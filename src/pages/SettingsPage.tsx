@@ -9,8 +9,7 @@ export default function SettingsPage() {
 
       <Paper variant="outlined" sx={{ p: 3 }}>
         <Typography color="text.secondary">
-          Keep global app configuration and integration keys in this section when
-          you start wiring APIs.
+         Comming Soon.
         </Typography>
       </Paper>
     </Stack>

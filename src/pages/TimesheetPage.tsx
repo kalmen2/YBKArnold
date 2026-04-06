@@ -1,4 +1,5 @@
 import AddRoundedIcon from '@mui/icons-material/AddRounded'
+import CategoryRoundedIcon from '@mui/icons-material/CategoryRounded'
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
 import FileDownloadRoundedIcon from '@mui/icons-material/FileDownloadRounded'
 import GroupRoundedIcon from '@mui/icons-material/GroupRounded'
@@ -13,6 +14,7 @@ import {
   DialogContent,
   DialogTitle,
   Divider,
+  IconButton,
   MenuItem,
   Paper,
   Stack,
@@ -30,19 +32,25 @@ import {
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import * as XLSX from 'xlsx'
 import {
+  createStage,
   createEntriesBulk,
-  deleteEntry,
   createWorker,
   createWorkersBulk,
+  deleteEntry,
+  deleteStage,
   deleteWorker,
   fetchTimesheetState,
+  reorderStages,
   type TimesheetEntry,
+  type TimesheetStage,
   type TimesheetWorker,
   updateEntry,
 } from '../features/timesheet/api'
 
 type BulkWorkerRow = {
+  id: string
   workerId: string
+  stageId: string
   jobName: string
   hours: string
   notes: string
@@ -70,6 +78,7 @@ type BulkWorkerDraftRow = {
 type EntryEditForm = {
   date: string
   workerId: string
+  stageId: string
   jobName: string
   hours: string
   notes: string
@@ -160,14 +169,20 @@ function exportRowsToCsv(
   URL.revokeObjectURL(url)
 }
 
-function buildExportRows(entries: TimesheetEntry[], workersById: Map<string, TimesheetWorker>) {
+function buildExportRows(
+  entries: TimesheetEntry[],
+  workersById: Map<string, TimesheetWorker>,
+  stagesById: Map<string, TimesheetStage>,
+) {
   return entries.map((entry) => {
     const worker = workersById.get(entry.workerId)
+    const stageName = entry.stageId ? stagesById.get(entry.stageId)?.name ?? 'Unknown stage' : 'Unassigned'
     const rate = worker?.hourlyRate ?? 0
 
     return {
       Date: entry.date,
       Worker: worker?.fullName ?? 'Unknown worker',
+      Stage: stageName,
       Job: entry.jobName,
       Hours: Number(formatHours(entry.hours)),
       Rate: Number(rate.toFixed(2)),
@@ -206,17 +221,33 @@ function syncBulkRowsWithWorkers(
   currentRows: BulkWorkerRow[],
   workers: TimesheetWorker[],
 ) {
-  const rowByWorkerId = new Map(currentRows.map((row) => [row.workerId, row]))
+  const workerIds = new Set(workers.map((worker) => worker.id))
+  const existingRows = currentRows.filter((row) => workerIds.has(row.workerId))
+  const workerIdsWithRows = new Set(existingRows.map((row) => row.workerId))
+  const missingRows = workers
+    .filter((worker) => !workerIdsWithRows.has(worker.id))
+    .map((worker) => createEmptyBulkRowForWorker(worker.id))
 
-  return workers.map(
-    (worker) =>
-      rowByWorkerId.get(worker.id) ?? {
-        workerId: worker.id,
-        jobName: '',
-        hours: '',
-        notes: '',
-      },
-  )
+  return [...existingRows, ...missingRows]
+}
+
+function reorderStageList(
+  currentStages: TimesheetStage[],
+  sourceStageId: string,
+  targetStageId: string,
+) {
+  const sourceIndex = currentStages.findIndex((stage) => stage.id === sourceStageId)
+  const targetIndex = currentStages.findIndex((stage) => stage.id === targetStageId)
+
+  if (sourceIndex === -1 || targetIndex === -1 || sourceIndex === targetIndex) {
+    return currentStages
+  }
+
+  const nextStages = [...currentStages]
+  const [movedStage] = nextStages.splice(sourceIndex, 1)
+  nextStages.splice(targetIndex, 0, movedStage)
+
+  return nextStages
 }
 
 function createEmptyBulkWorkerDraft(): BulkWorkerDraftRow {
@@ -230,17 +261,38 @@ function createEmptyBulkWorkerDraft(): BulkWorkerDraftRow {
   }
 }
 
+function createBulkRowId() {
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+function createEmptyBulkRowForWorker(workerId: string, stageId = ''): BulkWorkerRow {
+  return {
+    id: createBulkRowId(),
+    workerId,
+    stageId,
+    jobName: '',
+    hours: '',
+    notes: '',
+  }
+}
+
 export default function TimesheetPage() {
   const [activeTab, setActiveTab] = useState(0)
   const [workers, setWorkers] = useState<TimesheetWorker[]>([])
   const [entries, setEntries] = useState<TimesheetEntry[]>([])
+  const [stages, setStages] = useState<TimesheetStage[]>([])
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [isLoading, setIsLoading] = useState(true)
 
   const [workersDialogOpen, setWorkersDialogOpen] = useState(false)
+  const [stagesDialogOpen, setStagesDialogOpen] = useState(false)
+  const [managerSheetOpen, setManagerSheetOpen] = useState(false)
   const [jobDetailsOpen, setJobDetailsOpen] = useState(false)
   const [selectedJobName, setSelectedJobName] = useState('')
+  const [stageNameInput, setStageNameInput] = useState('')
+  const [draggedStageId, setDraggedStageId] = useState('')
+  const [isReorderingStages, setIsReorderingStages] = useState(false)
 
   const [workerForm, setWorkerForm] = useState({
     fullName: '',
@@ -262,6 +314,7 @@ export default function TimesheetPage() {
   const [entryEditForm, setEntryEditForm] = useState<EntryEditForm>({
     date: todayIsoDate(),
     workerId: '',
+    stageId: '',
     jobName: '',
     hours: '',
     notes: '',
@@ -281,7 +334,18 @@ export default function TimesheetPage() {
 
       setWorkers(payload.workers)
       setEntries(payload.entries)
-      setBulkRows((current) => syncBulkRowsWithWorkers(current, payload.workers))
+      setStages(payload.stages)
+      const stageIds = new Set(payload.stages.map((stage) => stage.id))
+      setBulkRows((current) =>
+        syncBulkRowsWithWorkers(current, payload.workers).map((row) =>
+          row.stageId && !stageIds.has(row.stageId)
+            ? {
+                ...row,
+                stageId: '',
+              }
+            : row,
+        ),
+      )
       setWorkerViewWorkerId((current) => {
         if (current && payload.workers.some((worker) => worker.id === current)) {
           return current
@@ -307,6 +371,11 @@ export default function TimesheetPage() {
   const workersById = useMemo(
     () => new Map(workers.map((worker) => [worker.id, worker])),
     [workers],
+  )
+
+  const stagesById = useMemo(
+    () => new Map(stages.map((stage) => [stage.id, stage])),
+    [stages],
   )
 
   const sortedEntries = useMemo(
@@ -485,9 +554,19 @@ export default function TimesheetPage() {
     return [...grouped.values()].sort((left, right) => right.totalHours - left.totalHours)
   }, [workerFilteredEntries, workersById])
 
+  const bulkRowCountByWorkerId = useMemo(() => {
+    const map = new Map<string, number>()
+
+    bulkRows.forEach((row) => {
+      map.set(row.workerId, (map.get(row.workerId) ?? 0) + 1)
+    })
+
+    return map
+  }, [bulkRows])
+
   const selectedJobExportRows = useMemo(
-    () => buildExportRows(selectedJobEntries, workersById),
-    [selectedJobEntries, workersById],
+    () => buildExportRows(selectedJobEntries, workersById, stagesById),
+    [selectedJobEntries, stagesById, workersById],
   )
 
   const byJobExportRows = useMemo(
@@ -496,8 +575,8 @@ export default function TimesheetPage() {
   )
 
   const workerExportRows = useMemo(
-    () => buildExportRows(workerFilteredEntries, workersById),
-    [workerFilteredEntries, workersById],
+    () => buildExportRows(workerFilteredEntries, workersById, stagesById),
+    [workerFilteredEntries, stagesById, workersById],
   )
 
   const dateViewRange = useMemo(() => {
@@ -533,6 +612,71 @@ export default function TimesheetPage() {
     )
   }, [dateViewEntries, workersById])
 
+  const managerDayEntries = useMemo(
+    () => sortedEntries.filter((entry) => entry.date === bulkDate),
+    [bulkDate, sortedEntries],
+  )
+
+  const managerDayTotals = useMemo(() => {
+    return managerDayEntries.reduce(
+      (accumulator, entry) => {
+        const rate = workersById.get(entry.workerId)?.hourlyRate ?? 0
+        accumulator.totalHours += entry.hours
+        accumulator.totalCost += entry.hours * rate
+        return accumulator
+      },
+      { totalHours: 0, totalCost: 0 },
+    )
+  }, [managerDayEntries, workersById])
+
+  const managerDayWorkerCount = useMemo(
+    () => new Set(managerDayEntries.map((entry) => entry.workerId)).size,
+    [managerDayEntries],
+  )
+
+  const managerDayByJobRows = useMemo(() => {
+    const grouped = new Map<
+      string,
+      {
+        jobName: string
+        totalHours: number
+        totalCost: number
+        workerIds: Set<string>
+      }
+    >()
+
+    managerDayEntries.forEach((entry) => {
+      if (!grouped.has(entry.jobName)) {
+        grouped.set(entry.jobName, {
+          jobName: entry.jobName,
+          totalHours: 0,
+          totalCost: 0,
+          workerIds: new Set(),
+        })
+      }
+
+      const row = grouped.get(entry.jobName)
+
+      if (!row) {
+        return
+      }
+
+      const rate = workersById.get(entry.workerId)?.hourlyRate ?? 0
+      row.totalHours += entry.hours
+      row.totalCost += entry.hours * rate
+      row.workerIds.add(entry.workerId)
+    })
+
+    return [...grouped.values()]
+      .map((row) => ({
+        jobName: row.jobName,
+        totalHours: row.totalHours,
+        totalCost: row.totalCost,
+        workerCount: row.workerIds.size,
+      }))
+      .sort((left, right) => right.totalHours - left.totalHours)
+  }, [managerDayEntries, workersById])
+
   useEffect(() => {
     if (!editingEntryId) {
       return
@@ -544,6 +688,12 @@ export default function TimesheetPage() {
 
     setEditingEntryId('')
   }, [editingEntryId, entries])
+
+  useEffect(() => {
+    if (managerSheetOpen && managerDayEntries.length === 0) {
+      setManagerSheetOpen(false)
+    }
+  }, [managerDayEntries.length, managerSheetOpen])
 
   const handleAddWorker = async () => {
     setError('')
@@ -690,13 +840,13 @@ export default function TimesheetPage() {
   }
 
   const handleBulkRowChange = (
-    workerId: string,
-    field: keyof Omit<BulkWorkerRow, 'workerId'>,
+    rowId: string,
+    field: keyof Omit<BulkWorkerRow, 'id' | 'workerId'>,
     value: string,
   ) => {
     setBulkRows((current) =>
       current.map((row) =>
-        row.workerId === workerId
+        row.id === rowId
           ? {
               ...row,
               [field]: value,
@@ -704,6 +854,40 @@ export default function TimesheetPage() {
           : row,
       ),
     )
+  }
+
+  const handleAddBulkRowForWorker = (workerId: string, afterRowId: string) => {
+    setBulkRows((current) => {
+      const insertIndex = current.findIndex((row) => row.id === afterRowId)
+      const sourceRow = insertIndex >= 0 ? current[insertIndex] : null
+      const nextRow = createEmptyBulkRowForWorker(workerId, sourceRow?.stageId ?? '')
+
+      if (insertIndex < 0) {
+        return [...current, nextRow]
+      }
+
+      const nextRows = [...current]
+      nextRows.splice(insertIndex + 1, 0, nextRow)
+      return nextRows
+    })
+  }
+
+  const handleRemoveBulkRowForWorker = (rowId: string) => {
+    setBulkRows((current) => {
+      const row = current.find((entry) => entry.id === rowId)
+
+      if (!row) {
+        return current
+      }
+
+      const workerRows = current.filter((entry) => entry.workerId === row.workerId)
+
+      if (workerRows.length <= 1) {
+        return current
+      }
+
+      return current.filter((entry) => entry.id !== rowId)
+    })
   }
 
   const handleSaveDailySheet = async () => {
@@ -722,6 +906,7 @@ export default function TimesheetPage() {
 
     const rows = [] as Array<{
       workerId: string
+      stageId?: string
       jobName: string
       hours: number
       notes: string
@@ -736,6 +921,7 @@ export default function TimesheetPage() {
       }
 
       const jobName = row.jobName.trim()
+      const stageId = row.stageId.trim()
       const hours = Number(row.hours)
 
       if (!jobName || !Number.isFinite(hours) || hours <= 0) {
@@ -749,6 +935,11 @@ export default function TimesheetPage() {
         jobName,
         hours,
         notes: row.notes.trim(),
+        ...(stageId
+          ? {
+              stageId,
+            }
+          : {}),
       })
     })
 
@@ -789,6 +980,7 @@ export default function TimesheetPage() {
     setEntryEditForm({
       date: entry.date,
       workerId: entry.workerId,
+      stageId: entry.stageId ?? '',
       jobName: entry.jobName,
       hours: String(entry.hours),
       notes: entry.notes,
@@ -817,6 +1009,7 @@ export default function TimesheetPage() {
 
     const date = entryEditForm.date.trim()
     const workerId = entryEditForm.workerId.trim()
+    const stageId = entryEditForm.stageId.trim()
     const jobName = entryEditForm.jobName.trim()
     const notes = entryEditForm.notes.trim()
     const hours = Number(entryEditForm.hours)
@@ -845,6 +1038,7 @@ export default function TimesheetPage() {
       await updateEntry(editingEntryId, {
         date,
         workerId,
+        stageId,
         jobName,
         hours,
         notes,
@@ -904,6 +1098,108 @@ export default function TimesheetPage() {
           ? requestError.message
           : 'Failed to remove worker.'
       setError(message)
+    }
+  }
+
+  const handleAddStage = async () => {
+    setError('')
+    setSuccess('')
+
+    const name = stageNameInput.trim()
+
+    if (!name) {
+      setError('Stage name is required.')
+      return
+    }
+
+    try {
+      await createStage({ name })
+      setStageNameInput('')
+      await refreshState()
+      setSuccess('Stage added.')
+    } catch (requestError) {
+      const message =
+        requestError instanceof Error
+          ? requestError.message
+          : 'Failed to add stage.'
+      setError(message)
+    }
+  }
+
+  const handleRemoveStage = async (stageId: string) => {
+    setError('')
+    setSuccess('')
+
+    const confirmed = window.confirm('Remove this stage?')
+
+    if (!confirmed) {
+      return
+    }
+
+    try {
+      await deleteStage(stageId)
+
+      if (entryEditForm.stageId === stageId) {
+        setEntryEditForm((current) => ({
+          ...current,
+          stageId: '',
+        }))
+      }
+
+      await refreshState()
+      setSuccess('Stage removed.')
+    } catch (requestError) {
+      const message =
+        requestError instanceof Error
+          ? requestError.message
+          : 'Failed to remove stage.'
+      setError(message)
+    }
+  }
+
+  const handleStageDragStart = (stageId: string) => {
+    if (isReorderingStages) {
+      return
+    }
+
+    setDraggedStageId(stageId)
+  }
+
+  const handleStageDragEnd = () => {
+    setDraggedStageId('')
+  }
+
+  const handleDropStage = async (targetStageId: string) => {
+    if (!draggedStageId || draggedStageId === targetStageId || isReorderingStages) {
+      return
+    }
+
+    const previousStages = stages
+    const nextStages = reorderStageList(stages, draggedStageId, targetStageId)
+
+    if (nextStages === previousStages) {
+      setDraggedStageId('')
+      return
+    }
+
+    setDraggedStageId('')
+    setStages(nextStages)
+    setError('')
+    setSuccess('')
+    setIsReorderingStages(true)
+
+    try {
+      await reorderStages(nextStages.map((stage) => stage.id))
+      setSuccess('Stage order updated.')
+    } catch (requestError) {
+      setStages(previousStages)
+      const message =
+        requestError instanceof Error
+          ? requestError.message
+          : 'Failed to reorder stages.'
+      setError(message)
+    } finally {
+      setIsReorderingStages(false)
     }
   }
 
@@ -997,13 +1293,23 @@ export default function TimesheetPage() {
           </Typography>
         </Box>
 
-        <Button
-          variant="outlined"
-          startIcon={<GroupRoundedIcon />}
-          onClick={() => setWorkersDialogOpen(true)}
-        >
-          Workers ({workers.length})
-        </Button>
+        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
+          <Button
+            variant="outlined"
+            startIcon={<GroupRoundedIcon />}
+            onClick={() => setWorkersDialogOpen(true)}
+          >
+            Workers ({workers.length})
+          </Button>
+
+          <Button
+            variant="outlined"
+            startIcon={<CategoryRoundedIcon />}
+            onClick={() => setStagesDialogOpen(true)}
+          >
+            Stages ({stages.length})
+          </Button>
+        </Stack>
       </Stack>
 
       {error ? (
@@ -1083,6 +1389,7 @@ export default function TimesheetPage() {
                   <TableHead>
                     <TableRow>
                       <TableCell>Worker</TableCell>
+                      <TableCell>Stage</TableCell>
                       <TableCell>Job</TableCell>
                       <TableCell align="right">Hours</TableCell>
                       <TableCell>Notes</TableCell>
@@ -1091,7 +1398,7 @@ export default function TimesheetPage() {
                   <TableBody>
                     {bulkRows.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={4}>
+                        <TableCell colSpan={5}>
                           <Typography color="text.secondary">
                             Add workers first, then fill this daily sheet.
                           </Typography>
@@ -1103,8 +1410,56 @@ export default function TimesheetPage() {
                           workersById.get(row.workerId)?.fullName ?? 'Unknown worker'
 
                         return (
-                          <TableRow key={row.workerId} hover>
-                            <TableCell>{workerName}</TableCell>
+                          <TableRow key={row.id} hover>
+                            <TableCell>
+                              <Stack direction="row" spacing={0.5} alignItems="center">
+                                <IconButton
+                                  size="small"
+                                  color="primary"
+                                  onClick={() => handleAddBulkRowForWorker(row.workerId, row.id)}
+                                  title="Add another line for this worker"
+                                >
+                                  <AddRoundedIcon fontSize="small" />
+                                </IconButton>
+
+                                {bulkRowCountByWorkerId.get(row.workerId) &&
+                                (bulkRowCountByWorkerId.get(row.workerId) ?? 0) > 1 ? (
+                                  <IconButton
+                                    size="small"
+                                    color="error"
+                                    onClick={() => handleRemoveBulkRowForWorker(row.id)}
+                                    title="Remove this extra line"
+                                  >
+                                    <DeleteOutlineRoundedIcon fontSize="small" />
+                                  </IconButton>
+                                ) : null}
+
+                                <Typography variant="body2">{workerName}</Typography>
+                              </Stack>
+                            </TableCell>
+                            <TableCell sx={{ minWidth: 180 }}>
+                              <TextField
+                                select
+                                size="small"
+                                fullWidth
+                                value={row.stageId}
+                                onChange={(event) =>
+                                  handleBulkRowChange(
+                                    row.id,
+                                    'stageId',
+                                    event.target.value,
+                                  )
+                                }
+                              >
+                                <MenuItem value="">No stage selected</MenuItem>
+
+                                {stages.map((stage) => (
+                                  <MenuItem key={stage.id} value={stage.id}>
+                                    {stage.name}
+                                  </MenuItem>
+                                ))}
+                              </TextField>
+                            </TableCell>
                             <TableCell>
                               <TextField
                                 size="small"
@@ -1113,7 +1468,7 @@ export default function TimesheetPage() {
                                 value={row.jobName}
                                 onChange={(event) =>
                                   handleBulkRowChange(
-                                    row.workerId,
+                                    row.id,
                                     'jobName',
                                     event.target.value,
                                   )
@@ -1130,7 +1485,7 @@ export default function TimesheetPage() {
                                 value={row.hours}
                                 onChange={(event) =>
                                   handleBulkRowChange(
-                                    row.workerId,
+                                    row.id,
                                     'hours',
                                     event.target.value,
                                   )
@@ -1145,7 +1500,7 @@ export default function TimesheetPage() {
                                 value={row.notes}
                                 onChange={(event) =>
                                   handleBulkRowChange(
-                                    row.workerId,
+                                    row.id,
                                     'notes',
                                     event.target.value,
                                   )
@@ -1160,11 +1515,27 @@ export default function TimesheetPage() {
                 </Table>
               </TableContainer>
 
-              <Box>
+              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
                 <Button variant="contained" onClick={handleSaveDailySheet}>
                   Save Daily Sheet
                 </Button>
-              </Box>
+
+                {managerDayEntries.length > 0 ? (
+                  <Button
+                    variant="outlined"
+                    startIcon={<OpenInNewRoundedIcon />}
+                    onClick={() => setManagerSheetOpen(true)}
+                  >
+                    Manager Sheet ({managerDayEntries.length})
+                  </Button>
+                ) : null}
+              </Stack>
+
+              <Typography variant="body2" color="text.secondary">
+                {managerDayEntries.length > 0
+                  ? `Entries found for ${bulkDate}. Open Manager Sheet to review all orders for this date.`
+                  : 'Manager Sheet appears after entries are submitted for the selected date.'}
+              </Typography>
             </Stack>
           ) : null}
 
@@ -1414,6 +1785,7 @@ export default function TimesheetPage() {
                   <TableHead>
                     <TableRow>
                       <TableCell>Date</TableCell>
+                      <TableCell>Stage</TableCell>
                       <TableCell>Job</TableCell>
                       <TableCell align="right">Hours</TableCell>
                       <TableCell align="right">Rate</TableCell>
@@ -1424,7 +1796,7 @@ export default function TimesheetPage() {
                   <TableBody>
                     {workerFilteredEntries.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={6}>
+                        <TableCell colSpan={7}>
                           <Typography color="text.secondary">No history rows in selected range.</Typography>
                         </TableCell>
                       </TableRow>
@@ -1437,6 +1809,9 @@ export default function TimesheetPage() {
                         return (
                           <TableRow key={entry.id} hover>
                             <TableCell>{entry.date}</TableCell>
+                            <TableCell>
+                              {entry.stageId ? stagesById.get(entry.stageId)?.name ?? 'Unknown stage' : '-'}
+                            </TableCell>
                             <TableCell>{entry.jobName}</TableCell>
                             <TableCell align="right">{formatHours(entry.hours)}</TableCell>
                             <TableCell align="right">{formatCurrency(rate)}</TableCell>
@@ -1525,6 +1900,7 @@ export default function TimesheetPage() {
                     <TableRow>
                       <TableCell>Date</TableCell>
                       <TableCell>Worker</TableCell>
+                      <TableCell>Stage</TableCell>
                       <TableCell>Job</TableCell>
                       <TableCell align="right">Hours</TableCell>
                       <TableCell align="right">Rate</TableCell>
@@ -1536,7 +1912,7 @@ export default function TimesheetPage() {
                   <TableBody>
                     {dateViewEntries.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={8}>
+                        <TableCell colSpan={9}>
                           <Typography color="text.secondary">
                             No entries in the selected date range.
                           </Typography>
@@ -1587,6 +1963,32 @@ export default function TimesheetPage() {
                                 </TextField>
                               ) : (
                                 workersById.get(entry.workerId)?.fullName ?? 'Unknown worker'
+                              )}
+                            </TableCell>
+
+                            <TableCell sx={{ minWidth: 180 }}>
+                              {isEditing ? (
+                                <TextField
+                                  select
+                                  size="small"
+                                  fullWidth
+                                  value={entryEditForm.stageId}
+                                  onChange={(event) =>
+                                    handleEditEntryFieldChange('stageId', event.target.value)
+                                  }
+                                >
+                                  <MenuItem value="">No stage selected</MenuItem>
+
+                                  {stages.map((stage) => (
+                                    <MenuItem key={stage.id} value={stage.id}>
+                                      {stage.name}
+                                    </MenuItem>
+                                  ))}
+                                </TextField>
+                              ) : entry.stageId ? (
+                                stagesById.get(entry.stageId)?.name ?? 'Unknown stage'
+                              ) : (
+                                '-'
                               )}
                             </TableCell>
 
@@ -1651,6 +2053,13 @@ export default function TimesheetPage() {
                                   </Button>
                                   <Button size="small" onClick={handleCancelEditEntry}>
                                     Cancel
+                                  </Button>
+                                  <Button
+                                    size="small"
+                                    color="error"
+                                    onClick={() => void handleDeleteEntryRow(entry.id)}
+                                  >
+                                    Remove
                                   </Button>
                                 </Stack>
                               ) : (
@@ -1942,6 +2351,236 @@ export default function TimesheetPage() {
       </Dialog>
 
       <Dialog
+        open={stagesDialogOpen}
+        onClose={() => setStagesDialogOpen(false)}
+        fullWidth
+        maxWidth="sm"
+      >
+        <DialogTitle>Stages</DialogTitle>
+        <DialogContent dividers>
+          <Stack spacing={2}>
+            <Typography variant="subtitle1" fontWeight={700}>
+              Add Stage
+            </Typography>
+
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.2}>
+              <TextField
+                fullWidth
+                label="Stage name"
+                value={stageNameInput}
+                onChange={(event) => setStageNameInput(event.target.value)}
+              />
+              <Button
+                variant="contained"
+                startIcon={<AddRoundedIcon />}
+                onClick={handleAddStage}
+                sx={{ minWidth: 130 }}
+              >
+                Add
+              </Button>
+            </Stack>
+
+            <Divider />
+
+            <Typography variant="subtitle1" fontWeight={700}>
+              Existing Stages
+            </Typography>
+
+            <Typography variant="body2" color="text.secondary">
+              Drag a stage row and drop it on another row to change the dropdown order.
+            </Typography>
+
+            <TableContainer sx={{ border: 1, borderColor: 'divider', borderRadius: 1.5 }}>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell width={90}>Drag</TableCell>
+                    <TableCell>Name</TableCell>
+                    <TableCell align="right">Actions</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {stages.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={3}>
+                        <Typography color="text.secondary">No stages yet.</Typography>
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    stages.map((stage) => (
+                      <TableRow
+                        key={stage.id}
+                        hover
+                        draggable={!isReorderingStages}
+                        onDragStart={() => handleStageDragStart(stage.id)}
+                        onDragEnd={handleStageDragEnd}
+                        onDragOver={(event) => event.preventDefault()}
+                        onDrop={() => void handleDropStage(stage.id)}
+                        sx={{
+                          cursor: isReorderingStages ? 'progress' : 'grab',
+                          opacity: draggedStageId === stage.id ? 0.55 : 1,
+                        }}
+                      >
+                        <TableCell>
+                          <Typography variant="caption" color="text.secondary">
+                            Drag
+                          </Typography>
+                        </TableCell>
+                        <TableCell>{stage.name}</TableCell>
+                        <TableCell align="right">
+                          <Button
+                            color="error"
+                            size="small"
+                            startIcon={<DeleteOutlineRoundedIcon />}
+                            onClick={() => void handleRemoveStage(stage.id)}
+                            disabled={isReorderingStages}
+                          >
+                            Remove
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setStagesDialogOpen(false)}>Close</Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={managerSheetOpen}
+        onClose={() => setManagerSheetOpen(false)}
+        fullWidth
+        maxWidth="xl"
+      >
+        <DialogTitle>Manager Sheet - {bulkDate || todayIsoDate()}</DialogTitle>
+        <DialogContent dividers>
+          {managerDayEntries.length === 0 ? (
+            <Typography color="text.secondary">
+              No submitted entries found for the selected date.
+            </Typography>
+          ) : (
+            <Stack spacing={2}>
+              <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5}>
+                <Paper variant="outlined" sx={{ p: 2, flex: 1 }}>
+                  <Typography variant="caption" color="text.secondary">
+                    Orders worked
+                  </Typography>
+                  <Typography variant="h6" fontWeight={700}>
+                    {managerDayByJobRows.length}
+                  </Typography>
+                </Paper>
+
+                <Paper variant="outlined" sx={{ p: 2, flex: 1 }}>
+                  <Typography variant="caption" color="text.secondary">
+                    Workers submitted
+                  </Typography>
+                  <Typography variant="h6" fontWeight={700}>
+                    {managerDayWorkerCount}
+                  </Typography>
+                </Paper>
+
+                <Paper variant="outlined" sx={{ p: 2, flex: 1 }}>
+                  <Typography variant="caption" color="text.secondary">
+                    Total hours
+                  </Typography>
+                  <Typography variant="h6" fontWeight={700}>
+                    {formatHours(managerDayTotals.totalHours)} h
+                  </Typography>
+                </Paper>
+
+                <Paper variant="outlined" sx={{ p: 2, flex: 1 }}>
+                  <Typography variant="caption" color="text.secondary">
+                    Total cost
+                  </Typography>
+                  <Typography variant="h6" fontWeight={700}>
+                    {formatCurrency(managerDayTotals.totalCost)}
+                  </Typography>
+                </Paper>
+              </Stack>
+
+              <Typography variant="subtitle1" fontWeight={700}>
+                Orders Worked On {bulkDate}
+              </Typography>
+
+              <TableContainer sx={{ border: 1, borderColor: 'divider', borderRadius: 1.5 }}>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Order</TableCell>
+                      <TableCell align="right">Workers</TableCell>
+                      <TableCell align="right">Hours</TableCell>
+                      <TableCell align="right">Cost</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {managerDayByJobRows.map((row) => (
+                      <TableRow key={row.jobName} hover>
+                        <TableCell>{row.jobName}</TableCell>
+                        <TableCell align="right">{row.workerCount}</TableCell>
+                        <TableCell align="right">{formatHours(row.totalHours)}</TableCell>
+                        <TableCell align="right">{formatCurrency(row.totalCost)}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+
+              <Typography variant="subtitle1" fontWeight={700}>
+                Submitted Rows
+              </Typography>
+
+              <TableContainer sx={{ border: 1, borderColor: 'divider', borderRadius: 1.5 }}>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Worker</TableCell>
+                      <TableCell>Stage</TableCell>
+                      <TableCell>Order</TableCell>
+                      <TableCell align="right">Hours</TableCell>
+                      <TableCell align="right">Rate</TableCell>
+                      <TableCell align="right">Cost</TableCell>
+                      <TableCell>Notes</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {managerDayEntries.map((entry) => {
+                      const worker = workersById.get(entry.workerId)
+                      const rate = worker?.hourlyRate ?? 0
+                      const cost = entry.hours * rate
+
+                      return (
+                        <TableRow key={entry.id} hover>
+                          <TableCell>{worker?.fullName ?? 'Unknown worker'}</TableCell>
+                          <TableCell>
+                            {entry.stageId
+                              ? stagesById.get(entry.stageId)?.name ?? 'Unknown stage'
+                              : '-'}
+                          </TableCell>
+                          <TableCell>{entry.jobName}</TableCell>
+                          <TableCell align="right">{formatHours(entry.hours)}</TableCell>
+                          <TableCell align="right">{formatCurrency(rate)}</TableCell>
+                          <TableCell align="right">{formatCurrency(cost)}</TableCell>
+                          <TableCell>{entry.notes || '-'}</TableCell>
+                        </TableRow>
+                      )
+                    })}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            </Stack>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setManagerSheetOpen(false)}>Close</Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
         open={jobDetailsOpen}
         onClose={() => setJobDetailsOpen(false)}
         fullWidth
@@ -2011,6 +2650,7 @@ export default function TimesheetPage() {
                     <TableRow>
                       <TableCell>Date</TableCell>
                       <TableCell>Worker</TableCell>
+                      <TableCell>Stage</TableCell>
                       <TableCell align="right">Hours</TableCell>
                       <TableCell align="right">Rate</TableCell>
                       <TableCell align="right">Cost</TableCell>
@@ -2020,7 +2660,7 @@ export default function TimesheetPage() {
                   <TableBody>
                     {selectedJobEntries.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={6}>
+                        <TableCell colSpan={7}>
                           <Typography color="text.secondary">No entry rows for this job.</Typography>
                         </TableCell>
                       </TableRow>
@@ -2034,6 +2674,9 @@ export default function TimesheetPage() {
                           <TableRow key={entry.id} hover>
                             <TableCell>{entry.date}</TableCell>
                             <TableCell>{worker?.fullName ?? 'Unknown worker'}</TableCell>
+                            <TableCell>
+                              {entry.stageId ? stagesById.get(entry.stageId)?.name ?? 'Unknown stage' : '-'}
+                            </TableCell>
                             <TableCell align="right">{formatHours(entry.hours)}</TableCell>
                             <TableCell align="right">{formatCurrency(rate)}</TableCell>
                             <TableCell align="right">{formatCurrency(cost)}</TableCell>

@@ -10,6 +10,10 @@ Timesheet frontend (React + Vite) with Express + MongoDB backend.
 PORT=8787
 MONGODB_URI=<your atlas uri>
 MONGODB_DB=arnold_system
+MONDAY_API_TOKEN=<your monday api token>
+MONDAY_BOARD_ID=1062951447
+MONDAY_BOARD_URL=https://arnoldcontract.monday.com/boards/1062951447
+MONDAY_API_URL=https://api.monday.com/v2
 ```
 
 2. Install root dependencies:
@@ -29,7 +33,7 @@ npm run dev
 This repo is configured to deploy:
 
 1. Frontend to Firebase Hosting (`dist`)
-2. Backend API to Firebase Functions (`functions/index.mjs`, function name `api`)
+2. Backend API to Firebase Functions (`functions/index.mjs`, function name `apiV1`)
 
 ### One-time setup
 
@@ -57,6 +61,10 @@ npm --prefix functions install
 ```
 MONGODB_URI=<your atlas uri>
 MONGODB_DB=arnold_system
+MONDAY_API_TOKEN=<your monday api token>
+MONDAY_BOARD_ID=1062951447
+MONDAY_BOARD_URL=https://arnoldcontract.monday.com/boards/1062951447
+MONDAY_API_URL=https://api.monday.com/v2
 ```
 
 ### Deploy commands

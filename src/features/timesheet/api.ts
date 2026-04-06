@@ -12,6 +12,7 @@ export type TimesheetWorker = {
 export type TimesheetEntry = {
   id: string
   workerId: string
+  stageId?: string
   date: string
   jobName: string
   hours: number
@@ -19,9 +20,18 @@ export type TimesheetEntry = {
   createdAt: string
 }
 
+export type TimesheetStage = {
+  id: string
+  name: string
+  sortOrder?: number
+  createdAt: string
+  updatedAt: string
+}
+
 type TimesheetStateResponse = {
   workers: TimesheetWorker[]
   entries: TimesheetEntry[]
+  stages: TimesheetStage[]
 }
 
 type CreateWorkerInput = {
@@ -34,6 +44,7 @@ type CreateWorkerInput = {
 
 type CreateEntryBulkRowInput = {
   workerId: string
+  stageId?: string
   jobName: string
   hours: number
   notes: string
@@ -42,9 +53,14 @@ type CreateEntryBulkRowInput = {
 type UpdateEntryInput = {
   date: string
   workerId: string
+  stageId?: string
   jobName: string
   hours: number
   notes: string
+}
+
+type CreateStageInput = {
+  name: string
 }
 
 async function request<T>(path: string, options: RequestInit = {}) {
@@ -86,6 +102,26 @@ export function createWorkersBulk(inputs: CreateWorkerInput[]) {
 export function deleteWorker(workerId: string) {
   return request<{ ok: boolean }>(`/api/timesheet/workers/${workerId}`, {
     method: 'DELETE',
+  })
+}
+
+export function createStage(input: CreateStageInput) {
+  return request<{ stage: TimesheetStage }>('/api/timesheet/stages', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export function deleteStage(stageId: string) {
+  return request<{ ok: boolean }>(`/api/timesheet/stages/${stageId}`, {
+    method: 'DELETE',
+  })
+}
+
+export function reorderStages(stageIds: string[]) {
+  return request<{ ok: boolean }>('/api/timesheet/stages/reorder', {
+    method: 'PATCH',
+    body: JSON.stringify({ stageIds }),
   })
 }
 
