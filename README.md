@@ -14,6 +14,9 @@ MONDAY_API_TOKEN=<your monday api token>
 MONDAY_BOARD_ID=1062951447
 MONDAY_BOARD_URL=https://arnoldcontract.monday.com/boards/1062951447
 MONDAY_API_URL=https://api.monday.com/v2
+ZENDESK_API_TOKEN=<your zendesk api token>
+ZENDESK_EMAIL=<optional: your zendesk email for api-token mode>
+ZENDESK_URL=https://your-subdomain.zendesk.com/agent
 ```
 
 2. Install root dependencies:
@@ -65,7 +68,15 @@ MONDAY_API_TOKEN=<your monday api token>
 MONDAY_BOARD_ID=1062951447
 MONDAY_BOARD_URL=https://arnoldcontract.monday.com/boards/1062951447
 MONDAY_API_URL=https://api.monday.com/v2
+ZENDESK_API_TOKEN=<your zendesk api token>
+ZENDESK_EMAIL=<optional: your zendesk email for api-token mode>
+ZENDESK_URL=https://your-subdomain.zendesk.com/agent
 ```
+
+Zendesk auth modes:
+
+- If `ZENDESK_EMAIL` is set, backend uses Basic auth (`email/token` + `ZENDESK_API_TOKEN`) for Zendesk API token mode.
+- If `ZENDESK_EMAIL` is not set, backend uses Bearer auth with `ZENDESK_API_TOKEN` (OAuth token mode).
 
 ### Deploy commands
 

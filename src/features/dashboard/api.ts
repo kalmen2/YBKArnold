@@ -68,6 +68,23 @@ export type MondayDashboardSnapshot = {
   }
 }
 
+export type ZendeskTicketSummarySnapshot = {
+  generatedAt: string
+  agentUrl: string | null
+  metrics: {
+    newTickets: number
+    inProgressTickets: number
+    openTickets: number
+    pendingTickets: number
+    solvedTickets: number
+    openTotalTickets: number
+  }
+}
+
+type DashboardFetchOptions = {
+  refresh?: boolean
+}
+
 async function request<T>(path: string, options: RequestInit = {}) {
   const response = await fetch(path, {
     ...options,
@@ -86,6 +103,23 @@ async function request<T>(path: string, options: RequestInit = {}) {
   return payload as T
 }
 
-export function fetchMondayDashboardSnapshot() {
-  return request<MondayDashboardSnapshot>('/api/dashboard/monday')
+function withRefreshQuery(path: string, refresh = false) {
+  if (!refresh) {
+    return path
+  }
+
+  const separator = path.includes('?') ? '&' : '?'
+  return `${path}${separator}refresh=1`
+}
+
+export function fetchMondayDashboardSnapshot(options: DashboardFetchOptions = {}) {
+  return request<MondayDashboardSnapshot>(
+    withRefreshQuery('/api/dashboard/monday', options.refresh === true),
+  )
+}
+
+export function fetchZendeskTicketSummary(options: DashboardFetchOptions = {}) {
+  return request<ZendeskTicketSummarySnapshot>(
+    withRefreshQuery('/api/dashboard/zendesk', options.refresh === true),
+  )
 }

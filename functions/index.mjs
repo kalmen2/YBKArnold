@@ -15,17 +15,9 @@ const mondayApiUrl = process.env.MONDAY_API_URL ?? 'https://api.monday.com/v2'
 const mondayApiToken = String(process.env.MONDAY_API_TOKEN ?? '').trim()
 const mondayBoardId = String(process.env.MONDAY_BOARD_ID ?? '').trim()
 const mondayBoardUrl = String(process.env.MONDAY_BOARD_URL ?? '').trim()
-
-const defaultTimesheetStageNames = [
-  'Design',
-  'Base/Form',
-  'Build',
-  'Sand or Lam',
-  'Sealer',
-  'Lacquer',
-  'Ready',
-  'Invoiced',
-]
+const zendeskApiToken = String(process.env.ZENDESK_API_TOKEN ?? '').trim()
+const zendeskEmail = String(process.env.ZENDESK_EMAIL ?? '').trim()
+const zendeskUrl = String(process.env.ZENDESK_URL ?? '').trim()
 
 const mondayProgressStatusConfig = [
   { key: 'priority', titleKeywords: ['priority'], weight: 0 },
@@ -91,6 +83,7 @@ async function getCollections() {
   const workersCollection = database.collection('workers')
   const entriesCollection = database.collection('timesheet_entries')
   const stagesCollection = database.collection('timesheet_stages')
+  const dashboardSnapshotsCollection = database.collection('dashboard_snapshots')
 
   if (!indexesPromise) {
     indexesPromise = Promise.all([
@@ -101,8 +94,9 @@ async function getCollections() {
       entriesCollection.createIndex({ date: -1 }),
       stagesCollection.createIndex({ id: 1 }, { unique: true }),
       stagesCollection.createIndex({ normalizedName: 1 }, { unique: true }),
+      dashboardSnapshotsCollection.createIndex({ snapshotKey: 1 }, { unique: true }),
     ]).then(async () => {
-      await ensureDefaultStages(stagesCollection)
+      await ensureDefaultStages()
       await ensureStageSortOrder(stagesCollection)
     })
   }
@@ -114,33 +108,13 @@ async function getCollections() {
     workersCollection,
     entriesCollection,
     stagesCollection,
+    dashboardSnapshotsCollection,
   }
 }
 
-async function ensureDefaultStages(stagesCollection) {
-  const existingCount = await stagesCollection.countDocuments({}, { limit: 1 })
-
-  if (existingCount > 0) {
-    return
-  }
-
-  const now = new Date().toISOString()
-  const defaults = defaultTimesheetStageNames.map((name, index) => ({
-    id: randomUUID(),
-    name,
-    normalizedName: normalizeStageName(name),
-    sortOrder: index,
-    createdAt: now,
-    updatedAt: now,
-  }))
-
-  try {
-    await stagesCollection.insertMany(defaults, { ordered: false })
-  } catch (error) {
-    if (Number(error?.code) !== 11000) {
-      throw error
-    }
-  }
+async function ensureDefaultStages() {
+  // Defaults are intentionally disabled; stages are user-managed.
+  return
 }
 
 async function ensureStageSortOrder(stagesCollection) {
@@ -190,6 +164,48 @@ async function ensureStageSortOrder(stagesCollection) {
   }
 }
 
+function isDashboardRefreshRequested(req) {
+  const rawValue = Array.isArray(req.query?.refresh)
+    ? req.query.refresh[0]
+    : req.query?.refresh
+  const normalizedValue = String(rawValue ?? '')
+    .trim()
+    .toLowerCase()
+
+  return ['1', 'true', 'yes', 'on'].includes(normalizedValue)
+}
+
+async function getDashboardSnapshotFromCache(snapshotKey) {
+  const { dashboardSnapshotsCollection } = await getCollections()
+  const cachedDocument = await dashboardSnapshotsCollection.findOne(
+    { snapshotKey },
+    {
+      projection: {
+        _id: 0,
+        snapshot: 1,
+      },
+    },
+  )
+
+  return cachedDocument?.snapshot ?? null
+}
+
+async function setDashboardSnapshotCache(snapshotKey, snapshot) {
+  const { dashboardSnapshotsCollection } = await getCollections()
+
+  await dashboardSnapshotsCollection.updateOne(
+    { snapshotKey },
+    {
+      $set: {
+        snapshotKey,
+        snapshot,
+        updatedAt: new Date().toISOString(),
+      },
+    },
+    { upsert: true },
+  )
+}
+
 app.get('/api/health', async (_req, res, next) => {
   try {
     const { database } = await getCollections()
@@ -200,9 +216,42 @@ app.get('/api/health', async (_req, res, next) => {
   }
 })
 
-app.get('/api/dashboard/monday', async (_req, res, next) => {
+app.get('/api/dashboard/monday', async (req, res, next) => {
   try {
+    const refreshRequested = isDashboardRefreshRequested(req)
+
+    if (!refreshRequested) {
+      const cachedSnapshot = await getDashboardSnapshotFromCache('monday')
+
+      if (cachedSnapshot) {
+        return res.json(cachedSnapshot)
+      }
+    }
+
     const snapshot = await fetchMondayDashboardSnapshot()
+    await setDashboardSnapshotCache('monday', snapshot)
+
+    res.json(snapshot)
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.get('/api/dashboard/zendesk', async (req, res, next) => {
+  try {
+    const refreshRequested = isDashboardRefreshRequested(req)
+
+    if (!refreshRequested) {
+      const cachedSnapshot = await getDashboardSnapshotFromCache('zendesk')
+
+      if (cachedSnapshot) {
+        return res.json(cachedSnapshot)
+      }
+    }
+
+    const snapshot = await fetchZendeskTicketSummary()
+    await setDashboardSnapshotCache('zendesk', snapshot)
+
     res.json(snapshot)
   } catch (error) {
     next(error)
@@ -767,6 +816,163 @@ async function fetchMondayDashboardSnapshot() {
   }
 }
 
+async function fetchZendeskTicketSummary() {
+  ensureZendeskConfiguration()
+
+  const customStatuses = await fetchZendeskCustomStatuses()
+  const inProgressCustomStatusId =
+    resolveZendeskCustomStatusId(customStatuses, 'In Progress', 'open') ||
+    resolveZendeskCustomStatusId(customStatuses, 'In Progress')
+  const openCustomStatusId =
+    resolveZendeskCustomStatusId(customStatuses, 'Open', 'open') ||
+    resolveZendeskCustomStatusId(customStatuses, 'Open')
+  const pendingCustomStatusId =
+    resolveZendeskCustomStatusId(customStatuses, 'Pending', 'pending') ||
+    resolveZendeskCustomStatusId(customStatuses, 'Pending')
+  const solvedCustomStatusId =
+    resolveZendeskCustomStatusId(customStatuses, 'Solved', 'solved') ||
+    resolveZendeskCustomStatusId(customStatuses, 'Solved')
+
+  const openTotalQuery = 'type:ticket status:open'
+  const inProgressQuery = inProgressCustomStatusId
+    ? buildZendeskCustomStatusCountQuery(inProgressCustomStatusId)
+    : 'type:ticket status:hold'
+  const openCustomStatusQuery = openCustomStatusId
+    ? buildZendeskCustomStatusCountQuery(openCustomStatusId)
+    : null
+  const pendingQuery = pendingCustomStatusId
+    ? buildZendeskCustomStatusCountQuery(pendingCustomStatusId)
+    : 'type:ticket status:pending'
+  const solvedQuery = solvedCustomStatusId
+    ? buildZendeskCustomStatusCountQuery(solvedCustomStatusId)
+    : 'type:ticket status:solved'
+
+  const [
+    newTickets,
+    openTotalTickets,
+    inProgressTickets,
+    openCustomStatusTickets,
+    pendingTickets,
+    solvedTickets,
+  ] = await Promise.all([
+    fetchZendeskTicketCount('type:ticket status:new'),
+    fetchZendeskTicketCount(openTotalQuery),
+    fetchZendeskTicketCount(inProgressQuery),
+    openCustomStatusQuery ? fetchZendeskTicketCount(openCustomStatusQuery) : Promise.resolve(null),
+    fetchZendeskTicketCount(pendingQuery),
+    fetchZendeskTicketCount(solvedQuery),
+  ])
+  const normalizedOpenTotalTickets = Number.isFinite(openTotalTickets)
+    ? Math.max(Math.round(openTotalTickets), 0)
+    : 0
+  const normalizedInProgressTickets = Number.isFinite(inProgressTickets)
+    ? Math.max(Math.round(inProgressTickets), 0)
+    : 0
+  const normalizedOpenCustomStatusTickets = Number.isFinite(openCustomStatusTickets)
+    ? Math.max(Math.round(openCustomStatusTickets), 0)
+    : null
+  const normalizedOpenTickets =
+    normalizedOpenCustomStatusTickets !== null
+      ? normalizedOpenCustomStatusTickets
+      : inProgressCustomStatusId
+        ? Math.max(normalizedOpenTotalTickets - normalizedInProgressTickets, 0)
+        : normalizedOpenTotalTickets
+
+  return {
+    generatedAt: new Date().toISOString(),
+    agentUrl: buildZendeskAgentUrl(),
+    metrics: {
+      newTickets,
+      inProgressTickets: normalizedInProgressTickets,
+      openTickets: normalizedOpenTickets,
+      pendingTickets,
+      solvedTickets,
+      openTotalTickets: normalizedOpenTickets + normalizedInProgressTickets,
+    },
+  }
+}
+
+async function fetchZendeskCustomStatuses() {
+  const apiBaseUrl = buildZendeskApiBaseUrl()
+
+  if (!apiBaseUrl) {
+    return []
+  }
+
+  const response = await fetch(`${apiBaseUrl}/custom_statuses.json`, {
+    method: 'GET',
+    headers: {
+      Authorization: buildZendeskAuthorizationHeader(),
+      'Content-Type': 'application/json',
+    },
+  })
+
+  const payload = await response.json().catch(() => ({}))
+
+  if (!response.ok) {
+    // Custom statuses can be unavailable by plan/permissions; fallback to status queries.
+    if ([401, 403, 404].includes(response.status)) {
+      return []
+    }
+
+    throw {
+      status: 502,
+      message: `Zendesk custom status request failed with status ${response.status}.`,
+    }
+  }
+
+  return (Array.isArray(payload?.custom_statuses) ? payload.custom_statuses : [])
+    .map((entry) => ({
+      id: Number(entry?.id),
+      agentLabel: String(entry?.agent_label ?? entry?.name ?? '').trim(),
+      endUserLabel: String(entry?.end_user_label ?? '').trim(),
+      statusCategory: String(entry?.status_category ?? '').trim(),
+    }))
+    .filter((entry) => Number.isFinite(entry.id) && entry.id > 0)
+}
+
+function resolveZendeskCustomStatusId(customStatuses, label, statusCategory = null) {
+  const normalizedTarget = normalizeLookupValue(label)
+
+  if (!normalizedTarget || !Array.isArray(customStatuses) || customStatuses.length === 0) {
+    return null
+  }
+
+  const filteredStatuses = statusCategory
+    ? customStatuses.filter(
+        (entry) =>
+          normalizeLookupValue(entry?.statusCategory) ===
+          normalizeLookupValue(statusCategory),
+      )
+    : customStatuses
+
+  const exactMatch = filteredStatuses.find((entry) => {
+    const candidateLabels = [entry?.agentLabel, entry?.endUserLabel]
+      .map((value) => normalizeLookupValue(value))
+      .filter(Boolean)
+
+    return candidateLabels.includes(normalizedTarget)
+  })
+
+  if (exactMatch) {
+    return Number(exactMatch.id)
+  }
+
+  const containsMatch = filteredStatuses.find((entry) => {
+    const candidateLabels = [entry?.agentLabel, entry?.endUserLabel]
+      .map((value) => normalizeLookupValue(value))
+      .filter(Boolean)
+
+    return candidateLabels.some((candidate) => candidate.includes(normalizedTarget))
+  })
+
+  return containsMatch ? Number(containsMatch.id) : null
+}
+
+function buildZendeskCustomStatusCountQuery(customStatusId) {
+  return `type:ticket custom_status_id:${Number(customStatusId)}`
+}
+
 function ensureMondayConfiguration() {
   if (!mondayApiToken) {
     throw {
@@ -781,6 +987,104 @@ function ensureMondayConfiguration() {
       message: 'Missing MONDAY_BOARD_ID in environment configuration.',
     }
   }
+}
+
+function ensureZendeskConfiguration() {
+  if (!zendeskApiToken) {
+    throw {
+      status: 500,
+      message: 'Missing ZENDESK_API_TOKEN in environment configuration.',
+    }
+  }
+
+  if (!buildZendeskApiBaseUrl()) {
+    throw {
+      status: 500,
+      message: 'Missing or invalid ZENDESK_URL in environment configuration.',
+    }
+  }
+}
+
+function buildZendeskOrigin() {
+  const input = String(zendeskUrl ?? '').trim()
+
+  if (!input) {
+    return null
+  }
+
+  try {
+    return new URL(input).origin
+  } catch {
+    return null
+  }
+}
+
+function buildZendeskApiBaseUrl() {
+  const origin = buildZendeskOrigin()
+  return origin ? `${origin}/api/v2` : null
+}
+
+function buildZendeskAgentUrl() {
+  const origin = buildZendeskOrigin()
+  return origin ? `${origin}/agent` : null
+}
+
+async function fetchZendeskTicketCount(query) {
+  const apiBaseUrl = buildZendeskApiBaseUrl()
+
+  if (!apiBaseUrl) {
+    throw {
+      status: 500,
+      message: 'Missing or invalid ZENDESK_URL in environment configuration.',
+    }
+  }
+
+  const response = await fetch(
+    `${apiBaseUrl}/search/count.json?query=${encodeURIComponent(query)}`,
+    {
+      method: 'GET',
+      headers: {
+        Authorization: buildZendeskAuthorizationHeader(),
+        'Content-Type': 'application/json',
+      },
+    },
+  )
+
+  const payload = await response.json().catch(() => ({}))
+
+  if (!response.ok) {
+    const rawMessage =
+      String(payload?.description || payload?.error || '').trim() ||
+      `Zendesk API request failed with status ${response.status}.`
+    const message =
+      rawMessage === 'invalid_token' && !zendeskEmail
+        ? 'Zendesk rejected ZENDESK_API_TOKEN. If this is an API token, also set ZENDESK_EMAIL.'
+        : rawMessage
+
+    throw {
+      status: 502,
+      message,
+    }
+  }
+
+  const numericCount =
+    Number(payload?.count?.value ?? payload?.count ?? payload?.total ?? 0)
+
+  return Number.isFinite(numericCount) && numericCount >= 0
+    ? Math.round(numericCount)
+    : 0
+}
+
+function buildZendeskAuthorizationHeader() {
+  if (zendeskEmail) {
+    const encodedCredentials = Buffer.from(
+      `${zendeskEmail}/token:${zendeskApiToken}`,
+    ).toString('base64')
+
+    return `Basic ${encodedCredentials}`
+  }
+
+  return `Bearer ${zendeskApiToken}`
 }
 
 async function callMondayGraphql(query, variables) {
