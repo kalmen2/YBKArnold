@@ -57,6 +57,22 @@ function formatDateTime(value: string) {
   }).format(parsed)
 }
 
+function formatSyncTimestamp(value: string) {
+  const parsed = new Date(value)
+
+  if (Number.isNaN(parsed.getTime())) {
+    return value
+  }
+
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(parsed)
+}
+
 function statusChipColor(status: string): 'default' | 'warning' | 'info' | 'success' {
   const normalized = String(status).trim().toLowerCase()
 
@@ -435,6 +451,25 @@ export default function SupportPage() {
     zendeskSummarySnapshot?.agentUrl ||
     null
 
+  const lastSyncTimestamp = useMemo(() => {
+    const timestamps = [
+      alertsSnapshot?.generatedAt,
+      ticketsSnapshot?.generatedAt,
+      zendeskSummarySnapshot?.generatedAt,
+      alertTicketsSnapshot?.generatedAt,
+    ]
+      .map((value) => String(value ?? '').trim())
+      .filter(Boolean)
+
+    if (timestamps.length === 0) {
+      return null
+    }
+
+    return timestamps.sort(
+      (left, right) => new Date(right).getTime() - new Date(left).getTime(),
+    )[0]
+  }, [alertsSnapshot, ticketsSnapshot, zendeskSummarySnapshot, alertTicketsSnapshot])
+
   const handleAlertCardClick = async (bucketKey: AlertBucketKey) => {
     const isSameBucket = selectedAlertBucket === bucketKey
 
@@ -463,7 +498,9 @@ export default function SupportPage() {
             Customer Support
           </Typography>
           <Typography color="text.secondary">
-            Zendesk ticket operations, conversations, and aging alerts
+            {lastSyncTimestamp
+              ? `Zendesk ticket operations, conversations, and aging alerts • Last sync ${formatSyncTimestamp(lastSyncTimestamp)}`
+              : 'Zendesk ticket operations, conversations, and aging alerts'}
           </Typography>
         </Box>
 

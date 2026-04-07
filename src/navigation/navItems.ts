@@ -12,14 +12,14 @@ export type NavItem = {
 
 export const navItems: NavItem[] = [
   {
-    label: 'Work Sheet',
-    path: '/timesheet',
-    icon: TableChartRoundedIcon,
-  },
-  {
     label: 'Dashboard',
     path: '/dashboard',
     icon: DashboardRoundedIcon,
+  },
+  {
+    label: 'Work Sheet',
+    path: '/timesheet',
+    icon: TableChartRoundedIcon,
   },
   {
     label: 'Support',

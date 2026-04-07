@@ -1384,8 +1384,15 @@ export default function TimesheetPage() {
                 sx={{ maxWidth: 220 }}
               />
 
-              <TableContainer sx={{ border: 1, borderColor: 'divider', borderRadius: 1.5 }}>
-                <Table size="small" sx={{ minWidth: 860 }}>
+              <TableContainer
+                sx={{
+                  border: 1,
+                  borderColor: 'divider',
+                  borderRadius: 1.5,
+                  maxHeight: { xs: 420, md: 560 },
+                }}
+              >
+                <Table size="small" stickyHeader sx={{ minWidth: 860 }}>
                   <TableHead>
                     <TableRow>
                       <TableCell>Worker</TableCell>
