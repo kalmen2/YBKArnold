@@ -62,6 +62,10 @@ export type CreateSupportTicketInput = {
   priority?: 'low' | 'normal' | 'high' | 'urgent'
 }
 
+type SupportFetchOptions = {
+  refresh?: boolean
+}
+
 async function request<T>(path: string, options: RequestInit = {}) {
   const response = await fetch(path, {
     ...options,
@@ -80,18 +84,34 @@ async function request<T>(path: string, options: RequestInit = {}) {
   return payload as T
 }
 
-export function fetchSupportAlerts() {
-  return request<SupportAlertsSnapshot>('/api/support/alerts')
+function withRefreshQuery(path: string, refresh = false) {
+  if (!refresh) {
+    return path
+  }
+
+  const separator = path.includes('?') ? '&' : '?'
+  return `${path}${separator}refresh=1`
 }
 
-export function fetchSupportAlertTickets(limitPerBucket = 100) {
-  return request<SupportAlertTicketsSnapshot>(
-    `/api/support/alerts/tickets?limitPerBucket=${limitPerBucket}`,
+export function fetchSupportAlerts(options: SupportFetchOptions = {}) {
+  return request<SupportAlertsSnapshot>(
+    withRefreshQuery('/api/support/alerts', options.refresh === true),
   )
 }
 
-export function fetchSupportTickets(limit = 50) {
-  return request<SupportTicketsSnapshot>(`/api/support/tickets?limit=${limit}`)
+export function fetchSupportAlertTickets(limitPerBucket = 100, options: SupportFetchOptions = {}) {
+  return request<SupportAlertTicketsSnapshot>(
+    withRefreshQuery(
+      `/api/support/alerts/tickets?limitPerBucket=${limitPerBucket}`,
+      options.refresh === true,
+    ),
+  )
+}
+
+export function fetchSupportTickets(limit = 50, options: SupportFetchOptions = {}) {
+  return request<SupportTicketsSnapshot>(
+    withRefreshQuery(`/api/support/tickets?limit=${limit}`, options.refresh === true),
+  )
 }
 
 export function fetchSupportTicketConversation(ticketId: number) {

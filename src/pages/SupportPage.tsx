@@ -31,6 +31,10 @@ import {
   type SupportTicketConversationSnapshot,
   type SupportTicketsSnapshot,
 } from '../features/support/api'
+import {
+  fetchZendeskTicketSummary,
+  type ZendeskTicketSummarySnapshot,
+} from '../features/dashboard/api'
 
 type AlertBucketKey =
   | 'newOver24Hours'
@@ -117,6 +121,8 @@ export default function SupportPage() {
   const [alertsSnapshot, setAlertsSnapshot] = useState<SupportAlertsSnapshot | null>(null)
   const [alertTicketsSnapshot, setAlertTicketsSnapshot] =
     useState<SupportAlertTicketsSnapshot | null>(null)
+  const [zendeskSummarySnapshot, setZendeskSummarySnapshot] =
+    useState<ZendeskTicketSummarySnapshot | null>(null)
   const [ticketsSnapshot, setTicketsSnapshot] = useState<SupportTicketsSnapshot | null>(null)
   const [conversationSnapshot, setConversationSnapshot] =
     useState<SupportTicketConversationSnapshot | null>(null)
@@ -140,19 +146,21 @@ export default function SupportPage() {
   const [isLoadingAlertTickets, setIsLoadingAlertTickets] = useState(false)
   const [isLoadingConversation, setIsLoadingConversation] = useState(false)
   const [loadingPreviewTicketId, setLoadingPreviewTicketId] = useState<number | null>(null)
+  const [isMetricsPanelExpanded, setIsMetricsPanelExpanded] = useState(true)
 
   const [pageError, setPageError] = useState<string | null>(null)
   const [alertTicketError, setAlertTicketError] = useState<string | null>(null)
   const [conversationError, setConversationError] = useState<string | null>(null)
 
-  const loadPage = useCallback(async () => {
+  const loadPage = useCallback(async (refreshRequested = false) => {
     setIsLoadingPage(true)
     setPageError(null)
 
-    const [alertsResult, alertTicketsResult, ticketsResult] = await Promise.allSettled([
-      fetchSupportAlerts(),
-      fetchSupportAlertTickets(100),
-      fetchSupportTickets(100),
+    const [alertsResult, alertTicketsResult, ticketsResult, zendeskSummaryResult] = await Promise.allSettled([
+      fetchSupportAlerts({ refresh: refreshRequested }),
+      fetchSupportAlertTickets(100, { refresh: refreshRequested }),
+      fetchSupportTickets(100, { refresh: refreshRequested }),
+      fetchZendeskTicketSummary({ refresh: refreshRequested }),
     ])
 
     if (alertsResult.status === 'fulfilled') {
@@ -168,10 +176,17 @@ export default function SupportPage() {
       setTicketsSnapshot(ticketsResult.value)
     }
 
+    if (zendeskSummaryResult.status === 'fulfilled') {
+      setZendeskSummarySnapshot(zendeskSummaryResult.value)
+    } else {
+      setZendeskSummarySnapshot(null)
+    }
+
     if (
       alertsResult.status === 'rejected' ||
       alertTicketsResult.status === 'rejected' ||
-      ticketsResult.status === 'rejected'
+      ticketsResult.status === 'rejected' ||
+      zendeskSummaryResult.status === 'rejected'
     ) {
       setPageError('Failed to load Zendesk support data.')
     }
@@ -244,7 +259,7 @@ export default function SupportPage() {
   }, [previewSnapshotsByTicketId])
 
   useEffect(() => {
-    void loadPage()
+    void loadPage(false)
   }, [loadPage])
 
   useEffect(() => {
@@ -309,6 +324,48 @@ export default function SupportPage() {
     return () => cancelAnimationFrame(frameId)
   }, [expandedTicketPreviewId, pendingSidebarTicketScrollId, ticketsSnapshot])
 
+  const ticketProgressCards = useMemo(() => {
+    const metrics = zendeskSummarySnapshot?.metrics
+
+    return [
+      {
+        key: 'newTickets',
+        label: 'New',
+        value: metrics?.newTickets ?? 0,
+        helper: 'Brand new tickets',
+        color: '#1e88e5',
+      },
+      {
+        key: 'inProgressTickets',
+        label: 'In Process',
+        value: metrics?.inProgressTickets ?? 0,
+        helper: 'Tickets in process',
+        color: '#5e35b1',
+      },
+      {
+        key: 'openTickets',
+        label: 'Open',
+        value: metrics?.openTickets ?? 0,
+        helper: 'Tickets with status open',
+        color: '#fb8c00',
+      },
+      {
+        key: 'pendingTickets',
+        label: 'Pending',
+        value: metrics?.pendingTickets ?? 0,
+        helper: 'Waiting for customer response',
+        color: '#8d6e63',
+      },
+      {
+        key: 'solvedTickets',
+        label: 'Solved',
+        value: metrics?.solvedTickets ?? 0,
+        helper: 'Done',
+        color: '#2e7d32',
+      },
+    ]
+  }, [zendeskSummarySnapshot])
+
   const alertCards = useMemo(() => {
     const alerts = alertsSnapshot?.alerts
 
@@ -355,15 +412,28 @@ export default function SupportPage() {
     return alertTicketsSnapshot.buckets[selectedAlertBucket] ?? []
   }, [alertTicketsSnapshot, selectedAlertBucket])
 
-  const openTickets = useMemo(
-    () =>
-      (ticketsSnapshot?.tickets ?? []).filter(
-        (ticket) => !['solved', 'closed'].includes(ticket.status),
-      ),
-    [ticketsSnapshot],
-  )
+  const openTickets = useMemo(() => {
+    const filteredTickets = (ticketsSnapshot?.tickets ?? []).filter(
+      (ticket) => !['solved', 'closed'].includes(ticket.status),
+    )
 
-  const helpdeskUrl = alertsSnapshot?.agentUrl || ticketsSnapshot?.agentUrl || null
+    return [...filteredTickets].sort((left, right) => {
+      const leftUpdatedAt = new Date(left.updatedAt).getTime()
+      const rightUpdatedAt = new Date(right.updatedAt).getTime()
+
+      if (Number.isFinite(leftUpdatedAt) && Number.isFinite(rightUpdatedAt)) {
+        return rightUpdatedAt - leftUpdatedAt
+      }
+
+      return right.id - left.id
+    })
+  }, [ticketsSnapshot])
+
+  const helpdeskUrl =
+    alertsSnapshot?.agentUrl ||
+    ticketsSnapshot?.agentUrl ||
+    zendeskSummarySnapshot?.agentUrl ||
+    null
 
   const handleAlertCardClick = async (bucketKey: AlertBucketKey) => {
     const isSameBucket = selectedAlertBucket === bucketKey
@@ -413,7 +483,7 @@ export default function SupportPage() {
 
           <Button
             variant="contained"
-            onClick={() => void loadPage()}
+            onClick={() => void loadPage(true)}
             startIcon={<RefreshRoundedIcon />}
             disabled={isLoadingPage}
           >
@@ -425,7 +495,7 @@ export default function SupportPage() {
       {pageError ? <Alert severity="warning">{pageError}</Alert> : null}
       {alertTicketError ? <Alert severity="warning">{alertTicketError}</Alert> : null}
 
-      {isLoadingPage && !alertsSnapshot && !ticketsSnapshot ? (
+      {isLoadingPage && !alertsSnapshot && !ticketsSnapshot && !zendeskSummarySnapshot ? (
         <Paper variant="outlined" sx={{ p: 4 }}>
           <Stack direction="row" spacing={1.25} alignItems="center">
             <CircularProgress size={22} />
@@ -434,42 +504,104 @@ export default function SupportPage() {
         </Paper>
       ) : null}
 
-      <Box
-        sx={{
-          display: 'grid',
-          gridTemplateColumns: {
-            xs: 'repeat(1, minmax(0, 1fr))',
-            sm: 'repeat(2, minmax(0, 1fr))',
-            xl: 'repeat(4, minmax(0, 1fr))',
-          },
-          gap: 1.5,
-        }}
+      <Accordion
+        disableGutters
+        expanded={isMetricsPanelExpanded}
+        onChange={(_event, expanded) => setIsMetricsPanelExpanded(expanded)}
+        sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 1.5, overflow: 'hidden' }}
       >
-        {alertCards.map((card) => (
-          <Paper
-            key={card.key}
-            variant="outlined"
-            onClick={() => void handleAlertCardClick(card.key as AlertBucketKey)}
-            sx={{
-              p: 2,
-              borderLeft: `4px solid ${card.color}`,
-              cursor: 'pointer',
-              transition: 'transform 120ms ease, box-shadow 120ms ease',
-              '&:hover': {
-                transform: 'translateY(-2px)',
-                boxShadow: 2,
-              },
-            }}
-          >
+        <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />} sx={{ px: 2.25 }}>
+          <Stack spacing={0.35}>
+            <Typography variant="subtitle1" fontWeight={700}>
+              Tickets Progress & Aging Alerts
+            </Typography>
             <Typography variant="body2" color="text.secondary">
-              {card.label}
+              Collapse this panel to give the ticket sidebar and conversation more room.
             </Typography>
-            <Typography variant="h4" fontWeight={800} lineHeight={1.1}>
-              {card.value}
-            </Typography>
-          </Paper>
-        ))}
-      </Box>
+          </Stack>
+        </AccordionSummary>
+        <AccordionDetails sx={{ pt: 0, px: 2.25, pb: 2.25 }}>
+          <Stack spacing={2}>
+            <Stack spacing={1}>
+              
+              <Box
+                sx={{
+                  display: 'grid',
+                  gridTemplateColumns: {
+                    xs: 'repeat(1, minmax(0, 1fr))',
+                    sm: 'repeat(2, minmax(0, 1fr))',
+                    xl: 'repeat(5, minmax(0, 1fr))',
+                  },
+                  gap: 1.5,
+                }}
+              >
+                {ticketProgressCards.map((card) => (
+                  <Paper
+                    key={card.key}
+                    variant="outlined"
+                    sx={{
+                      p: 2,
+                      borderLeft: `4px solid ${card.color}`,
+                    }}
+                  >
+                    <Typography variant="body2" color="text.secondary">
+                      {card.label}
+                    </Typography>
+                    <Typography variant="h4" fontWeight={800} lineHeight={1.1}>
+                      {card.value}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {card.helper}
+                    </Typography>
+                  </Paper>
+                ))}
+              </Box>
+            </Stack>
+
+            <Stack spacing={1}>
+              <Typography variant="subtitle2" fontWeight={700}>
+                Aging Alerts
+              </Typography>
+              <Box
+                sx={{
+                  display: 'grid',
+                  gridTemplateColumns: {
+                    xs: 'repeat(1, minmax(0, 1fr))',
+                    sm: 'repeat(2, minmax(0, 1fr))',
+                    xl: 'repeat(4, minmax(0, 1fr))',
+                  },
+                  gap: 1.5,
+                }}
+              >
+                {alertCards.map((card) => (
+                  <Paper
+                    key={card.key}
+                    variant="outlined"
+                    onClick={() => void handleAlertCardClick(card.key as AlertBucketKey)}
+                    sx={{
+                      p: 2,
+                      borderLeft: `4px solid ${card.color}`,
+                      cursor: 'pointer',
+                      transition: 'transform 120ms ease, box-shadow 120ms ease',
+                      '&:hover': {
+                        transform: 'translateY(-2px)',
+                        boxShadow: 2,
+                      },
+                    }}
+                  >
+                    <Typography variant="body2" color="text.secondary">
+                      {card.label}
+                    </Typography>
+                    <Typography variant="h4" fontWeight={800} lineHeight={1.1}>
+                      {card.value}
+                    </Typography>
+                  </Paper>
+                ))}
+              </Box>
+            </Stack>
+          </Stack>
+        </AccordionDetails>
+      </Accordion>
 
       {selectedAlertBucket ? (
         <Paper variant="outlined" sx={{ p: 2.25 }}>
@@ -557,7 +689,7 @@ export default function SupportPage() {
           variant="outlined"
           sx={{
             p: 1.25,
-            height: { xs: 460, md: 560, lg: 640 },
+            height: { xs: 560, md: 700, lg: 780 },
             display: 'flex',
             flexDirection: 'column',
             minHeight: 0,
@@ -678,7 +810,13 @@ export default function SupportPage() {
 
                       {previewSnapshot ? (
                         <Stack spacing={0.6}>
-                          {previewSnapshot.comments.map((comment) => (
+                          {[...previewSnapshot.comments]
+                            .sort(
+                              (left, right) =>
+                                new Date(left.createdAt).getTime() -
+                                new Date(right.createdAt).getTime(),
+                            )
+                            .map((comment) => (
                             <Paper
                               key={comment.id}
                               variant="outlined"
@@ -718,7 +856,7 @@ export default function SupportPage() {
                                 {buildPreviewParagraph(comment.body)}
                               </Typography>
                             </Paper>
-                          ))}
+                            ))}
 
                           {previewSnapshot.comments.length === 0 ? (
                             <Typography variant="body2" color="text.secondary">
@@ -743,7 +881,7 @@ export default function SupportPage() {
           variant="outlined"
           sx={{
             p: 1.5,
-            height: { xs: 460, md: 560, lg: 640 },
+            height: { xs: 560, md: 700, lg: 780 },
             display: 'flex',
             flexDirection: 'column',
             minHeight: 0,

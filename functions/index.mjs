@@ -212,6 +212,14 @@ async function setDashboardSnapshotCache(snapshotKey, snapshot) {
   )
 }
 
+async function clearSupportSnapshotCache() {
+  const { dashboardSnapshotsCollection } = await getCollections()
+
+  await dashboardSnapshotsCollection.deleteMany({
+    snapshotKey: /^support_/,
+  })
+}
+
 app.get('/api/health', async (_req, res, next) => {
   try {
     const { database } = await getCollections()
@@ -264,9 +272,21 @@ app.get('/api/dashboard/zendesk', async (req, res, next) => {
   }
 })
 
-app.get('/api/support/alerts', async (_req, res, next) => {
+app.get('/api/support/alerts', async (req, res, next) => {
   try {
+    const refreshRequested = isDashboardRefreshRequested(req)
+    const snapshotKey = 'support_alerts'
+
+    if (!refreshRequested) {
+      const cachedSnapshot = await getDashboardSnapshotFromCache(snapshotKey)
+
+      if (cachedSnapshot) {
+        return res.json(cachedSnapshot)
+      }
+    }
+
     const snapshot = await fetchZendeskSupportAlerts()
+    await setDashboardSnapshotCache(snapshotKey, snapshot)
     res.json(snapshot)
   } catch (error) {
     next(error)
@@ -275,8 +295,20 @@ app.get('/api/support/alerts', async (_req, res, next) => {
 
 app.get('/api/support/alerts/tickets', async (req, res, next) => {
   try {
+    const refreshRequested = isDashboardRefreshRequested(req)
     const limitPerBucket = toBoundedInteger(req.query?.limitPerBucket, 10, 200, 100)
+    const snapshotKey = `support_alert_tickets_${limitPerBucket}`
+
+    if (!refreshRequested) {
+      const cachedSnapshot = await getDashboardSnapshotFromCache(snapshotKey)
+
+      if (cachedSnapshot) {
+        return res.json(cachedSnapshot)
+      }
+    }
+
     const snapshot = await fetchZendeskSupportAlertTicketsSnapshot(limitPerBucket)
+    await setDashboardSnapshotCache(snapshotKey, snapshot)
     res.json(snapshot)
   } catch (error) {
     next(error)
@@ -285,8 +317,20 @@ app.get('/api/support/alerts/tickets', async (req, res, next) => {
 
 app.get('/api/support/tickets', async (req, res, next) => {
   try {
+    const refreshRequested = isDashboardRefreshRequested(req)
     const limit = toBoundedInteger(req.query?.limit, 10, 100, 50)
+    const snapshotKey = `support_tickets_${limit}`
+
+    if (!refreshRequested) {
+      const cachedSnapshot = await getDashboardSnapshotFromCache(snapshotKey)
+
+      if (cachedSnapshot) {
+        return res.json(cachedSnapshot)
+      }
+    }
+
     const snapshot = await fetchZendeskSupportTicketsSnapshot(limit)
+    await setDashboardSnapshotCache(snapshotKey, snapshot)
     res.json(snapshot)
   } catch (error) {
     next(error)
@@ -338,6 +382,12 @@ app.post('/api/support/tickets', async (req, res, next) => {
       requesterEmail,
       priority: normalizedPriority,
     })
+
+    try {
+      await clearSupportSnapshotCache()
+    } catch (cacheError) {
+      console.warn('Unable to clear support snapshot cache after ticket creation.', cacheError)
+    }
 
     return res.status(201).json(createdTicket)
   } catch (error) {
