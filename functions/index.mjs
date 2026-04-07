@@ -18,6 +18,12 @@ const mondayBoardUrl = String(process.env.MONDAY_BOARD_URL ?? '').trim()
 const zendeskApiToken = String(process.env.ZENDESK_API_TOKEN ?? '').trim()
 const zendeskEmail = String(process.env.ZENDESK_EMAIL ?? '').trim()
 const zendeskUrl = String(process.env.ZENDESK_URL ?? '').trim()
+const zendeskTicketFieldCacheTtlMs = 30 * 60 * 1000
+const zendeskTicketFieldErrorCacheTtlMs = 5 * 60 * 1000
+
+let zendeskOrderNumberFieldId = null
+let zendeskOrderNumberFieldExpiresAt = 0
+let zendeskOrderNumberFieldPromise = null
 
 const mondayProgressStatusConfig = [
   { key: 'priority', titleKeywords: ['priority'], weight: 0 },
@@ -253,6 +259,87 @@ app.get('/api/dashboard/zendesk', async (req, res, next) => {
     await setDashboardSnapshotCache('zendesk', snapshot)
 
     res.json(snapshot)
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.get('/api/support/alerts', async (_req, res, next) => {
+  try {
+    const snapshot = await fetchZendeskSupportAlerts()
+    res.json(snapshot)
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.get('/api/support/alerts/tickets', async (req, res, next) => {
+  try {
+    const limitPerBucket = toBoundedInteger(req.query?.limitPerBucket, 10, 200, 100)
+    const snapshot = await fetchZendeskSupportAlertTicketsSnapshot(limitPerBucket)
+    res.json(snapshot)
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.get('/api/support/tickets', async (req, res, next) => {
+  try {
+    const limit = toBoundedInteger(req.query?.limit, 10, 100, 50)
+    const snapshot = await fetchZendeskSupportTicketsSnapshot(limit)
+    res.json(snapshot)
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.get('/api/support/tickets/:ticketId/conversation', async (req, res, next) => {
+  try {
+    const ticketId = String(req.params.ticketId ?? '').trim()
+
+    if (!/^[0-9]+$/.test(ticketId)) {
+      return res.status(400).json({ error: 'ticketId must be numeric.' })
+    }
+
+    const conversation = await fetchZendeskTicketConversation(ticketId)
+    res.json(conversation)
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.post('/api/support/tickets', async (req, res, next) => {
+  try {
+    const subject = String(req.body?.subject ?? '').trim()
+    const description = String(req.body?.description ?? '').trim()
+    const requesterName = String(req.body?.requesterName ?? '').trim()
+    const requesterEmail = String(req.body?.requesterEmail ?? '').trim()
+    const priority = String(req.body?.priority ?? '').trim().toLowerCase()
+
+    if (!subject) {
+      return res.status(400).json({ error: 'subject is required.' })
+    }
+
+    if (!description) {
+      return res.status(400).json({ error: 'description is required.' })
+    }
+
+    if (requesterEmail && !requesterName) {
+      return res.status(400).json({ error: 'requesterName is required when requesterEmail is provided.' })
+    }
+
+    const allowedPriorities = ['low', 'normal', 'high', 'urgent']
+    const normalizedPriority = allowedPriorities.includes(priority) ? priority : null
+
+    const createdTicket = await createZendeskSupportTicket({
+      subject,
+      description,
+      requesterName,
+      requesterEmail,
+      priority: normalizedPriority,
+    })
+
+    return res.status(201).json(createdTicket)
   } catch (error) {
     next(error)
   }
@@ -819,33 +906,14 @@ async function fetchMondayDashboardSnapshot() {
 async function fetchZendeskTicketSummary() {
   ensureZendeskConfiguration()
 
-  const customStatuses = await fetchZendeskCustomStatuses()
-  const inProgressCustomStatusId =
-    resolveZendeskCustomStatusId(customStatuses, 'In Progress', 'open') ||
-    resolveZendeskCustomStatusId(customStatuses, 'In Progress')
-  const openCustomStatusId =
-    resolveZendeskCustomStatusId(customStatuses, 'Open', 'open') ||
-    resolveZendeskCustomStatusId(customStatuses, 'Open')
-  const pendingCustomStatusId =
-    resolveZendeskCustomStatusId(customStatuses, 'Pending', 'pending') ||
-    resolveZendeskCustomStatusId(customStatuses, 'Pending')
-  const solvedCustomStatusId =
-    resolveZendeskCustomStatusId(customStatuses, 'Solved', 'solved') ||
-    resolveZendeskCustomStatusId(customStatuses, 'Solved')
-
-  const openTotalQuery = 'type:ticket status:open'
-  const inProgressQuery = inProgressCustomStatusId
-    ? buildZendeskCustomStatusCountQuery(inProgressCustomStatusId)
-    : 'type:ticket status:hold'
-  const openCustomStatusQuery = openCustomStatusId
-    ? buildZendeskCustomStatusCountQuery(openCustomStatusId)
-    : null
-  const pendingQuery = pendingCustomStatusId
-    ? buildZendeskCustomStatusCountQuery(pendingCustomStatusId)
-    : 'type:ticket status:pending'
-  const solvedQuery = solvedCustomStatusId
-    ? buildZendeskCustomStatusCountQuery(solvedCustomStatusId)
-    : 'type:ticket status:solved'
+  const statusContext = await fetchZendeskStatusContext()
+  const {
+    openTotalQuery,
+    inProgressQuery,
+    openCustomStatusQuery,
+    pendingQuery,
+    solvedQuery,
+  } = buildZendeskStatusQueries(statusContext)
 
   const [
     newTickets,
@@ -890,6 +958,702 @@ async function fetchZendeskTicketSummary() {
       openTotalTickets: normalizedOpenTickets + normalizedInProgressTickets,
     },
   }
+}
+
+async function fetchZendeskSupportAlerts() {
+  ensureZendeskConfiguration()
+
+  const statusContext = await fetchZendeskStatusContext()
+  const {
+    inProgressQuery,
+    openCustomStatusQuery,
+    pendingQuery,
+  } = buildZendeskStatusQueries(statusContext)
+
+  const openQuery = openCustomStatusQuery || 'type:ticket status:open'
+
+  const [newOver24Hours, openOver24Hours, inProgressOver48Hours, pendingOver48Hours] =
+    await Promise.all([
+      countZendeskTicketsOlderThanHours('type:ticket status:new', 24),
+      countZendeskTicketsOlderThanHours(openQuery, 24),
+      countZendeskTicketsOlderThanHours(inProgressQuery, 48),
+      countZendeskTicketsOlderThanHours(pendingQuery, 48),
+    ])
+
+  return {
+    generatedAt: new Date().toISOString(),
+    agentUrl: buildZendeskAgentUrl(),
+    alerts: {
+      newOver24Hours,
+      openOver24Hours,
+      inProgressOver48Hours,
+      pendingOver48Hours,
+    },
+  }
+}
+
+async function fetchZendeskSupportAlertTicketsSnapshot(limitPerBucket = 100) {
+  ensureZendeskConfiguration()
+
+  const [statusContext, orderNumberFieldId] = await Promise.all([
+    fetchZendeskStatusContext(),
+    resolveZendeskOrderNumberFieldId(),
+  ])
+  const {
+    inProgressQuery,
+    openCustomStatusQuery,
+    pendingQuery,
+  } = buildZendeskStatusQueries(statusContext)
+  const openQuery = openCustomStatusQuery || 'type:ticket status:open'
+
+  const [
+    newOver24HoursRaw,
+    openOver24HoursRaw,
+    inProgressOver48HoursRaw,
+    pendingOver48HoursRaw,
+  ] = await Promise.all([
+    fetchZendeskTicketsOlderThanHours('type:ticket status:new', 24, limitPerBucket),
+    fetchZendeskTicketsOlderThanHours(openQuery, 24, limitPerBucket),
+    fetchZendeskTicketsOlderThanHours(inProgressQuery, 48, limitPerBucket),
+    fetchZendeskTicketsOlderThanHours(pendingQuery, 48, limitPerBucket),
+  ])
+
+  const userIds = new Set()
+  const allRawTickets = [
+    ...newOver24HoursRaw,
+    ...openOver24HoursRaw,
+    ...inProgressOver48HoursRaw,
+    ...pendingOver48HoursRaw,
+  ]
+
+  allRawTickets.forEach((ticket) => {
+    const requesterId = Number(ticket?.requester_id)
+    const assigneeId = Number(ticket?.assignee_id)
+
+    if (Number.isFinite(requesterId) && requesterId > 0) {
+      userIds.add(requesterId)
+    }
+
+    if (Number.isFinite(assigneeId) && assigneeId > 0) {
+      userIds.add(assigneeId)
+    }
+  })
+
+  const usersById = await fetchZendeskUsersByIds([...userIds])
+  const normalize = (ticket) =>
+    normalizeZendeskSupportTicket(
+      ticket,
+      statusContext,
+      usersById,
+      orderNumberFieldId,
+    )
+
+  return {
+    generatedAt: new Date().toISOString(),
+    agentUrl: buildZendeskAgentUrl(),
+    buckets: {
+      newOver24Hours: newOver24HoursRaw.map(normalize),
+      openOver24Hours: openOver24HoursRaw.map(normalize),
+      inProgressOver48Hours: inProgressOver48HoursRaw.map(normalize),
+      pendingOver48Hours: pendingOver48HoursRaw.map(normalize),
+    },
+  }
+}
+
+async function fetchZendeskSupportTicketsSnapshot(limit = 50) {
+  ensureZendeskConfiguration()
+
+  const [statusContext, orderNumberFieldId] = await Promise.all([
+    fetchZendeskStatusContext(),
+    resolveZendeskOrderNumberFieldId(),
+  ])
+  const tickets = await fetchZendeskSearchTickets('type:ticket status<solved', {
+    page: 1,
+    perPage: toBoundedInteger(limit, 10, 100, 50),
+    sortBy: 'updated_at',
+    sortOrder: 'desc',
+  })
+
+  const userIds = new Set()
+
+  tickets.forEach((ticket) => {
+    const requesterId = Number(ticket?.requester_id)
+    const assigneeId = Number(ticket?.assignee_id)
+
+    if (Number.isFinite(requesterId) && requesterId > 0) {
+      userIds.add(requesterId)
+    }
+
+    if (Number.isFinite(assigneeId) && assigneeId > 0) {
+      userIds.add(assigneeId)
+    }
+  })
+
+  const usersById = await fetchZendeskUsersByIds([...userIds])
+  const normalizedTickets = tickets.map((ticket) =>
+    normalizeZendeskSupportTicket(
+      ticket,
+      statusContext,
+      usersById,
+      orderNumberFieldId,
+    ),
+  )
+
+  return {
+    generatedAt: new Date().toISOString(),
+    agentUrl: buildZendeskAgentUrl(),
+    tickets: normalizedTickets,
+  }
+}
+
+async function fetchZendeskTicketConversation(ticketId) {
+  ensureZendeskConfiguration()
+
+  const [statusContext, orderNumberFieldId, ticketPayload, commentsPayload] = await Promise.all([
+    fetchZendeskStatusContext(),
+    resolveZendeskOrderNumberFieldId(),
+    callZendeskApi(`/tickets/${encodeURIComponent(ticketId)}.json`, {
+      method: 'GET',
+    }),
+    callZendeskApi(`/tickets/${encodeURIComponent(ticketId)}/comments.json`, {
+      method: 'GET',
+    }),
+  ])
+
+  const ticket = ticketPayload?.ticket ?? null
+
+  if (!ticket) {
+    throw {
+      status: 404,
+      message: 'Zendesk ticket was not found.',
+    }
+  }
+
+  const comments = Array.isArray(commentsPayload?.comments)
+    ? commentsPayload.comments
+    : []
+  const userIds = new Set()
+  const requesterId = Number(ticket?.requester_id)
+  const assigneeId = Number(ticket?.assignee_id)
+
+  if (Number.isFinite(requesterId) && requesterId > 0) {
+    userIds.add(requesterId)
+  }
+
+  if (Number.isFinite(assigneeId) && assigneeId > 0) {
+    userIds.add(assigneeId)
+  }
+
+  comments.forEach((comment) => {
+    const authorId = Number(comment?.author_id)
+
+    if (Number.isFinite(authorId) && authorId > 0) {
+      userIds.add(authorId)
+    }
+  })
+
+  const usersById = await fetchZendeskUsersByIds([...userIds])
+  const normalizedTicket = normalizeZendeskSupportTicket(
+    ticket,
+    statusContext,
+    usersById,
+    orderNumberFieldId,
+  )
+  const normalizedComments = comments
+    .map((comment) => {
+      const authorId = Number(comment?.author_id)
+      const author = usersById.get(authorId)
+      const plainBody = String(comment?.plain_body ?? '').trim()
+      const fallbackBody = String(comment?.body ?? comment?.html_body ?? '').trim()
+
+      return {
+        id: Number(comment?.id),
+        authorName: String(author?.name ?? 'Unknown user'),
+        createdAt: String(comment?.created_at ?? ''),
+        body: plainBody || fallbackBody,
+        public: Boolean(comment?.public),
+      }
+    })
+    .filter((comment) => Number.isFinite(comment.id) && comment.id > 0)
+    .sort(
+      (left, right) =>
+        new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime(),
+    )
+
+  return {
+    generatedAt: new Date().toISOString(),
+    ticket: normalizedTicket,
+    comments: normalizedComments,
+  }
+}
+
+async function fetchZendeskTicketsOlderThanHours(query, thresholdHours, limit = 100) {
+  const maxPages = 40
+  const perPage = 100
+  const cutoffMs = Date.now() - thresholdHours * 60 * 60 * 1000
+  let page = 1
+  const tickets = []
+
+  while (page <= maxPages && tickets.length < limit) {
+    const pageResults = await fetchZendeskSearchTickets(query, {
+      page,
+      perPage,
+      sortBy: 'created_at',
+      sortOrder: 'asc',
+    })
+
+    if (pageResults.length === 0) {
+      break
+    }
+
+    let shouldStop = false
+
+    for (const ticket of pageResults) {
+      const createdAtMs = Date.parse(String(ticket?.created_at ?? ''))
+
+      if (!Number.isFinite(createdAtMs)) {
+        continue
+      }
+
+      if (createdAtMs <= cutoffMs) {
+        tickets.push(ticket)
+
+        if (tickets.length >= limit) {
+          break
+        }
+      } else {
+        shouldStop = true
+        break
+      }
+    }
+
+    if (shouldStop || pageResults.length < perPage || tickets.length >= limit) {
+      break
+    }
+
+    page += 1
+  }
+
+  return tickets.sort(
+    (left, right) =>
+      new Date(String(right?.updated_at ?? '')).getTime() -
+      new Date(String(left?.updated_at ?? '')).getTime(),
+  )
+}
+
+async function createZendeskSupportTicket(input) {
+  ensureZendeskConfiguration()
+
+  const ticketPayload = {
+    ticket: {
+      subject: input.subject,
+      comment: {
+        body: input.description,
+      },
+    },
+  }
+
+  if (input.priority) {
+    ticketPayload.ticket.priority = input.priority
+  }
+
+  if (input.requesterName && input.requesterEmail) {
+    ticketPayload.ticket.requester = {
+      name: input.requesterName,
+      email: input.requesterEmail,
+    }
+  }
+
+  const payload = await callZendeskApi('/tickets.json', {
+    method: 'POST',
+    body: JSON.stringify(ticketPayload),
+  })
+  const ticket = payload?.ticket ?? null
+
+  if (!ticket) {
+    throw {
+      status: 502,
+      message: 'Zendesk create ticket response did not include a ticket.',
+    }
+  }
+
+  const [statusContext, orderNumberFieldId] = await Promise.all([
+    fetchZendeskStatusContext(),
+    resolveZendeskOrderNumberFieldId(),
+  ])
+  const requesterId = Number(ticket?.requester_id)
+  const assigneeId = Number(ticket?.assignee_id)
+  const userIds = [requesterId, assigneeId].filter(
+    (id) => Number.isFinite(id) && id > 0,
+  )
+  const usersById = await fetchZendeskUsersByIds(userIds)
+
+  return {
+    ticket: normalizeZendeskSupportTicket(
+      ticket,
+      statusContext,
+      usersById,
+      orderNumberFieldId,
+    ),
+  }
+}
+
+async function fetchZendeskStatusContext() {
+  const customStatuses = await fetchZendeskCustomStatuses()
+
+  return {
+    customStatuses,
+    customStatusById: buildZendeskCustomStatusMap(customStatuses),
+    inProgressCustomStatusId:
+      resolveZendeskCustomStatusId(customStatuses, 'In Progress', 'open') ||
+      resolveZendeskCustomStatusId(customStatuses, 'In Progress'),
+    openCustomStatusId:
+      resolveZendeskCustomStatusId(customStatuses, 'Open', 'open') ||
+      resolveZendeskCustomStatusId(customStatuses, 'Open'),
+    pendingCustomStatusId:
+      resolveZendeskCustomStatusId(customStatuses, 'Pending', 'pending') ||
+      resolveZendeskCustomStatusId(customStatuses, 'Pending'),
+    solvedCustomStatusId:
+      resolveZendeskCustomStatusId(customStatuses, 'Solved', 'solved') ||
+      resolveZendeskCustomStatusId(customStatuses, 'Solved'),
+  }
+}
+
+function buildZendeskStatusQueries(statusContext) {
+  const inProgressQuery = statusContext.inProgressCustomStatusId
+    ? buildZendeskCustomStatusCountQuery(statusContext.inProgressCustomStatusId)
+    : 'type:ticket status:hold'
+  const openCustomStatusQuery = statusContext.openCustomStatusId
+    ? buildZendeskCustomStatusCountQuery(statusContext.openCustomStatusId)
+    : null
+
+  return {
+    openTotalQuery: 'type:ticket status:open',
+    inProgressQuery,
+    openCustomStatusQuery,
+    pendingQuery: statusContext.pendingCustomStatusId
+      ? buildZendeskCustomStatusCountQuery(statusContext.pendingCustomStatusId)
+      : 'type:ticket status:pending',
+    solvedQuery: statusContext.solvedCustomStatusId
+      ? buildZendeskCustomStatusCountQuery(statusContext.solvedCustomStatusId)
+      : 'type:ticket status:solved',
+  }
+}
+
+function buildZendeskCustomStatusMap(customStatuses) {
+  const map = new Map()
+
+  customStatuses.forEach((entry) => {
+    const id = Number(entry?.id)
+
+    if (!Number.isFinite(id) || id <= 0) {
+      return
+    }
+
+    map.set(id, {
+      id,
+      agentLabel: String(entry?.agentLabel ?? '').trim(),
+      endUserLabel: String(entry?.endUserLabel ?? '').trim(),
+      statusCategory: String(entry?.statusCategory ?? '').trim(),
+    })
+  })
+
+  return map
+}
+
+async function countZendeskTicketsOlderThanHours(query, thresholdHours) {
+  const maxPages = 40
+  const perPage = 100
+  const cutoffMs = Date.now() - thresholdHours * 60 * 60 * 1000
+  let page = 1
+  let total = 0
+
+  while (page <= maxPages) {
+    const pageResults = await fetchZendeskSearchTickets(query, {
+      page,
+      perPage,
+      sortBy: 'created_at',
+      sortOrder: 'asc',
+    })
+
+    if (pageResults.length === 0) {
+      break
+    }
+
+    let shouldStop = false
+
+    for (const ticket of pageResults) {
+      const createdAtMs = Date.parse(String(ticket?.created_at ?? ''))
+
+      if (!Number.isFinite(createdAtMs)) {
+        continue
+      }
+
+      if (createdAtMs <= cutoffMs) {
+        total += 1
+      } else {
+        shouldStop = true
+        break
+      }
+    }
+
+    if (shouldStop || pageResults.length < perPage) {
+      break
+    }
+
+    page += 1
+  }
+
+  return total
+}
+
+async function fetchZendeskSearchTickets(query, options = {}) {
+  const page = toBoundedInteger(options.page, 1, 1000, 1)
+  const perPage = toBoundedInteger(options.perPage, 1, 100, 50)
+  const sortBy = String(options.sortBy ?? 'updated_at').trim() || 'updated_at'
+  const sortOrder =
+    String(options.sortOrder ?? 'desc').trim().toLowerCase() === 'asc'
+      ? 'asc'
+      : 'desc'
+  const searchParams = new URLSearchParams({
+    query,
+    page: String(page),
+    per_page: String(perPage),
+    sort_by: sortBy,
+    sort_order: sortOrder,
+  })
+  const payload = await callZendeskApi(`/search.json?${searchParams.toString()}`, {
+    method: 'GET',
+  })
+  const results = Array.isArray(payload?.results) ? payload.results : []
+
+  return results.filter((result) => {
+    const resultType = String(result?.result_type ?? 'ticket').toLowerCase()
+    return resultType === 'ticket'
+  })
+}
+
+async function fetchZendeskUsersByIds(userIds) {
+  const normalizedIds = [...new Set(userIds.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0))]
+  const usersById = new Map()
+
+  if (normalizedIds.length === 0) {
+    return usersById
+  }
+
+  const chunkSize = 100
+
+  for (let start = 0; start < normalizedIds.length; start += chunkSize) {
+    const chunk = normalizedIds.slice(start, start + chunkSize)
+    const payload = await callZendeskApi(
+      `/users/show_many.json?ids=${encodeURIComponent(chunk.join(','))}`,
+      {
+        method: 'GET',
+      },
+    )
+    const users = Array.isArray(payload?.users) ? payload.users : []
+
+    users.forEach((entry) => {
+      const id = Number(entry?.id)
+
+      if (!Number.isFinite(id) || id <= 0) {
+        return
+      }
+
+      usersById.set(id, {
+        id,
+        name: String(entry?.name ?? '').trim() || 'Unknown user',
+        email: String(entry?.email ?? '').trim(),
+      })
+    })
+  }
+
+  return usersById
+}
+
+function normalizeZendeskSupportTicket(
+  ticket,
+  statusContext,
+  usersById,
+  orderNumberFieldId = null,
+) {
+  const id = Number(ticket?.id)
+  const requesterId = Number(ticket?.requester_id)
+  const assigneeId = Number(ticket?.assignee_id)
+  const requester = usersById.get(requesterId)
+  const assignee = usersById.get(assigneeId)
+  const statusLabel = resolveZendeskTicketStatusLabel(ticket, statusContext)
+  const orderNumber = resolveZendeskOrderNumber(ticket, orderNumberFieldId)
+
+  return {
+    id: Number.isFinite(id) ? id : 0,
+    subject: String(ticket?.subject ?? '').trim() || `Ticket #${id}`,
+    orderNumber,
+    status: String(ticket?.status ?? '').trim().toLowerCase(),
+    statusLabel,
+    priority: String(ticket?.priority ?? '').trim().toLowerCase() || 'normal',
+    requesterName: String(requester?.name ?? 'Unknown requester'),
+    assigneeName: String(assignee?.name ?? 'Unassigned'),
+    createdAt: String(ticket?.created_at ?? ''),
+    updatedAt: String(ticket?.updated_at ?? ''),
+    url: buildZendeskTicketUrl(id),
+  }
+}
+
+function resolveZendeskTicketStatusLabel(ticket, statusContext) {
+  const customStatusId = Number(ticket?.custom_status_id)
+
+  if (Number.isFinite(customStatusId) && customStatusId > 0) {
+    const customStatus = statusContext.customStatusById.get(customStatusId)
+
+    if (customStatus?.agentLabel) {
+      return customStatus.agentLabel
+    }
+  }
+
+  return formatZendeskStatusLabel(ticket?.status)
+}
+
+function formatZendeskStatusLabel(statusValue) {
+  const normalized = normalizeLookupValue(statusValue)
+
+  if (!normalized) {
+    return 'Unknown'
+  }
+
+  return normalized
+    .split(' ')
+    .filter(Boolean)
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(' ')
+}
+
+function buildZendeskTicketUrl(ticketId) {
+  const origin = buildZendeskOrigin()
+
+  if (!origin || !Number.isFinite(Number(ticketId)) || Number(ticketId) <= 0) {
+    return null
+  }
+
+  return `${origin}/agent/tickets/${Number(ticketId)}`
+}
+
+function resolveZendeskOrderNumber(ticket, orderNumberFieldId) {
+  const normalizedFieldId = Number(orderNumberFieldId)
+
+  if (!Number.isFinite(normalizedFieldId) || normalizedFieldId <= 0) {
+    return null
+  }
+
+  const customFields = Array.isArray(ticket?.custom_fields) ? ticket.custom_fields : []
+  const matchingField = customFields.find(
+    (entry) => Number(entry?.id) === normalizedFieldId,
+  )
+  const rawValue = matchingField?.value
+
+  if (typeof rawValue === 'number' && Number.isFinite(rawValue)) {
+    return String(rawValue)
+  }
+
+  if (typeof rawValue === 'string') {
+    const trimmedValue = rawValue.trim()
+    return trimmedValue || null
+  }
+
+  return null
+}
+
+async function resolveZendeskOrderNumberFieldId() {
+  const now = Date.now()
+
+  if (zendeskOrderNumberFieldPromise) {
+    return zendeskOrderNumberFieldPromise
+  }
+
+  if (zendeskOrderNumberFieldExpiresAt > now) {
+    return zendeskOrderNumberFieldId
+  }
+
+  zendeskOrderNumberFieldPromise = (async () => {
+    try {
+      const resolvedFieldId = await fetchZendeskOrderNumberFieldId()
+
+      zendeskOrderNumberFieldId =
+        Number.isFinite(Number(resolvedFieldId)) && Number(resolvedFieldId) > 0
+          ? Number(resolvedFieldId)
+          : null
+      zendeskOrderNumberFieldExpiresAt = Date.now() + zendeskTicketFieldCacheTtlMs
+      return zendeskOrderNumberFieldId
+    } catch (error) {
+      zendeskOrderNumberFieldId = null
+      zendeskOrderNumberFieldExpiresAt = Date.now() + zendeskTicketFieldErrorCacheTtlMs
+      console.warn('Unable to resolve Zendesk order-number field.', error)
+      return null
+    } finally {
+      zendeskOrderNumberFieldPromise = null
+    }
+  })()
+
+  return zendeskOrderNumberFieldPromise
+}
+
+async function fetchZendeskOrderNumberFieldId() {
+  const perPage = 100
+  const maxPages = 10
+
+  for (let page = 1; page <= maxPages; page += 1) {
+    const payload = await callZendeskApi(
+      `/ticket_fields.json?page=${page}&per_page=${perPage}`,
+      {
+        method: 'GET',
+      },
+    )
+    const ticketFields = Array.isArray(payload?.ticket_fields)
+      ? payload.ticket_fields
+      : []
+    const orderNumberField = ticketFields.find(isZendeskOrderNumberTicketField)
+
+    if (orderNumberField) {
+      const id = Number(orderNumberField?.id)
+      return Number.isFinite(id) && id > 0 ? id : null
+    }
+
+    if (!payload?.next_page || ticketFields.length < perPage) {
+      break
+    }
+  }
+
+  return null
+}
+
+function isZendeskOrderNumberTicketField(ticketField) {
+  const candidateLabels = [
+    ticketField?.title,
+    ticketField?.raw_title,
+    ticketField?.title_in_portal,
+    ticketField?.raw_title_in_portal,
+    ticketField?.tag,
+    ticketField?.key,
+  ]
+    .map((value) => String(value ?? '').trim())
+    .filter(Boolean)
+
+  if (candidateLabels.length === 0) {
+    return false
+  }
+
+  return candidateLabels.some((label) => {
+    const rawLabel = label.toLowerCase()
+    const normalizedLabel = normalizeLookupValue(label)
+
+    return (
+      /\border\s*#/.test(rawLabel) ||
+      /\border\s*(number|num|no|nr)\b/.test(rawLabel) ||
+      normalizedLabel.includes('order number') ||
+      normalizedLabel.includes('order num') ||
+      normalizedLabel.includes('order no')
+    )
+  })
 }
 
 async function fetchZendeskCustomStatuses() {
@@ -1029,7 +1793,7 @@ function buildZendeskAgentUrl() {
   return origin ? `${origin}/agent` : null
 }
 
-async function fetchZendeskTicketCount(query) {
+async function callZendeskApi(path, options = {}) {
   const apiBaseUrl = buildZendeskApiBaseUrl()
 
   if (!apiBaseUrl) {
@@ -1039,17 +1803,15 @@ async function fetchZendeskTicketCount(query) {
     }
   }
 
-  const response = await fetch(
-    `${apiBaseUrl}/search/count.json?query=${encodeURIComponent(query)}`,
-    {
-      method: 'GET',
-      headers: {
-        Authorization: buildZendeskAuthorizationHeader(),
-        'Content-Type': 'application/json',
-      },
+  const response = await fetch(`${apiBaseUrl}${path}`, {
+    method: 'GET',
+    ...options,
+    headers: {
+      Authorization: buildZendeskAuthorizationHeader(),
+      'Content-Type': 'application/json',
+      ...(options.headers ?? {}),
     },
-  )
-
+  })
   const payload = await response.json().catch(() => ({}))
 
   if (!response.ok) {
@@ -1066,6 +1828,17 @@ async function fetchZendeskTicketCount(query) {
       message,
     }
   }
+
+  return payload
+}
+
+async function fetchZendeskTicketCount(query) {
+  const payload = await callZendeskApi(
+    `/search/count.json?query=${encodeURIComponent(query)}`,
+    {
+      method: 'GET',
+    },
+  )
 
   const numericCount =
     Number(payload?.count?.value ?? payload?.count ?? payload?.total ?? 0)
@@ -1726,4 +2499,22 @@ function normalizeStageName(name) {
     .trim()
     .toLowerCase()
     .replace(/\s+/g, ' ')
+}
+
+function toBoundedInteger(value, min, max, fallback) {
+  const parsed = Number.parseInt(String(value ?? ''), 10)
+
+  if (!Number.isFinite(parsed)) {
+    return fallback
+  }
+
+  if (parsed < min) {
+    return min
+  }
+
+  if (parsed > max) {
+    return max
+  }
+
+  return parsed
 }
