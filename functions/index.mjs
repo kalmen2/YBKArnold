@@ -35,6 +35,10 @@ const authRoleStandard = 'standard'
 const authRoleAdmin = 'admin'
 const authApprovalPending = 'pending'
 const authApprovalApproved = 'approved'
+const authActivityTypeApiRequest = 'api_request'
+const authActivityTypeUiEvent = 'ui_event'
+const authAccessTimeZoneUtc = 'UTC'
+const authAccessTimeZoneNewJersey = 'America/New_York'
 const zendeskTicketFieldCacheTtlMs = 30 * 60 * 1000
 const zendeskTicketFieldErrorCacheTtlMs = 5 * 60 * 1000
 
@@ -122,10 +126,12 @@ async function getCollections() {
   const stagesCollection = database.collection('timesheet_stages')
   const dashboardSnapshotsCollection = database.collection('dashboard_snapshots')
   const authUsersCollection = database.collection('auth_users')
+  const authActivityLogsCollection = database.collection('auth_activity_logs')
 
   if (!indexesPromise) {
     indexesPromise = Promise.all([
       workersCollection.createIndex({ id: 1 }, { unique: true }),
+      workersCollection.createIndex({ workerNumber: 1 }, { unique: true, sparse: true }),
       entriesCollection.createIndex({ id: 1 }, { unique: true }),
       entriesCollection.createIndex({ workerId: 1 }),
       entriesCollection.createIndex({ stageId: 1 }),
@@ -135,7 +141,11 @@ async function getCollections() {
       dashboardSnapshotsCollection.createIndex({ snapshotKey: 1 }, { unique: true }),
       authUsersCollection.createIndex({ uid: 1 }, { unique: true }),
       authUsersCollection.createIndex({ emailLower: 1 }, { unique: true }),
+      authUsersCollection.createIndex({ linkedWorkerId: 1 }, { unique: true, sparse: true }),
       authUsersCollection.createIndex({ approvalStatus: 1, role: 1 }),
+      authActivityLogsCollection.createIndex({ uid: 1, createdAt: -1 }),
+      authActivityLogsCollection.createIndex({ createdAt: -1 }),
+      authActivityLogsCollection.createIndex({ type: 1, createdAt: -1 }),
     ]).then(async () => {
       await ensureDefaultStages()
       await ensureStageSortOrder(stagesCollection)
@@ -151,6 +161,7 @@ async function getCollections() {
     stagesCollection,
     dashboardSnapshotsCollection,
     authUsersCollection,
+    authActivityLogsCollection,
   }
 }
 
@@ -222,6 +233,212 @@ function normalizeAuthRole(value) {
   return null
 }
 
+function normalizeAuthHour(value) {
+  const parsed = Number.parseInt(String(value ?? ''), 10)
+
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 23) {
+    return null
+  }
+
+  return parsed
+}
+
+function parseOptionalAuthHour(value, fieldName) {
+  const normalized = String(value ?? '').trim()
+
+  if (!normalized) {
+    return null
+  }
+
+  const parsed = Number.parseInt(normalized, 10)
+
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 23) {
+    throw {
+      status: 400,
+      message: `${fieldName} must be an integer between 0 and 23.`,
+    }
+  }
+
+  return parsed
+}
+
+function normalizeAuthAccessTimeZone(value) {
+  const normalized = String(value ?? '').trim()
+
+  if ([authAccessTimeZoneUtc, authAccessTimeZoneNewJersey].includes(normalized)) {
+    return normalized
+  }
+
+  return null
+}
+
+function parseOptionalAuthAccessTimeZone(value) {
+  const normalized = String(value ?? '').trim()
+
+  if (!normalized) {
+    return null
+  }
+
+  const parsed = normalizeAuthAccessTimeZone(normalized)
+
+  if (!parsed) {
+    throw {
+      status: 400,
+      message: `timeZone must be '${authAccessTimeZoneUtc}' or '${authAccessTimeZoneNewJersey}'.`,
+    }
+  }
+
+  return parsed
+}
+
+function getAuthHourForTimeZone(now, timeZone) {
+  try {
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      hour: '2-digit',
+      hour12: false,
+      timeZone,
+    })
+    const hourPart = formatter
+      .formatToParts(now)
+      .find((part) => part.type === 'hour')
+      ?.value
+    const parsed = Number.parseInt(String(hourPart ?? ''), 10)
+
+    if (Number.isInteger(parsed)) {
+      return parsed % 24
+    }
+  } catch {
+    // Fallback to UTC if timezone parsing fails.
+  }
+
+  return now.getUTCHours()
+}
+
+function formatAuthTimeZoneLabel(timeZone) {
+  if (timeZone === authAccessTimeZoneNewJersey) {
+    return 'New Jersey time (ET)'
+  }
+
+  return 'UTC'
+}
+
+function hasAuthLoginHourRestriction(startHourUtc, endHourUtc) {
+  return Number.isInteger(startHourUtc) && Number.isInteger(endHourUtc) && startHourUtc !== endHourUtc
+}
+
+function isAllowedByAuthLoginHours(document, now = new Date()) {
+  const startHourUtc = normalizeAuthHour(document?.accessStartHourUtc)
+  const endHourUtc = normalizeAuthHour(document?.accessEndHourUtc)
+  const accessTimeZone = normalizeAuthAccessTimeZone(document?.accessTimeZone) ?? authAccessTimeZoneUtc
+
+  if (!hasAuthLoginHourRestriction(startHourUtc, endHourUtc)) {
+    return true
+  }
+
+  const currentHour = getAuthHourForTimeZone(now, accessTimeZone)
+
+  if (startHourUtc < endHourUtc) {
+    return currentHour >= startHourUtc && currentHour < endHourUtc
+  }
+
+  return currentHour >= startHourUtc || currentHour < endHourUtc
+}
+
+function formatAuthLoginHoursWindow(document) {
+  const startHourUtc = normalizeAuthHour(document?.accessStartHourUtc)
+  const endHourUtc = normalizeAuthHour(document?.accessEndHourUtc)
+  const accessTimeZone = normalizeAuthAccessTimeZone(document?.accessTimeZone) ?? authAccessTimeZoneUtc
+
+  if (!hasAuthLoginHourRestriction(startHourUtc, endHourUtc)) {
+    return 'any time'
+  }
+
+  return `${String(startHourUtc).padStart(2, '0')}:00 to ${String(endHourUtc).padStart(2, '0')}:00 ${formatAuthTimeZoneLabel(accessTimeZone)}`
+}
+
+function extractRequestIpAddress(req) {
+  const rawForwardedFor = req.headers?.['x-forwarded-for']
+  const forwardedValue = Array.isArray(rawForwardedFor)
+    ? rawForwardedFor[0]
+    : rawForwardedFor
+  const forwardedIp = String(forwardedValue ?? '')
+    .split(',')[0]
+    .trim()
+
+  if (forwardedIp) {
+    return forwardedIp
+  }
+
+  const ip = String(req.ip ?? req.socket?.remoteAddress ?? '').trim()
+
+  if (!ip) {
+    return null
+  }
+
+  return ip.replace('::ffff:', '')
+}
+
+function extractRequestUserAgent(req) {
+  const userAgent = String(req.headers?.['user-agent'] ?? '').trim()
+
+  return userAgent || null
+}
+
+function normalizeActivityMetadata(value) {
+  if (value === undefined) {
+    return null
+  }
+
+  try {
+    const serialized = JSON.stringify(value)
+
+    if (!serialized) {
+      return null
+    }
+
+    if (serialized.length > 4000) {
+      return {
+        truncated: true,
+      }
+    }
+
+    return JSON.parse(serialized)
+  } catch {
+    return null
+  }
+}
+
+async function writeAuthActivityLog(entry) {
+  try {
+    const { authActivityLogsCollection } = await getCollections()
+    const now = new Date().toISOString()
+    const rawStatusCode = entry?.statusCode
+    const parsedStatusCode =
+      rawStatusCode === null || rawStatusCode === undefined || String(rawStatusCode).trim() === ''
+        ? null
+        : Number(rawStatusCode)
+
+    await authActivityLogsCollection.insertOne({
+      id: randomUUID(),
+      uid: String(entry?.uid ?? '').trim(),
+      email: String(entry?.email ?? '').trim() || null,
+      type: String(entry?.type ?? authActivityTypeUiEvent).trim() || authActivityTypeUiEvent,
+      action: String(entry?.action ?? '').trim() || 'unknown_action',
+      target: String(entry?.target ?? '').trim() || null,
+      path: String(entry?.path ?? '').trim() || null,
+      method: String(entry?.method ?? '').trim().toUpperCase() || null,
+      statusCode: Number.isInteger(parsedStatusCode) ? parsedStatusCode : null,
+      ipAddress: String(entry?.ipAddress ?? '').trim() || null,
+      userAgent: String(entry?.userAgent ?? '').trim() || null,
+      metadata: normalizeActivityMetadata(entry?.metadata),
+      requestStartedAt: String(entry?.requestStartedAt ?? '').trim() || null,
+      createdAt: String(entry?.createdAt ?? '').trim() || now,
+    })
+  } catch (error) {
+    console.error('Failed to write auth activity log:', error)
+  }
+}
+
 function toPublicAuthUser(document) {
   if (!document) {
     return null
@@ -232,6 +449,12 @@ function toPublicAuthUser(document) {
     String(document.approvalStatus ?? '').trim().toLowerCase() === authApprovalApproved
       ? authApprovalApproved
       : authApprovalPending
+  const accessStartHourUtc = normalizeAuthHour(document.accessStartHourUtc)
+  const accessEndHourUtc = normalizeAuthHour(document.accessEndHourUtc)
+  const accessTimeZone = normalizeAuthAccessTimeZone(document.accessTimeZone) ?? authAccessTimeZoneUtc
+  const linkedWorkerId = String(document.linkedWorkerId ?? '').trim() || null
+  const linkedWorkerNumber = normalizeWorkerNumber(document.linkedWorkerNumber)
+  const linkedWorkerName = String(document.linkedWorkerName ?? '').trim() || null
 
   return {
     uid: String(document.uid ?? ''),
@@ -247,7 +470,158 @@ function toPublicAuthUser(document) {
     createdAt: String(document.createdAt ?? '').trim() || null,
     updatedAt: String(document.updatedAt ?? '').trim() || null,
     lastLoginAt: String(document.lastLoginAt ?? '').trim() || null,
+    accessStartHourUtc,
+    accessEndHourUtc,
+    accessTimeZone,
+    hasLoginHoursRestriction: hasAuthLoginHourRestriction(accessStartHourUtc, accessEndHourUtc),
+    linkedWorkerId,
+    linkedWorkerNumber,
+    linkedWorkerName,
   }
+}
+
+function normalizeWorkerNumber(value) {
+  const normalized = String(value ?? '').trim()
+
+  if (!/^[0-9]{4}$/.test(normalized)) {
+    return null
+  }
+
+  return normalized
+}
+
+async function allocateWorkerNumbers(workersCollection, requestedCount) {
+  const count = Number(requestedCount)
+
+  if (!Number.isInteger(count) || count <= 0) {
+    return []
+  }
+
+  const existingWorkers = await workersCollection
+    .find(
+      {},
+      {
+        projection: {
+          _id: 0,
+          workerNumber: 1,
+        },
+      },
+    )
+    .toArray()
+  const usedNumbers = new Set(
+    existingWorkers
+      .map((worker) => normalizeWorkerNumber(worker.workerNumber))
+      .filter(Boolean),
+  )
+
+  if (usedNumbers.size + count > 9000) {
+    throw {
+      status: 500,
+      message: 'No available worker IDs remain.',
+    }
+  }
+
+  const allocatedNumbers = []
+  const startOffset = Math.floor(Math.random() * 9000)
+
+  for (let index = 0; index < 9000 && allocatedNumbers.length < count; index += 1) {
+    const numericValue = 1000 + ((startOffset + index) % 9000)
+    const candidate = String(numericValue).padStart(4, '0')
+
+    if (usedNumbers.has(candidate)) {
+      continue
+    }
+
+    usedNumbers.add(candidate)
+    allocatedNumbers.push(candidate)
+  }
+
+  if (allocatedNumbers.length !== count) {
+    throw {
+      status: 500,
+      message: 'Unable to allocate worker IDs.',
+    }
+  }
+
+  return allocatedNumbers
+}
+
+async function ensureWorkersHaveWorkerNumbers(workersCollection, workers) {
+  const workerList = Array.isArray(workers) ? workers : []
+  const workersMissingNumbers = workerList.filter(
+    (worker) => !normalizeWorkerNumber(worker.workerNumber),
+  )
+
+  if (workersMissingNumbers.length === 0) {
+    return workerList
+  }
+
+  const allocatedNumbers = await allocateWorkerNumbers(workersCollection, workersMissingNumbers.length)
+  const now = new Date().toISOString()
+  const allocatedByWorkerId = new Map()
+
+  workersMissingNumbers.forEach((worker, index) => {
+    allocatedByWorkerId.set(String(worker.id), allocatedNumbers[index])
+  })
+
+  await workersCollection.bulkWrite(
+    workersMissingNumbers.map((worker) => ({
+      updateOne: {
+        filter: { id: String(worker.id) },
+        update: {
+          $set: {
+            workerNumber: allocatedByWorkerId.get(String(worker.id)),
+            updatedAt: now,
+          },
+        },
+      },
+    })),
+    { ordered: false },
+  )
+
+  return workerList.map((worker) => {
+    const workerId = String(worker.id)
+    const allocatedNumber = allocatedByWorkerId.get(workerId)
+
+    if (!allocatedNumber) {
+      return worker
+    }
+
+    return {
+      ...worker,
+      workerNumber: allocatedNumber,
+      updatedAt: now,
+    }
+  })
+}
+
+async function writeAuthApiRequestLog(req, publicUser) {
+  if (!publicUser?.uid) {
+    return
+  }
+
+  const requestStartedAt = new Date().toISOString()
+  const actionPath = String(req.path ?? req.originalUrl ?? '/').trim() || '/'
+
+  if (actionPath.startsWith('/api/auth/activity')) {
+    return
+  }
+
+  await writeAuthActivityLog({
+    uid: publicUser.uid,
+    email: publicUser.email,
+    type: authActivityTypeApiRequest,
+    action: `${String(req.method ?? '').toUpperCase()} ${actionPath}`,
+    path: actionPath,
+    method: req.method,
+    statusCode: null,
+    ipAddress: extractRequestIpAddress(req),
+    userAgent: extractRequestUserAgent(req),
+    metadata: {
+      originalUrl: String(req.originalUrl ?? '').trim() || null,
+    },
+    requestStartedAt,
+  })
 }
 
 function isApprovedAdminUser(document) {
@@ -365,8 +739,29 @@ async function resolveCurrentAuthUserFromRequest(req) {
 async function requireFirebaseAuth(req, _res, next) {
   try {
     const { decodedToken, userDocument } = await resolveCurrentAuthUserFromRequest(req)
+    const publicUser = toPublicAuthUser(userDocument)
+
+    if (!publicUser) {
+      throw {
+        status: 500,
+        message: 'Unable to load authenticated user.',
+      }
+    }
+
+    if (
+      publicUser.isApproved
+      && !publicUser.isOwner
+      && !isAllowedByAuthLoginHours(userDocument)
+    ) {
+      throw {
+        status: 403,
+        message: `Access is currently blocked. You can use the app during ${formatAuthLoginHoursWindow(userDocument)}.`,
+      }
+    }
+
     req.firebaseToken = decodedToken
     req.authUser = userDocument
+    await writeAuthApiRequestLog(req, publicUser)
     next()
   } catch (error) {
     next(error)
@@ -646,6 +1041,59 @@ async function saveOrderPhotoRecord(orderId, imageBuffer, mimeType) {
   return buildOrderPhotoRecord(file, bucket.name)
 }
 
+function normalizeOrderPhotoPath(orderId, rawPath) {
+  const normalizedPath = String(rawPath ?? '').trim().replace(/^\/+/, '')
+
+  if (!normalizedPath) {
+    return null
+  }
+
+  const expectedPrefix = buildOrderPhotoPrefix(orderId)
+
+  if (!normalizedPath.startsWith(expectedPrefix) || normalizedPath.includes('..')) {
+    return null
+  }
+
+  return normalizedPath
+}
+
+function buildOrderPhotoDownloadFileName(orderId, path) {
+  const rawFileName = String(path ?? '').split('/').pop() ?? ''
+  const safeFileName = rawFileName
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]+/g, '_')
+
+  if (safeFileName) {
+    return safeFileName
+  }
+
+  const safeOrderId = String(orderId ?? '')
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]+/g, '_')
+
+  return `order-${safeOrderId || 'photo'}-image.jpg`
+}
+
+async function deleteOrderPhotoRecord(orderId, path) {
+  const normalizedPath = normalizeOrderPhotoPath(orderId, path)
+
+  if (!normalizedPath) {
+    return false
+  }
+
+  const bucket = getOrderPhotosBucket()
+  const file = bucket.file(normalizedPath)
+  const [exists] = await file.exists()
+
+  if (!exists) {
+    return false
+  }
+
+  await file.delete()
+
+  return true
+}
+
 app.get('/api/health', async (_req, res, next) => {
   try {
     const { database } = await getCollections()
@@ -712,6 +1160,129 @@ app.get('/api/auth/users', requireFirebaseAuth, requireAdminRole, async (_req, r
   }
 })
 
+app.get('/api/auth/workers', requireFirebaseAuth, requireAdminRole, async (_req, res, next) => {
+  try {
+    const { workersCollection } = await getCollections()
+    const workers = await workersCollection
+      .find(
+        {},
+        {
+          projection: {
+            _id: 0,
+          },
+        },
+      )
+      .sort({ fullName: 1 })
+      .toArray()
+    const workersWithNumbers = await ensureWorkersHaveWorkerNumbers(workersCollection, workers)
+
+    return res.json({
+      workers: workersWithNumbers.map((worker) => ({
+        id: String(worker.id ?? '').trim(),
+        workerNumber: normalizeWorkerNumber(worker.workerNumber),
+        fullName: String(worker.fullName ?? '').trim(),
+        role: String(worker.role ?? '').trim(),
+        email: String(worker.email ?? '').trim(),
+      })),
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.patch('/api/auth/users/:uid/worker-link', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+  try {
+    const targetUid = String(req.params.uid ?? '').trim()
+
+    if (!targetUid) {
+      return res.status(400).json({ error: 'uid is required.' })
+    }
+
+    const rawWorkerId = String(req.body?.workerId ?? '').trim()
+    const workerId = rawWorkerId || null
+    const { authUsersCollection, workersCollection } = await getCollections()
+    const existingUser = await authUsersCollection.findOne(
+      { uid: targetUid },
+      {
+        projection: {
+          _id: 0,
+        },
+      },
+    )
+
+    if (!existingUser) {
+      return res.status(404).json({ error: 'User not found.' })
+    }
+
+    let linkedWorker = null
+
+    if (workerId) {
+      const matchedWorker = await workersCollection.findOne(
+        { id: workerId },
+        {
+          projection: {
+            _id: 0,
+          },
+        },
+      )
+
+      if (!matchedWorker) {
+        return res.status(400).json({ error: 'Selected worker was not found.' })
+      }
+
+      const [workerWithNumber] = await ensureWorkersHaveWorkerNumbers(workersCollection, [matchedWorker])
+      linkedWorker = workerWithNumber
+
+      const existingLinkedUser = await authUsersCollection.findOne(
+        {
+          linkedWorkerId: workerId,
+          uid: {
+            $ne: targetUid,
+          },
+        },
+        {
+          projection: {
+            _id: 0,
+            uid: 1,
+            email: 1,
+          },
+        },
+      )
+
+      if (existingLinkedUser) {
+        return res.status(400).json({
+          error: `Worker is already linked to ${String(existingLinkedUser.email ?? '').trim() || 'another user'}.`,
+        })
+      }
+    }
+
+    const now = new Date().toISOString()
+    const updatedUser = await authUsersCollection.findOneAndUpdate(
+      { uid: targetUid },
+      {
+        $set: {
+          linkedWorkerId: linkedWorker ? String(linkedWorker.id ?? '').trim() : null,
+          linkedWorkerNumber: linkedWorker ? normalizeWorkerNumber(linkedWorker.workerNumber) : null,
+          linkedWorkerName: linkedWorker ? String(linkedWorker.fullName ?? '').trim() || null : null,
+          updatedAt: now,
+        },
+      },
+      {
+        returnDocument: 'after',
+        projection: {
+          _id: 0,
+        },
+      },
+    )
+
+    return res.json({
+      user: toPublicAuthUser(updatedUser),
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
 app.patch('/api/auth/users/:uid/approval', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
   try {
     const targetUid = String(req.params.uid ?? '').trim()
@@ -744,6 +1315,21 @@ app.patch('/api/auth/users/:uid/approval', requireFirebaseAuth, requireAdminRole
 
     const targetEmailLower = normalizeEmail(existingUser.emailLower)
     const isOwnerTarget = targetEmailLower === ownerEmail
+    const existingPublicUser = toPublicAuthUser(existingUser)
+    const requiresAdminPromotionConfirmation =
+      !isOwnerTarget
+      && role === authRoleAdmin
+      && !existingPublicUser?.isAdmin
+    const confirmAdminPromotion =
+      req.body?.confirmAdminPromotion === true
+      || String(req.body?.confirmAdminPromotion ?? '').trim().toLowerCase() === 'true'
+
+    if (requiresAdminPromotionConfirmation && !confirmAdminPromotion) {
+      return res.status(400).json({
+        error: 'Admin promotion requires explicit confirmation.',
+      })
+    }
+
     const approvedRole = isOwnerTarget ? authRoleAdmin : role
     const approvedByEmail = normalizeEmail(req.authUser?.emailLower)
       ? String(req.authUser.emailLower)
@@ -772,6 +1358,439 @@ app.patch('/api/auth/users/:uid/approval', requireFirebaseAuth, requireAdminRole
 
     return res.json({
       user: toPublicAuthUser(updatedUser),
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.patch('/api/auth/users/:uid/unapprove', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+  try {
+    const targetUid = String(req.params.uid ?? '').trim()
+
+    if (!targetUid) {
+      return res.status(400).json({ error: 'uid is required.' })
+    }
+
+    const { authUsersCollection } = await getCollections()
+    const existingUser = await authUsersCollection.findOne(
+      { uid: targetUid },
+      {
+        projection: {
+          _id: 0,
+        },
+      },
+    )
+
+    if (!existingUser) {
+      return res.status(404).json({ error: 'User not found.' })
+    }
+
+    const existingPublicUser = toPublicAuthUser(existingUser)
+
+    if (existingPublicUser?.isOwner) {
+      return res.status(400).json({ error: 'Owner account cannot be unapproved.' })
+    }
+
+    const now = new Date().toISOString()
+    const updatedUser = await authUsersCollection.findOneAndUpdate(
+      { uid: targetUid },
+      {
+        $set: {
+          role: authRoleStandard,
+          approvalStatus: authApprovalPending,
+          approvedAt: null,
+          approvedByUid: null,
+          approvedByEmail: null,
+          updatedAt: now,
+        },
+      },
+      {
+        returnDocument: 'after',
+        projection: {
+          _id: 0,
+        },
+      },
+    )
+
+    return res.json({
+      user: toPublicAuthUser(updatedUser),
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.delete('/api/auth/users/:uid', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+  try {
+    const targetUid = String(req.params.uid ?? '').trim()
+
+    if (!targetUid) {
+      return res.status(400).json({ error: 'uid is required.' })
+    }
+
+    if (targetUid === String(req.authUser?.uid ?? '').trim()) {
+      return res.status(400).json({ error: 'You cannot delete your own account.' })
+    }
+
+    const { authUsersCollection, authActivityLogsCollection } = await getCollections()
+    const existingUser = await authUsersCollection.findOne(
+      { uid: targetUid },
+      {
+        projection: {
+          _id: 0,
+        },
+      },
+    )
+
+    if (!existingUser) {
+      return res.status(404).json({ error: 'User not found.' })
+    }
+
+    const existingPublicUser = toPublicAuthUser(existingUser)
+
+    if (existingPublicUser?.isOwner) {
+      return res.status(400).json({ error: 'Owner account cannot be deleted.' })
+    }
+
+    await Promise.all([
+      authUsersCollection.deleteOne({ uid: targetUid }),
+      authActivityLogsCollection.deleteMany({ uid: targetUid }),
+    ])
+
+    return res.json({
+      ok: true,
+      uid: targetUid,
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.patch('/api/auth/users/:uid/access-hours', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+  try {
+    const targetUid = String(req.params.uid ?? '').trim()
+
+    if (!targetUid) {
+      return res.status(400).json({ error: 'uid is required.' })
+    }
+
+    const startHourUtc = parseOptionalAuthHour(req.body?.startHourUtc, 'startHourUtc')
+    const endHourUtc = parseOptionalAuthHour(req.body?.endHourUtc, 'endHourUtc')
+    const requestedTimeZone = parseOptionalAuthAccessTimeZone(req.body?.timeZone)
+
+    if ((startHourUtc === null) !== (endHourUtc === null)) {
+      return res.status(400).json({
+        error: 'startHourUtc and endHourUtc must both be provided, or both omitted to clear restrictions.',
+      })
+    }
+
+    if (startHourUtc !== null && endHourUtc !== null && startHourUtc === endHourUtc) {
+      return res.status(400).json({
+        error: 'startHourUtc and endHourUtc cannot be the same.',
+      })
+    }
+
+    const { authUsersCollection } = await getCollections()
+    const existingUser = await authUsersCollection.findOne(
+      { uid: targetUid },
+      {
+        projection: {
+          _id: 0,
+        },
+      },
+    )
+
+    if (!existingUser) {
+      return res.status(404).json({ error: 'User not found.' })
+    }
+
+    const existingPublicUser = toPublicAuthUser(existingUser)
+
+    if (existingPublicUser?.isAdmin) {
+      return res.status(400).json({ error: 'Admin accounts cannot have login-hour restrictions.' })
+    }
+
+    const now = new Date().toISOString()
+    const nextStartHour = startHourUtc
+    const nextEndHour = endHourUtc
+    const nextTimeZone =
+      requestedTimeZone
+      ?? normalizeAuthAccessTimeZone(existingUser.accessTimeZone)
+      ?? authAccessTimeZoneNewJersey
+
+    const updatedUser = await authUsersCollection.findOneAndUpdate(
+      { uid: targetUid },
+      {
+        $set: {
+          accessStartHourUtc: nextStartHour,
+          accessEndHourUtc: nextEndHour,
+          accessTimeZone: nextTimeZone,
+          updatedAt: now,
+        },
+      },
+      {
+        returnDocument: 'after',
+        projection: {
+          _id: 0,
+        },
+      },
+    )
+
+    return res.json({
+      user: toPublicAuthUser(updatedUser),
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.post('/api/auth/activity', requireFirebaseAuth, async (req, res, next) => {
+  try {
+    const publicUser = toPublicAuthUser(req.authUser)
+
+    if (!publicUser) {
+      throw {
+        status: 500,
+        message: 'Unable to resolve activity user.',
+      }
+    }
+
+    const action = String(req.body?.action ?? '').trim().slice(0, 120)
+
+    if (!action) {
+      return res.status(400).json({ error: 'action is required.' })
+    }
+
+    const target = String(req.body?.target ?? '').trim().slice(0, 180) || null
+    const path = String(req.body?.path ?? '').trim().slice(0, 240) || null
+
+    await writeAuthActivityLog({
+      uid: publicUser.uid,
+      email: publicUser.email,
+      type: authActivityTypeUiEvent,
+      action,
+      target,
+      path,
+      method: req.method,
+      statusCode: 201,
+      ipAddress: extractRequestIpAddress(req),
+      userAgent: extractRequestUserAgent(req),
+      metadata: req.body?.metadata,
+    })
+
+    return res.status(201).json({ ok: true })
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.get('/api/auth/logs/users', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+  try {
+    const limit = toBoundedInteger(req.query?.limit, 25, 500, 200)
+    const { authUsersCollection, authActivityLogsCollection } = await getCollections()
+    const users = await authUsersCollection
+      .find(
+        {},
+        {
+          projection: {
+            _id: 0,
+          },
+        },
+      )
+      .toArray()
+
+    const activitySummaryRows = await authActivityLogsCollection
+      .aggregate([
+        {
+          $sort: {
+            createdAt: -1,
+          },
+        },
+        {
+          $group: {
+            _id: '$uid',
+            totalEvents: {
+              $sum: 1,
+            },
+            lastActivityAt: {
+              $first: '$createdAt',
+            },
+            lastIpAddress: {
+              $first: '$ipAddress',
+            },
+            lastUserAgent: {
+              $first: '$userAgent',
+            },
+            lastAction: {
+              $first: '$action',
+            },
+          },
+        },
+      ])
+      .toArray()
+
+    const summaryByUid = new Map(
+      activitySummaryRows.map((row) => [
+        String(row._id ?? '').trim(),
+        {
+          totalEvents: Number(row.totalEvents ?? 0),
+          lastActivityAt: String(row.lastActivityAt ?? '').trim() || null,
+          lastIpAddress: String(row.lastIpAddress ?? '').trim() || null,
+          lastUserAgent: String(row.lastUserAgent ?? '').trim() || null,
+          lastAction: String(row.lastAction ?? '').trim() || null,
+        },
+      ]),
+    )
+
+    const userSummaries = users
+      .map((document) => {
+        const user = toPublicAuthUser(document)
+
+        if (!user?.uid) {
+          return null
+        }
+
+        const activitySummary = summaryByUid.get(user.uid) ?? {
+          totalEvents: 0,
+          lastActivityAt: null,
+          lastIpAddress: null,
+          lastUserAgent: null,
+          lastAction: null,
+        }
+
+        return {
+          user,
+          ...activitySummary,
+        }
+      })
+      .filter(Boolean)
+
+    userSummaries.sort((left, right) => {
+      const leftTimestamp = Date.parse(left.lastActivityAt ?? left.user.lastLoginAt ?? '')
+      const rightTimestamp = Date.parse(right.lastActivityAt ?? right.user.lastLoginAt ?? '')
+
+      if (Number.isFinite(leftTimestamp) && Number.isFinite(rightTimestamp)) {
+        return rightTimestamp - leftTimestamp
+      }
+
+      if (Number.isFinite(rightTimestamp)) {
+        return 1
+      }
+
+      if (Number.isFinite(leftTimestamp)) {
+        return -1
+      }
+
+      return left.user.email.localeCompare(right.user.email)
+    })
+
+    return res.json({
+      users: userSummaries.slice(0, limit),
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.get('/api/auth/logs/users/:uid/info', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+  try {
+    const targetUid = String(req.params.uid ?? '').trim()
+
+    if (!targetUid) {
+      return res.status(400).json({ error: 'uid is required.' })
+    }
+
+    const { authUsersCollection, authActivityLogsCollection } = await getCollections()
+    const userDocument = await authUsersCollection.findOne(
+      { uid: targetUid },
+      {
+        projection: {
+          _id: 0,
+        },
+      },
+    )
+
+    if (!userDocument) {
+      return res.status(404).json({ error: 'User not found.' })
+    }
+
+    const [totalEvents, latestEvent, latestLoginEvent] = await Promise.all([
+      authActivityLogsCollection.countDocuments({ uid: targetUid }),
+      authActivityLogsCollection.findOne(
+        { uid: targetUid },
+        {
+          sort: {
+            createdAt: -1,
+          },
+          projection: {
+            _id: 0,
+          },
+        },
+      ),
+      authActivityLogsCollection.findOne(
+        {
+          uid: targetUid,
+          path: '/api/auth/me',
+        },
+        {
+          sort: {
+            createdAt: -1,
+          },
+          projection: {
+            _id: 0,
+          },
+        },
+      ),
+    ])
+
+    return res.json({
+      user: toPublicAuthUser(userDocument),
+      summary: {
+        totalEvents,
+        lastActivityAt: String(latestEvent?.createdAt ?? '').trim() || null,
+        lastIpAddress: String(latestEvent?.ipAddress ?? '').trim() || null,
+        lastUserAgent: String(latestEvent?.userAgent ?? '').trim() || null,
+      },
+      latestEvent,
+      latestLoginEvent,
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.get('/api/auth/logs/users/:uid/events', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+  try {
+    const targetUid = String(req.params.uid ?? '').trim()
+
+    if (!targetUid) {
+      return res.status(400).json({ error: 'uid is required.' })
+    }
+
+    const eventType = String(req.query?.type ?? '').trim().toLowerCase()
+    const limit = toBoundedInteger(req.query?.limit, 20, 1000, 200)
+    const filter = {
+      uid: targetUid,
+    }
+
+    if ([authActivityTypeApiRequest, authActivityTypeUiEvent].includes(eventType)) {
+      filter.type = eventType
+    }
+
+    const { authActivityLogsCollection } = await getCollections()
+    const events = await authActivityLogsCollection
+      .find(filter, {
+        projection: {
+          _id: 0,
+        },
+      })
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .toArray()
+
+    return res.json({
+      events,
     })
   } catch (error) {
     next(error)
@@ -971,6 +1990,51 @@ app.get('/api/orders/:orderId/photos', async (req, res, next) => {
   }
 })
 
+app.get('/api/orders/:orderId/photos/download', async (req, res, next) => {
+  try {
+    const orderId = normalizeOrderPhotoOrderId(req.params.orderId)
+
+    if (!orderId) {
+      return res.status(400).json({ error: 'orderId is required.' })
+    }
+
+    const queryPath = Array.isArray(req.query?.path)
+      ? req.query.path[0]
+      : req.query?.path
+    const photoPath = normalizeOrderPhotoPath(orderId, queryPath)
+
+    if (!photoPath) {
+      return res.status(400).json({ error: 'A valid photo path is required.' })
+    }
+
+    const bucket = getOrderPhotosBucket()
+    const file = bucket.file(photoPath)
+    const [exists] = await file.exists()
+
+    if (!exists) {
+      return res.status(404).json({ error: 'Photo not found.' })
+    }
+
+    const [metadata] = await file.getMetadata()
+    const contentType = String(metadata?.contentType ?? '').trim() || 'application/octet-stream'
+    const fileName = buildOrderPhotoDownloadFileName(orderId, photoPath)
+
+    res.setHeader('Content-Type', contentType)
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`)
+    res.setHeader('Cache-Control', 'private, max-age=60')
+
+    await new Promise((resolve, reject) => {
+      const stream = file.createReadStream()
+
+      stream.on('error', reject)
+      stream.on('end', resolve)
+      stream.pipe(res)
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
 app.post('/api/orders/:orderId/photos', async (req, res, next) => {
   try {
     const orderId = normalizeOrderPhotoOrderId(req.params.orderId)
@@ -1000,6 +2064,42 @@ app.post('/api/orders/:orderId/photos', async (req, res, next) => {
     const photo = await saveOrderPhotoRecord(orderId, imageBuffer, mimeType)
 
     return res.status(201).json({ orderId, photo })
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.delete('/api/orders/:orderId/photos', async (req, res, next) => {
+  try {
+    const orderId = normalizeOrderPhotoOrderId(req.params.orderId)
+
+    if (!orderId) {
+      return res.status(400).json({ error: 'orderId is required.' })
+    }
+
+    const queryPath = Array.isArray(req.query?.path)
+      ? req.query.path[0]
+      : req.query?.path
+    const photoPath = normalizeOrderPhotoPath(
+      orderId,
+      req.body?.path ?? queryPath,
+    )
+
+    if (!photoPath) {
+      return res.status(400).json({ error: 'A valid photo path is required.' })
+    }
+
+    const deleted = await deleteOrderPhotoRecord(orderId, photoPath)
+
+    if (!deleted) {
+      return res.status(404).json({ error: 'Photo not found.' })
+    }
+
+    return res.json({
+      ok: true,
+      orderId,
+      path: photoPath,
+    })
   } catch (error) {
     next(error)
   }
@@ -1046,7 +2146,9 @@ app.get('/api/timesheet/state', async (_req, res, next) => {
         .toArray(),
     ])
 
-    res.json({ workers, entries, stages })
+    const workersWithNumbers = await ensureWorkersHaveWorkerNumbers(workersCollection, workers)
+
+    res.json({ workers: workersWithNumbers, entries, stages })
   } catch (error) {
     next(error)
   }
@@ -1206,7 +2308,16 @@ app.post('/api/timesheet/workers', async (req, res, next) => {
   try {
     const { workersCollection } = await getCollections()
     const input = req.body ?? {}
-    const worker = validateWorkerInput(input)
+    const workerFields = validateWorkerInput(input)
+    const [workerNumber] = await allocateWorkerNumbers(workersCollection, 1)
+    const now = new Date().toISOString()
+    const worker = {
+      id: randomUUID(),
+      workerNumber,
+      ...workerFields,
+      createdAt: now,
+      updatedAt: now,
+    }
 
     await workersCollection.insertOne(worker)
 
@@ -1225,9 +2336,18 @@ app.post('/api/timesheet/workers/bulk', async (req, res, next) => {
       return res.status(400).json({ error: 'workers array is required.' })
     }
 
-    const workers = payloadWorkers.map((entry, index) =>
+    const workerFieldsList = payloadWorkers.map((entry, index) =>
       validateWorkerInput(entry, `workers[${index}]`),
     )
+    const workerNumbers = await allocateWorkerNumbers(workersCollection, workerFieldsList.length)
+    const now = new Date().toISOString()
+    const workers = workerFieldsList.map((workerFields, index) => ({
+      id: randomUUID(),
+      workerNumber: workerNumbers[index],
+      ...workerFields,
+      createdAt: now,
+      updatedAt: now,
+    }))
 
     await workersCollection.insertMany(workers)
 
@@ -3079,17 +4199,12 @@ function validateWorkerInput(input, path = 'worker') {
     }
   }
 
-  const now = new Date().toISOString()
-
   return {
-    id: randomUUID(),
     fullName,
     role,
     email,
     phone,
     hourlyRate,
-    createdAt: now,
-    updatedAt: now,
   }
 }
 

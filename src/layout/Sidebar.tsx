@@ -1,5 +1,6 @@
 import {
   Box,
+  Collapse,
   Divider,
   Drawer,
   List,
@@ -10,6 +11,9 @@ import {
   Toolbar,
   Typography,
 } from '@mui/material'
+import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded'
+import KeyboardArrowRightRoundedIcon from '@mui/icons-material/KeyboardArrowRightRounded'
+import { useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
 import { navItems } from '../navigation/navItems'
@@ -32,9 +36,63 @@ function SidebarContent({ showText, onNavigate }: SidebarContentProps) {
   const location = useLocation()
   const navigate = useNavigate()
   const { appUser } = useAuth()
-  const visibleNavItems = navItems.filter(
-    (item) => !item.adminOnly || appUser?.isAdmin,
-  )
+  const regularNavItems = navItems.filter((item) => !item.adminOnly)
+  const adminNavItems = navItems.filter((item) => item.adminOnly && appUser?.isAdmin)
+  const [adminExpanded, setAdminExpanded] = useState(location.pathname.startsWith('/admin/'))
+
+  useEffect(() => {
+    if (location.pathname.startsWith('/admin/')) {
+      setAdminExpanded(true)
+    }
+  }, [location.pathname])
+
+  const renderItem = (path: string, label: string, Icon: (typeof navItems)[number]['icon'], nested = false) => {
+    const isSelected =
+      location.pathname === path
+      || location.pathname.startsWith(`${path}/`)
+
+    return (
+      <ListItem key={path} disablePadding sx={{ mb: 0.5 }}>
+        <ListItemButton
+          selected={isSelected}
+          onClick={() => {
+            navigate(path)
+            onNavigate?.()
+          }}
+          sx={{
+            minHeight: 44,
+            borderRadius: 1.5,
+            justifyContent: showText ? 'flex-start' : 'center',
+            px: showText ? 1.5 : 1.25,
+            pl: showText && nested ? 3 : undefined,
+          }}
+        >
+          <ListItemIcon
+            sx={{
+              minWidth: 0,
+              justifyContent: 'center',
+              mr: showText ? 1.5 : 0,
+            }}
+          >
+            <Icon fontSize="small" />
+          </ListItemIcon>
+
+          <ListItemText
+            primary={label}
+            sx={{
+              display: showText ? 'block' : 'none',
+              '& .MuiListItemText-primary': {
+                fontSize: 14,
+                fontWeight: 500,
+              },
+            }}
+          />
+        </ListItemButton>
+      </ListItem>
+    )
+  }
+
+  const flatNavItems = navItems.filter((item) => !item.adminOnly || appUser?.isAdmin)
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -55,51 +113,60 @@ function SidebarContent({ showText, onNavigate }: SidebarContentProps) {
       <Divider />
 
       <List sx={{ px: 1, py: 1.5 }}>
-        {visibleNavItems.map((item) => {
-          const isSelected =
-            location.pathname === item.path ||
-            location.pathname.startsWith(`${item.path}/`)
-          const Icon = item.icon
+        {!showText
+          ? flatNavItems.map((item) => renderItem(item.path, item.label, item.icon))
+          : null}
 
-          return (
-            <ListItem key={item.path} disablePadding sx={{ mb: 0.5 }}>
+        {showText
+          ? regularNavItems.map((item) => renderItem(item.path, item.label, item.icon))
+          : null}
+
+        {showText && adminNavItems.length > 0 ? (
+          <>
+            <ListItem disablePadding sx={{ mb: 0.5 }}>
               <ListItemButton
-                selected={isSelected}
                 onClick={() => {
-                  navigate(item.path)
-                  onNavigate?.()
+                  setAdminExpanded((current) => !current)
                 }}
                 sx={{
                   minHeight: 44,
                   borderRadius: 1.5,
-                  justifyContent: showText ? 'flex-start' : 'center',
-                  px: showText ? 1.5 : 1.25,
+                  px: 1.5,
                 }}
               >
                 <ListItemIcon
                   sx={{
                     minWidth: 0,
                     justifyContent: 'center',
-                    mr: showText ? 1.5 : 0,
+                    mr: 1.5,
                   }}
                 >
-                  <Icon fontSize="small" />
+                  {adminExpanded ? (
+                    <KeyboardArrowDownRoundedIcon fontSize="small" />
+                  ) : (
+                    <KeyboardArrowRightRoundedIcon fontSize="small" />
+                  )}
                 </ListItemIcon>
 
                 <ListItemText
-                  primary={item.label}
+                  primary="Admin"
                   sx={{
-                    display: showText ? 'block' : 'none',
                     '& .MuiListItemText-primary': {
                       fontSize: 14,
-                      fontWeight: 500,
+                      fontWeight: 600,
                     },
                   }}
                 />
               </ListItemButton>
             </ListItem>
-          )
-        })}
+
+            <Collapse in={adminExpanded} timeout="auto" unmountOnExit>
+              <List disablePadding>
+                {adminNavItems.map((item) => renderItem(item.path, item.label, item.icon, true))}
+              </List>
+            </Collapse>
+          </>
+        ) : null}
       </List>
     </Box>
   )

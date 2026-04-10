@@ -1,6 +1,24 @@
 import dotenv from 'dotenv'
+import { statSync } from 'node:fs'
 
 dotenv.config()
+
+const googleApplicationCredentialsPath = String(process.env.GOOGLE_APPLICATION_CREDENTIALS ?? '').trim()
+
+if (googleApplicationCredentialsPath) {
+  try {
+    const credentialsPathStat = statSync(googleApplicationCredentialsPath)
+
+    if (!credentialsPathStat.isFile()) {
+      throw new Error('Path is not a file.')
+    }
+  } catch {
+    console.warn(
+      `Ignoring invalid GOOGLE_APPLICATION_CREDENTIALS path: ${googleApplicationCredentialsPath}`,
+    )
+    delete process.env.GOOGLE_APPLICATION_CREDENTIALS
+  }
+}
 
 const port = Number(process.env.PORT ?? 8787)
 const { app, closeMongoConnections } = await import('../functions/index.mjs')

@@ -1,7 +1,8 @@
 import AdminPanelSettingsRoundedIcon from '@mui/icons-material/AdminPanelSettingsRounded'
 import DashboardRoundedIcon from '@mui/icons-material/DashboardRounded'
+import GroupRoundedIcon from '@mui/icons-material/GroupRounded'
+import ManageHistoryRoundedIcon from '@mui/icons-material/ManageHistoryRounded'
 import PhotoLibraryRoundedIcon from '@mui/icons-material/PhotoLibraryRounded'
-import SettingsRoundedIcon from '@mui/icons-material/SettingsRounded'
 import SupportAgentRoundedIcon from '@mui/icons-material/SupportAgentRounded'
 import TableChartRoundedIcon from '@mui/icons-material/TableChartRounded'
 import type { ElementType } from 'react'
@@ -25,6 +26,11 @@ export const navItems: NavItem[] = [
     icon: TableChartRoundedIcon,
   },
   {
+    label: 'Workers',
+    path: '/workers',
+    icon: GroupRoundedIcon,
+  },
+  {
     label: 'Support',
     path: '/support',
     icon: SupportAgentRoundedIcon,
@@ -35,14 +41,15 @@ export const navItems: NavItem[] = [
     icon: PhotoLibraryRoundedIcon,
   },
   {
-    label: 'Settings',
-    path: '/settings',
-    icon: SettingsRoundedIcon,
-  },
-  {
-    label: 'Admin Users',
+    label: 'Users',
     path: '/admin/users',
     icon: AdminPanelSettingsRoundedIcon,
+    adminOnly: true,
+  },
+  {
+    label: 'Logs',
+    path: '/admin/logs',
+    icon: ManageHistoryRoundedIcon,
     adminOnly: true,
   },
 ]

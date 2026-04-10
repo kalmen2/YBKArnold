@@ -2,7 +2,6 @@ import AddRoundedIcon from '@mui/icons-material/AddRounded'
 import CategoryRoundedIcon from '@mui/icons-material/CategoryRounded'
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
 import FileDownloadRoundedIcon from '@mui/icons-material/FileDownloadRounded'
-import GroupRoundedIcon from '@mui/icons-material/GroupRounded'
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded'
 import {
   Alert,
@@ -34,11 +33,8 @@ import * as XLSX from 'xlsx'
 import {
   createStage,
   createEntriesBulk,
-  createWorker,
-  createWorkersBulk,
   deleteEntry,
   deleteStage,
-  deleteWorker,
   fetchTimesheetState,
   reorderStages,
   type TimesheetEntry,
@@ -57,23 +53,6 @@ type BulkWorkerRow = {
 }
 
 type WorkerRangePreset = 'week' | 'month' | 'year' | 'custom'
-
-type CreateWorkerInput = {
-  fullName: string
-  role: string
-  email: string
-  phone: string
-  hourlyRate: number
-}
-
-type BulkWorkerDraftRow = {
-  id: string
-  fullName: string
-  role: string
-  email: string
-  phone: string
-  hourlyRate: string
-}
 
 type EntryEditForm = {
   date: string
@@ -250,17 +229,6 @@ function reorderStageList(
   return nextStages
 }
 
-function createEmptyBulkWorkerDraft(): BulkWorkerDraftRow {
-  return {
-    id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    fullName: '',
-    role: '',
-    email: '',
-    phone: '',
-    hourlyRate: '',
-  }
-}
-
 function createBulkRowId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
@@ -285,7 +253,6 @@ export default function TimesheetPage() {
   const [success, setSuccess] = useState('')
   const [isLoading, setIsLoading] = useState(true)
 
-  const [workersDialogOpen, setWorkersDialogOpen] = useState(false)
   const [stagesDialogOpen, setStagesDialogOpen] = useState(false)
   const [managerSheetOpen, setManagerSheetOpen] = useState(false)
   const [jobDetailsOpen, setJobDetailsOpen] = useState(false)
@@ -293,18 +260,6 @@ export default function TimesheetPage() {
   const [stageNameInput, setStageNameInput] = useState('')
   const [draggedStageId, setDraggedStageId] = useState('')
   const [isReorderingStages, setIsReorderingStages] = useState(false)
-
-  const [workerForm, setWorkerForm] = useState({
-    fullName: '',
-    role: '',
-    email: '',
-    phone: '',
-    hourlyRate: '',
-  })
-
-  const [bulkWorkerRows, setBulkWorkerRows] = useState<BulkWorkerDraftRow[]>([
-    createEmptyBulkWorkerDraft(),
-  ])
   const [bulkDate, setBulkDate] = useState(todayIsoDate())
   const [bulkRows, setBulkRows] = useState<BulkWorkerRow[]>([])
 
@@ -695,150 +650,6 @@ export default function TimesheetPage() {
     }
   }, [managerDayEntries.length, managerSheetOpen])
 
-  const handleAddWorker = async () => {
-    setError('')
-    setSuccess('')
-
-    const fullName = workerForm.fullName.trim()
-    const role = workerForm.role.trim()
-    const email = workerForm.email.trim()
-    const phone = workerForm.phone.trim()
-    const hourlyRate = Number(workerForm.hourlyRate)
-
-    if (!fullName) {
-      setError('Worker full name is required.')
-      return
-    }
-
-    if (!Number.isFinite(hourlyRate) || hourlyRate <= 0) {
-      setError('Hourly rate must be a positive number.')
-      return
-    }
-
-    try {
-      await createWorker({
-        fullName,
-        role,
-        email,
-        phone,
-        hourlyRate,
-      })
-
-      setWorkerForm({
-        fullName: '',
-        role: '',
-        email: '',
-        phone: '',
-        hourlyRate: '',
-      })
-
-      await refreshState()
-      setSuccess('Worker added.')
-    } catch (requestError) {
-      const message =
-        requestError instanceof Error
-          ? requestError.message
-          : 'Failed to add worker.'
-      setError(message)
-    }
-  }
-
-  const handleBulkAddWorkers = async () => {
-    setError('')
-    setSuccess('')
-
-    const validWorkers: CreateWorkerInput[] = []
-    const invalidRows: string[] = []
-    let hasAnyInput = false
-
-    bulkWorkerRows.forEach((row, index) => {
-      const fullName = row.fullName.trim()
-      const role = row.role.trim()
-      const email = row.email.trim()
-      const phone = row.phone.trim()
-      const hourlyRateRaw = row.hourlyRate.trim()
-
-      const hasInput =
-        fullName || role || email || phone || hourlyRateRaw
-
-      if (!hasInput) {
-        return
-      }
-
-      hasAnyInput = true
-      const hourlyRate = Number(hourlyRateRaw)
-
-      if (!fullName || !Number.isFinite(hourlyRate) || hourlyRate <= 0) {
-        invalidRows.push(`Row ${index + 1}`)
-        return
-      }
-
-      validWorkers.push({
-        fullName,
-        role,
-        email,
-        phone,
-        hourlyRate,
-      })
-    })
-
-    if (!hasAnyInput) {
-      setError('Fill at least one row in the bulk worker table.')
-      return
-    }
-
-    if (invalidRows.length > 0) {
-      setError(`${invalidRows.join(', ')} invalid. Name and positive hourly rate are required.`)
-      return
-    }
-
-    if (validWorkers.length === 0) {
-      setError('No valid worker rows to submit.')
-      return
-    }
-
-    try {
-      const response = await createWorkersBulk(validWorkers)
-      setBulkWorkerRows([createEmptyBulkWorkerDraft()])
-      await refreshState()
-      setSuccess(`Bulk workers added: ${response.insertedCount}`)
-    } catch (requestError) {
-      const message =
-        requestError instanceof Error
-          ? requestError.message
-          : 'Failed to bulk add workers.'
-      setError(message)
-    }
-  }
-
-  const handleBulkWorkerRowChange = (
-    rowId: string,
-    field: keyof Omit<BulkWorkerDraftRow, 'id'>,
-    value: string,
-  ) => {
-    setBulkWorkerRows((current) =>
-      current.map((row) =>
-        row.id === rowId
-          ? {
-              ...row,
-              [field]: value,
-            }
-          : row,
-      ),
-    )
-  }
-
-  const handleAddBulkWorkerRow = () => {
-    setBulkWorkerRows((current) => [...current, createEmptyBulkWorkerDraft()])
-  }
-
-  const handleRemoveBulkWorkerRow = (rowId: string) => {
-    setBulkWorkerRows((current) => {
-      const nextRows = current.filter((row) => row.id !== rowId)
-      return nextRows.length > 0 ? nextRows : [createEmptyBulkWorkerDraft()]
-    })
-  }
-
   const handleBulkRowChange = (
     rowId: string,
     field: keyof Omit<BulkWorkerRow, 'id' | 'workerId'>,
@@ -1084,23 +895,6 @@ export default function TimesheetPage() {
     }
   }
 
-  const handleRemoveWorker = async (workerId: string) => {
-    setError('')
-    setSuccess('')
-
-    try {
-      await deleteWorker(workerId)
-      await refreshState()
-      setSuccess('Worker removed.')
-    } catch (requestError) {
-      const message =
-        requestError instanceof Error
-          ? requestError.message
-          : 'Failed to remove worker.'
-      setError(message)
-    }
-  }
-
   const handleAddStage = async () => {
     setError('')
     setSuccess('')
@@ -1293,23 +1087,13 @@ export default function TimesheetPage() {
           </Typography>
         </Box>
 
-        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
-          <Button
-            variant="outlined"
-            startIcon={<GroupRoundedIcon />}
-            onClick={() => setWorkersDialogOpen(true)}
-          >
-            Workers ({workers.length})
-          </Button>
-
-          <Button
-            variant="outlined"
-            startIcon={<CategoryRoundedIcon />}
-            onClick={() => setStagesDialogOpen(true)}
-          >
-            Stages ({stages.length})
-          </Button>
-        </Stack>
+        <Button
+          variant="outlined"
+          startIcon={<CategoryRoundedIcon />}
+          onClick={() => setStagesDialogOpen(true)}
+        >
+          Stages ({stages.length})
+        </Button>
       </Stack>
 
       {error ? (
@@ -1371,9 +1155,7 @@ export default function TimesheetPage() {
         <Box sx={{ p: { xs: 1.5, md: 2 } }}>
           {activeTab === 0 ? (
             <Stack spacing={2}>
-              <Typography variant="subtitle1" fontWeight={700}>
-                Daily Bulk Entry
-              </Typography>
+             
 
               <TextField
                 type="date"
@@ -1415,6 +1197,8 @@ export default function TimesheetPage() {
                       bulkRows.map((row) => {
                         const workerName =
                           workersById.get(row.workerId)?.fullName ?? 'Unknown worker'
+                        const workerNumber =
+                          String(workersById.get(row.workerId)?.workerNumber ?? '').trim() || '----'
 
                         return (
                           <TableRow key={row.id} hover>
@@ -1441,7 +1225,7 @@ export default function TimesheetPage() {
                                   </IconButton>
                                 ) : null}
 
-                                <Typography variant="body2">{workerName}</Typography>
+                                <Typography variant="body2">{workerNumber} - {workerName}</Typography>
                               </Stack>
                             </TableCell>
                             <TableCell sx={{ minWidth: 180 }}>
@@ -1656,7 +1440,7 @@ export default function TimesheetPage() {
 
                   {workers.map((worker) => (
                     <MenuItem key={worker.id} value={worker.id}>
-                      {worker.fullName}
+                      {(String(worker.workerNumber ?? '').trim() || '----')} - {worker.fullName}
                     </MenuItem>
                   ))}
                 </TextField>
@@ -2096,266 +1880,6 @@ export default function TimesheetPage() {
           ) : null}
         </Box>
       </Paper>
-
-      <Dialog
-        open={workersDialogOpen}
-        onClose={() => setWorkersDialogOpen(false)}
-        fullWidth
-        maxWidth="lg"
-      >
-        <DialogTitle>Workers</DialogTitle>
-        <DialogContent dividers>
-          <Stack spacing={2}>
-            <Typography variant="subtitle1" fontWeight={700}>
-              Add Worker
-            </Typography>
-
-            <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.2}>
-              <TextField
-                fullWidth
-                label="Full name"
-                value={workerForm.fullName}
-                onChange={(event) =>
-                  setWorkerForm((current) => ({
-                    ...current,
-                    fullName: event.target.value,
-                  }))
-                }
-              />
-
-              <TextField
-                fullWidth
-                label="Role"
-                value={workerForm.role}
-                onChange={(event) =>
-                  setWorkerForm((current) => ({
-                    ...current,
-                    role: event.target.value,
-                  }))
-                }
-              />
-
-              <TextField
-                fullWidth
-                type="number"
-                label="Hourly rate"
-                inputProps={{ min: 0, step: 0.01 }}
-                value={workerForm.hourlyRate}
-                onChange={(event) =>
-                  setWorkerForm((current) => ({
-                    ...current,
-                    hourlyRate: event.target.value,
-                  }))
-                }
-              />
-            </Stack>
-
-            <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.2}>
-              <TextField
-                fullWidth
-                label="Email"
-                value={workerForm.email}
-                onChange={(event) =>
-                  setWorkerForm((current) => ({
-                    ...current,
-                    email: event.target.value,
-                  }))
-                }
-              />
-
-              <TextField
-                fullWidth
-                label="Phone"
-                value={workerForm.phone}
-                onChange={(event) =>
-                  setWorkerForm((current) => ({
-                    ...current,
-                    phone: event.target.value,
-                  }))
-                }
-              />
-            </Stack>
-
-            <Box>
-              <Button variant="contained" startIcon={<AddRoundedIcon />} onClick={handleAddWorker}>
-                Add Worker
-              </Button>
-            </Box>
-
-            <Divider />
-
-            <Typography variant="subtitle1" fontWeight={700}>
-              Bulk Add Workers
-            </Typography>
-
-            <Typography variant="body2" color="text.secondary">
-              Fill rows in the chart below. Full name and hourly rate are required. Blank
-              rows are ignored.
-            </Typography>
-
-            <TableContainer sx={{ border: 1, borderColor: 'divider', borderRadius: 1.5 }}>
-              <Table size="small" sx={{ minWidth: 900 }}>
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Name</TableCell>
-                    <TableCell>Role</TableCell>
-                    <TableCell>Email</TableCell>
-                    <TableCell>Phone</TableCell>
-                    <TableCell align="right">Rate / hour</TableCell>
-                    <TableCell align="right">Actions</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {bulkWorkerRows.map((row) => (
-                    <TableRow key={row.id} hover>
-                      <TableCell sx={{ minWidth: 200 }}>
-                        <TextField
-                          size="small"
-                          fullWidth
-                          placeholder="Full name"
-                          value={row.fullName}
-                          onChange={(event) =>
-                            handleBulkWorkerRowChange(
-                              row.id,
-                              'fullName',
-                              event.target.value,
-                            )
-                          }
-                        />
-                      </TableCell>
-
-                      <TableCell sx={{ minWidth: 160 }}>
-                        <TextField
-                          size="small"
-                          fullWidth
-                          placeholder="Role"
-                          value={row.role}
-                          onChange={(event) =>
-                            handleBulkWorkerRowChange(row.id, 'role', event.target.value)
-                          }
-                        />
-                      </TableCell>
-
-                      <TableCell sx={{ minWidth: 220 }}>
-                        <TextField
-                          size="small"
-                          fullWidth
-                          placeholder="Email"
-                          value={row.email}
-                          onChange={(event) =>
-                            handleBulkWorkerRowChange(row.id, 'email', event.target.value)
-                          }
-                        />
-                      </TableCell>
-
-                      <TableCell sx={{ minWidth: 180 }}>
-                        <TextField
-                          size="small"
-                          fullWidth
-                          placeholder="Phone"
-                          value={row.phone}
-                          onChange={(event) =>
-                            handleBulkWorkerRowChange(row.id, 'phone', event.target.value)
-                          }
-                        />
-                      </TableCell>
-
-                      <TableCell align="right" sx={{ minWidth: 140 }}>
-                        <TextField
-                          size="small"
-                          fullWidth
-                          type="number"
-                          inputProps={{ min: 0, step: 0.01 }}
-                          placeholder="0"
-                          value={row.hourlyRate}
-                          onChange={(event) =>
-                            handleBulkWorkerRowChange(
-                              row.id,
-                              'hourlyRate',
-                              event.target.value,
-                            )
-                          }
-                        />
-                      </TableCell>
-
-                      <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>
-                        <Button
-                          color="error"
-                          size="small"
-                          onClick={() => handleRemoveBulkWorkerRow(row.id)}
-                          disabled={bulkWorkerRows.length === 1}
-                        >
-                          Remove
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </TableContainer>
-
-            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
-              <Button
-                variant="outlined"
-                startIcon={<AddRoundedIcon />}
-                onClick={handleAddBulkWorkerRow}
-              >
-                Add Row
-              </Button>
-              <Button variant="outlined" onClick={handleBulkAddWorkers}>
-                Add Bulk Workers
-              </Button>
-            </Stack>
-
-            <TableContainer sx={{ border: 1, borderColor: 'divider', borderRadius: 1.5 }}>
-              <Table size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Name</TableCell>
-                    <TableCell>Role</TableCell>
-                    <TableCell>Email</TableCell>
-                    <TableCell>Phone</TableCell>
-                    <TableCell align="right">Rate / hour</TableCell>
-                    <TableCell align="right">Actions</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {workers.length === 0 ? (
-                    <TableRow>
-                      <TableCell colSpan={6}>
-                        <Typography color="text.secondary">No workers yet.</Typography>
-                      </TableCell>
-                    </TableRow>
-                  ) : (
-                    workers.map((worker) => (
-                      <TableRow key={worker.id} hover>
-                        <TableCell>{worker.fullName}</TableCell>
-                        <TableCell>{worker.role || '-'}</TableCell>
-                        <TableCell>{worker.email || '-'}</TableCell>
-                        <TableCell>{worker.phone || '-'}</TableCell>
-                        <TableCell align="right">{formatCurrency(worker.hourlyRate)}</TableCell>
-                        <TableCell align="right">
-                          <Button
-                            color="error"
-                            size="small"
-                            startIcon={<DeleteOutlineRoundedIcon />}
-                            onClick={() => handleRemoveWorker(worker.id)}
-                          >
-                            Remove
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    ))
-                  )}
-                </TableBody>
-              </Table>
-            </TableContainer>
-          </Stack>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setWorkersDialogOpen(false)}>Close</Button>
-        </DialogActions>
-      </Dialog>
 
       <Dialog
         open={stagesDialogOpen}

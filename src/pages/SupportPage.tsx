@@ -494,39 +494,9 @@ export default function SupportPage() {
         gap={1.25}
       >
         <Box>
-          <Typography variant="h4" fontWeight={700}>
-            Customer Support
-          </Typography>
-          <Typography color="text.secondary">
-            {lastSyncTimestamp
-              ? `Zendesk ticket operations, conversations, and aging alerts • Last sync ${formatSyncTimestamp(lastSyncTimestamp)}`
-              : 'Zendesk ticket operations, conversations, and aging alerts'}
-          </Typography>
+          
+          
         </Box>
-
-        <Stack direction="row" spacing={1.25}>
-          {helpdeskUrl ? (
-            <Button
-              variant="outlined"
-              color="inherit"
-              href={helpdeskUrl}
-              target="_blank"
-              rel="noreferrer"
-              startIcon={<OpenInNewRoundedIcon />}
-            >
-              Open Helpdesk
-            </Button>
-          ) : null}
-
-          <Button
-            variant="contained"
-            onClick={() => void loadPage(true)}
-            startIcon={<RefreshRoundedIcon />}
-            disabled={isLoadingPage}
-          >
-            Refresh
-          </Button>
-        </Stack>
       </Stack>
 
       {pageError ? <Alert severity="warning">{pageError}</Alert> : null}
@@ -553,12 +523,43 @@ export default function SupportPage() {
               Tickets Progress & Aging Alerts
             </Typography>
             <Typography variant="body2" color="text.secondary">
-              Collapse this panel to give the ticket sidebar and conversation more room.
+              {lastSyncTimestamp
+                ? `Last sync ${formatSyncTimestamp(lastSyncTimestamp)}`
+                : 'Last sync unavailable'}
             </Typography>
           </Stack>
         </AccordionSummary>
         <AccordionDetails sx={{ pt: 0, px: 2.25, pb: 2.25 }}>
           <Stack spacing={2}>
+            <Stack
+              direction={{ xs: 'column', sm: 'row' }}
+              spacing={1.25}
+              justifyContent="flex-end"
+              alignItems={{ xs: 'stretch', sm: 'center' }}
+            >
+              {helpdeskUrl ? (
+                <Button
+                  variant="outlined"
+                  color="inherit"
+                  href={helpdeskUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  startIcon={<OpenInNewRoundedIcon />}
+                >
+                  Open Helpdesk
+                </Button>
+              ) : null}
+
+              <Button
+                variant="contained"
+                onClick={() => void loadPage(true)}
+                startIcon={<RefreshRoundedIcon />}
+                disabled={isLoadingPage}
+              >
+                Refresh
+              </Button>
+            </Stack>
+
             <Stack spacing={1}>
               
               <Box

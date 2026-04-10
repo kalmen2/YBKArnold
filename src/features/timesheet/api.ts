@@ -1,5 +1,6 @@
 export type TimesheetWorker = {
   id: string
+  workerNumber: string | null
   fullName: string
   role: string
   email: string

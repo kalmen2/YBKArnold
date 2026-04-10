@@ -15,8 +15,8 @@ import {
   useMediaQuery,
   useTheme,
 } from '@mui/material'
-import { useState } from 'react'
-import { Outlet } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { Outlet, useLocation } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
 import Sidebar from './Sidebar'
 
@@ -26,7 +26,8 @@ const COLLAPSED_DRAWER_WIDTH = 76
 export default function AppLayout() {
   const theme = useTheme()
   const isMobile = useMediaQuery(theme.breakpoints.down('md'))
-  const { appUser, signOutFromApp } = useAuth()
+  const location = useLocation()
+  const { appUser, signOutFromApp, logActivity } = useAuth()
   const [collapsed, setCollapsed] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
   const [isSigningOut, setIsSigningOut] = useState(false)
@@ -45,6 +46,14 @@ export default function AppLayout() {
   const closeMobileSidebar = () => {
     setMobileOpen(false)
   }
+
+  useEffect(() => {
+    void logActivity({
+      action: 'route_view',
+      target: location.pathname,
+      path: location.pathname,
+    })
+  }, [location.pathname, logActivity])
 
   return (
     <Box sx={{ display: 'flex', minHeight: '100vh', bgcolor: 'background.default' }}>
@@ -116,6 +125,7 @@ export default function AppLayout() {
               size="small"
               color="inherit"
               startIcon={<LogoutRoundedIcon />}
+              data-log-action="Sign out"
               disabled={isSigningOut}
               onClick={() => {
                 setIsSigningOut(true)

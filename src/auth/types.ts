@@ -16,4 +16,11 @@ export type AppAuthUser = {
   createdAt: string | null
   updatedAt: string | null
   lastLoginAt: string | null
+  accessStartHourUtc: number | null
+  accessEndHourUtc: number | null
+  accessTimeZone: string | null
+  hasLoginHoursRestriction: boolean
+  linkedWorkerId: string | null
+  linkedWorkerNumber: string | null
+  linkedWorkerName: string | null
 }

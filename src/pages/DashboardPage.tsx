@@ -1,5 +1,4 @@
 import AccessTimeRoundedIcon from '@mui/icons-material/AccessTimeRounded'
-import AssignmentTurnedInRoundedIcon from '@mui/icons-material/AssignmentTurnedInRounded'
 import EngineeringRoundedIcon from '@mui/icons-material/EngineeringRounded'
 import ErrorOutlineRoundedIcon from '@mui/icons-material/ErrorOutlineRounded'
 import FactCheckRoundedIcon from '@mui/icons-material/FactCheckRounded'
@@ -40,8 +39,8 @@ import {
 type DrilldownKey =
   | 'lateOrders'
   | 'dueSoonOrders'
+  | 'dueInTwoWeeksOrders'
   | 'activeOrders'
-  | 'completedOrders'
   | 'missingDueDateOrders'
 
 type SummaryCard = {
@@ -65,8 +64,8 @@ type ZendeskSummaryCard = {
 const drilldownTitles: Record<DrilldownKey, string> = {
   lateOrders: 'Late Orders',
   dueSoonOrders: 'Due In Next 7 Days',
+  dueInTwoWeeksOrders: 'Due In Next 14 Days',
   activeOrders: 'Active Orders',
-  completedOrders: 'Shipped Orders',
   missingDueDateOrders: 'Missing Due Date',
 }
 
@@ -198,6 +197,13 @@ export default function DashboardPage() {
       return []
     }
 
+    const dueInTwoWeeksOrders = snapshot.orders.filter(
+      (order) => !order.isDone
+        && typeof order.daysUntilDue === 'number'
+        && order.daysUntilDue >= 0
+        && order.daysUntilDue <= 14,
+    )
+
     return [
       {
         key: 'lateOrders',
@@ -216,20 +222,20 @@ export default function DashboardPage() {
         color: '#ef6c00',
       },
       {
+        key: 'dueInTwoWeeksOrders',
+        label: 'Due In 2 Weeks',
+        value: dueInTwoWeeksOrders.length,
+        helper: 'Upcoming within 14 days',
+        icon: <TaskAltRoundedIcon />,
+        color: '#00897b',
+      },
+      {
         key: 'activeOrders',
         label: 'In Progress',
         value: snapshot.metrics.activeOrders,
         helper: 'Open production workload',
         icon: <AccessTimeRoundedIcon />,
         color: '#1565c0',
-      },
-      {
-        key: 'completedOrders',
-        label: 'Shipped',
-        value: snapshot.metrics.completedOrders,
-        helper: 'Orders with Ship Date set',
-        icon: <AssignmentTurnedInRoundedIcon />,
-        color: '#2e7d32',
       },
       {
         key: 'missingDueDateOrders',
@@ -241,6 +247,16 @@ export default function DashboardPage() {
       },
     ]
   }, [snapshot])
+
+  const dueInTwoWeeksOrders = useMemo(
+    () => (snapshot?.orders ?? []).filter(
+      (order) => !order.isDone
+        && typeof order.daysUntilDue === 'number'
+        && order.daysUntilDue >= 0
+        && order.daysUntilDue <= 14,
+    ),
+    [snapshot],
+  )
 
   const zendeskSummaryCards = useMemo<ZendeskSummaryCard[]>(() => {
     if (!zendeskSnapshot) {
@@ -291,7 +307,17 @@ export default function DashboardPage() {
     ]
   }, [zendeskSnapshot])
 
-  const drilldownOrders = activeDrilldown && snapshot ? snapshot.details[activeDrilldown] : []
+  const drilldownOrders = useMemo(() => {
+    if (!activeDrilldown || !snapshot) {
+      return []
+    }
+
+    if (activeDrilldown === 'dueInTwoWeeksOrders') {
+      return dueInTwoWeeksOrders
+    }
+
+    return snapshot.details[activeDrilldown]
+  }, [activeDrilldown, dueInTwoWeeksOrders, snapshot])
 
   return (
     <Stack spacing={2.5}>

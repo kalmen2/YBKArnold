@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react'
@@ -34,6 +35,12 @@ type AuthContextValue = {
   signOutFromApp: () => Promise<void>
   refreshProfile: () => Promise<void>
   getIdToken: () => Promise<string>
+  logActivity: (input: {
+    action: string
+    target?: string | null
+    path?: string | null
+    metadata?: unknown
+  }) => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
@@ -69,6 +76,61 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isProfileLoading, setIsProfileLoading] = useState(false)
   const [profileError, setProfileError] = useState<string | null>(null)
   const [ownerEmailValue, setOwnerEmailValue] = useState(ownerEmail)
+  const activityCooldownByKeyRef = useRef<Map<string, number>>(new Map())
+
+  const logActivity = useCallback(async (input: {
+    action: string
+    target?: string | null
+    path?: string | null
+    metadata?: unknown
+  }) => {
+    const action = String(input?.action ?? '').trim().slice(0, 120)
+
+    if (!action) {
+      return
+    }
+
+    const activeUser = firebaseAuth.currentUser
+
+    if (!activeUser) {
+      return
+    }
+
+    const target = String(input?.target ?? '').trim().slice(0, 180)
+    const key = `${action}:${target}`
+    const now = Date.now()
+    const lastSentAt = activityCooldownByKeyRef.current.get(key) ?? 0
+
+    if (now - lastSentAt < 1200) {
+      return
+    }
+
+    activityCooldownByKeyRef.current.set(key, now)
+
+    try {
+      const idToken = await activeUser.getIdToken()
+
+      const response = await fetch('/api/auth/activity', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({
+          action,
+          target: target || null,
+          path: String(input?.path ?? '').trim().slice(0, 240) || window.location.pathname,
+          metadata: input?.metadata,
+        }),
+      })
+
+      if (response.status === 401 || response.status === 403) {
+        await signOut(firebaseAuth)
+      }
+    } catch {
+      // Best-effort telemetry only; never block UX.
+    }
+  }, [])
 
   const syncProfile = useCallback(async (user: User) => {
     setIsProfileLoading(true)
@@ -91,6 +153,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
 
       if (!response.ok) {
+        const responseErrorMessage =
+          typeof payload?.error === 'string'
+            ? payload.error
+            : ''
+        const isHoursBlockedError =
+          response.status === 403
+          && responseErrorMessage.toLowerCase().includes('access is currently blocked')
+
+        if (isHoursBlockedError) {
+          setAppUser(null)
+          setProfileError(responseErrorMessage || 'Access is currently blocked.')
+          await signOut(firebaseAuth)
+          return
+        }
+
         if (payload?.user) {
           setAppUser(payload.user as AppAuthUser)
           setProfileError(
@@ -134,7 +211,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     if (!firebaseUser) {
       setAppUser(null)
-      setProfileError(null)
       setIsProfileLoading(false)
       setOwnerEmailValue(ownerEmail)
       return
@@ -142,6 +218,71 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     void syncProfile(firebaseUser)
   }, [isFirebaseResolved, firebaseUser, syncProfile])
+
+  useEffect(() => {
+    if (!isFirebaseResolved || !firebaseUser) {
+      return
+    }
+
+    const refreshIntervalId = window.setInterval(() => {
+      void syncProfile(firebaseUser)
+    }, 60 * 1000)
+
+    return () => {
+      window.clearInterval(refreshIntervalId)
+    }
+  }, [firebaseUser, isFirebaseResolved, syncProfile])
+
+  useEffect(() => {
+    if (!firebaseUser || !appUser?.isApproved) {
+      return
+    }
+
+    const handleDocumentClick = (event: MouseEvent) => {
+      const eventTarget = event.target
+
+      if (!(eventTarget instanceof Element)) {
+        return
+      }
+
+      const clickableElement = eventTarget.closest(
+        'button, a, [role="button"], [data-log-action]',
+      )
+
+      if (!clickableElement) {
+        return
+      }
+
+      const inferredTarget = String(
+        clickableElement.getAttribute('data-log-action')
+          ?? clickableElement.getAttribute('aria-label')
+          ?? clickableElement.textContent
+          ?? clickableElement.id
+          ?? '',
+      )
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 180)
+
+      if (!inferredTarget) {
+        return
+      }
+
+      void logActivity({
+        action: 'click',
+        target: inferredTarget,
+        metadata: {
+          tag: clickableElement.tagName.toLowerCase(),
+        },
+      })
+    }
+
+    document.addEventListener('click', handleDocumentClick, true)
+
+    return () => {
+      document.removeEventListener('click', handleDocumentClick, true)
+    }
+  }, [appUser?.isApproved, firebaseUser, logActivity])
 
   const signInWithGoogle = useCallback(async () => {
     if (!isFirebaseAuthConfigured) {
@@ -153,6 +294,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const signOutFromApp = useCallback(async () => {
+    setProfileError(null)
     await signOut(firebaseAuth)
   }, [])
 
@@ -192,6 +334,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       signOutFromApp,
       refreshProfile,
       getIdToken,
+      logActivity,
     }
   }, [
     appUser,
@@ -202,6 +345,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     ownerEmailValue,
     profileError,
     refreshProfile,
+    logActivity,
     signInWithGoogle,
     signOutFromApp,
   ])
