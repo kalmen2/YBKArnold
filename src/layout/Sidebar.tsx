@@ -11,6 +11,7 @@ import {
   Typography,
 } from '@mui/material'
 import { useLocation, useNavigate } from 'react-router-dom'
+import { useAuth } from '../auth/AuthContext'
 import { navItems } from '../navigation/navItems'
 
 type SidebarProps = {
@@ -30,6 +31,10 @@ type SidebarContentProps = {
 function SidebarContent({ showText, onNavigate }: SidebarContentProps) {
   const location = useLocation()
   const navigate = useNavigate()
+  const { appUser } = useAuth()
+  const visibleNavItems = navItems.filter(
+    (item) => !item.adminOnly || appUser?.isAdmin,
+  )
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -50,7 +55,7 @@ function SidebarContent({ showText, onNavigate }: SidebarContentProps) {
       <Divider />
 
       <List sx={{ px: 1, py: 1.5 }}>
-        {navItems.map((item) => {
+        {visibleNavItems.map((item) => {
           const isSelected =
             location.pathname === item.path ||
             location.pathname.startsWith(`${item.path}/`)

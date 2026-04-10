@@ -1,6 +1,8 @@
 import { Navigate, createBrowserRouter } from 'react-router-dom'
 import AppLayout from '../layout/AppLayout'
+import AdminUsersPage from '../pages/AdminUsersPage'
 import DashboardPage from '../pages/DashboardPage'
+import PicturesPage from '../pages/PicturesPage'
 import SettingsPage from '../pages/SettingsPage'
 import SupportPage from '../pages/SupportPage'
 import TimesheetPage from '../pages/TimesheetPage'
@@ -27,8 +29,16 @@ export const router = createBrowserRouter([
         element: <SupportPage />,
       },
       {
+        path: 'pictures',
+        element: <PicturesPage />,
+      },
+      {
         path: 'settings',
         element: <SettingsPage />,
+      },
+      {
+        path: 'admin/users',
+        element: <AdminUsersPage />,
       },
     ],
   },

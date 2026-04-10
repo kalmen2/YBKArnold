@@ -1,10 +1,15 @@
 import KeyboardDoubleArrowLeftRoundedIcon from '@mui/icons-material/KeyboardDoubleArrowLeftRounded'
 import KeyboardDoubleArrowRightRoundedIcon from '@mui/icons-material/KeyboardDoubleArrowRightRounded'
+import LogoutRoundedIcon from '@mui/icons-material/LogoutRounded'
 import MenuRoundedIcon from '@mui/icons-material/MenuRounded'
 import {
+  Avatar,
   AppBar,
   Box,
+  Button,
+  Chip,
   IconButton,
+  Stack,
   Toolbar,
   Typography,
   useMediaQuery,
@@ -12,6 +17,7 @@ import {
 } from '@mui/material'
 import { useState } from 'react'
 import { Outlet } from 'react-router-dom'
+import { useAuth } from '../auth/AuthContext'
 import Sidebar from './Sidebar'
 
 const EXPANDED_DRAWER_WIDTH = 248
@@ -20,8 +26,10 @@ const COLLAPSED_DRAWER_WIDTH = 76
 export default function AppLayout() {
   const theme = useTheme()
   const isMobile = useMediaQuery(theme.breakpoints.down('md'))
+  const { appUser, signOutFromApp } = useAuth()
   const [collapsed, setCollapsed] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
+  const [isSigningOut, setIsSigningOut] = useState(false)
 
   const drawerWidth = collapsed ? COLLAPSED_DRAWER_WIDTH : EXPANDED_DRAWER_WIDTH
 
@@ -75,8 +83,51 @@ export default function AppLayout() {
           </IconButton>
 
           <Typography variant="h6" sx={{ fontWeight: 700 }}>
-            {/* Integrations Hub */}
+            Integrations Hub
           </Typography>
+
+          <Box sx={{ flexGrow: 1 }} />
+
+          <Stack direction="row" spacing={1} alignItems="center">
+            <Chip
+              size="small"
+              color={appUser?.isAdmin ? 'secondary' : 'default'}
+              label={appUser?.isAdmin ? 'Admin' : 'Standard'}
+              variant="outlined"
+            />
+
+            <Avatar
+              src={appUser?.photoURL ?? undefined}
+              alt={appUser?.displayName ?? appUser?.email ?? 'User'}
+              sx={{ width: 28, height: 28 }}
+            >
+              {(appUser?.displayName ?? appUser?.email ?? '?')
+                .charAt(0)
+                .toUpperCase()}
+            </Avatar>
+
+            {!isMobile ? (
+              <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 220 }} noWrap>
+                {appUser?.displayName ?? appUser?.email ?? 'Signed in'}
+              </Typography>
+            ) : null}
+
+            <Button
+              size="small"
+              color="inherit"
+              startIcon={<LogoutRoundedIcon />}
+              disabled={isSigningOut}
+              onClick={() => {
+                setIsSigningOut(true)
+
+                void signOutFromApp().finally(() => {
+                  setIsSigningOut(false)
+                })
+              }}
+            >
+              {isSigningOut ? 'Signing out...' : 'Sign out'}
+            </Button>
+          </Stack>
         </Toolbar>
       </AppBar>
 

@@ -2,12 +2,15 @@ import { randomUUID } from 'node:crypto'
 import cors from 'cors'
 import express from 'express'
 import * as functions from 'firebase-functions/v1'
+import { getApps, initializeApp } from 'firebase-admin/app'
+import { getAuth } from 'firebase-admin/auth'
+import { getStorage } from 'firebase-admin/storage'
 import { MongoClient } from 'mongodb'
 
 export const app = express()
 
 app.use(cors({ origin: true }))
-app.use(express.json({ limit: '1mb' }))
+app.use(express.json({ limit: '12mb' }))
 
 const mongoUri = process.env.MONGODB_URI
 const mongoDbName = process.env.MONGODB_DB ?? 'arnold_system'
@@ -18,8 +21,36 @@ const mondayBoardUrl = String(process.env.MONDAY_BOARD_URL ?? '').trim()
 const zendeskApiToken = String(process.env.ZENDESK_API_TOKEN ?? '').trim()
 const zendeskEmail = String(process.env.ZENDESK_EMAIL ?? '').trim()
 const zendeskUrl = String(process.env.ZENDESK_URL ?? '').trim()
+const firebaseProjectId = String(
+  process.env.FIREBASE_PROJECT_ID
+    ?? process.env.GOOGLE_CLOUD_PROJECT
+    ?? process.env.GCLOUD_PROJECT
+    ?? 'ybkarnold-b7ec0',
+).trim()
+const firebaseStorageBucketName = String(
+  process.env.FIREBASE_STORAGE_BUCKET ?? 'ybkarnold-b7ec0.firebasestorage.app',
+).trim()
+const ownerEmail = 'kal@ybkarnold.com'
+const authRoleStandard = 'standard'
+const authRoleAdmin = 'admin'
+const authApprovalPending = 'pending'
+const authApprovalApproved = 'approved'
 const zendeskTicketFieldCacheTtlMs = 30 * 60 * 1000
 const zendeskTicketFieldErrorCacheTtlMs = 5 * 60 * 1000
+
+if (getApps().length === 0) {
+  const firebaseAdminOptions = {}
+
+  if (firebaseProjectId) {
+    firebaseAdminOptions.projectId = firebaseProjectId
+  }
+
+  if (firebaseStorageBucketName) {
+    firebaseAdminOptions.storageBucket = firebaseStorageBucketName
+  }
+
+  initializeApp(Object.keys(firebaseAdminOptions).length > 0 ? firebaseAdminOptions : undefined)
+}
 
 let zendeskOrderNumberFieldId = null
 let zendeskOrderNumberFieldExpiresAt = 0
@@ -90,6 +121,7 @@ async function getCollections() {
   const entriesCollection = database.collection('timesheet_entries')
   const stagesCollection = database.collection('timesheet_stages')
   const dashboardSnapshotsCollection = database.collection('dashboard_snapshots')
+  const authUsersCollection = database.collection('auth_users')
 
   if (!indexesPromise) {
     indexesPromise = Promise.all([
@@ -101,6 +133,9 @@ async function getCollections() {
       stagesCollection.createIndex({ id: 1 }, { unique: true }),
       stagesCollection.createIndex({ normalizedName: 1 }, { unique: true }),
       dashboardSnapshotsCollection.createIndex({ snapshotKey: 1 }, { unique: true }),
+      authUsersCollection.createIndex({ uid: 1 }, { unique: true }),
+      authUsersCollection.createIndex({ emailLower: 1 }, { unique: true }),
+      authUsersCollection.createIndex({ approvalStatus: 1, role: 1 }),
     ]).then(async () => {
       await ensureDefaultStages()
       await ensureStageSortOrder(stagesCollection)
@@ -115,6 +150,7 @@ async function getCollections() {
     entriesCollection,
     stagesCollection,
     dashboardSnapshotsCollection,
+    authUsersCollection,
   }
 }
 
@@ -170,6 +206,184 @@ async function ensureStageSortOrder(stagesCollection) {
   }
 }
 
+function normalizeEmail(value) {
+  const normalized = String(value ?? '').trim().toLowerCase()
+
+  return normalized || null
+}
+
+function normalizeAuthRole(value) {
+  const normalized = String(value ?? '').trim().toLowerCase()
+
+  if (normalized === authRoleAdmin || normalized === authRoleStandard) {
+    return normalized
+  }
+
+  return null
+}
+
+function toPublicAuthUser(document) {
+  if (!document) {
+    return null
+  }
+
+  const normalizedRole = normalizeAuthRole(document.role) ?? authRoleStandard
+  const normalizedApprovalStatus =
+    String(document.approvalStatus ?? '').trim().toLowerCase() === authApprovalApproved
+      ? authApprovalApproved
+      : authApprovalPending
+
+  return {
+    uid: String(document.uid ?? ''),
+    email: String(document.email ?? ''),
+    displayName: String(document.displayName ?? '').trim() || null,
+    photoURL: String(document.photoURL ?? '').trim() || null,
+    role: normalizedRole,
+    approvalStatus: normalizedApprovalStatus,
+    isOwner: normalizeEmail(document.emailLower) === ownerEmail,
+    isAdmin: normalizedRole === authRoleAdmin,
+    isApproved: normalizedApprovalStatus === authApprovalApproved,
+    approvedAt: String(document.approvedAt ?? '').trim() || null,
+    createdAt: String(document.createdAt ?? '').trim() || null,
+    updatedAt: String(document.updatedAt ?? '').trim() || null,
+    lastLoginAt: String(document.lastLoginAt ?? '').trim() || null,
+  }
+}
+
+function isApprovedAdminUser(document) {
+  const publicUser = toPublicAuthUser(document)
+
+  return Boolean(publicUser?.isApproved && publicUser?.isAdmin)
+}
+
+async function resolveCurrentAuthUserFromRequest(req) {
+  const bearerToken = String(req.headers?.authorization ?? '').trim()
+
+  if (!bearerToken.toLowerCase().startsWith('bearer ')) {
+    throw {
+      status: 401,
+      message: 'Missing Firebase ID token.',
+    }
+  }
+
+  const idToken = bearerToken.slice(7).trim()
+
+  if (!idToken) {
+    throw {
+      status: 401,
+      message: 'Missing Firebase ID token.',
+    }
+  }
+
+  let decodedToken
+
+  try {
+    decodedToken = await getAuth().verifyIdToken(idToken)
+  } catch {
+    throw {
+      status: 401,
+      message: 'Invalid Firebase ID token.',
+    }
+  }
+
+  const uid = String(decodedToken?.uid ?? '').trim()
+  const email = String(decodedToken?.email ?? '').trim()
+  const emailLower = normalizeEmail(email)
+
+  if (!uid || !emailLower) {
+    throw {
+      status: 400,
+      message: 'Google account email is required.',
+    }
+  }
+
+  const displayName = String(decodedToken?.name ?? '').trim()
+  const photoURL = String(decodedToken?.picture ?? '').trim()
+  const { authUsersCollection } = await getCollections()
+  const now = new Date().toISOString()
+  const isOwner = emailLower === ownerEmail
+
+  const updateOperation = isOwner
+    ? {
+        $set: {
+          uid,
+          email,
+          emailLower,
+          displayName: displayName || null,
+          photoURL: photoURL || null,
+          role: authRoleAdmin,
+          approvalStatus: authApprovalApproved,
+          approvedAt: now,
+          approvedByEmail: ownerEmail,
+          lastLoginAt: now,
+          updatedAt: now,
+        },
+        $setOnInsert: {
+          createdAt: now,
+        },
+      }
+    : {
+        $set: {
+          uid,
+          email,
+          emailLower,
+          displayName: displayName || null,
+          photoURL: photoURL || null,
+          lastLoginAt: now,
+          updatedAt: now,
+        },
+        $setOnInsert: {
+          role: authRoleStandard,
+          approvalStatus: authApprovalPending,
+          createdAt: now,
+        },
+      }
+
+  const upsertResult = await authUsersCollection.findOneAndUpdate(
+    {
+      $or: [
+        { uid },
+        { emailLower },
+      ],
+    },
+    updateOperation,
+    {
+      upsert: true,
+      returnDocument: 'after',
+      projection: {
+        _id: 0,
+      },
+    },
+  )
+
+  return {
+    decodedToken,
+    userDocument: upsertResult,
+  }
+}
+
+async function requireFirebaseAuth(req, _res, next) {
+  try {
+    const { decodedToken, userDocument } = await resolveCurrentAuthUserFromRequest(req)
+    req.firebaseToken = decodedToken
+    req.authUser = userDocument
+    next()
+  } catch (error) {
+    next(error)
+  }
+}
+
+function requireAdminRole(req, _res, next) {
+  if (!isApprovedAdminUser(req.authUser)) {
+    return next({
+      status: 403,
+      message: 'Admin access is required.',
+    })
+  }
+
+  next()
+}
+
 function isDashboardRefreshRequested(req) {
   const rawValue = Array.isArray(req.query?.refresh)
     ? req.query.refresh[0]
@@ -220,11 +434,345 @@ async function clearSupportSnapshotCache() {
   })
 }
 
+function normalizeOrderPhotoOrderId(rawOrderId) {
+  const normalized = String(rawOrderId ?? '').trim()
+
+  if (!normalized) {
+    return null
+  }
+
+  return normalized.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 120)
+}
+
+function buildOrderPhotoPrefix(orderId) {
+  return `order-photos/${orderId}/`
+}
+
+function isSupportedPhotoMimeType(mimeType) {
+  return [
+    'image/jpeg',
+    'image/png',
+    'image/webp',
+    'image/heic',
+    'image/heif',
+  ].includes(String(mimeType ?? '').trim().toLowerCase())
+}
+
+function extensionForPhotoMimeType(mimeType) {
+  const normalized = String(mimeType ?? '').trim().toLowerCase()
+
+  switch (normalized) {
+    case 'image/png':
+      return 'png'
+    case 'image/webp':
+      return 'webp'
+    case 'image/heic':
+      return 'heic'
+    case 'image/heif':
+      return 'heif'
+    default:
+      return 'jpg'
+  }
+}
+
+function decodeBase64Image(rawValue) {
+  const normalized = String(rawValue ?? '').trim()
+
+  if (!normalized) {
+    return null
+  }
+
+  const withoutPrefix = normalized.includes(',')
+    ? normalized.split(',').pop()
+    : normalized
+  const compact = String(withoutPrefix ?? '').replace(/\s+/g, '')
+
+  if (!compact || !/^[a-zA-Z0-9+/=]+$/.test(compact)) {
+    return null
+  }
+
+  try {
+    return Buffer.from(compact, 'base64')
+  } catch {
+    return null
+  }
+}
+
+function extractPhotoTimestampMsFromPath(path) {
+  const fileName = String(path ?? '').split('/').pop() ?? ''
+  const leadingPart = fileName.split('-')[0]
+  const parsed = Number(leadingPart)
+
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null
+  }
+
+  return parsed
+}
+
+function extractOrderIdFromPhotoPath(path) {
+  const pathParts = String(path ?? '').split('/')
+
+  if (pathParts.length < 3 || pathParts[0] !== 'order-photos') {
+    return null
+  }
+
+  return normalizeOrderPhotoOrderId(pathParts[1])
+}
+
+function getOrderPhotosBucket() {
+  const storage = getStorage()
+
+  return firebaseStorageBucketName
+    ? storage.bucket(firebaseStorageBucketName)
+    : storage.bucket()
+}
+
+function buildFirebaseStorageDownloadUrl(bucketName, objectPath, downloadToken) {
+  const encodedObjectPath = encodeURIComponent(String(objectPath ?? '').trim())
+  const encodedToken = encodeURIComponent(String(downloadToken ?? '').trim())
+
+  return `https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(bucketName)}/o/${encodedObjectPath}?alt=media&token=${encodedToken}`
+}
+
+async function buildOrderPhotoRecord(file, bucketName) {
+  const timestampMs = extractPhotoTimestampMsFromPath(file.name) ?? Date.now()
+  const [metadata] = await file.getMetadata()
+  const tokenList = String(metadata?.metadata?.firebaseStorageDownloadTokens ?? '')
+    .split(',')
+    .map((token) => token.trim())
+    .filter(Boolean)
+  let downloadToken = tokenList[0] ?? null
+
+  if (!downloadToken) {
+    downloadToken = randomUUID()
+    await file.setMetadata({
+      metadata: {
+        ...(metadata?.metadata ?? {}),
+        firebaseStorageDownloadTokens: downloadToken,
+      },
+    })
+  }
+
+  const url = buildFirebaseStorageDownloadUrl(bucketName, file.name, downloadToken)
+
+  return {
+    path: file.name,
+    url,
+    createdAt: new Date(timestampMs).toISOString(),
+  }
+}
+
+async function listOrderPhotoRecords(orderId) {
+  const prefix = buildOrderPhotoPrefix(orderId)
+  const bucket = getOrderPhotosBucket()
+  const [files] = await bucket.getFiles({
+    prefix,
+    autoPaginate: false,
+    maxResults: 200,
+  })
+  const usableFiles = files.filter((file) => file?.name && !file.name.endsWith('/'))
+  const photoRecords = await Promise.all(
+    usableFiles.map((file) => buildOrderPhotoRecord(file, bucket.name)),
+  )
+
+  return photoRecords.sort(
+    (left, right) =>
+      Date.parse(right.createdAt) - Date.parse(left.createdAt),
+  )
+}
+
+async function listAllOrderPhotoGroups() {
+  const bucket = getOrderPhotosBucket()
+  const [files] = await bucket.getFiles({
+    prefix: 'order-photos/',
+    autoPaginate: false,
+    maxResults: 2000,
+  })
+  const usableFiles = files.filter((file) => file?.name && !file.name.endsWith('/'))
+  const groupedPhotos = new Map()
+
+  for (const file of usableFiles) {
+    const orderId = extractOrderIdFromPhotoPath(file.name)
+
+    if (!orderId) {
+      continue
+    }
+
+    const photoRecord = await buildOrderPhotoRecord(file, bucket.name)
+    const orderPhotos = groupedPhotos.get(orderId) ?? []
+    orderPhotos.push(photoRecord)
+    groupedPhotos.set(orderId, orderPhotos)
+  }
+
+  const groupedList = Array.from(groupedPhotos.entries()).map(([orderId, photos]) => ({
+    orderId,
+    photos: photos.sort(
+      (left, right) =>
+        Date.parse(right.createdAt) - Date.parse(left.createdAt),
+    ),
+  }))
+
+  groupedList.sort((left, right) => {
+    const leftMostRecent = left.photos[0]?.createdAt ?? ''
+    const rightMostRecent = right.photos[0]?.createdAt ?? ''
+
+    return Date.parse(rightMostRecent) - Date.parse(leftMostRecent)
+  })
+
+  return groupedList
+}
+
+async function saveOrderPhotoRecord(orderId, imageBuffer, mimeType) {
+  const timestampMs = Date.now()
+  const extension = extensionForPhotoMimeType(mimeType)
+  const objectPath = `${buildOrderPhotoPrefix(orderId)}${timestampMs}-${randomUUID()}.${extension}`
+  const downloadToken = randomUUID()
+  const bucket = getOrderPhotosBucket()
+  const file = bucket.file(objectPath)
+
+  await file.save(imageBuffer, {
+    resumable: false,
+    metadata: {
+      contentType: mimeType,
+      metadata: {
+        firebaseStorageDownloadTokens: downloadToken,
+        orderId,
+        uploadedAt: new Date(timestampMs).toISOString(),
+      },
+    },
+  })
+
+  return buildOrderPhotoRecord(file, bucket.name)
+}
+
 app.get('/api/health', async (_req, res, next) => {
   try {
     const { database } = await getCollections()
     await database.command({ ping: 1 })
     res.json({ ok: true })
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.get('/api/auth/me', requireFirebaseAuth, async (req, res, next) => {
+  try {
+    const publicUser = toPublicAuthUser(req.authUser)
+
+    if (!publicUser) {
+      throw {
+        status: 500,
+        message: 'Unable to load authenticated user.',
+      }
+    }
+
+    if (!publicUser.isApproved) {
+      return res.status(403).json({
+        error: 'Your account is waiting for admin approval.',
+        user: publicUser,
+        ownerEmail,
+      })
+    }
+
+    return res.json({
+      user: publicUser,
+      ownerEmail,
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.get('/api/auth/users', requireFirebaseAuth, requireAdminRole, async (_req, res, next) => {
+  try {
+    const { authUsersCollection } = await getCollections()
+    const users = await authUsersCollection
+      .find(
+        {},
+        {
+          projection: {
+            _id: 0,
+          },
+        },
+      )
+      .sort({
+        approvalStatus: -1,
+        createdAt: -1,
+        emailLower: 1,
+      })
+      .toArray()
+
+    return res.json({
+      users: users.map((document) => toPublicAuthUser(document)),
+      ownerEmail,
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.patch('/api/auth/users/:uid/approval', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+  try {
+    const targetUid = String(req.params.uid ?? '').trim()
+
+    if (!targetUid) {
+      return res.status(400).json({ error: 'uid is required.' })
+    }
+
+    const role = normalizeAuthRole(req.body?.role)
+
+    if (!role) {
+      return res.status(400).json({
+        error: "role must be 'standard' or 'admin'.",
+      })
+    }
+
+    const { authUsersCollection } = await getCollections()
+    const existingUser = await authUsersCollection.findOne(
+      { uid: targetUid },
+      {
+        projection: {
+          _id: 0,
+        },
+      },
+    )
+
+    if (!existingUser) {
+      return res.status(404).json({ error: 'User not found.' })
+    }
+
+    const targetEmailLower = normalizeEmail(existingUser.emailLower)
+    const isOwnerTarget = targetEmailLower === ownerEmail
+    const approvedRole = isOwnerTarget ? authRoleAdmin : role
+    const approvedByEmail = normalizeEmail(req.authUser?.emailLower)
+      ? String(req.authUser.emailLower)
+      : ownerEmail
+    const now = new Date().toISOString()
+
+    const updatedUser = await authUsersCollection.findOneAndUpdate(
+      { uid: targetUid },
+      {
+        $set: {
+          role: approvedRole,
+          approvalStatus: authApprovalApproved,
+          approvedAt: now,
+          approvedByUid: String(req.authUser?.uid ?? '').trim() || null,
+          approvedByEmail,
+          updatedAt: now,
+        },
+      },
+      {
+        returnDocument: 'after',
+        projection: {
+          _id: 0,
+        },
+      },
+    )
+
+    return res.json({
+      user: toPublicAuthUser(updatedUser),
+    })
   } catch (error) {
     next(error)
   }
@@ -390,6 +938,68 @@ app.post('/api/support/tickets', async (req, res, next) => {
     }
 
     return res.status(201).json(createdTicket)
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.get('/api/orders/photos-index', async (_req, res, next) => {
+  try {
+    const orders = await listAllOrderPhotoGroups()
+
+    return res.json({
+      generatedAt: new Date().toISOString(),
+      orders,
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.get('/api/orders/:orderId/photos', async (req, res, next) => {
+  try {
+    const orderId = normalizeOrderPhotoOrderId(req.params.orderId)
+
+    if (!orderId) {
+      return res.status(400).json({ error: 'orderId is required.' })
+    }
+
+    const photos = await listOrderPhotoRecords(orderId)
+    return res.json({ orderId, photos })
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.post('/api/orders/:orderId/photos', async (req, res, next) => {
+  try {
+    const orderId = normalizeOrderPhotoOrderId(req.params.orderId)
+
+    if (!orderId) {
+      return res.status(400).json({ error: 'orderId is required.' })
+    }
+
+    const mimeType = String(req.body?.mimeType ?? 'image/jpeg')
+      .trim()
+      .toLowerCase()
+
+    if (!isSupportedPhotoMimeType(mimeType)) {
+      return res.status(400).json({ error: 'Unsupported image mimeType.' })
+    }
+
+    const imageBuffer = decodeBase64Image(req.body?.imageBase64)
+
+    if (!imageBuffer || imageBuffer.length === 0) {
+      return res.status(400).json({ error: 'imageBase64 is required.' })
+    }
+
+    if (imageBuffer.length > 8 * 1024 * 1024) {
+      return res.status(400).json({ error: 'Image exceeds 8MB limit.' })
+    }
+
+    const photo = await saveOrderPhotoRecord(orderId, imageBuffer, mimeType)
+
+    return res.status(201).json({ orderId, photo })
   } catch (error) {
     next(error)
   }
