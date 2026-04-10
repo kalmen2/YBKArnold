@@ -23,4 +23,12 @@ export type AppAuthUser = {
   linkedWorkerId: string | null
   linkedWorkerNumber: string | null
   linkedWorkerName: string | null
+  clientPlatforms: Array<'web' | 'app'>
+  lastLoginClientPlatform: 'web' | 'app' | null
+  clientAccessMode: 'web_and_app' | 'web_only' | 'app_only'
+  allowedClientPlatforms: Array<'web' | 'app'>
+  hasWebAccess: boolean
+  hasAppAccess: boolean
+  hasWebSignIn: boolean
+  hasAppSignIn: boolean
 }

@@ -21,11 +21,11 @@ import {
 } from '@mui/material'
 import { useCallback, useEffect, useState } from 'react'
 import {
-  createWorker,
   createWorkersBulk,
   deleteWorker,
   fetchTimesheetState,
   type TimesheetWorker,
+  updateWorker,
 } from '../features/timesheet/api'
 
 type CreateWorkerInput = {
@@ -38,6 +38,14 @@ type CreateWorkerInput = {
 
 type BulkWorkerDraftRow = {
   id: string
+  fullName: string
+  role: string
+  email: string
+  phone: string
+  hourlyRate: string
+}
+
+type WorkerEditForm = {
   fullName: string
   role: string
   email: string
@@ -71,17 +79,17 @@ export default function WorkersPage() {
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
 
-  const [workerForm, setWorkerForm] = useState({
+  const [bulkWorkerRows, setBulkWorkerRows] = useState<BulkWorkerDraftRow[]>([
+    createEmptyBulkWorkerDraft(),
+  ])
+  const [editingWorkerId, setEditingWorkerId] = useState('')
+  const [workerEditForm, setWorkerEditForm] = useState<WorkerEditForm>({
     fullName: '',
     role: '',
     email: '',
     phone: '',
     hourlyRate: '',
   })
-
-  const [bulkWorkerRows, setBulkWorkerRows] = useState<BulkWorkerDraftRow[]>([
-    createEmptyBulkWorkerDraft(),
-  ])
 
   const refreshWorkers = useCallback(async (refreshRequested = false) => {
     if (refreshRequested) {
@@ -109,53 +117,15 @@ export default function WorkersPage() {
     void refreshWorkers(false)
   }, [refreshWorkers])
 
-  const handleAddWorker = async () => {
-    setError('')
-    setSuccess('')
-
-    const fullName = workerForm.fullName.trim()
-    const role = workerForm.role.trim()
-    const email = workerForm.email.trim()
-    const phone = workerForm.phone.trim()
-    const hourlyRate = Number(workerForm.hourlyRate)
-
-    if (!fullName) {
-      setError('Worker full name is required.')
+  useEffect(() => {
+    if (!editingWorkerId) {
       return
     }
 
-    if (!Number.isFinite(hourlyRate) || hourlyRate <= 0) {
-      setError('Hourly rate must be a positive number.')
-      return
+    if (!workers.some((worker) => worker.id === editingWorkerId)) {
+      setEditingWorkerId('')
     }
-
-    try {
-      await createWorker({
-        fullName,
-        role,
-        email,
-        phone,
-        hourlyRate,
-      })
-
-      setWorkerForm({
-        fullName: '',
-        role: '',
-        email: '',
-        phone: '',
-        hourlyRate: '',
-      })
-
-      await refreshWorkers(true)
-      setSuccess('Worker added.')
-    } catch (requestError) {
-      const message =
-        requestError instanceof Error
-          ? requestError.message
-          : 'Failed to add worker.'
-      setError(message)
-    }
-  }
+  }, [editingWorkerId, workers])
 
   const handleBulkWorkerRowChange = (
     rowId: string,
@@ -242,12 +212,12 @@ export default function WorkersPage() {
       const response = await createWorkersBulk(validWorkers)
       setBulkWorkerRows([createEmptyBulkWorkerDraft()])
       await refreshWorkers(true)
-      setSuccess(`Bulk workers added: ${response.insertedCount}`)
+      setSuccess(`Workers added: ${response.insertedCount}`)
     } catch (requestError) {
       const message =
         requestError instanceof Error
           ? requestError.message
-          : 'Failed to bulk add workers.'
+          : 'Failed to add workers.'
       setError(message)
     }
   }
@@ -271,6 +241,71 @@ export default function WorkersPage() {
         requestError instanceof Error
           ? requestError.message
           : 'Failed to remove worker.'
+      setError(message)
+    }
+  }
+
+  const handleStartEditWorker = (worker: TimesheetWorker) => {
+    setError('')
+    setSuccess('')
+    setEditingWorkerId(worker.id)
+    setWorkerEditForm({
+      fullName: worker.fullName,
+      role: worker.role,
+      email: worker.email,
+      phone: worker.phone,
+      hourlyRate: String(worker.hourlyRate),
+    })
+  }
+
+  const handleWorkerEditFieldChange = (field: keyof WorkerEditForm, value: string) => {
+    setWorkerEditForm((current) => ({
+      ...current,
+      [field]: value,
+    }))
+  }
+
+  const handleCancelEditWorker = () => {
+    setEditingWorkerId('')
+  }
+
+  const handleSaveEditedWorker = async () => {
+    setError('')
+    setSuccess('')
+
+    if (!editingWorkerId) {
+      return
+    }
+
+    const fullName = workerEditForm.fullName.trim()
+    const hourlyRate = Number(workerEditForm.hourlyRate.trim())
+
+    if (!fullName) {
+      setError('Worker name is required.')
+      return
+    }
+
+    if (!Number.isFinite(hourlyRate) || hourlyRate <= 0) {
+      setError('Hourly rate must be a positive number.')
+      return
+    }
+
+    try {
+      await updateWorker(editingWorkerId, {
+        fullName,
+        role: workerEditForm.role.trim(),
+        email: workerEditForm.email.trim(),
+        phone: workerEditForm.phone.trim(),
+        hourlyRate,
+      })
+      await refreshWorkers(true)
+      setEditingWorkerId('')
+      setSuccess('Worker updated. New pay rate applies only to new entries.')
+    } catch (requestError) {
+      const message =
+        requestError instanceof Error
+          ? requestError.message
+          : 'Failed to update worker.'
       setError(message)
     }
   }
@@ -329,87 +364,7 @@ export default function WorkersPage() {
       <Paper variant="outlined" sx={{ p: 2 }}>
         <Stack spacing={2}>
           <Typography variant="subtitle1" fontWeight={700}>
-            Add Worker
-          </Typography>
-
-          <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.2}>
-            <TextField
-              fullWidth
-              label="Full name"
-              value={workerForm.fullName}
-              onChange={(event) =>
-                setWorkerForm((current) => ({
-                  ...current,
-                  fullName: event.target.value,
-                }))
-              }
-            />
-
-            <TextField
-              fullWidth
-              label="Role"
-              value={workerForm.role}
-              onChange={(event) =>
-                setWorkerForm((current) => ({
-                  ...current,
-                  role: event.target.value,
-                }))
-              }
-            />
-
-            <TextField
-              fullWidth
-              type="number"
-              label="Hourly rate"
-              inputProps={{ min: 0, step: 0.01 }}
-              value={workerForm.hourlyRate}
-              onChange={(event) =>
-                setWorkerForm((current) => ({
-                  ...current,
-                  hourlyRate: event.target.value,
-                }))
-              }
-            />
-          </Stack>
-
-          <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.2}>
-            <TextField
-              fullWidth
-              label="Email"
-              value={workerForm.email}
-              onChange={(event) =>
-                setWorkerForm((current) => ({
-                  ...current,
-                  email: event.target.value,
-                }))
-              }
-            />
-
-            <TextField
-              fullWidth
-              label="Phone"
-              value={workerForm.phone}
-              onChange={(event) =>
-                setWorkerForm((current) => ({
-                  ...current,
-                  phone: event.target.value,
-                }))
-              }
-            />
-          </Stack>
-
-          <Box>
-            <Button variant="contained" startIcon={<AddRoundedIcon />} onClick={handleAddWorker}>
-              Add Worker
-            </Button>
-          </Box>
-        </Stack>
-      </Paper>
-
-      <Paper variant="outlined" sx={{ p: 2 }}>
-        <Stack spacing={2}>
-          <Typography variant="subtitle1" fontWeight={700}>
-            Bulk Add Workers
+            Add Workers
           </Typography>
 
           <Typography variant="body2" color="text.secondary">
@@ -518,7 +473,7 @@ export default function WorkersPage() {
               Add Row
             </Button>
             <Button variant="outlined" onClick={handleBulkAddWorkers}>
-              Add Bulk Workers
+              Add Workers
             </Button>
           </Stack>
         </Stack>
@@ -551,26 +506,123 @@ export default function WorkersPage() {
                     </TableCell>
                   </TableRow>
                 ) : (
-                  workers.map((worker) => (
-                    <TableRow key={worker.id} hover>
-                      <TableCell>{String(worker.workerNumber ?? '').trim() || '----'}</TableCell>
-                      <TableCell>{worker.fullName}</TableCell>
-                      <TableCell>{worker.role || '-'}</TableCell>
-                      <TableCell>{worker.email || '-'}</TableCell>
-                      <TableCell>{worker.phone || '-'}</TableCell>
-                      <TableCell align="right">{formatCurrency(worker.hourlyRate)}</TableCell>
-                      <TableCell align="right">
-                        <Button
-                          color="error"
-                          size="small"
-                          startIcon={<DeleteOutlineRoundedIcon />}
-                          onClick={() => void handleRemoveWorker(worker.id)}
-                        >
-                          Remove
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  ))
+                  workers.map((worker) => {
+                    const isEditing = editingWorkerId === worker.id
+
+                    return (
+                      <TableRow key={worker.id} hover>
+                        <TableCell>{String(worker.workerNumber ?? '').trim() || '----'}</TableCell>
+
+                        <TableCell sx={{ minWidth: 220 }}>
+                          {isEditing ? (
+                            <TextField
+                              size="small"
+                              fullWidth
+                              value={workerEditForm.fullName}
+                              onChange={(event) =>
+                                handleWorkerEditFieldChange('fullName', event.target.value)
+                              }
+                            />
+                          ) : (
+                            worker.fullName
+                          )}
+                        </TableCell>
+
+                        <TableCell sx={{ minWidth: 170 }}>
+                          {isEditing ? (
+                            <TextField
+                              size="small"
+                              fullWidth
+                              value={workerEditForm.role}
+                              onChange={(event) =>
+                                handleWorkerEditFieldChange('role', event.target.value)
+                              }
+                            />
+                          ) : (
+                            worker.role || '-'
+                          )}
+                        </TableCell>
+
+                        <TableCell sx={{ minWidth: 220 }}>
+                          {isEditing ? (
+                            <TextField
+                              size="small"
+                              fullWidth
+                              value={workerEditForm.email}
+                              onChange={(event) =>
+                                handleWorkerEditFieldChange('email', event.target.value)
+                              }
+                            />
+                          ) : (
+                            worker.email || '-'
+                          )}
+                        </TableCell>
+
+                        <TableCell sx={{ minWidth: 180 }}>
+                          {isEditing ? (
+                            <TextField
+                              size="small"
+                              fullWidth
+                              value={workerEditForm.phone}
+                              onChange={(event) =>
+                                handleWorkerEditFieldChange('phone', event.target.value)
+                              }
+                            />
+                          ) : (
+                            worker.phone || '-'
+                          )}
+                        </TableCell>
+
+                        <TableCell align="right" sx={{ minWidth: 150 }}>
+                          {isEditing ? (
+                            <TextField
+                              size="small"
+                              fullWidth
+                              type="number"
+                              inputProps={{ min: 0, step: 0.01 }}
+                              value={workerEditForm.hourlyRate}
+                              onChange={(event) =>
+                                handleWorkerEditFieldChange('hourlyRate', event.target.value)
+                              }
+                            />
+                          ) : (
+                            formatCurrency(worker.hourlyRate)
+                          )}
+                        </TableCell>
+
+                        <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>
+                          {isEditing ? (
+                            <Stack direction="row" spacing={1} justifyContent="flex-end">
+                              <Button
+                                size="small"
+                                variant="contained"
+                                onClick={() => void handleSaveEditedWorker()}
+                              >
+                                Save
+                              </Button>
+                              <Button size="small" onClick={handleCancelEditWorker}>
+                                Cancel
+                              </Button>
+                            </Stack>
+                          ) : (
+                            <Stack direction="row" spacing={1} justifyContent="flex-end">
+                              <Button size="small" onClick={() => handleStartEditWorker(worker)}>
+                                Edit
+                              </Button>
+                              <Button
+                                color="error"
+                                size="small"
+                                startIcon={<DeleteOutlineRoundedIcon />}
+                                onClick={() => void handleRemoveWorker(worker.id)}
+                              >
+                                Remove
+                              </Button>
+                            </Stack>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    )
+                  })
                 )}
               </TableBody>
             </Table>
@@ -580,7 +632,7 @@ export default function WorkersPage() {
 
       <Divider />
       <Typography variant="caption" color="text.secondary">
-        Worker IDs are auto-generated and cannot be edited.
+        Worker IDs are auto-generated and cannot be edited. Updating pay rate affects only new entries.
       </Typography>
     </Stack>
   )

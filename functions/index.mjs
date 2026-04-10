@@ -39,6 +39,11 @@ const authActivityTypeApiRequest = 'api_request'
 const authActivityTypeUiEvent = 'ui_event'
 const authAccessTimeZoneUtc = 'UTC'
 const authAccessTimeZoneNewJersey = 'America/New_York'
+const authClientPlatformWeb = 'web'
+const authClientPlatformApp = 'app'
+const authClientAccessModeWebAndApp = 'web_and_app'
+const authClientAccessModeWebOnly = 'web_only'
+const authClientAccessModeAppOnly = 'app_only'
 const zendeskTicketFieldCacheTtlMs = 30 * 60 * 1000
 const zendeskTicketFieldErrorCacheTtlMs = 5 * 60 * 1000
 
@@ -124,6 +129,8 @@ async function getCollections() {
   const workersCollection = database.collection('workers')
   const entriesCollection = database.collection('timesheet_entries')
   const stagesCollection = database.collection('timesheet_stages')
+  const orderProgressCollection = database.collection('timesheet_order_progress')
+  const missingWorkerReviewsCollection = database.collection('timesheet_missing_worker_reviews')
   const dashboardSnapshotsCollection = database.collection('dashboard_snapshots')
   const authUsersCollection = database.collection('auth_users')
   const authActivityLogsCollection = database.collection('auth_activity_logs')
@@ -138,6 +145,13 @@ async function getCollections() {
       entriesCollection.createIndex({ date: -1 }),
       stagesCollection.createIndex({ id: 1 }, { unique: true }),
       stagesCollection.createIndex({ normalizedName: 1 }, { unique: true }),
+      orderProgressCollection.createIndex({ id: 1 }, { unique: true }),
+      orderProgressCollection.createIndex({ date: -1, normalizedJobName: 1 }, { unique: true }),
+      orderProgressCollection.createIndex({ date: -1 }),
+      missingWorkerReviewsCollection.createIndex({ id: 1 }, { unique: true }),
+      missingWorkerReviewsCollection.createIndex({ date: -1, workerId: 1 }, { unique: true }),
+      missingWorkerReviewsCollection.createIndex({ date: -1 }),
+      missingWorkerReviewsCollection.createIndex({ approved: 1, date: -1 }),
       dashboardSnapshotsCollection.createIndex({ snapshotKey: 1 }, { unique: true }),
       authUsersCollection.createIndex({ uid: 1 }, { unique: true }),
       authUsersCollection.createIndex({ emailLower: 1 }, { unique: true }),
@@ -159,6 +173,8 @@ async function getCollections() {
     workersCollection,
     entriesCollection,
     stagesCollection,
+    orderProgressCollection,
+    missingWorkerReviewsCollection,
     dashboardSnapshotsCollection,
     authUsersCollection,
     authActivityLogsCollection,
@@ -270,6 +286,75 @@ function normalizeAuthAccessTimeZone(value) {
   }
 
   return null
+}
+
+function normalizeAuthClientPlatform(value) {
+  const normalized = String(value ?? '').trim().toLowerCase()
+
+  if ([authClientPlatformWeb, authClientPlatformApp].includes(normalized)) {
+    return normalized
+  }
+
+  return null
+}
+
+function normalizeAuthClientAccessMode(value) {
+  const normalized = String(value ?? '').trim().toLowerCase()
+
+  if ([
+    authClientAccessModeWebAndApp,
+    authClientAccessModeWebOnly,
+    authClientAccessModeAppOnly,
+  ].includes(normalized)) {
+    return normalized
+  }
+
+  return null
+}
+
+function resolveAuthClientAccessMode(document) {
+  const normalized = normalizeAuthClientAccessMode(document?.clientAccessMode)
+
+  if (normalized) {
+    return normalized
+  }
+
+  // Backward compatibility for older records that may have only this boolean.
+  if (document?.webAccessEnabled === false) {
+    return authClientAccessModeAppOnly
+  }
+
+  return authClientAccessModeWebAndApp
+}
+
+function getAllowedAuthClientPlatforms(clientAccessMode) {
+  if (clientAccessMode === authClientAccessModeWebOnly) {
+    return [authClientPlatformWeb]
+  }
+
+  return clientAccessMode === authClientAccessModeAppOnly
+    ? [authClientPlatformApp]
+    : [authClientPlatformWeb, authClientPlatformApp]
+}
+
+function resolveAuthClientPlatformFromRequest(req) {
+  const rawHeaderValue = req.headers?.['x-client-platform']
+  const headerValue = Array.isArray(rawHeaderValue)
+    ? rawHeaderValue[0]
+    : rawHeaderValue
+  const normalizedFromHeader = normalizeAuthClientPlatform(headerValue)
+
+  if (normalizedFromHeader) {
+    return normalizedFromHeader
+  }
+
+  const userAgent = String(req.headers?.['user-agent'] ?? '').toLowerCase()
+
+  if (/react\s*native|expo|okhttp|cfnetwork|darwin|iphone|android/i.test(userAgent)) {
+    return authClientPlatformApp
+  }
+
+  return authClientPlatformWeb
 }
 
 function parseOptionalAuthAccessTimeZone(value) {
@@ -444,6 +529,7 @@ function toPublicAuthUser(document) {
     return null
   }
 
+  const isOwner = normalizeEmail(document.emailLower) === ownerEmail
   const normalizedRole = normalizeAuthRole(document.role) ?? authRoleStandard
   const normalizedApprovalStatus =
     String(document.approvalStatus ?? '').trim().toLowerCase() === authApprovalApproved
@@ -455,6 +541,27 @@ function toPublicAuthUser(document) {
   const linkedWorkerId = String(document.linkedWorkerId ?? '').trim() || null
   const linkedWorkerNumber = normalizeWorkerNumber(document.linkedWorkerNumber)
   const linkedWorkerName = String(document.linkedWorkerName ?? '').trim() || null
+  const rawClientPlatforms = Array.isArray(document.clientPlatforms)
+    ? document.clientPlatforms
+    : []
+  const normalizedClientPlatforms = Array.from(
+    new Set(
+      rawClientPlatforms
+        .map((platform) => normalizeAuthClientPlatform(platform))
+        .filter(Boolean),
+    ),
+  )
+  const clientPlatforms =
+    normalizedClientPlatforms.length > 0
+      ? normalizedClientPlatforms
+      : [authClientPlatformWeb]
+  const lastLoginClientPlatform =
+    normalizeAuthClientPlatform(document.lastLoginClientPlatform)
+    ?? clientPlatforms[clientPlatforms.length - 1]
+  const clientAccessMode = isOwner
+    ? authClientAccessModeWebAndApp
+    : resolveAuthClientAccessMode(document)
+  const allowedClientPlatforms = getAllowedAuthClientPlatforms(clientAccessMode)
 
   return {
     uid: String(document.uid ?? ''),
@@ -463,7 +570,7 @@ function toPublicAuthUser(document) {
     photoURL: String(document.photoURL ?? '').trim() || null,
     role: normalizedRole,
     approvalStatus: normalizedApprovalStatus,
-    isOwner: normalizeEmail(document.emailLower) === ownerEmail,
+    isOwner,
     isAdmin: normalizedRole === authRoleAdmin,
     isApproved: normalizedApprovalStatus === authApprovalApproved,
     approvedAt: String(document.approvedAt ?? '').trim() || null,
@@ -477,6 +584,14 @@ function toPublicAuthUser(document) {
     linkedWorkerId,
     linkedWorkerNumber,
     linkedWorkerName,
+    clientPlatforms,
+    lastLoginClientPlatform,
+    clientAccessMode,
+    allowedClientPlatforms,
+    hasWebAccess: allowedClientPlatforms.includes(authClientPlatformWeb),
+    hasAppAccess: allowedClientPlatforms.includes(authClientPlatformApp),
+    hasWebSignIn: clientPlatforms.includes(authClientPlatformWeb),
+    hasAppSignIn: clientPlatforms.includes(authClientPlatformApp),
   }
 }
 
@@ -595,6 +710,95 @@ async function ensureWorkersHaveWorkerNumbers(workersCollection, workers) {
   })
 }
 
+function normalizeJobName(name) {
+  return String(name ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+}
+
+async function ensureEntriesHavePayRates(entriesCollection, workersCollection, entries) {
+  const entryList = Array.isArray(entries) ? entries : []
+  const entriesMissingPayRate = entryList.filter(
+    (entry) => !Number.isFinite(Number(entry?.payRate)),
+  )
+
+  if (entriesMissingPayRate.length === 0) {
+    return entryList
+  }
+
+  const workerIds = [...new Set(entriesMissingPayRate.map((entry) => String(entry.workerId ?? '').trim()).filter(Boolean))]
+
+  if (workerIds.length === 0) {
+    return entryList
+  }
+
+  const workers = await workersCollection
+    .find(
+      {
+        id: {
+          $in: workerIds,
+        },
+      },
+      {
+        projection: {
+          _id: 0,
+          id: 1,
+          hourlyRate: 1,
+        },
+      },
+    )
+    .toArray()
+  const hourlyRateByWorkerId = new Map(
+    workers.map((worker) => [String(worker.id), Number(worker.hourlyRate)]),
+  )
+
+  const writes = []
+
+  entriesMissingPayRate.forEach((entry) => {
+    const workerId = String(entry.workerId ?? '').trim()
+    const workerRate = hourlyRateByWorkerId.get(workerId)
+
+    if (!Number.isFinite(workerRate) || workerRate <= 0) {
+      return
+    }
+
+    writes.push({
+      updateOne: {
+        filter: { id: String(entry.id ?? '').trim() },
+        update: {
+          $set: {
+            payRate: Number(workerRate),
+          },
+        },
+      },
+    })
+  })
+
+  if (writes.length > 0) {
+    await entriesCollection.bulkWrite(writes, { ordered: false })
+  }
+
+  return entryList.map((entry) => {
+    const existingPayRate = Number(entry?.payRate)
+
+    if (Number.isFinite(existingPayRate) && existingPayRate > 0) {
+      return entry
+    }
+
+    const workerRate = hourlyRateByWorkerId.get(String(entry.workerId ?? '').trim())
+
+    if (!Number.isFinite(workerRate) || workerRate <= 0) {
+      return entry
+    }
+
+    return {
+      ...entry,
+      payRate: Number(workerRate),
+    }
+  })
+}
+
 async function writeAuthApiRequestLog(req, publicUser) {
   if (!publicUser?.uid) {
     return
@@ -673,6 +877,8 @@ async function resolveCurrentAuthUserFromRequest(req) {
 
   const displayName = String(decodedToken?.name ?? '').trim()
   const photoURL = String(decodedToken?.picture ?? '').trim()
+  const clientPlatform = resolveAuthClientPlatformFromRequest(req)
+  const requestUserAgent = extractRequestUserAgent(req)
   const { authUsersCollection } = await getCollections()
   const now = new Date().toISOString()
   const isOwner = emailLower === ownerEmail
@@ -690,7 +896,13 @@ async function resolveCurrentAuthUserFromRequest(req) {
           approvedAt: now,
           approvedByEmail: ownerEmail,
           lastLoginAt: now,
+          lastLoginClientPlatform: clientPlatform,
+          lastLoginUserAgent: requestUserAgent,
+          clientAccessMode: authClientAccessModeWebAndApp,
           updatedAt: now,
+        },
+        $addToSet: {
+          clientPlatforms: clientPlatform,
         },
         $setOnInsert: {
           createdAt: now,
@@ -704,11 +916,17 @@ async function resolveCurrentAuthUserFromRequest(req) {
           displayName: displayName || null,
           photoURL: photoURL || null,
           lastLoginAt: now,
+          lastLoginClientPlatform: clientPlatform,
+          lastLoginUserAgent: requestUserAgent,
           updatedAt: now,
+        },
+        $addToSet: {
+          clientPlatforms: clientPlatform,
         },
         $setOnInsert: {
           role: authRoleStandard,
           approvalStatus: authApprovalPending,
+          clientAccessMode: authClientAccessModeWebAndApp,
           createdAt: now,
         },
       }
@@ -740,11 +958,22 @@ async function requireFirebaseAuth(req, _res, next) {
   try {
     const { decodedToken, userDocument } = await resolveCurrentAuthUserFromRequest(req)
     const publicUser = toPublicAuthUser(userDocument)
+    const requestClientPlatform = resolveAuthClientPlatformFromRequest(req)
 
     if (!publicUser) {
       throw {
         status: 500,
         message: 'Unable to load authenticated user.',
+      }
+    }
+
+    if (!publicUser.allowedClientPlatforms.includes(requestClientPlatform)) {
+      throw {
+        status: 403,
+        message:
+          requestClientPlatform === authClientPlatformWeb
+            ? 'Website access is disabled for this account. Use the mobile app.'
+            : 'App access is disabled for this account.',
       }
     }
 
@@ -761,6 +990,7 @@ async function requireFirebaseAuth(req, _res, next) {
 
     req.firebaseToken = decodedToken
     req.authUser = userDocument
+    req.authClientPlatform = requestClientPlatform
     await writeAuthApiRequestLog(req, publicUser)
     next()
   } catch (error) {
@@ -776,6 +1006,30 @@ function requireAdminRole(req, _res, next) {
     })
   }
 
+  next()
+}
+
+function requireApprovedLinkedWorker(req, _res, next) {
+  const publicUser = toPublicAuthUser(req.authUser)
+
+  if (!publicUser?.isApproved) {
+    return next({
+      status: 403,
+      message: 'Approved access is required.',
+    })
+  }
+
+  const linkedWorkerId = String(publicUser?.linkedWorkerId ?? '').trim()
+
+  if (!linkedWorkerId) {
+    return next({
+      status: 403,
+      message: 'Your account is not linked to a worker profile yet. Contact an admin.',
+    })
+  }
+
+  req.authPublicUser = publicUser
+  req.authLinkedWorkerId = linkedWorkerId
   next()
 }
 
@@ -1345,6 +1599,71 @@ app.patch('/api/auth/users/:uid/approval', requireFirebaseAuth, requireAdminRole
           approvedAt: now,
           approvedByUid: String(req.authUser?.uid ?? '').trim() || null,
           approvedByEmail,
+          updatedAt: now,
+        },
+      },
+      {
+        returnDocument: 'after',
+        projection: {
+          _id: 0,
+        },
+      },
+    )
+
+    return res.json({
+      user: toPublicAuthUser(updatedUser),
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.patch('/api/auth/users/:uid/client-access', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+  try {
+    const targetUid = String(req.params.uid ?? '').trim()
+
+    if (!targetUid) {
+      return res.status(400).json({ error: 'uid is required.' })
+    }
+
+    const requestedAccessMode = normalizeAuthClientAccessMode(req.body?.mode)
+
+    if (!requestedAccessMode) {
+      return res.status(400).json({
+        error: "mode must be 'web_and_app', 'web_only', or 'app_only'.",
+      })
+    }
+
+    const { authUsersCollection } = await getCollections()
+    const existingUser = await authUsersCollection.findOne(
+      { uid: targetUid },
+      {
+        projection: {
+          _id: 0,
+        },
+      },
+    )
+
+    if (!existingUser) {
+      return res.status(404).json({ error: 'User not found.' })
+    }
+
+    const existingPublicUser = toPublicAuthUser(existingUser)
+
+    if (existingPublicUser?.isOwner && requestedAccessMode !== authClientAccessModeWebAndApp) {
+      return res.status(400).json({ error: 'Owner account must keep website access enabled.' })
+    }
+
+    const now = new Date().toISOString()
+    const nextAccessMode = existingPublicUser?.isOwner
+      ? authClientAccessModeWebAndApp
+      : requestedAccessMode
+
+    const updatedUser = await authUsersCollection.findOneAndUpdate(
+      { uid: targetUid },
+      {
+        $set: {
+          clientAccessMode: nextAccessMode,
           updatedAt: now,
         },
       },
@@ -2107,9 +2426,15 @@ app.delete('/api/orders/:orderId/photos', async (req, res, next) => {
 
 app.get('/api/timesheet/state', async (_req, res, next) => {
   try {
-    const { workersCollection, entriesCollection, stagesCollection } = await getCollections()
+    const {
+      workersCollection,
+      entriesCollection,
+      stagesCollection,
+      orderProgressCollection,
+      missingWorkerReviewsCollection,
+    } = await getCollections()
 
-    const [workers, entries, stages] = await Promise.all([
+    const [workers, entries, stages, orderProgress, missingWorkerReviews] = await Promise.all([
       workersCollection
         .find(
           {},
@@ -2144,11 +2469,323 @@ app.get('/api/timesheet/state', async (_req, res, next) => {
         )
         .sort({ sortOrder: 1, name: 1 })
         .toArray(),
+      orderProgressCollection
+        .find(
+          {},
+          {
+            projection: {
+              _id: 0,
+              normalizedJobName: 0,
+            },
+          },
+        )
+        .sort({ date: -1, updatedAt: -1 })
+        .toArray(),
+      missingWorkerReviewsCollection
+        .find(
+          {},
+          {
+            projection: {
+              _id: 0,
+            },
+          },
+        )
+        .sort({ date: -1, updatedAt: -1 })
+        .toArray(),
     ])
 
     const workersWithNumbers = await ensureWorkersHaveWorkerNumbers(workersCollection, workers)
+    const entriesWithPayRates = await ensureEntriesHavePayRates(
+      entriesCollection,
+      workersCollection,
+      entries,
+    )
 
-    res.json({ workers: workersWithNumbers, entries, stages })
+    res.json({
+      workers: workersWithNumbers,
+      entries: entriesWithPayRates,
+      stages,
+      orderProgress,
+      missingWorkerReviews,
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.put('/api/timesheet/missing-worker-reviews', async (req, res, next) => {
+  try {
+    const { workersCollection, missingWorkerReviewsCollection } = await getCollections()
+    const date = String(req.body?.date ?? '').trim()
+    const workerId = String(req.body?.workerId ?? '').trim()
+    const note = String(req.body?.note ?? '').trim()
+    const approved = req.body?.approved === true
+
+    if (!date) {
+      return res.status(400).json({ error: 'date is required.' })
+    }
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return res.status(400).json({ error: 'date must be yyyy-mm-dd.' })
+    }
+
+    if (!workerId) {
+      return res.status(400).json({ error: 'workerId is required.' })
+    }
+
+    if (note.length > 2000) {
+      return res.status(400).json({ error: 'note is too long.' })
+    }
+
+    const workerExists = await workersCollection.countDocuments({ id: workerId })
+
+    if (workerExists === 0) {
+      return res.status(400).json({ error: 'workerId is invalid.' })
+    }
+
+    const now = new Date().toISOString()
+    const updateOperation = approved
+      ? {
+          $set: {
+            date,
+            workerId,
+            note,
+            approved: true,
+            approvedAt: now,
+            updatedAt: now,
+          },
+          $setOnInsert: {
+            id: randomUUID(),
+            createdAt: now,
+          },
+        }
+      : {
+          $set: {
+            date,
+            workerId,
+            note,
+            approved: false,
+            updatedAt: now,
+          },
+          $unset: {
+            approvedAt: '',
+          },
+          $setOnInsert: {
+            id: randomUUID(),
+            createdAt: now,
+          },
+        }
+
+    await missingWorkerReviewsCollection.updateOne(
+      {
+        date,
+        workerId,
+      },
+      updateOperation,
+      {
+        upsert: true,
+      },
+    )
+
+    const review = await missingWorkerReviewsCollection.findOne(
+      {
+        date,
+        workerId,
+      },
+      {
+        projection: {
+          _id: 0,
+        },
+      },
+    )
+
+    return res.json({ review })
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.put('/api/timesheet/order-progress', async (req, res, next) => {
+  try {
+    const { orderProgressCollection } = await getCollections()
+    const date = String(req.body?.date ?? '').trim()
+    const jobName = String(req.body?.jobName ?? '').trim()
+    const readyPercent = Number(req.body?.readyPercent)
+
+    if (!date) {
+      return res.status(400).json({ error: 'date is required.' })
+    }
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return res.status(400).json({ error: 'date must be yyyy-mm-dd.' })
+    }
+
+    if (!jobName) {
+      return res.status(400).json({ error: 'jobName is required.' })
+    }
+
+    if (!Number.isFinite(readyPercent) || readyPercent < 0 || readyPercent > 100) {
+      return res.status(400).json({ error: 'readyPercent must be between 0 and 100.' })
+    }
+
+    const normalizedJobName = normalizeJobName(jobName)
+    const roundedReadyPercent = Number(readyPercent.toFixed(2))
+    const now = new Date().toISOString()
+
+    await orderProgressCollection.updateOne(
+      {
+        date,
+        normalizedJobName,
+      },
+      {
+        $set: {
+          date,
+          jobName,
+          normalizedJobName,
+          readyPercent: roundedReadyPercent,
+          updatedAt: now,
+        },
+        $setOnInsert: {
+          id: randomUUID(),
+          createdAt: now,
+        },
+      },
+      {
+        upsert: true,
+      },
+    )
+
+    const progress = await orderProgressCollection.findOne(
+      {
+        date,
+        normalizedJobName,
+      },
+      {
+        projection: {
+          _id: 0,
+          normalizedJobName: 0,
+        },
+      },
+    )
+
+    return res.json({ progress })
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.get('/api/timesheet/my-state', requireFirebaseAuth, requireApprovedLinkedWorker, async (req, res, next) => {
+  try {
+    const { workersCollection, entriesCollection, stagesCollection } = await getCollections()
+    const linkedWorkerId = String(req.authLinkedWorkerId ?? '').trim()
+    const worker = await workersCollection.findOne(
+      { id: linkedWorkerId },
+      {
+        projection: {
+          _id: 0,
+        },
+      },
+    )
+
+    if (!worker) {
+      return res.status(404).json({
+        error: 'Linked worker profile was not found. Contact an admin.',
+      })
+    }
+
+    const [entries, workersWithNumbers, stages] = await Promise.all([
+      entriesCollection
+        .find(
+          { workerId: linkedWorkerId },
+          {
+            projection: {
+              _id: 0,
+            },
+          },
+        )
+        .sort({ date: -1, createdAt: -1 })
+        .toArray(),
+      ensureWorkersHaveWorkerNumbers(workersCollection, [worker]),
+      stagesCollection
+        .find(
+          {},
+          {
+            projection: {
+              _id: 0,
+              normalizedName: 0,
+            },
+          },
+        )
+        .sort({ sortOrder: 1, name: 1 })
+        .toArray(),
+    ])
+    const entriesWithPayRates = await ensureEntriesHavePayRates(
+      entriesCollection,
+      workersCollection,
+      entries,
+    )
+
+    return res.json({
+      worker: workersWithNumbers[0] ?? worker,
+      entries: entriesWithPayRates,
+      stages,
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.post('/api/timesheet/my-entries', requireFirebaseAuth, requireApprovedLinkedWorker, async (req, res, next) => {
+  try {
+    const { workersCollection, entriesCollection, stagesCollection } = await getCollections()
+    const linkedWorkerId = String(req.authLinkedWorkerId ?? '').trim()
+    const date = String(req.body?.date ?? '').trim()
+    const stageId = String(req.body?.stageId ?? '').trim()
+    const worker = await workersCollection.findOne(
+      { id: linkedWorkerId },
+      {
+        projection: {
+          _id: 0,
+          id: 1,
+          hourlyRate: 1,
+        },
+      },
+    )
+
+    if (!worker) {
+      return res.status(404).json({
+        error: 'Linked worker profile was not found. Contact an admin.',
+      })
+    }
+
+    if (!stageId) {
+      return res.status(400).json({ error: 'stageId is required.' })
+    }
+
+    const stageExists = await stagesCollection.countDocuments({ id: stageId })
+
+    if (stageExists === 0) {
+      return res.status(400).json({ error: 'stageId is invalid.' })
+    }
+
+    const entry = validateEntryInput(
+      {
+        ...req.body,
+        workerId: linkedWorkerId,
+      },
+      date,
+      'entry',
+    )
+
+    const workerRate = Number(worker.hourlyRate)
+
+    if (Number.isFinite(workerRate) && workerRate > 0) {
+      entry.payRate = workerRate
+    }
+
+    await entriesCollection.insertOne(entry)
+
+    return res.status(201).json({ entry })
   } catch (error) {
     next(error)
   }
@@ -2357,6 +2994,71 @@ app.post('/api/timesheet/workers/bulk', async (req, res, next) => {
   }
 })
 
+app.patch('/api/timesheet/workers/:workerId', async (req, res, next) => {
+  try {
+    const { workersCollection } = await getCollections()
+    const workerId = String(req.params.workerId ?? '').trim()
+
+    if (!workerId) {
+      return res.status(400).json({ error: 'workerId is required.' })
+    }
+
+    const existingWorker = await workersCollection.findOne(
+      { id: workerId },
+      {
+        projection: {
+          _id: 0,
+        },
+      },
+    )
+
+    if (!existingWorker) {
+      return res.status(404).json({ error: 'Worker not found.' })
+    }
+
+    const mergedInput = {
+      fullName: Object.prototype.hasOwnProperty.call(req.body ?? {}, 'fullName')
+        ? req.body.fullName
+        : existingWorker.fullName,
+      role: Object.prototype.hasOwnProperty.call(req.body ?? {}, 'role')
+        ? req.body.role
+        : existingWorker.role,
+      email: Object.prototype.hasOwnProperty.call(req.body ?? {}, 'email')
+        ? req.body.email
+        : existingWorker.email,
+      phone: Object.prototype.hasOwnProperty.call(req.body ?? {}, 'phone')
+        ? req.body.phone
+        : existingWorker.phone,
+      hourlyRate: Object.prototype.hasOwnProperty.call(req.body ?? {}, 'hourlyRate')
+        ? req.body.hourlyRate
+        : existingWorker.hourlyRate,
+    }
+
+    const workerFields = validateWorkerInput(mergedInput)
+    const now = new Date().toISOString()
+
+    await workersCollection.updateOne(
+      { id: workerId },
+      {
+        $set: {
+          ...workerFields,
+          updatedAt: now,
+        },
+      },
+    )
+
+    return res.json({
+      worker: {
+        ...existingWorker,
+        ...workerFields,
+        updatedAt: now,
+      },
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
 app.delete('/api/timesheet/workers/:workerId', async (req, res, next) => {
   try {
     const { workersCollection, entriesCollection } = await getCollections()
@@ -2412,6 +3114,7 @@ app.post('/api/timesheet/entries/bulk', async (req, res, next) => {
           projection: {
             _id: 0,
             id: 1,
+            hourlyRate: 1,
           },
         },
       )
@@ -2444,6 +3147,18 @@ app.post('/api/timesheet/entries/bulk', async (req, res, next) => {
         return res.status(400).json({ error: 'One or more stage IDs are invalid.' })
       }
     }
+
+    const workerRateById = new Map(
+      validWorkers.map((worker) => [String(worker.id), Number(worker.hourlyRate)]),
+    )
+
+    entries.forEach((entry) => {
+      const workerRate = workerRateById.get(String(entry.workerId ?? '').trim())
+
+      if (Number.isFinite(workerRate) && workerRate > 0) {
+        entry.payRate = workerRate
+      }
+    })
 
     await entriesCollection.insertMany(entries)
 
@@ -2482,12 +3197,32 @@ app.patch('/api/timesheet/entries/:entryId', async (req, res, next) => {
     }
 
     const updatedFields = validateEntryFields(req.body, date)
-    const workerExists = await workersCollection.countDocuments({
+    const worker = await workersCollection.findOne({
       id: updatedFields.workerId,
+    }, {
+      projection: {
+        _id: 0,
+        id: 1,
+        hourlyRate: 1,
+      },
     })
 
-    if (workerExists === 0) {
+    if (!worker) {
       return res.status(400).json({ error: 'workerId is invalid.' })
+    }
+
+    const workerRate = Number(worker.hourlyRate)
+    const existingEntryPayRate = Number(existingEntry.payRate)
+    const workerChanged = String(existingEntry.workerId ?? '') !== updatedFields.workerId
+
+    if (workerChanged) {
+      if (Number.isFinite(workerRate) && workerRate > 0) {
+        updatedFields.payRate = workerRate
+      }
+    } else if (Number.isFinite(existingEntryPayRate) && existingEntryPayRate > 0) {
+      updatedFields.payRate = existingEntryPayRate
+    } else if (Number.isFinite(workerRate) && workerRate > 0) {
+      updatedFields.payRate = workerRate
     }
 
     if (updatedFields.stageId) {

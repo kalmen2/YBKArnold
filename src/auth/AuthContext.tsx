@@ -50,6 +50,7 @@ async function requestCurrentUser(idToken: string) {
     method: 'GET',
     headers: {
       Authorization: `Bearer ${idToken}`,
+      'x-client-platform': 'web',
     },
   })
 
@@ -73,7 +74,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null)
   const [appUser, setAppUser] = useState<AppAuthUser | null>(null)
   const [isFirebaseResolved, setIsFirebaseResolved] = useState(false)
-  const [isProfileLoading, setIsProfileLoading] = useState(false)
+  const [hasResolvedProfile, setHasResolvedProfile] = useState(false)
   const [profileError, setProfileError] = useState<string | null>(null)
   const [ownerEmailValue, setOwnerEmailValue] = useState(ownerEmail)
   const activityCooldownByKeyRef = useRef<Map<string, number>>(new Map())
@@ -97,15 +98,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     const target = String(input?.target ?? '').trim().slice(0, 180)
-    const key = `${action}:${target}`
-    const now = Date.now()
-    const lastSentAt = activityCooldownByKeyRef.current.get(key) ?? 0
+    if (action !== 'click') {
+      const key = `${action}:${target}`
+      const now = Date.now()
+      const lastSentAt = activityCooldownByKeyRef.current.get(key) ?? 0
 
-    if (now - lastSentAt < 1200) {
-      return
+      if (now - lastSentAt < 1200) {
+        return
+      }
+
+      activityCooldownByKeyRef.current.set(key, now)
     }
-
-    activityCooldownByKeyRef.current.set(key, now)
 
     try {
       const idToken = await activeUser.getIdToken()
@@ -115,6 +118,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${idToken}`,
+          'x-client-platform': 'web',
         },
         body: JSON.stringify({
           action,
@@ -133,7 +137,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const syncProfile = useCallback(async (user: User) => {
-    setIsProfileLoading(true)
 
     try {
       let idToken = await user.getIdToken()
@@ -189,13 +192,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setAppUser(null)
       setProfileError(getErrorMessage(error))
     } finally {
-      setIsProfileLoading(false)
+      setHasResolvedProfile(true)
     }
   }, [])
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(firebaseAuth, (nextUser) => {
       setFirebaseUser(nextUser)
+      setHasResolvedProfile(!nextUser)
       setIsFirebaseResolved(true)
     })
 
@@ -211,7 +215,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     if (!firebaseUser) {
       setAppUser(null)
-      setIsProfileLoading(false)
+      setHasResolvedProfile(true)
       setOwnerEmailValue(ownerEmail)
       return
     }
@@ -220,21 +224,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [isFirebaseResolved, firebaseUser, syncProfile])
 
   useEffect(() => {
-    if (!isFirebaseResolved || !firebaseUser) {
-      return
-    }
-
-    const refreshIntervalId = window.setInterval(() => {
-      void syncProfile(firebaseUser)
-    }, 60 * 1000)
-
-    return () => {
-      window.clearInterval(refreshIntervalId)
-    }
-  }, [firebaseUser, isFirebaseResolved, syncProfile])
-
-  useEffect(() => {
-    if (!firebaseUser || !appUser?.isApproved) {
+    if (!firebaseUser) {
       return
     }
 
@@ -258,23 +248,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           ?? clickableElement.getAttribute('aria-label')
           ?? clickableElement.textContent
           ?? clickableElement.id
-          ?? '',
+          ?? clickableElement.tagName.toLowerCase(),
       )
         .replace(/\s+/g, ' ')
         .trim()
         .slice(0, 180)
 
-      if (!inferredTarget) {
-        return
-      }
-
       void logActivity({
         action: 'click',
-        target: inferredTarget,
+        target: inferredTarget || clickableElement.tagName.toLowerCase(),
         metadata: {
           tag: clickableElement.tagName.toLowerCase(),
         },
       })
+
+      void syncProfile(firebaseUser)
     }
 
     document.addEventListener('click', handleDocumentClick, true)
@@ -282,7 +270,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => {
       document.removeEventListener('click', handleDocumentClick, true)
     }
-  }, [appUser?.isApproved, firebaseUser, logActivity])
+  }, [firebaseUser, logActivity, syncProfile])
 
   const signInWithGoogle = useCallback(async () => {
     if (!isFirebaseAuthConfigured) {
@@ -320,7 +308,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<AuthContextValue>(() => {
     const isInitializing =
-      !isFirebaseResolved || (Boolean(firebaseUser) && isProfileLoading)
+      !isFirebaseResolved || (Boolean(firebaseUser) && !hasResolvedProfile)
 
     return {
       firebaseUser,
@@ -340,8 +328,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     appUser,
     firebaseUser,
     getIdToken,
-    isProfileLoading,
     isFirebaseResolved,
+    hasResolvedProfile,
     ownerEmailValue,
     profileError,
     refreshProfile,

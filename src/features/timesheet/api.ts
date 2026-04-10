@@ -17,6 +17,7 @@ export type TimesheetEntry = {
   date: string
   jobName: string
   hours: number
+  payRate?: number
   notes: string
   createdAt: string
 }
@@ -29,10 +30,32 @@ export type TimesheetStage = {
   updatedAt: string
 }
 
+export type TimesheetMissingWorkerReview = {
+  id: string
+  date: string
+  workerId: string
+  note: string
+  approved: boolean
+  approvedAt?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export type TimesheetOrderProgress = {
+  id: string
+  date: string
+  jobName: string
+  readyPercent: number
+  createdAt: string
+  updatedAt: string
+}
+
 type TimesheetStateResponse = {
   workers: TimesheetWorker[]
   entries: TimesheetEntry[]
   stages: TimesheetStage[]
+  orderProgress?: TimesheetOrderProgress[]
+  missingWorkerReviews?: TimesheetMissingWorkerReview[]
 }
 
 type CreateWorkerInput = {
@@ -41,6 +64,14 @@ type CreateWorkerInput = {
   email: string
   phone: string
   hourlyRate: number
+}
+
+type UpdateWorkerInput = {
+  fullName?: string
+  role?: string
+  email?: string
+  phone?: string
+  hourlyRate?: number
 }
 
 type CreateEntryBulkRowInput = {
@@ -62,6 +93,19 @@ type UpdateEntryInput = {
 
 type CreateStageInput = {
   name: string
+}
+
+type UpsertMissingWorkerReviewInput = {
+  date: string
+  workerId: string
+  note: string
+  approved: boolean
+}
+
+type UpsertOrderProgressInput = {
+  date: string
+  jobName: string
+  readyPercent: number
 }
 
 async function request<T>(path: string, options: RequestInit = {}) {
@@ -106,6 +150,13 @@ export function deleteWorker(workerId: string) {
   })
 }
 
+export function updateWorker(workerId: string, input: UpdateWorkerInput) {
+  return request<{ worker: TimesheetWorker }>(`/api/timesheet/workers/${workerId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(input),
+  })
+}
+
 export function createStage(input: CreateStageInput) {
   return request<{ stage: TimesheetStage }>('/api/timesheet/stages', {
     method: 'POST',
@@ -143,5 +194,19 @@ export function updateEntry(entryId: string, input: UpdateEntryInput) {
 export function deleteEntry(entryId: string) {
   return request<{ ok: boolean }>(`/api/timesheet/entries/${entryId}`, {
     method: 'DELETE',
+  })
+}
+
+export function upsertMissingWorkerReview(input: UpsertMissingWorkerReviewInput) {
+  return request<{ review: TimesheetMissingWorkerReview }>('/api/timesheet/missing-worker-reviews', {
+    method: 'PUT',
+    body: JSON.stringify(input),
+  })
+}
+
+export function upsertOrderProgress(input: UpsertOrderProgressInput) {
+  return request<{ progress: TimesheetOrderProgress }>('/api/timesheet/order-progress', {
+    method: 'PUT',
+    body: JSON.stringify(input),
   })
 }

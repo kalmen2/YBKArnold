@@ -1,8 +1,6 @@
-import AdminPanelSettingsRoundedIcon from '@mui/icons-material/AdminPanelSettingsRounded'
 import CheckRoundedIcon from '@mui/icons-material/CheckRounded'
-import DeleteForeverRoundedIcon from '@mui/icons-material/DeleteForeverRounded'
+import MoreVertRoundedIcon from '@mui/icons-material/MoreVertRounded'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
-import ScheduleRoundedIcon from '@mui/icons-material/ScheduleRounded'
 import ShieldRoundedIcon from '@mui/icons-material/ShieldRounded'
 import {
   Alert,
@@ -14,6 +12,8 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  IconButton,
+  Menu,
   MenuItem,
   Paper,
   Stack,
@@ -47,6 +47,8 @@ type AdminWorkerOption = {
 type ListWorkersResponse = {
   workers: AdminWorkerOption[]
 }
+
+type ClientAccessMode = 'web_and_app' | 'web_only' | 'app_only'
 
 const newJerseyTimeZone = 'America/New_York'
 const utcTimeZone = 'UTC'
@@ -118,6 +120,18 @@ function formatLinkedWorkerLabel(user: AppAuthUser) {
   return `${workerNumber} • ${workerName}`
 }
 
+function formatClientAccessLabel(mode: ClientAccessMode) {
+  if (mode === 'app_only') {
+    return 'App only'
+  }
+
+  if (mode === 'web_only') {
+    return 'Website only'
+  }
+
+  return 'Web + App'
+}
+
 const hourOptions = Array.from({ length: 24 }, (_, index) => index)
 
 export default function AdminUsersPage() {
@@ -139,6 +153,10 @@ export default function AdminUsersPage() {
   const [hoursTimeZone, setHoursTimeZone] = useState<string>(newJerseyTimeZone)
   const [workerLinkTarget, setWorkerLinkTarget] = useState<AppAuthUser | null>(null)
   const [workerLinkWorkerId, setWorkerLinkWorkerId] = useState('')
+  const [workerApproveTarget, setWorkerApproveTarget] = useState<AppAuthUser | null>(null)
+  const [workerApproveWorkerId, setWorkerApproveWorkerId] = useState('')
+  const [actionsAnchorEl, setActionsAnchorEl] = useState<HTMLElement | null>(null)
+  const [actionsTarget, setActionsTarget] = useState<AppAuthUser | null>(null)
 
   const requestWithAuth = useCallback(
     async <T,>(path: string, options: RequestInit = {}) => {
@@ -148,6 +166,7 @@ export default function AdminUsersPage() {
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${idToken}`,
+          'x-client-platform': 'web',
           ...(options.headers ?? {}),
         },
       })
@@ -294,6 +313,56 @@ export default function AdminUsersPage() {
     }
   }, [hoursEnd, hoursRestricted, hoursStart, hoursTarget, hoursTimeZone, requestWithAuth])
 
+  const handleSetClientAccess = useCallback(
+    async (targetUid: string, mode: ClientAccessMode) => {
+      setErrorMessage(null)
+      setActionMessage(null)
+      setActiveUserId(targetUid)
+
+      try {
+        const payload = await requestWithAuth<{ user: AppAuthUser }>(
+          `/api/auth/users/${targetUid}/client-access`,
+          {
+            method: 'PATCH',
+            body: JSON.stringify({
+              mode,
+            }),
+          },
+        )
+
+        setUsers((currentUsers) =>
+          currentUsers.map((user) =>
+            user.uid === payload.user.uid ? payload.user : user,
+          ),
+        )
+        setActionMessage(
+          mode === 'app_only'
+            ? 'Access set to app only.'
+            : mode === 'web_only'
+              ? 'Access set to website only.'
+              : 'Access set to web + app.',
+        )
+      } catch (error) {
+        setErrorMessage(
+          error instanceof Error ? error.message : 'Could not update client access.',
+        )
+      } finally {
+        setActiveUserId(null)
+      }
+    },
+    [requestWithAuth],
+  )
+
+  const openRowActions = useCallback((anchorElement: HTMLElement, user: AppAuthUser) => {
+    setActionsAnchorEl(anchorElement)
+    setActionsTarget(user)
+  }, [])
+
+  const closeRowActions = useCallback(() => {
+    setActionsAnchorEl(null)
+    setActionsTarget(null)
+  }, [])
+
   const handleUnapprove = useCallback(async (targetUid: string) => {
     setErrorMessage(null)
     setActionMessage(null)
@@ -408,6 +477,60 @@ export default function AdminUsersPage() {
     setPromotionConfirmationText('')
   }, [])
 
+  const handleApproveAsWorker = useCallback(async () => {
+    if (!workerApproveTarget) {
+      return
+    }
+
+    const selectedWorkerId = String(workerApproveWorkerId ?? '').trim()
+
+    if (!selectedWorkerId) {
+      setErrorMessage('Select a worker before approving as worker login.')
+      return
+    }
+
+    setErrorMessage(null)
+    setActionMessage(null)
+    setActiveUserId(workerApproveTarget.uid)
+
+    try {
+      await requestWithAuth<{ user: AppAuthUser }>(
+        `/api/auth/users/${workerApproveTarget.uid}/approval`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({
+            role: 'standard',
+          }),
+        },
+      )
+
+      const linkPayload = await requestWithAuth<{ user: AppAuthUser }>(
+        `/api/auth/users/${workerApproveTarget.uid}/worker-link`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({
+            workerId: selectedWorkerId,
+          }),
+        },
+      )
+
+      setUsers((currentUsers) =>
+        currentUsers.map((user) =>
+          user.uid === linkPayload.user.uid ? linkPayload.user : user,
+        ),
+      )
+      setActionMessage('User approved as worker login.')
+      setWorkerApproveTarget(null)
+      setWorkerApproveWorkerId('')
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : 'Could not approve user as worker.',
+      )
+    } finally {
+      setActiveUserId(null)
+    }
+  }, [requestWithAuth, workerApproveTarget, workerApproveWorkerId])
+
   const canConfirmPromotion = useMemo(() => {
     if (!promotionTarget) {
       return false
@@ -419,6 +542,16 @@ export default function AdminUsersPage() {
   const pendingCount = useMemo(
     () => users.filter((user) => !user.isApproved).length,
     [users],
+  )
+
+  const actionsMenuOpen = Boolean(actionsAnchorEl && actionsTarget)
+  const actionsTargetIsSaving = actionsTarget ? activeUserId === actionsTarget.uid : false
+  const actionsTargetCanAssignStandard = Boolean(actionsTarget && !actionsTarget.isOwner)
+  const actionsTargetCanEditHours = Boolean(actionsTarget && !actionsTarget.isAdmin)
+  const actionsTargetCanDelete = Boolean(
+    actionsTarget
+    && !actionsTarget.isOwner
+    && actionsTarget.uid !== appUser?.uid,
   )
 
   if (!appUser?.isAdmin) {
@@ -438,9 +571,8 @@ export default function AdminUsersPage() {
             Admin Users
           </Typography>
           <Typography color="text.secondary">
-            Approve website users and assign roles. Pending accounts: {pendingCount}
+            Manage all users in one list. Pending accounts: {pendingCount}
           </Typography>
-          
         </Box>
 
         <Button
@@ -452,8 +584,6 @@ export default function AdminUsersPage() {
           {isRefreshing ? 'Refreshing…' : 'Refresh'}
         </Button>
       </Stack>
-
-    
 
       {actionMessage ? <Alert severity="success">{actionMessage}</Alert> : null}
       {errorMessage ? <Alert severity="error">{errorMessage}</Alert> : null}
@@ -486,6 +616,7 @@ export default function AdminUsersPage() {
                 <TableCell>Role</TableCell>
                 <TableCell>Login Hours</TableCell>
                 <TableCell>Worker Login</TableCell>
+                <TableCell>Client Access</TableCell>
                 <TableCell>Last Login</TableCell>
                 <TableCell align="right">Actions</TableCell>
               </TableRow>
@@ -494,9 +625,6 @@ export default function AdminUsersPage() {
             <TableBody>
               {users.map((user) => {
                 const isSaving = activeUserId === user.uid
-                const canAssignStandard = !user.isOwner
-                const canEditHours = !user.isAdmin
-                const canDeleteUser = !user.isOwner && user.uid !== appUser.uid
 
                 return (
                   <TableRow key={user.uid} hover>
@@ -558,101 +686,26 @@ export default function AdminUsersPage() {
                       />
                     </TableCell>
 
+                    <TableCell>
+                      <Chip
+                        label={formatClientAccessLabel(user.clientAccessMode)}
+                        size="small"
+                        variant="outlined"
+                        color={user.clientAccessMode === 'web_and_app' ? 'success' : 'warning'}
+                      />
+                    </TableCell>
+
                     <TableCell>{formatDateTime(user.lastLoginAt)}</TableCell>
 
                     <TableCell align="right">
-                      <Stack
-                        direction={{ xs: 'column', md: 'row' }}
-                        spacing={0.75}
-                        justifyContent="flex-end"
+                      <IconButton
+                        size="small"
+                        disabled={isSaving}
+                        onClick={(event) => openRowActions(event.currentTarget, user)}
+                        aria-label="Open user actions"
                       >
-                        <Button
-                          size="small"
-                          variant={
-                            user.isApproved && user.role === 'standard'
-                              ? 'contained'
-                              : 'outlined'
-                          }
-                          disabled={isSaving || !canAssignStandard}
-                          onClick={() => void handleApprove(user.uid, 'standard')}
-                          startIcon={<CheckRoundedIcon />}
-                        >
-                          Standard
-                        </Button>
-
-                        <Button
-                          size="small"
-                          variant={
-                            user.isApproved && user.role === 'admin'
-                              ? 'contained'
-                              : 'outlined'
-                          }
-                          color="secondary"
-                          disabled={isSaving || user.isOwner}
-                          onClick={() => {
-                            const requiresConfirmation = !(user.isApproved && user.role === 'admin')
-
-                            if (requiresConfirmation) {
-                              setPromotionTarget(user)
-                              setPromotionConfirmationText('')
-                              return
-                            }
-
-                            void handleApprove(user.uid, 'admin', true)
-                          }}
-                          startIcon={<AdminPanelSettingsRoundedIcon />}
-                        >
-                          {user.isApproved && user.role === 'admin' ? 'Admin' : 'Make Admin'}
-                        </Button>
-
-                        {canEditHours ? (
-                          <Button
-                            size="small"
-                            variant="outlined"
-                            disabled={isSaving}
-                            onClick={() => openHoursEditor(user)}
-                            startIcon={<ScheduleRoundedIcon />}
-                          >
-                            Hours
-                          </Button>
-                        ) : null}
-
-                        <Button
-                          size="small"
-                          variant="outlined"
-                          disabled={isSaving || user.isOwner}
-                          onClick={() => {
-                            openWorkerLinkDialog(user)
-                          }}
-                        >
-                          Assign Worker
-                        </Button>
-
-                        <Button
-                          size="small"
-                          color="warning"
-                          variant="outlined"
-                          disabled={isSaving || user.isOwner || !user.isApproved}
-                          onClick={() => {
-                            void handleUnapprove(user.uid)
-                          }}
-                        >
-                          Unapprove
-                        </Button>
-
-                        <Button
-                          size="small"
-                          color="error"
-                          variant="outlined"
-                          disabled={isSaving || !canDeleteUser}
-                          onClick={() => {
-                            setDeleteTarget(user)
-                          }}
-                          startIcon={<DeleteForeverRoundedIcon />}
-                        >
-                          Delete
-                        </Button>
-                      </Stack>
+                        <MoreVertRoundedIcon fontSize="small" />
+                      </IconButton>
                     </TableCell>
                   </TableRow>
                 )
@@ -661,6 +714,188 @@ export default function AdminUsersPage() {
           </Table>
         </TableContainer>
       ) : null}
+
+      <Menu
+        anchorEl={actionsAnchorEl}
+        open={actionsMenuOpen}
+        onClose={closeRowActions}
+      >
+        <MenuItem disabled>
+          {actionsTarget?.email ?? 'User actions'}
+        </MenuItem>
+
+        <MenuItem
+          disabled={actionsTargetIsSaving || !actionsTargetCanAssignStandard}
+          onClick={() => {
+            if (!actionsTarget) {
+              return
+            }
+
+            closeRowActions()
+            void handleApprove(actionsTarget.uid, 'standard')
+          }}
+        >
+          Set Standard
+        </MenuItem>
+
+        <MenuItem
+          disabled={actionsTargetIsSaving || Boolean(actionsTarget?.isOwner)}
+          onClick={() => {
+            if (!actionsTarget) {
+              return
+            }
+
+            closeRowActions()
+            const requiresConfirmation = !(
+              actionsTarget.isApproved
+              && actionsTarget.role === 'admin'
+            )
+
+            if (requiresConfirmation) {
+              setPromotionTarget(actionsTarget)
+              setPromotionConfirmationText('')
+              return
+            }
+
+            void handleApprove(actionsTarget.uid, 'admin', true)
+          }}
+        >
+          {actionsTarget?.isApproved && actionsTarget.role === 'admin' ? 'Admin' : 'Make Admin'}
+        </MenuItem>
+
+        <MenuItem
+          disabled={
+            actionsTargetIsSaving
+            || Boolean(actionsTarget?.isOwner)
+            || Boolean(actionsTarget?.isAdmin)
+          }
+          onClick={() => {
+            if (!actionsTarget) {
+              return
+            }
+
+            closeRowActions()
+            setWorkerApproveTarget(actionsTarget)
+            setWorkerApproveWorkerId(actionsTarget.linkedWorkerId ?? '')
+          }}
+        >
+          Approve Worker
+        </MenuItem>
+
+        <MenuItem
+          disabled={actionsTargetIsSaving || Boolean(actionsTarget?.isOwner)}
+          onClick={() => {
+            if (!actionsTarget) {
+              return
+            }
+
+            closeRowActions()
+            openWorkerLinkDialog(actionsTarget)
+          }}
+        >
+          Assign Worker
+        </MenuItem>
+
+        <MenuItem
+          disabled={actionsTargetIsSaving || !actionsTargetCanEditHours}
+          onClick={() => {
+            if (!actionsTarget) {
+              return
+            }
+
+            closeRowActions()
+            openHoursEditor(actionsTarget)
+          }}
+        >
+          Set Login Hours
+        </MenuItem>
+
+        <MenuItem
+          disabled={
+            actionsTargetIsSaving
+            || Boolean(actionsTarget?.isOwner)
+            || actionsTarget?.clientAccessMode === 'web_only'
+          }
+          onClick={() => {
+            if (!actionsTarget) {
+              return
+            }
+
+            closeRowActions()
+            void handleSetClientAccess(actionsTarget.uid, 'web_only')
+          }}
+        >
+          Set Website Only Access
+        </MenuItem>
+
+        <MenuItem
+          disabled={
+            actionsTargetIsSaving
+            || Boolean(actionsTarget?.isOwner)
+            || actionsTarget?.clientAccessMode === 'app_only'
+          }
+          onClick={() => {
+            if (!actionsTarget) {
+              return
+            }
+
+            closeRowActions()
+            void handleSetClientAccess(actionsTarget.uid, 'app_only')
+          }}
+        >
+          Set App Only Access
+        </MenuItem>
+
+        <MenuItem
+          disabled={
+            actionsTargetIsSaving
+            || Boolean(actionsTarget?.isOwner)
+            || actionsTarget?.clientAccessMode === 'web_and_app'
+          }
+          onClick={() => {
+            if (!actionsTarget) {
+              return
+            }
+
+            closeRowActions()
+            void handleSetClientAccess(actionsTarget.uid, 'web_and_app')
+          }}
+        >
+          Set Web + App Access
+        </MenuItem>
+
+        <MenuItem
+          disabled={
+            actionsTargetIsSaving
+            || Boolean(actionsTarget?.isOwner)
+            || !actionsTarget?.isApproved
+          }
+          onClick={() => {
+            if (!actionsTarget) {
+              return
+            }
+
+            closeRowActions()
+            void handleUnapprove(actionsTarget.uid)
+          }}
+        >
+          Unapprove
+        </MenuItem>
+
+        <MenuItem
+          disabled={actionsTargetIsSaving || !actionsTargetCanDelete}
+          onClick={() => {
+            if (!actionsTarget) {
+              return
+            }
+
+            closeRowActions()
+            setDeleteTarget(actionsTarget)
+          }}
+        >
+          Delete
+        </MenuItem>
+      </Menu>
 
       <Dialog open={Boolean(promotionTarget)} onClose={closePromotionDialog} fullWidth maxWidth="sm">
         <DialogTitle>Confirm Admin Promotion</DialogTitle>
@@ -834,6 +1069,71 @@ export default function AdminUsersPage() {
             }}
           >
             Save Hours
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(workerApproveTarget)}
+        onClose={() => {
+          if (!activeUserId) {
+            setWorkerApproveTarget(null)
+            setWorkerApproveWorkerId('')
+          }
+        }}
+        fullWidth
+        maxWidth="sm"
+      >
+        <DialogTitle>Approve As Worker Login</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ pt: 1 }}>
+            <Alert severity="info">
+              Approving as worker will set the user role to Standard and require a linked worker.
+            </Alert>
+
+            <Typography variant="body2" color="text.secondary">
+              {workerApproveTarget?.email}
+            </Typography>
+
+            <TextField
+              select
+              fullWidth
+              label="Worker"
+              value={workerApproveWorkerId}
+              onChange={(event) => {
+                setWorkerApproveWorkerId(event.target.value)
+              }}
+            >
+              <MenuItem value="" disabled>Select worker</MenuItem>
+              {workerOptions.map((worker) => {
+                const workerNumber = String(worker.workerNumber ?? '').trim() || '----'
+                return (
+                  <MenuItem key={worker.id} value={worker.id}>
+                    {workerNumber} - {worker.fullName}
+                  </MenuItem>
+                )
+              })}
+            </TextField>
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={() => {
+              setWorkerApproveTarget(null)
+              setWorkerApproveWorkerId('')
+            }}
+            disabled={Boolean(activeUserId)}
+          >
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            disabled={!workerApproveTarget || !workerApproveWorkerId || activeUserId === workerApproveTarget.uid}
+            onClick={() => {
+              void handleApproveAsWorker()
+            }}
+          >
+            Approve As Worker
           </Button>
         </DialogActions>
       </Dialog>
