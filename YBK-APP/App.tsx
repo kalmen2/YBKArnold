@@ -574,10 +574,8 @@ export default function App() {
 
   const requestWithSession = useCallback(
     async <T,>(path: string, refreshRequested = false, init: RequestInit = {}) => {
-      const idToken = firebaseUser ? await firebaseUser.getIdToken() : null
-
-      try {
-        return await request<T>(path, refreshRequested, {
+      const runRequest = async (idToken: string | null) => {
+        return request<T>(path, refreshRequested, {
           ...init,
           headers: {
             ...(init.headers ?? {}),
@@ -589,21 +587,47 @@ export default function App() {
               : {}),
           },
         })
+      }
+
+      const signOutForUnauthorized = async () => {
+        await signOut(mobileAuth)
+        setAuthProfile(null)
+        setHasBiometricSessionAuth(false)
+        setHasSkippedBiometricPrompt(false)
+        setIsBiometricPromptOpen(false)
+        setAuthMessage(t('Your session expired. Please sign in again.', 'Tu sesion expiro. Inicia sesion otra vez.'))
+      }
+
+      let idToken = firebaseUser ? await firebaseUser.getIdToken() : null
+
+      try {
+        return await runRequest(idToken)
       } catch (error) {
         const status = (error as { status?: number })?.status
 
-        if (status === 401 || status === 403) {
-          await signOut(mobileAuth)
-          setAuthProfile(null)
-          setHasBiometricSessionAuth(false)
-          setHasSkippedBiometricPrompt(false)
-          setIsBiometricPromptOpen(false)
+        if (status === 401 && firebaseUser) {
+          try {
+            idToken = await firebaseUser.getIdToken(true)
+            return await runRequest(idToken)
+          } catch (retryError) {
+            const retryStatus = (retryError as { status?: number })?.status
+
+            if (retryStatus === 401) {
+              await signOutForUnauthorized()
+            }
+
+            throw retryError
+          }
+        }
+
+        if (status === 401) {
+          await signOutForUnauthorized()
         }
 
         throw error
       }
     },
-    [firebaseUser],
+    [firebaseUser, t],
   )
 
   const syncAuthProfile = useCallback(async () => {
@@ -616,15 +640,35 @@ export default function App() {
     setIsCheckingApproval(true)
 
     try {
-      const idToken = await firebaseUser.getIdToken()
-      const response = await fetch(`${API_BASE_URL}/api/auth/me`, {
-        method: 'GET',
-        headers: {
-          Authorization: `Bearer ${idToken}`,
-          'x-client-platform': 'app',
-        },
-      })
-      const payload = await response.json().catch(() => ({}))
+      const requestProfile = async (forceTokenRefresh = false) => {
+        const idToken = await firebaseUser.getIdToken(forceTokenRefresh)
+        const response = await fetch(`${API_BASE_URL}/api/auth/me`, {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${idToken}`,
+            'x-client-platform': 'app',
+          },
+        })
+
+        const payload = await response.json().catch(() => ({}))
+
+        return {
+          response,
+          payload,
+        }
+      }
+
+      let { response, payload } = await requestProfile(false)
+
+      if (response.status === 401) {
+        try {
+          const refreshedResult = await requestProfile(true)
+          response = refreshedResult.response
+          payload = refreshedResult.payload
+        } catch {
+          // Let the 401 handling below apply.
+        }
+      }
 
       if (response.status === 401) {
         await signOut(mobileAuth)
@@ -635,7 +679,6 @@ export default function App() {
       }
 
       if (response.status === 403) {
-        await signOut(mobileAuth)
         setAuthProfile(null)
         setHasBiometricSessionAuth(false)
         setIsBiometricPromptOpen(false)
