@@ -1,12 +1,11 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
-import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker'
-import { Picker } from '@react-native-picker/picker'
+import { type DateTimePickerEvent } from '@react-native-community/datetimepicker'
 import * as Google from 'expo-auth-session/providers/google'
 import Constants from 'expo-constants'
 import { StatusBar } from 'expo-status-bar'
 import * as ImagePicker from 'expo-image-picker'
 import * as LocalAuthentication from 'expo-local-authentication'
-import * as Updates from 'expo-updates/build/index'
+import * as Notifications from 'expo-notifications'
 import * as WebBrowser from 'expo-web-browser'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
@@ -18,7 +17,6 @@ import {
   Platform,
   Pressable,
   ScrollView,
-  StyleSheet,
   Text,
   TextInput,
   useWindowDimensions,
@@ -29,17 +27,62 @@ import {
   GoogleAuthProvider,
   onAuthStateChanged,
   signInWithCredential,
+  signInWithEmailAndPassword,
   signOut,
   type User,
 } from 'firebase/auth'
+import { ORDER_TONES, SIDEBAR_ITEMS, TICKET_TONES } from './appConstants'
+import type {
+  AppLanguage,
+  AppScreen,
+  DetailSelection,
+  MondayDashboardSnapshot,
+  MobileAlert,
+  MobileAuthUser,
+  MobileManagerOrderProgress,
+  MobileTimesheetEntry,
+  MobileTimesheetStage,
+  MobileTimesheetWorker,
+  OrderPhoto,
+  SupportTicketsSnapshot,
+  ZendeskTicketSummarySnapshot,
+} from './appTypes'
 import { mobileAuth } from './firebase'
+import {
+  buildOrderBuckets,
+  formatDateInput,
+  formatDisplayDate,
+  formatSyncTimestamp,
+  normalizeTicketStatus,
+} from './appUtils'
+import { extractFirstUrlFromText, request, withBuildQuery } from './appApi'
+import { styles } from './appStyles'
+import {
+  AlertsSection,
+  AuthButton,
+  AuthShell,
+  DashboardSection,
+  InlineLoading,
+  ManagerSheetSection,
+  PicturesSection,
+  SettingsOverviewSection,
+  TimesheetSection,
+} from './appSections'
 
 WebBrowser.maybeCompleteAuthSession()
 
-const API_BASE_URL = 'https://us-central1-ybkarnold-b7ec0.cloudfunctions.net/apiV1'
-const API_REQUEST_TIMEOUT_MS = 15000
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+    shouldShowBanner: true,
+    shouldShowList: true,
+  }),
+})
+
 const MOBILE_BIOMETRIC_ENABLED_KEY = 'ybk.mobile.biometric.enabled'
 const MOBILE_LANGUAGE_KEY = 'ybk.mobile.language'
+const MOBILE_NOTIFICATIONS_ENABLED_KEY = 'ybk.mobile.notifications.enabled'
 const MOBILE_ANDROID_PACKAGE = 'com.ybk.arnold'
 const GOOGLE_WEB_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID ?? ''
 const GOOGLE_IOS_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID ?? ''
@@ -48,420 +91,69 @@ const GOOGLE_EXPO_IOS_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_EXPO_IOS_CLIENT
 const GOOGLE_EXPO_ANDROID_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_EXPO_ANDROID_CLIENT_ID ?? ''
 const GOOGLE_ANDROID_REDIRECT_URI = `${MOBILE_ANDROID_PACKAGE}:/oauthredirect`
 const APP_UPDATE_URL = process.env.EXPO_PUBLIC_APP_UPDATE_URL ?? ''
-const ANDROID_APK_UPDATE_URL = process.env.EXPO_PUBLIC_ANDROID_APK_UPDATE_URL ?? ''
+const DEFAULT_ANDROID_APK_UPDATE_URL = 'https://ybkarnold-b7ec0.web.app/apk/YBK-APP-local-release.apk'
+const DEFAULT_IOS_UPDATE_URL = 'https://ybkarnold-b7ec0.web.app/ios-update.html'
+const ANDROID_APK_UPDATE_URL = process.env.EXPO_PUBLIC_ANDROID_APK_UPDATE_URL ?? DEFAULT_ANDROID_APK_UPDATE_URL
 const ANDROID_PLAY_STORE_URL = process.env.EXPO_PUBLIC_ANDROID_PLAY_STORE_URL ?? ''
-const IOS_APP_STORE_URL = process.env.EXPO_PUBLIC_IOS_APP_STORE_URL ?? ''
+const IOS_APP_STORE_URL = process.env.EXPO_PUBLIC_IOS_APP_STORE_URL ?? DEFAULT_IOS_UPDATE_URL
 
-type DashboardOrder = {
-  id: string
-  name: string
-  groupTitle: string
-  statusLabel: string
-  stageLabel: string
-  readyLabel: string
-  leadTimeDays: number | null
-  progressPercent: number | null
-  orderDate: string | null
-  shippedAt: string | null
-  dueDate: string | null
-  computedDueDate: string | null
-  effectiveDueDate: string | null
-  daysUntilDue: number | null
-  isDone: boolean
-  isLate: boolean
-  daysLate: number
-  updatedAt: string | null
-  itemUrl: string | null
-}
-
-type MondayDashboardSnapshot = {
-  board: {
-    id: string
-    name: string
-    url: string | null
-  }
-  generatedAt: string
-  metrics: {
-    totalOrders: number
-    activeOrders: number
-    completedOrders: number
-    lateOrders: number
-    dueSoonOrders: number
-    missingDueDateOrders: number
-    averageLeadTimeDays: number | null
-  }
-  details: {
-    lateOrders: DashboardOrder[]
-    dueSoonOrders: DashboardOrder[]
-    activeOrders: DashboardOrder[]
-    completedOrders: DashboardOrder[]
-    missingDueDateOrders: DashboardOrder[]
-  }
-  orders: DashboardOrder[]
-}
-
-type ZendeskTicketSummarySnapshot = {
-  generatedAt: string
-  agentUrl: string | null
-  metrics: {
-    newTickets: number
-    inProgressTickets: number
-    openTickets: number
-    pendingTickets: number
-    solvedTickets: number
-    openTotalTickets: number
-  }
-}
-
-type SupportTicket = {
-  id: number
-  subject: string
-  orderNumber: string | null
-  status: string
-  statusLabel: string
-  priority: string
-  requesterName: string
-  assigneeName: string
-  createdAt: string
-  updatedAt: string
-  url: string | null
-}
-
-type SupportTicketsSnapshot = {
-  generatedAt: string
-  agentUrl: string | null
-  tickets: SupportTicket[]
-}
-
-type OrderPhoto = {
-  path: string
-  url: string
-  createdAt: string
-}
-
-type MobileTimesheetWorker = {
-  id: string
-  workerNumber: string
-  fullName: string
-  role: string
-  email: string
-  phone: string
-  hourlyRate: number
-}
-
-type MobileTimesheetEntry = {
-  id: string
-  workerId: string
-  date: string
-  jobName: string
-  stageId?: string
-  hours: number
-  notes: string
-  createdAt: string
-}
-
-type MobileTimesheetStage = {
-  id: string
-  name: string
-  sortOrder: number
-}
-
-type MobileAuthUser = {
-  uid: string
-  email: string
-  displayName: string | null
-  role: 'standard' | 'admin'
-  isApproved: boolean
-  approvalStatus: 'pending' | 'approved'
-  linkedWorkerId: string | null
-  linkedWorkerNumber: string | null
-  linkedWorkerName: string | null
-}
-
-type MetricTone = {
-  cardBackground: string
-  borderColor: string
-  labelColor: string
-  valueColor: string
-}
-
-type AppScreen = 'dashboard' | 'pictures' | 'timesheet' | 'settings'
-type AppLanguage = 'en' | 'es'
-type OrderMetricKey =
-  | 'lateOrders'
-  | 'dueThisWeekOrders'
-  | 'dueInTwoWeeksOrders'
-  | 'activeOrders'
-  | 'missingDueDateOrders'
-type TicketMetricKey =
-  | 'newTickets'
-  | 'inProgressTickets'
-  | 'openTickets'
-  | 'pendingTickets'
-  | 'solvedTickets'
-
-type DetailSelection =
-  | {
-      type: 'order'
-      key: OrderMetricKey
-      label: string
+type AppUpdateStatusResponse = {
+  updates?: {
+    android?: {
+      url?: string | null
+      buildNumber?: number | string | null
+      version?: string | null
     }
-  | {
-      type: 'ticket'
-      key: TicketMetricKey
-      label: string
+    ios?: {
+      url?: string | null
+      buildNumber?: number | string | null
+      version?: string | null
     }
-  | null
-
-const ORDER_TONES: MetricTone[] = [
-  {
-    cardBackground: '#e8f7ff',
-    borderColor: '#9cd4f4',
-    labelColor: '#21507a',
-    valueColor: '#0a2f52',
-  },
-  {
-    cardBackground: '#eaf6ee',
-    borderColor: '#9fd8b2',
-    labelColor: '#1d5f37',
-    valueColor: '#0f3f24',
-  },
-  {
-    cardBackground: '#fff4e8',
-    borderColor: '#f2c999',
-    labelColor: '#7a4d1f',
-    valueColor: '#5b330b',
-  },
-  {
-    cardBackground: '#fff9e8',
-    borderColor: '#efd98d',
-    labelColor: '#705718',
-    valueColor: '#574107',
-  },
-  {
-    cardBackground: '#ffeef1',
-    borderColor: '#efb2bf',
-    labelColor: '#7f2740',
-    valueColor: '#5e1330',
-  },
-]
-
-const TICKET_TONES: MetricTone[] = [
-  {
-    cardBackground: '#f0efff',
-    borderColor: '#b5b0f0',
-    labelColor: '#3d2f8a',
-    valueColor: '#281a66',
-  },
-  {
-    cardBackground: '#f2fbf8',
-    borderColor: '#9edcc8',
-    labelColor: '#1b6850',
-    valueColor: '#0f4a37',
-  },
-  {
-    cardBackground: '#ecf4ff',
-    borderColor: '#9ec1ea',
-    labelColor: '#224f84',
-    valueColor: '#14335d',
-  },
-  {
-    cardBackground: '#fff5f1',
-    borderColor: '#f3c1ac',
-    labelColor: '#7a3f2a',
-    valueColor: '#582712',
-  },
-  {
-    cardBackground: '#eff7ee',
-    borderColor: '#b4d6a8',
-    labelColor: '#325f27',
-    valueColor: '#1e4617',
-  },
-]
-
-const SIDEBAR_ITEMS: Array<{ id: AppScreen; shortLabel: string }> = [
-  { id: 'dashboard', shortLabel: 'DB' },
-  { id: 'pictures', shortLabel: 'PH' },
-  { id: 'timesheet', shortLabel: 'TS' },
-  { id: 'settings', shortLabel: 'ST' },
-]
-
-function withRefreshQuery(path: string, refreshRequested: boolean) {
-  if (!refreshRequested) {
-    return `${API_BASE_URL}${path}`
   }
-
-  const separator = path.includes('?') ? '&' : '?'
-  return `${API_BASE_URL}${path}${separator}refresh=1`
 }
 
-async function request<T>(
-  path: string,
-  refreshRequested = false,
-  init: RequestInit = {},
-) {
-  const timeoutController = init.signal ? null : new AbortController()
-  const timeoutId = timeoutController
-    ? setTimeout(() => {
-        timeoutController.abort()
-      }, API_REQUEST_TIMEOUT_MS)
-    : null
+type SettingsMenuId = 'security' | 'language' | 'notifications' | 'updates' | 'account'
 
-  let response: Response
-  let payload: unknown = {}
-
-  try {
-    response = await fetch(withRefreshQuery(path, refreshRequested), {
-      ...init,
-      signal: init.signal ?? timeoutController?.signal,
-      headers: {
-        'Content-Type': 'application/json',
-        ...(init.headers ?? {}),
-      },
-    })
-    payload = await response.json().catch(() => ({}))
-  } catch (error) {
-    if (timeoutId) {
-      clearTimeout(timeoutId)
-    }
-
-    if (error instanceof Error && error.name === 'AbortError') {
-      throw new Error('Request timed out. Check your network connection and try again.')
-    }
-
-    throw error
-  }
-
-  if (timeoutId) {
-    clearTimeout(timeoutId)
-  }
-
-  if (!response.ok) {
-    const requestError = new Error(
-      String((payload as { error?: string }).error ?? 'Request failed.'),
-    ) as Error & { status?: number }
-    requestError.status = response.status
-    throw requestError
-  }
-
-  return payload as T
+function normalizeJobName(value: string) {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
 }
 
-function formatSyncTimestamp(value: string | null | undefined, locale = 'en-US') {
-  const isSpanishLocale = locale.toLowerCase().startsWith('es')
+function normalizeIsoDate(value: string) {
+  const normalizedValue = String(value ?? '').trim()
 
-  if (!value) {
-    return isSpanishLocale ? 'Desconocido' : 'Unknown'
-  }
-
-  const parsed = new Date(value)
-
-  if (Number.isNaN(parsed.getTime())) {
-    return value
-  }
-
-  return new Intl.DateTimeFormat(locale, {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  }).format(parsed)
-}
-
-function formatDisplayDate(value: string | null | undefined, locale = 'en-US') {
-  const isSpanishLocale = locale.toLowerCase().startsWith('es')
-
-  if (!value) {
-    return isSpanishLocale ? 'Sin fecha' : 'Not set'
-  }
-
-  const parsed = new Date(value)
-
-  if (Number.isNaN(parsed.getTime())) {
-    return value
-  }
-
-  return new Intl.DateTimeFormat(locale, {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  }).format(parsed)
-}
-
-function formatDateInput(value: Date) {
-  const year = value.getFullYear()
-  const month = String(value.getMonth() + 1).padStart(2, '0')
-  const day = String(value.getDate()).padStart(2, '0')
-
-  return `${year}-${month}-${day}`
-}
-
-function normalizeTicketStatus(value: string | null | undefined) {
-  return String(value ?? '').trim().toLowerCase()
-}
-
-function resolveDaysUntilDue(order: DashboardOrder) {
-  if (typeof order.daysUntilDue === 'number' && Number.isFinite(order.daysUntilDue)) {
-    return order.daysUntilDue
-  }
-
-  const rawDueDate = String(order.effectiveDueDate ?? '').trim()
-
-  if (!rawDueDate) {
+  if (!normalizedValue) {
     return null
   }
 
-  const parsedDueDate = new Date(rawDueDate)
+  const isoMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(normalizedValue)
 
-  if (Number.isNaN(parsedDueDate.getTime())) {
+  if (isoMatch) {
+    const year = Number(isoMatch[1])
+    const month = Number(isoMatch[2])
+    const day = Number(isoMatch[3])
+    const parsed = new Date(year, month - 1, day)
+
+    if (
+      parsed.getFullYear() === year
+      && parsed.getMonth() === month - 1
+      && parsed.getDate() === day
+    ) {
+      return formatDateInput(parsed)
+    }
+
     return null
   }
 
-  const today = new Date()
-  const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate())
-  const dueDateStart = new Date(
-    parsedDueDate.getFullYear(),
-    parsedDueDate.getMonth(),
-    parsedDueDate.getDate(),
-  )
+  const parsed = new Date(normalizedValue)
 
-  return Math.round((dueDateStart.getTime() - todayStart.getTime()) / (24 * 60 * 60 * 1000))
-}
+  if (Number.isNaN(parsed.getTime())) {
+    return null
+  }
 
-function MetricCard({
-  label,
-  value,
-  helper,
-  actionLabel,
-  tone,
-  onPress,
-}: {
-  label: string
-  value: string
-  helper?: string
-  actionLabel: string
-  tone: MetricTone
-  onPress: () => void
-}) {
-  return (
-    <Pressable
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.metricCard,
-        {
-          backgroundColor: tone.cardBackground,
-          borderColor: tone.borderColor,
-        },
-        pressed ? styles.metricCardPressed : null,
-      ]}
-    >
-      <Text style={[styles.metricLabel, { color: tone.labelColor }]}>{label}</Text>
-      <Text style={[styles.metricValue, { color: tone.valueColor }]}>{value}</Text>
-      {helper ? <Text style={[styles.metricHelper, { color: tone.labelColor }]}>{helper}</Text> : null}
-      <Text style={styles.metricActionText}>{actionLabel}</Text>
-    </Pressable>
-  )
+  return formatDateInput(parsed)
 }
 
 export default function App() {
@@ -479,7 +171,10 @@ export default function App() {
   const [isAuthResolved, setIsAuthResolved] = useState(false)
   const [isCheckingApproval, setIsCheckingApproval] = useState(false)
   const [isSigningIn, setIsSigningIn] = useState(false)
+  const [isEmailSigningIn, setIsEmailSigningIn] = useState(false)
   const [authMessage, setAuthMessage] = useState<string | null>(null)
+  const [emailSignInValue, setEmailSignInValue] = useState('')
+  const [passwordSignInValue, setPasswordSignInValue] = useState('')
   const [language, setLanguage] = useState<AppLanguage>('en')
   const [isBiometricEnabled, setIsBiometricEnabled] = useState(true)
   const [isBiometricPromptOpen, setIsBiometricPromptOpen] = useState(false)
@@ -515,6 +210,14 @@ export default function App() {
   const [orderPhotosByOrderId, setOrderPhotosByOrderId] = useState<Record<string, OrderPhoto[]>>({})
   const [isLoadingOrderPhotos, setIsLoadingOrderPhotos] = useState(false)
   const [isUploadingPicture, setIsUploadingPicture] = useState(false)
+  const [pendingPictures, setPendingPictures] = useState<
+    Array<{
+      id: string
+      base64: string
+      mimeType: string
+      previewUri: string
+    }>
+  >([])
   const [pictureMessage, setPictureMessage] = useState<string | null>(null)
 
   const [timesheetWorker, setTimesheetWorker] = useState<MobileTimesheetWorker | null>(null)
@@ -529,47 +232,201 @@ export default function App() {
   const [timesheetHours, setTimesheetHours] = useState('')
   const [timesheetNotes, setTimesheetNotes] = useState('')
   const [isTimesheetDatePickerOpen, setIsTimesheetDatePickerOpen] = useState(false)
+  const [managerDate, setManagerDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const [managerEntries, setManagerEntries] = useState<MobileTimesheetEntry[]>([])
+  const [managerOrderProgress, setManagerOrderProgress] = useState<MobileManagerOrderProgress[]>([])
+  const [managerProgressByJob, setManagerProgressByJob] = useState<Record<string, string>>({})
+  const [isManagerLoading, setIsManagerLoading] = useState(false)
+  const [isManagerSaving, setIsManagerSaving] = useState(false)
+  const [managerMessage, setManagerMessage] = useState<string | null>(null)
+  const [alerts, setAlerts] = useState<MobileAlert[]>([])
+  const [isAlertsLoading, setIsAlertsLoading] = useState(false)
+  const [alertsMessage, setAlertsMessage] = useState<string | null>(null)
+  const [alertsUnreadCount, setAlertsUnreadCount] = useState(0)
+  const [registeredPushToken, setRegisteredPushToken] = useState<string | null>(null)
+  const [isNotificationsEnabled, setIsNotificationsEnabled] = useState(true)
   const [updateMessage, setUpdateMessage] = useState<string | null>(null)
   const [isCheckingForUpdates, setIsCheckingForUpdates] = useState(false)
+  const [isInstallingUpdate, setIsInstallingUpdate] = useState(false)
+  const [resolvedUpdateUrl, setResolvedUpdateUrl] = useState('')
+  const [activeSettingsMenuId, setActiveSettingsMenuId] = useState<SettingsMenuId | null>(null)
 
   const isSpanish = language === 'es'
   const locale = isSpanish ? 'es-ES' : 'en-US'
   const t = useCallback((english: string, spanish: string) => (isSpanish ? spanish : english), [isSpanish])
+  const getErrorMessage = useCallback(
+    (error: unknown, englishFallback: string, spanishFallback: string) => {
+      return error instanceof Error ? error.message : t(englishFallback, spanishFallback)
+    },
+    [t],
+  )
+  const isBiometricLocked = isBiometricEnabled && !hasBiometricSessionAuth
+  const hasApprovedSessionAccess = Boolean(authProfile?.isApproved) && !isBiometricLocked
+  const hasManagerSheetAccess = Boolean(authProfile?.isAdmin || authProfile?.isManager)
 
   const localizedScreenLabels = useMemo<Record<AppScreen, string>>(
     () => ({
       dashboard: t('Dashboard', 'Panel'),
       pictures: t('Pictures', 'Fotos'),
       timesheet: t('Timesheet', 'Horas'),
+      manager: t('Manager Sheet', 'Hoja gerente'),
+      alerts: t('Notifications', 'Notificaciones'),
       settings: t('Settings', 'Configuracion'),
     }),
     [t],
   )
 
-  const appVersionLabel = useMemo(() => {
-    const version = Constants.expoConfig?.version ?? 'unknown'
-    const build =
+  const sidebarItems = useMemo(
+    () => SIDEBAR_ITEMS.filter((item) => item.id !== 'manager' || hasManagerSheetAccess),
+    [hasManagerSheetAccess],
+  )
+
+  const dashboardUnreadSummary = useMemo(() => {
+    if (alertsUnreadCount <= 0) {
+      return null
+    }
+
+    if (isSpanish) {
+      return alertsUnreadCount === 1
+        ? 'Tienes 1 mensaje sin leer.'
+        : `Tienes ${alertsUnreadCount} mensajes sin leer.`
+    }
+
+    return alertsUnreadCount === 1
+      ? 'You have 1 unread message.'
+      : `You have ${alertsUnreadCount} unread messages.`
+  }, [alertsUnreadCount, isSpanish])
+
+  const installedNativeVersion = useMemo(
+    () => String(Constants.nativeAppVersion ?? Constants.expoConfig?.version ?? 'unknown').trim() || 'unknown',
+    [],
+  )
+
+  const installedNativeBuildLabel = useMemo(() => {
+    const nativeBuild = String(Constants.nativeBuildVersion ?? '').trim()
+
+    if (nativeBuild) {
+      return nativeBuild
+    }
+
+    const fallbackBuild =
       Platform.OS === 'android'
         ? Constants.expoConfig?.android?.versionCode
         : Constants.expoConfig?.ios?.buildNumber
 
-    return build ? `v${version} (${build})` : `v${version}`
+    return String(fallbackBuild ?? '').trim()
+  }, [])
+
+  const installedNativeBuildNumber = useMemo(() => {
+    const parsed = Number(installedNativeBuildLabel)
+
+    return Number.isFinite(parsed) ? parsed : null
+  }, [installedNativeBuildLabel])
+
+  const appVersionLabel = useMemo(() => {
+    return installedNativeBuildLabel
+      ? `v${installedNativeVersion} (${installedNativeBuildLabel})`
+      : `v${installedNativeVersion}`
+  }, [installedNativeBuildLabel, installedNativeVersion])
+
+  const settingsMenuItems = useMemo<Array<{ id: SettingsMenuId; title: string; subtitle: string; status: string }>>(
+    () => [
+      {
+        id: 'security',
+        title: t('Security', 'Seguridad'),
+        subtitle: t('Biometric sign-in controls.', 'Controles de inicio biometrico.'),
+        status: isBiometricEnabled ? t('Enabled', 'Activada') : t('Disabled', 'Desactivada'),
+      },
+      {
+        id: 'language',
+        title: t('Language', 'Idioma'),
+        subtitle: t('Choose your app language.', 'Elige el idioma de la aplicacion.'),
+        status: language === 'es' ? 'Espanol' : 'English',
+      },
+      {
+        id: 'notifications',
+        title: t('Notifications', 'Notificaciones'),
+        subtitle: t('Enable, disable, or manage notification access.', 'Activa, desactiva o administra acceso de notificaciones.'),
+        status: isNotificationsEnabled ? t('On', 'Activas') : t('Off', 'Desactivadas'),
+      },
+      {
+        id: 'updates',
+        title: t('App Updates', 'Actualizaciones'),
+        subtitle: t('Check and install the latest build.', 'Busca e instala la compilacion mas reciente.'),
+        status: appVersionLabel,
+      },
+      {
+        id: 'account',
+        title: t('Account', 'Cuenta'),
+        subtitle: t('Sign-out and session actions.', 'Acciones de sesion y cierre de sesion.'),
+        status: t('Open', 'Abrir'),
+      },
+    ],
+    [appVersionLabel, isBiometricEnabled, isNotificationsEnabled, language, t],
+  )
+
+  const activeSettingsMenuItem = useMemo(
+    () => settingsMenuItems.find((item) => item.id === activeSettingsMenuId) ?? null,
+    [activeSettingsMenuId, settingsMenuItems],
+  )
+
+  const easProjectId = useMemo(() => {
+    return String(
+      Constants.easConfig?.projectId
+      ?? Constants.expoConfig?.extra?.eas?.projectId
+      ?? '',
+    ).trim()
   }, [])
 
   const appUpdateUrl = useMemo(() => {
     const candidates =
       Platform.OS === 'android'
-        ? [ANDROID_PLAY_STORE_URL, ANDROID_APK_UPDATE_URL, APP_UPDATE_URL]
-        : [IOS_APP_STORE_URL, APP_UPDATE_URL]
+        ? [ANDROID_APK_UPDATE_URL, APP_UPDATE_URL, ANDROID_PLAY_STORE_URL, DEFAULT_ANDROID_APK_UPDATE_URL]
+        : [IOS_APP_STORE_URL, APP_UPDATE_URL, DEFAULT_IOS_UPDATE_URL]
 
     return candidates.map((value) => String(value ?? '').trim()).find((value) => value.length > 0) ?? ''
   }, [])
 
-  const canUseOtaUpdates = useMemo(() => !__DEV__ && Updates.isEnabled, [])
-  const otaChannelLabel = useMemo(() => {
-    const configuredChannel = String(Updates.channel ?? '').trim()
+  const lockBiometricSession = useCallback(() => {
+    setHasBiometricSessionAuth(false)
+    setHasSkippedBiometricPrompt(false)
+    setIsBiometricPromptOpen(false)
+  }, [])
 
-    return configuredChannel || 'production'
+  const unlockBiometricSession = useCallback(() => {
+    setHasBiometricSessionAuth(true)
+    setHasSkippedBiometricPrompt(false)
+    setIsBiometricPromptOpen(false)
+  }, [])
+
+  const signOutForExpiredSession = useCallback(async () => {
+    await signOut(mobileAuth)
+    setAuthProfile(null)
+    lockBiometricSession()
+    setAuthMessage(t('Your session expired. Please sign in again.', 'Tu sesion expiro. Inicia sesion otra vez.'))
+  }, [lockBiometricSession, t])
+
+  const lockSessionWithMessage = useCallback(
+    (message: string) => {
+      setAuthProfile(null)
+      lockBiometricSession()
+      setAuthMessage(message)
+    },
+    [lockBiometricSession],
+  )
+
+  const resetPendingPicturesAndMessage = useCallback(() => {
+    setPendingPictures([])
+    setPictureMessage(null)
+  }, [])
+
+  const closePicturesModal = useCallback(() => {
+    setIsPicturesModalOpen(false)
+    resetPendingPicturesAndMessage()
+  }, [resetPendingPicturesAndMessage])
+
+  const closeSettingsMenu = useCallback(() => {
+    setActiveSettingsMenuId(null)
   }, [])
 
   const requestWithSession = useCallback(
@@ -589,15 +446,6 @@ export default function App() {
         })
       }
 
-      const signOutForUnauthorized = async () => {
-        await signOut(mobileAuth)
-        setAuthProfile(null)
-        setHasBiometricSessionAuth(false)
-        setHasSkippedBiometricPrompt(false)
-        setIsBiometricPromptOpen(false)
-        setAuthMessage(t('Your session expired. Please sign in again.', 'Tu sesion expiro. Inicia sesion otra vez.'))
-      }
-
       let idToken = firebaseUser ? await firebaseUser.getIdToken() : null
 
       try {
@@ -613,7 +461,7 @@ export default function App() {
             const retryStatus = (retryError as { status?: number })?.status
 
             if (retryStatus === 401) {
-              await signOutForUnauthorized()
+              await signOutForExpiredSession()
             }
 
             throw retryError
@@ -621,13 +469,13 @@ export default function App() {
         }
 
         if (status === 401) {
-          await signOutForUnauthorized()
+          await signOutForExpiredSession()
         }
 
         throw error
       }
     },
-    [firebaseUser, t],
+    [firebaseUser, signOutForExpiredSession],
   )
 
   const syncAuthProfile = useCallback(async () => {
@@ -640,52 +488,47 @@ export default function App() {
     setIsCheckingApproval(true)
 
     try {
-      const requestProfile = async (forceTokenRefresh = false) => {
-        const idToken = await firebaseUser.getIdToken(forceTokenRefresh)
-        const response = await fetch(`${API_BASE_URL}/api/auth/me`, {
-          method: 'GET',
-          headers: {
-            Authorization: `Bearer ${idToken}`,
-            'x-client-platform': 'app',
-          },
-        })
-
-        const payload = await response.json().catch(() => ({}))
-
-        return {
-          response,
-          payload,
+      const payload = await requestWithSession<{
+        user?: {
+          isApproved?: unknown
+          role?: unknown
+          isAdmin?: unknown
+          isManager?: unknown
         }
-      }
+      }>('/api/auth/me')
 
-      let { response, payload } = await requestProfile(false)
+      const approvalValue = payload?.user?.isApproved
 
-      if (response.status === 401) {
-        try {
-          const refreshedResult = await requestProfile(true)
-          response = refreshedResult.response
-          payload = refreshedResult.payload
-        } catch {
-          // Let the 401 handling below apply.
-        }
-      }
-
-      if (response.status === 401) {
-        await signOut(mobileAuth)
-        setAuthProfile(null)
-        setHasBiometricSessionAuth(false)
-        setAuthMessage(t('Your session expired. Please sign in again.', 'Tu sesion expiro. Inicia sesion otra vez.'))
+      if (typeof approvalValue !== 'boolean') {
+        setAuthMessage(t('Unable to verify account approval.', 'No se pudo verificar la aprobacion de la cuenta.'))
         return
       }
 
-      if (response.status === 403) {
-        setAuthProfile(null)
-        setHasBiometricSessionAuth(false)
-        setIsBiometricPromptOpen(false)
-        setHasSkippedBiometricPrompt(false)
-        setAuthMessage(
-          typeof payload?.error === 'string'
-            ? payload.error
+      const roleValue = String(payload?.user?.role ?? '').trim().toLowerCase()
+      const normalizedRole = ['standard', 'manager', 'admin'].includes(roleValue)
+        ? (roleValue as 'standard' | 'manager' | 'admin')
+        : 'standard'
+      const isAdmin = payload?.user?.isAdmin === true || normalizedRole === 'admin'
+      const isManager = payload?.user?.isManager === true || normalizedRole === 'manager'
+
+      setAuthProfile({
+        isApproved: approvalValue,
+        role: normalizedRole,
+        isAdmin,
+        isManager,
+      })
+      setAuthMessage(null)
+    } catch (error) {
+      const status = (error as { status?: number })?.status
+
+      if (status === 401) {
+        return
+      }
+
+      if (status === 403) {
+        lockSessionWithMessage(
+          error instanceof Error && error.message
+            ? error.message
             : t(
                 'Access is blocked outside your allowed login hours.',
                 'El acceso esta bloqueado fuera de tu horario permitido de inicio de sesion.',
@@ -694,30 +537,17 @@ export default function App() {
         return
       }
 
-      if (!response.ok) {
-        setAuthProfile(null)
-
-        setAuthMessage(
-          typeof payload?.error === 'string'
-            ? payload.error
-            : t('Unable to verify account approval.', 'No se pudo verificar la aprobacion de la cuenta.'),
-        )
-        return
-      }
-
-      setAuthProfile(payload.user as MobileAuthUser)
-      setAuthMessage(null)
-    } catch (error) {
-      setAuthProfile(null)
       setAuthMessage(
-        error instanceof Error
-          ? error.message
-          : t('Could not verify account access.', 'No se pudo verificar el acceso de la cuenta.'),
+        getErrorMessage(
+          error,
+          'Could not verify account access.',
+          'No se pudo verificar el acceso de la cuenta.',
+        ),
       )
     } finally {
       setIsCheckingApproval(false)
     }
-  }, [firebaseUser, t])
+  }, [firebaseUser, getErrorMessage, lockSessionWithMessage, requestWithSession, t])
 
   const handleAuthenticateBiometric = useCallback(async () => {
     setIsAuthenticatingBiometric(true)
@@ -728,9 +558,7 @@ export default function App() {
 
       if (!hasHardware || !isEnrolled) {
         setIsBiometricEnabled(false)
-        setIsBiometricPromptOpen(false)
-        setHasBiometricSessionAuth(true)
-        setHasSkippedBiometricPrompt(false)
+        unlockBiometricSession()
         await AsyncStorage.setItem(MOBILE_BIOMETRIC_ENABLED_KEY, 'false')
         setAuthMessage(
           t(
@@ -748,9 +576,7 @@ export default function App() {
       })
 
       if (result.success) {
-        setHasBiometricSessionAuth(true)
-        setHasSkippedBiometricPrompt(false)
-        setIsBiometricPromptOpen(false)
+        unlockBiometricSession()
         setAuthMessage(null)
         return
       }
@@ -760,14 +586,12 @@ export default function App() {
       )
     } catch (error) {
       setAuthMessage(
-        error instanceof Error
-          ? error.message
-          : t('Could not verify biometrics.', 'No se pudo verificar la biometria.'),
+        getErrorMessage(error, 'Could not verify biometrics.', 'No se pudo verificar la biometria.'),
       )
     } finally {
       setIsAuthenticatingBiometric(false)
     }
-  }, [t])
+  }, [getErrorMessage, t, unlockBiometricSession])
 
   const handleSkipBiometricPrompt = useCallback(() => {
     setHasBiometricSessionAuth(false)
@@ -806,11 +630,9 @@ export default function App() {
 
   const handleUseGoogleSessionUnlock = useCallback(() => {
     // User is already authenticated with Google at this stage; allow session unlock without biometric.
-    setHasBiometricSessionAuth(true)
-    setHasSkippedBiometricPrompt(false)
-    setIsBiometricPromptOpen(false)
+    unlockBiometricSession()
     setAuthMessage(null)
-  }, [])
+  }, [unlockBiometricSession])
 
   const handleChangeLanguage = useCallback(async (nextLanguage: AppLanguage) => {
     setLanguage(nextLanguage)
@@ -829,28 +651,33 @@ export default function App() {
     }
 
     setIsBiometricEnabled(true)
-    setHasBiometricSessionAuth(false)
-    setHasSkippedBiometricPrompt(false)
+    lockBiometricSession()
     await AsyncStorage.setItem(MOBILE_BIOMETRIC_ENABLED_KEY, 'true')
 
     if (authProfile?.isApproved) {
       setIsBiometricPromptOpen(true)
     }
-  }, [authProfile?.isApproved, isBiometricEnabled])
+  }, [authProfile?.isApproved, isBiometricEnabled, lockBiometricSession])
 
-  const openAppUpdateUrl = useCallback(async () => {
-    if (!appUpdateUrl) {
+  const openAppUpdateUrl = useCallback(async (preferredUrl?: string | null) => {
+    const targetUpdateUrl = String(preferredUrl ?? appUpdateUrl ?? '').trim()
+
+    if (!targetUpdateUrl) {
       setUpdateMessage(
         t(
-          'Update link is not configured yet. Ask admin to set EXPO_PUBLIC_ANDROID_PLAY_STORE_URL or EXPO_PUBLIC_ANDROID_APK_UPDATE_URL.',
-          'El enlace de actualizacion no esta configurado. Pide al administrador que configure EXPO_PUBLIC_ANDROID_PLAY_STORE_URL o EXPO_PUBLIC_ANDROID_APK_UPDATE_URL.',
+          'Update link is not configured yet. Ask admin to set platform update URLs.',
+          'El enlace de actualizacion no esta configurado. Pide al administrador que configure los enlaces de actualizacion.',
         ),
       )
       return false
     }
 
     try {
-      const canOpen = await Linking.canOpenURL(appUpdateUrl)
+      const launchUrl =
+        Platform.OS === 'android' && /\.apk(?:$|\?)/i.test(targetUpdateUrl)
+          ? `${targetUpdateUrl}${targetUpdateUrl.includes('?') ? '&' : '?'}installTs=${Date.now()}`
+          : targetUpdateUrl
+      const canOpen = await Linking.canOpenURL(launchUrl)
 
       if (!canOpen) {
         setUpdateMessage(
@@ -862,7 +689,7 @@ export default function App() {
         return false
       }
 
-      await Linking.openURL(appUpdateUrl)
+      await Linking.openURL(launchUrl)
       setUpdateMessage(
         t(
           'Update link opened. Install the new version when prompted.',
@@ -872,83 +699,164 @@ export default function App() {
       return true
     } catch (error) {
       setUpdateMessage(
-        error instanceof Error
-          ? error.message
-          : t('Could not open update link.', 'No se pudo abrir el enlace de actualizacion.'),
+        getErrorMessage(
+          error,
+          'Could not open update link.',
+          'No se pudo abrir el enlace de actualizacion.',
+        ),
       )
       return false
     }
-  }, [appUpdateUrl, t])
+  }, [appUpdateUrl, getErrorMessage, t])
 
   const handleCheckForUpdates = useCallback(async () => {
     setUpdateMessage(null)
+    setResolvedUpdateUrl('')
     setIsCheckingForUpdates(true)
 
     try {
-      if (canUseOtaUpdates) {
-        const updateCheckResult = await Updates.checkForUpdateAsync()
+      const payload = await requestWithSession<AppUpdateStatusResponse>('/api/app-updates/status')
+      const platformUpdate = Platform.OS === 'android' ? payload?.updates?.android : payload?.updates?.ios
+      const backendUpdateUrl = String(platformUpdate?.url ?? '').trim()
+      const latestBuildNumber = Number(platformUpdate?.buildNumber)
+      const candidateUpdateUrl = withBuildQuery(backendUpdateUrl || appUpdateUrl, latestBuildNumber)
+      const latestVersion = String(platformUpdate?.version ?? '').trim()
+      const hasComparableBuilds = Number.isFinite(latestBuildNumber) && installedNativeBuildNumber !== null
+      const hasNewNativeBuild = hasComparableBuilds
+        ? latestBuildNumber > installedNativeBuildNumber
+        : Boolean(candidateUpdateUrl)
 
-        if (updateCheckResult.isAvailable) {
-          setUpdateMessage(
-            t(
-              'Update found. Installing now...',
-              'Actualizacion encontrada. Instalando ahora...',
-            ),
-          )
-          await Updates.fetchUpdateAsync()
-          await Updates.reloadAsync()
-          return
-        }
-
-        if (appUpdateUrl) {
-          await openAppUpdateUrl()
-          return
-        }
-
+      if (!candidateUpdateUrl) {
         setUpdateMessage(
           t(
-            'You already have the latest version.',
-            'Ya tienes la version mas reciente.',
+            'Update link is not configured yet.',
+            'El enlace de actualizacion aun no esta configurado.',
           ),
         )
         return
       }
 
-      await openAppUpdateUrl()
-    } catch (error) {
+      if (hasComparableBuilds && !hasNewNativeBuild) {
+        const currentBuildText = installedNativeBuildLabel || String(installedNativeBuildNumber)
+
+        setUpdateMessage(
+          t(
+            `You already have the latest native build (${currentBuildText}).`,
+            `Ya tienes la compilacion nativa mas reciente (${currentBuildText}).`,
+          ),
+        )
+        return
+      }
+
+      setResolvedUpdateUrl(candidateUpdateUrl)
+      if (latestVersion && Number.isFinite(latestBuildNumber)) {
+        setUpdateMessage(
+          t(
+            `Native update found (v${latestVersion} build ${latestBuildNumber}). Tap Install Update.`,
+            `Se encontro actualizacion nativa (v${latestVersion} build ${latestBuildNumber}). Toca Instalar actualizacion.`,
+          ),
+        )
+        return
+      }
+
       setUpdateMessage(
-        error instanceof Error
-          ? error.message
-          : t('Could not check for updates.', 'No se pudo buscar actualizaciones.'),
+        t(
+          'Native update found. Tap Install Update to continue.',
+          'Se encontro actualizacion nativa. Toca Instalar actualizacion para continuar.',
+        ),
+      )
+    } catch (error) {
+      if (appUpdateUrl) {
+        setResolvedUpdateUrl(appUpdateUrl)
+        setUpdateMessage(
+          t(
+            'Tap Install Update to open the latest app package.',
+            'Toca Instalar actualizacion para abrir el paquete mas reciente.',
+          ),
+        )
+        return
+      }
+
+      setUpdateMessage(
+        getErrorMessage(
+          error,
+          'Could not check for updates.',
+          'No se pudo buscar actualizaciones.',
+        ),
       )
     } finally {
       setIsCheckingForUpdates(false)
     }
-  }, [appUpdateUrl, canUseOtaUpdates, openAppUpdateUrl, t])
+  }, [appUpdateUrl, getErrorMessage, installedNativeBuildLabel, installedNativeBuildNumber, requestWithSession, t])
+
+  const handleInstallUpdate = useCallback(async () => {
+    if (!resolvedUpdateUrl) {
+      setUpdateMessage(
+        t(
+          'Check for updates first.',
+          'Primero busca actualizaciones.',
+        ),
+      )
+      return
+    }
+
+    setIsInstallingUpdate(true)
+
+    try {
+      await openAppUpdateUrl(resolvedUpdateUrl || appUpdateUrl)
+    } catch (error) {
+      setUpdateMessage(
+        getErrorMessage(
+          error,
+          'Could not install update.',
+          'No se pudo instalar la actualizacion.',
+        ),
+      )
+    } finally {
+      setIsInstallingUpdate(false)
+    }
+  }, [appUpdateUrl, getErrorMessage, openAppUpdateUrl, resolvedUpdateUrl, t])
 
   const handleConfirmDisableBiometric = useCallback(async () => {
     setIsBiometricEnabled(false)
-    setHasBiometricSessionAuth(true)
-    setHasSkippedBiometricPrompt(false)
-    setIsBiometricPromptOpen(false)
+    unlockBiometricSession()
     setIsDisableBiometricConfirmOpen(false)
     await AsyncStorage.setItem(MOBILE_BIOMETRIC_ENABLED_KEY, 'false')
-  }, [])
+  }, [unlockBiometricSession])
 
   const handleSignOut = useCallback(async () => {
+    if (registeredPushToken && firebaseUser) {
+      try {
+        await requestWithSession('/api/alerts/device-token', false, {
+          method: 'DELETE',
+          body: JSON.stringify({ token: registeredPushToken }),
+        })
+      } catch {
+        // Best-effort cleanup only.
+      }
+    }
+
     await signOut(mobileAuth)
     setAuthProfile(null)
+    closeSettingsMenu()
     setDetailSelection(null)
-    setIsPicturesModalOpen(false)
+    closePicturesModal()
     setIsSidebarOpen(false)
-    setHasBiometricSessionAuth(false)
-    setHasSkippedBiometricPrompt(false)
-    setIsBiometricPromptOpen(false)
+    lockBiometricSession()
     setIsDisableBiometricConfirmOpen(false)
     setLastAutoBiometricAttemptAt(0)
     setTimesheetMessage(null)
+    setManagerEntries([])
+    setManagerOrderProgress([])
+    setManagerProgressByJob({})
+    setManagerMessage(null)
+    setManagerDate(new Date().toISOString().slice(0, 10))
+    setAlerts([])
+    setAlertsUnreadCount(0)
+    setAlertsMessage(null)
+    setRegisteredPushToken(null)
     setAuthMessage(null)
-  }, [])
+  }, [closePicturesModal, closeSettingsMenu, firebaseUser, lockBiometricSession, registeredPushToken, requestWithSession])
 
   const handleStartGoogleLogin = useCallback(async () => {
     if (!googleRequest) {
@@ -967,9 +875,54 @@ export default function App() {
       }
     } catch (error) {
       setIsSigningIn(false)
-      setAuthMessage(error instanceof Error ? error.message : t('Google sign-in failed.', 'Fallo el inicio de sesion con Google.'))
+      setAuthMessage(getErrorMessage(error, 'Google sign-in failed.', 'Fallo el inicio de sesion con Google.'))
     }
-  }, [googleRequest, promptGoogleSignIn, t])
+  }, [getErrorMessage, googleRequest, promptGoogleSignIn, t])
+
+  const handleStartEmailPasswordLogin = useCallback(async () => {
+    const normalizedEmail = emailSignInValue.trim().toLowerCase()
+    const normalizedPassword = passwordSignInValue
+
+    if (!normalizedEmail || !normalizedPassword) {
+      setAuthMessage(
+        t(
+          'Enter email and password to continue.',
+          'Escribe correo y contrasena para continuar.',
+        ),
+      )
+      return
+    }
+
+    setAuthMessage(null)
+    setIsEmailSigningIn(true)
+
+    try {
+      await signInWithEmailAndPassword(mobileAuth, normalizedEmail, normalizedPassword)
+      setAuthMessage(null)
+    } catch (error) {
+      const normalizedCode = String((error as { code?: string })?.code ?? '').trim().toLowerCase()
+
+      if (
+        normalizedCode.includes('auth/invalid-credential')
+        || normalizedCode.includes('auth/wrong-password')
+        || normalizedCode.includes('auth/user-not-found')
+        || normalizedCode.includes('auth/invalid-email')
+      ) {
+        setAuthMessage(t('Incorrect email or password.', 'Correo o contrasena incorrectos.'))
+        return
+      }
+
+      setAuthMessage(
+        getErrorMessage(
+          error,
+          'Email sign-in failed.',
+          'Fallo el inicio de sesion con correo.',
+        ),
+      )
+    } finally {
+      setIsEmailSigningIn(false)
+    }
+  }, [emailSignInValue, getErrorMessage, passwordSignInValue, t])
 
   useEffect(() => {
     let isMounted = true
@@ -997,7 +950,13 @@ export default function App() {
       })
     } catch (error) {
       if (isMounted) {
-        setAuthMessage(error instanceof Error ? error.message : t('Mobile auth failed to initialize.', 'La autenticacion movil no pudo iniciarse.'))
+        setAuthMessage(
+          getErrorMessage(
+            error,
+            'Mobile auth failed to initialize.',
+            'La autenticacion movil no pudo iniciarse.',
+          ),
+        )
         setIsAuthResolved(true)
       }
 
@@ -1009,7 +968,7 @@ export default function App() {
       clearTimeout(resolveTimeoutId)
       subscription()
     }
-  }, [t])
+  }, [getErrorMessage, t])
 
   useEffect(() => {
     let isMounted = true
@@ -1017,8 +976,9 @@ export default function App() {
     Promise.all([
       AsyncStorage.getItem(MOBILE_BIOMETRIC_ENABLED_KEY),
       AsyncStorage.getItem(MOBILE_LANGUAGE_KEY),
+      AsyncStorage.getItem(MOBILE_NOTIFICATIONS_ENABLED_KEY),
     ])
-      .then(([storedBiometricValue, storedLanguageValue]) => {
+      .then(([storedBiometricValue, storedLanguageValue, storedNotificationsValue]) => {
         if (!isMounted) {
           return
         }
@@ -1029,6 +989,10 @@ export default function App() {
 
         if (storedLanguageValue === 'es' || storedLanguageValue === 'en') {
           setLanguage(storedLanguageValue)
+        }
+
+        if (storedNotificationsValue === 'false') {
+          setIsNotificationsEnabled(false)
         }
       })
       .catch(() => {
@@ -1065,28 +1029,41 @@ export default function App() {
         setAuthMessage(null)
       })
       .catch((error) => {
-        setAuthMessage(error instanceof Error ? error.message : t('Google sign-in failed.', 'Fallo el inicio de sesion con Google.'))
+        setAuthMessage(getErrorMessage(error, 'Google sign-in failed.', 'Fallo el inicio de sesion con Google.'))
       })
       .finally(() => {
         setIsSigningIn(false)
       })
-  }, [googleResponse, t])
+  }, [getErrorMessage, googleResponse, t])
 
   useEffect(() => {
     if (!firebaseUser) {
       setAuthProfile(null)
+      closeSettingsMenu()
       setIsCheckingApproval(false)
-      setHasBiometricSessionAuth(false)
-      setHasSkippedBiometricPrompt(false)
-      setIsBiometricPromptOpen(false)
+      setRegisteredPushToken(null)
+      setManagerEntries([])
+      setManagerOrderProgress([])
+      setManagerProgressByJob({})
+      setManagerMessage(null)
+      setAlerts([])
+      setAlertsUnreadCount(0)
+      setAlertsMessage(null)
+      lockBiometricSession()
       setLastAutoBiometricAttemptAt(0)
       return
     }
 
-    setHasBiometricSessionAuth(false)
-    setHasSkippedBiometricPrompt(false)
+    setPasswordSignInValue('')
+    lockBiometricSession()
     void syncAuthProfile()
-  }, [firebaseUser, syncAuthProfile])
+  }, [closeSettingsMenu, firebaseUser, lockBiometricSession, syncAuthProfile])
+
+  useEffect(() => {
+    if (activeScreen === 'manager' && !hasManagerSheetAccess) {
+      setActiveScreen('dashboard')
+    }
+  }, [activeScreen, hasManagerSheetAccess])
 
   useEffect(() => {
     maybeAutoPromptBiometric()
@@ -1111,8 +1088,7 @@ export default function App() {
     }
 
     if (!isBiometricEnabled) {
-      setHasBiometricSessionAuth(true)
-      setIsBiometricPromptOpen(false)
+      unlockBiometricSession()
       return
     }
 
@@ -1130,7 +1106,12 @@ export default function App() {
     hasBiometricSessionAuth,
     hasSkippedBiometricPrompt,
     isBiometricEnabled,
+    unlockBiometricSession,
   ])
+
+  const orderBuckets = useMemo(() => {
+    return buildOrderBuckets(mondaySnapshot?.orders ?? [])
+  }, [mondaySnapshot])
 
   useEffect(() => {
     if (!firebaseUser || !authProfile?.isApproved) {
@@ -1192,23 +1173,21 @@ export default function App() {
       }
     } catch (error) {
       setErrorMessage(
-        error instanceof Error
-          ? error.message
-          : t('Failed to load data.', 'No se pudieron cargar los datos.'),
+        getErrorMessage(error, 'Failed to load data.', 'No se pudieron cargar los datos.'),
       )
     } finally {
       setIsLoading(false)
       setIsRefreshing(false)
     }
-  }, [requestWithSession, t])
+  }, [getErrorMessage, requestWithSession, t])
 
   useEffect(() => {
-    if (!authProfile?.isApproved || (isBiometricEnabled && !hasBiometricSessionAuth)) {
+    if (!hasApprovedSessionAccess) {
       return
     }
 
     void loadDashboard(false)
-  }, [authProfile?.isApproved, hasBiometricSessionAuth, isBiometricEnabled, loadDashboard])
+  }, [hasApprovedSessionAccess, loadDashboard])
 
   const loadTimesheet = useCallback(async () => {
     setIsTimesheetLoading(true)
@@ -1233,23 +1212,469 @@ export default function App() {
       setTimesheetEntries([])
       setTimesheetStages([])
       setTimesheetStageId('')
-      setTimesheetMessage(error instanceof Error ? error.message : t('Could not load your timesheet.', 'No se pudo cargar tu hoja de horas.'))
+      setTimesheetMessage(
+        getErrorMessage(
+          error,
+          'Could not load your timesheet.',
+          'No se pudo cargar tu hoja de horas.',
+        ),
+      )
     } finally {
       setIsTimesheetLoading(false)
     }
-  }, [requestWithSession, t])
+  }, [getErrorMessage, requestWithSession])
 
   useEffect(() => {
     if (activeScreen !== 'timesheet') {
       return
     }
 
-    if (!authProfile?.isApproved || (isBiometricEnabled && !hasBiometricSessionAuth)) {
+    if (!hasApprovedSessionAccess) {
       return
     }
 
     void loadTimesheet()
-  }, [activeScreen, authProfile?.isApproved, hasBiometricSessionAuth, isBiometricEnabled, loadTimesheet])
+  }, [activeScreen, hasApprovedSessionAccess, loadTimesheet])
+
+  const loadManagerSheet = useCallback(async () => {
+    if (!hasManagerSheetAccess) {
+      setManagerEntries([])
+      setManagerOrderProgress([])
+      setManagerProgressByJob({})
+      return
+    }
+
+    setIsManagerLoading(true)
+    setManagerMessage(null)
+
+    try {
+      const payload = await requestWithSession<{
+        entries?: MobileTimesheetEntry[]
+        orderProgress?: MobileManagerOrderProgress[]
+      }>('/api/timesheet/state')
+
+      setManagerEntries(Array.isArray(payload.entries) ? payload.entries : [])
+      setManagerOrderProgress(Array.isArray(payload.orderProgress) ? payload.orderProgress : [])
+    } catch (error) {
+      setManagerEntries([])
+      setManagerOrderProgress([])
+      setManagerProgressByJob({})
+      setManagerMessage(
+        getErrorMessage(
+          error,
+          'Could not load manager sheet data.',
+          'No se pudo cargar los datos de la hoja de gerente.',
+        ),
+      )
+    } finally {
+      setIsManagerLoading(false)
+    }
+  }, [getErrorMessage, hasManagerSheetAccess, requestWithSession])
+
+  useEffect(() => {
+    if (activeScreen !== 'manager') {
+      return
+    }
+
+    if (!hasApprovedSessionAccess || !hasManagerSheetAccess) {
+      return
+    }
+
+    void loadManagerSheet()
+  }, [activeScreen, hasApprovedSessionAccess, hasManagerSheetAccess, loadManagerSheet])
+
+  const loadAlerts = useCallback(async (refreshRequested = false) => {
+    setIsAlertsLoading(true)
+
+    if (refreshRequested) {
+      setIsRefreshing(true)
+    }
+
+    try {
+      const payload = await requestWithSession<{ alerts: MobileAlert[]; unreadCount?: number }>(
+        '/api/alerts/my?limit=80',
+        refreshRequested,
+      )
+
+      const nextAlerts = Array.isArray(payload.alerts)
+        ? payload.alerts.map((alertItem) => ({
+            ...alertItem,
+            isRead: Boolean(alertItem.isRead),
+            readAt: String(alertItem.readAt ?? '').trim() || null,
+          }))
+        : []
+      const unreadCountFromPayload = Number(payload.unreadCount)
+      const unreadCount = Number.isFinite(unreadCountFromPayload)
+        ? Math.max(0, Math.floor(unreadCountFromPayload))
+        : nextAlerts.reduce((total, alertItem) => total + (alertItem.isRead ? 0 : 1), 0)
+
+      setAlerts(nextAlerts)
+      setAlertsUnreadCount(unreadCount)
+      setAlertsMessage(null)
+    } catch (error) {
+      setAlerts([])
+      setAlertsUnreadCount(0)
+      setAlertsMessage(
+        getErrorMessage(
+          error,
+          'Could not load notifications.',
+          'No se pudieron cargar las notificaciones.',
+        ),
+      )
+    } finally {
+      setIsAlertsLoading(false)
+      setIsRefreshing(false)
+    }
+  }, [getErrorMessage, requestWithSession])
+
+  const markAlertAsRead = useCallback(async (alertItem: MobileAlert) => {
+    const alertId = String(alertItem?.id ?? '').trim()
+
+    if (!alertId || alertItem.isRead) {
+      return
+    }
+
+    try {
+      const payload = await requestWithSession<{ readAt?: string }>(
+        `/api/alerts/${encodeURIComponent(alertId)}/read`,
+        false,
+        {
+          method: 'POST',
+        },
+      )
+      const nextReadAt = String(payload.readAt ?? '').trim() || new Date().toISOString()
+
+      setAlerts((previous) =>
+        previous.map((entry) =>
+          entry.id === alertId
+            ? {
+                ...entry,
+                isRead: true,
+                readAt: nextReadAt,
+              }
+            : entry,
+        ),
+      )
+      setAlertsUnreadCount((current) => Math.max(0, current - 1))
+    } catch (error) {
+      setAlertsMessage(
+        getErrorMessage(
+          error,
+          'Could not mark this notification as read.',
+          'No se pudo marcar esta notificacion como leida.',
+        ),
+      )
+    }
+  }, [getErrorMessage, requestWithSession])
+
+  const resolveAlertLink = useCallback((alertItem: MobileAlert) => {
+    const messageLink = extractFirstUrlFromText(alertItem.message)
+
+    if (messageLink) {
+      return messageLink
+    }
+
+    const titleAndMessage = `${alertItem.title} ${alertItem.message}`.toLowerCase()
+    const looksLikeUpdateNotice =
+      alertItem.isUpdate === true
+      || /update|actualiz|apk|install|instala|version|build|download|descarg/.test(titleAndMessage)
+
+    if (!looksLikeUpdateNotice) {
+      return null
+    }
+
+    const fallbackLink = String(appUpdateUrl ?? '').trim()
+
+    return fallbackLink || null
+  }, [appUpdateUrl])
+
+  const handleOpenAlertLink = useCallback(async (url: string, alertItem?: MobileAlert) => {
+    const normalizedUrl = String(url ?? '').trim()
+
+    if (!normalizedUrl) {
+      return
+    }
+
+    try {
+      const launchUrl =
+        Platform.OS === 'android' && /\.apk(?:$|\?)/i.test(normalizedUrl)
+          ? `${normalizedUrl}${normalizedUrl.includes('?') ? '&' : '?'}installTs=${Date.now()}`
+          : normalizedUrl
+      const canOpen = await Linking.canOpenURL(launchUrl)
+
+      if (!canOpen) {
+        setAlertsMessage(
+          t(
+            'This device cannot open the update link.',
+            'Este dispositivo no puede abrir el enlace de actualizacion.',
+          ),
+        )
+        return
+      }
+
+      await Linking.openURL(launchUrl)
+
+      if (alertItem && !alertItem.isRead) {
+        void markAlertAsRead(alertItem)
+      }
+
+      setAlertsMessage(
+        t(
+          'Opened update link.',
+          'Se abrio el enlace de actualizacion.',
+        ),
+      )
+    } catch (error) {
+      setAlertsMessage(
+        getErrorMessage(
+          error,
+          'Could not open update link.',
+          'No se pudo abrir el enlace de actualizacion.',
+        ),
+      )
+    }
+  }, [getErrorMessage, markAlertAsRead, t])
+
+  const resolveNotificationTargetScreen = useCallback((rawData: unknown): AppScreen => {
+    if (!rawData || typeof rawData !== 'object') {
+      return 'alerts'
+    }
+
+    const notificationData = rawData as Record<string, unknown>
+    const route = String(
+      notificationData.route
+      ?? notificationData.screen
+      ?? notificationData.targetScreen
+      ?? '',
+    ).trim().toLowerCase()
+    const type = String(notificationData.type ?? '').trim().toLowerCase()
+
+    if (route === 'updates' || route === 'update' || type === 'app_update') {
+      return 'settings'
+    }
+
+    return 'alerts'
+  }, [])
+
+  useEffect(() => {
+    if (!firebaseUser || !hasApprovedSessionAccess) {
+      return
+    }
+
+    void loadAlerts(false)
+  }, [
+    activeScreen,
+    firebaseUser,
+    hasApprovedSessionAccess,
+    loadAlerts,
+  ])
+
+  const registerPushTokenForAlerts = useCallback(async (forceEnable = false) => {
+    if (!firebaseUser || !hasApprovedSessionAccess || (!forceEnable && !isNotificationsEnabled)) {
+      return
+    }
+
+    try {
+      if (Platform.OS === 'android') {
+        await Notifications.setNotificationChannelAsync('alerts', {
+          name: 'Notifications',
+          importance: Notifications.AndroidImportance.HIGH,
+          vibrationPattern: [0, 200, 160, 200],
+          lightColor: '#3d65ef',
+        })
+      }
+
+      const currentPermissions = await Notifications.getPermissionsAsync()
+      let permissionStatus = currentPermissions.status
+
+      if (permissionStatus !== 'granted') {
+        const requestedPermissions = await Notifications.requestPermissionsAsync()
+        permissionStatus = requestedPermissions.status
+      }
+
+      if (permissionStatus !== 'granted') {
+        setAlertsMessage((current) =>
+          current
+          ?? t(
+            'Notifications are disabled. Enable them in device settings to receive notifications.',
+            'Las notificaciones estan desactivadas. Activalas en configuracion para recibir notificaciones.',
+          ),
+        )
+        return
+      }
+
+      let token = ''
+      let tokenProvider: 'expo' | 'fcm' = 'expo'
+
+      if (Platform.OS === 'android') {
+        const devicePushToken = await Notifications.getDevicePushTokenAsync()
+        token = String(devicePushToken.data ?? '').trim()
+        tokenProvider = 'fcm'
+      } else {
+        const tokenPayload = await Notifications.getExpoPushTokenAsync(
+          easProjectId
+            ? {
+                projectId: easProjectId,
+              }
+            : undefined,
+        )
+        token = String(tokenPayload.data ?? '').trim()
+        tokenProvider = 'expo'
+      }
+
+      if (!token || token === registeredPushToken) {
+        return
+      }
+
+      await requestWithSession('/api/alerts/device-token', false, {
+        method: 'POST',
+        body: JSON.stringify({
+          token,
+          tokenProvider,
+          platform: 'app',
+          appVersion: installedNativeVersion,
+          appBuild: installedNativeBuildLabel,
+        }),
+      })
+
+      setRegisteredPushToken(token)
+      setAlertsMessage(null)
+    } catch (error) {
+      const rawMessage = error instanceof Error ? error.message : ''
+      const normalizedMessage = rawMessage.toLowerCase()
+
+      if (
+        Platform.OS === 'android'
+        && (
+          normalizedMessage.includes('firebase app is not initialized')
+          || normalizedMessage.includes('fcm credentials')
+        )
+      ) {
+        setAlertsMessage(
+          t(
+            'Notifications are not ready in this install yet. Reinstall the latest local APK and then enable notifications again.',
+            'Las notificaciones aun no estan listas en esta instalacion. Reinstala el APK local mas reciente y luego activa notificaciones otra vez.',
+          ),
+        )
+        return
+      }
+
+      setAlertsMessage(
+        getErrorMessage(
+          error,
+          'Could not register this phone for notifications.',
+          'No se pudo registrar este telefono para notificaciones.',
+        ),
+      )
+    }
+  }, [
+    easProjectId,
+    firebaseUser,
+    getErrorMessage,
+    hasApprovedSessionAccess,
+    installedNativeBuildLabel,
+    installedNativeVersion,
+    isNotificationsEnabled,
+    registeredPushToken,
+    requestWithSession,
+    t,
+  ])
+
+  const handleEnableNotifications = useCallback(async () => {
+    setAlertsMessage(null)
+    setIsNotificationsEnabled(true)
+
+    try {
+      await AsyncStorage.setItem(MOBILE_NOTIFICATIONS_ENABLED_KEY, 'true')
+    } catch {
+      // Keep in-memory state if persistence fails.
+    }
+
+    void registerPushTokenForAlerts(true)
+  }, [registerPushTokenForAlerts])
+
+  const handleOpenDeviceNotificationSettings = useCallback(async () => {
+    try {
+      await Linking.openSettings()
+      setAlertsMessage(
+        t(
+          'Opened device settings. You can block notifications there.',
+          'Se abrio configuracion del dispositivo. Puedes bloquear notificaciones alli.',
+        ),
+      )
+    } catch (error) {
+      setAlertsMessage(
+        getErrorMessage(
+          error,
+          'Could not open device settings.',
+          'No se pudo abrir la configuracion del dispositivo.',
+        ),
+      )
+    }
+  }, [getErrorMessage, t])
+
+  const handleDisableNotifications = useCallback(async () => {
+    setAlertsMessage(null)
+    setIsNotificationsEnabled(false)
+
+    try {
+      await AsyncStorage.setItem(MOBILE_NOTIFICATIONS_ENABLED_KEY, 'false')
+    } catch {
+      // Keep in-memory state if persistence fails.
+    }
+
+    if (firebaseUser) {
+      try {
+        await requestWithSession('/api/alerts/device-token', false, {
+          method: 'DELETE',
+          body: registeredPushToken ? JSON.stringify({ token: registeredPushToken }) : undefined,
+        })
+      } catch {
+        // Best-effort cleanup only.
+      }
+    }
+
+    setRegisteredPushToken(null)
+    await handleOpenDeviceNotificationSettings()
+  }, [firebaseUser, handleOpenDeviceNotificationSettings, registeredPushToken, requestWithSession])
+
+  useEffect(() => {
+    if (!firebaseUser || !hasApprovedSessionAccess || !isNotificationsEnabled) {
+      return
+    }
+
+    void registerPushTokenForAlerts()
+  }, [
+    firebaseUser,
+    hasApprovedSessionAccess,
+    isNotificationsEnabled,
+    registerPushTokenForAlerts,
+  ])
+
+  useEffect(() => {
+    const receiveSubscription = Notifications.addNotificationReceivedListener(() => {
+      if (!firebaseUser || !authProfile?.isApproved) {
+        return
+      }
+
+      void loadAlerts(true)
+    })
+    const responseSubscription = Notifications.addNotificationResponseReceivedListener((response) => {
+      if (!firebaseUser || !authProfile?.isApproved) {
+        return
+      }
+
+      const nextScreen = resolveNotificationTargetScreen(response.notification.request.content.data)
+
+      setActiveScreen(nextScreen)
+      void loadAlerts(true)
+    })
+
+    return () => {
+      receiveSubscription.remove()
+      responseSubscription.remove()
+    }
+  }, [authProfile?.isApproved, firebaseUser, loadAlerts, resolveNotificationTargetScreen])
 
   const handleSaveTimesheetEntry = useCallback(async () => {
     const normalizedDate = timesheetDate.trim()
@@ -1302,11 +1727,26 @@ export default function App() {
       setTimesheetNotes('')
       setTimesheetMessage(t('Timesheet entry saved.', 'Entrada de horas guardada.'))
     } catch (error) {
-      setTimesheetMessage(error instanceof Error ? error.message : t('Could not save timesheet entry.', 'No se pudo guardar la entrada de horas.'))
+      setTimesheetMessage(
+        getErrorMessage(
+          error,
+          'Could not save timesheet entry.',
+          'No se pudo guardar la entrada de horas.',
+        ),
+      )
     } finally {
       setIsTimesheetSaving(false)
     }
-  }, [requestWithSession, t, timesheetDate, timesheetHours, timesheetJobNumber, timesheetNotes, timesheetStageId])
+  }, [
+    getErrorMessage,
+    requestWithSession,
+    t,
+    timesheetDate,
+    timesheetHours,
+    timesheetJobNumber,
+    timesheetNotes,
+    timesheetStageId,
+  ])
 
   const handleRefreshActiveScreen = useCallback(() => {
     if (activeScreen === 'timesheet') {
@@ -1314,13 +1754,24 @@ export default function App() {
       return
     }
 
+    if (activeScreen === 'manager') {
+      void loadManagerSheet()
+      return
+    }
+
+    if (activeScreen === 'alerts') {
+      void loadAlerts(true)
+      return
+    }
+
     if (activeScreen === 'settings') {
       void syncAuthProfile()
+      void handleCheckForUpdates()
       return
     }
 
     void loadDashboard(true)
-  }, [activeScreen, loadDashboard, loadTimesheet, syncAuthProfile])
+  }, [activeScreen, handleCheckForUpdates, loadAlerts, loadDashboard, loadManagerSheet, loadTimesheet, syncAuthProfile])
 
   useEffect(() => {
     const firstOrderId = mondaySnapshot?.orders?.[0]?.id ?? null
@@ -1333,6 +1784,10 @@ export default function App() {
       return firstOrderId
     })
   }, [mondaySnapshot])
+
+  useEffect(() => {
+    resetPendingPicturesAndMessage()
+  }, [resetPendingPicturesAndMessage, selectedPictureOrderId])
 
   const loadOrderPhotos = useCallback(
     async (orderId: string, forceRefresh = false) => {
@@ -1378,6 +1833,13 @@ export default function App() {
     void loadOrderPhotos(selectedPictureOrderId)
   }, [activeScreen, selectedPictureOrderId, loadOrderPhotos])
 
+  const openPicturesModalForOrder = useCallback((orderId: string) => {
+    setSelectedPictureOrderId(orderId)
+    resetPendingPicturesAndMessage()
+    setIsPicturesModalOpen(true)
+    void loadOrderPhotos(orderId)
+  }, [loadOrderPhotos, resetPendingPicturesAndMessage])
+
   const orderMetrics = useMemo(
     () => [
       {
@@ -1390,30 +1852,14 @@ export default function App() {
       {
         key: 'dueThisWeekOrders' as const,
         label: t('Due This Week', 'Vencen esta semana'),
-        value: (mondaySnapshot?.orders ?? []).filter((order) => {
-          if (order.isDone) {
-            return false
-          }
-
-          const daysUntilDue = resolveDaysUntilDue(order)
-
-          return daysUntilDue !== null && daysUntilDue >= 0 && daysUntilDue <= 7
-        }).length,
+        value: orderBuckets.dueThisWeekOrders.length,
         helper: t('Not shipped, due in 7 days', 'No enviadas, vencen en 7 dias'),
         tone: ORDER_TONES[1],
       },
       {
         key: 'dueInTwoWeeksOrders' as const,
         label: t('Due In 2 Weeks', 'Vencen en 2 semanas'),
-        value: (mondaySnapshot?.orders ?? []).filter((order) => {
-          if (order.isDone) {
-            return false
-          }
-
-          const daysUntilDue = resolveDaysUntilDue(order)
-
-          return daysUntilDue !== null && daysUntilDue > 7 && daysUntilDue <= 14
-        }).length,
+        value: orderBuckets.dueInTwoWeeksOrders.length,
         helper: t('Not shipped, due in 8-14 days', 'No enviadas, vencen en 8-14 dias'),
         tone: ORDER_TONES[3],
       },
@@ -1432,36 +1878,8 @@ export default function App() {
         tone: ORDER_TONES[4],
       },
     ],
-    [mondaySnapshot, t],
+    [mondaySnapshot, orderBuckets, t],
   )
-
-  const orderBuckets = useMemo(() => {
-    const allOrders = mondaySnapshot?.orders ?? []
-    const dueThisWeekOrders = allOrders.filter((order) => {
-      if (order.isDone) {
-        return false
-      }
-
-      const daysUntilDue = resolveDaysUntilDue(order)
-
-      return daysUntilDue !== null && daysUntilDue >= 0 && daysUntilDue <= 7
-    })
-
-    const dueInTwoWeeksOrders = allOrders.filter((order) => {
-      if (order.isDone) {
-        return false
-      }
-
-      const daysUntilDue = resolveDaysUntilDue(order)
-
-      return daysUntilDue !== null && daysUntilDue > 7 && daysUntilDue <= 14
-    })
-
-    return {
-      dueThisWeekOrders,
-      dueInTwoWeeksOrders,
-    }
-  }, [mondaySnapshot])
 
   const ticketMetrics = useMemo(
     () => [
@@ -1530,7 +1948,7 @@ export default function App() {
 
   const detailOrders = useMemo(() => {
     if (!mondaySnapshot || !detailSelection || detailSelection.type !== 'order') {
-      return [] as DashboardOrder[]
+      return []
     }
 
     switch (detailSelection.key) {
@@ -1545,13 +1963,13 @@ export default function App() {
       case 'missingDueDateOrders':
         return mondaySnapshot.details.missingDueDateOrders
       default:
-        return [] as DashboardOrder[]
+        return []
     }
   }, [detailSelection, mondaySnapshot, orderBuckets])
 
   const detailTickets = useMemo(() => {
     if (!supportTicketsSnapshot || !detailSelection || detailSelection.type !== 'ticket') {
-      return [] as SupportTicket[]
+      return []
     }
 
     const allTickets = supportTicketsSnapshot.tickets
@@ -1616,11 +2034,13 @@ export default function App() {
 
   const selectedOrderPhotos = useMemo(() => {
     if (!selectedPictureOrder) {
-      return [] as OrderPhoto[]
+      return []
     }
 
     return orderPhotosByOrderId[selectedPictureOrder.id] ?? []
   }, [orderPhotosByOrderId, selectedPictureOrder])
+
+  const pendingPictureCount = pendingPictures.length
 
   const timesheetEntriesForSelectedDate = useMemo(
     () => timesheetEntries.filter((entry) => String(entry.date) === timesheetDate.trim()),
@@ -1635,6 +2055,153 @@ export default function App() {
       }, {}),
     [timesheetStages],
   )
+
+  const managerProgressByDateJobKey = useMemo(() => {
+    const map = new Map<string, MobileManagerOrderProgress>()
+
+    managerOrderProgress.forEach((progress) => {
+      const normalizedDate = normalizeIsoDate(progress.date)
+      const normalizedJobName = normalizeJobName(progress.jobName)
+
+      if (!normalizedDate || !normalizedJobName) {
+        return
+      }
+
+      const key = `${normalizedDate}:${normalizedJobName}`
+      map.set(key, progress)
+    })
+
+    return map
+  }, [managerOrderProgress])
+
+  const managerJobsByDate = useMemo(() => {
+    const jobsByDate = new Map<string, Set<string>>()
+
+    managerEntries.forEach((entry) => {
+      const normalizedDate = normalizeIsoDate(entry.date)
+      const normalizedJobName = normalizeJobName(entry.jobName)
+
+      if (!normalizedDate || !normalizedJobName) {
+        return
+      }
+
+      const jobsForDate = jobsByDate.get(normalizedDate) ?? new Set<string>()
+
+      jobsForDate.add(normalizedJobName)
+      jobsByDate.set(normalizedDate, jobsForDate)
+    })
+
+    return jobsByDate
+  }, [managerEntries])
+
+  const managerDatesWithOrders = useMemo(
+    () => [...managerJobsByDate.keys()].sort((left, right) => left.localeCompare(right)),
+    [managerJobsByDate],
+  )
+
+  const managerDatesWithOrdersSet = useMemo(
+    () => new Set(managerDatesWithOrders),
+    [managerDatesWithOrders],
+  )
+
+  const managerDatesMissingProgress = useMemo(() => {
+    const missingDates: string[] = []
+
+    managerJobsByDate.forEach((jobNames, date) => {
+      const hasMissingJobProgress = [...jobNames].some((jobName) => {
+        const key = `${date}:${jobName}`
+
+        return !managerProgressByDateJobKey.has(key)
+      })
+
+      if (hasMissingJobProgress) {
+        missingDates.push(date)
+      }
+    })
+
+    return missingDates.sort((left, right) => left.localeCompare(right))
+  }, [managerJobsByDate, managerProgressByDateJobKey])
+
+  const managerDayEntries = useMemo(
+    () => managerEntries.filter((entry) => normalizeIsoDate(entry.date) === managerDate.trim()),
+    [managerDate, managerEntries],
+  )
+
+  const managerDayJobs = useMemo(() => {
+    const jobNames = new Set<string>()
+
+    managerDayEntries.forEach((entry) => {
+      const jobName = String(entry.jobName ?? '').trim()
+
+      if (jobName) {
+        jobNames.add(jobName)
+      }
+    })
+
+    managerOrderProgress.forEach((progress) => {
+      if (normalizeIsoDate(progress.date) !== managerDate.trim()) {
+        return
+      }
+
+      const jobName = String(progress.jobName ?? '').trim()
+
+      if (jobName) {
+        jobNames.add(jobName)
+      }
+    })
+
+    return [...jobNames].sort((left, right) => left.localeCompare(right))
+  }, [managerDate, managerDayEntries, managerOrderProgress])
+
+  const managerRows = useMemo(() => {
+    const entriesByJobKey = new Map<
+      string,
+      {
+        totalHours: number
+        workerIds: Set<string>
+      }
+    >()
+
+    managerDayEntries.forEach((entry) => {
+      const jobKey = normalizeJobName(entry.jobName)
+
+      if (!jobKey) {
+        return
+      }
+
+      const existing = entriesByJobKey.get(jobKey) ?? {
+        totalHours: 0,
+        workerIds: new Set<string>(),
+      }
+      const workerKey = String(entry.workerId ?? '').trim() || `entry-${entry.id}`
+
+      existing.totalHours += Number(entry.hours ?? 0)
+      existing.workerIds.add(workerKey)
+      entriesByJobKey.set(jobKey, existing)
+    })
+
+    return managerDayJobs.map((jobName) => {
+      const jobKey = normalizeJobName(jobName)
+      const totals = entriesByJobKey.get(jobKey)
+      const progressKey = `${managerDate.trim()}:${jobKey}`
+      const savedProgress = managerProgressByDateJobKey.get(progressKey)
+      const savedReadyPercent = savedProgress ? Number(savedProgress.readyPercent) : 0
+      const rawDraft = String(managerProgressByJob[jobName] ?? '').trim()
+      const parsedDraft = Number(rawDraft)
+      const editReadyPercent =
+        rawDraft === '' || !Number.isFinite(parsedDraft)
+          ? savedReadyPercent
+          : Math.min(100, Math.max(0, parsedDraft))
+
+      return {
+        jobName,
+        totalHours: totals?.totalHours ?? 0,
+        workerCount: totals?.workerIds.size ?? 0,
+        savedReadyPercent,
+        editReadyPercent,
+      }
+    })
+  }, [managerDate, managerDayEntries, managerDayJobs, managerProgressByDateJobKey, managerProgressByJob])
 
   const selectedTimesheetDate = useMemo(() => {
     const parsed = new Date(`${timesheetDate.trim()}T12:00:00`)
@@ -1658,6 +2225,173 @@ export default function App() {
     setTimesheetDate(formatDateInput(value))
   }, [])
 
+  const handleManagerDateSelect = useCallback((nextDate: string) => {
+    const normalizedDate = nextDate.trim()
+
+    if (!normalizedDate || !managerDatesWithOrdersSet.has(normalizedDate)) {
+      setManagerMessage(
+        t(
+          'No orders found for this date.',
+          'No se encontraron ordenes para esta fecha.',
+        ),
+      )
+      return
+    }
+
+    setManagerDate(normalizedDate)
+    setManagerMessage(null)
+  }, [managerDatesWithOrdersSet, t])
+
+  useEffect(() => {
+    if (activeScreen !== 'manager' || managerDatesWithOrders.length === 0) {
+      return
+    }
+
+    const normalizedManagerDate = managerDate.trim()
+
+    if (managerDatesWithOrdersSet.has(normalizedManagerDate)) {
+      return
+    }
+
+    const latestDateWithOrders = managerDatesWithOrders[managerDatesWithOrders.length - 1]
+
+    setManagerDate(latestDateWithOrders)
+  }, [activeScreen, managerDate, managerDatesWithOrders, managerDatesWithOrdersSet])
+
+  useEffect(() => {
+    if (activeScreen !== 'manager') {
+      return
+    }
+
+    const nextDraftByJob: Record<string, string> = {}
+    const normalizedManagerDate = managerDate.trim()
+
+    managerDayJobs.forEach((jobName) => {
+      const key = `${normalizedManagerDate}:${normalizeJobName(jobName)}`
+      const progress = managerProgressByDateJobKey.get(key)
+      nextDraftByJob[jobName] = progress ? String(progress.readyPercent) : '0'
+    })
+
+    setManagerProgressByJob(nextDraftByJob)
+  }, [activeScreen, managerDate, managerDayJobs, managerProgressByDateJobKey])
+
+  const handleManagerProgressChange = useCallback((jobName: string, value: string) => {
+    setManagerProgressByJob((current) => ({
+      ...current,
+      [jobName]: value,
+    }))
+  }, [])
+
+  const handleSaveManagerProgress = useCallback(async () => {
+    if (!hasManagerSheetAccess) {
+      setManagerMessage(
+        t(
+          'Manager access is required.',
+          'Se requiere acceso de gerente.',
+        ),
+      )
+      return
+    }
+
+    const normalizedDate = managerDate.trim()
+
+    if (!normalizedDate) {
+      setManagerMessage(t('Date is required.', 'La fecha es obligatoria.'))
+      return
+    }
+
+    if (!managerDatesWithOrdersSet.has(normalizedDate)) {
+      setManagerMessage(
+        t(
+          'No orders found for this date.',
+          'No se encontraron ordenes para esta fecha.',
+        ),
+      )
+      return
+    }
+
+    if (managerDayJobs.length === 0) {
+      setManagerMessage(
+        t(
+          'No orders found for this date.',
+          'No se encontraron ordenes para esta fecha.',
+        ),
+      )
+      return
+    }
+
+    const invalidJobs: string[] = []
+
+    managerDayJobs.forEach((jobName) => {
+      const rawValue = String(managerProgressByJob[jobName] ?? '').trim()
+      const readyPercent = Number(rawValue)
+
+      if (!rawValue || !Number.isFinite(readyPercent) || readyPercent < 0 || readyPercent > 100) {
+        invalidJobs.push(jobName)
+      }
+    })
+
+    if (invalidJobs.length > 0) {
+      setManagerMessage(
+        t(
+          `Enter ready % from 0 to 100 for: ${invalidJobs.join(', ')}`,
+          `Ingresa listo % de 0 a 100 para: ${invalidJobs.join(', ')}`,
+        ),
+      )
+      return
+    }
+
+    setIsManagerSaving(true)
+    setManagerMessage(null)
+
+    try {
+      await Promise.all(
+        managerDayJobs.map((jobName) =>
+          requestWithSession<{ progress: MobileManagerOrderProgress }>(
+            '/api/timesheet/order-progress',
+            false,
+            {
+              method: 'PUT',
+              body: JSON.stringify({
+                date: normalizedDate,
+                jobName,
+                readyPercent: Number(String(managerProgressByJob[jobName] ?? '').trim()),
+              }),
+            },
+          ),
+        ),
+      )
+
+      await loadManagerSheet()
+      setManagerMessage(
+        t(
+          'Manager progress saved.',
+          'Progreso de gerente guardado.',
+        ),
+      )
+    } catch (error) {
+      setManagerMessage(
+        getErrorMessage(
+          error,
+          'Could not save manager progress.',
+          'No se pudo guardar el progreso de gerente.',
+        ),
+      )
+    } finally {
+      setIsManagerSaving(false)
+    }
+  }, [
+    getErrorMessage,
+    hasManagerSheetAccess,
+    loadManagerSheet,
+    managerDate,
+    managerDayJobs,
+    managerDatesWithOrdersSet,
+    managerProgressByJob,
+    requestWithSession,
+    t,
+  ])
+
   const handleTakePicture = useCallback(async () => {
     if (!selectedPictureOrder) {
       setPictureMessage(t('Select an order first.', 'Selecciona una orden primero.'))
@@ -1678,7 +2412,7 @@ export default function App() {
       }
 
       const result = await ImagePicker.launchCameraAsync({
-        quality: 0.75,
+        quality: 0.68,
         base64: true,
       })
 
@@ -1698,44 +2432,165 @@ export default function App() {
         return
       }
 
-      setIsUploadingPicture(true)
+      const queuedPicture = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        base64: capturedAsset.base64,
+        mimeType: capturedAsset.mimeType || 'image/jpeg',
+        previewUri: capturedAsset.uri,
+      }
 
-      const payload = await requestWithSession<{ photo: OrderPhoto }>(
-        `/api/orders/${encodeURIComponent(selectedPictureOrder.id)}/photos`,
-        false,
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            imageBase64: capturedAsset.base64,
-            mimeType: capturedAsset.mimeType || 'image/jpeg',
-          }),
-        },
-      )
-
-      setOrderPhotosByOrderId((previous) => ({
-        ...previous,
-        [selectedPictureOrder.id]: [
-          payload.photo,
-          ...(previous[selectedPictureOrder.id] ?? []),
-        ],
-      }))
+      setPendingPictures((previous) => [...previous, queuedPicture])
       setPictureMessage(
-        `${t('Saved picture for order', 'Foto guardada para la orden')} ${selectedPictureOrder.name}.`,
+        t(
+          `Picture added. ${pendingPictureCount + 1} ready to upload.`,
+          `Foto agregada. ${pendingPictureCount + 1} listas para subir.`,
+        ),
       )
     } catch {
       setPictureMessage(
-        t('Could not upload picture. Try again.', 'No se pudo subir la foto. Intenta de nuevo.'),
+        t('Could not capture picture. Try again.', 'No se pudo capturar la foto. Intenta de nuevo.'),
       )
+    }
+  }, [pendingPictureCount, selectedPictureOrder, t])
+
+  const handleRemovePendingPicture = useCallback((pictureId: string) => {
+    setPendingPictures((previous) => previous.filter((picture) => picture.id !== pictureId))
+  }, [])
+
+  const handleClearPendingPictures = useCallback(() => {
+    if (pendingPictureCount === 0) {
+      return
+    }
+
+    setPendingPictures([])
+    setPictureMessage(t('Pending pictures cleared.', 'Fotos pendientes eliminadas.'))
+  }, [pendingPictureCount, t])
+
+  const handleUploadPendingPictures = useCallback(async () => {
+    if (!selectedPictureOrder) {
+      setPictureMessage(t('Select an order first.', 'Selecciona una orden primero.'))
+      return
+    }
+
+    if (pendingPictures.length === 0) {
+      setPictureMessage(
+        t(
+          'Take one or more pictures first, then upload.',
+          'Primero toma una o mas fotos y luego subelas.',
+        ),
+      )
+      return
+    }
+
+    const queuedPictures = pendingPictures
+    const uploadErrorMessage = t(
+      'Could not upload pictures. Check connection and try again.',
+      'No se pudieron subir las fotos. Revisa la conexion e intenta de nuevo.',
+    )
+
+    setIsUploadingPicture(true)
+    setPictureMessage(
+      t(
+        `Uploading ${queuedPictures.length} pictures...`,
+        `Subiendo ${queuedPictures.length} fotos...`,
+      ),
+    )
+
+    try {
+      const uploadResults = await Promise.allSettled(
+        queuedPictures.map((queuedPicture) =>
+          requestWithSession<{ photo: OrderPhoto }>(
+            `/api/orders/${encodeURIComponent(selectedPictureOrder.id)}/photos`,
+            false,
+            {
+              method: 'POST',
+              body: JSON.stringify({
+                imageBase64: queuedPicture.base64,
+                mimeType: queuedPicture.mimeType,
+              }),
+            },
+          ),
+        ),
+      )
+
+      const uploadedPhotos: OrderPhoto[] = []
+      const failedPictureIds: string[] = []
+
+      uploadResults.forEach((result, index) => {
+        if (result.status === 'fulfilled') {
+          uploadedPhotos.push(result.value.photo)
+          return
+        }
+
+        failedPictureIds.push(queuedPictures[index].id)
+      })
+
+      if (uploadedPhotos.length > 0) {
+        setOrderPhotosByOrderId((previous) => ({
+          ...previous,
+          [selectedPictureOrder.id]: [
+            ...uploadedPhotos,
+            ...(previous[selectedPictureOrder.id] ?? []),
+          ],
+        }))
+      }
+
+      setPendingPictures(queuedPictures.filter((queuedPicture) => failedPictureIds.includes(queuedPicture.id)))
+
+      if (uploadedPhotos.length === queuedPictures.length) {
+        setPictureMessage(
+          t(
+            `Uploaded ${uploadedPhotos.length} pictures for this order.`,
+            `Se subieron ${uploadedPhotos.length} fotos para esta orden.`,
+          ),
+        )
+        return
+      }
+
+      if (uploadedPhotos.length > 0) {
+        setPictureMessage(
+          t(
+            `Uploaded ${uploadedPhotos.length} of ${queuedPictures.length} pictures. Failed pictures stayed in queue.`,
+            `Se subieron ${uploadedPhotos.length} de ${queuedPictures.length} fotos. Las que fallaron quedaron en cola.`,
+          ),
+        )
+        return
+      }
+
+      setPictureMessage(
+        uploadErrorMessage,
+      )
+    } catch {
+      setPictureMessage(uploadErrorMessage)
     } finally {
       setIsUploadingPicture(false)
     }
-  }, [requestWithSession, selectedPictureOrder, t])
+  }, [pendingPictures, requestWithSession, selectedPictureOrder, t])
 
   useEffect(() => {
     if (activeScreen !== 'pictures') {
       setIsPicturesModalOpen(false)
+      setPendingPictures([])
     }
   }, [activeScreen])
+
+  const handleSelectSidebarItem = useCallback((nextScreen: AppScreen) => {
+    setActiveScreen(nextScreen)
+
+    if (nextScreen !== 'dashboard') {
+      setDetailSelection(null)
+    }
+
+    if (nextScreen !== 'pictures') {
+      closePicturesModal()
+    }
+
+    if (nextScreen !== 'settings') {
+      closeSettingsMenu()
+    }
+
+    setIsSidebarOpen(false)
+  }, [closePicturesModal, closeSettingsMenu])
 
   const hasGoogleClientId =
     Platform.OS === 'ios'
@@ -1775,176 +2630,194 @@ export default function App() {
 
   if (!isAuthResolved) {
     return (
-      <SafeAreaView style={styles.authShell}>
-        <StatusBar style="light" />
-        <View style={styles.authCard}>
-          <Text style={styles.authTitle}>YBK Mobile</Text>
-          <Text style={styles.authSubtitle}>{t('Preparing secure login...', 'Preparando inicio de sesion seguro...')}</Text>
-          <ActivityIndicator size="small" color="#7fa2ff" />
-        </View>
-      </SafeAreaView>
+      <AuthShell>
+        <Text style={styles.authTitle}>YBK Mobile</Text>
+        <Text style={styles.authSubtitle}>{t('Preparing secure login...', 'Preparando inicio de sesion seguro...')}</Text>
+        <ActivityIndicator size="small" color="#7fa2ff" />
+      </AuthShell>
     )
   }
 
   if (!firebaseUser) {
+    const isEmailLoginDisabled = isEmailSigningIn || isSigningIn || !emailSignInValue.trim() || !passwordSignInValue
+
     return (
-      <SafeAreaView style={styles.authShell}>
-        <StatusBar style="light" />
-        <View style={styles.authCard}>
-          <Text style={styles.authTitle}>{t('Sign in to YBK', 'Inicia sesion en YBK')}</Text>
-          <Text style={styles.authSubtitle}>
-            {t(
-              'Use Google to access dashboard, support, and pictures from your phone.',
-              'Usa Google para acceder al panel, soporte y fotos desde tu telefono.',
-            )}
+      <AuthShell>
+        <Text style={styles.authTitle}>{t('Sign in to YBK', 'Inicia sesion en YBK')}</Text>
+        <Text style={styles.authSubtitle}>
+          {t(
+            'Use email/password or Google to access dashboard, support, and pictures from your phone.',
+            'Usa correo/contrasena o Google para acceder al panel, soporte y fotos desde tu telefono.',
+          )}
+        </Text>
+
+        <TextInput
+          value={emailSignInValue}
+          onChangeText={setEmailSignInValue}
+          placeholder={t('Email', 'Correo')}
+          placeholderTextColor="#7f92c4"
+          keyboardType="email-address"
+          autoCapitalize="none"
+          autoCorrect={false}
+          style={styles.authInput}
+        />
+
+        <TextInput
+          value={passwordSignInValue}
+          onChangeText={setPasswordSignInValue}
+          placeholder={t('Password', 'Contrasena')}
+          placeholderTextColor="#7f92c4"
+          autoCapitalize="none"
+          autoCorrect={false}
+          secureTextEntry
+          style={styles.authInput}
+        />
+
+        <AuthButton
+          label={
+            isEmailSigningIn
+              ? t('Signing in...', 'Iniciando sesion...')
+              : t('Sign in with Email', 'Entrar con correo')
+          }
+          onPress={() => {
+            void handleStartEmailPasswordLogin()
+          }}
+          disabled={isEmailLoginDisabled}
+        />
+
+        <Text style={styles.authDividerText}>{t('or', 'o')}</Text>
+
+        <AuthButton
+          label={
+            isSigningIn
+              ? t('Signing in...', 'Iniciando sesion...')
+              : t('Continue with Google', 'Continuar con Google')
+          }
+          onPress={() => {
+            void handleStartGoogleLogin()
+          }}
+          disabled={isSigningIn || !hasGoogleClientId}
+        />
+
+        {!hasGoogleClientId ? (
+          <Text style={styles.authCaption}>
+            {googleClientIdHint}
           </Text>
+        ) : null}
 
-          <Pressable
-            style={[styles.authButtonPrimary, (isSigningIn || !hasGoogleClientId) ? styles.buttonDisabled : null]}
-            onPress={() => {
-              void handleStartGoogleLogin()
-            }}
-            disabled={isSigningIn || !hasGoogleClientId}
-          >
-            <Text style={styles.authButtonText}>
-              {isSigningIn
-                ? t('Signing in...', 'Iniciando sesion...')
-                : t('Continue with Google', 'Continuar con Google')}
-            </Text>
-          </Pressable>
-
-          {!hasGoogleClientId ? (
-            <Text style={styles.authCaption}>
-              {googleClientIdHint}
-            </Text>
-          ) : null}
-
-          {authMessage ? <Text style={styles.authMessage}>{authMessage}</Text> : null}
-        </View>
-      </SafeAreaView>
+        {authMessage ? <Text style={styles.authMessage}>{authMessage}</Text> : null}
+      </AuthShell>
     )
   }
 
   if (!authProfile) {
     return (
-      <SafeAreaView style={styles.authShell}>
-        <StatusBar style="light" />
-        <View style={styles.authCard}>
-          {isCheckingApproval ? (
-            <>
-              <Text style={styles.authTitle}>{t('Checking Access', 'Verificando acceso')}</Text>
-              <Text style={styles.authSubtitle}>{t('Verifying your approval status...', 'Verificando tu estado de aprobacion...')}</Text>
-              <ActivityIndicator size="small" color="#7fa2ff" />
-              {authMessage ? <Text style={styles.authMessage}>{authMessage}</Text> : null}
-            </>
-          ) : (
-            <>
-              <Text style={styles.authTitle}>{t('Could not verify access', 'No se pudo verificar el acceso')}</Text>
-              <Text style={styles.authSubtitle}>
-                {authMessage || t('We could not reach the approval service.', 'No se pudo conectar con el servicio de aprobacion.')}
-              </Text>
+      <AuthShell>
+        {isCheckingApproval ? (
+          <>
+            <Text style={styles.authTitle}>{t('Checking Access', 'Verificando acceso')}</Text>
+            <Text style={styles.authSubtitle}>{t('Verifying your approval status...', 'Verificando tu estado de aprobacion...')}</Text>
+            <ActivityIndicator size="small" color="#7fa2ff" />
+            {authMessage ? <Text style={styles.authMessage}>{authMessage}</Text> : null}
+          </>
+        ) : (
+          <>
+            <Text style={styles.authTitle}>{t('Could not verify access', 'No se pudo verificar el acceso')}</Text>
+            <Text style={styles.authSubtitle}>
+              {authMessage || t('We could not reach the approval service.', 'No se pudo conectar con el servicio de aprobacion.')}
+            </Text>
 
-              <Pressable
-                style={styles.authButtonPrimary}
-                onPress={() => {
-                  void syncAuthProfile()
-                }}
-              >
-                <Text style={styles.authButtonText}>{t('Retry', 'Reintentar')}</Text>
-              </Pressable>
+            <AuthButton
+              label={t('Retry', 'Reintentar')}
+              onPress={() => {
+                void syncAuthProfile()
+              }}
+            />
 
-              <Pressable
-                style={styles.authButtonSecondary}
-                onPress={() => {
-                  void handleSignOut()
-                }}
-              >
-                <Text style={styles.authButtonSecondaryText}>{t('Sign out', 'Cerrar sesion')}</Text>
-              </Pressable>
-            </>
-          )}
-        </View>
-      </SafeAreaView>
+            <AuthButton
+              label={t('Sign out', 'Cerrar sesion')}
+              variant="secondary"
+              textVariant="secondary"
+              onPress={() => {
+                void handleSignOut()
+              }}
+            />
+          </>
+        )}
+      </AuthShell>
     )
   }
 
   if (!authProfile.isApproved) {
     return (
-      <SafeAreaView style={styles.authShell}>
-        <StatusBar style="light" />
-        <View style={styles.authCard}>
-          <Text style={styles.authTitle}>{t('Approval Pending', 'Aprobacion pendiente')}</Text>
-          <Text style={styles.authSubtitle}>
-            {t(
-              'Your account is waiting for admin approval in the website Admin Users page.',
-              'Tu cuenta esta esperando aprobacion del administrador en la pagina Admin Users del sitio web.',
-            )}
-          </Text>
-          {authMessage ? <Text style={styles.authMessage}>{authMessage}</Text> : null}
+      <AuthShell>
+        <Text style={styles.authTitle}>{t('Approval Pending', 'Aprobacion pendiente')}</Text>
+        <Text style={styles.authSubtitle}>
+          {t(
+            'Your account is waiting for admin approval in the website Admin Users page.',
+            'Tu cuenta esta esperando aprobacion del administrador en la pagina Admin Users del sitio web.',
+          )}
+        </Text>
+        {authMessage ? <Text style={styles.authMessage}>{authMessage}</Text> : null}
 
-          <Pressable
-            style={styles.authButtonPrimary}
-            onPress={() => {
-              void syncAuthProfile()
-            }}
-          >
-            <Text style={styles.authButtonText}>{t('Refresh Approval Status', 'Actualizar estado de aprobacion')}</Text>
-          </Pressable>
+        <AuthButton
+          label={t('Refresh Approval Status', 'Actualizar estado de aprobacion')}
+          onPress={() => {
+            void syncAuthProfile()
+          }}
+        />
 
-          <Pressable
-            style={styles.authButtonSecondary}
-            onPress={() => {
-              void handleSignOut()
-            }}
-          >
-            <Text style={styles.authButtonText}>{t('Sign Out', 'Cerrar sesion')}</Text>
-          </Pressable>
-        </View>
-      </SafeAreaView>
+        <AuthButton
+          label={t('Sign Out', 'Cerrar sesion')}
+          variant="secondary"
+          textVariant="primary"
+          onPress={() => {
+            void handleSignOut()
+          }}
+        />
+      </AuthShell>
     )
   }
 
-  if (isBiometricEnabled && !hasBiometricSessionAuth) {
+  if (isBiometricLocked) {
     return (
-      <SafeAreaView style={styles.authShell}>
-        <StatusBar style="light" />
-        <View style={styles.authCard}>
-          <Text style={styles.authTitle}>{t('Sign in to continue', 'Inicia sesion para continuar')}</Text>
-          <Text style={styles.authSubtitle}>
-            {t(
-              'Use biometrics to unlock quickly, or sign in with Google instead.',
-              'Usa biometria para desbloquear rapido, o inicia sesion con Google.',
-            )}
-          </Text>
+      <AuthShell>
+        <Text style={styles.authTitle}>{t('Sign in to continue', 'Inicia sesion para continuar')}</Text>
+        <Text style={styles.authSubtitle}>
+          {t(
+            'Use biometrics to unlock quickly, or sign in with Google instead.',
+            'Usa biometria para desbloquear rapido, o inicia sesion con Google.',
+          )}
+        </Text>
 
-          <Pressable
-            style={[styles.authButtonPrimary, isAuthenticatingBiometric ? styles.buttonDisabled : null]}
-            onPress={() => {
-              void handleAuthenticateBiometric()
-            }}
-            disabled={isAuthenticatingBiometric}
-          >
-            <Text style={styles.authButtonText}>
-              {isAuthenticatingBiometric ? t('Verifying...', 'Verificando...') : t('Use Biometrics', 'Usar biometria')}
-            </Text>
-          </Pressable>
+        <AuthButton
+          label={isAuthenticatingBiometric ? t('Verifying...', 'Verificando...') : t('Use Biometrics', 'Usar biometria')}
+          onPress={() => {
+            void handleAuthenticateBiometric()
+          }}
+          disabled={isAuthenticatingBiometric}
+        />
 
-          <Pressable
-            style={[styles.authButtonSecondary, isSigningIn || !hasGoogleClientId ? styles.buttonDisabled : null]}
-            onPress={handleUseGoogleSessionUnlock}
-            disabled={isSigningIn || !hasGoogleClientId}
-          >
-            <Text style={styles.authButtonSecondaryText}>{t('Use Google Instead', 'Usar Google en su lugar')}</Text>
-          </Pressable>
+        <AuthButton
+          label={t('Use Google Instead', 'Usar Google en su lugar')}
+          variant="secondary"
+          textVariant="secondary"
+          onPress={handleUseGoogleSessionUnlock}
+          disabled={isSigningIn || !hasGoogleClientId}
+        />
 
-          {authMessage ? <Text style={styles.authMessage}>{authMessage}</Text> : null}
-        </View>
-      </SafeAreaView>
+        {authMessage ? <Text style={styles.authMessage}>{authMessage}</Text> : null}
+      </AuthShell>
     )
   }
 
   const isPicturesScreen = activeScreen === 'pictures'
-  const isRefreshBusy = isRefreshing || (activeScreen === 'timesheet' && isTimesheetLoading)
+  const isRefreshBusy =
+    isRefreshing
+    || (activeScreen === 'timesheet' && isTimesheetLoading)
+    || (activeScreen === 'manager' && (isManagerLoading || isManagerSaving))
+    || (activeScreen === 'alerts' && isAlertsLoading)
+    || (activeScreen === 'settings' && (isCheckingForUpdates || isInstallingUpdate))
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -2001,330 +2874,114 @@ export default function App() {
             ) : null}
 
             {activeScreen === 'dashboard' ? (
-              <>
-                <Text style={styles.sectionTitle}>{t('Order Snapshot', 'Resumen de ordenes')}</Text>
-                <View style={styles.metricsGrid}>
-                  {orderMetrics.map((metric) => (
-                    <MetricCard
-                      key={metric.key}
-                      label={metric.label}
-                      value={String(metric.value)}
-                      helper={metric.helper}
-                      actionLabel={t('Tap to view', 'Tocar para ver')}
-                      tone={metric.tone}
-                      onPress={() =>
-                        setDetailSelection({
-                          type: 'order',
-                          key: metric.key,
-                          label: metric.label,
-                        })
-                      }
-                    />
-                  ))}
-                </View>
-
-                <Text style={styles.sectionTitle}>{t('Ticket Progress', 'Progreso de tickets')}</Text>
-                <View style={styles.metricsGrid}>
-                  {ticketMetrics.map((metric) => (
-                    <MetricCard
-                      key={metric.key}
-                      label={metric.label}
-                      value={String(metric.value)}
-                      actionLabel={t('Tap to view', 'Tocar para ver')}
-                      tone={metric.tone}
-                      onPress={() =>
-                        setDetailSelection({
-                          type: 'ticket',
-                          key: metric.key,
-                          label: metric.label,
-                        })
-                      }
-                    />
-                  ))}
-                </View>
-              </>
+              <DashboardSection
+                dashboardUnreadSummary={dashboardUnreadSummary}
+                orderMetrics={orderMetrics}
+                ticketMetrics={ticketMetrics}
+                t={t}
+                onSelectOrderMetric={(key, label) => {
+                  setDetailSelection({
+                    type: 'order',
+                    key,
+                    label,
+                  })
+                }}
+                onSelectTicketMetric={(key, label) => {
+                  setDetailSelection({
+                    type: 'ticket',
+                    key,
+                    label,
+                  })
+                }}
+              />
             ) : null}
 
             {activeScreen === 'pictures' ? (
-              <>
-                <Text style={styles.sectionTitle}>{t('Pictures', 'Fotos')}</Text>
-                <Text style={styles.sectionSubtitle}>
-                  {t(
-                    'Search an order number, then tap an order to open its pictures popup.',
-                    'Busca un numero de orden y toca una orden para abrir su ventana de fotos.',
-                  )}
-                </Text>
-
-                {allOrdersForPictures.length === 0 ? (
-                  <View style={styles.emptyPicturesBox}>
-                    <Text style={styles.emptyDetailText}>
-                      {t('No orders loaded yet. Refresh to pull current orders.', 'Aun no hay ordenes cargadas. Actualiza para traer las ordenes actuales.')}
-                    </Text>
-                  </View>
-                ) : (
-                  <View style={[styles.ordersListCard, { height: picturesCardHeight }]}> 
-                    <TextInput
-                      value={orderSearchQuery}
-                      onChangeText={setOrderSearchQuery}
-                      placeholder={t('Search by order #', 'Buscar por orden #')}
-                      placeholderTextColor="#6a7ea8"
-                      style={styles.orderSearchInput}
-                      keyboardType="number-pad"
-                    />
-
-                    {filteredOrdersForPictures.length === 0 ? (
-                      <Text style={styles.emptyDetailText}>{t('No orders match your search.', 'No hay ordenes que coincidan con tu busqueda.')}</Text>
-                    ) : (
-                      <ScrollView
-                        style={styles.ordersListScroll}
-                        contentContainerStyle={styles.ordersListContent}
-                      >
-                        {filteredOrdersForPictures.map((order) => (
-                          <Pressable
-                            key={order.id}
-                            style={styles.orderListItem}
-                            onPress={() => {
-                              setSelectedPictureOrderId(order.id)
-                              setPictureMessage(null)
-                              setIsPicturesModalOpen(true)
-                              void loadOrderPhotos(order.id)
-                            }}
-                          >
-                            <Text style={styles.orderListName} numberOfLines={1}>
-                              {order.name || `Order ${order.id}`}
-                            </Text>
-                            <Text style={styles.orderListMeta} numberOfLines={1}>
-                              {t('Order', 'Orden')} #{order.id}
-                            </Text>
-                          </Pressable>
-                        ))}
-                      </ScrollView>
-                    )}
-                  </View>
-                )}
-              </>
+              <PicturesSection
+                t={t}
+                allOrdersForPictures={allOrdersForPictures}
+                filteredOrdersForPictures={filteredOrdersForPictures}
+                orderSearchQuery={orderSearchQuery}
+                onOrderSearchQueryChange={setOrderSearchQuery}
+                picturesCardHeight={picturesCardHeight}
+                onOpenPicturesModalForOrder={openPicturesModalForOrder}
+              />
             ) : null}
 
             {activeScreen === 'timesheet' ? (
-              <>
-                <Text style={styles.sectionTitle}>{t('My Daily Timesheet', 'Mi hoja diaria de horas')}</Text>
-                <Text style={styles.sectionSubtitle}>
-                  {t(
-                    'Submit your own daily entries. Reports are managed on the website.',
-                    'Envia tus propias entradas diarias. Los reportes se manejan en el sitio web.',
-                  )}
-                </Text>
+              <TimesheetSection
+                t={t}
+                locale={locale}
+                timesheetWorker={timesheetWorker}
+                timesheetDate={timesheetDate}
+                onOpenDatePicker={() => setIsTimesheetDatePickerOpen(true)}
+                isTimesheetDatePickerOpen={isTimesheetDatePickerOpen}
+                selectedTimesheetDate={selectedTimesheetDate}
+                onTimesheetDateChange={handleTimesheetDateChange}
+                timesheetStages={timesheetStages}
+                timesheetStageId={timesheetStageId}
+                onTimesheetStageIdChange={setTimesheetStageId}
+                timesheetJobNumber={timesheetJobNumber}
+                onTimesheetJobNumberChange={setTimesheetJobNumber}
+                timesheetHours={timesheetHours}
+                onTimesheetHoursChange={setTimesheetHours}
+                timesheetNotes={timesheetNotes}
+                onTimesheetNotesChange={setTimesheetNotes}
+                isTimesheetSaving={isTimesheetSaving}
+                onSaveTimesheetEntry={() => {
+                  void handleSaveTimesheetEntry()
+                }}
+                timesheetMessage={timesheetMessage}
+                isTimesheetLoading={isTimesheetLoading}
+                timesheetEntriesForSelectedDate={timesheetEntriesForSelectedDate}
+                timesheetStageNamesById={timesheetStageNamesById}
+              />
+            ) : null}
 
-                <View style={styles.timesheetCard}>
-                  <Text style={styles.timesheetWorkerText}>
-                    {timesheetWorker
-                      ? `${t('Worker', 'Trabajador')} #${timesheetWorker.workerNumber} • ${timesheetWorker.fullName}`
-                      : t('No linked worker profile found yet.', 'Aun no se encontro un perfil de trabajador vinculado.')}
-                  </Text>
+            {activeScreen === 'manager' && hasManagerSheetAccess ? (
+              <ManagerSheetSection
+                t={t}
+                locale={locale}
+                managerDate={managerDate}
+                managerDatesWithOrders={managerDatesWithOrders}
+                managerDatesMissingProgress={managerDatesMissingProgress}
+                onSelectManagerDate={handleManagerDateSelect}
+                isManagerLoading={isManagerLoading}
+                managerRows={managerRows}
+                managerMessage={managerMessage}
+                isManagerSaving={isManagerSaving}
+                onManagerProgressChange={handleManagerProgressChange}
+                onSaveManagerProgress={() => {
+                  void handleSaveManagerProgress()
+                }}
+              />
+            ) : null}
 
-                  <Pressable
-                    style={styles.timesheetDateButton}
-                    onPress={() => setIsTimesheetDatePickerOpen(true)}
-                  >
-                    <Text style={styles.timesheetDateButtonText}>{t('Date', 'Fecha')}: {formatDisplayDate(timesheetDate, locale)}</Text>
-                    <Text style={styles.timesheetDateHint}>{timesheetDate}</Text>
-                  </Pressable>
-
-                  {isTimesheetDatePickerOpen ? (
-                    <View style={styles.timesheetDatePickerWrap}>
-                      <DateTimePicker
-                        value={selectedTimesheetDate}
-                        mode="date"
-                        display={Platform.OS === 'android' ? 'calendar' : 'default'}
-                        onChange={handleTimesheetDateChange}
-                      />
-                    </View>
-                  ) : null}
-
-                  <View style={styles.timesheetStagePickerWrap}>
-                    <Picker
-                      selectedValue={timesheetStageId}
-                      onValueChange={(value) => setTimesheetStageId(String(value ?? ''))}
-                      enabled={timesheetStages.length > 0}
-                      style={styles.timesheetStagePicker}
-                    >
-                      <Picker.Item
-                        label={timesheetStages.length > 0 ? t('Select stage', 'Seleccionar etapa') : t('No stages available', 'No hay etapas disponibles')}
-                        value=""
-                      />
-                      {timesheetStages.map((stage) => (
-                        <Picker.Item key={stage.id} label={stage.name} value={stage.id} />
-                      ))}
-                    </Picker>
-                  </View>
-
-                  {timesheetStages.length === 0 ? (
-                    <Text style={styles.timesheetInlineHint}>
-                      {t('No stages found. Add stages on the website first.', 'No se encontraron etapas. Agrega etapas primero en el sitio web.')}
-                    </Text>
-                  ) : null}
-
-                  <TextInput
-                    value={timesheetJobNumber}
-                    onChangeText={setTimesheetJobNumber}
-                    placeholder={t('Job number', 'Numero de trabajo')}
-                    placeholderTextColor="#6a7ea8"
-                    style={styles.orderSearchInput}
-                  />
-
-                  <TextInput
-                    value={timesheetHours}
-                    onChangeText={setTimesheetHours}
-                    placeholder={t('Hours', 'Horas')}
-                    placeholderTextColor="#6a7ea8"
-                    style={styles.orderSearchInput}
-                    keyboardType="decimal-pad"
-                  />
-
-                  <TextInput
-                    value={timesheetNotes}
-                    onChangeText={setTimesheetNotes}
-                    placeholder={t('Notes (optional)', 'Notas (opcional)')}
-                    placeholderTextColor="#6a7ea8"
-                    style={[styles.orderSearchInput, styles.timesheetNotesInput]}
-                    multiline
-                  />
-
-                  <Pressable
-                    style={[styles.authButtonPrimary, isTimesheetSaving ? styles.buttonDisabled : null]}
-                    onPress={() => {
-                      void handleSaveTimesheetEntry()
-                    }}
-                    disabled={isTimesheetSaving || !timesheetWorker || !timesheetStageId || timesheetStages.length === 0}
-                  >
-                    <Text style={styles.authButtonText}>
-                      {isTimesheetSaving ? t('Saving...', 'Guardando...') : t('Save Daily Entry', 'Guardar entrada diaria')}
-                    </Text>
-                  </Pressable>
-
-                  {timesheetMessage ? <Text style={styles.timesheetMessage}>{timesheetMessage}</Text> : null}
-                </View>
-
-                <View style={styles.timesheetCard}>
-                  <Text style={styles.timesheetListTitle}>
-                    {t('Entries for', 'Entradas para')} {timesheetDate.trim() || t('selected date', 'fecha seleccionada')}
-                  </Text>
-                  {isTimesheetLoading ? (
-                    <View style={styles.inlineLoadingBox}>
-                      <ActivityIndicator size="small" color="#335ad8" />
-                      <Text style={styles.loadingText}>{t('Loading your entries...', 'Cargando tus entradas...')}</Text>
-                    </View>
-                  ) : timesheetEntriesForSelectedDate.length === 0 ? (
-                    <Text style={styles.emptyDetailText}>{t('No entries for this date yet.', 'Aun no hay entradas para esta fecha.')}</Text>
-                  ) : (
-                    <View style={styles.timesheetList}>
-                      {timesheetEntriesForSelectedDate.map((entry) => (
-                        <View key={entry.id} style={styles.timesheetEntryRow}>
-                          <Text style={styles.detailPrimary}>{entry.jobName}</Text>
-                          <Text style={styles.detailSecondary}>
-                            {t('Stage', 'Etapa')}: {timesheetStageNamesById[String(entry.stageId ?? '')] || t('Not set', 'Sin definir')}
-                          </Text>
-                          <Text style={styles.detailSecondary}>{entry.hours} {t('hours', 'horas')}</Text>
-                          {entry.notes ? (
-                            <Text style={styles.detailSecondary}>{entry.notes}</Text>
-                          ) : null}
-                        </View>
-                      ))}
-                    </View>
-                  )}
-                </View>
-              </>
+            {activeScreen === 'alerts' ? (
+              <AlertsSection
+                t={t}
+                locale={locale}
+                isAlertsLoading={isAlertsLoading}
+                alerts={alerts}
+                alertsMessage={alertsMessage}
+                resolveAlertLink={resolveAlertLink}
+                onMarkAlertAsRead={(alertItem) => {
+                  void markAlertAsRead(alertItem)
+                }}
+                onOpenAlertLink={(url, alertItem) => {
+                  void handleOpenAlertLink(url, alertItem)
+                }}
+              />
             ) : null}
 
             {activeScreen === 'settings' ? (
-              <>
-                <Text style={styles.sectionTitle}>{t('Settings', 'Configuracion')}</Text>
-                <View style={styles.settingsCard}>
-                  <Text style={styles.settingsTitle}>{t('Biometric Sign-In', 'Inicio biometrico')}</Text>
-                  <Text style={styles.settingsSubtitle}>
-                    {isBiometricEnabled
-                      ? t('Biometrics are enabled. You will be asked to verify on login.', 'La biometria esta activada. Se te pedira verificar al iniciar sesion.')
-                      : t('Biometrics are currently turned off.', 'La biometria esta desactivada.')}
-                  </Text>
-
-                  <Pressable
-                    style={styles.settingsToggleButton}
-                    onPress={() => {
-                      void handleToggleBiometricFromSettings()
-                    }}
-                  >
-                    <Text style={styles.settingsToggleButtonText}>
-                      {isBiometricEnabled ? t('Turn Off Biometrics', 'Desactivar biometria') : t('Turn On Biometrics', 'Activar biometria')}
-                    </Text>
-                  </Pressable>
-                </View>
-
-                <View style={styles.settingsCard}>
-                  <Text style={styles.settingsTitle}>{t('Language', 'Idioma')}</Text>
-                  <Text style={styles.settingsSubtitle}>
-                    {t('Choose your app language.', 'Elige el idioma de la aplicacion.')}
-                  </Text>
-
-                  <View style={styles.settingsLanguageRow}>
-                    <Pressable
-                      style={[styles.settingsLanguageButton, language === 'en' ? styles.settingsLanguageButtonActive : null]}
-                      onPress={() => {
-                        void handleChangeLanguage('en')
-                      }}
-                    >
-                      <Text style={styles.settingsLanguageButtonText}>English</Text>
-                    </Pressable>
-
-                    <Pressable
-                      style={[styles.settingsLanguageButton, language === 'es' ? styles.settingsLanguageButtonActive : null]}
-                      onPress={() => {
-                        void handleChangeLanguage('es')
-                      }}
-                    >
-                      <Text style={styles.settingsLanguageButtonText}>Espanol</Text>
-                    </Pressable>
-                  </View>
-                </View>
-
-                <View style={styles.settingsCard}>
-                  <Text style={styles.settingsTitle}>{t('App Updates', 'Actualizaciones')}</Text>
-                  <Text style={styles.settingsSubtitle}>
-                    {t('Current version', 'Version actual')}: {appVersionLabel}
-                  </Text>
-                  <Text style={styles.settingsSubtitle}>
-                    {canUseOtaUpdates
-                      ? t(
-                          `Live updates are enabled on channel: ${otaChannelLabel}.`,
-                          `Las actualizaciones en vivo estan activadas en el canal: ${otaChannelLabel}.`,
-                        )
-                      : appUpdateUrl
-                      ? t(
-                          'Tap below to open your update link and install the newest build.',
-                          'Toca abajo para abrir el enlace de actualizacion e instalar la version mas nueva.',
-                        )
-                      : t(
-                          'No update link is configured yet.',
-                          'Aun no hay un enlace de actualizacion configurado.',
-                        )}
-                  </Text>
-
-                  <Pressable
-                    style={[styles.settingsToggleButton, isCheckingForUpdates ? styles.buttonDisabled : null]}
-                    disabled={isCheckingForUpdates}
-                    onPress={() => {
-                      void handleCheckForUpdates()
-                    }}
-                  >
-                    <Text style={styles.settingsToggleButtonText}>
-                      {isCheckingForUpdates
-                        ? t('Checking for updates...', 'Buscando actualizaciones...')
-                        : t('Check for Updates', 'Buscar actualizaciones')}
-                    </Text>
-                  </Pressable>
-
-                  {updateMessage ? <Text style={styles.settingsUpdateMessage}>{updateMessage}</Text> : null}
-                </View>
-              </>
+              <SettingsOverviewSection
+                t={t}
+                appVersionLabel={appVersionLabel}
+                isNotificationsEnabled={isNotificationsEnabled}
+                settingsMenuItems={settingsMenuItems}
+                onSelectSettingsMenu={setActiveSettingsMenuId}
+              />
             ) : null}
           </ScrollView>
         </View>
@@ -2391,10 +3048,215 @@ export default function App() {
         </Modal>
 
         <Modal
+          visible={Boolean(activeSettingsMenuId)}
+          transparent
+          animationType="fade"
+          onRequestClose={closeSettingsMenu}
+        >
+          <View style={styles.modalBackdrop}>
+            <View style={styles.modalCard}>
+              <View style={styles.detailHeader}>
+                <Text style={styles.detailTitle}>{activeSettingsMenuItem?.title ?? t('Settings', 'Configuracion')}</Text>
+                <Pressable
+                  style={styles.detailCloseButton}
+                  onPress={closeSettingsMenu}
+                >
+                  <Text style={styles.detailCloseButtonText}>{t('Close', 'Cerrar')}</Text>
+                </Pressable>
+              </View>
+
+              <ScrollView contentContainerStyle={styles.modalBodyContent}>
+                {activeSettingsMenuItem?.subtitle ? (
+                  <Text style={styles.settingsSubtitle}>{activeSettingsMenuItem.subtitle}</Text>
+                ) : null}
+
+                {activeSettingsMenuId === 'security' ? (
+                  <>
+                    <Text style={styles.settingsTitle}>{t('Biometric Sign-In', 'Inicio biometrico')}</Text>
+                    <Text style={styles.settingsSubtitle}>
+                      {isBiometricEnabled
+                        ? t(
+                            'Biometrics are enabled. You will verify on login.',
+                            'La biometria esta activada. Verificaras al iniciar sesion.',
+                          )
+                        : t('Biometrics are currently turned off.', 'La biometria esta desactivada.')}
+                    </Text>
+                    <Pressable
+                      style={styles.settingsToggleButton}
+                      onPress={() => {
+                        void handleToggleBiometricFromSettings()
+                      }}
+                    >
+                      <Text style={styles.settingsToggleButtonText}>
+                        {isBiometricEnabled ? t('Turn Off Biometrics', 'Desactivar biometria') : t('Turn On Biometrics', 'Activar biometria')}
+                      </Text>
+                    </Pressable>
+                  </>
+                ) : null}
+
+                {activeSettingsMenuId === 'language' ? (
+                  <>
+                    <Text style={styles.settingsTitle}>{t('Language', 'Idioma')}</Text>
+                    <View style={styles.settingsLanguageRow}>
+                      <Pressable
+                        style={[styles.settingsLanguageButton, language === 'en' ? styles.settingsLanguageButtonActive : null]}
+                        onPress={() => {
+                          void handleChangeLanguage('en')
+                        }}
+                      >
+                        <Text style={styles.settingsLanguageButtonText}>English</Text>
+                      </Pressable>
+
+                      <Pressable
+                        style={[styles.settingsLanguageButton, language === 'es' ? styles.settingsLanguageButtonActive : null]}
+                        onPress={() => {
+                          void handleChangeLanguage('es')
+                        }}
+                      >
+                        <Text style={styles.settingsLanguageButtonText}>Espanol</Text>
+                      </Pressable>
+                    </View>
+                  </>
+                ) : null}
+
+                {activeSettingsMenuId === 'notifications' ? (
+                  <>
+                    <Text style={styles.settingsTitle}>{t('Push Notifications', 'Notificaciones push')}</Text>
+                    <Text style={styles.settingsSubtitle}>
+                      {isNotificationsEnabled
+                        ? t(
+                            'Notifications are enabled for this app session.',
+                            'Las notificaciones estan activadas para esta sesion de la app.',
+                          )
+                        : t(
+                            'Notifications are blocked for this app session.',
+                            'Las notificaciones estan bloqueadas para esta sesion de la app.',
+                          )}
+                    </Text>
+
+                    {isNotificationsEnabled ? (
+                      <Pressable
+                        style={styles.settingsDangerButton}
+                        onPress={() => {
+                          void handleDisableNotifications()
+                        }}
+                      >
+                        <Text style={styles.settingsDangerButtonText}>
+                          {t('Disable Notifications', 'Desactivar notificaciones')}
+                        </Text>
+                      </Pressable>
+                    ) : (
+                      <Pressable
+                        style={styles.settingsToggleButton}
+                        onPress={() => {
+                          void handleEnableNotifications()
+                        }}
+                      >
+                        <Text style={styles.settingsToggleButtonText}>
+                          {t('Enable Notifications', 'Activar notificaciones')}
+                        </Text>
+                      </Pressable>
+                    )}
+
+                    <Pressable
+                      style={[styles.settingsToggleButton, styles.settingsToggleButtonSecondary]}
+                      onPress={() => {
+                        void handleOpenDeviceNotificationSettings()
+                      }}
+                    >
+                      <Text style={styles.settingsToggleButtonText}>
+                        {t('Open Device Notification Settings', 'Abrir configuracion de notificaciones del dispositivo')}
+                      </Text>
+                    </Pressable>
+
+                    {alertsMessage ? <Text style={styles.settingsInlineStatus}>{alertsMessage}</Text> : null}
+                  </>
+                ) : null}
+
+                {activeSettingsMenuId === 'updates' ? (
+                  <>
+                    <Text style={styles.settingsTitle}>{t('Update Management', 'Gestion de actualizaciones')}</Text>
+                    <Text style={styles.settingsSubtitle}>
+                      {appUpdateUrl
+                        ? t(
+                            'Check first, then install to open the latest package link.',
+                            'Busca primero y luego instala para abrir el enlace del paquete mas reciente.',
+                          )
+                        : t(
+                            'No update link is configured yet.',
+                            'Aun no hay un enlace de actualizacion configurado.',
+                          )}
+                    </Text>
+
+                    <View style={styles.settingsActionsRow}>
+                      <Pressable
+                        style={[styles.settingsToggleButton, isCheckingForUpdates ? styles.buttonDisabled : null]}
+                        disabled={isCheckingForUpdates}
+                        onPress={() => {
+                          void handleCheckForUpdates()
+                        }}
+                      >
+                        <Text style={styles.settingsToggleButtonText}>
+                          {isCheckingForUpdates
+                            ? t('Checking...', 'Buscando...')
+                            : t('Check for Updates', 'Buscar actualizaciones')}
+                        </Text>
+                      </Pressable>
+
+                      <Pressable
+                        style={[
+                          styles.settingsToggleButton,
+                          styles.settingsToggleButtonSecondary,
+                          (!resolvedUpdateUrl || isInstallingUpdate || isCheckingForUpdates)
+                            ? styles.buttonDisabled
+                            : null,
+                        ]}
+                        disabled={!resolvedUpdateUrl || isInstallingUpdate || isCheckingForUpdates}
+                        onPress={() => {
+                          void handleInstallUpdate()
+                        }}
+                      >
+                        <Text style={styles.settingsToggleButtonText}>
+                          {isInstallingUpdate
+                            ? t('Installing...', 'Instalando...')
+                            : t('Install Update', 'Instalar actualizacion')}
+                        </Text>
+                      </Pressable>
+                    </View>
+
+                    {updateMessage ? <Text style={styles.settingsUpdateMessage}>{updateMessage}</Text> : null}
+                  </>
+                ) : null}
+
+                {activeSettingsMenuId === 'account' ? (
+                  <>
+                    <Text style={styles.settingsTitle}>{t('Session', 'Sesion')}</Text>
+                    <Text style={styles.settingsSubtitle}>
+                      {t(
+                        'Sign out from this device when you finish your shift.',
+                        'Cierra sesion en este dispositivo cuando termines tu turno.',
+                      )}
+                    </Text>
+                    <Pressable
+                      style={styles.settingsDangerButton}
+                      onPress={() => {
+                        void handleSignOut()
+                      }}
+                    >
+                      <Text style={styles.settingsDangerButtonText}>{t('Sign Out', 'Cerrar sesion')}</Text>
+                    </Pressable>
+                  </>
+                ) : null}
+              </ScrollView>
+            </View>
+          </View>
+        </Modal>
+
+        <Modal
           visible={isPicturesModalOpen}
           transparent
           animationType="fade"
-          onRequestClose={() => setIsPicturesModalOpen(false)}
+          onRequestClose={closePicturesModal}
         >
           <View style={styles.modalBackdrop}>
             <View style={styles.modalCard}>
@@ -2409,7 +3271,7 @@ export default function App() {
                 </View>
                 <Pressable
                   style={styles.detailCloseButton}
-                  onPress={() => setIsPicturesModalOpen(false)}
+                  onPress={closePicturesModal}
                 >
                   <Text style={styles.detailCloseButtonText}>{t('Close', 'Cerrar')}</Text>
                 </Pressable>
@@ -2427,19 +3289,88 @@ export default function App() {
                   disabled={!selectedPictureOrder || isUploadingPicture}
                 >
                   <Text style={styles.takePictureButtonText}>
-                    {isUploadingPicture ? t('Saving...', 'Guardando...') : t('Take picture', 'Tomar foto')}
+                    {t('Take picture', 'Tomar foto')}
+                  </Text>
+                </Pressable>
+
+                <Pressable
+                  style={[
+                    styles.uploadQueueButton,
+                    !selectedPictureOrder || pendingPictureCount === 0 || isUploadingPicture
+                      ? styles.buttonDisabled
+                      : null,
+                  ]}
+                  onPress={() => {
+                    void handleUploadPendingPictures()
+                  }}
+                  disabled={!selectedPictureOrder || pendingPictureCount === 0 || isUploadingPicture}
+                >
+                  <Text style={styles.uploadQueueButtonText}>
+                    {isUploadingPicture
+                      ? t('Uploading...', 'Subiendo...')
+                      : t(`Upload (${pendingPictureCount})`, `Subir (${pendingPictureCount})`)}
+                  </Text>
+                </Pressable>
+
+                <Pressable
+                  style={[
+                    styles.clearQueueButton,
+                    pendingPictureCount === 0 || isUploadingPicture ? styles.buttonDisabled : null,
+                  ]}
+                  onPress={handleClearPendingPictures}
+                  disabled={pendingPictureCount === 0 || isUploadingPicture}
+                >
+                  <Text style={styles.clearQueueButtonText}>
+                    {t('Clear', 'Limpiar')}
                   </Text>
                 </Pressable>
               </View>
 
               {pictureMessage ? <Text style={styles.pictureMessage}>{pictureMessage}</Text> : null}
 
+              <View style={styles.pendingQueueCard}>
+                <Text style={styles.pendingQueueTitle}>
+                  {t(
+                    `Ready to upload (${pendingPictureCount})`,
+                    `Listas para subir (${pendingPictureCount})`,
+                  )}
+                </Text>
+
+                {pendingPictureCount === 0 ? (
+                  <Text style={styles.pendingQueueHint}>
+                    {t(
+                      'Take as many pictures as you want, then tap Upload.',
+                      'Toma todas las fotos que quieras y luego toca Subir.',
+                    )}
+                  </Text>
+                ) : (
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={styles.pendingQueueGrid}
+                  >
+                    {pendingPictures.map((queuedPicture, index) => (
+                      <View key={queuedPicture.id} style={styles.pendingQueueItem}>
+                        <Image source={{ uri: queuedPicture.previewUri }} style={styles.pendingQueueImage} />
+                        <Pressable
+                          style={styles.pendingQueueRemoveButton}
+                          onPress={() => {
+                            handleRemovePendingPicture(queuedPicture.id)
+                          }}
+                          disabled={isUploadingPicture}
+                        >
+                          <Text style={styles.pendingQueueRemoveButtonText}>x</Text>
+                        </Pressable>
+                        <Text style={styles.pendingQueueItemLabel}>{t('Photo', 'Foto')} {index + 1}</Text>
+                      </View>
+                    ))}
+                  </ScrollView>
+                )}
+              </View>
+
               <ScrollView contentContainerStyle={styles.modalBodyContent}>
                 {isLoadingOrderPhotos ? (
-                  <View style={styles.inlineLoadingBox}>
-                    <ActivityIndicator size="small" color="#335ad8" />
-                      <Text style={styles.loadingText}>{t('Loading saved pictures...', 'Cargando fotos guardadas...')}</Text>
-                  </View>
+                  <InlineLoading label={t('Loading saved pictures...', 'Cargando fotos guardadas...')} />
                 ) : selectedOrderPhotos.length === 0 ? (
                     <Text style={styles.emptyDetailText}>{t('No pictures saved for this order yet.', 'Aun no hay fotos guardadas para esta orden.')}</Text>
                 ) : (
@@ -2523,17 +3454,13 @@ export default function App() {
                 >
                   <Text style={styles.confirmCancelButtonText}>{t('Skip', 'Omitir')}</Text>
                 </Pressable>
-                <Pressable
-                  style={[styles.authButtonPrimary, isAuthenticatingBiometric ? styles.buttonDisabled : null]}
+                <AuthButton
+                  label={isAuthenticatingBiometric ? t('Verifying...', 'Verificando...') : t('Use Biometrics', 'Usar biometria')}
                   onPress={() => {
                     void handleAuthenticateBiometric()
                   }}
                   disabled={isAuthenticatingBiometric}
-                >
-                  <Text style={styles.authButtonText}>
-                    {isAuthenticatingBiometric ? t('Verifying...', 'Verificando...') : t('Use Biometrics', 'Usar biometria')}
-                  </Text>
-                </Pressable>
+                />
               </View>
             </View>
           </View>
@@ -2549,23 +3476,23 @@ export default function App() {
               </View>
 
               <View style={styles.sidebarNav}>
-                {SIDEBAR_ITEMS.map((item) => (
+                {sidebarItems.map((item) => (
                   <Pressable
                     key={item.id}
                     style={[styles.sidebarItem, activeScreen === item.id ? styles.sidebarItemActive : null]}
-                    onPress={() => {
-                      setActiveScreen(item.id)
-                      if (item.id !== 'dashboard') {
-                        setDetailSelection(null)
-                      }
-                      if (item.id !== 'pictures') {
-                        setIsPicturesModalOpen(false)
-                      }
-                      setIsSidebarOpen(false)
-                    }}
+                    onPress={() => handleSelectSidebarItem(item.id)}
                   >
                     <Text style={styles.sidebarItemShort}>{item.shortLabel}</Text>
-                    <Text style={styles.sidebarItemLabel}>{localizedScreenLabels[item.id]}</Text>
+                    <View style={styles.sidebarItemLabelRow}>
+                      <Text style={styles.sidebarItemLabel}>{localizedScreenLabels[item.id]}</Text>
+                      {item.id === 'alerts' && alertsUnreadCount > 0 ? (
+                        <View style={styles.sidebarAlertBadge}>
+                          <Text style={styles.sidebarAlertBadgeText}>
+                            {alertsUnreadCount > 99 ? '99+' : String(alertsUnreadCount)}
+                          </Text>
+                        </View>
+                      ) : null}
+                    </View>
                   </Pressable>
                 ))}
               </View>
@@ -2588,746 +3515,3 @@ export default function App() {
   )
 }
 
-const styles = StyleSheet.create({
-  authShell: {
-    flex: 1,
-    backgroundColor: '#0b1232',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 18,
-  },
-  authCard: {
-    width: '100%',
-    borderWidth: 1,
-    borderColor: '#334d9f',
-    borderRadius: 14,
-    backgroundColor: '#131f4a',
-    paddingHorizontal: 14,
-    paddingVertical: 16,
-    gap: 10,
-  },
-  authTitle: {
-    color: '#f3f7ff',
-    fontSize: 20,
-    fontWeight: '800',
-  },
-  authSubtitle: {
-    color: '#c8d7ff',
-    fontSize: 13,
-    lineHeight: 19,
-  },
-  authMessage: {
-    color: '#ffd5de',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  authCaption: {
-    color: '#9fb6ff',
-    fontSize: 11,
-  },
-  authButtonPrimary: {
-    backgroundColor: '#3d65ef',
-    borderRadius: 10,
-    paddingVertical: 10,
-    alignItems: 'center',
-  },
-  authButtonSecondary: {
-    backgroundColor: '#203063',
-    borderColor: '#3c5ec7',
-    borderWidth: 1,
-    borderRadius: 10,
-    paddingVertical: 10,
-    alignItems: 'center',
-  },
-  authButtonText: {
-    color: '#ffffff',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  authButtonSecondaryText: {
-    color: '#d9e5ff',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  safeArea: {
-    flex: 1,
-    backgroundColor: '#0b1232',
-  },
-  shell: {
-    flex: 1,
-    position: 'relative',
-  },
-  contentPane: {
-    flex: 1,
-    backgroundColor: '#eef2ff',
-  },
-  scrollContent: {
-    paddingHorizontal: 14,
-    paddingVertical: 16,
-    paddingBottom: 40,
-    gap: 8,
-  },
-  scrollContentPictures: {
-    flexGrow: 1,
-  },
-  picturesScreenScroll: {
-    flex: 1,
-  },
-  topBarCard: {
-    backgroundColor: '#111f4b',
-    borderRadius: 14,
-    borderColor: '#3559db',
-    borderWidth: 1,
-    padding: 12,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    gap: 10,
-  },
-  topBarLeftGroup: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    flexShrink: 1,
-  },
-  menuButton: {
-    width: 34,
-    height: 34,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#3b57b5',
-    backgroundColor: '#1a2b68',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  menuIconWrap: {
-    gap: 3,
-  },
-  menuLine: {
-    width: 14,
-    height: 2,
-    borderRadius: 2,
-    backgroundColor: '#d5e0ff',
-  },
-  topBarSyncText: {
-    color: '#b7c8ff',
-    fontWeight: '600',
-    flexShrink: 1,
-  },
-  refreshButton: {
-    backgroundColor: '#3d65ef',
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    minWidth: 95,
-    alignItems: 'center',
-  },
-  buttonDisabled: {
-    opacity: 0.65,
-  },
-  refreshButtonText: {
-    color: '#ffffff',
-    fontWeight: '700',
-    fontSize: 12,
-  },
-  loadingBox: {
-    backgroundColor: '#f9fbff',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#cdd8f5',
-    paddingVertical: 14,
-    paddingHorizontal: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  inlineLoadingBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  loadingText: {
-    color: '#445889',
-  },
-  errorBox: {
-    marginBottom: 8,
-    backgroundColor: '#ffe8ec',
-    borderColor: '#ee9db0',
-    borderWidth: 1,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-  },
-  errorText: {
-    color: '#8e233f',
-    fontWeight: '500',
-  },
-  sectionTitle: {
-    marginTop: 10,
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#1a2550',
-    marginBottom: 6,
-  },
-  sectionSubtitle: {
-    color: '#425485',
-    marginBottom: 4,
-  },
-  timesheetCard: {
-    marginTop: 8,
-    borderWidth: 1,
-    borderColor: '#c6d2f8',
-    borderRadius: 12,
-    backgroundColor: '#f9fbff',
-    padding: 12,
-    gap: 8,
-  },
-  timesheetWorkerText: {
-    color: '#1b2a59',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  timesheetDateButton: {
-    borderWidth: 1,
-    borderColor: '#c8d6ff',
-    borderRadius: 10,
-    backgroundColor: '#ffffff',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    gap: 2,
-  },
-  timesheetDateButtonText: {
-    color: '#1b2a59',
-    fontWeight: '700',
-    fontSize: 13,
-  },
-  timesheetDateHint: {
-    color: '#536895',
-    fontSize: 11,
-  },
-  timesheetDatePickerWrap: {
-    borderWidth: 1,
-    borderColor: '#d9e3ff',
-    borderRadius: 10,
-    backgroundColor: '#ffffff',
-    overflow: 'hidden',
-  },
-  timesheetStagePickerWrap: {
-    borderWidth: 1,
-    borderColor: '#c8d6ff',
-    borderRadius: 10,
-    backgroundColor: '#ffffff',
-    overflow: 'hidden',
-  },
-  timesheetStagePicker: {
-    color: '#1b2a59',
-  },
-  timesheetInlineHint: {
-    color: '#6b7fa8',
-    fontSize: 12,
-  },
-  timesheetNotesInput: {
-    minHeight: 84,
-    textAlignVertical: 'top',
-  },
-  timesheetMessage: {
-    color: '#204fc2',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  timesheetListTitle: {
-    color: '#1b2a59',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  timesheetList: {
-    gap: 8,
-    marginTop: 6,
-  },
-  timesheetEntryRow: {
-    borderWidth: 1,
-    borderColor: '#d9e3ff',
-    borderRadius: 10,
-    backgroundColor: '#ffffff',
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    gap: 2,
-  },
-  settingsCard: {
-    marginTop: 8,
-    borderWidth: 1,
-    borderColor: '#c6d2f8',
-    borderRadius: 12,
-    backgroundColor: '#f9fbff',
-    padding: 12,
-    gap: 10,
-  },
-  settingsTitle: {
-    color: '#1a2550',
-    fontSize: 16,
-    fontWeight: '800',
-  },
-  settingsSubtitle: {
-    color: '#4e6294',
-    fontSize: 13,
-    lineHeight: 18,
-  },
-  settingsToggleButton: {
-    alignSelf: 'flex-start',
-    backgroundColor: '#203063',
-    borderColor: '#3c5ec7',
-    borderWidth: 1,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-  },
-  settingsToggleButtonText: {
-    color: '#d9e5ff',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  settingsLanguageRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  settingsLanguageButton: {
-    flex: 1,
-    borderWidth: 1,
-    borderColor: '#c6d2f8',
-    borderRadius: 10,
-    backgroundColor: '#ffffff',
-    paddingVertical: 10,
-    alignItems: 'center',
-  },
-  settingsLanguageButtonActive: {
-    borderColor: '#3c5ec7',
-    backgroundColor: '#e8eeff',
-  },
-  settingsLanguageButtonText: {
-    color: '#22366f',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  settingsUpdateMessage: {
-    color: '#204fc2',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  metricsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  metricCard: {
-    width: '48%',
-    borderRadius: 12,
-    borderWidth: 1,
-    minHeight: 116,
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    shadowColor: '#1a2345',
-    shadowOpacity: 0.09,
-    shadowOffset: { width: 0, height: 3 },
-    shadowRadius: 8,
-    elevation: 2,
-  },
-  metricCardPressed: {
-    transform: [{ scale: 0.985 }],
-  },
-  metricLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  metricValue: {
-    marginTop: 4,
-    fontWeight: '800',
-    fontSize: 24,
-  },
-  metricHelper: {
-    marginTop: 4,
-    fontSize: 11,
-  },
-  metricActionText: {
-    marginTop: 6,
-    fontSize: 11,
-    color: '#1a2550',
-    fontWeight: '700',
-  },
-  detailPanel: {
-    marginTop: 12,
-    borderWidth: 1,
-    borderColor: '#c6d2f8',
-    borderRadius: 12,
-    backgroundColor: '#f9fbff',
-    padding: 12,
-    gap: 8,
-  },
-  detailHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    gap: 10,
-  },
-  detailTitle: {
-    color: '#1a2550',
-    fontWeight: '800',
-    fontSize: 17,
-    flexShrink: 1,
-  },
-  detailCloseButton: {
-    backgroundColor: '#273c84',
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-  },
-  detailCloseButtonText: {
-    color: '#ffffff',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  detailRow: {
-    borderWidth: 1,
-    borderColor: '#d9e3ff',
-    borderRadius: 10,
-    backgroundColor: '#ffffff',
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    gap: 2,
-  },
-  detailPrimary: {
-    color: '#1b2a59',
-    fontWeight: '700',
-    fontSize: 13,
-  },
-  detailSecondary: {
-    color: '#536895',
-    fontSize: 12,
-  },
-  emptyDetailText: {
-    color: '#5a6f99',
-    fontSize: 13,
-  },
-  emptyPicturesBox: {
-    borderWidth: 1,
-    borderColor: '#c6d2f8',
-    borderRadius: 12,
-    backgroundColor: '#f9fbff',
-    padding: 12,
-  },
-  ordersListCard: {
-    borderWidth: 1,
-    borderColor: '#c6d2f8',
-    borderRadius: 12,
-    backgroundColor: '#f9fbff',
-    padding: 12,
-    gap: 10,
-  },
-  orderSearchInput: {
-    borderWidth: 1,
-    borderColor: '#c8d6ff',
-    borderRadius: 10,
-    backgroundColor: '#ffffff',
-    color: '#1b2a59',
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    fontWeight: '600',
-  },
-  ordersListScroll: {
-    flex: 1,
-  },
-  ordersListContent: {
-    gap: 8,
-    paddingBottom: 8,
-  },
-  orderListItem: {
-    borderWidth: 1,
-    borderColor: '#c8d6ff',
-    borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 10,
-    backgroundColor: '#ffffff',
-    gap: 2,
-  },
-  orderListName: {
-    color: '#22366f',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  orderListMeta: {
-    color: '#4e6294',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  orderPickerChip: {
-    borderWidth: 1,
-    borderColor: '#c8d6ff',
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: '#ffffff',
-    maxWidth: 210,
-  },
-  orderPickerChipSelected: {
-    borderColor: '#3f63e8',
-    backgroundColor: '#dce6ff',
-  },
-  orderPickerChipText: {
-    color: '#22366f',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  orderPickerChipTextSelected: {
-    color: '#1a2f72',
-  },
-  pictureActionCard: {
-    marginTop: 8,
-    borderWidth: 1,
-    borderColor: '#c6d2f8',
-    borderRadius: 12,
-    backgroundColor: '#f9fbff',
-    padding: 12,
-    gap: 8,
-  },
-  pictureActionHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 10,
-  },
-  pictureOrderTextBlock: {
-    flex: 1,
-    gap: 1,
-  },
-  pictureOrderTitle: {
-    color: '#1b2a59',
-    fontWeight: '800',
-    fontSize: 14,
-  },
-  pictureOrderMeta: {
-    color: '#4e6294',
-    fontSize: 12,
-  },
-  takePictureButton: {
-    backgroundColor: '#204fc2',
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  takePictureButtonText: {
-    color: '#ffffff',
-    fontWeight: '700',
-    fontSize: 12,
-  },
-  pictureMessage: {
-    color: '#204fc2',
-    fontSize: 12,
-    fontWeight: '600',
-    marginBottom: 6,
-  },
-  pictureModalActionRow: {
-    flexDirection: 'row',
-    justifyContent: 'flex-start',
-    marginTop: 4,
-  },
-  photoGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginTop: 2,
-  },
-  photoTile: {
-    width: '48%',
-    backgroundColor: '#ffffff',
-    borderWidth: 1,
-    borderColor: '#d9e3ff',
-    borderRadius: 10,
-    overflow: 'hidden',
-  },
-  photoImage: {
-    width: '100%',
-    aspectRatio: 1,
-    backgroundColor: '#e2e8ff',
-  },
-  photoTileCaption: {
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-    color: '#4b6191',
-    fontWeight: '600',
-    fontSize: 11,
-  },
-  modalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(8, 16, 46, 0.46)',
-    paddingHorizontal: 14,
-    justifyContent: 'center',
-  },
-  modalCard: {
-    maxHeight: '82%',
-    borderWidth: 1,
-    borderColor: '#c6d2f8',
-    borderRadius: 14,
-    backgroundColor: '#f9fbff',
-    padding: 12,
-    gap: 10,
-  },
-  confirmCard: {
-    borderWidth: 1,
-    borderColor: '#c6d2f8',
-    borderRadius: 14,
-    backgroundColor: '#f9fbff',
-    padding: 14,
-    gap: 10,
-  },
-  confirmTitle: {
-    color: '#1a2550',
-    fontSize: 18,
-    fontWeight: '800',
-  },
-  confirmText: {
-    color: '#4e6294',
-    fontSize: 13,
-    lineHeight: 18,
-  },
-  confirmActions: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    gap: 8,
-    marginTop: 2,
-  },
-  confirmCancelButton: {
-    borderWidth: 1,
-    borderColor: '#c6d2f8',
-    borderRadius: 10,
-    backgroundColor: '#ffffff',
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-  },
-  confirmCancelButtonText: {
-    color: '#38508a',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  confirmDangerButton: {
-    borderWidth: 1,
-    borderColor: '#9d4a63',
-    borderRadius: 10,
-    backgroundColor: '#512037',
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-  },
-  confirmDangerButtonText: {
-    color: '#ffdbe5',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  modalBodyContent: {
-    gap: 8,
-    paddingBottom: 8,
-  },
-  sidebarScrim: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(11, 18, 50, 0.28)',
-  },
-  sidebarDrawer: {
-    position: 'absolute',
-    top: 0,
-    bottom: 0,
-    left: 0,
-    width: 220,
-    backgroundColor: '#101836',
-    borderRightWidth: 1,
-    borderRightColor: '#1f2a56',
-    paddingTop: 46,
-    paddingHorizontal: 10,
-  },
-  sidebarBrandBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 20,
-    gap: 8,
-  },
-  sidebarBrandA: {
-    width: 34,
-    height: 34,
-    borderRadius: 10,
-    backgroundColor: '#3c62f0',
-    color: '#ffffff',
-    textAlign: 'center',
-    textAlignVertical: 'center',
-    fontSize: 16,
-    fontWeight: '800',
-    overflow: 'hidden',
-  },
-  sidebarBrandText: {
-    color: '#ced8ff',
-    fontSize: 18,
-    fontWeight: '700',
-  },
-  sidebarNav: {
-    gap: 10,
-  },
-  sidebarActions: {
-    marginTop: 18,
-    gap: 10,
-  },
-  sidebarItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 10,
-    paddingHorizontal: 8,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#2a376f',
-    backgroundColor: '#16224a',
-  },
-  sidebarItemActive: {
-    borderColor: '#7fa2ff',
-    backgroundColor: '#2a3f8e',
-  },
-  sidebarItemShort: {
-    width: 34,
-    height: 34,
-    borderRadius: 8,
-    backgroundColor: '#0f1739',
-    color: '#c8d4ff',
-    fontWeight: '700',
-    textAlign: 'center',
-    textAlignVertical: 'center',
-    overflow: 'hidden',
-  },
-  sidebarItemLabel: {
-    marginLeft: 10,
-    color: '#d2dcff',
-    fontWeight: '600',
-  },
-  sidebarActionButton: {
-    borderWidth: 1,
-    borderColor: '#3c5ec7',
-    borderRadius: 10,
-    backgroundColor: '#18295e',
-    paddingHorizontal: 10,
-    paddingVertical: 10,
-  },
-  sidebarActionLabel: {
-    color: '#d9e3ff',
-    fontWeight: '700',
-    fontSize: 12,
-  },
-  sidebarSignOutButton: {
-    borderWidth: 1,
-    borderColor: '#9d4a63',
-    borderRadius: 10,
-    backgroundColor: '#512037',
-    paddingHorizontal: 10,
-    paddingVertical: 10,
-  },
-  sidebarSignOutText: {
-    color: '#ffdbe5',
-    fontWeight: '700',
-    fontSize: 12,
-  },
-})

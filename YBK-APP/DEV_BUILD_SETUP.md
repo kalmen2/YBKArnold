@@ -1,16 +1,51 @@
-# YBK Mobile: Reliable Google Login Setup
+# YBK Mobile: Local Build Setup
 
-This app works most reliably with a development build (not Expo Go).
+This guide prioritizes local builds so you do not wait in EAS cloud queues.
 
-## Android phone now (quick path)
+## Local APK fast path (no EAS)
 
 Run these commands in YBK-APP:
 
-1. npm run eas:login
-2. npm run eas:android:dev
-3. Install the generated Android build from the EAS link on your phone.
-4. npm run start:dev-client
-5. Open the installed YBK dev app on your phone and connect to Metro.
+1. npm install
+2. npm run android:apk:local:all
+3. Install the generated file `YBK-APP-local-release.apk` on your phone.
+
+Optional direct install when your phone is connected by USB:
+
+1. npm run android:apk:local
+2. npm run android:install:local
+
+Updates in this mode are link-based from Settings (no OTA publish required):
+
+- Set `EXPO_PUBLIC_ANDROID_APK_UPDATE_URL` to your latest APK download URL.
+- Send update notification from admin alerts.
+- User taps Check for Updates, then Install Update.
+
+## iOS local fast path (no EAS queue)
+
+Requirements:
+
+- Xcode installed
+- CocoaPods installed (`brew install cocoapods`)
+
+Run these commands in YBK-APP:
+
+1. npm install
+2. npm run ios:local:setup
+3. npm run ios:sim:local
+
+This compiles the app locally for simulator using Xcode toolchain.
+
+For physical iPhone / TestFlight-ready archive (local machine build):
+
+1. npm run ios:archive:local
+2. npm run ios:open:xcode
+3. In Xcode Organizer, distribute/upload the archive.
+
+Notes:
+
+- This avoids EAS build queues.
+- Apple processing time after upload still applies.
 
 ## 1) Required env values
 
@@ -41,16 +76,16 @@ Your native OAuth clients must match app identifiers from app.json:
 
 Android also requires SHA-1 for the signing key used by your build.
 
-## 3) Build and run (recommended path)
+## 3) Build and run (recommended local path)
 
 From YBK-APP:
 
 1. Install dependencies:
    npm install
 
-2. Build native development app once per platform:
-   - iOS simulator: npm run ios:dev
-   - Android emulator/device: npm run android:dev
+2. Build native app locally:
+   - iOS simulator: npm run ios:sim:local
+   - Android release APK: npm run android:apk:local:all
 
 3. Start Metro for dev client:
    npm run start:dev-client
@@ -58,6 +93,8 @@ From YBK-APP:
 4. Open the installed dev build on device/simulator and connect to Metro.
 
 ## 4) Optional EAS internal dev build
+
+Use only if you explicitly want cloud build infrastructure.
 
 If you want installable dev clients on physical devices:
 
@@ -77,6 +114,13 @@ Then start Metro with:
 - Fully restart Metro: npm run start:dev-client
 
 ## 6) Release files for stores
+
+Preferred local-first path for iOS:
+
+1. npm run ios:archive:local
+2. Open Xcode Organizer and upload archive.
+
+Optional EAS cloud path (slower queue during busy periods):
 
 From YBK-APP:
 

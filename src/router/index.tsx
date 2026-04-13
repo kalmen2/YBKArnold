@@ -1,4 +1,5 @@
 import { Navigate, createBrowserRouter } from 'react-router-dom'
+import AdminAlertsPage from '../pages/AdminAlertsPage'
 import AppLayout from '../layout/AppLayout'
 import AdminLogsPage from '../pages/AdminLogsPage'
 import AdminUsersPage from '../pages/AdminUsersPage'
@@ -40,6 +41,10 @@ export const router = createBrowserRouter([
       {
         path: 'admin/users',
         element: <AdminUsersPage />,
+      },
+      {
+        path: 'admin/alerts',
+        element: <AdminAlertsPage />,
       },
       {
         path: 'admin/logs',

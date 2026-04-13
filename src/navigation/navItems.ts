@@ -2,6 +2,7 @@ import AdminPanelSettingsRoundedIcon from '@mui/icons-material/AdminPanelSetting
 import DashboardRoundedIcon from '@mui/icons-material/DashboardRounded'
 import GroupRoundedIcon from '@mui/icons-material/GroupRounded'
 import ManageHistoryRoundedIcon from '@mui/icons-material/ManageHistoryRounded'
+import NotificationsActiveRoundedIcon from '@mui/icons-material/NotificationsActiveRounded'
 import PhotoLibraryRoundedIcon from '@mui/icons-material/PhotoLibraryRounded'
 import SupportAgentRoundedIcon from '@mui/icons-material/SupportAgentRounded'
 import TableChartRoundedIcon from '@mui/icons-material/TableChartRounded'
@@ -44,6 +45,12 @@ export const navItems: NavItem[] = [
     label: 'Users',
     path: '/admin/users',
     icon: AdminPanelSettingsRoundedIcon,
+    adminOnly: true,
+  },
+  {
+    label: 'Notifications',
+    path: '/admin/alerts',
+    icon: NotificationsActiveRoundedIcon,
     adminOnly: true,
   },
   {

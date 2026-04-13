@@ -1,4 +1,4 @@
-export type AppAuthRole = 'standard' | 'admin'
+export type AppAuthRole = 'standard' | 'manager' | 'admin'
 
 export type AppAuthApprovalStatus = 'pending' | 'approved'
 
@@ -11,6 +11,7 @@ export type AppAuthUser = {
   approvalStatus: AppAuthApprovalStatus
   isOwner: boolean
   isAdmin: boolean
+  isManager: boolean
   isApproved: boolean
   approvedAt: string | null
   createdAt: string | null

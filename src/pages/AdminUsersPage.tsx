@@ -1,4 +1,5 @@
 import CheckRoundedIcon from '@mui/icons-material/CheckRounded'
+import ManageAccountsRoundedIcon from '@mui/icons-material/ManageAccountsRounded'
 import MoreVertRoundedIcon from '@mui/icons-material/MoreVertRounded'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import ShieldRoundedIcon from '@mui/icons-material/ShieldRounded'
@@ -79,6 +80,30 @@ function approvalLabel(user: AppAuthUser) {
 
 function approvalColor(user: AppAuthUser) {
   return user.isApproved ? 'success' : 'warning'
+}
+
+function roleLabel(role: AppAuthRole) {
+  if (role === 'admin') {
+    return 'Admin'
+  }
+
+  if (role === 'manager') {
+    return 'Manager'
+  }
+
+  return 'Standard'
+}
+
+function roleColor(role: AppAuthRole): 'default' | 'primary' | 'secondary' {
+  if (role === 'admin') {
+    return 'secondary'
+  }
+
+  if (role === 'manager') {
+    return 'primary'
+  }
+
+  return 'default'
 }
 
 function formatHour(hour: number) {
@@ -257,7 +282,9 @@ export default function AdminUsersPage() {
         setActionMessage(
           role === 'admin'
             ? 'User approved as Admin.'
-            : 'User approved as Standard.',
+            : role === 'manager'
+              ? 'User approved as Manager.'
+              : 'User approved as Standard.',
         )
       } catch (error) {
         setErrorMessage(
@@ -655,12 +682,14 @@ export default function AdminUsersPage() {
 
                     <TableCell>
                       <Chip
-                        label={user.role === 'admin' ? 'Admin' : 'Standard'}
+                        label={roleLabel(user.role)}
                         size="small"
-                        color={user.role === 'admin' ? 'secondary' : 'default'}
+                        color={roleColor(user.role)}
                         icon={
                           user.role === 'admin' ? (
                             <ShieldRoundedIcon fontSize="small" />
+                          ) : user.role === 'manager' ? (
+                            <ManageAccountsRoundedIcon fontSize="small" />
                           ) : (
                             <CheckRoundedIcon fontSize="small" />
                           )
@@ -739,6 +768,20 @@ export default function AdminUsersPage() {
         </MenuItem>
 
         <MenuItem
+          disabled={actionsTargetIsSaving || !actionsTargetCanAssignStandard}
+          onClick={() => {
+            if (!actionsTarget) {
+              return
+            }
+
+            closeRowActions()
+            void handleApprove(actionsTarget.uid, 'manager')
+          }}
+        >
+          {actionsTarget?.isApproved && actionsTarget.role === 'manager' ? 'Manager' : 'Set Manager'}
+        </MenuItem>
+
+        <MenuItem
           disabled={actionsTargetIsSaving || Boolean(actionsTarget?.isOwner)}
           onClick={() => {
             if (!actionsTarget) {
@@ -768,6 +811,7 @@ export default function AdminUsersPage() {
             actionsTargetIsSaving
             || Boolean(actionsTarget?.isOwner)
             || Boolean(actionsTarget?.isAdmin)
+            || actionsTarget?.role === 'manager'
           }
           onClick={() => {
             if (!actionsTarget) {

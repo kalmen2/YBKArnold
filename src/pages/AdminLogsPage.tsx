@@ -83,6 +83,7 @@ const routeLabels: Record<string, string> = {
   '/support': 'Support',
   '/pictures': 'Pictures',
   '/admin/users': 'Admin Users',
+  '/admin/alerts': 'Admin Notifications',
   '/admin/logs': 'Admin Logs',
 }
 
@@ -538,8 +539,20 @@ export default function AdminLogsPage() {
                 <Stack direction="row" spacing={1}>
                   <Chip
                     size="small"
-                    label={selectedSummary?.user.isAdmin ? 'Admin' : 'Standard'}
-                    color={selectedSummary?.user.isAdmin ? 'secondary' : 'default'}
+                    label={
+                      selectedSummary?.user.role === 'admin'
+                        ? 'Admin'
+                        : selectedSummary?.user.role === 'manager'
+                          ? 'Manager'
+                          : 'Standard'
+                    }
+                    color={
+                      selectedSummary?.user.role === 'admin'
+                        ? 'secondary'
+                        : selectedSummary?.user.role === 'manager'
+                          ? 'primary'
+                          : 'default'
+                    }
                   />
                   <Chip
                     size="small"

@@ -55,6 +55,17 @@ export default function AppLayout() {
     })
   }, [location.pathname, logActivity])
 
+  const appUserRoleLabel = appUser?.role === 'admin'
+    ? 'Admin'
+    : appUser?.role === 'manager'
+      ? 'Manager'
+      : 'Standard'
+  const appUserRoleColor: 'default' | 'primary' | 'secondary' = appUser?.role === 'admin'
+    ? 'secondary'
+    : appUser?.role === 'manager'
+      ? 'primary'
+      : 'default'
+
   return (
     <Box sx={{ display: 'flex', minHeight: '100vh', bgcolor: 'background.default' }}>
       <AppBar
@@ -100,8 +111,8 @@ export default function AppLayout() {
           <Stack direction="row" spacing={1} alignItems="center">
             <Chip
               size="small"
-              color={appUser?.isAdmin ? 'secondary' : 'default'}
-              label={appUser?.isAdmin ? 'Admin' : 'Standard'}
+              color={appUserRoleColor}
+              label={appUserRoleLabel}
               variant="outlined"
             />
 

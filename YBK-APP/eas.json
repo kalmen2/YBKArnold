@@ -20,6 +20,7 @@
       "distribution": "store",
       "autoIncrement": true,
       "channel": "production",
+      "environment": "production",
       "android": {
         "buildType": "app-bundle"
       },
@@ -30,6 +31,7 @@
     "android-apk": {
       "distribution": "internal",
       "channel": "production",
+      "environment": "production",
       "android": {
         "buildType": "apk"
       }
@@ -38,6 +40,7 @@
       "distribution": "store",
       "autoIncrement": true,
       "channel": "production",
+      "environment": "production",
       "android": {
         "buildType": "app-bundle"
       }
@@ -46,6 +49,7 @@
       "distribution": "store",
       "autoIncrement": true,
       "channel": "production",
+      "environment": "production",
       "ios": {
         "simulator": false
       }
@@ -58,7 +62,9 @@
       }
     },
     "ios-store": {
-      "ios": {}
+      "ios": {
+        "ascAppId": "6762073444"
+      }
     }
   }
 }
