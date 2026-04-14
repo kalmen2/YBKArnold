@@ -11,10 +11,15 @@ node_modules
 dist
 dist-ssr
 .firebase
+.expo
 *.local
 .env
 .env.*
 !.env.example
+
+# Mobile local secret files
+YBK-APP/google-services.json
+YBK-APP/GoogleService-Info.plist
 
 # Editor directories and files
 .vscode/*

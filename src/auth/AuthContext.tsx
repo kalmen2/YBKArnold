@@ -22,6 +22,8 @@ import {
 import type { AppAuthUser } from './types'
 
 const ownerEmail = 'kal@ybkarnold.com'
+const authProfileRequestTimeoutMs = 7000
+const cachedAuthUserStorageKey = 'arnold.auth.cached-user.v1'
 
 type AuthContextValue = {
   firebaseUser: User | null
@@ -45,20 +47,75 @@ type AuthContextValue = {
 
 const AuthContext = createContext<AuthContextValue | null>(null)
 
+function readCachedAuthUser() {
+  if (typeof window === 'undefined') {
+    return null
+  }
+
+  try {
+    const rawValue = window.localStorage.getItem(cachedAuthUserStorageKey)
+
+    if (!rawValue) {
+      return null
+    }
+
+    const parsedValue = JSON.parse(rawValue) as AppAuthUser | null
+
+    return parsedValue && typeof parsedValue === 'object'
+      ? parsedValue
+      : null
+  } catch {
+    return null
+  }
+}
+
+function persistCachedAuthUser(user: AppAuthUser | null) {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  try {
+    if (user) {
+      window.localStorage.setItem(cachedAuthUserStorageKey, JSON.stringify(user))
+      return
+    }
+
+    window.localStorage.removeItem(cachedAuthUserStorageKey)
+  } catch {
+    // Cache writes are best-effort only.
+  }
+}
+
 async function requestCurrentUser(idToken: string) {
-  const response = await fetch('/api/auth/me', {
-    method: 'GET',
-    headers: {
-      Authorization: `Bearer ${idToken}`,
-      'x-client-platform': 'web',
-    },
-  })
+  const abortController = new AbortController()
+  const timeoutId = setTimeout(() => {
+    abortController.abort()
+  }, authProfileRequestTimeoutMs)
 
-  const payload = await response.json().catch(() => ({}))
+  try {
+    const response = await fetch('/api/auth/me', {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${idToken}`,
+        'x-client-platform': 'web',
+      },
+      signal: abortController.signal,
+    })
 
-  return {
-    response,
-    payload,
+    const payload = await response.json().catch(() => ({}))
+
+    return {
+      response,
+      payload,
+    }
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error('Access check timed out. Please refresh.')
+    }
+
+    throw error
+  } finally {
+    clearTimeout(timeoutId)
   }
 }
 
@@ -71,10 +128,11 @@ function getErrorMessage(error: unknown) {
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
+  const initialCachedUserRef = useRef<AppAuthUser | null>(readCachedAuthUser())
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null)
-  const [appUser, setAppUser] = useState<AppAuthUser | null>(null)
+  const [appUser, setAppUser] = useState<AppAuthUser | null>(initialCachedUserRef.current)
   const [isFirebaseResolved, setIsFirebaseResolved] = useState(false)
-  const [hasResolvedProfile, setHasResolvedProfile] = useState(false)
+  const [hasResolvedProfile, setHasResolvedProfile] = useState(Boolean(initialCachedUserRef.current))
   const [profileError, setProfileError] = useState<string | null>(null)
   const [ownerEmailValue, setOwnerEmailValue] = useState(ownerEmail)
   const activityCooldownByKeyRef = useRef<Map<string, number>>(new Map())
@@ -160,19 +218,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           typeof payload?.error === 'string'
             ? payload.error
             : ''
+
+        if (response.status === 401) {
+          setAppUser(null)
+          persistCachedAuthUser(null)
+          setProfileError(responseErrorMessage || 'Session expired. Please sign in again.')
+          await signOut(firebaseAuth)
+          return
+        }
+
         const isHoursBlockedError =
           response.status === 403
           && responseErrorMessage.toLowerCase().includes('access is currently blocked')
 
         if (isHoursBlockedError) {
           setAppUser(null)
+          persistCachedAuthUser(null)
           setProfileError(responseErrorMessage || 'Access is currently blocked.')
           await signOut(firebaseAuth)
           return
         }
 
         if (payload?.user) {
-          setAppUser(payload.user as AppAuthUser)
+          const nextUser = payload.user as AppAuthUser
+
+          setAppUser(nextUser)
+          persistCachedAuthUser(nextUser)
           setProfileError(
             typeof payload.error === 'string' ? payload.error : null,
           )
@@ -186,10 +257,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         )
       }
 
-      setAppUser((payload?.user as AppAuthUser | undefined) ?? null)
+      const nextUser = (payload?.user as AppAuthUser | undefined) ?? null
+
+      setAppUser(nextUser)
+      persistCachedAuthUser(nextUser)
       setProfileError(null)
     } catch (error) {
-      setAppUser(null)
       setProfileError(getErrorMessage(error))
     } finally {
       setHasResolvedProfile(true)
@@ -199,7 +272,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(firebaseAuth, (nextUser) => {
       setFirebaseUser(nextUser)
-      setHasResolvedProfile(!nextUser)
+
+      if (!nextUser) {
+        setAppUser(null)
+        persistCachedAuthUser(null)
+        setHasResolvedProfile(true)
+        setIsFirebaseResolved(true)
+        return
+      }
+
+      const cachedUser = readCachedAuthUser()
+      const cachedEmail = String(cachedUser?.email ?? '').trim().toLowerCase()
+      const firebaseEmail = String(nextUser.email ?? '').trim().toLowerCase()
+      const canUseCachedUser = Boolean(cachedUser && cachedEmail && cachedEmail === firebaseEmail)
+
+      if (canUseCachedUser) {
+        setAppUser(cachedUser)
+        setHasResolvedProfile(true)
+      } else {
+        setAppUser(null)
+        setHasResolvedProfile(false)
+      }
+
       setIsFirebaseResolved(true)
     })
 
@@ -215,6 +309,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     if (!firebaseUser) {
       setAppUser(null)
+      persistCachedAuthUser(null)
       setHasResolvedProfile(true)
       setOwnerEmailValue(ownerEmail)
       return

@@ -43,3 +43,7 @@ yarn-error.*
 
 # local build artifacts
 *.apk
+
+# Firebase native config secrets
+google-services.json
+GoogleService-Info.plist
