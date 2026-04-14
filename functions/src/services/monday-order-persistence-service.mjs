@@ -1,11 +1,102 @@
-export function createMondayOrderPersistenceService({ getCollections }) {
+export function createMondayOrderPersistenceService({
+  fetchMondayAssetDownloadInfo,
+  getCollections,
+  getOrderPhotosBucket,
+  randomUUID,
+}) {
   function normalizeMondayItemId(rawValue) {
     const normalized = String(rawValue ?? '').trim()
 
     return normalized || null
   }
 
-  function buildMondayOrderDocument(order, board, createdAt) {
+  function normalizeUrl(rawValue) {
+    const normalized = String(rawValue ?? '').trim()
+
+    return normalized || null
+  }
+
+  function sanitizeStorageSegment(rawValue, fallback = 'unknown') {
+    const normalized = String(rawValue ?? '').trim().replace(/[^a-zA-Z0-9_-]+/g, '_')
+
+    if (!normalized) {
+      return fallback
+    }
+
+    return normalized.slice(0, 120)
+  }
+
+  function sanitizeDownloadFileName(rawValue, fallbackFileName = 'shop-drawing.pdf') {
+    const normalized = String(rawValue ?? '').trim().replace(/[\\/:*?"<>|]+/g, '-')
+
+    if (!normalized) {
+      return fallbackFileName
+    }
+
+    return normalized
+  }
+
+  function ensurePdfFileName(rawValue, fallbackFileName = 'shop-drawing.pdf') {
+    const safeFileName = sanitizeDownloadFileName(rawValue, fallbackFileName)
+
+    if (/\.pdf$/i.test(safeFileName)) {
+      return safeFileName
+    }
+
+    return `${safeFileName}.pdf`
+  }
+
+  function deriveFileNameFromUrl(rawValue) {
+    const normalizedUrl = normalizeUrl(rawValue)
+
+    if (!normalizedUrl) {
+      return null
+    }
+
+    try {
+      const parsedUrl = new URL(normalizedUrl)
+      const segment = parsedUrl.pathname.split('/').pop() ?? ''
+      const decoded = decodeURIComponent(segment).trim()
+
+      return decoded || null
+    } catch {
+      return null
+    }
+  }
+
+  function extractMondayAssetIdFromUrl(rawValue) {
+    const normalizedUrl = normalizeUrl(rawValue)
+
+    if (!normalizedUrl) {
+      return null
+    }
+
+    try {
+      const parsedUrl = new URL(normalizedUrl)
+      const match = parsedUrl.pathname.match(/\/resources\/([0-9]+)(?:\/|$)/i)
+
+      return match?.[1] ?? null
+    } catch {
+      return null
+    }
+  }
+
+  function buildFirebaseStorageDownloadUrl(bucketName, objectPath, downloadToken) {
+    const encodedObjectPath = encodeURIComponent(String(objectPath ?? '').trim())
+    const encodedToken = encodeURIComponent(String(downloadToken ?? '').trim())
+
+    return `https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(bucketName)}/o/${encodedObjectPath}?alt=media&token=${encodedToken}`
+  }
+
+  function createDownloadToken() {
+    if (typeof randomUUID === 'function') {
+      return randomUUID()
+    }
+
+    return `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`
+  }
+
+  function createOrderSetFields({ order, board, now, sourceInfo }) {
     return {
       mondayItemId: normalizeMondayItemId(order?.id),
       mondayBoardId: String(board?.id ?? '').trim() || null,
@@ -31,9 +122,165 @@ export function createMondayOrderPersistenceService({ getCollections }) {
       daysLate: Number.isFinite(order?.daysLate) ? Number(order.daysLate) : 0,
       mondayItemUrl: String(order?.itemUrl ?? '').trim() || null,
       mondayUpdatedAt: String(order?.updatedAt ?? '').trim() || null,
-      createdAt,
-      firstSeenAt: createdAt,
-      lastSeenAt: createdAt,
+      shopDrawingUrl: normalizeUrl(order?.shopDrawingUrl),
+      shopDrawingFileName: sourceInfo.fileName,
+      shopDrawingSourceAssetId: sourceInfo.sourceAssetId,
+      shopDrawingSourceUrl: sourceInfo.sourceUrl,
+      shopDrawingResolvedUrl: sourceInfo.sourceUrl,
+      updatedAt: now,
+      lastSeenAt: now,
+    }
+  }
+
+  async function resolveShopDrawingSource(order, assetInfoById) {
+    const originalUrl = normalizeUrl(order?.shopDrawingUrl)
+    const explicitFileName = String(order?.shopDrawingFileName ?? '').trim() || null
+    const fallbackFileName = deriveFileNameFromUrl(originalUrl)
+    const originalFileName = ensurePdfFileName(
+      explicitFileName || fallbackFileName || 'shop-drawing.pdf',
+      'shop-drawing.pdf',
+    )
+
+    if (!originalUrl) {
+      return {
+        sourceAssetId: null,
+        sourceUrl: null,
+        fileName: null,
+      }
+    }
+
+    const sourceAssetId = extractMondayAssetIdFromUrl(originalUrl)
+    const isProtectedMondayAssetUrl = /\/protected_static\//i.test(originalUrl)
+
+    if (!isProtectedMondayAssetUrl || !sourceAssetId || typeof fetchMondayAssetDownloadInfo !== 'function') {
+      return {
+        sourceAssetId,
+        sourceUrl: originalUrl,
+        fileName: originalFileName,
+      }
+    }
+
+    if (assetInfoById.has(sourceAssetId)) {
+      const cachedAssetInfo = assetInfoById.get(sourceAssetId)
+
+      return {
+        sourceAssetId,
+        sourceUrl: cachedAssetInfo.publicUrl || originalUrl,
+        fileName: ensurePdfFileName(cachedAssetInfo.name || originalFileName, originalFileName),
+      }
+    }
+
+    try {
+      const assetInfo = await fetchMondayAssetDownloadInfo(sourceAssetId)
+      const normalizedAssetInfo = {
+        name: String(assetInfo?.name ?? '').trim() || null,
+        publicUrl: normalizeUrl(assetInfo?.publicUrl),
+      }
+      assetInfoById.set(sourceAssetId, normalizedAssetInfo)
+
+      return {
+        sourceAssetId,
+        sourceUrl: normalizedAssetInfo.publicUrl || originalUrl,
+        fileName: ensurePdfFileName(
+          normalizedAssetInfo.name || originalFileName,
+          originalFileName,
+        ),
+      }
+    } catch {
+      return {
+        sourceAssetId,
+        sourceUrl: originalUrl,
+        fileName: originalFileName,
+      }
+    }
+  }
+
+  async function cacheShopDrawingForOrder({
+    bucket,
+    existingOrder,
+    fileName,
+    mondayItemId,
+    now,
+    sourceAssetId,
+    sourceUrl,
+  }) {
+    const existingStoragePath = String(existingOrder?.shopDrawingStoragePath ?? '').trim() || null
+    const existingDownloadUrl = String(existingOrder?.shopDrawingDownloadUrl ?? '').trim() || null
+
+    if (
+      existingOrder?.shopDrawingSourceUrl === sourceUrl
+      && existingStoragePath
+      && existingDownloadUrl
+    ) {
+      return {
+        cacheFields: {
+          shopDrawingStoragePath: existingStoragePath,
+          shopDrawingDownloadUrl: existingDownloadUrl,
+          shopDrawingContentType: String(existingOrder?.shopDrawingContentType ?? '').trim() || null,
+          shopDrawingCachedAt: String(existingOrder?.shopDrawingCachedAt ?? '').trim() || null,
+          shopDrawingCacheStatus: 'ready',
+          shopDrawingCacheError: null,
+        },
+        status: 'reused',
+      }
+    }
+
+    try {
+      const storageOrderId = sanitizeStorageSegment(mondayItemId)
+      const storageFileName = sanitizeDownloadFileName(fileName, `${storageOrderId}-shop-drawing.pdf`)
+      const storagePath = `monday-shop-drawings/${storageOrderId}/${storageFileName}`
+      const sourceResponse = await fetch(sourceUrl)
+
+      if (!sourceResponse.ok) {
+        throw new Error(`Source responded with status ${sourceResponse.status}.`)
+      }
+
+      const contentType = String(sourceResponse.headers.get('content-type') ?? '').trim() || 'application/pdf'
+      const sourceBuffer = Buffer.from(await sourceResponse.arrayBuffer())
+      const downloadToken = createDownloadToken()
+      const targetFile = bucket.file(storagePath)
+
+      await targetFile.save(sourceBuffer, {
+        resumable: false,
+        metadata: {
+          contentType,
+          metadata: {
+            firebaseStorageDownloadTokens: downloadToken,
+            mondayItemId,
+            sourceAssetId: String(sourceAssetId ?? '').trim() || null,
+            sourceUrl,
+            syncedAt: now,
+          },
+        },
+      })
+
+      const downloadUrl = buildFirebaseStorageDownloadUrl(bucket.name, storagePath, downloadToken)
+
+      return {
+        cacheFields: {
+          shopDrawingStoragePath: storagePath,
+          shopDrawingDownloadUrl: downloadUrl,
+          shopDrawingContentType: contentType,
+          shopDrawingCachedAt: now,
+          shopDrawingCacheStatus: 'ready',
+          shopDrawingCacheError: null,
+        },
+        status: 'cached',
+      }
+    } catch (error) {
+      const cachedErrorMessage = error instanceof Error ? error.message : 'Shop drawing sync failed.'
+
+      return {
+        cacheFields: {
+          shopDrawingStoragePath: existingStoragePath,
+          shopDrawingDownloadUrl: existingDownloadUrl,
+          shopDrawingContentType: String(existingOrder?.shopDrawingContentType ?? '').trim() || null,
+          shopDrawingCachedAt: String(existingOrder?.shopDrawingCachedAt ?? '').trim() || null,
+          shopDrawingCacheStatus: existingStoragePath && existingDownloadUrl ? 'ready' : 'error',
+          shopDrawingCacheError: existingStoragePath && existingDownloadUrl ? null : cachedErrorMessage,
+        },
+        status: existingStoragePath && existingDownloadUrl ? 'reused' : 'failed',
+      }
     }
   }
 
@@ -45,6 +292,9 @@ export function createMondayOrderPersistenceService({ getCollections }) {
         checkedCount: 0,
         newCount: 0,
         insertedCount: 0,
+        shopDrawingsCached: 0,
+        shopDrawingsReused: 0,
+        shopDrawingsFailed: 0,
       }
     }
 
@@ -67,25 +317,102 @@ export function createMondayOrderPersistenceService({ getCollections }) {
         checkedCount: 0,
         newCount: 0,
         insertedCount: 0,
+        shopDrawingsCached: 0,
+        shopDrawingsReused: 0,
+        shopDrawingsFailed: 0,
       }
     }
 
     const { mondayOrdersCollection } = await getCollections()
     const now = new Date().toISOString()
     const board = snapshot?.board ?? null
-    const operations = mondayItemIds.map((mondayItemId) => ({
-      updateOne: {
-        filter: { mondayItemId },
-        update: {
-          $setOnInsert: buildMondayOrderDocument(
-            orderByItemId.get(mondayItemId),
-            board,
-            now,
-          ),
+    const existingOrders = await mondayOrdersCollection
+      .find(
+        {
+          mondayItemId: {
+            $in: mondayItemIds,
+          },
         },
-        upsert: true,
-      },
-    }))
+        {
+          projection: {
+            _id: 0,
+            mondayItemId: 1,
+            shopDrawingContentType: 1,
+            shopDrawingCachedAt: 1,
+            shopDrawingDownloadUrl: 1,
+            shopDrawingStoragePath: 1,
+            shopDrawingSourceUrl: 1,
+          },
+        },
+      )
+      .toArray()
+    const existingOrderByItemId = new Map(
+      existingOrders.map((orderDocument) => [orderDocument.mondayItemId, orderDocument]),
+    )
+    const bucket = typeof getOrderPhotosBucket === 'function' ? getOrderPhotosBucket() : null
+    const assetInfoById = new Map()
+    let shopDrawingsCached = 0
+    let shopDrawingsReused = 0
+    let shopDrawingsFailed = 0
+    const operations = []
+
+    for (const mondayItemId of mondayItemIds) {
+      const order = orderByItemId.get(mondayItemId)
+      const existingOrder = existingOrderByItemId.get(mondayItemId) ?? null
+      const sourceInfo = await resolveShopDrawingSource(order, assetInfoById)
+      const setFields = createOrderSetFields({
+        order,
+        board,
+        now,
+        sourceInfo,
+      })
+      let cacheFields = {
+        shopDrawingStoragePath: null,
+        shopDrawingDownloadUrl: null,
+        shopDrawingContentType: null,
+        shopDrawingCachedAt: null,
+        shopDrawingCacheStatus: sourceInfo.sourceUrl ? 'missing' : null,
+        shopDrawingCacheError: null,
+      }
+
+      if (sourceInfo.sourceUrl && bucket) {
+        const cacheResult = await cacheShopDrawingForOrder({
+          bucket,
+          existingOrder,
+          fileName: sourceInfo.fileName,
+          mondayItemId,
+          now,
+          sourceAssetId: sourceInfo.sourceAssetId,
+          sourceUrl: sourceInfo.sourceUrl,
+        })
+        cacheFields = cacheResult.cacheFields
+
+        if (cacheResult.status === 'cached') {
+          shopDrawingsCached += 1
+        } else if (cacheResult.status === 'reused') {
+          shopDrawingsReused += 1
+        } else {
+          shopDrawingsFailed += 1
+        }
+      }
+
+      operations.push({
+        updateOne: {
+          filter: { mondayItemId },
+          update: {
+            $set: {
+              ...setFields,
+              ...cacheFields,
+            },
+            $setOnInsert: {
+              createdAt: now,
+              firstSeenAt: now,
+            },
+          },
+          upsert: true,
+        },
+      })
+    }
 
     const writeResult = await mondayOrdersCollection.bulkWrite(operations, {
       ordered: false,
@@ -96,6 +423,9 @@ export function createMondayOrderPersistenceService({ getCollections }) {
       checkedCount: mondayItemIds.length,
       newCount: insertedCount,
       insertedCount,
+      shopDrawingsCached,
+      shopDrawingsReused,
+      shopDrawingsFailed,
     }
   }
 

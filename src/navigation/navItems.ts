@@ -6,6 +6,7 @@ import NotificationsActiveRoundedIcon from '@mui/icons-material/NotificationsAct
 import PhotoLibraryRoundedIcon from '@mui/icons-material/PhotoLibraryRounded'
 import SupportAgentRoundedIcon from '@mui/icons-material/SupportAgentRounded'
 import TableChartRoundedIcon from '@mui/icons-material/TableChartRounded'
+import TrendingUpRoundedIcon from '@mui/icons-material/TrendingUpRounded'
 import type { ElementType } from 'react'
 
 export type NavItem = {
@@ -25,6 +26,11 @@ export const navItems: NavItem[] = [
     label: 'Work Sheet',
     path: '/timesheet',
     icon: TableChartRoundedIcon,
+  },
+  {
+    label: 'Manager Progress',
+    path: '/manager-progress',
+    icon: TrendingUpRoundedIcon,
   },
   {
     label: 'Workers',

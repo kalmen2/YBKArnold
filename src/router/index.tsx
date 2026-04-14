@@ -23,6 +23,10 @@ export const router = createBrowserRouter([
         element: <TimesheetPage />,
       },
       {
+        path: 'manager-progress',
+        element: <TimesheetPage initialView="manager-progress" />,
+      },
+      {
         path: 'workers',
         element: <WorkersPage />,
       },

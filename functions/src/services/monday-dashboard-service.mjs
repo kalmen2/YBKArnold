@@ -49,6 +49,11 @@ export function createMondayDashboardService({
       ['ready by', 'need by', 'due', 'ship', 'delivery', 'target', 'eta', 'lead time'],
       ['date', 'timeline'],
     )
+    const shopDrawingColumnId = pickColumnId(
+      columns,
+      ['shop drawing', 'shop drawings', 'drawing', 'drawings'],
+      ['file', 'link', 'text', 'long-text'],
+    )
     let orderDateColumnId = pickColumnId(
       columns,
       ['order date', 'ordered', 'po date', 'received', 'start'],
@@ -73,6 +78,7 @@ export function createMondayDashboardService({
       shipDateColumnId,
       leadTimeColumnId,
       dueDateColumnId,
+      shopDrawingColumnId,
       orderDateColumnId,
       progressStatusColumns,
     }
@@ -132,6 +138,9 @@ export function createMondayDashboardService({
     const dueDateColumn =
       findColumnById(columnValues, columnMap.dueDateColumnId) ||
       findColumnByKeywords(columnValues, ['due', 'ready', 'ship'])
+    const shopDrawingColumn =
+      findColumnById(columnValues, columnMap.shopDrawingColumnId) ||
+      findColumnByKeywords(columnValues, ['shop drawing', 'drawing'])
     const orderDateColumn =
       findColumnById(columnValues, columnMap.orderDateColumnId) ||
       findColumnByKeywords(columnValues, ['order date', 'ordered'])
@@ -165,6 +174,7 @@ export function createMondayDashboardService({
       progressPercent,
       stageLabel,
     })
+    const shopDrawing = parseShopDrawing(shopDrawingColumn)
     const isLate = !isDone && typeof daysUntilDue === 'number' ? daysUntilDue < 0 : false
     const daysLate = isLate && typeof daysUntilDue === 'number' ? Math.abs(daysUntilDue) : 0
 
@@ -188,6 +198,8 @@ export function createMondayDashboardService({
       daysLate,
       updatedAt: parseDateValue(item?.updated_at),
       itemUrl: buildMondayItemUrl(item?.id),
+      shopDrawingUrl: shopDrawing.url,
+      shopDrawingFileName: shopDrawing.fileName,
     }
   }
 
@@ -247,6 +259,151 @@ export function createMondayDashboardService({
     }
 
     return ''
+  }
+
+  function parseShopDrawing(columnValue) {
+    if (!columnValue) {
+      return {
+        url: null,
+        fileName: null,
+      }
+    }
+
+    const parsedValue = parseJsonValue(columnValue.value)
+    const urls = [
+      ...extractUrlsFromUnknown(columnValue.text),
+      ...extractUrlsFromUnknown(parsedValue),
+    ]
+    const preferredUrl = pickPreferredShopDrawingUrl(urls)
+    const explicitFileName = readShopDrawingFileName(parsedValue)
+    const derivedFileName = deriveFileNameFromUrl(preferredUrl)
+
+    return {
+      url: preferredUrl,
+      fileName: normalizeShopDrawingFileName(explicitFileName || derivedFileName),
+    }
+  }
+
+  function extractUrlsFromUnknown(value, depth = 0) {
+    if (depth > 6 || value == null) {
+      return []
+    }
+
+    if (typeof value === 'string') {
+      return extractUrlsFromString(value)
+    }
+
+    if (Array.isArray(value)) {
+      return value.flatMap((entry) => extractUrlsFromUnknown(entry, depth + 1))
+    }
+
+    if (typeof value === 'object') {
+      return Object.values(value).flatMap((entry) =>
+        extractUrlsFromUnknown(entry, depth + 1),
+      )
+    }
+
+    return []
+  }
+
+  function extractUrlsFromString(rawValue) {
+    const normalizedValue = String(rawValue ?? '').replace(/\\\//g, '/').trim()
+
+    if (!normalizedValue) {
+      return []
+    }
+
+    const matches = normalizedValue.match(/https?:\/\/[^\s"'<>]+/gi) ?? []
+
+    return matches
+      .map((match) => normalizeUrlCandidate(match))
+      .filter(Boolean)
+  }
+
+  function normalizeUrlCandidate(value) {
+    const normalized = String(value ?? '')
+      .trim()
+      .replace(/\\\//g, '/')
+      .replace(/[),.;]+$/g, '')
+
+    if (!normalized) {
+      return null
+    }
+
+    try {
+      const parsedUrl = new URL(normalized)
+
+      if (!/^https?:$/i.test(parsedUrl.protocol)) {
+        return null
+      }
+
+      return parsedUrl.toString()
+    } catch {
+      return null
+    }
+  }
+
+  function pickPreferredShopDrawingUrl(urls) {
+    const uniqueUrls = [...new Set(urls.filter(Boolean))]
+
+    if (uniqueUrls.length === 0) {
+      return null
+    }
+
+    const pdfUrl = uniqueUrls.find((url) => /\.pdf(?:$|[?#])/i.test(url))
+
+    return pdfUrl ?? uniqueUrls[0]
+  }
+
+  function readShopDrawingFileName(parsedValue) {
+    if (!parsedValue || typeof parsedValue !== 'object') {
+      return null
+    }
+
+    const fileCandidates = Array.isArray(parsedValue.files) ? parsedValue.files : []
+
+    for (const candidate of fileCandidates) {
+      const fileName = normalizeShopDrawingFileName(
+        candidate?.name ||
+          candidate?.file_name ||
+          candidate?.filename ||
+          candidate?.title,
+      )
+
+      if (fileName) {
+        return fileName
+      }
+    }
+
+    return null
+  }
+
+  function deriveFileNameFromUrl(url) {
+    if (!url) {
+      return null
+    }
+
+    try {
+      const parsedUrl = new URL(url)
+      const segment = parsedUrl.pathname.split('/').pop() ?? ''
+      const decoded = decodeURIComponent(segment).trim()
+
+      return decoded || null
+    } catch {
+      return null
+    }
+  }
+
+  function normalizeShopDrawingFileName(value) {
+    const normalized = String(value ?? '').trim()
+
+    if (!normalized) {
+      return null
+    }
+
+    const safeValue = normalized.replace(/[\\/:*?"<>|]+/g, '-').trim()
+
+    return safeValue || null
   }
 
   function calculateProgressPercent(columnValues, progressStatusColumns) {

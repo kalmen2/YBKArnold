@@ -23,6 +23,9 @@ export type DashboardOrder = {
   daysLate: number
   updatedAt: string | null
   itemUrl: string | null
+  shopDrawingUrl: string | null
+  shopDrawingFileName: string | null
+  shopDrawingCachedUrl?: string | null
 }
 
 export type MondayDashboardSnapshot = {

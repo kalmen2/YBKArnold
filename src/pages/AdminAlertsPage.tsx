@@ -194,13 +194,16 @@ export default function AdminAlertsPage() {
   const handleSendAlert = useCallback(async () => {
     const normalizedTitle = title.trim()
     const normalizedMessage = message.trim()
+    const messageToSend =
+      normalizedMessage
+      || (isUpdateAlert ? 'A new app update is available. Open Settings -> App Updates.' : '')
 
     if (!normalizedTitle) {
       setErrorMessage('Title is required.')
       return
     }
 
-    if (!normalizedMessage) {
+    if (!normalizedMessage && !isUpdateAlert) {
       setErrorMessage('Message is required.')
       return
     }
@@ -219,7 +222,7 @@ export default function AdminAlertsPage() {
         method: 'POST',
         body: JSON.stringify({
           title: normalizedTitle,
-          message: normalizedMessage,
+          message: messageToSend,
           isUpdate: isUpdateAlert,
           targetMode: sendToAllUsers ? 'all' : 'selected',
           userUids: sendToAllUsers ? [] : selectedRecipientUids,
@@ -349,7 +352,7 @@ export default function AdminAlertsPage() {
                     onChange={(event) => setIsUpdateAlert(event.target.checked)}
                   />
                 )}
-                label="This is an app update notification (opens Updates page on tap)"
+                label="This is an app update notification (opens Settings -> App Updates on tap)"
               />
 
               <FormControlLabel

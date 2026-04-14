@@ -3,7 +3,7 @@
     "name": "Arnold",
     "slug": "YBK-APP",
     "scheme": "com.ybk.arnold",
-    "version": "1.2",
+    "version": "1.6",
     "runtimeVersion": {
       "policy": "sdkVersion"
     },
@@ -39,7 +39,7 @@
         "backgroundColor": "#ffffff"
       },
       "predictiveBackGestureEnabled": false,
-      "versionCode": 9
+      "versionCode": 13
     },
     "web": {
       "favicon": "./assets/favicon.png"

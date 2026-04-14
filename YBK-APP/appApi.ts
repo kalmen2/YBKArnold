@@ -1,4 +1,4 @@
-const API_BASE_URL = 'https://us-central1-ybkarnold-b7ec0.cloudfunctions.net/apiV1'
+export const API_BASE_URL = 'https://us-central1-ybkarnold-b7ec0.cloudfunctions.net/apiV1'
 const API_REQUEST_TIMEOUT_MS = 15000
 
 function withRefreshQuery(path: string, refreshRequested: boolean) {
@@ -60,18 +60,6 @@ export async function request<T>(
   }
 
   return payload as T
-}
-
-export function extractFirstUrlFromText(value: string | null | undefined) {
-  const normalized = String(value ?? '').trim()
-
-  if (!normalized) {
-    return null
-  }
-
-  const match = normalized.match(/https?:\/\/[^\s)]+/i)
-
-  return match?.[0] ?? null
 }
 
 export function withBuildQuery(updateUrl: string, buildNumber: number) {

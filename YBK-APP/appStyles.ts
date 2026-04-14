@@ -502,20 +502,6 @@ export const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '500',
   },
-  alertLinkButton: {
-    alignSelf: 'flex-start',
-    borderWidth: 1,
-    borderColor: '#3c5ec7',
-    borderRadius: 8,
-    backgroundColor: '#e7eeff',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-  },
-  alertLinkButtonText: {
-    color: '#204fc2',
-    fontSize: 12,
-    fontWeight: '700',
-  },
   alertMessage: {
     color: '#204fc2',
     fontSize: 12,

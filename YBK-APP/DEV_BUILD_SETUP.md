@@ -17,7 +17,8 @@ Optional direct install when your phone is connected by USB:
 
 Updates in this mode are link-based from Settings (no OTA publish required):
 
-- Set `EXPO_PUBLIC_ANDROID_APK_UPDATE_URL` to your latest APK download URL.
+- Set backend `MOBILE_ANDROID_UPDATE_URL` to your latest APK download URL.
+- Set backend `MOBILE_ANDROID_LATEST_BUILD` to the new build number.
 - Send update notification from admin alerts.
 - User taps Check for Updates, then Install Update.
 
@@ -60,12 +61,14 @@ Expo Go-only values are optional and should only be used for fallback testing:
 - EXPO_PUBLIC_GOOGLE_EXPO_IOS_CLIENT_ID
 - EXPO_PUBLIC_GOOGLE_EXPO_ANDROID_CLIENT_ID
 
-Optional update links for Settings -> Check for Updates:
+Update status is backend-controlled (single source of truth):
 
-- EXPO_PUBLIC_ANDROID_PLAY_STORE_URL
-- EXPO_PUBLIC_ANDROID_APK_UPDATE_URL
-- EXPO_PUBLIC_IOS_APP_STORE_URL
-- EXPO_PUBLIC_APP_UPDATE_URL
+- MOBILE_ANDROID_UPDATE_URL
+- MOBILE_ANDROID_LATEST_BUILD
+- MOBILE_ANDROID_LATEST_VERSION
+- MOBILE_IOS_UPDATE_URL
+- MOBILE_IOS_LATEST_BUILD
+- MOBILE_IOS_LATEST_VERSION
 
 ## 2) Google OAuth checks
 

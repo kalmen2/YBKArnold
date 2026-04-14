@@ -42,3 +42,23 @@ if (currentContent.trim() !== localPropertiesContent.trim()) {
 } else {
   console.log(`Using existing ${path.relative(projectRoot, localPropertiesPath)} with ${sdkDir}`)
 }
+
+const rnHermesDir = path.join(projectRoot, 'node_modules', 'react-native', 'sdks', 'hermesc')
+const fallbackHermesDir = path.join(projectRoot, 'node_modules', 'hermes-compiler', 'hermesc')
+const rnHermesCompilerPath = path.join(rnHermesDir, 'osx-bin', 'hermesc')
+const fallbackHermesCompilerPath = path.join(fallbackHermesDir, 'osx-bin', 'hermesc')
+
+try {
+  const hasRnHermesCompiler = fs.existsSync(rnHermesCompilerPath)
+  const hasFallbackHermesCompiler = fs.existsSync(fallbackHermesCompilerPath)
+
+  if (!hasRnHermesCompiler && hasFallbackHermesCompiler) {
+    fs.rmSync(rnHermesDir, { recursive: true, force: true })
+    fs.cpSync(fallbackHermesDir, rnHermesDir, { recursive: true })
+    fs.chmodSync(rnHermesCompilerPath, 0o755)
+    console.log('Restored missing react-native Hermes compiler from hermes-compiler package.')
+  }
+} catch (error) {
+  const message = error instanceof Error ? error.message : String(error)
+  console.warn(`Could not ensure Hermes compiler path: ${message}`)
+}

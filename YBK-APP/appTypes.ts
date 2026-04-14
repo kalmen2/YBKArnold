@@ -6,6 +6,9 @@ export type DashboardOrder = {
   effectiveDueDate: string | null
   daysUntilDue: number | null
   isDone: boolean
+  shopDrawingUrl?: string | null
+  shopDrawingFileName?: string | null
+  shopDrawingCachedUrl?: string | null
 }
 
 export type MondayDashboardSnapshot = {
@@ -55,6 +58,7 @@ export type OrderPhoto = {
 }
 
 export type MobileTimesheetWorker = {
+  id?: string
   workerNumber: string
   fullName: string
 }

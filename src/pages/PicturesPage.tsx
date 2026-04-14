@@ -4,6 +4,9 @@ import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded'
 import MoreVertRoundedIcon from '@mui/icons-material/MoreVertRounded'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded'
+import RestartAltRoundedIcon from '@mui/icons-material/RestartAltRounded'
+import ZoomInRoundedIcon from '@mui/icons-material/ZoomInRounded'
+import ZoomOutRoundedIcon from '@mui/icons-material/ZoomOutRounded'
 import JSZip from 'jszip'
 import {
   Accordion,
@@ -24,11 +27,12 @@ import {
   Menu,
   MenuItem,
   Paper,
+  Slider,
   Stack,
   TextField,
   Typography,
 } from '@mui/material'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { type MouseEvent, type WheelEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   fetchMondayDashboardSnapshot,
 } from '../features/dashboard/api'
@@ -62,6 +66,35 @@ type PictureOrder = {
 type DeleteTarget = {
   orderId: string
   path: string
+}
+
+type ViewerTarget = {
+  orderId: string
+  orderName: string
+  photo: OrderPhoto
+}
+
+const MIN_VIEWER_ZOOM = 10
+const MAX_VIEWER_ZOOM = 400
+const VIEWER_ZOOM_STEP = 10
+
+function clampViewerZoom(value: number) {
+  return Math.min(MAX_VIEWER_ZOOM, Math.max(MIN_VIEWER_ZOOM, Math.round(value)))
+}
+
+function computeViewerFitZoom(
+  imageWidth: number,
+  imageHeight: number,
+  viewportWidth: number,
+  viewportHeight: number,
+) {
+  if (!imageWidth || !imageHeight || !viewportWidth || !viewportHeight) {
+    return 100
+  }
+
+  const fitRatio = Math.min(viewportWidth / imageWidth, viewportHeight / imageHeight, 1)
+
+  return clampViewerZoom(fitRatio * 100)
 }
 
 async function request<T>(path: string, options: RequestInit = {}) {
@@ -263,6 +296,17 @@ export default function PicturesPage() {
   const [downloadingPhotoPath, setDownloadingPhotoPath] = useState<string | null>(null)
   const [photoMenuAnchorEl, setPhotoMenuAnchorEl] = useState<HTMLElement | null>(null)
   const [photoMenuTarget, setPhotoMenuTarget] = useState<DeleteTarget | null>(null)
+  const [viewerTarget, setViewerTarget] = useState<ViewerTarget | null>(null)
+  const [viewerZoom, setViewerZoom] = useState(100)
+  const [viewerImageSize, setViewerImageSize] = useState<{ width: number; height: number } | null>(null)
+  const [isViewerDragging, setIsViewerDragging] = useState(false)
+  const viewerViewportRef = useRef<HTMLDivElement | null>(null)
+  const viewerDragRef = useRef<{
+    startX: number
+    startY: number
+    startScrollLeft: number
+    startScrollTop: number
+  } | null>(null)
 
   const loadPictures = useCallback(async (refreshRequested = false) => {
     setErrorMessage(null)
@@ -499,6 +543,146 @@ export default function PicturesPage() {
     setPhotoMenuTarget(null)
   }, [])
 
+  const handleOpenViewer = useCallback((order: PictureOrder, photo: OrderPhoto) => {
+    setViewerTarget({
+      orderId: order.id,
+      orderName: order.name,
+      photo,
+    })
+    setViewerZoom(100)
+    setViewerImageSize(null)
+    setIsViewerDragging(false)
+    viewerDragRef.current = null
+
+    void logActivity({
+      action: 'open_order_photo_viewer',
+      target: `Order #${order.id}`,
+      path: '/pictures',
+      metadata: {
+        orderId: order.id,
+        photoPath: photo.path,
+      },
+    })
+  }, [logActivity])
+
+  const handleCloseViewer = useCallback(() => {
+    setViewerTarget(null)
+    setViewerZoom(100)
+    setViewerImageSize(null)
+    setIsViewerDragging(false)
+    viewerDragRef.current = null
+  }, [])
+
+  const handleViewerZoomChange = useCallback((nextZoom: number) => {
+    setViewerZoom(clampViewerZoom(nextZoom))
+  }, [])
+
+  const handleViewerWheel = useCallback((event: WheelEvent<HTMLDivElement>) => {
+    event.preventDefault()
+
+    const viewport = viewerViewportRef.current
+
+    if (!viewport) {
+      return
+    }
+
+    const previousZoom = viewerZoom
+    const nextZoom = clampViewerZoom(
+      previousZoom + (event.deltaY < 0 ? VIEWER_ZOOM_STEP : -VIEWER_ZOOM_STEP),
+    )
+
+    if (nextZoom === previousZoom) {
+      return
+    }
+
+    const rect = viewport.getBoundingClientRect()
+    const pointerX = event.clientX - rect.left
+    const pointerY = event.clientY - rect.top
+    const imageX = viewport.scrollLeft + pointerX
+    const imageY = viewport.scrollTop + pointerY
+    const zoomRatio = nextZoom / previousZoom
+
+    setViewerZoom(nextZoom)
+
+    window.requestAnimationFrame(() => {
+      viewport.scrollLeft = imageX * zoomRatio - pointerX
+      viewport.scrollTop = imageY * zoomRatio - pointerY
+    })
+  }, [viewerZoom])
+
+  const handleViewerMouseDown = useCallback((event: MouseEvent<HTMLDivElement>) => {
+    if (event.button !== 0) {
+      return
+    }
+
+    const viewport = viewerViewportRef.current
+
+    if (!viewport) {
+      return
+    }
+
+    viewerDragRef.current = {
+      startX: event.clientX,
+      startY: event.clientY,
+      startScrollLeft: viewport.scrollLeft,
+      startScrollTop: viewport.scrollTop,
+    }
+    setIsViewerDragging(true)
+    event.preventDefault()
+  }, [])
+
+  const handleViewerMouseMove = useCallback((event: MouseEvent<HTMLDivElement>) => {
+    const viewport = viewerViewportRef.current
+    const dragState = viewerDragRef.current
+
+    if (!viewport || !dragState) {
+      return
+    }
+
+    viewport.scrollLeft = dragState.startScrollLeft - (event.clientX - dragState.startX)
+    viewport.scrollTop = dragState.startScrollTop - (event.clientY - dragState.startY)
+  }, [])
+
+  const stopViewerDragging = useCallback(() => {
+    if (!viewerDragRef.current) {
+      return
+    }
+
+    viewerDragRef.current = null
+    setIsViewerDragging(false)
+  }, [])
+
+  const handleViewerImageLoad = useCallback((event: React.SyntheticEvent<HTMLImageElement>) => {
+    const image = event.currentTarget
+    const naturalWidth = image.naturalWidth || 0
+    const naturalHeight = image.naturalHeight || 0
+
+    setViewerImageSize({
+      width: naturalWidth,
+      height: naturalHeight,
+    })
+
+    const viewport = viewerViewportRef.current
+
+    if (!viewport || !naturalWidth || !naturalHeight) {
+      return
+    }
+
+    const fitZoom = computeViewerFitZoom(
+      naturalWidth,
+      naturalHeight,
+      viewport.clientWidth - 16,
+      viewport.clientHeight - 16,
+    )
+
+    setViewerZoom(fitZoom)
+
+    window.requestAnimationFrame(() => {
+      viewport.scrollLeft = 0
+      viewport.scrollTop = 0
+    })
+  }, [])
+
   return (
     <Stack spacing={2.5}>
       <Stack
@@ -651,12 +835,16 @@ export default function PicturesPage() {
                             component="img"
                             src={photo.url}
                             alt={`Order ${order.id} photo`}
+                            onClick={() => {
+                              handleOpenViewer(order, photo)
+                            }}
                             sx={{
                               width: '100%',
                               aspectRatio: '1 / 1',
                               objectFit: 'cover',
                               display: 'block',
                               bgcolor: 'grey.100',
+                              cursor: 'zoom-in',
                             }}
                           />
 
@@ -783,6 +971,154 @@ export default function PicturesPage() {
           >
             {isDeletingPhoto ? 'Deleting...' : 'Delete Picture'}
           </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(viewerTarget)}
+        onClose={handleCloseViewer}
+        fullWidth
+        maxWidth={false}
+        PaperProps={{
+          sx: {
+            width: 'min(96vw, 1680px)',
+            maxHeight: '96vh',
+          },
+        }}
+      >
+        <DialogTitle>
+          {viewerTarget ? `${viewerTarget.orderName} • Order #${viewerTarget.orderId}` : 'Picture Preview'}
+        </DialogTitle>
+        <DialogContent dividers>
+          <Stack spacing={1.5}>
+            <Stack
+              direction={{ xs: 'column', md: 'row' }}
+              spacing={1.25}
+              alignItems={{ xs: 'stretch', md: 'center' }}
+              justifyContent="space-between"
+            >
+              <Typography variant="body2" color="text.secondary">
+                {viewerTarget ? formatDisplayDate(viewerTarget.photo.createdAt) : ''}
+              </Typography>
+
+              <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 280 }}>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<ZoomOutRoundedIcon fontSize="small" />}
+                  onClick={() => {
+                    handleViewerZoomChange(viewerZoom - VIEWER_ZOOM_STEP)
+                  }}
+                  disabled={viewerZoom <= MIN_VIEWER_ZOOM}
+                >
+                  Zoom Out
+                </Button>
+
+                <Slider
+                  size="small"
+                  value={viewerZoom}
+                  min={MIN_VIEWER_ZOOM}
+                  max={MAX_VIEWER_ZOOM}
+                  step={VIEWER_ZOOM_STEP}
+                  valueLabelDisplay="off"
+                  onChange={(_event, value) => {
+                    handleViewerZoomChange(Array.isArray(value) ? value[0] : value)
+                  }}
+                  sx={{ mx: 1 }}
+                />
+
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<ZoomInRoundedIcon fontSize="small" />}
+                  onClick={() => {
+                    handleViewerZoomChange(viewerZoom + VIEWER_ZOOM_STEP)
+                  }}
+                  disabled={viewerZoom >= MAX_VIEWER_ZOOM}
+                >
+                  Zoom In
+                </Button>
+
+                <Button
+                  size="small"
+                  variant="text"
+                  startIcon={<RestartAltRoundedIcon fontSize="small" />}
+                  onClick={() => {
+                      if (!viewerImageSize || !viewerViewportRef.current) {
+                        handleViewerZoomChange(100)
+                        return
+                      }
+
+                      const fitZoom = computeViewerFitZoom(
+                        viewerImageSize.width,
+                        viewerImageSize.height,
+                        viewerViewportRef.current.clientWidth - 16,
+                        viewerViewportRef.current.clientHeight - 16,
+                      )
+                      handleViewerZoomChange(fitZoom)
+                  }}
+                    disabled={!viewerImageSize}
+                >
+                    Fit
+                </Button>
+              </Stack>
+            </Stack>
+
+            <Box
+                ref={viewerViewportRef}
+              onWheel={handleViewerWheel}
+                onMouseDown={handleViewerMouseDown}
+                onMouseMove={handleViewerMouseMove}
+                onMouseUp={stopViewerDragging}
+                onMouseLeave={stopViewerDragging}
+              sx={{
+                maxHeight: '72vh',
+                overflow: 'auto',
+                borderRadius: 1,
+                border: '1px solid',
+                borderColor: 'divider',
+                bgcolor: 'grey.100',
+                p: 1,
+                  cursor: isViewerDragging ? 'grabbing' : 'grab',
+                  userSelect: 'none',
+              }}
+            >
+              {viewerTarget ? (
+                <Box
+                  component="img"
+                    onLoad={handleViewerImageLoad}
+                    draggable={false}
+                    onDragStart={(event) => {
+                      event.preventDefault()
+                    }}
+                  src={viewerTarget.photo.url}
+                  alt={`Order ${viewerTarget.orderId} photo`}
+                  sx={{
+                      width: viewerImageSize
+                        ? `${Math.max(1, Math.round((viewerImageSize.width * viewerZoom) / 100))}px`
+                        : '100%',
+                      height: viewerImageSize
+                        ? `${Math.max(1, Math.round((viewerImageSize.height * viewerZoom) / 100))}px`
+                        : 'auto',
+                    maxWidth: 'none',
+                    display: 'block',
+                      mx: 0,
+                    borderRadius: 0.5,
+                    boxShadow: 1,
+                    bgcolor: 'common.white',
+                      pointerEvents: 'none',
+                  }}
+                />
+              ) : null}
+            </Box>
+
+            <Typography variant="caption" color="text.secondary">
+                Zoom: {viewerZoom}% • Use mouse wheel to zoom and click-drag to pan.
+            </Typography>
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleCloseViewer}>Close</Button>
         </DialogActions>
       </Dialog>
     </Stack>

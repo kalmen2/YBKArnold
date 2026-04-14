@@ -40,21 +40,27 @@ app.get('/api/app-updates/status', async (_req, res, next) => {
     const configuredIosVersion = normalizeOptionalShortText(process.env.MOBILE_IOS_LATEST_VERSION, 40)
     const configuredAndroidBuild = normalizeOptionalBuildNumber(process.env.MOBILE_ANDROID_LATEST_BUILD)
     const configuredIosBuild = normalizeOptionalBuildNumber(process.env.MOBILE_IOS_LATEST_BUILD)
+    const requestedPlatform = String(_req.query?.platform ?? '').trim().toLowerCase() === 'ios'
+      ? 'ios'
+      : 'android'
+    const androidUpdate = {
+      url: configuredAndroidUrl ?? defaultMobileAndroidUpdateUrl,
+      buildNumber: configuredAndroidBuild ?? defaultMobileAndroidLatestBuild,
+      version: configuredAndroidVersion ?? defaultMobileLatestVersion,
+    }
+    const iosUpdate = {
+      url: configuredIosUrl ?? defaultMobileIosUpdateUrl,
+      buildNumber: configuredIosBuild ?? defaultMobileIosLatestBuild,
+      version: configuredIosVersion ?? defaultMobileLatestVersion,
+    }
+    const selectedUpdate = requestedPlatform === 'ios' ? iosUpdate : androidUpdate
 
     return res.json({
       generatedAt: new Date().toISOString(),
-      updates: {
-        android: {
-          url: configuredAndroidUrl ?? defaultMobileAndroidUpdateUrl,
-          buildNumber: configuredAndroidBuild ?? defaultMobileAndroidLatestBuild,
-          version: configuredAndroidVersion ?? defaultMobileLatestVersion,
-        },
-        ios: {
-          url: configuredIosUrl ?? defaultMobileIosUpdateUrl,
-          buildNumber: configuredIosBuild ?? defaultMobileIosLatestBuild,
-          version: configuredIosVersion ?? defaultMobileLatestVersion,
-        },
-      },
+      platform: requestedPlatform,
+      url: selectedUpdate.url,
+      build: selectedUpdate.buildNumber,
+      version: selectedUpdate.version,
     })
   } catch (error) {
     next(error)
@@ -400,9 +406,11 @@ app.delete('/api/admin/alerts/:alertId', requireFirebaseAuth, requireAdminRole, 
 app.post('/api/admin/alerts/send', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
   try {
     const title = normalizeOptionalShortText(req.body?.title, 120)
-    const message = normalizeOptionalShortText(req.body?.message, 600)
+    const requestedMessage = normalizeOptionalShortText(req.body?.message, 600)
     const targetMode = normalizeMobileAlertTargetMode(req.body?.targetMode)
     const isUpdate = req.body?.isUpdate === true
+    const message = requestedMessage
+      ?? (isUpdate ? 'A new app update is available. Open Settings -> App Updates.' : null)
 
     if (!title) {
       return res.status(400).json({ error: 'title is required.' })
@@ -486,13 +494,9 @@ app.post('/api/admin/alerts/send', requireFirebaseAuth, requireAdminRole, async 
       uid: {
         $in: recipientUids,
       },
-      ...(isUpdate
-        ? {}
-        : {
-            active: {
-              $ne: false,
-            },
-          }),
+      active: {
+        $ne: false,
+      },
     }
     const rawTokenDocuments = await mobilePushTokensCollection
       .find(
@@ -592,17 +596,10 @@ app.post('/api/admin/alerts/send', requireFirebaseAuth, requireAdminRole, async 
     const now = new Date().toISOString()
 
     if (invalidTokens.length > 0) {
-      await mobilePushTokensCollection.updateMany(
+      await mobilePushTokensCollection.deleteMany(
         {
           token: {
             $in: invalidTokens,
-          },
-        },
-        {
-          $set: {
-            active: false,
-            disabledReason: 'device_not_registered',
-            updatedAt: now,
           },
         },
       )

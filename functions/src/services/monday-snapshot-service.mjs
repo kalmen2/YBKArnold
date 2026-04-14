@@ -139,7 +139,49 @@ export function createMondaySnapshotService({
     return payload?.data ?? {}
   }
 
+  async function fetchMondayAssetDownloadInfo(assetId) {
+    const normalizedAssetId = String(assetId ?? '').trim()
+
+    if (!/^[0-9]+$/.test(normalizedAssetId)) {
+      return null
+    }
+
+    ensureMondayConfiguration()
+
+    const data = await callMondayGraphql(
+      `
+query GetAssetDownloadInfo($assetId: ID!) {
+  assets(ids: [$assetId]) {
+    id
+    name
+    file_extension
+    public_url
+    url
+  }
+}
+`,
+      {
+        assetId: normalizedAssetId,
+      },
+    )
+
+    const asset = Array.isArray(data?.assets) ? data.assets[0] : null
+
+    if (!asset) {
+      return null
+    }
+
+    return {
+      id: String(asset.id ?? normalizedAssetId),
+      name: String(asset.name ?? '').trim() || null,
+      fileExtension: String(asset.file_extension ?? '').trim() || null,
+      publicUrl: String(asset.public_url ?? '').trim() || null,
+      url: String(asset.url ?? '').trim() || null,
+    }
+  }
+
   return {
+    fetchMondayAssetDownloadInfo,
     fetchMondayDashboardSnapshot,
   }
 }

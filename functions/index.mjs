@@ -85,9 +85,9 @@ const mobilePushTokenProviderExpo = 'expo'
 const mobilePushTokenProviderFcm = 'fcm'
 const defaultMobileAndroidUpdateUrl = 'https://ybkarnold-b7ec0.web.app/apk/YBK-APP-local-release.apk'
 const defaultMobileIosUpdateUrl = 'https://ybkarnold-b7ec0.web.app/ios-update.html'
-const defaultMobileAndroidLatestBuild = 5
+const defaultMobileAndroidLatestBuild = 13
 const defaultMobileIosLatestBuild = 6
-const defaultMobileLatestVersion = '1.2'
+const defaultMobileLatestVersion = '1.6'
 const expoPushApiUrl = 'https://exp.host/--/api/v2/push/send'
 const zendeskTicketFieldCacheTtlMs = 30 * 60 * 1000
 const zendeskTicketFieldErrorCacheTtlMs = 5 * 60 * 1000
@@ -299,7 +299,7 @@ query GetBoardItems($boardId: ID!, $limit: Int!, $cursor: String) {
 }
 `
 
-const { fetchMondayDashboardSnapshot } = createMondaySnapshotService({
+const { fetchMondayAssetDownloadInfo, fetchMondayDashboardSnapshot } = createMondaySnapshotService({
   ensureMondayConfiguration,
   mondayApiUrl,
   mondayApiToken,
@@ -322,7 +322,10 @@ async function getCollections() {
 }
 
 const { persistNewMondayOrders } = createMondayOrderPersistenceService({
+  fetchMondayAssetDownloadInfo,
   getCollections,
+  getOrderPhotosBucket,
+  randomUUID,
 })
 
 const {
@@ -377,6 +380,7 @@ const routeDeps = {
   extractRequestIpAddress,
   extractRequestUserAgent,
   fetchMondayDashboardSnapshot,
+  fetchMondayAssetDownloadInfo,
   fetchZendeskSupportAlertTicketsSnapshot,
   fetchZendeskSupportAlerts,
   fetchZendeskSupportTicketsSnapshot,

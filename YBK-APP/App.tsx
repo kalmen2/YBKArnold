@@ -55,7 +55,7 @@ import {
   formatSyncTimestamp,
   normalizeTicketStatus,
 } from './appUtils'
-import { extractFirstUrlFromText, request, withBuildQuery } from './appApi'
+import { API_BASE_URL, request, withBuildQuery } from './appApi'
 import { styles } from './appStyles'
 import {
   AlertsSection,
@@ -90,26 +90,11 @@ const GOOGLE_ANDROID_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_I
 const GOOGLE_EXPO_IOS_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_EXPO_IOS_CLIENT_ID ?? ''
 const GOOGLE_EXPO_ANDROID_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_EXPO_ANDROID_CLIENT_ID ?? ''
 const GOOGLE_ANDROID_REDIRECT_URI = `${MOBILE_ANDROID_PACKAGE}:/oauthredirect`
-const APP_UPDATE_URL = process.env.EXPO_PUBLIC_APP_UPDATE_URL ?? ''
-const DEFAULT_ANDROID_APK_UPDATE_URL = 'https://ybkarnold-b7ec0.web.app/apk/YBK-APP-local-release.apk'
-const DEFAULT_IOS_UPDATE_URL = 'https://ybkarnold-b7ec0.web.app/ios-update.html'
-const ANDROID_APK_UPDATE_URL = process.env.EXPO_PUBLIC_ANDROID_APK_UPDATE_URL ?? DEFAULT_ANDROID_APK_UPDATE_URL
-const ANDROID_PLAY_STORE_URL = process.env.EXPO_PUBLIC_ANDROID_PLAY_STORE_URL ?? ''
-const IOS_APP_STORE_URL = process.env.EXPO_PUBLIC_IOS_APP_STORE_URL ?? DEFAULT_IOS_UPDATE_URL
 
 type AppUpdateStatusResponse = {
-  updates?: {
-    android?: {
-      url?: string | null
-      buildNumber?: number | string | null
-      version?: string | null
-    }
-    ios?: {
-      url?: string | null
-      buildNumber?: number | string | null
-      version?: string | null
-    }
-  }
+  url?: string | null
+  build?: number | string | null
+  version?: string | null
 }
 
 type SettingsMenuId = 'security' | 'language' | 'notifications' | 'updates' | 'account'
@@ -119,6 +104,12 @@ function normalizeJobName(value: string) {
     .trim()
     .toLowerCase()
     .replace(/\s+/g, ' ')
+}
+
+function extractDigits(value: string) {
+  const digits = String(value ?? '').replace(/\D+/g, '').trim()
+
+  return digits || null
 }
 
 function normalizeIsoDate(value: string) {
@@ -226,13 +217,15 @@ export default function App() {
   const [isTimesheetLoading, setIsTimesheetLoading] = useState(false)
   const [isTimesheetSaving, setIsTimesheetSaving] = useState(false)
   const [timesheetMessage, setTimesheetMessage] = useState<string | null>(null)
-  const [timesheetDate, setTimesheetDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const [timesheetDate, setTimesheetDate] = useState(() => formatDateInput(new Date()))
   const [timesheetJobNumber, setTimesheetJobNumber] = useState('')
   const [timesheetStageId, setTimesheetStageId] = useState('')
   const [timesheetHours, setTimesheetHours] = useState('')
   const [timesheetNotes, setTimesheetNotes] = useState('')
   const [isTimesheetDatePickerOpen, setIsTimesheetDatePickerOpen] = useState(false)
-  const [managerDate, setManagerDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const [managerDate, setManagerDate] = useState(() => formatDateInput(new Date()))
+  const [isManagerDatePickerOpen, setIsManagerDatePickerOpen] = useState(false)
+  const [managerWorkers, setManagerWorkers] = useState<MobileTimesheetWorker[]>([])
   const [managerEntries, setManagerEntries] = useState<MobileTimesheetEntry[]>([])
   const [managerOrderProgress, setManagerOrderProgress] = useState<MobileManagerOrderProgress[]>([])
   const [managerProgressByJob, setManagerProgressByJob] = useState<Record<string, string>>({})
@@ -376,15 +369,6 @@ export default function App() {
       ?? Constants.expoConfig?.extra?.eas?.projectId
       ?? '',
     ).trim()
-  }, [])
-
-  const appUpdateUrl = useMemo(() => {
-    const candidates =
-      Platform.OS === 'android'
-        ? [ANDROID_APK_UPDATE_URL, APP_UPDATE_URL, ANDROID_PLAY_STORE_URL, DEFAULT_ANDROID_APK_UPDATE_URL]
-        : [IOS_APP_STORE_URL, APP_UPDATE_URL, DEFAULT_IOS_UPDATE_URL]
-
-    return candidates.map((value) => String(value ?? '').trim()).find((value) => value.length > 0) ?? ''
   }, [])
 
   const lockBiometricSession = useCallback(() => {
@@ -660,7 +644,7 @@ export default function App() {
   }, [authProfile?.isApproved, isBiometricEnabled, lockBiometricSession])
 
   const openAppUpdateUrl = useCallback(async (preferredUrl?: string | null) => {
-    const targetUpdateUrl = String(preferredUrl ?? appUpdateUrl ?? '').trim()
+    const targetUpdateUrl = String(preferredUrl ?? '').trim()
 
     if (!targetUpdateUrl) {
       setUpdateMessage(
@@ -707,7 +691,7 @@ export default function App() {
       )
       return false
     }
-  }, [appUpdateUrl, getErrorMessage, t])
+  }, [getErrorMessage, t])
 
   const handleCheckForUpdates = useCallback(async () => {
     setUpdateMessage(null)
@@ -715,12 +699,14 @@ export default function App() {
     setIsCheckingForUpdates(true)
 
     try {
-      const payload = await requestWithSession<AppUpdateStatusResponse>('/api/app-updates/status')
-      const platformUpdate = Platform.OS === 'android' ? payload?.updates?.android : payload?.updates?.ios
-      const backendUpdateUrl = String(platformUpdate?.url ?? '').trim()
-      const latestBuildNumber = Number(platformUpdate?.buildNumber)
-      const candidateUpdateUrl = withBuildQuery(backendUpdateUrl || appUpdateUrl, latestBuildNumber)
-      const latestVersion = String(platformUpdate?.version ?? '').trim()
+      const updatePlatform = Platform.OS === 'ios' ? 'ios' : 'android'
+      const payload = await requestWithSession<AppUpdateStatusResponse>(
+        `/api/app-updates/status?platform=${updatePlatform}`,
+      )
+      const backendUpdateUrl = String(payload?.url ?? '').trim()
+      const latestBuildNumber = Number(payload?.build)
+      const candidateUpdateUrl = withBuildQuery(backendUpdateUrl, latestBuildNumber)
+      const latestVersion = String(payload?.version ?? '').trim()
       const hasComparableBuilds = Number.isFinite(latestBuildNumber) && installedNativeBuildNumber !== null
       const hasNewNativeBuild = hasComparableBuilds
         ? latestBuildNumber > installedNativeBuildNumber
@@ -766,17 +752,6 @@ export default function App() {
         ),
       )
     } catch (error) {
-      if (appUpdateUrl) {
-        setResolvedUpdateUrl(appUpdateUrl)
-        setUpdateMessage(
-          t(
-            'Tap Install Update to open the latest app package.',
-            'Toca Instalar actualizacion para abrir el paquete mas reciente.',
-          ),
-        )
-        return
-      }
-
       setUpdateMessage(
         getErrorMessage(
           error,
@@ -787,7 +762,7 @@ export default function App() {
     } finally {
       setIsCheckingForUpdates(false)
     }
-  }, [appUpdateUrl, getErrorMessage, installedNativeBuildLabel, installedNativeBuildNumber, requestWithSession, t])
+  }, [getErrorMessage, installedNativeBuildLabel, installedNativeBuildNumber, requestWithSession, t])
 
   const handleInstallUpdate = useCallback(async () => {
     if (!resolvedUpdateUrl) {
@@ -803,7 +778,7 @@ export default function App() {
     setIsInstallingUpdate(true)
 
     try {
-      await openAppUpdateUrl(resolvedUpdateUrl || appUpdateUrl)
+      await openAppUpdateUrl(resolvedUpdateUrl)
     } catch (error) {
       setUpdateMessage(
         getErrorMessage(
@@ -815,7 +790,7 @@ export default function App() {
     } finally {
       setIsInstallingUpdate(false)
     }
-  }, [appUpdateUrl, getErrorMessage, openAppUpdateUrl, resolvedUpdateUrl, t])
+  }, [getErrorMessage, openAppUpdateUrl, resolvedUpdateUrl, t])
 
   const handleConfirmDisableBiometric = useCallback(async () => {
     setIsBiometricEnabled(false)
@@ -846,11 +821,13 @@ export default function App() {
     setIsDisableBiometricConfirmOpen(false)
     setLastAutoBiometricAttemptAt(0)
     setTimesheetMessage(null)
+    setIsManagerDatePickerOpen(false)
+    setManagerWorkers([])
     setManagerEntries([])
     setManagerOrderProgress([])
     setManagerProgressByJob({})
     setManagerMessage(null)
-    setManagerDate(new Date().toISOString().slice(0, 10))
+    setManagerDate(formatDateInput(new Date()))
     setAlerts([])
     setAlertsUnreadCount(0)
     setAlertsMessage(null)
@@ -1042,6 +1019,8 @@ export default function App() {
       closeSettingsMenu()
       setIsCheckingApproval(false)
       setRegisteredPushToken(null)
+      setIsManagerDatePickerOpen(false)
+      setManagerWorkers([])
       setManagerEntries([])
       setManagerOrderProgress([])
       setManagerProgressByJob({})
@@ -1064,6 +1043,12 @@ export default function App() {
       setActiveScreen('dashboard')
     }
   }, [activeScreen, hasManagerSheetAccess])
+
+  useEffect(() => {
+    if (activeScreen !== 'manager') {
+      setIsManagerDatePickerOpen(false)
+    }
+  }, [activeScreen])
 
   useEffect(() => {
     maybeAutoPromptBiometric()
@@ -1238,6 +1223,7 @@ export default function App() {
 
   const loadManagerSheet = useCallback(async () => {
     if (!hasManagerSheetAccess) {
+      setManagerWorkers([])
       setManagerEntries([])
       setManagerOrderProgress([])
       setManagerProgressByJob({})
@@ -1249,13 +1235,16 @@ export default function App() {
 
     try {
       const payload = await requestWithSession<{
+        workers?: MobileTimesheetWorker[]
         entries?: MobileTimesheetEntry[]
         orderProgress?: MobileManagerOrderProgress[]
       }>('/api/timesheet/state')
 
+      setManagerWorkers(Array.isArray(payload.workers) ? payload.workers : [])
       setManagerEntries(Array.isArray(payload.entries) ? payload.entries : [])
       setManagerOrderProgress(Array.isArray(payload.orderProgress) ? payload.orderProgress : [])
     } catch (error) {
+      setManagerWorkers([])
       setManagerEntries([])
       setManagerOrderProgress([])
       setManagerProgressByJob({})
@@ -1366,74 +1355,6 @@ export default function App() {
       )
     }
   }, [getErrorMessage, requestWithSession])
-
-  const resolveAlertLink = useCallback((alertItem: MobileAlert) => {
-    const messageLink = extractFirstUrlFromText(alertItem.message)
-
-    if (messageLink) {
-      return messageLink
-    }
-
-    const titleAndMessage = `${alertItem.title} ${alertItem.message}`.toLowerCase()
-    const looksLikeUpdateNotice =
-      alertItem.isUpdate === true
-      || /update|actualiz|apk|install|instala|version|build|download|descarg/.test(titleAndMessage)
-
-    if (!looksLikeUpdateNotice) {
-      return null
-    }
-
-    const fallbackLink = String(appUpdateUrl ?? '').trim()
-
-    return fallbackLink || null
-  }, [appUpdateUrl])
-
-  const handleOpenAlertLink = useCallback(async (url: string, alertItem?: MobileAlert) => {
-    const normalizedUrl = String(url ?? '').trim()
-
-    if (!normalizedUrl) {
-      return
-    }
-
-    try {
-      const launchUrl =
-        Platform.OS === 'android' && /\.apk(?:$|\?)/i.test(normalizedUrl)
-          ? `${normalizedUrl}${normalizedUrl.includes('?') ? '&' : '?'}installTs=${Date.now()}`
-          : normalizedUrl
-      const canOpen = await Linking.canOpenURL(launchUrl)
-
-      if (!canOpen) {
-        setAlertsMessage(
-          t(
-            'This device cannot open the update link.',
-            'Este dispositivo no puede abrir el enlace de actualizacion.',
-          ),
-        )
-        return
-      }
-
-      await Linking.openURL(launchUrl)
-
-      if (alertItem && !alertItem.isRead) {
-        void markAlertAsRead(alertItem)
-      }
-
-      setAlertsMessage(
-        t(
-          'Opened update link.',
-          'Se abrio el enlace de actualizacion.',
-        ),
-      )
-    } catch (error) {
-      setAlertsMessage(
-        getErrorMessage(
-          error,
-          'Could not open update link.',
-          'No se pudo abrir el enlace de actualizacion.',
-        ),
-      )
-    }
-  }, [getErrorMessage, markAlertAsRead, t])
 
   const resolveNotificationTargetScreen = useCallback((rawData: unknown): AppScreen => {
     if (!rawData || typeof rawData !== 'object') {
@@ -1667,6 +1588,11 @@ export default function App() {
       const nextScreen = resolveNotificationTargetScreen(response.notification.request.content.data)
 
       setActiveScreen(nextScreen)
+
+      if (nextScreen === 'settings') {
+        setActiveSettingsMenuId('updates')
+      }
+
       void loadAlerts(true)
     })
 
@@ -2074,53 +2000,55 @@ export default function App() {
     return map
   }, [managerOrderProgress])
 
-  const managerJobsByDate = useMemo(() => {
-    const jobsByDate = new Map<string, Set<string>>()
+  const managerWorkersById = useMemo(() => {
+    const map = new Map<string, MobileTimesheetWorker>()
 
-    managerEntries.forEach((entry) => {
-      const normalizedDate = normalizeIsoDate(entry.date)
-      const normalizedJobName = normalizeJobName(entry.jobName)
+    managerWorkers.forEach((worker) => {
+      const workerId = String(worker.id ?? '').trim()
 
-      if (!normalizedDate || !normalizedJobName) {
-        return
-      }
-
-      const jobsForDate = jobsByDate.get(normalizedDate) ?? new Set<string>()
-
-      jobsForDate.add(normalizedJobName)
-      jobsByDate.set(normalizedDate, jobsForDate)
-    })
-
-    return jobsByDate
-  }, [managerEntries])
-
-  const managerDatesWithOrders = useMemo(
-    () => [...managerJobsByDate.keys()].sort((left, right) => left.localeCompare(right)),
-    [managerJobsByDate],
-  )
-
-  const managerDatesWithOrdersSet = useMemo(
-    () => new Set(managerDatesWithOrders),
-    [managerDatesWithOrders],
-  )
-
-  const managerDatesMissingProgress = useMemo(() => {
-    const missingDates: string[] = []
-
-    managerJobsByDate.forEach((jobNames, date) => {
-      const hasMissingJobProgress = [...jobNames].some((jobName) => {
-        const key = `${date}:${jobName}`
-
-        return !managerProgressByDateJobKey.has(key)
-      })
-
-      if (hasMissingJobProgress) {
-        missingDates.push(date)
+      if (workerId) {
+        map.set(workerId, worker)
       }
     })
 
-    return missingDates.sort((left, right) => left.localeCompare(right))
-  }, [managerJobsByDate, managerProgressByDateJobKey])
+    return map
+  }, [managerWorkers])
+
+  const mondayOrderLookup = useMemo(() => {
+    const byNormalizedKey = new Map<string, MondayDashboardSnapshot['orders'][number]>()
+    const byDigits = new Map<string, MondayDashboardSnapshot['orders'][number]>()
+
+    ;(mondaySnapshot?.orders ?? []).forEach((order) => {
+      const nameKey = normalizeJobName(order.name)
+
+      if (nameKey && !byNormalizedKey.has(nameKey)) {
+        byNormalizedKey.set(nameKey, order)
+      }
+
+      const idKey = normalizeJobName(order.id)
+
+      if (idKey && !byNormalizedKey.has(idKey)) {
+        byNormalizedKey.set(idKey, order)
+      }
+
+      const nameDigits = extractDigits(order.name)
+
+      if (nameDigits && !byDigits.has(nameDigits)) {
+        byDigits.set(nameDigits, order)
+      }
+
+      const idDigits = extractDigits(order.id)
+
+      if (idDigits && !byDigits.has(idDigits)) {
+        byDigits.set(idDigits, order)
+      }
+    })
+
+    return {
+      byNormalizedKey,
+      byDigits,
+    }
+  }, [mondaySnapshot?.orders])
 
   const managerDayEntries = useMemo(
     () => managerEntries.filter((entry) => normalizeIsoDate(entry.date) === managerDate.trim()),
@@ -2158,7 +2086,7 @@ export default function App() {
       string,
       {
         totalHours: number
-        workerIds: Set<string>
+        workerHoursById: Map<string, number>
       }
     >()
 
@@ -2171,23 +2099,38 @@ export default function App() {
 
       const existing = entriesByJobKey.get(jobKey) ?? {
         totalHours: 0,
-        workerIds: new Set<string>(),
+        workerHoursById: new Map<string, number>(),
       }
       const workerKey = String(entry.workerId ?? '').trim() || `entry-${entry.id}`
 
       existing.totalHours += Number(entry.hours ?? 0)
-      existing.workerIds.add(workerKey)
+      existing.workerHoursById.set(
+        workerKey,
+        (existing.workerHoursById.get(workerKey) ?? 0) + Number(entry.hours ?? 0),
+      )
       entriesByJobKey.set(jobKey, existing)
     })
 
     return managerDayJobs.map((jobName) => {
       const jobKey = normalizeJobName(jobName)
+      const jobDigits = extractDigits(jobName)
+      const matchedMondayOrder =
+        mondayOrderLookup.byNormalizedKey.get(jobKey)
+        || (jobDigits ? mondayOrderLookup.byDigits.get(jobDigits) : null)
+        || null
       const totals = entriesByJobKey.get(jobKey)
       const progressKey = `${managerDate.trim()}:${jobKey}`
       const savedProgress = managerProgressByDateJobKey.get(progressKey)
       const savedReadyPercent = savedProgress ? Number(savedProgress.readyPercent) : 0
       const rawDraft = String(managerProgressByJob[jobName] ?? '').trim()
       const parsedDraft = Number(rawDraft)
+      const workerHoursByWorker = [...(totals?.workerHoursById.entries() ?? [])]
+        .map(([workerId, hours]) => ({
+          workerId,
+          workerName: managerWorkersById.get(workerId)?.fullName ?? 'Unknown worker',
+          hours,
+        }))
+        .sort((left, right) => right.hours - left.hours || left.workerName.localeCompare(right.workerName))
       const editReadyPercent =
         rawDraft === '' || !Number.isFinite(parsedDraft)
           ? savedReadyPercent
@@ -2195,13 +2138,28 @@ export default function App() {
 
       return {
         jobName,
+        displayOrderNumber: matchedMondayOrder?.id ?? jobName,
+        mondayOrderId: matchedMondayOrder?.id ?? null,
+        mondayItemName: matchedMondayOrder?.name ?? null,
+        shopDrawingUrl: matchedMondayOrder?.shopDrawingUrl ?? null,
+        shopDrawingCachedUrl: matchedMondayOrder?.shopDrawingCachedUrl ?? null,
         totalHours: totals?.totalHours ?? 0,
-        workerCount: totals?.workerIds.size ?? 0,
+        workerCount: workerHoursByWorker.length,
+        workerHoursByWorker,
         savedReadyPercent,
         editReadyPercent,
       }
     })
-  }, [managerDate, managerDayEntries, managerDayJobs, managerProgressByDateJobKey, managerProgressByJob])
+  }, [
+    managerDate,
+    managerDayEntries,
+    managerDayJobs,
+    managerProgressByDateJobKey,
+    managerProgressByJob,
+    managerWorkersById,
+    mondayOrderLookup.byDigits,
+    mondayOrderLookup.byNormalizedKey,
+  ])
 
   const selectedTimesheetDate = useMemo(() => {
     const parsed = new Date(`${timesheetDate.trim()}T12:00:00`)
@@ -2225,38 +2183,28 @@ export default function App() {
     setTimesheetDate(formatDateInput(value))
   }, [])
 
-  const handleManagerDateSelect = useCallback((nextDate: string) => {
-    const normalizedDate = nextDate.trim()
+  const selectedManagerDate = useMemo(() => {
+    const parsed = new Date(`${managerDate.trim()}T12:00:00`)
 
-    if (!normalizedDate || !managerDatesWithOrdersSet.has(normalizedDate)) {
-      setManagerMessage(
-        t(
-          'No orders found for this date.',
-          'No se encontraron ordenes para esta fecha.',
-        ),
-      )
+    if (Number.isNaN(parsed.getTime())) {
+      return new Date()
+    }
+
+    return parsed
+  }, [managerDate])
+
+  const handleManagerDateChange = useCallback((event: DateTimePickerEvent, value?: Date) => {
+    if (Platform.OS === 'android') {
+      setIsManagerDatePickerOpen(false)
+    }
+
+    if (event.type !== 'set' || !value) {
       return
     }
 
-    setManagerDate(normalizedDate)
+    setManagerDate(formatDateInput(value))
     setManagerMessage(null)
-  }, [managerDatesWithOrdersSet, t])
-
-  useEffect(() => {
-    if (activeScreen !== 'manager' || managerDatesWithOrders.length === 0) {
-      return
-    }
-
-    const normalizedManagerDate = managerDate.trim()
-
-    if (managerDatesWithOrdersSet.has(normalizedManagerDate)) {
-      return
-    }
-
-    const latestDateWithOrders = managerDatesWithOrders[managerDatesWithOrders.length - 1]
-
-    setManagerDate(latestDateWithOrders)
-  }, [activeScreen, managerDate, managerDatesWithOrders, managerDatesWithOrdersSet])
+  }, [])
 
   useEffect(() => {
     if (activeScreen !== 'manager') {
@@ -2282,6 +2230,49 @@ export default function App() {
     }))
   }, [])
 
+  const handleOpenManagerShopDrawingPreview = useCallback(async (row: {
+    mondayOrderId: string | null
+    shopDrawingCachedUrl?: string | null
+  }) => {
+    const cachedPreviewUrl = String(row.shopDrawingCachedUrl ?? '').trim()
+    const orderId = String(row.mondayOrderId ?? '').trim()
+
+    if (!cachedPreviewUrl && !orderId) {
+      setManagerMessage(
+        t(
+          'This order is not linked to Monday yet.',
+          'Esta orden aun no esta vinculada con Monday.',
+        ),
+      )
+      return
+    }
+
+    setManagerMessage(null)
+
+    try {
+      if (cachedPreviewUrl) {
+        await WebBrowser.openBrowserAsync(cachedPreviewUrl)
+        return
+      }
+
+      const query = new URLSearchParams({
+        orderId,
+        inline: '1',
+      })
+      await WebBrowser.openBrowserAsync(
+        `${API_BASE_URL}/api/dashboard/monday/shop-drawing/download?${query.toString()}`,
+      )
+    } catch (error) {
+      setManagerMessage(
+        getErrorMessage(
+          error,
+          'Could not open shop drawing preview.',
+          'No se pudo abrir la vista previa del shop drawing.',
+        ),
+      )
+    }
+  }, [getErrorMessage, t])
+
   const handleSaveManagerProgress = useCallback(async () => {
     if (!hasManagerSheetAccess) {
       setManagerMessage(
@@ -2297,16 +2288,6 @@ export default function App() {
 
     if (!normalizedDate) {
       setManagerMessage(t('Date is required.', 'La fecha es obligatoria.'))
-      return
-    }
-
-    if (!managerDatesWithOrdersSet.has(normalizedDate)) {
-      setManagerMessage(
-        t(
-          'No orders found for this date.',
-          'No se encontraron ordenes para esta fecha.',
-        ),
-      )
       return
     }
 
@@ -2386,7 +2367,6 @@ export default function App() {
     loadManagerSheet,
     managerDate,
     managerDayJobs,
-    managerDatesWithOrdersSet,
     managerProgressByJob,
     requestWithSession,
     t,
@@ -2943,9 +2923,10 @@ export default function App() {
                 t={t}
                 locale={locale}
                 managerDate={managerDate}
-                managerDatesWithOrders={managerDatesWithOrders}
-                managerDatesMissingProgress={managerDatesMissingProgress}
-                onSelectManagerDate={handleManagerDateSelect}
+                onOpenManagerDatePicker={() => setIsManagerDatePickerOpen(true)}
+                isManagerDatePickerOpen={isManagerDatePickerOpen}
+                selectedManagerDate={selectedManagerDate}
+                onManagerDateChange={handleManagerDateChange}
                 isManagerLoading={isManagerLoading}
                 managerRows={managerRows}
                 managerMessage={managerMessage}
@@ -2953,6 +2934,9 @@ export default function App() {
                 onManagerProgressChange={handleManagerProgressChange}
                 onSaveManagerProgress={() => {
                   void handleSaveManagerProgress()
+                }}
+                onOpenManagerShopDrawingPreview={(row) => {
+                  void handleOpenManagerShopDrawingPreview(row)
                 }}
               />
             ) : null}
@@ -2964,12 +2948,8 @@ export default function App() {
                 isAlertsLoading={isAlertsLoading}
                 alerts={alerts}
                 alertsMessage={alertsMessage}
-                resolveAlertLink={resolveAlertLink}
                 onMarkAlertAsRead={(alertItem) => {
                   void markAlertAsRead(alertItem)
-                }}
-                onOpenAlertLink={(url, alertItem) => {
-                  void handleOpenAlertLink(url, alertItem)
                 }}
               />
             ) : null}
@@ -3175,18 +3155,7 @@ export default function App() {
 
                 {activeSettingsMenuId === 'updates' ? (
                   <>
-                    <Text style={styles.settingsTitle}>{t('Update Management', 'Gestion de actualizaciones')}</Text>
-                    <Text style={styles.settingsSubtitle}>
-                      {appUpdateUrl
-                        ? t(
-                            'Check first, then install to open the latest package link.',
-                            'Busca primero y luego instala para abrir el enlace del paquete mas reciente.',
-                          )
-                        : t(
-                            'No update link is configured yet.',
-                            'Aun no hay un enlace de actualizacion configurado.',
-                          )}
-                    </Text>
+                    <Text style={styles.settingsTitle}>{t('App Updates', 'Actualizaciones de la app')}</Text>
 
                     <View style={styles.settingsActionsRow}>
                       <Pressable

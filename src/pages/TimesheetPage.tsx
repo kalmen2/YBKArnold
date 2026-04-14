@@ -3,6 +3,7 @@ import CategoryRoundedIcon from '@mui/icons-material/CategoryRounded'
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
 import FileDownloadRoundedIcon from '@mui/icons-material/FileDownloadRounded'
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded'
+import VisibilityRoundedIcon from '@mui/icons-material/VisibilityRounded'
 import {
   Alert,
   Box,
@@ -29,7 +30,12 @@ import {
   Typography,
 } from '@mui/material'
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import * as XLSX from 'xlsx'
+import {
+  fetchMondayDashboardSnapshot,
+  type DashboardOrder,
+} from '../features/dashboard/api'
 import {
   createStage,
   createEntriesBulk,
@@ -74,6 +80,28 @@ type MissingWorkerReview = {
   approvedAt?: string
 }
 
+type ManagerProgressRow = {
+  jobName: string
+  totalHours: number
+  workerCount: number
+  workerHoursByWorker: Array<{
+    workerId: string
+    workerName: string
+    hours: number
+  }>
+  savedReadyPercent: number
+  editReadyPercent: number
+  mondayOrderId: string | null
+  mondayItemName: string | null
+  shopDrawingUrl: string | null
+  shopDrawingFileName: string | null
+  shopDrawingCachedUrl: string | null
+}
+
+type TimesheetPageProps = {
+  initialView?: 'timesheet' | 'manager-progress'
+}
+
 const WORKSHEET_TABLE_CONTAINER_SX = {
   border: 1,
   borderColor: 'divider',
@@ -102,7 +130,12 @@ function compareDateDesc(left: string, right: string) {
 }
 
 function todayIsoDate() {
-  return new Date().toISOString().slice(0, 10)
+  const today = new Date()
+  const year = today.getFullYear()
+  const month = String(today.getMonth() + 1).padStart(2, '0')
+  const day = String(today.getDate()).padStart(2, '0')
+
+  return `${year}-${month}-${day}`
 }
 
 function addDaysToIsoDate(baseIsoDate: string, days: number) {
@@ -143,6 +176,12 @@ function normalizeJobName(value: string) {
     .trim()
     .toLowerCase()
     .replace(/\s+/g, ' ')
+}
+
+function extractDigits(value: string) {
+  const digits = String(value ?? '').replace(/\D+/g, '').trim()
+
+  return digits || null
 }
 
 function exportRowsToXlsx(
@@ -358,7 +397,9 @@ function buildMissingReviewMap(
   return next
 }
 
-export default function TimesheetPage() {
+export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPageProps) {
+  const navigate = useNavigate()
+  const isManagerProgressView = initialView === 'manager-progress'
   const [activeTab, setActiveTab] = useState(0)
   const [workers, setWorkers] = useState<TimesheetWorker[]>([])
   const [entries, setEntries] = useState<TimesheetEntry[]>([])
@@ -396,6 +437,13 @@ export default function TimesheetPage() {
   const [orderProgress, setOrderProgress] = useState<TimesheetOrderProgress[]>([])
   const [managerProgressByJob, setManagerProgressByJob] = useState<Record<string, string>>({})
   const [isSavingManagerProgress, setIsSavingManagerProgress] = useState(false)
+  const [mondayOrders, setMondayOrders] = useState<DashboardOrder[]>([])
+  const [managerWorkersPopupRow, setManagerWorkersPopupRow] =
+    useState<ManagerProgressRow | null>(null)
+  const [shopDrawingPreviewRow, setShopDrawingPreviewRow] =
+    useState<ManagerProgressRow | null>(null)
+  const [isShopDrawingPreviewLoading, setIsShopDrawingPreviewLoading] =
+    useState(false)
   const [missingWorkersDate, setMissingWorkersDate] = useState('')
   const [missingReviewByKey, setMissingReviewByKey] =
     useState<Record<string, MissingWorkerReview>>({})
@@ -404,11 +452,29 @@ export default function TimesheetPage() {
   const [workerCustomStartDate, setWorkerCustomStartDate] = useState(todayIsoDate())
   const [workerCustomEndDate, setWorkerCustomEndDate] = useState(todayIsoDate())
 
+  useEffect(() => {
+    if (!isManagerProgressView) {
+      return
+    }
+
+    setActiveTab(0)
+    setManagerSheetOpen(true)
+  }, [isManagerProgressView])
+
   const refreshState = useCallback(async () => {
     setIsLoading(true)
 
     try {
-      const payload = await fetchTimesheetState()
+      const [timesheetResult, mondayResult] = await Promise.allSettled([
+        fetchTimesheetState(),
+        fetchMondayDashboardSnapshot(),
+      ])
+
+      if (timesheetResult.status !== 'fulfilled') {
+        throw timesheetResult.reason
+      }
+
+      const payload = timesheetResult.value
 
       setWorkers(payload.workers)
       setEntries(payload.entries)
@@ -424,6 +490,10 @@ export default function TimesheetPage() {
 
         return payload.workers[0]?.id ?? ''
       })
+
+      if (mondayResult.status === 'fulfilled') {
+        setMondayOrders(Array.isArray(mondayResult.value.orders) ? mondayResult.value.orders : [])
+      }
     } catch (requestError) {
       const message =
         requestError instanceof Error
@@ -879,12 +949,49 @@ export default function TimesheetPage() {
     return [...jobNames].sort((left, right) => left.localeCompare(right))
   }, [bulkDate, managerDayEntries, orderProgress])
 
-  const managerProgressRows = useMemo(() => {
+  const mondayOrderLookup = useMemo(() => {
+    const byNormalizedKey = new Map<string, DashboardOrder>()
+    const byDigits = new Map<string, DashboardOrder>()
+
+    mondayOrders.forEach((order) => {
+      const nameKey = normalizeJobName(order.name)
+
+      if (nameKey && !byNormalizedKey.has(nameKey)) {
+        byNormalizedKey.set(nameKey, order)
+      }
+
+      const idKey = normalizeJobName(order.id)
+
+      if (idKey && !byNormalizedKey.has(idKey)) {
+        byNormalizedKey.set(idKey, order)
+      }
+
+      const nameDigits = extractDigits(order.name)
+
+      if (nameDigits && !byDigits.has(nameDigits)) {
+        byDigits.set(nameDigits, order)
+      }
+
+      const idDigits = extractDigits(order.id)
+
+      if (idDigits && !byDigits.has(idDigits)) {
+        byDigits.set(idDigits, order)
+      }
+    })
+
+    return {
+      byNormalizedKey,
+      byDigits,
+    }
+  }, [mondayOrders])
+
+  const managerProgressRows = useMemo<ManagerProgressRow[]>(() => {
     const entriesByJobKey = new Map<
       string,
       {
         totalHours: number
         workerIds: Set<string>
+        workerHoursById: Map<string, number>
       }
     >()
 
@@ -898,21 +1005,38 @@ export default function TimesheetPage() {
       const existing = entriesByJobKey.get(jobKey) ?? {
         totalHours: 0,
         workerIds: new Set<string>(),
+        workerHoursById: new Map<string, number>(),
       }
 
       existing.totalHours += entry.hours
       existing.workerIds.add(entry.workerId)
+      existing.workerHoursById.set(
+        entry.workerId,
+        (existing.workerHoursById.get(entry.workerId) ?? 0) + entry.hours,
+      )
       entriesByJobKey.set(jobKey, existing)
     })
 
     return managerDayJobs.map((jobName) => {
       const jobKey = normalizeJobName(jobName)
+      const jobDigits = extractDigits(jobName)
+      const matchedMondayOrder =
+        mondayOrderLookup.byNormalizedKey.get(jobKey) ||
+        (jobDigits ? mondayOrderLookup.byDigits.get(jobDigits) : null) ||
+        null
       const totals = entriesByJobKey.get(jobKey)
       const progressKey = `${bulkDate}:${jobKey}`
       const savedProgress = orderProgressByDateJobKey.get(progressKey)
       const savedReadyPercent = savedProgress ? Number(savedProgress.readyPercent) : 0
       const rawDraft = String(managerProgressByJob[jobName] ?? '').trim()
       const parsedDraft = Number(rawDraft)
+      const workerHoursByWorker = [...(totals?.workerHoursById.entries() ?? [])]
+        .map(([workerId, hours]) => ({
+          workerId,
+          workerName: workersById.get(workerId)?.fullName ?? 'Unknown worker',
+          hours,
+        }))
+        .sort((left, right) => right.hours - left.hours || left.workerName.localeCompare(right.workerName))
       const editReadyPercent =
         rawDraft === '' || !Number.isFinite(parsedDraft)
           ? savedReadyPercent
@@ -921,12 +1045,27 @@ export default function TimesheetPage() {
       return {
         jobName,
         totalHours: totals?.totalHours ?? 0,
-        workerCount: totals?.workerIds.size ?? 0,
+        workerCount: workerHoursByWorker.length,
+        workerHoursByWorker,
         savedReadyPercent,
         editReadyPercent,
+        mondayOrderId: matchedMondayOrder?.id ?? null,
+        mondayItemName: matchedMondayOrder?.name ?? null,
+        shopDrawingUrl: matchedMondayOrder?.shopDrawingUrl ?? null,
+        shopDrawingFileName: matchedMondayOrder?.shopDrawingFileName ?? null,
+        shopDrawingCachedUrl: matchedMondayOrder?.shopDrawingCachedUrl ?? null,
       }
     })
-  }, [bulkDate, managerDayEntries, managerDayJobs, managerProgressByJob, orderProgressByDateJobKey])
+  }, [
+    bulkDate,
+    managerDayEntries,
+    managerDayJobs,
+    managerProgressByJob,
+    mondayOrderLookup.byDigits,
+    mondayOrderLookup.byNormalizedKey,
+    orderProgressByDateJobKey,
+    workersById,
+  ])
 
   const managerProgressSummary = useMemo(() => {
     if (managerProgressRows.length === 0) {
@@ -1082,10 +1221,10 @@ export default function TimesheetPage() {
   }, [editingEntryId, entries])
 
   useEffect(() => {
-    if (managerSheetOpen && managerDayJobs.length === 0) {
+    if (!isManagerProgressView && managerSheetOpen && managerDayJobs.length === 0) {
       setManagerSheetOpen(false)
     }
-  }, [managerDayJobs.length, managerSheetOpen])
+  }, [isManagerProgressView, managerDayJobs.length, managerSheetOpen])
 
   useEffect(() => {
     if (!managerSheetOpen) {
@@ -1542,6 +1681,66 @@ export default function TimesheetPage() {
     }
   }
 
+  const handleOpenShopDrawingPreview = useCallback((row: ManagerProgressRow) => {
+    const cachedPreviewUrl = String(row.shopDrawingCachedUrl ?? '').trim()
+    const mondayOrderId = String(row.mondayOrderId ?? '').trim()
+
+    if (!cachedPreviewUrl && !mondayOrderId) {
+      setError('This order is not linked to a Monday item yet.')
+      return
+    }
+
+    setError('')
+    setSuccess('')
+    setIsShopDrawingPreviewLoading(true)
+    setShopDrawingPreviewRow(row)
+  }, [])
+
+  const handleOpenManagerWorkersPopup = useCallback((row: ManagerProgressRow) => {
+    if (row.workerHoursByWorker.length === 0) {
+      return
+    }
+
+    setManagerWorkersPopupRow(row)
+  }, [])
+
+  const handleCloseManagerWorkersPopup = useCallback(() => {
+    setManagerWorkersPopupRow(null)
+  }, [])
+
+  const closeManagerSheet = useCallback(() => {
+    if (isManagerProgressView) {
+      navigate('/timesheet')
+      return
+    }
+
+    setManagerSheetOpen(false)
+  }, [isManagerProgressView, navigate])
+
+  const handleCloseShopDrawingPreview = useCallback(() => {
+    setIsShopDrawingPreviewLoading(false)
+    setShopDrawingPreviewRow(null)
+  }, [])
+
+  const shopDrawingPreviewSrc = useMemo(() => {
+    const cachedPreviewUrl = String(shopDrawingPreviewRow?.shopDrawingCachedUrl ?? '').trim()
+
+    if (cachedPreviewUrl) {
+      return cachedPreviewUrl
+    }
+
+    if (!shopDrawingPreviewRow?.mondayOrderId) {
+      return ''
+    }
+
+    const query = new URLSearchParams({
+      orderId: shopDrawingPreviewRow.mondayOrderId,
+      inline: '1',
+    })
+
+    return `/api/dashboard/monday/shop-drawing/download?${query.toString()}`
+  }, [shopDrawingPreviewRow])
+
   const handleManagerProgressChange = (jobName: string, value: string) => {
     setManagerProgressByJob((current) => ({
       ...current,
@@ -1594,7 +1793,10 @@ export default function TimesheetPage() {
 
       await refreshState()
       setSuccess('Manager progress saved.')
-      setManagerSheetOpen(false)
+
+      if (!isManagerProgressView) {
+        setManagerSheetOpen(false)
+      }
     } catch (requestError) {
       const message =
         requestError instanceof Error
@@ -2982,7 +3184,7 @@ export default function TimesheetPage() {
 
       <Dialog
         open={managerSheetOpen}
-        onClose={() => setManagerSheetOpen(false)}
+        onClose={closeManagerSheet}
         fullWidth
         maxWidth="xl"
       >
@@ -3040,7 +3242,9 @@ export default function TimesheetPage() {
                 <Table size="small">
                   <TableHead>
                     <TableRow>
-                      <TableCell>Order</TableCell>
+                      <TableCell>Order Number</TableCell>
+                      <TableCell>Item</TableCell>
+                      <TableCell>Shop Drawing</TableCell>
                       <TableCell align="right">Hours</TableCell>
                       <TableCell align="right">Workers</TableCell>
                       <TableCell align="right">Current ready %</TableCell>
@@ -3050,9 +3254,63 @@ export default function TimesheetPage() {
                   <TableBody>
                     {managerProgressRows.map((row) => (
                       <TableRow key={row.jobName} hover>
-                        <TableCell>{row.jobName}</TableCell>
+                        <TableCell>{row.mondayOrderId || row.jobName}</TableCell>
+                        <TableCell>
+                          {row.mondayItemName ? (
+                            row.mondayItemName
+                          ) : (
+                            <Typography variant="body2" color="text.secondary">
+                              Not available
+                            </Typography>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          {row.shopDrawingCachedUrl || (row.shopDrawingUrl && row.mondayOrderId) ? (
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              startIcon={<VisibilityRoundedIcon fontSize="small" />}
+                              onClick={() => {
+                                handleOpenShopDrawingPreview(row)
+                              }}
+                            >
+                              Preview
+                            </Button>
+                          ) : (
+                            <Typography variant="body2" color="text.secondary">
+                              Not available
+                            </Typography>
+                          )}
+                        </TableCell>
                         <TableCell align="right">{formatHours(row.totalHours)}</TableCell>
-                        <TableCell align="right">{row.workerCount}</TableCell>
+                        <TableCell align="right">
+                          {row.workerCount > 0 ? (
+                            <Button
+                              size="small"
+                              variant="text"
+                              onClick={() => {
+                                handleOpenManagerWorkersPopup(row)
+                              }}
+                              sx={{
+                                color: 'primary.main',
+                                fontWeight: 700,
+                                minWidth: 0,
+                                p: 0,
+                                textDecoration: 'underline',
+                                '&:hover': {
+                                  textDecoration: 'underline',
+                                  backgroundColor: 'transparent',
+                                },
+                              }}
+                            >
+                              {row.workerCount}
+                            </Button>
+                          ) : (
+                            <Typography variant="body2" color="text.secondary">
+                              0
+                            </Typography>
+                          )}
+                        </TableCell>
                         <TableCell align="right">{row.savedReadyPercent.toFixed(1)}%</TableCell>
                         <TableCell align="right" sx={{ width: 180 }}>
                           <TextField
@@ -3081,7 +3339,102 @@ export default function TimesheetPage() {
           >
             {isSavingManagerProgress ? 'Saving...' : 'Save'}
           </Button>
-          <Button onClick={() => setManagerSheetOpen(false)}>Close</Button>
+          <Button onClick={closeManagerSheet}>Close</Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(managerWorkersPopupRow)}
+        onClose={handleCloseManagerWorkersPopup}
+        fullWidth
+        maxWidth="xs"
+      >
+        <DialogTitle>
+          {managerWorkersPopupRow
+            ? `Workers - ${managerWorkersPopupRow.mondayOrderId || managerWorkersPopupRow.jobName}`
+            : 'Workers'}
+        </DialogTitle>
+        <DialogContent dividers>
+          {!managerWorkersPopupRow || managerWorkersPopupRow.workerHoursByWorker.length === 0 ? (
+            <Typography color="text.secondary">No workers found for this order.</Typography>
+          ) : (
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Worker</TableCell>
+                  <TableCell align="right">Hours</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {managerWorkersPopupRow.workerHoursByWorker.map((workerRow) => (
+                  <TableRow key={workerRow.workerId}>
+                    <TableCell>{workerRow.workerName}</TableCell>
+                    <TableCell align="right">{formatHours(workerRow.hours)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleCloseManagerWorkersPopup}>Close</Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(shopDrawingPreviewRow)}
+        onClose={handleCloseShopDrawingPreview}
+        fullWidth
+        maxWidth="lg"
+      >
+        <DialogTitle>
+          {shopDrawingPreviewRow
+            ? `Shop Drawing Preview - ${shopDrawingPreviewRow.jobName}`
+            : 'Shop Drawing Preview'}
+        </DialogTitle>
+        <DialogContent dividers sx={{ p: 0 }}>
+          {shopDrawingPreviewSrc ? (
+            <Box sx={{ height: { xs: '72vh', md: '80vh' }, position: 'relative' }}>
+              {isShopDrawingPreviewLoading ? (
+                <Stack
+                  spacing={1}
+                  alignItems="center"
+                  justifyContent="center"
+                  sx={{
+                    position: 'absolute',
+                    inset: 0,
+                    bgcolor: 'rgba(255, 255, 255, 0.85)',
+                    zIndex: 1,
+                  }}
+                >
+                  <CircularProgress size={28} />
+                  <Typography variant="body2" color="text.secondary">
+                    Loading preview...
+                  </Typography>
+                </Stack>
+              ) : null}
+              <iframe
+                key={shopDrawingPreviewSrc}
+                src={shopDrawingPreviewSrc}
+                title="Shop Drawing Preview"
+                onLoad={() => {
+                  setIsShopDrawingPreviewLoading(false)
+                }}
+                onError={() => {
+                  setIsShopDrawingPreviewLoading(false)
+                  setError('Could not load shop drawing preview.')
+                }}
+                style={{ width: '100%', height: '100%', border: 0 }}
+              />
+            </Box>
+          ) : (
+            <Stack sx={{ p: 2 }}>
+              <Typography color="text.secondary">No preview is available.</Typography>
+            </Stack>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleCloseShopDrawingPreview}>Close</Button>
         </DialogActions>
       </Dialog>
 

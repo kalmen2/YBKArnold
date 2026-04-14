@@ -1,9 +1,10 @@
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker'
 import { Picker } from '@react-native-picker/picker'
 import { StatusBar } from 'expo-status-bar'
-import { type ReactNode, useEffect, useMemo, useState } from 'react'
+import { type ReactNode, useState } from 'react'
 import {
   ActivityIndicator,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -46,54 +47,20 @@ type TicketMetricItem = {
 
 type ManagerProgressRow = {
   jobName: string
+  displayOrderNumber: string
+  mondayOrderId: string | null
+  mondayItemName: string | null
+  shopDrawingUrl: string | null
+  shopDrawingCachedUrl: string | null
   totalHours: number
   workerCount: number
+  workerHoursByWorker: Array<{
+    workerId: string
+    workerName: string
+    hours: number
+  }>
   savedReadyPercent: number
   editReadyPercent: number
-}
-
-type ManagerCalendarDayCell = {
-  date: string
-  dayNumber: number
-  hasOrders: boolean
-  hasMissingProgress: boolean
-  isSelected: boolean
-}
-
-function parseCalendarIsoDate(value: string) {
-  const normalized = String(value ?? '').trim()
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(normalized)
-
-  if (!match) {
-    return null
-  }
-
-  const year = Number(match[1])
-  const month = Number(match[2])
-  const day = Number(match[3])
-  const parsed = new Date(year, month - 1, day)
-
-  if (
-    parsed.getFullYear() !== year
-    || parsed.getMonth() !== month - 1
-    || parsed.getDate() !== day
-  ) {
-    return null
-  }
-
-  return parsed
-}
-
-function formatCalendarIsoDate(value: Date) {
-  const year = value.getFullYear()
-  const month = String(value.getMonth() + 1).padStart(2, '0')
-  const day = String(value.getDate()).padStart(2, '0')
-
-  return `${year}-${month}-${day}`
-}
-
-function monthStart(value: Date) {
-  return new Date(value.getFullYear(), value.getMonth(), 1)
 }
 
 export function MetricCard({
@@ -478,187 +445,60 @@ export function ManagerSheetSection({
   t,
   locale,
   managerDate,
-  managerDatesWithOrders,
-  managerDatesMissingProgress,
-  onSelectManagerDate,
+  onOpenManagerDatePicker,
+  isManagerDatePickerOpen,
+  selectedManagerDate,
+  onManagerDateChange,
   isManagerLoading,
   managerRows,
   managerMessage,
   isManagerSaving,
   onManagerProgressChange,
   onSaveManagerProgress,
+  onOpenManagerShopDrawingPreview,
 }: {
   t: TranslateFn
   locale: string
   managerDate: string
-  managerDatesWithOrders: string[]
-  managerDatesMissingProgress: string[]
-  onSelectManagerDate: (value: string) => void
+  onOpenManagerDatePicker: () => void
+  isManagerDatePickerOpen: boolean
+  selectedManagerDate: Date
+  onManagerDateChange: (event: DateTimePickerEvent, value?: Date) => void
   isManagerLoading: boolean
   managerRows: ManagerProgressRow[]
   managerMessage: string | null
   isManagerSaving: boolean
   onManagerProgressChange: (jobName: string, value: string) => void
   onSaveManagerProgress: () => void
+  onOpenManagerShopDrawingPreview: (row: ManagerProgressRow) => void
 }) {
-  const resolvedSelectedDate = useMemo(
-    () => parseCalendarIsoDate(managerDate) ?? new Date(),
-    [managerDate],
-  )
-  const [visibleMonth, setVisibleMonth] = useState(() => monthStart(resolvedSelectedDate))
-
-  useEffect(() => {
-    setVisibleMonth(monthStart(resolvedSelectedDate))
-  }, [resolvedSelectedDate])
-
-  const managerOrderDateSet = useMemo(
-    () => new Set(managerDatesWithOrders),
-    [managerDatesWithOrders],
-  )
-  const managerMissingDateSet = useMemo(
-    () => new Set(managerDatesMissingProgress),
-    [managerDatesMissingProgress],
-  )
-
-  const monthLabel = useMemo(
-    () =>
-      new Intl.DateTimeFormat(locale, {
-        month: 'long',
-        year: 'numeric',
-      }).format(visibleMonth),
-    [locale, visibleMonth],
-  )
-
-  const weekdayLabels = useMemo(() => {
-    const formatter = new Intl.DateTimeFormat(locale, { weekday: 'short' })
-
-    return Array.from({ length: 7 }, (_, index) => formatter.format(new Date(2024, 0, 7 + index)))
-  }, [locale])
-
-  const managerCalendarCells = useMemo(() => {
-    const year = visibleMonth.getFullYear()
-    const month = visibleMonth.getMonth()
-    const firstDay = new Date(year, month, 1)
-    const daysInMonth = new Date(year, month + 1, 0).getDate()
-    const cells: Array<ManagerCalendarDayCell | null> = []
-
-    for (let index = 0; index < firstDay.getDay(); index += 1) {
-      cells.push(null)
-    }
-
-    for (let day = 1; day <= daysInMonth; day += 1) {
-      const cellDate = formatCalendarIsoDate(new Date(year, month, day))
-
-      cells.push({
-        date: cellDate,
-        dayNumber: day,
-        hasOrders: managerOrderDateSet.has(cellDate),
-        hasMissingProgress: managerMissingDateSet.has(cellDate),
-        isSelected: managerDate.trim() === cellDate,
-      })
-    }
-
-    const fullGridCellCount = Math.ceil(cells.length / 7) * 7
-
-    while (cells.length < fullGridCellCount) {
-      cells.push(null)
-    }
-
-    return cells
-  }, [managerDate, managerMissingDateSet, managerOrderDateSet, visibleMonth])
+  const [workersPopupRow, setWorkersPopupRow] = useState<ManagerProgressRow | null>(null)
 
   return (
     <>
       <Text style={styles.sectionTitle}>{t('Manager Sheet', 'Hoja de gerente')}</Text>
       <Text style={styles.sectionSubtitle}>
         {t(
-          'Only dates with orders can be selected. Red bubble means missing manager progress.',
-          'Solo se pueden seleccionar fechas con ordenes. Burbuja roja significa progreso de gerente faltante.',
+          'Date defaults to today. Tap Date to open the calendar picker.',
+          'La fecha por defecto es hoy. Toca Fecha para abrir el calendario.',
         )}
       </Text>
 
       <View style={styles.managerSheetCard}>
-        <View style={styles.timesheetDateButton}>
+        <Pressable style={styles.timesheetDateButton} onPress={onOpenManagerDatePicker}>
           <Text style={styles.timesheetDateButtonText}>{t('Date', 'Fecha')}: {formatDisplayDate(managerDate, locale)}</Text>
           <Text style={styles.timesheetDateHint}>{managerDate}</Text>
-        </View>
+        </Pressable>
 
-        <View style={styles.managerCalendarHeader}>
-          <Pressable
-            style={styles.managerCalendarNavButton}
-            onPress={() => {
-              setVisibleMonth((current) => new Date(current.getFullYear(), current.getMonth() - 1, 1))
-            }}
-          >
-            <Text style={styles.managerCalendarNavButtonText}>{t('Prev', 'Anterior')}</Text>
-          </Pressable>
-
-          <Text style={styles.managerCalendarMonthLabel}>{monthLabel}</Text>
-
-          <Pressable
-            style={styles.managerCalendarNavButton}
-            onPress={() => {
-              setVisibleMonth((current) => new Date(current.getFullYear(), current.getMonth() + 1, 1))
-            }}
-          >
-            <Text style={styles.managerCalendarNavButtonText}>{t('Next', 'Siguiente')}</Text>
-          </Pressable>
-        </View>
-
-        <View style={styles.managerCalendarWeekRow}>
-          {weekdayLabels.map((label, index) => (
-            <Text key={`${label}-${index}`} style={styles.managerCalendarWeekdayLabel}>
-              {label}
-            </Text>
-          ))}
-        </View>
-
-        <View style={styles.managerCalendarGrid}>
-          {managerCalendarCells.map((cell, index) => {
-            if (!cell) {
-              return <View key={`blank-${index}`} style={styles.managerCalendarBlankCell} />
-            }
-
-            const isDisabled = !cell.hasOrders
-
-            return (
-              <Pressable
-                key={cell.date}
-                style={({ pressed }) => [
-                  styles.managerCalendarDayCell,
-                  isDisabled ? styles.managerCalendarDayCellDisabled : null,
-                  cell.isSelected ? styles.managerCalendarDayCellSelected : null,
-                  pressed && !isDisabled ? styles.managerCalendarDayCellPressed : null,
-                ]}
-                onPress={() => onSelectManagerDate(cell.date)}
-                disabled={isDisabled}
-              >
-                {cell.hasMissingProgress ? <View style={styles.managerCalendarMissingBubble} /> : null}
-                <Text
-                  style={[
-                    styles.managerCalendarDayLabel,
-                    isDisabled ? styles.managerCalendarDayLabelDisabled : null,
-                    cell.isSelected ? styles.managerCalendarDayLabelSelected : null,
-                  ]}
-                >
-                  {cell.dayNumber}
-                </Text>
-              </Pressable>
-            )
-          })}
-        </View>
-
-        <Text style={styles.managerCalendarLegend}>
-          {t(
-            'White days have no orders and cannot be clicked. Red bubble means manager progress is missing.',
-            'Los dias blancos no tienen ordenes y no se pueden tocar. La burbuja roja significa que falta progreso de gerente.',
-          )}
-        </Text>
-
-        {managerDatesWithOrders.length === 0 ? (
-          <Text style={styles.managerCalendarEmptyText}>
-            {t('No order dates are available yet.', 'Aun no hay fechas con ordenes disponibles.')}
-          </Text>
+        {isManagerDatePickerOpen ? (
+          <View style={styles.timesheetDatePickerWrap}>
+            <DateTimePicker
+              value={selectedManagerDate}
+              mode="date"
+              display={Platform.OS === 'android' ? 'calendar' : 'default'}
+              onChange={onManagerDateChange}
+            />
+          </View>
         ) : null}
 
         {isManagerLoading ? (
@@ -669,10 +509,60 @@ export function ManagerSheetSection({
           <View style={styles.managerProgressList}>
             {managerRows.map((row) => (
               <View key={row.jobName} style={styles.managerProgressRow}>
-                <Text style={styles.managerProgressJob} numberOfLines={1}>{row.jobName}</Text>
-                <Text style={styles.managerProgressMeta}>
-                  {t('Hours', 'Horas')}: {row.totalHours.toFixed(2)} • {t('Workers', 'Trabajadores')}: {row.workerCount}
+                <Text style={styles.managerProgressJob} numberOfLines={1}>
+                  {t('Order #', 'Orden #')}{row.displayOrderNumber}
                 </Text>
+                <Text style={styles.managerProgressMeta} numberOfLines={2}>
+                  {t('Item', 'Item')}: {row.mondayItemName || row.jobName}
+                </Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <Text style={styles.managerProgressMeta}>
+                    {t('Shop Drawing', 'Shop Drawing')}:
+                  </Text>
+                  {row.shopDrawingCachedUrl || (row.shopDrawingUrl && row.mondayOrderId) ? (
+                    <Pressable
+                      onPress={() => onOpenManagerShopDrawingPreview(row)}
+                      style={{
+                        borderWidth: 1,
+                        borderColor: '#8fa8f2',
+                        borderRadius: 8,
+                        backgroundColor: '#eef3ff',
+                        paddingHorizontal: 10,
+                        paddingVertical: 4,
+                      }}
+                    >
+                      <Text style={{ color: '#234ebf', fontSize: 12, fontWeight: '700' }}>
+                        {t('Preview', 'Vista previa')}
+                      </Text>
+                    </Pressable>
+                  ) : (
+                    <Text style={styles.managerProgressMeta}>{t('Not available', 'No disponible')}</Text>
+                  )}
+                </View>
+                <Text style={styles.managerProgressMeta}>
+                  {t('Hours', 'Horas')}: {row.totalHours.toFixed(2)}
+                </Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                  <Text style={styles.managerProgressMeta}>{t('Workers', 'Trabajadores')}: </Text>
+                  {row.workerCount > 0 ? (
+                    <Pressable
+                      onPress={() => setWorkersPopupRow(row)}
+                    >
+                      <Text
+                        style={{
+                          color: '#214fc5',
+                          fontSize: 12,
+                          fontWeight: '700',
+                          textDecorationLine: 'underline',
+                        }}
+                      >
+                        {row.workerCount}
+                      </Text>
+                    </Pressable>
+                  ) : (
+                    <Text style={styles.managerProgressMeta}>0</Text>
+                  )}
+                </View>
                 <Text style={styles.managerProgressMeta}>
                   {t('Current ready', 'Listo actual')}: {row.savedReadyPercent.toFixed(1)}%
                 </Text>
@@ -701,6 +591,48 @@ export function ManagerSheetSection({
 
         {managerMessage ? <Text style={styles.managerSheetMessage}>{managerMessage}</Text> : null}
       </View>
+
+      <Modal
+        visible={Boolean(workersPopupRow)}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setWorkersPopupRow(null)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.modalCard, { maxHeight: '60%' }]}> 
+            <View style={styles.detailHeader}>
+              <Text style={styles.detailTitle}>
+                {workersPopupRow
+                  ? `${t('Workers - Order #', 'Trabajadores - Orden #')}${workersPopupRow.displayOrderNumber}`
+                  : t('Workers', 'Trabajadores')}
+              </Text>
+              <Pressable
+                style={styles.detailCloseButton}
+                onPress={() => setWorkersPopupRow(null)}
+              >
+                <Text style={styles.detailCloseButtonText}>{t('Close', 'Cerrar')}</Text>
+              </Pressable>
+            </View>
+
+            <ScrollView contentContainerStyle={styles.modalBodyContent}>
+              {!workersPopupRow || workersPopupRow.workerHoursByWorker.length === 0 ? (
+                <Text style={styles.emptyDetailText}>
+                  {t('No workers found for this order.', 'No se encontraron trabajadores para esta orden.')}
+                </Text>
+              ) : (
+                workersPopupRow.workerHoursByWorker.map((workerRow) => (
+                  <View key={workerRow.workerId} style={styles.detailRow}>
+                    <Text style={styles.detailPrimary}>{workerRow.workerName}</Text>
+                    <Text style={styles.detailSecondary}>
+                      {t('Hours', 'Horas')}: {workerRow.hours.toFixed(2)}
+                    </Text>
+                  </View>
+                ))
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </>
   )
 }
@@ -711,18 +643,14 @@ export function AlertsSection({
   isAlertsLoading,
   alerts,
   alertsMessage,
-  resolveAlertLink,
   onMarkAlertAsRead,
-  onOpenAlertLink,
 }: {
   t: TranslateFn
   locale: string
   isAlertsLoading: boolean
   alerts: MobileAlert[]
   alertsMessage: string | null
-  resolveAlertLink: (alertItem: MobileAlert) => string | null
   onMarkAlertAsRead: (alertItem: MobileAlert) => void
-  onOpenAlertLink: (url: string, alertItem?: MobileAlert) => void
 }) {
   return (
     <>
@@ -742,7 +670,6 @@ export function AlertsSection({
         ) : (
           <View style={styles.alertsList}>
             {alerts.map((alertItem) => {
-              const alertLink = resolveAlertLink(alertItem)
               const isRead = Boolean(alertItem.isRead)
 
               return (
@@ -772,18 +699,6 @@ export function AlertsSection({
                     <Text style={styles.alertTapHint}>
                       {t('Tap this notification to mark it as read.', 'Toca esta notificacion para marcarla como leida.')}
                     </Text>
-                  ) : null}
-                  {alertLink ? (
-                    <Pressable
-                      style={styles.alertLinkButton}
-                      onPress={() => {
-                        onOpenAlertLink(alertLink, alertItem)
-                      }}
-                    >
-                      <Text style={styles.alertLinkButtonText}>
-                        {t('Open update link', 'Abrir enlace de actualizacion')}
-                      </Text>
-                    </Pressable>
                   ) : null}
                 </Pressable>
               )
