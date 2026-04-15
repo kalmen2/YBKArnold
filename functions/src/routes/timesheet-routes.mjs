@@ -14,6 +14,110 @@ export function registerTimesheetRoutes(app, deps) {
     validateWorkerInput,
   } = deps
 
+  const isoDatePattern = /^\d{4}-\d{2}-\d{2}$/
+  const duplicateConstraintMessage =
+    'Daily sheet save failed due to a duplicate database constraint. Please refresh and try again.'
+
+  function isDuplicateKeyError(error) {
+    return Number(error?.code) === 11000
+  }
+
+  function buildDuplicateKeyError() {
+    return {
+      status: 400,
+      message: duplicateConstraintMessage,
+    }
+  }
+
+  async function fetchWorkerRateById(workersCollection, workerIds) {
+    const uniqueWorkerIds = [...new Set(workerIds.map((value) => String(value ?? '').trim()))].filter(Boolean)
+
+    if (uniqueWorkerIds.length === 0) {
+      return new Map()
+    }
+
+    const validWorkers = await workersCollection
+      .find(
+        {
+          id: {
+            $in: uniqueWorkerIds,
+          },
+        },
+        {
+          projection: {
+            _id: 0,
+            id: 1,
+            hourlyRate: 1,
+          },
+        },
+      )
+      .toArray()
+
+    if (validWorkers.length !== uniqueWorkerIds.length) {
+      throw {
+        status: 400,
+        message: 'One or more worker IDs are invalid.',
+      }
+    }
+
+    return new Map(
+      validWorkers.map((worker) => [String(worker.id), Number(worker.hourlyRate)]),
+    )
+  }
+
+  async function assertValidStageIds(stagesCollection, stageIds) {
+    const uniqueStageIds = [...new Set(stageIds.map((value) => String(value ?? '').trim()))].filter(Boolean)
+
+    if (uniqueStageIds.length === 0) {
+      return
+    }
+
+    const validStages = await stagesCollection
+      .find(
+        {
+          id: {
+            $in: uniqueStageIds,
+          },
+        },
+        {
+          projection: {
+            _id: 0,
+            id: 1,
+          },
+        },
+      )
+      .toArray()
+
+    if (validStages.length !== uniqueStageIds.length) {
+      throw {
+        status: 400,
+        message: 'One or more stage IDs are invalid.',
+      }
+    }
+  }
+
+  function resolveEntryPayRate({
+    existingEntryPayRate,
+    existingWorkerId,
+    nextWorkerId,
+    workerRate,
+  }) {
+    const parsedWorkerRate = Number(workerRate)
+    const parsedExistingPayRate = Number(existingEntryPayRate)
+    const shouldUseWorkerRate = Number.isFinite(parsedWorkerRate) && parsedWorkerRate > 0
+    const workerChanged = String(existingWorkerId ?? '') !== String(nextWorkerId ?? '')
+
+    if (workerChanged) {
+      return shouldUseWorkerRate ? parsedWorkerRate : null
+    }
+
+    if (Number.isFinite(parsedExistingPayRate) && parsedExistingPayRate > 0) {
+      return parsedExistingPayRate
+    }
+
+    return shouldUseWorkerRate ? parsedWorkerRate : null
+  }
+
 
 app.get('/api/timesheet/state', async (_req, res, next) => {
   try {
@@ -116,7 +220,7 @@ app.put('/api/timesheet/missing-worker-reviews', async (req, res, next) => {
       return res.status(400).json({ error: 'date is required.' })
     }
 
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    if (!isoDatePattern.test(date)) {
       return res.status(400).json({ error: 'date must be yyyy-mm-dd.' })
     }
 
@@ -207,7 +311,7 @@ app.put('/api/timesheet/order-progress', async (req, res, next) => {
       return res.status(400).json({ error: 'date is required.' })
     }
 
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    if (!isoDatePattern.test(date)) {
       return res.status(400).json({ error: 'date must be yyyy-mm-dd.' })
     }
 
@@ -685,6 +789,10 @@ app.post('/api/timesheet/entries/bulk', async (req, res, next) => {
       return res.status(400).json({ error: 'date is required.' })
     }
 
+    if (!isoDatePattern.test(date)) {
+      return res.status(400).json({ error: 'date must be yyyy-mm-dd.' })
+    }
+
     if (rows.length === 0) {
       return res.status(400).json({ error: 'rows array is required.' })
     }
@@ -693,54 +801,13 @@ app.post('/api/timesheet/entries/bulk', async (req, res, next) => {
       validateEntryInput(row, date, `rows[${index}]`),
     )
 
-    const workerIds = [...new Set(entries.map((entry) => entry.workerId))]
-    const validWorkers = await workersCollection
-      .find(
-        {
-          id: {
-            $in: workerIds,
-          },
-        },
-        {
-          projection: {
-            _id: 0,
-            id: 1,
-            hourlyRate: 1,
-          },
-        },
-      )
-      .toArray()
-
-    if (validWorkers.length !== workerIds.length) {
-      return res.status(400).json({ error: 'One or more worker IDs are invalid.' })
-    }
-
-    const stageIds = [...new Set(entries.map((entry) => entry.stageId).filter(Boolean))]
-
-    if (stageIds.length > 0) {
-      const validStages = await stagesCollection
-        .find(
-          {
-            id: {
-              $in: stageIds,
-            },
-          },
-          {
-            projection: {
-              _id: 0,
-              id: 1,
-            },
-          },
-        )
-        .toArray()
-
-      if (validStages.length !== stageIds.length) {
-        return res.status(400).json({ error: 'One or more stage IDs are invalid.' })
-      }
-    }
-
-    const workerRateById = new Map(
-      validWorkers.map((worker) => [String(worker.id), Number(worker.hourlyRate)]),
+    const workerRateById = await fetchWorkerRateById(
+      workersCollection,
+      entries.map((entry) => entry.workerId),
+    )
+    await assertValidStageIds(
+      stagesCollection,
+      entries.map((entry) => entry.stageId).filter(Boolean),
     )
 
     entries.forEach((entry) => {
@@ -755,6 +822,187 @@ app.post('/api/timesheet/entries/bulk', async (req, res, next) => {
 
     return res.status(201).json({ insertedCount: entries.length })
   } catch (error) {
+    if (isDuplicateKeyError(error)) {
+      return next(buildDuplicateKeyError())
+    }
+
+    next(error)
+  }
+})
+
+app.post('/api/timesheet/entries/sync', async (req, res, next) => {
+  try {
+    const { workersCollection, entriesCollection, stagesCollection } = await getCollections()
+    const date = String(req.body?.date ?? '').trim()
+    const rows = Array.isArray(req.body?.rows) ? req.body.rows : []
+
+    if (!date) {
+      return res.status(400).json({ error: 'date is required.' })
+    }
+
+    if (!isoDatePattern.test(date)) {
+      return res.status(400).json({ error: 'date must be yyyy-mm-dd.' })
+    }
+
+    const normalizedRows = rows.map((row, index) => {
+      const entryId = String(row?.entryId ?? '').trim()
+      const fields = validateEntryFields(row, date, `rows[${index}]`)
+
+      return {
+        entryId,
+        fields,
+      }
+    })
+
+    const payloadEntryIds = normalizedRows
+      .map((row) => row.entryId)
+      .filter(Boolean)
+    const uniquePayloadEntryIds = [...new Set(payloadEntryIds)]
+
+    if (uniquePayloadEntryIds.length !== payloadEntryIds.length) {
+      return res.status(400).json({ error: 'rows contain duplicate entryId values.' })
+    }
+
+    const workerRateById = await fetchWorkerRateById(
+      workersCollection,
+      normalizedRows.map((row) => row.fields.workerId),
+    )
+    await assertValidStageIds(
+      stagesCollection,
+      normalizedRows.map((row) => row.fields.stageId).filter(Boolean),
+    )
+
+    const existingEntries = await entriesCollection
+      .find(
+        {
+          date,
+        },
+        {
+          projection: {
+            _id: 0,
+            id: 1,
+            workerId: 1,
+            payRate: 1,
+          },
+        },
+      )
+      .toArray()
+    const existingEntriesById = new Map(
+      existingEntries.map((entry) => [String(entry.id ?? '').trim(), entry]),
+    )
+
+    const unknownEntryId = uniquePayloadEntryIds.find((entryId) => !existingEntriesById.has(entryId))
+
+    if (unknownEntryId) {
+      return res.status(400).json({ error: 'One or more entry IDs are invalid for this date.' })
+    }
+
+    const now = new Date().toISOString()
+    const operations = []
+    let insertedCount = 0
+    let updatedCount = 0
+
+    const deletedEntryIds = existingEntries
+      .map((entry) => String(entry.id ?? '').trim())
+      .filter((entryId) => entryId && !uniquePayloadEntryIds.includes(entryId))
+
+    if (deletedEntryIds.length > 0) {
+      operations.push({
+        deleteMany: {
+          filter: {
+            date,
+            id: {
+              $in: deletedEntryIds,
+            },
+          },
+        },
+      })
+    }
+
+    normalizedRows.forEach((row) => {
+      const workerRate = workerRateById.get(String(row.fields.workerId ?? '').trim())
+
+      if (row.entryId) {
+        const existingEntry = existingEntriesById.get(row.entryId)
+        const payRate = resolveEntryPayRate({
+          existingEntryPayRate: existingEntry?.payRate,
+          existingWorkerId: existingEntry?.workerId,
+          nextWorkerId: row.fields.workerId,
+          workerRate,
+        })
+
+        const nextFields = {
+          ...row.fields,
+          ...(payRate
+            ? {
+                payRate,
+              }
+            : {}),
+        }
+        const shouldUnsetStage = !row.fields.stageId
+
+        operations.push({
+          updateOne: {
+            filter: {
+              id: row.entryId,
+              date,
+            },
+            update: shouldUnsetStage
+              ? {
+                  $set: nextFields,
+                  $unset: {
+                    stageId: '',
+                  },
+                }
+              : {
+                  $set: nextFields,
+                },
+          },
+        })
+
+        updatedCount += 1
+        return
+      }
+
+      const entry = {
+        id: randomUUID(),
+        ...row.fields,
+        createdAt: now,
+        ...(
+          Number.isFinite(workerRate) && Number(workerRate) > 0
+            ? {
+                payRate: Number(workerRate),
+              }
+            : {}
+        ),
+      }
+
+      operations.push({
+        insertOne: {
+          document: entry,
+        },
+      })
+
+      insertedCount += 1
+    })
+
+    let deletedCount = 0
+
+    if (operations.length > 0) {
+      const result = await entriesCollection.bulkWrite(operations, { ordered: false })
+      deletedCount = Number(result.deletedCount ?? 0)
+    }
+
+    return res.json({
+      insertedCount,
+      updatedCount,
+      deletedCount,
+    })
+  } catch (error) {
+    if (isDuplicateKeyError(error)) {
+      return next(buildDuplicateKeyError())
+    }
+
     next(error)
   }
 })
@@ -787,6 +1035,10 @@ app.patch('/api/timesheet/entries/:entryId', async (req, res, next) => {
       return res.status(400).json({ error: 'date is required.' })
     }
 
+    if (!isoDatePattern.test(date)) {
+      return res.status(400).json({ error: 'date must be yyyy-mm-dd.' })
+    }
+
     const updatedFields = validateEntryFields(req.body, date)
     const worker = await workersCollection.findOne({
       id: updatedFields.workerId,
@@ -802,29 +1054,18 @@ app.patch('/api/timesheet/entries/:entryId', async (req, res, next) => {
       return res.status(400).json({ error: 'workerId is invalid.' })
     }
 
-    const workerRate = Number(worker.hourlyRate)
-    const existingEntryPayRate = Number(existingEntry.payRate)
-    const workerChanged = String(existingEntry.workerId ?? '') !== updatedFields.workerId
+    const payRate = resolveEntryPayRate({
+      existingEntryPayRate: existingEntry.payRate,
+      existingWorkerId: existingEntry.workerId,
+      nextWorkerId: updatedFields.workerId,
+      workerRate: worker.hourlyRate,
+    })
 
-    if (workerChanged) {
-      if (Number.isFinite(workerRate) && workerRate > 0) {
-        updatedFields.payRate = workerRate
-      }
-    } else if (Number.isFinite(existingEntryPayRate) && existingEntryPayRate > 0) {
-      updatedFields.payRate = existingEntryPayRate
-    } else if (Number.isFinite(workerRate) && workerRate > 0) {
-      updatedFields.payRate = workerRate
+    if (payRate) {
+      updatedFields.payRate = payRate
     }
 
-    if (updatedFields.stageId) {
-      const stageExists = await stagesCollection.countDocuments({
-        id: updatedFields.stageId,
-      })
-
-      if (stageExists === 0) {
-        return res.status(400).json({ error: 'stageId is invalid.' })
-      }
-    }
+    await assertValidStageIds(stagesCollection, [updatedFields.stageId].filter(Boolean))
 
     const hasStageField = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'stageId')
     const shouldUnsetStage = hasStageField && !updatedFields.stageId

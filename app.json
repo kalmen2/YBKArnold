@@ -1,5 +1,10 @@
 {
   "ios": {
-    "bundleIdentifier": "com.ybkarnold.arnold-api"
+    "bundleIdentifier": "com.ybk.arnold"
+  },
+  "extra": {
+    "eas": {
+      "projectId": "279a4895-4424-4f61-bc57-c9bb3bd060d0"
+    }
   }
 }

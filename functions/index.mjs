@@ -85,7 +85,7 @@ const mobilePushTokenProviderExpo = 'expo'
 const mobilePushTokenProviderFcm = 'fcm'
 const defaultMobileAndroidUpdateUrl = 'https://ybkarnold-b7ec0.web.app/apk/YBK-APP-local-release.apk'
 const defaultMobileIosUpdateUrl = 'https://ybkarnold-b7ec0.web.app/ios-update.html'
-const defaultMobileAndroidLatestBuild = 13
+const defaultMobileAndroidLatestBuild = 14
 const defaultMobileIosLatestBuild = 6
 const defaultMobileLatestVersion = '1.6'
 const expoPushApiUrl = 'https://exp.host/--/api/v2/push/send'
@@ -444,6 +444,16 @@ app.use((error, _req, res, _next) => {
   const status = Number(error?.status ?? 500)
   const message =
     error?.message || error?.details || 'Unexpected server error occurred.'
+
+  if (status >= 500) {
+    console.error('apiV1 request failed', {
+      code: error?.code ?? null,
+      codeName: error?.codeName ?? null,
+      message,
+      stack: error?.stack ?? null,
+      status,
+    })
+  }
 
   res.status(status).json({ error: message })
 })

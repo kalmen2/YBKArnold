@@ -74,7 +74,8 @@ type UpdateWorkerInput = {
   hourlyRate?: number
 }
 
-type CreateEntryBulkRowInput = {
+export type SyncDailyEntryRowInput = {
+  entryId?: string
   workerId: string
   stageId?: string
   jobName: string
@@ -177,8 +178,12 @@ export function reorderStages(stageIds: string[]) {
   })
 }
 
-export function createEntriesBulk(date: string, rows: CreateEntryBulkRowInput[]) {
-  return request<{ insertedCount: number }>('/api/timesheet/entries/bulk', {
+export function syncDailyEntries(date: string, rows: SyncDailyEntryRowInput[]) {
+  return request<{
+    insertedCount: number
+    updatedCount: number
+    deletedCount: number
+  }>('/api/timesheet/entries/sync', {
     method: 'POST',
     body: JSON.stringify({ date, rows }),
   })

@@ -1,5 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { type DateTimePickerEvent } from '@react-native-community/datetimepicker'
+import * as AppleAuthentication from 'expo-apple-authentication'
+import * as Crypto from 'expo-crypto'
 import * as Google from 'expo-auth-session/providers/google'
 import Constants from 'expo-constants'
 import { StatusBar } from 'expo-status-bar'
@@ -25,6 +27,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context'
 import {
   GoogleAuthProvider,
+  OAuthProvider,
   onAuthStateChanged,
   signInWithCredential,
   signInWithEmailAndPassword,
@@ -112,6 +115,19 @@ function extractDigits(value: string) {
   return digits || null
 }
 
+function buildAppleRawNonce(length = 32) {
+  const nonceCharacters = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-._'
+  const nonceLength = Math.max(16, Math.min(length, 64))
+  const randomBytes = Crypto.getRandomBytes(nonceLength)
+  let rawNonce = ''
+
+  for (let index = 0; index < nonceLength; index += 1) {
+    rawNonce += nonceCharacters[randomBytes[index] % nonceCharacters.length]
+  }
+
+  return rawNonce
+}
+
 function normalizeIsoDate(value: string) {
   const normalizedValue = String(value ?? '').trim()
 
@@ -163,6 +179,7 @@ export default function App() {
   const [isCheckingApproval, setIsCheckingApproval] = useState(false)
   const [isSigningIn, setIsSigningIn] = useState(false)
   const [isEmailSigningIn, setIsEmailSigningIn] = useState(false)
+  const [isAppleSignInAvailable, setIsAppleSignInAvailable] = useState(false)
   const [authMessage, setAuthMessage] = useState<string | null>(null)
   const [emailSignInValue, setEmailSignInValue] = useState('')
   const [passwordSignInValue, setPasswordSignInValue] = useState('')
@@ -554,7 +571,7 @@ export default function App() {
       }
 
       const result = await LocalAuthentication.authenticateAsync({
-        promptMessage: t('Use biometrics for YBK', 'Usar biometria para YBK'),
+        promptMessage: t('Use biometrics for Arnold', 'Usar biometria para Arnold'),
         fallbackLabel: t('Use device passcode', 'Usar codigo del dispositivo'),
         disableDeviceFallback: false,
       })
@@ -856,6 +873,84 @@ export default function App() {
     }
   }, [getErrorMessage, googleRequest, promptGoogleSignIn, t])
 
+  const handleStartAppleLogin = useCallback(async () => {
+    if (Platform.OS !== 'ios') {
+      setAuthMessage(
+        t(
+          'Apple sign-in is available on iPhone and iPad only.',
+          'El inicio de sesion con Apple solo esta disponible en iPhone y iPad.',
+        ),
+      )
+      return
+    }
+
+    if (!isAppleSignInAvailable) {
+      setAuthMessage(
+        t(
+          'Apple sign-in is not available on this device yet.',
+          'El inicio de sesion con Apple no esta disponible en este dispositivo.',
+        ),
+      )
+      return
+    }
+
+    setAuthMessage(null)
+    setIsSigningIn(true)
+
+    try {
+      const rawNonce = buildAppleRawNonce()
+      const hashedNonce = await Crypto.digestStringAsync(
+        Crypto.CryptoDigestAlgorithm.SHA256,
+        rawNonce,
+      )
+
+      const appleAuthCredential = await AppleAuthentication.signInAsync({
+        requestedScopes: [
+          AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
+          AppleAuthentication.AppleAuthenticationScope.EMAIL,
+        ],
+        nonce: hashedNonce,
+      })
+      const idToken = String(appleAuthCredential.identityToken ?? '').trim()
+
+      if (!idToken) {
+        setAuthMessage(
+          t(
+            'Apple sign-in did not return an identity token.',
+            'Apple no devolvio un token de identidad al iniciar sesion.',
+          ),
+        )
+        return
+      }
+
+      const provider = new OAuthProvider('apple.com')
+      const credential = provider.credential({
+        idToken,
+        rawNonce,
+      })
+
+      await signInWithCredential(mobileAuth, credential)
+      setAuthMessage(null)
+    } catch (error) {
+      const errorCode = String((error as { code?: string })?.code ?? '').trim()
+
+      if (errorCode === 'ERR_REQUEST_CANCELED') {
+        setAuthMessage(null)
+        return
+      }
+
+      setAuthMessage(
+        getErrorMessage(
+          error,
+          'Apple sign-in failed.',
+          'Fallo el inicio de sesion con Apple.',
+        ),
+      )
+    } finally {
+      setIsSigningIn(false)
+    }
+  }, [getErrorMessage, isAppleSignInAvailable, t])
+
   const handleStartEmailPasswordLogin = useCallback(async () => {
     const normalizedEmail = emailSignInValue.trim().toLowerCase()
     const normalizedPassword = passwordSignInValue
@@ -974,6 +1069,37 @@ export default function App() {
       })
       .catch(() => {
         // Keep default when storage read fails.
+      })
+
+    return () => {
+      isMounted = false
+    }
+  }, [])
+
+  useEffect(() => {
+    let isMounted = true
+
+    if (Platform.OS !== 'ios') {
+      setIsAppleSignInAvailable(false)
+      return () => {
+        isMounted = false
+      }
+    }
+
+    AppleAuthentication.isAvailableAsync()
+      .then((isAvailable) => {
+        if (!isMounted) {
+          return
+        }
+
+        setIsAppleSignInAvailable(isAvailable)
+      })
+      .catch(() => {
+        if (!isMounted) {
+          return
+        }
+
+        setIsAppleSignInAvailable(false)
       })
 
     return () => {
@@ -2611,7 +2737,7 @@ export default function App() {
   if (!isAuthResolved) {
     return (
       <AuthShell>
-        <Text style={styles.authTitle}>YBK Mobile</Text>
+        <Text style={styles.authTitle}>Arnold Mobile</Text>
         <Text style={styles.authSubtitle}>{t('Preparing secure login...', 'Preparando inicio de sesion seguro...')}</Text>
         <ActivityIndicator size="small" color="#7fa2ff" />
       </AuthShell>
@@ -2623,11 +2749,11 @@ export default function App() {
 
     return (
       <AuthShell>
-        <Text style={styles.authTitle}>{t('Sign in to YBK', 'Inicia sesion en YBK')}</Text>
+        <Text style={styles.authTitle}>{t('Sign in to Arnold', 'Inicia sesion en Arnold')}</Text>
         <Text style={styles.authSubtitle}>
           {t(
-            'Use email/password or Google to access dashboard, support, and pictures from your phone.',
-            'Usa correo/contrasena o Google para acceder al panel, soporte y fotos desde tu telefono.',
+            'Use email/password, Google, or Apple to access dashboard, support, and pictures from your phone.',
+            'Usa correo/contrasena, Google o Apple para acceder al panel, soporte y fotos desde tu telefono.',
           )}
         </Text>
 
@@ -2678,6 +2804,22 @@ export default function App() {
           }}
           disabled={isSigningIn || !hasGoogleClientId}
         />
+
+        {Platform.OS === 'ios' ? (
+          <AuthButton
+            label={
+              isSigningIn
+                ? t('Signing in...', 'Iniciando sesion...')
+                : t('Continue with Apple', 'Continuar con Apple')
+            }
+            variant="secondary"
+            textVariant="secondary"
+            onPress={() => {
+              void handleStartAppleLogin()
+            }}
+            disabled={isSigningIn || !isAppleSignInAvailable}
+          />
+        ) : null}
 
         {!hasGoogleClientId ? (
           <Text style={styles.authCaption}>
