@@ -6,6 +6,7 @@ import { getApps, initializeApp } from 'firebase-admin/app'
 import { getAuth } from 'firebase-admin/auth'
 import { registerAlertsRoutes } from './src/routes/alerts-routes.mjs'
 import { registerAuthRoutes } from './src/routes/auth-routes.mjs'
+import { registerCrmRoutes } from './src/routes/crm-routes.mjs'
 import { registerDashboardSupportRoutes } from './src/routes/dashboard-support-routes.mjs'
 import { registerOrderPhotoRoutes } from './src/routes/order-photos-routes.mjs'
 import { registerTimesheetRoutes } from './src/routes/timesheet-routes.mjs'
@@ -45,6 +46,16 @@ export const app = express()
 
 app.use(cors({ origin: true }))
 app.use(express.json({ limit: '12mb' }))
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api/')) {
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
+    res.set('Pragma', 'no-cache')
+    res.set('Expires', '0')
+    res.set('Surrogate-Control', 'no-store')
+  }
+
+  next()
+})
 
 const mongoUri = process.env.MONGODB_URI
 const mongoDbName = process.env.MONGODB_DB ?? 'arnold_system'
@@ -437,6 +448,7 @@ const routeDeps = {
 
 registerAuthRoutes(app, routeDeps)
 registerAlertsRoutes(app, routeDeps)
+registerCrmRoutes(app, routeDeps)
 registerDashboardSupportRoutes(app, routeDeps)
 registerOrderPhotoRoutes(app, routeDeps)
 registerTimesheetRoutes(app, routeDeps)

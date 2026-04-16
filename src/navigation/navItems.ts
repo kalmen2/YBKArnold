@@ -1,9 +1,12 @@
 import AdminPanelSettingsRoundedIcon from '@mui/icons-material/AdminPanelSettingsRounded'
+import BusinessRoundedIcon from '@mui/icons-material/BusinessRounded'
+import ContactsRoundedIcon from '@mui/icons-material/ContactsRounded'
 import DashboardRoundedIcon from '@mui/icons-material/DashboardRounded'
 import GroupRoundedIcon from '@mui/icons-material/GroupRounded'
 import ManageHistoryRoundedIcon from '@mui/icons-material/ManageHistoryRounded'
 import NotificationsActiveRoundedIcon from '@mui/icons-material/NotificationsActiveRounded'
 import PhotoLibraryRoundedIcon from '@mui/icons-material/PhotoLibraryRounded'
+import StoreRoundedIcon from '@mui/icons-material/StoreRounded'
 import SupportAgentRoundedIcon from '@mui/icons-material/SupportAgentRounded'
 import TableChartRoundedIcon from '@mui/icons-material/TableChartRounded'
 import TrendingUpRoundedIcon from '@mui/icons-material/TrendingUpRounded'
@@ -63,6 +66,24 @@ export const navItems: NavItem[] = [
     label: 'Logs',
     path: '/admin/logs',
     icon: ManageHistoryRoundedIcon,
+    adminOnly: true,
+  },
+  {
+    label: 'CRM Control',
+    path: '/admin/crm',
+    icon: BusinessRoundedIcon,
+    adminOnly: true,
+  },
+  {
+    label: 'Dealers',
+    path: '/admin/crm/dealers',
+    icon: StoreRoundedIcon,
+    adminOnly: true,
+  },
+  {
+    label: 'Contacts',
+    path: '/admin/crm/contacts',
+    icon: ContactsRoundedIcon,
     adminOnly: true,
   },
 ]

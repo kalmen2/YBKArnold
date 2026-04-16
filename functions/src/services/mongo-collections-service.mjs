@@ -105,6 +105,12 @@ export function createMongoCollectionsService({
         const mobilePushTokensCollection = database.collection('mobile_push_tokens')
         const mobileAlertsCollection = database.collection('mobile_alerts')
         const mobileAlertReadsCollection = database.collection('mobile_alert_reads')
+        const crmImportRunsCollection = database.collection('crm_import_runs')
+        const crmAccountsCollection = database.collection('crm_accounts')
+        const crmContactsCollection = database.collection('crm_contacts')
+        const crmDuplicateQueueCollection = database.collection('crm_duplicate_queue')
+        const crmQuotesCollection = database.collection('crm_quotes')
+        const crmOrdersCollection = database.collection('crm_orders')
 
         if (!indexesPromise) {
           indexesPromise = Promise.all([
@@ -144,6 +150,35 @@ export function createMongoCollectionsService({
             mobileAlertReadsCollection.createIndex({ uid: 1, alertId: 1 }, { unique: true }),
             mobileAlertReadsCollection.createIndex({ uid: 1, readAt: -1 }),
             mobileAlertReadsCollection.createIndex({ alertId: 1, readAt: -1 }),
+            crmImportRunsCollection.createIndex({ id: 1 }, { unique: true }),
+            crmImportRunsCollection.createIndex({ importedAt: -1 }),
+            crmImportRunsCollection.createIndex({ importFingerprint: 1 }),
+            crmAccountsCollection.createIndex({ id: 1 }, { unique: true }),
+            crmAccountsCollection.createIndex({ sourceId: 1 }, { unique: true }),
+            crmAccountsCollection.createIndex({ nameLower: 1 }),
+            crmAccountsCollection.createIndex({ emailLower: 1 }, { sparse: true }),
+            crmAccountsCollection.createIndex({ ownerEmailLower: 1 }, { sparse: true }),
+            crmAccountsCollection.createIndex({ lastImportRunId: 1 }),
+            crmContactsCollection.createIndex({ id: 1 }, { unique: true }),
+            crmContactsCollection.createIndex({ sourceId: 1 }, { unique: true }),
+            crmContactsCollection.createIndex({ accountSourceId: 1 }),
+            crmContactsCollection.createIndex({ primaryEmailLower: 1 }, { sparse: true }),
+            crmContactsCollection.createIndex({ contactOrigin: 1 }),
+            crmContactsCollection.createIndex({ lastImportRunId: 1 }),
+            crmDuplicateQueueCollection.createIndex({ id: 1 }, { unique: true }),
+            crmDuplicateQueueCollection.createIndex({ status: 1, createdAt: -1 }),
+            crmDuplicateQueueCollection.createIndex({ importRunId: 1, status: 1 }),
+            crmDuplicateQueueCollection.createIndex({ conflictType: 1, status: 1 }),
+            crmQuotesCollection.createIndex({ id: 1 }, { unique: true }),
+            crmQuotesCollection.createIndex({ dealerSourceId: 1, status: 1 }),
+            crmQuotesCollection.createIndex({ quoteNumber: 1 }, { sparse: true }),
+            crmQuotesCollection.createIndex({ status: 1, updatedAt: -1 }),
+            crmQuotesCollection.createIndex({ createdAt: -1 }),
+            crmOrdersCollection.createIndex({ id: 1 }, { unique: true }),
+            crmOrdersCollection.createIndex({ dealerSourceId: 1, status: 1 }),
+            crmOrdersCollection.createIndex({ orderNumber: 1 }, { sparse: true }),
+            crmOrdersCollection.createIndex({ status: 1, updatedAt: -1 }),
+            crmOrdersCollection.createIndex({ createdAt: -1 }),
           ]).then(async () => {
             await removeLegacyTimesheetEntryIndexes(entriesCollection)
             await ensureDefaultStages()
@@ -172,6 +207,12 @@ export function createMongoCollectionsService({
           mobilePushTokensCollection,
           mobileAlertsCollection,
           mobileAlertReadsCollection,
+          crmImportRunsCollection,
+          crmAccountsCollection,
+          crmContactsCollection,
+          crmDuplicateQueueCollection,
+          crmQuotesCollection,
+          crmOrdersCollection,
         }
       } catch (error) {
         lastError = error
