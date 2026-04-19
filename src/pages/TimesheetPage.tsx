@@ -1989,20 +1989,11 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     <Stack spacing={isReportsView ? 1.5 : 2.5}>
       {!isReportsView ? (
         <Stack
-          direction={{ xs: 'column', sm: 'row' }}
-          justifyContent="space-between"
-          alignItems={{ xs: 'flex-start', sm: 'center' }}
+          direction="row"
+          justifyContent="flex-end"
+          alignItems="center"
           gap={1.2}
         >
-          <Box>
-            <Typography variant="h4" fontWeight={700}>
-              Work Sheet
-            </Typography>
-            <Typography color="text.secondary">
-              Daily bulk sheet and worksheet management.
-            </Typography>
-          </Box>
-
           <Button
             variant="outlined"
             startIcon={<CategoryRoundedIcon />}
