@@ -1,47 +1,12 @@
 import { createHash } from 'node:crypto'
+import { createTtlCache } from '../utils/ttl-cache.mjs'
+import { nowIso } from '../utils/value-utils.mjs'
 
-// ---------------------------------------------------------------------------
-// Simple in-memory cache
-// ---------------------------------------------------------------------------
-// Stores expensive read results so repeated requests within the TTL window
-// hit memory instead of MongoDB. Each entry is keyed by a string and expires
-// after `ttlMs` milliseconds. Entries are lazily evicted on next access.
-//
-// This is intentionally simple — no LRU, no max-size, because the number of
-// distinct cache keys is small and bounded.
-
-const _cacheStore = new Map()
-
-function cacheGet(key) {
-  const entry = _cacheStore.get(key)
-
-  if (!entry) {
-    return undefined
-  }
-
-  if (Date.now() > entry.expiresAt) {
-    _cacheStore.delete(key)
-    return undefined
-  }
-
-  return entry.value
-}
-
-function cacheSet(key, value, ttlMs) {
-  _cacheStore.set(key, { value, expiresAt: Date.now() + ttlMs })
-}
-
-function cacheDelete(key) {
-  _cacheStore.delete(key)
-}
-
-function cacheDeleteByPrefix(prefix) {
-  for (const key of _cacheStore.keys()) {
-    if (key.startsWith(prefix)) {
-      _cacheStore.delete(key)
-    }
-  }
-}
+const _cache = createTtlCache()
+const cacheGet = (key) => _cache.get(key)
+const cacheSet = (key, value, ttlMs) => _cache.set(key, value, ttlMs)
+const cacheDelete = (key) => _cache.delete(key)
+const cacheDeleteByPrefix = (prefix) => _cache.deleteByPrefix(prefix)
 
 const DEALERS_CACHE_PREFIX = 'crm:dealers:'
 const OVERVIEW_CACHE_KEY = 'crm:overview'
@@ -821,7 +786,7 @@ async function computeCrmOverview({
   }))
 
   return {
-    generatedAt: new Date().toISOString(),
+    generatedAt: nowIso(),
     dealers: {
       totalAccounts,
       totalContacts,
@@ -1542,7 +1507,7 @@ export function registerCrmRoutes(app, deps) {
       } = await getCollections()
 
       const dealer = await resolveDealerOrThrow(crmAccountsCollection, body.dealerSourceId)
-      const now = new Date().toISOString()
+      const now = nowIso()
 
       const nextQuote = {
         id: randomUUID(),
@@ -1613,7 +1578,7 @@ export function registerCrmRoutes(app, deps) {
       }
 
       const updates = {}
-      const now = new Date().toISOString()
+      const now = nowIso()
 
       if (Object.prototype.hasOwnProperty.call(body, 'title')) {
         const nextTitle = toTrimmedText(body.title, 240)
@@ -1792,7 +1757,7 @@ export function registerCrmRoutes(app, deps) {
       } = await getCollections()
 
       const dealer = await resolveDealerOrThrow(crmAccountsCollection, body.dealerSourceId)
-      const now = new Date().toISOString()
+      const now = nowIso()
 
       const nextOrder = {
         id: randomUUID(),
@@ -1859,7 +1824,7 @@ export function registerCrmRoutes(app, deps) {
       }
 
       const updates = {}
-      const now = new Date().toISOString()
+      const now = nowIso()
 
       if (Object.prototype.hasOwnProperty.call(body, 'title')) {
         const nextTitle = toTrimmedText(body.title, 240)
@@ -2045,7 +2010,7 @@ export function registerCrmRoutes(app, deps) {
         crmImportRunsCollection,
       } = await getCollections()
 
-      const importedAt = new Date().toISOString()
+      const importedAt = nowIso()
       const importRunId = randomUUID()
       const importedByUid = toTrimmedText(req.authUser?.uid, 160)
       const importedByEmail = toTrimmedText(req.authUser?.email, 200)

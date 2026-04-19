@@ -45,64 +45,19 @@ import {
 import { alpha } from '@mui/material/styles'
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Link as RouterLink, useSearchParams } from 'react-router-dom'
-import { useAuth } from '../auth/useAuth'
+import { StatusAlerts } from '../components/StatusAlerts'
+import { useDataLoader } from '../hooks/useDataLoader'
+import { useDebounceValue } from '../hooks/useDebounceValue'
+import { formatDate, formatDateTime, formatStatusLabel } from '../lib/formatters'
 import {
   fetchCrmDealerDetail,
   fetchCrmDealers,
   fetchCrmOrders,
   type CrmDealer,
   type CrmDealerDetailResponse,
+  type CrmDealersResponse,
   type CrmOrder,
 } from '../features/crm/api'
-
-function formatDateTime(value: string | null | undefined) {
-  if (!value) {
-    return 'Unknown'
-  }
-
-  const parsed = new Date(value)
-
-  if (Number.isNaN(parsed.getTime())) {
-    return value
-  }
-
-  return new Intl.DateTimeFormat('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  }).format(parsed)
-}
-
-function formatDate(value: string | null | undefined) {
-  if (!value) {
-    return '-'
-  }
-
-  const parsed = new Date(value)
-
-  if (Number.isNaN(parsed.getTime())) {
-    return value
-  }
-
-  return new Intl.DateTimeFormat('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  }).format(parsed)
-}
-
-function formatStatus(value: string | null | undefined) {
-  if (!value) {
-    return '-'
-  }
-
-  return value
-    .split('_')
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(' ')
-}
 
 function toExternalUrl(value: string | null | undefined) {
   const normalized = String(value ?? '').trim()
@@ -241,7 +196,6 @@ function DetailField({ label, value }: { label: string; value: ReactNode }) {
 }
 
 export default function CrmDealersPage() {
-  const { getIdToken } = useAuth()
   const [searchParams] = useSearchParams()
 
   const [dealers, setDealers] = useState<CrmDealer[]>([])
@@ -253,47 +207,24 @@ export default function CrmDealersPage() {
   const [detailsTab, setDetailsTab] = useState<'contacts' | 'orders'>('contacts')
   const [isAccountInfoExpanded, setIsAccountInfoExpanded] = useState(true)
 
-  const [isLoadingDealers, setIsLoadingDealers] = useState(true)
-  const [isRefreshingDealers, setIsRefreshingDealers] = useState(false)
   const [isLoadingDetail, setIsLoadingDetail] = useState(false)
   const [isLoadingSalesData, setIsLoadingSalesData] = useState(false)
 
-  const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [salesDataError, setSalesDataError] = useState<string | null>(null)
 
   const [dealerPage, setDealerPage] = useState(0)
   const [dealerRowsPerPage, setDealerRowsPerPage] = useState(25)
   const [dealerSearchInput, setDealerSearchInput] = useState('')
-  const [dealerSearch, setDealerSearch] = useState('')
+  const dealerSearch = useDebounceValue(dealerSearchInput)
   const [ownerEmailFilter, setOwnerEmailFilter] = useState('')
   const [includeArchivedDealers, setIncludeArchivedDealers] = useState(false)
   const [hasEmailFilter, setHasEmailFilter] = useState<'all' | 'with' | 'without'>('all')
 
   const [contactSearchInput, setContactSearchInput] = useState('')
-  const [contactSearch, setContactSearch] = useState('')
+  const contactSearch = useDebounceValue(contactSearchInput)
   const [includeArchivedContacts, setIncludeArchivedContacts] = useState(false)
   const [contactPage, setContactPage] = useState(0)
   const [contactRowsPerPage, setContactRowsPerPage] = useState(25)
-
-  useEffect(() => {
-    const timeoutId = window.setTimeout(() => {
-      setDealerSearch(dealerSearchInput.trim())
-    }, 250)
-
-    return () => {
-      window.clearTimeout(timeoutId)
-    }
-  }, [dealerSearchInput])
-
-  useEffect(() => {
-    const timeoutId = window.setTimeout(() => {
-      setContactSearch(contactSearchInput.trim())
-    }, 250)
-
-    return () => {
-      window.clearTimeout(timeoutId)
-    }
-  }, [contactSearchInput])
 
   const hasEmailFilterValue = useMemo(() => {
     if (hasEmailFilter === 'with') {
@@ -322,52 +253,29 @@ export default function CrmDealersPage() {
     setDealerPage(0)
   }, [dealerSearch, hasEmailFilter, includeArchivedDealers, ownerEmailFilter])
 
-  const loadDealers = useCallback(async (refreshRequested = false) => {
-    setErrorMessage(null)
-
-    if (refreshRequested) {
-      setIsRefreshingDealers(true)
-    } else {
-      setIsLoadingDealers(true)
-    }
-
-    try {
-      const idToken = await getIdToken()
-      const response = await fetchCrmDealers(idToken, {
-        limit: dealerRowsPerPage,
-        offset: dealerPage * dealerRowsPerPage,
-        includeArchived: includeArchivedDealers,
-        search: dealerSearch || undefined,
-        ownerEmail: ownerEmailFilter.trim() || undefined,
-        hasEmail: hasEmailFilterValue,
-      })
-
+  const { isLoading: isLoadingDealers, isRefreshing: isRefreshingDealers, errorMessage, setErrorMessage, load: loadDealers } = useDataLoader({
+    fetcher: useCallback(() => fetchCrmDealers({
+      limit: dealerRowsPerPage,
+      offset: dealerPage * dealerRowsPerPage,
+      includeArchived: includeArchivedDealers,
+      search: dealerSearch || undefined,
+      ownerEmail: ownerEmailFilter.trim() || undefined,
+      hasEmail: hasEmailFilterValue,
+    }), [dealerPage, dealerRowsPerPage, dealerSearch, hasEmailFilterValue, includeArchivedDealers, ownerEmailFilter]),
+    onSuccess: useCallback((response: CrmDealersResponse) => {
       const nextDealers = Array.isArray(response.dealers) ? response.dealers : []
-
       setDealers(nextDealers)
       setDealersTotal(Number(response.total ?? nextDealers.length))
-
       if (!selectedDealerId && nextDealers.length > 0) {
         setSelectedDealerId(nextDealers[0].sourceId)
       }
-    } catch (error) {
+    }, [selectedDealerId]),
+    onError: useCallback(() => {
       setDealers([])
       setDealersTotal(0)
-      setErrorMessage(error instanceof Error ? error.message : 'Failed to load accounts.')
-    } finally {
-      setIsLoadingDealers(false)
-      setIsRefreshingDealers(false)
-    }
-  }, [
-    dealerPage,
-    dealerRowsPerPage,
-    dealerSearch,
-    getIdToken,
-    hasEmailFilterValue,
-    includeArchivedDealers,
-    ownerEmailFilter,
-    selectedDealerId,
-  ])
+    }, []),
+    fallbackErrorMessage: 'Failed to load accounts.',
+  })
 
   const loadDealerDetail = useCallback(async () => {
     if (!selectedDealerId) {
@@ -379,8 +287,7 @@ export default function CrmDealersPage() {
     setIsLoadingDetail(true)
 
     try {
-      const idToken = await getIdToken()
-      const response = await fetchCrmDealerDetail(idToken, selectedDealerId, {
+      const response = await fetchCrmDealerDetail(selectedDealerId, {
         includeArchivedContacts,
         contactSearch: contactSearch || undefined,
         contactOffset: contactPage * contactRowsPerPage,
@@ -394,14 +301,7 @@ export default function CrmDealersPage() {
     } finally {
       setIsLoadingDetail(false)
     }
-  }, [
-    contactPage,
-    contactRowsPerPage,
-    contactSearch,
-    getIdToken,
-    includeArchivedContacts,
-    selectedDealerId,
-  ])
+  }, [contactPage, contactRowsPerPage, contactSearch, includeArchivedContacts, selectedDealerId])
 
   const loadDealerSalesData = useCallback(async () => {
     if (!selectedDealerId) {
@@ -414,12 +314,7 @@ export default function CrmDealersPage() {
     setIsLoadingSalesData(true)
 
     try {
-      const idToken = await getIdToken()
-      const ordersPayload = await fetchCrmOrders(idToken, {
-        dealerSourceId: selectedDealerId,
-        limit: 150,
-      })
-
+      const ordersPayload = await fetchCrmOrders({ dealerSourceId: selectedDealerId, limit: 150 })
       setDealerOrders(Array.isArray(ordersPayload.orders) ? ordersPayload.orders : [])
     } catch (error) {
       setDealerOrders([])
@@ -427,11 +322,7 @@ export default function CrmDealersPage() {
     } finally {
       setIsLoadingSalesData(false)
     }
-  }, [getIdToken, selectedDealerId])
-
-  useEffect(() => {
-    void loadDealers(false)
-  }, [loadDealers])
+  }, [selectedDealerId])
 
   useEffect(() => {
     void loadDealerDetail()
@@ -522,7 +413,7 @@ export default function CrmDealersPage() {
         </Stack>
       </Paper>
 
-      {errorMessage ? <Alert severity="error">{errorMessage}</Alert> : null}
+      <StatusAlerts errorMessage={errorMessage} />
 
       <Box
         sx={{
@@ -1067,7 +958,7 @@ export default function CrmDealersPage() {
                                   </Typography>
                                 </Stack>
                               </TableCell>
-                              <TableCell>{formatStatus(order.status)}</TableCell>
+                              <TableCell>{formatStatusLabel(order.status)}</TableCell>
                               <TableCell>{formatDate(order.dueDate)}</TableCell>
                               <TableCell align="right">{Math.round(order.progressPercent)}%</TableCell>
                             </TableRow>

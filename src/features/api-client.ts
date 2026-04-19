@@ -39,6 +39,7 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
     ...options,
     headers: {
       'Content-Type': 'application/json',
+      'x-client-platform': 'web',
       ...authHeaders,
       ...(options.headers ?? {}),
     },

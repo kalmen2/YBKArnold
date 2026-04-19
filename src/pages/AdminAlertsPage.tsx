@@ -3,12 +3,10 @@ import NotificationsActiveRoundedIcon from '@mui/icons-material/NotificationsAct
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import SendRoundedIcon from '@mui/icons-material/SendRounded'
 import {
-  Alert,
   Box,
   Button,
   Checkbox,
   Chip,
-  CircularProgress,
   Divider,
   FormControlLabel,
   List,
@@ -20,10 +18,15 @@ import {
   TextField,
   Typography,
 } from '@mui/material'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
+import { useDataLoader } from '../hooks/useDataLoader'
 import { Navigate } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
+import { apiRequest } from '../features/api-client'
 import type { AppAuthUser } from '../auth/types'
+import { LoadingPanel } from '../components/LoadingPanel'
+import { StatusAlerts } from '../components/StatusAlerts'
+import { formatDateTime } from '../lib/formatters'
 
 type ListUsersResponse = {
   users: AppAuthUser[]
@@ -64,33 +67,13 @@ type DeleteAdminAlertResponse = {
   deletedReadCount: number
 }
 
-function formatDateTime(value: string | null) {
-  if (!value) {
-    return 'Unknown'
-  }
-
-  const parsed = new Date(value)
-
-  if (Number.isNaN(parsed.getTime())) {
-    return value
-  }
-
-  return new Intl.DateTimeFormat('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  }).format(parsed)
-}
-
 function formatRecipientLabel(user: AppAuthUser) {
   const name = String(user.displayName ?? '').trim() || user.email
   return `${name} (${user.email})`
 }
 
 export default function AdminAlertsPage() {
-  const { appUser, getIdToken } = useAuth()
+  const { appUser } = useAuth()
   const [users, setUsers] = useState<AppAuthUser[]>([])
   const [recentAlerts, setRecentAlerts] = useState<AdminAlertRecord[]>([])
   const [title, setTitle] = useState('')
@@ -98,36 +81,10 @@ export default function AdminAlertsPage() {
   const [isUpdateAlert, setIsUpdateAlert] = useState(false)
   const [sendToAllUsers, setSendToAllUsers] = useState(true)
   const [selectedRecipientUids, setSelectedRecipientUids] = useState<string[]>([])
-  const [isLoading, setIsLoading] = useState(true)
-  const [isRefreshing, setIsRefreshing] = useState(false)
   const [isSending, setIsSending] = useState(false)
   const [deletingAlertIds, setDeletingAlertIds] = useState<string[]>([])
-  const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [actionMessage, setActionMessage] = useState<string | null>(null)
 
-  const requestWithAuth = useCallback(
-    async <T,>(path: string, options: RequestInit = {}) => {
-      const idToken = await getIdToken()
-      const response = await fetch(path, {
-        ...options,
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${idToken}`,
-          'x-client-platform': 'web',
-          ...(options.headers ?? {}),
-        },
-      })
-
-      const payload = await response.json().catch(() => ({}))
-
-      if (!response.ok) {
-        throw new Error(typeof payload?.error === 'string' ? payload.error : 'Request failed.')
-      }
-
-      return payload as T
-    },
-    [getIdToken],
-  )
 
   const eligibleUsers = useMemo(() => {
     return users.filter((user) => user.isApproved && user.hasAppAccess)
@@ -139,49 +96,31 @@ export default function AdminAlertsPage() {
     return eligibleUsers.filter((user) => selectedSet.has(user.uid)).length
   }, [eligibleUsers, selectedRecipientUids])
 
-  const loadPageData = useCallback(async (refreshRequested = false) => {
-    setErrorMessage(null)
-
-    if (refreshRequested) {
-      setIsRefreshing(true)
-    } else {
-      setIsLoading(true)
-    }
-
-    try {
+  const { isLoading, isRefreshing, errorMessage, load: loadPageData, setErrorMessage } = useDataLoader({
+    fetcher: useCallback(async () => {
       const [usersPayload, alertsPayload] = await Promise.all([
-        requestWithAuth<ListUsersResponse>('/api/auth/users'),
-        requestWithAuth<ListAdminAlertsResponse>('/api/admin/alerts?limit=80'),
+        apiRequest<ListUsersResponse>('/api/auth/users'),
+        apiRequest<ListAdminAlertsResponse>('/api/admin/alerts?limit=80'),
       ])
-
-      const nextUsers = Array.isArray(usersPayload.users) ? usersPayload.users : []
-      const nextAlerts = Array.isArray(alertsPayload.alerts) ? alertsPayload.alerts : []
-
-      setUsers(nextUsers)
-      setRecentAlerts(nextAlerts)
+      return {
+        users: Array.isArray(usersPayload.users) ? usersPayload.users : [],
+        alerts: Array.isArray(alertsPayload.alerts) ? alertsPayload.alerts : [],
+      }
+    }, []),
+    onSuccess: useCallback(({ users, alerts }: { users: AppAuthUser[]; alerts: AdminAlertRecord[] }) => {
+      setUsers(users)
+      setRecentAlerts(alerts)
       setSelectedRecipientUids((current) => {
-        const allowedIds = new Set(nextUsers.map((user) => user.uid))
+        const allowedIds = new Set(users.map((user) => user.uid))
         return current.filter((uid) => allowedIds.has(uid))
       })
-    } catch (error) {
+    }, []),
+    onError: useCallback(() => {
       setUsers([])
       setRecentAlerts([])
-      setErrorMessage(error instanceof Error ? error.message : 'Could not load notifications page.')
-    } finally {
-      setIsLoading(false)
-      setIsRefreshing(false)
-    }
-  }, [requestWithAuth])
-
-  useEffect(() => {
-    const timeoutId = window.setTimeout(() => {
-      void loadPageData(false)
-    }, 0)
-
-    return () => {
-      window.clearTimeout(timeoutId)
-    }
-  }, [loadPageData])
+    }, []),
+    fallbackErrorMessage: 'Could not load notifications page.',
+  })
 
   const toggleRecipient = useCallback((uid: string) => {
     setSelectedRecipientUids((current) => {
@@ -218,7 +157,7 @@ export default function AdminAlertsPage() {
     setIsSending(true)
 
     try {
-      const payload = await requestWithAuth<SendAdminAlertResponse>('/api/admin/alerts/send', {
+      const payload = await apiRequest<SendAdminAlertResponse>('/api/admin/alerts/send', {
         method: 'POST',
         body: JSON.stringify({
           title: normalizedTitle,
@@ -243,7 +182,7 @@ export default function AdminAlertsPage() {
     } finally {
       setIsSending(false)
     }
-  }, [isUpdateAlert, message, requestWithAuth, selectedRecipientUids, sendToAllUsers, title])
+  }, [isUpdateAlert, message, selectedRecipientUids, sendToAllUsers, title, setErrorMessage])
 
   const handleDeleteAlert = useCallback(async (alertItem: AdminAlertRecord) => {
     const normalizedAlertId = String(alertItem.id ?? '').trim()
@@ -265,7 +204,7 @@ export default function AdminAlertsPage() {
     setDeletingAlertIds((current) => (current.includes(normalizedAlertId) ? current : [...current, normalizedAlertId]))
 
     try {
-      await requestWithAuth<DeleteAdminAlertResponse>(`/api/admin/alerts/${encodeURIComponent(normalizedAlertId)}`, {
+      await apiRequest<DeleteAdminAlertResponse>(`/api/admin/alerts/${encodeURIComponent(normalizedAlertId)}`, {
         method: 'DELETE',
       })
 
@@ -276,7 +215,7 @@ export default function AdminAlertsPage() {
     } finally {
       setDeletingAlertIds((current) => current.filter((id) => id !== normalizedAlertId))
     }
-  }, [requestWithAuth])
+  }, [setErrorMessage])
 
   if (!appUser?.isAdmin) {
     return <Navigate to="/dashboard" replace />
@@ -317,14 +256,9 @@ export default function AdminAlertsPage() {
             </Button>
           </Stack>
 
-          {errorMessage ? <Alert severity="error">{errorMessage}</Alert> : null}
-          {actionMessage ? <Alert severity="success">{actionMessage}</Alert> : null}
-
+          <StatusAlerts errorMessage={errorMessage} successMessage={actionMessage} />
           {isLoading ? (
-            <Stack direction="row" spacing={1.2} alignItems="center">
-              <CircularProgress size={18} />
-              <Typography color="text.secondary">Loading notifications tools...</Typography>
-            </Stack>
+            <LoadingPanel loading={isLoading} message="Loading notifications..." contained={false} size={18} />
           ) : (
             <>
               <TextField

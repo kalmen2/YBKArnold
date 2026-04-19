@@ -1,4 +1,6 @@
 import { AppError } from '../utils/app-error.mjs'
+import { createTtlCache } from '../utils/ttl-cache.mjs'
+import { nowIso } from '../utils/value-utils.mjs'
 
 const quickBooksAuthorizeUrl = 'https://appcenter.intuit.com/connect/oauth2'
 const quickBooksTokenUrl = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer'
@@ -12,25 +14,12 @@ const quickBooksMaxQueryPages = 8
 const quickBooksMaxUnlinkedTransactions = 500
 const quickBooksMaxDetailRowsPerType = 1200
 
-// ---------------------------------------------------------------------------
-// In-memory cache for the QuickBooks overview endpoint
-// ---------------------------------------------------------------------------
 // The overview fires 5–40 live QB API calls (5 entity types × up to 8 pages
 // each). Caching for 5 minutes means repeat navigations hit memory instead
-// of QuickBooks. forceRefresh=1 bypasses the read but still seeds the cache
-// for the next visitor.
-const _qbCacheStore = new Map()
-
-function qbCacheGet(key) {
-  const entry = _qbCacheStore.get(key)
-  if (!entry) return undefined
-  if (Date.now() > entry.expiresAt) { _qbCacheStore.delete(key); return undefined }
-  return entry.value
-}
-
-function qbCacheSet(key, value, ttlMs) {
-  _qbCacheStore.set(key, { value, expiresAt: Date.now() + ttlMs })
-}
+// of QuickBooks. forceRefresh=1 bypasses the read but still seeds the cache.
+const _qbCache = createTtlCache()
+const qbCacheGet = (key) => _qbCache.get(key)
+const qbCacheSet = (key, value, ttlMs) => _qbCache.set(key, value, ttlMs)
 
 const QB_OVERVIEW_CACHE_KEY = 'qb:overview'
 const QB_OVERVIEW_CACHE_TTL_MS = 5 * 60 * 1000  // 5 minutes
@@ -563,7 +552,7 @@ export function registerQuickBooksRoutes(app, deps) {
       refreshToken: tokenDoc.refreshToken,
     })
     const normalizedToken = mapQuickBooksTokenPayload(refreshPayload, tokenDoc)
-    const now = new Date().toISOString()
+    const now = nowIso()
 
     await quickBooksTokensCollection.updateOne(
       { id: quickBooksTokenDocId },
@@ -665,7 +654,7 @@ export function registerQuickBooksRoutes(app, deps) {
     try {
       const quickBooksConfig = getQuickBooksConfig(req)
       const { quickBooksStatesCollection } = await getQuickBooksCollections()
-      const now = new Date().toISOString()
+      const now = nowIso()
       const cutoffIso = new Date(Date.now() - quickBooksOauthStateTtlMs).toISOString()
       const stateId = randomUUID()
       const redirectPath = sanitizeRedirectPath(req.query?.redirectPath || '/quickbooks')
@@ -772,7 +761,7 @@ export function registerQuickBooksRoutes(app, deps) {
         throw validationError
       }
 
-      const now = new Date().toISOString()
+      const now = nowIso()
 
       await quickBooksTokensCollection.updateOne(
         {
@@ -900,7 +889,7 @@ export function registerQuickBooksRoutes(app, deps) {
           {
             $set: {
               companyName: companyInfo.companyName,
-              updatedAt: new Date().toISOString(),
+              updatedAt: nowIso(),
             },
           },
         )
@@ -1198,13 +1187,13 @@ export function registerQuickBooksRoutes(app, deps) {
         { id: quickBooksTokenDocId },
         {
           $set: {
-            lastOverviewSyncAt: new Date().toISOString(),
+            lastOverviewSyncAt: nowIso(),
           },
         },
       )
 
       const overviewPayload = {
-        generatedAt: new Date().toISOString(),
+        generatedAt: nowIso(),
         realmId: normalizeText(tokenDoc.realmId, 160),
         companyInfo,
         totals,

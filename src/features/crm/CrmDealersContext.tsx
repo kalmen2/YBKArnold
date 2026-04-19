@@ -11,6 +11,8 @@
  * hit the network again.
  */
 
+/* eslint-disable react-refresh/only-export-components */
+
 import {
   createContext,
   useCallback,
@@ -64,17 +66,14 @@ export function CrmDealersProvider({ children }: { children: ReactNode }) {
     setError(null)
 
     try {
-      const user = firebaseAuth.currentUser
-
-      if (!user) {
+      if (!firebaseAuth.currentUser) {
         if (isMountedRef.current) {
           setIsLoading(false)
         }
         return
       }
 
-      const idToken = await user.getIdToken()
-      const response = await fetchCrmDealers(idToken, {
+      const response = await fetchCrmDealers({
         includeArchived: true,
         limit: 2500,
       })

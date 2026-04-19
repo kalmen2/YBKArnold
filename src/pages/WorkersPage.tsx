@@ -6,7 +6,6 @@ import {
   Alert,
   Box,
   Button,
-  CircularProgress,
   Divider,
   Paper,
   Stack,
@@ -21,6 +20,8 @@ import {
 } from '@mui/material'
 import { useCallback, useEffect, useState } from 'react'
 import { useAuth } from '../auth/useAuth'
+import { LoadingPanel } from '../components/LoadingPanel'
+import { formatCurrency } from '../lib/formatters'
 import {
   createWorkersBulk,
   deleteWorker,
@@ -52,14 +53,6 @@ type WorkerEditForm = {
   email: string
   phone: string
   hourlyRate: string
-}
-
-function formatCurrency(value: number) {
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    maximumFractionDigits: 2,
-  }).format(value)
 }
 
 function createEmptyBulkWorkerDraft(): BulkWorkerDraftRow {
@@ -375,14 +368,7 @@ export default function WorkersPage() {
         </Alert>
       ) : null}
 
-      {isLoading ? (
-        <Paper variant="outlined" sx={{ p: 3 }}>
-          <Stack direction="row" spacing={1} alignItems="center">
-            <CircularProgress size={22} />
-            <Typography color="text.secondary">Loading workers...</Typography>
-          </Stack>
-        </Paper>
-      ) : null}
+      <LoadingPanel loading={isLoading} message="Loading workers..." />
 
       {!canManageWorkers ? (
         <Alert severity="info">
@@ -617,7 +603,7 @@ export default function WorkersPage() {
                               }
                             />
                           ) : (
-                            formatCurrency(worker.hourlyRate)
+                            formatCurrency(worker.hourlyRate, 2)
                           )}
                         </TableCell>
 

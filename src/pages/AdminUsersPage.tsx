@@ -8,7 +8,6 @@ import {
   Box,
   Button,
   Chip,
-  CircularProgress,
   Dialog,
   DialogActions,
   DialogContent,
@@ -27,10 +26,22 @@ import {
   TextField,
   Typography,
 } from '@mui/material'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { LoadingPanel } from '../components/LoadingPanel'
+import { StatusAlerts } from '../components/StatusAlerts'
+import { useCallback, useMemo, useState } from 'react'
+import { useDataLoader } from '../hooks/useDataLoader'
 import { Navigate } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
+import { apiRequest } from '../features/api-client'
 import type { AppAuthRole, AppAuthUser } from '../auth/types'
+import {
+  approvalColor,
+  approvalLabel,
+  formatDateTime,
+  formatLoginHours,
+  roleColor,
+  roleLabel,
+} from '../lib/formatters'
 
 type ListUsersResponse = {
   users: AppAuthUser[]
@@ -54,58 +65,6 @@ type ClientAccessMode = 'web_and_app' | 'web_only' | 'app_only'
 const newJerseyTimeZone = 'America/New_York'
 const utcTimeZone = 'UTC'
 
-function formatDateTime(value: string | null) {
-  if (!value) {
-    return 'Unknown'
-  }
-
-  const parsed = new Date(value)
-
-  if (Number.isNaN(parsed.getTime())) {
-    return value
-  }
-
-  return new Intl.DateTimeFormat('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  }).format(parsed)
-}
-
-function approvalLabel(user: AppAuthUser) {
-  return user.isApproved ? 'Approved' : 'Pending'
-}
-
-function approvalColor(user: AppAuthUser) {
-  return user.isApproved ? 'success' : 'warning'
-}
-
-function roleLabel(role: AppAuthRole) {
-  if (role === 'admin') {
-    return 'Admin'
-  }
-
-  if (role === 'manager') {
-    return 'Manager'
-  }
-
-  return 'Standard'
-}
-
-function roleColor(role: AppAuthRole): 'default' | 'primary' | 'secondary' {
-  if (role === 'admin') {
-    return 'secondary'
-  }
-
-  if (role === 'manager') {
-    return 'primary'
-  }
-
-  return 'default'
-}
-
 function formatHour(hour: number) {
   return `${String(hour).padStart(2, '0')}:00`
 }
@@ -116,22 +75,6 @@ function formatTimeZoneLabel(timeZone: string | null | undefined) {
   }
 
   return 'UTC'
-}
-
-function resolveUserTimeZone(user: AppAuthUser) {
-  const normalized = String(user.accessTimeZone ?? '').trim()
-
-  return normalized || utcTimeZone
-}
-
-function formatLoginHours(user: AppAuthUser) {
-  if (!user.hasLoginHoursRestriction || user.accessStartHourUtc === null || user.accessEndHourUtc === null) {
-    return 'Any time'
-  }
-
-  const timeZone = resolveUserTimeZone(user)
-
-  return `${formatHour(user.accessStartHourUtc)} - ${formatHour(user.accessEndHourUtc)} ${formatTimeZoneLabel(timeZone)}`
 }
 
 function formatLinkedWorkerLabel(user: AppAuthUser) {
@@ -160,12 +103,9 @@ function formatClientAccessLabel(mode: ClientAccessMode) {
 const hourOptions = Array.from({ length: 24 }, (_, index) => index)
 
 export default function AdminUsersPage() {
-  const { appUser, getIdToken } = useAuth()
+  const { appUser } = useAuth()
   const [users, setUsers] = useState<AppAuthUser[]>([])
   const [workerOptions, setWorkerOptions] = useState<AdminWorkerOption[]>([])
-  const [isLoading, setIsLoading] = useState(true)
-  const [isRefreshing, setIsRefreshing] = useState(false)
-  const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [actionMessage, setActionMessage] = useState<string | null>(null)
   const [activeUserId, setActiveUserId] = useState<string | null>(null)
   const [promotionTarget, setPromotionTarget] = useState<AppAuthUser | null>(null)
@@ -183,75 +123,25 @@ export default function AdminUsersPage() {
   const [actionsAnchorEl, setActionsAnchorEl] = useState<HTMLElement | null>(null)
   const [actionsTarget, setActionsTarget] = useState<AppAuthUser | null>(null)
 
-  const requestWithAuth = useCallback(
-    async <T,>(path: string, options: RequestInit = {}) => {
-      const idToken = await getIdToken()
-      const response = await fetch(path, {
-        ...options,
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${idToken}`,
-          'x-client-platform': 'web',
-          ...(options.headers ?? {}),
-        },
-      })
 
-      const payload = await response.json().catch(() => ({}))
-
-      if (!response.ok) {
-        throw new Error(
-          typeof payload?.error === 'string'
-            ? payload.error
-            : 'Request failed.',
-        )
-      }
-
-      return payload as T
-    },
-    [getIdToken],
-  )
-
-  const loadUsers = useCallback(
-    async (refreshRequested = false) => {
-      setErrorMessage(null)
-
-      if (refreshRequested) {
-        setIsRefreshing(true)
-      } else {
-        setIsLoading(true)
-      }
-
-      try {
-        const [usersPayload, workersPayload] = await Promise.all([
-          requestWithAuth<ListUsersResponse>('/api/auth/users'),
-          requestWithAuth<ListWorkersResponse>('/api/auth/workers'),
-        ])
-
-        setUsers(Array.isArray(usersPayload.users) ? usersPayload.users : [])
-        setWorkerOptions(Array.isArray(workersPayload.workers) ? workersPayload.workers : [])
-      } catch (error) {
-        setUsers([])
-        setWorkerOptions([])
-        setErrorMessage(
-          error instanceof Error ? error.message : 'Failed to load users.',
-        )
-      } finally {
-        setIsLoading(false)
-        setIsRefreshing(false)
-      }
-    },
-    [requestWithAuth],
-  )
-
-  useEffect(() => {
-    const timeoutId = window.setTimeout(() => {
-      void loadUsers(false)
-    }, 0)
-
-    return () => {
-      window.clearTimeout(timeoutId)
-    }
-  }, [loadUsers])
+  const { isLoading, isRefreshing, errorMessage, load: loadUsers, setErrorMessage } = useDataLoader({
+    fetcher: useCallback(async () => {
+      const [usersPayload, workersPayload] = await Promise.all([
+        apiRequest<ListUsersResponse>('/api/auth/users'),
+        apiRequest<ListWorkersResponse>('/api/auth/workers'),
+      ])
+      return { users: usersPayload.users, workers: workersPayload.workers }
+    }, []),
+    onSuccess: useCallback(({ users, workers }: { users: AppAuthUser[]; workers: AdminWorkerOption[] }) => {
+      setUsers(Array.isArray(users) ? users : [])
+      setWorkerOptions(Array.isArray(workers) ? workers : [])
+    }, []),
+    onError: useCallback(() => {
+      setUsers([])
+      setWorkerOptions([])
+    }, []),
+    fallbackErrorMessage: 'Failed to load users.',
+  })
 
   const handleApprove = useCallback(
     async (targetUid: string, role: AppAuthRole, confirmAdminPromotion = false) => {
@@ -260,7 +150,7 @@ export default function AdminUsersPage() {
       setActiveUserId(targetUid)
 
       try {
-        const payload = await requestWithAuth<{ user: AppAuthUser }>(
+        const payload = await apiRequest<{ user: AppAuthUser }>(
           `/api/auth/users/${targetUid}/approval`,
           {
             method: 'PATCH',
@@ -294,7 +184,7 @@ export default function AdminUsersPage() {
         setActiveUserId(null)
       }
     },
-    [requestWithAuth],
+    [],
   )
 
   const handleSaveHours = useCallback(async () => {
@@ -312,7 +202,7 @@ export default function AdminUsersPage() {
     setActiveUserId(hoursTarget.uid)
 
     try {
-      const payload = await requestWithAuth<{ user: AppAuthUser }>(
+      const payload = await apiRequest<{ user: AppAuthUser }>(
         `/api/auth/users/${hoursTarget.uid}/access-hours`,
         {
           method: 'PATCH',
@@ -338,7 +228,7 @@ export default function AdminUsersPage() {
     } finally {
       setActiveUserId(null)
     }
-  }, [hoursEnd, hoursRestricted, hoursStart, hoursTarget, hoursTimeZone, requestWithAuth])
+  }, [hoursEnd, hoursRestricted, hoursStart, hoursTarget, hoursTimeZone])
 
   const handleSetClientAccess = useCallback(
     async (targetUid: string, mode: ClientAccessMode) => {
@@ -347,7 +237,7 @@ export default function AdminUsersPage() {
       setActiveUserId(targetUid)
 
       try {
-        const payload = await requestWithAuth<{ user: AppAuthUser }>(
+        const payload = await apiRequest<{ user: AppAuthUser }>(
           `/api/auth/users/${targetUid}/client-access`,
           {
             method: 'PATCH',
@@ -377,7 +267,7 @@ export default function AdminUsersPage() {
         setActiveUserId(null)
       }
     },
-    [requestWithAuth],
+    [],
   )
 
   const openRowActions = useCallback((anchorElement: HTMLElement, user: AppAuthUser) => {
@@ -396,7 +286,7 @@ export default function AdminUsersPage() {
     setActiveUserId(targetUid)
 
     try {
-      const payload = await requestWithAuth<{ user: AppAuthUser }>(
+      const payload = await apiRequest<{ user: AppAuthUser }>(
         `/api/auth/users/${targetUid}/unapprove`,
         {
           method: 'PATCH',
@@ -416,7 +306,7 @@ export default function AdminUsersPage() {
     } finally {
       setActiveUserId(null)
     }
-  }, [requestWithAuth])
+  }, [])
 
   const handleDeleteUser = useCallback(async () => {
     if (!deleteTarget) {
@@ -428,7 +318,7 @@ export default function AdminUsersPage() {
     setActiveUserId(deleteTarget.uid)
 
     try {
-      const payload = await requestWithAuth<{ ok: boolean, uid: string }>(
+      const payload = await apiRequest<{ ok: boolean, uid: string }>(
         `/api/auth/users/${deleteTarget.uid}`,
         {
           method: 'DELETE',
@@ -447,7 +337,7 @@ export default function AdminUsersPage() {
     } finally {
       setActiveUserId(null)
     }
-  }, [deleteTarget, requestWithAuth])
+  }, [deleteTarget])
 
   const openHoursEditor = useCallback((user: AppAuthUser) => {
     setHoursTarget(user)
@@ -472,7 +362,7 @@ export default function AdminUsersPage() {
     setActiveUserId(workerLinkTarget.uid)
 
     try {
-      const payload = await requestWithAuth<{ user: AppAuthUser }>(
+      const payload = await apiRequest<{ user: AppAuthUser }>(
         `/api/auth/users/${workerLinkTarget.uid}/worker-link`,
         {
           method: 'PATCH',
@@ -497,7 +387,7 @@ export default function AdminUsersPage() {
     } finally {
       setActiveUserId(null)
     }
-  }, [requestWithAuth, workerLinkTarget, workerLinkWorkerId])
+  }, [apiRequest, workerLinkTarget, workerLinkWorkerId])
 
   const closePromotionDialog = useCallback(() => {
     setPromotionTarget(null)
@@ -521,7 +411,7 @@ export default function AdminUsersPage() {
     setActiveUserId(workerApproveTarget.uid)
 
     try {
-      await requestWithAuth<{ user: AppAuthUser }>(
+      await apiRequest<{ user: AppAuthUser }>(
         `/api/auth/users/${workerApproveTarget.uid}/approval`,
         {
           method: 'PATCH',
@@ -531,7 +421,7 @@ export default function AdminUsersPage() {
         },
       )
 
-      const linkPayload = await requestWithAuth<{ user: AppAuthUser }>(
+      const linkPayload = await apiRequest<{ user: AppAuthUser }>(
         `/api/auth/users/${workerApproveTarget.uid}/worker-link`,
         {
           method: 'PATCH',
@@ -556,7 +446,7 @@ export default function AdminUsersPage() {
     } finally {
       setActiveUserId(null)
     }
-  }, [requestWithAuth, workerApproveTarget, workerApproveWorkerId])
+  }, [apiRequest, workerApproveTarget, workerApproveWorkerId])
 
   const canConfirmPromotion = useMemo(() => {
     if (!promotionTarget) {
@@ -612,17 +502,8 @@ export default function AdminUsersPage() {
         </Button>
       </Stack>
 
-      {actionMessage ? <Alert severity="success">{actionMessage}</Alert> : null}
-      {errorMessage ? <Alert severity="error">{errorMessage}</Alert> : null}
-
-      {isLoading ? (
-        <Paper variant="outlined" sx={{ p: 4 }}>
-          <Stack direction="row" spacing={1.25} alignItems="center">
-            <CircularProgress size={22} />
-            <Typography color="text.secondary">Loading users...</Typography>
-          </Stack>
-        </Paper>
-      ) : null}
+      <StatusAlerts errorMessage={errorMessage} successMessage={actionMessage} />
+      <LoadingPanel loading={isLoading} message="Loading users..." padding={4} />
 
       {!isLoading && users.length === 0 ? (
         <Paper variant="outlined" sx={{ p: 3 }}>

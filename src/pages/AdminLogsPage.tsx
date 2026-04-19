@@ -1,11 +1,9 @@
 import ManageHistoryRoundedIcon from '@mui/icons-material/ManageHistoryRounded'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import {
-  Alert,
   Box,
   Button,
   Chip,
-  CircularProgress,
   List,
   ListItemButton,
   ListItemText,
@@ -26,7 +24,19 @@ import {
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Navigate } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
+import { apiRequest } from '../features/api-client'
 import type { AppAuthUser } from '../auth/types'
+import { LoadingPanel } from '../components/LoadingPanel'
+import { StatusAlerts } from '../components/StatusAlerts'
+import { useDataLoader } from '../hooks/useDataLoader'
+import {
+  approvalColor,
+  approvalLabel,
+  formatDateTimeWithSeconds,
+  formatLoginHours,
+  roleColor,
+  roleLabel,
+} from '../lib/formatters'
 
 type ActivityEventType = 'api_request' | 'ui_event'
 
@@ -76,7 +86,6 @@ type UserEventsResponse = {
   events: ActivityEvent[]
 }
 
-const newJerseyTimeZone = 'America/New_York'
 const routeLabels: Record<string, string> = {
   '/dashboard': 'Dashboard',
   '/timesheet': 'Work Sheet',
@@ -85,27 +94,6 @@ const routeLabels: Record<string, string> = {
   '/admin/users': 'Admin Users',
   '/admin/alerts': 'Admin Notifications',
   '/admin/logs': 'Admin Logs',
-}
-
-function formatDateTime(value: string | null | undefined) {
-  if (!value) {
-    return 'Unknown'
-  }
-
-  const parsed = new Date(value)
-
-  if (Number.isNaN(parsed.getTime())) {
-    return value
-  }
-
-  return new Intl.DateTimeFormat('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-    second: '2-digit',
-  }).format(parsed)
 }
 
 function summarizeDevice(userAgent: string | null | undefined) {
@@ -144,17 +132,6 @@ function summarizeDevice(userAgent: string | null | undefined) {
   }
 
   return `${browser} on ${os}`
-}
-
-function formatLoginHours(user: AppAuthUser | null | undefined) {
-  if (!user?.hasLoginHoursRestriction || user.accessStartHourUtc === null || user.accessEndHourUtc === null) {
-    return 'Any time'
-  }
-
-  const timeZone = String(user.accessTimeZone ?? '').trim()
-  const timeZoneLabel = timeZone === newJerseyTimeZone ? 'New Jersey (ET)' : 'UTC'
-
-  return `${String(user.accessStartHourUtc).padStart(2, '0')}:00 - ${String(user.accessEndHourUtc).padStart(2, '0')}:00 ${timeZoneLabel}`
 }
 
 function normalizePath(value: string | null | undefined) {
@@ -290,74 +267,42 @@ function describeActivityEvent(event: ActivityEvent) {
 }
 
 export default function AdminLogsPage() {
-  const { appUser, getIdToken } = useAuth()
+  const { appUser } = useAuth()
   const [userSummaries, setUserSummaries] = useState<UserLogSummary[]>([])
   const [selectedUid, setSelectedUid] = useState<string | null>(null)
   const [tabValue, setTabValue] = useState<'info' | 'logs'>('info')
   const [eventTypeFilter, setEventTypeFilter] = useState<'all' | ActivityEventType>('all')
-  const [isLoadingUsers, setIsLoadingUsers] = useState(true)
   const [isLoadingPanel, setIsLoadingPanel] = useState(false)
-  const [isRefreshing, setIsRefreshing] = useState(false)
-  const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [selectedUserInfo, setSelectedUserInfo] = useState<UserInfoResponse | null>(null)
   const [selectedUserEvents, setSelectedUserEvents] = useState<ActivityEvent[]>([])
 
-  const requestWithAuth = useCallback(
-    async <T,>(path: string) => {
-      const idToken = await getIdToken()
-      const response = await fetch(path, {
-        method: 'GET',
-        headers: {
-          Authorization: `Bearer ${idToken}`,
-        },
+
+  const {
+    isLoading: isLoadingUsers,
+    isRefreshing,
+    errorMessage,
+    load: loadUsers,
+    setErrorMessage,
+  } = useDataLoader({
+    fetcher: useCallback(async () => {
+      const payload = await apiRequest<ListLogUsersResponse>('/api/auth/logs/users?limit=300')
+      return Array.isArray(payload.users) ? payload.users : []
+    }, []),
+    onSuccess: useCallback((nextUsers: UserLogSummary[]) => {
+      setUserSummaries(nextUsers)
+      setSelectedUid((currentSelectedUid) => {
+        if (currentSelectedUid && nextUsers.some((row) => row.user.uid === currentSelectedUid)) {
+          return currentSelectedUid
+        }
+        return nextUsers[0]?.user.uid ?? null
       })
-
-      const payload = await response.json().catch(() => ({}))
-
-      if (!response.ok) {
-        throw new Error(
-          typeof payload?.error === 'string' ? payload.error : 'Request failed.',
-        )
-      }
-
-      return payload as T
-    },
-    [getIdToken],
-  )
-
-  const loadUsers = useCallback(
-    async (refreshRequested = false) => {
-      setErrorMessage(null)
-
-      if (refreshRequested) {
-        setIsRefreshing(true)
-      } else {
-        setIsLoadingUsers(true)
-      }
-
-      try {
-        const payload = await requestWithAuth<ListLogUsersResponse>('/api/auth/logs/users?limit=300')
-        const nextUsers = Array.isArray(payload.users) ? payload.users : []
-
-        setUserSummaries(nextUsers)
-        setSelectedUid((currentSelectedUid) => {
-          if (currentSelectedUid && nextUsers.some((row) => row.user.uid === currentSelectedUid)) {
-            return currentSelectedUid
-          }
-
-          return nextUsers[0]?.user.uid ?? null
-        })
-      } catch (error) {
-        setUserSummaries([])
-        setSelectedUid(null)
-        setErrorMessage(error instanceof Error ? error.message : 'Failed to load logs users.')
-      } finally {
-        setIsLoadingUsers(false)
-        setIsRefreshing(false)
-      }
-    },
-    [requestWithAuth],
-  )
+    }, []),
+    onError: useCallback(() => {
+      setUserSummaries([])
+      setSelectedUid(null)
+    }, []),
+    fallbackErrorMessage: 'Failed to load logs users.',
+  })
 
   const loadUserPanel = useCallback(
     async (targetUid: string) => {
@@ -367,8 +312,8 @@ export default function AdminLogsPage() {
       try {
         const typeQuery = eventTypeFilter === 'all' ? '' : `&type=${eventTypeFilter}`
         const [userInfoPayload, userEventsPayload] = await Promise.all([
-          requestWithAuth<UserInfoResponse>(`/api/auth/logs/users/${targetUid}/info`),
-          requestWithAuth<UserEventsResponse>(`/api/auth/logs/users/${targetUid}/events?limit=300${typeQuery}`),
+          apiRequest<UserInfoResponse>(`/api/auth/logs/users/${targetUid}/info`),
+          apiRequest<UserEventsResponse>(`/api/auth/logs/users/${targetUid}/events?limit=300${typeQuery}`),
         ])
 
         setSelectedUserInfo(userInfoPayload)
@@ -381,18 +326,8 @@ export default function AdminLogsPage() {
         setIsLoadingPanel(false)
       }
     },
-    [eventTypeFilter, requestWithAuth],
+    [eventTypeFilter],
   )
-
-  useEffect(() => {
-    const timeoutId = window.setTimeout(() => {
-      void loadUsers(false)
-    }, 0)
-
-    return () => {
-      window.clearTimeout(timeoutId)
-    }
-  }, [loadUsers])
 
   useEffect(() => {
     if (!selectedUid) {
@@ -457,7 +392,7 @@ export default function AdminLogsPage() {
         </Button>
       </Stack>
 
-      {errorMessage ? <Alert severity="error">{errorMessage}</Alert> : null}
+      <StatusAlerts errorMessage={errorMessage} />
 
       <Box
         sx={{
@@ -469,10 +404,7 @@ export default function AdminLogsPage() {
       >
         <Paper variant="outlined" sx={{ maxHeight: 620, overflow: 'auto' }}>
           {isLoadingUsers ? (
-            <Stack direction="row" spacing={1.25} alignItems="center" sx={{ p: 2 }}>
-              <CircularProgress size={18} />
-              <Typography color="text.secondary">Loading users...</Typography>
-            </Stack>
+            <LoadingPanel loading={isLoadingUsers} message="Loading users..." contained={false} size={18} />
           ) : userSummaries.length === 0 ? (
             <Typography sx={{ p: 2 }} color="text.secondary">
               No users available for logs.
@@ -500,7 +432,7 @@ export default function AdminLogsPage() {
                           {entry.user.email}
                         </Typography>
                         <Typography variant="caption" color="text.secondary">
-                          Last activity: {formatDateTime(entry.lastActivityAt || entry.user.lastLoginAt)}
+                          Last activity: {formatDateTimeWithSeconds(entry.lastActivityAt || entry.user.lastLoginAt)}
                         </Typography>
                         <Typography variant="caption" color="text.secondary">
                           Events: {entry.totalEvents}
@@ -539,25 +471,14 @@ export default function AdminLogsPage() {
                 <Stack direction="row" spacing={1}>
                   <Chip
                     size="small"
-                    label={
-                      selectedSummary?.user.role === 'admin'
-                        ? 'Admin'
-                        : selectedSummary?.user.role === 'manager'
-                          ? 'Manager'
-                          : 'Standard'
-                    }
-                    color={
-                      selectedSummary?.user.role === 'admin'
-                        ? 'secondary'
-                        : selectedSummary?.user.role === 'manager'
-                          ? 'primary'
-                          : 'default'
+                    label={roleLabel(selectedSummary?.user.role ?? 'standard')}
+                    color={roleColor(selectedSummary?.user.role ?? 'standard')
                     }
                   />
                   <Chip
                     size="small"
-                    label={selectedSummary?.user.isApproved ? 'Approved' : 'Pending'}
-                    color={selectedSummary?.user.isApproved ? 'success' : 'warning'}
+                    label={selectedSummary?.user ? approvalLabel(selectedSummary.user) : 'Pending'}
+                    color={selectedSummary?.user ? approvalColor(selectedSummary.user) : 'warning'}
                     variant="outlined"
                   />
                 </Stack>
@@ -590,12 +511,7 @@ export default function AdminLogsPage() {
                 </TextField>
               ) : null}
 
-              {isLoadingPanel ? (
-                <Stack direction="row" spacing={1.25} alignItems="center" sx={{ py: 2 }}>
-                  <CircularProgress size={18} />
-                  <Typography color="text.secondary">Loading panel...</Typography>
-                </Stack>
-              ) : null}
+              <LoadingPanel loading={isLoadingPanel} message="Loading panel..." contained={false} size={18} />
 
               {!isLoadingPanel && tabValue === 'info' ? (
                 <Stack spacing={1.5}>
@@ -612,7 +528,7 @@ export default function AdminLogsPage() {
                     <Stack spacing={0.75}>
                       <Typography variant="subtitle2">Last Login</Typography>
                       <Typography variant="body2" color="text.secondary">
-                        Time: {formatDateTime(lastLoginTime)}
+                        Time: {formatDateTimeWithSeconds(lastLoginTime)}
                       </Typography>
                       <Typography variant="body2" color="text.secondary">
                         IP: {lastLoginIp || 'Unknown'}
@@ -635,7 +551,7 @@ export default function AdminLogsPage() {
                         </Typography>
                       ) : null}
                       <Typography variant="body2" color="text.secondary">
-                        Last activity: {formatDateTime(selectedUserInfo?.summary.lastActivityAt)}
+                        Last activity: {formatDateTimeWithSeconds(selectedUserInfo?.summary.lastActivityAt)}
                       </Typography>
                       <Typography variant="body2" color="text.secondary">
                         Last IP: {selectedUserInfo?.summary.lastIpAddress || 'Unknown'}
@@ -671,7 +587,7 @@ export default function AdminLogsPage() {
                       ) : (
                         selectedUserEvents.map((event) => (
                           <TableRow key={event.id} hover>
-                            <TableCell>{formatDateTime(event.createdAt)}</TableCell>
+                            <TableCell>{formatDateTimeWithSeconds(event.createdAt)}</TableCell>
                             <TableCell>
                               <Chip
                                 size="small"

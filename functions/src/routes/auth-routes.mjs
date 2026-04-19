@@ -1,3 +1,5 @@
+import { nowIso, NO_ID } from '../utils/value-utils.mjs'
+
 export function registerAuthRoutes(app, deps) {
   const {
     authAccessTimeZoneNewJersey,
@@ -28,6 +30,31 @@ export function registerAuthRoutes(app, deps) {
     writeAuthActivityLog,
   } = deps
 
+  async function requireUserByUid(req, res) {
+    const targetUid = String(req.params.uid ?? '').trim()
+    if (!targetUid) {
+      res.status(400).json({ error: 'uid is required.' })
+      return null
+    }
+    const { authUsersCollection } = await getCollections()
+    const user = await authUsersCollection.findOne({ uid: targetUid }, NO_ID)
+    if (!user) {
+      res.status(404).json({ error: 'User not found.' })
+      return null
+    }
+    return user
+  }
+
+  async function updateUserAndRespond(res, targetUid, fields) {
+    const { authUsersCollection } = await getCollections()
+    const updatedUser = await authUsersCollection.findOneAndUpdate(
+      { uid: targetUid },
+      { $set: { ...fields, updatedAt: nowIso() } },
+      { returnDocument: 'after', ...NO_ID },
+    )
+    invalidateAuthUserCache(targetUid)
+    return res.json({ user: toPublicAuthUser(updatedUser) })
+  }
 
 app.get('/api/health', async (_req, res, next) => {
   try {
@@ -73,11 +100,7 @@ app.get('/api/auth/users', requireFirebaseAuth, requireAdminRole, async (_req, r
     const users = await authUsersCollection
       .find(
         {},
-        {
-          projection: {
-            _id: 0,
-          },
-        },
+        NO_ID,
       )
       .sort({
         approvalStatus: -1,
@@ -101,11 +124,7 @@ app.get('/api/auth/workers', requireFirebaseAuth, requireAdminRole, async (_req,
     const workers = await workersCollection
       .find(
         {},
-        {
-          projection: {
-            _id: 0,
-          },
-        },
+        NO_ID,
       )
       .sort({ fullName: 1 })
       .toArray()
@@ -154,11 +173,7 @@ app.patch('/api/auth/users/:uid/worker-link', requireFirebaseAuth, requireAdminR
     if (workerId) {
       const matchedWorker = await workersCollection.findOne(
         { id: workerId },
-        {
-          projection: {
-            _id: 0,
-          },
-        },
+        NO_ID,
       )
 
       if (!matchedWorker) {
@@ -191,7 +206,7 @@ app.patch('/api/auth/users/:uid/worker-link', requireFirebaseAuth, requireAdminR
       }
     }
 
-    const now = new Date().toISOString()
+    const now = nowIso()
     const updatedUser = await authUsersCollection.findOneAndUpdate(
       { uid: targetUid },
       {
@@ -220,81 +235,33 @@ app.patch('/api/auth/users/:uid/worker-link', requireFirebaseAuth, requireAdminR
 
 app.patch('/api/auth/users/:uid/approval', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
   try {
-    const targetUid = String(req.params.uid ?? '').trim()
-
-    if (!targetUid) {
-      return res.status(400).json({ error: 'uid is required.' })
-    }
-
     const role = normalizeAuthRole(req.body?.role)
 
     if (!role) {
-      return res.status(400).json({
-        error: "role must be 'standard', 'manager', or 'admin'.",
-      })
+      return res.status(400).json({ error: "role must be 'standard', 'manager', or 'admin'." })
     }
 
-    const { authUsersCollection } = await getCollections()
-    const existingUser = await authUsersCollection.findOne(
-      { uid: targetUid },
-      {
-        projection: {
-          _id: 0,
-        },
-      },
-    )
+    const existingUser = await requireUserByUid(req, res)
+    if (!existingUser) return
 
-    if (!existingUser) {
-      return res.status(404).json({ error: 'User not found.' })
-    }
-
-    const targetEmailLower = normalizeEmail(existingUser.emailLower)
-    const isOwnerTarget = targetEmailLower === ownerEmail
+    const targetUid = String(existingUser.uid)
+    const isOwnerTarget = normalizeEmail(existingUser.emailLower) === ownerEmail
     const existingPublicUser = toPublicAuthUser(existingUser)
-    const requiresAdminPromotionConfirmation =
-      !isOwnerTarget
-      && role === authRoleAdmin
-      && !existingPublicUser?.isAdmin
+    const requiresAdminPromotion = !isOwnerTarget && role === authRoleAdmin && !existingPublicUser?.isAdmin
     const confirmAdminPromotion =
       req.body?.confirmAdminPromotion === true
       || String(req.body?.confirmAdminPromotion ?? '').trim().toLowerCase() === 'true'
 
-    if (requiresAdminPromotionConfirmation && !confirmAdminPromotion) {
-      return res.status(400).json({
-        error: 'Admin promotion requires explicit confirmation.',
-      })
+    if (requiresAdminPromotion && !confirmAdminPromotion) {
+      return res.status(400).json({ error: 'Admin promotion requires explicit confirmation.' })
     }
 
-    const approvedRole = isOwnerTarget ? authRoleAdmin : role
-    const approvedByEmail = normalizeEmail(req.authUser?.emailLower)
-      ? String(req.authUser.emailLower)
-      : ownerEmail
-    const now = new Date().toISOString()
-
-    const updatedUser = await authUsersCollection.findOneAndUpdate(
-      { uid: targetUid },
-      {
-        $set: {
-          role: approvedRole,
-          approvalStatus: authApprovalApproved,
-          approvedAt: now,
-          approvedByUid: String(req.authUser?.uid ?? '').trim() || null,
-          approvedByEmail,
-          updatedAt: now,
-        },
-      },
-      {
-        returnDocument: 'after',
-        projection: {
-          _id: 0,
-        },
-      },
-    )
-
-    invalidateAuthUserCache(targetUid)
-
-    return res.json({
-      user: toPublicAuthUser(updatedUser),
+    return updateUserAndRespond(res, targetUid, {
+      role: isOwnerTarget ? authRoleAdmin : role,
+      approvalStatus: authApprovalApproved,
+      approvedAt: nowIso(),
+      approvedByUid: String(req.authUser?.uid ?? '').trim() || null,
+      approvedByEmail: normalizeEmail(req.authUser?.emailLower) ? String(req.authUser.emailLower) : ownerEmail,
     })
   } catch (error) {
     next(error)
@@ -303,65 +270,24 @@ app.patch('/api/auth/users/:uid/approval', requireFirebaseAuth, requireAdminRole
 
 app.patch('/api/auth/users/:uid/client-access', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
   try {
-    const targetUid = String(req.params.uid ?? '').trim()
-
-    if (!targetUid) {
-      return res.status(400).json({ error: 'uid is required.' })
-    }
-
     const requestedAccessMode = normalizeAuthClientAccessMode(req.body?.mode)
 
     if (!requestedAccessMode) {
-      return res.status(400).json({
-        error: "mode must be 'web_and_app', 'web_only', or 'app_only'.",
-      })
+      return res.status(400).json({ error: "mode must be 'web_and_app', 'web_only', or 'app_only'." })
     }
 
-    const { authUsersCollection } = await getCollections()
-    const existingUser = await authUsersCollection.findOne(
-      { uid: targetUid },
-      {
-        projection: {
-          _id: 0,
-        },
-      },
-    )
+    const existingUser = await requireUserByUid(req, res)
+    if (!existingUser) return
 
-    if (!existingUser) {
-      return res.status(404).json({ error: 'User not found.' })
-    }
-
+    const targetUid = String(existingUser.uid)
     const existingPublicUser = toPublicAuthUser(existingUser)
 
     if (existingPublicUser?.isOwner && requestedAccessMode !== authClientAccessModeWebAndApp) {
       return res.status(400).json({ error: 'Owner account must keep website access enabled.' })
     }
 
-    const now = new Date().toISOString()
-    const nextAccessMode = existingPublicUser?.isOwner
-      ? authClientAccessModeWebAndApp
-      : requestedAccessMode
-
-    const updatedUser = await authUsersCollection.findOneAndUpdate(
-      { uid: targetUid },
-      {
-        $set: {
-          clientAccessMode: nextAccessMode,
-          updatedAt: now,
-        },
-      },
-      {
-        returnDocument: 'after',
-        projection: {
-          _id: 0,
-        },
-      },
-    )
-
-    invalidateAuthUserCache(targetUid)
-
-    return res.json({
-      user: toPublicAuthUser(updatedUser),
+    return updateUserAndRespond(res, targetUid, {
+      clientAccessMode: existingPublicUser?.isOwner ? authClientAccessModeWebAndApp : requestedAccessMode,
     })
   } catch (error) {
     next(error)
@@ -370,57 +296,19 @@ app.patch('/api/auth/users/:uid/client-access', requireFirebaseAuth, requireAdmi
 
 app.patch('/api/auth/users/:uid/unapprove', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
   try {
-    const targetUid = String(req.params.uid ?? '').trim()
+    const existingUser = await requireUserByUid(req, res)
+    if (!existingUser) return
 
-    if (!targetUid) {
-      return res.status(400).json({ error: 'uid is required.' })
-    }
-
-    const { authUsersCollection } = await getCollections()
-    const existingUser = await authUsersCollection.findOne(
-      { uid: targetUid },
-      {
-        projection: {
-          _id: 0,
-        },
-      },
-    )
-
-    if (!existingUser) {
-      return res.status(404).json({ error: 'User not found.' })
-    }
-
-    const existingPublicUser = toPublicAuthUser(existingUser)
-
-    if (existingPublicUser?.isOwner) {
+    if (toPublicAuthUser(existingUser)?.isOwner) {
       return res.status(400).json({ error: 'Owner account cannot be unapproved.' })
     }
 
-    const now = new Date().toISOString()
-    const updatedUser = await authUsersCollection.findOneAndUpdate(
-      { uid: targetUid },
-      {
-        $set: {
-          role: authRoleStandard,
-          approvalStatus: authApprovalPending,
-          approvedAt: null,
-          approvedByUid: null,
-          approvedByEmail: null,
-          updatedAt: now,
-        },
-      },
-      {
-        returnDocument: 'after',
-        projection: {
-          _id: 0,
-        },
-      },
-    )
-
-    invalidateAuthUserCache(targetUid)
-
-    return res.json({
-      user: toPublicAuthUser(updatedUser),
+    return updateUserAndRespond(res, String(existingUser.uid), {
+      role: authRoleStandard,
+      approvalStatus: authApprovalPending,
+      approvedAt: null,
+      approvedByUid: null,
+      approvedByEmail: null,
     })
   } catch (error) {
     next(error)
@@ -519,7 +407,7 @@ app.patch('/api/auth/users/:uid/access-hours', requireFirebaseAuth, requireAdmin
       return res.status(400).json({ error: 'Admin accounts cannot have login-hour restrictions.' })
     }
 
-    const now = new Date().toISOString()
+    const now = nowIso()
     const nextStartHour = startHourUtc
     const nextEndHour = endHourUtc
     const nextTimeZone =
@@ -600,11 +488,7 @@ app.get('/api/auth/logs/users', requireFirebaseAuth, requireAdminRole, async (re
     const users = await authUsersCollection
       .find(
         {},
-        {
-          projection: {
-            _id: 0,
-          },
-        },
+        NO_ID,
       )
       .toArray()
 

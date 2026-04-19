@@ -13,7 +13,6 @@ import {
   Alert,
   Box,
   Button,
-  CircularProgress,
   FormControl,
   InputLabel,
   MenuItem,
@@ -28,7 +27,7 @@ import {
   TextField,
   Typography,
 } from '@mui/material'
-import { type ChangeEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
+import { type ChangeEvent, type ReactNode, useCallback, useMemo, useState } from 'react'
 import { Link as RouterLink, Navigate } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
 import {
@@ -54,6 +53,10 @@ import {
   type CrmQuoteStatus,
 } from '../features/crm/api'
 import { invalidateCrmDealersCache, useCrmDealers } from '../features/crm/CrmDealersContext'
+import { LoadingPanel } from '../components/LoadingPanel'
+import { StatusAlerts } from '../components/StatusAlerts'
+import { useDataLoader } from '../hooks/useDataLoader'
+import { formatCurrency, formatDateTime, formatStatusLabel } from '../lib/formatters'
 
 const importConfirmPhrase = 'I_UNDERSTAND_IMPORT_OVERWRITES'
 const quoteStatusOptions: CrmQuoteStatus[] = ['draft', 'sent', 'accepted', 'rejected', 'cancelled']
@@ -79,41 +82,6 @@ type ConflictSectionProps = {
   title: string
   groups: CrmConflictGroup[]
   emptyText: string
-}
-
-function formatDateTime(value: string | null) {
-  if (!value) {
-    return 'Unknown'
-  }
-
-  const parsed = new Date(value)
-
-  if (Number.isNaN(parsed.getTime())) {
-    return value
-  }
-
-  return new Intl.DateTimeFormat('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  }).format(parsed)
-}
-
-function formatCurrency(value: number) {
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    maximumFractionDigits: 0,
-  }).format(value)
-}
-
-function formatStatusLabel(value: string) {
-  return value
-    .split('_')
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(' ')
 }
 
 function parseNonNegativeAmount(input: string) {
@@ -198,7 +166,7 @@ function ConflictSection({ title, groups, emptyText }: ConflictSectionProps) {
 }
 
 export default function CrmPage() {
-  const { appUser, getIdToken } = useAuth()
+  const { appUser } = useAuth()
   const { dealers, refetch: refetchDealers } = useCrmDealers()
 
   const [overview, setOverview] = useState<CrmOverviewResponse | null>(null)
@@ -207,8 +175,6 @@ export default function CrmPage() {
   const [importRuns, setImportRuns] = useState<CrmImportRunRecord[]>([])
   const [openConflicts, setOpenConflicts] = useState<CrmConflictRecord[]>([])
 
-  const [isLoading, setIsLoading] = useState(true)
-  const [isRefreshing, setIsRefreshing] = useState(false)
   const [isPreviewing, setIsPreviewing] = useState(false)
   const [isCommittingImport, setIsCommittingImport] = useState(false)
   const [isSavingQuote, setIsSavingQuote] = useState(false)
@@ -235,7 +201,6 @@ export default function CrmPage() {
   const [orderStatus, setOrderStatus] = useState<CrmOrderStatus>('pending')
   const [orderProgressInput, setOrderProgressInput] = useState('')
 
-  const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [actionMessage, setActionMessage] = useState<string | null>(null)
 
   const activeDealers = useMemo(
@@ -243,58 +208,39 @@ export default function CrmPage() {
     [dealers],
   )
 
-  const loadCrmPageData = useCallback(async (refreshRequested = false) => {
-    setErrorMessage(null)
-
-    if (refreshRequested) {
-      setIsRefreshing(true)
-    } else {
-      setIsLoading(true)
-    }
-
-    try {
-      const idToken = await getIdToken()
-      const [
-        overviewPayload,
-        importsPayload,
-        conflictsPayload,
-        quotesPayload,
-        ordersPayload,
-      ] = await Promise.all([
-        fetchCrmOverview(idToken),
-        fetchCrmImports(idToken, 12),
-        fetchCrmConflicts(idToken, 'open', 120),
-        fetchCrmQuotes(idToken, { limit: 200 }),
-        fetchCrmOrders(idToken, { limit: 200 }),
+  const { isLoading, isRefreshing, errorMessage, load: loadCrmPageData, setErrorMessage } = useDataLoader({
+    fetcher: useCallback(async () => {
+      const [overviewPayload, importsPayload, conflictsPayload, quotesPayload, ordersPayload] = await Promise.all([
+        fetchCrmOverview(),
+        fetchCrmImports(12),
+        fetchCrmConflicts('open', 120),
+        fetchCrmQuotes({ limit: 200 }),
+        fetchCrmOrders({ limit: 200 }),
       ])
-
+      return { overviewPayload, importsPayload, conflictsPayload, quotesPayload, ordersPayload }
+    }, []),
+    onSuccess: useCallback(({ overviewPayload, importsPayload, conflictsPayload, quotesPayload, ordersPayload }: {
+      overviewPayload: CrmOverviewResponse
+      importsPayload: { imports: CrmImportRunRecord[] }
+      conflictsPayload: { conflicts: CrmConflictRecord[] }
+      quotesPayload: { quotes: CrmQuote[] }
+      ordersPayload: { orders: CrmOrder[] }
+    }) => {
       setOverview(overviewPayload)
       setImportRuns(Array.isArray(importsPayload.imports) ? importsPayload.imports : [])
       setOpenConflicts(Array.isArray(conflictsPayload.conflicts) ? conflictsPayload.conflicts : [])
       setQuotes(Array.isArray(quotesPayload.quotes) ? quotesPayload.quotes : [])
       setOrders(Array.isArray(ordersPayload.orders) ? ordersPayload.orders : [])
-    } catch (error) {
+    }, []),
+    onError: useCallback(() => {
       setOverview(null)
       setQuotes([])
       setOrders([])
       setImportRuns([])
       setOpenConflicts([])
-      setErrorMessage(error instanceof Error ? error.message : 'Failed to load CRM data.')
-    } finally {
-      setIsLoading(false)
-      setIsRefreshing(false)
-    }
-  }, [getIdToken])
-
-  useEffect(() => {
-    const timeoutId = window.setTimeout(() => {
-      void loadCrmPageData(false)
-    }, 0)
-
-    return () => {
-      window.clearTimeout(timeoutId)
-    }
-  }, [loadCrmPageData])
+    }, []),
+    fallbackErrorMessage: 'Failed to load CRM data.',
+  })
 
   const handleImportFileChange = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
@@ -337,8 +283,7 @@ export default function CrmPage() {
     setIsPreviewing(true)
 
     try {
-      const idToken = await getIdToken()
-      const preview = await previewCrmImport(idToken, importPayload)
+      const preview = await previewCrmImport(importPayload)
       setPreviewResult(preview)
       setActionMessage('Preview completed. Review conflicts and validation warnings before import commit.')
     } catch (error) {
@@ -347,7 +292,7 @@ export default function CrmPage() {
     } finally {
       setIsPreviewing(false)
     }
-  }, [getIdToken, importPayload])
+  }, [importPayload])
 
   const handleCommitImport = useCallback(async () => {
     if (!importPayload || !previewResult) {
@@ -373,9 +318,7 @@ export default function CrmPage() {
     setIsCommittingImport(true)
 
     try {
-      const idToken = await getIdToken()
       const result = await commitCrmImport(
-        idToken,
         importPayload,
         confirmText,
         previewResult.importFingerprint,
@@ -394,7 +337,7 @@ export default function CrmPage() {
     } finally {
       setIsCommittingImport(false)
     }
-  }, [confirmText, getIdToken, importPayload, loadCrmPageData, previewResult])
+  }, [confirmText, importPayload, loadCrmPageData, previewResult])
 
   const handleCreateQuote = useCallback(async () => {
     const normalizedTitle = quoteTitle.trim()
@@ -420,9 +363,7 @@ export default function CrmPage() {
     setIsSavingQuote(true)
 
     try {
-      const idToken = await getIdToken()
-
-      await createCrmQuote(idToken, {
+      await createCrmQuote({
         dealerSourceId: quoteDealerSourceId,
         title: normalizedTitle,
         quoteNumber: quoteNumber.trim() || null,
@@ -441,7 +382,7 @@ export default function CrmPage() {
     } finally {
       setIsSavingQuote(false)
     }
-  }, [getIdToken, loadCrmPageData, quoteAmountInput, quoteDealerSourceId, quoteNumber, quoteStatus, quoteTitle])
+  }, [loadCrmPageData, quoteAmountInput, quoteDealerSourceId, quoteNumber, quoteStatus, quoteTitle])
 
   const handleQuoteStatusUpdate = useCallback(async (quoteId: string, nextStatus: CrmQuoteStatus) => {
     setErrorMessage(null)
@@ -449,8 +390,7 @@ export default function CrmPage() {
     setUpdatingQuoteId(quoteId)
 
     try {
-      const idToken = await getIdToken()
-      await updateCrmQuote(idToken, quoteId, {
+      await updateCrmQuote(quoteId, {
         status: nextStatus,
       })
 
@@ -461,7 +401,7 @@ export default function CrmPage() {
     } finally {
       setUpdatingQuoteId(null)
     }
-  }, [getIdToken, loadCrmPageData])
+  }, [loadCrmPageData])
 
   const handleCreateOrder = useCallback(async () => {
     const normalizedTitle = orderTitle.trim()
@@ -495,9 +435,7 @@ export default function CrmPage() {
     setIsSavingOrder(true)
 
     try {
-      const idToken = await getIdToken()
-
-      await createCrmOrder(idToken, {
+      await createCrmOrder({
         dealerSourceId: orderDealerSourceId,
         title: normalizedTitle,
         orderNumber: orderNumber.trim() || null,
@@ -518,7 +456,7 @@ export default function CrmPage() {
     } finally {
       setIsSavingOrder(false)
     }
-  }, [getIdToken, loadCrmPageData, orderDealerSourceId, orderNumber, orderProgressInput, orderStatus, orderTitle, orderValueInput])
+  }, [loadCrmPageData, orderDealerSourceId, orderNumber, orderProgressInput, orderStatus, orderTitle, orderValueInput])
 
   const handleOrderStatusUpdate = useCallback(async (orderId: string, nextStatus: CrmOrderStatus) => {
     setErrorMessage(null)
@@ -526,8 +464,7 @@ export default function CrmPage() {
     setUpdatingOrderId(orderId)
 
     try {
-      const idToken = await getIdToken()
-      await updateCrmOrder(idToken, orderId, {
+      await updateCrmOrder(orderId, {
         status: nextStatus,
       })
 
@@ -538,7 +475,7 @@ export default function CrmPage() {
     } finally {
       setUpdatingOrderId(null)
     }
-  }, [getIdToken, loadCrmPageData])
+  }, [loadCrmPageData])
 
   const handleOrderProgressUpdate = useCallback(async (order: CrmOrder) => {
     const promptValue = window.prompt('Set order progress (0-100):', String(order.progressPercent ?? 0))
@@ -559,8 +496,7 @@ export default function CrmPage() {
     setUpdatingOrderId(order.id)
 
     try {
-      const idToken = await getIdToken()
-      await updateCrmOrder(idToken, order.id, {
+      await updateCrmOrder(order.id, {
         progressPercent: nextProgress,
       })
 
@@ -571,7 +507,7 @@ export default function CrmPage() {
     } finally {
       setUpdatingOrderId(null)
     }
-  }, [getIdToken, loadCrmPageData])
+  }, [loadCrmPageData])
 
   const topDealersByAcceptedValue = useMemo(() => {
     return overview?.quotes.topDealersByAcceptedValue ?? []
@@ -624,16 +560,9 @@ export default function CrmPage() {
         </Stack>
       </Paper>
 
-      {errorMessage ? <Alert severity="error">{errorMessage}</Alert> : null}
-      {actionMessage ? <Alert severity="success">{actionMessage}</Alert> : null}
-
+      <StatusAlerts errorMessage={errorMessage} successMessage={actionMessage} />
       {isLoading ? (
-        <Paper variant="outlined" sx={{ p: 3 }}>
-          <Stack direction="row" spacing={1.2} alignItems="center">
-            <CircularProgress size={18} />
-            <Typography color="text.secondary">Loading CRM module...</Typography>
-          </Stack>
-        </Paper>
+        <LoadingPanel loading={isLoading} message="Loading CRM module..." size={18} />
       ) : (
         <>
           <Box

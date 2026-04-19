@@ -1,3 +1,5 @@
+import { createTtlCache } from '../utils/ttl-cache.mjs'
+
 export function registerDashboardSupportRoutes(app, deps) {
   const {
     clearSupportSnapshotCache,
@@ -17,24 +19,13 @@ export function registerDashboardSupportRoutes(app, deps) {
     toBoundedInteger,
   } = deps
 
-  // ---------------------------------------------------------------------------
   // Zendesk ticket conversation cache (5-minute TTL)
   // Avoids a live Zendesk API call on every ticket click — conversations rarely
   // change within a 5-minute window and the frontend already has gcTime: 15 min.
-  // ---------------------------------------------------------------------------
-  const _convCache = new Map()  // ticketId (string) → { payload, expiresAt }
+  const _convCache = createTtlCache()
   const CONV_CACHE_TTL_MS = 5 * 60 * 1000
-
-  function convCacheGet(ticketId) {
-    const entry = _convCache.get(ticketId)
-    if (!entry) return undefined
-    if (Date.now() > entry.expiresAt) { _convCache.delete(ticketId); return undefined }
-    return entry.payload
-  }
-
-  function convCacheSet(ticketId, payload) {
-    _convCache.set(ticketId, { payload, expiresAt: Date.now() + CONV_CACHE_TTL_MS })
-  }
+  const convCacheGet = (ticketId) => _convCache.get(ticketId)
+  const convCacheSet = (ticketId, payload) => _convCache.set(ticketId, payload, CONV_CACHE_TTL_MS)
 
   function sanitizeDownloadFileName(value, fallbackFileName = 'shop-drawing.pdf') {
     const normalized = String(value ?? '').trim().replace(/[\\/:*?"<>|]+/g, '-')
@@ -175,10 +166,6 @@ app.get('/api/dashboard/monday', requireFirebaseAuth, async (req, res, next) => 
 
     if (!snapshot) {
       snapshot = await fetchMondayDashboardSnapshot()
-    }
-
-    if (refreshRequested) {
-      await persistNewMondayOrders(snapshot)
     }
 
     const shopDrawingCacheByOrderId = await loadShopDrawingCacheByOrderId(

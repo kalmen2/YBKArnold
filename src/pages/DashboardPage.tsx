@@ -34,6 +34,7 @@ import {
   fetchZendeskTicketSummary,
   type DashboardOrder,
 } from '../features/dashboard/api'
+import { formatDateTime } from '../lib/formatters'
 
 type DrilldownKey =
   | 'lateOrders'
@@ -83,22 +84,6 @@ function formatDisplayDate(value: string | null) {
     month: 'short',
     day: 'numeric',
     year: 'numeric',
-  }).format(parsed)
-}
-
-function formatSyncTimestamp(value: string) {
-  const parsed = new Date(value)
-
-  if (Number.isNaN(parsed.getTime())) {
-    return value
-  }
-
-  return new Intl.DateTimeFormat('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
   }).format(parsed)
 }
 
@@ -161,7 +146,18 @@ export default function DashboardPage() {
   const zendeskErrorMessage = zendeskQuery.error instanceof Error ? zendeskQuery.error.message : null
 
   const handleRefresh = useCallback(() => {
-    void queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+    void Promise.all([
+      queryClient.fetchQuery({
+        queryKey: ['dashboard', 'monday'],
+        queryFn: () => fetchMondayDashboardSnapshot({ refresh: true }),
+        staleTime: 0,
+      }),
+      queryClient.fetchQuery({
+        queryKey: ['dashboard', 'zendesk'],
+        queryFn: () => fetchZendeskTicketSummary({ refresh: true }),
+        staleTime: 0,
+      }),
+    ])
   }, [queryClient])
 
   const summaryCards = useMemo<SummaryCard[]>(() => {
@@ -305,7 +301,7 @@ export default function DashboardPage() {
           </Typography>
           {snapshot ? (
             <Typography color="text.secondary">
-              {snapshot.board.name} • Last sync {formatSyncTimestamp(snapshot.generatedAt)}
+              {snapshot.board.name} • Last sync {formatDateTime(snapshot.generatedAt)}
             </Typography>
           ) : (
             <Typography color="text.secondary">Live monday.com board intelligence</Typography>

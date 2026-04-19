@@ -1,3 +1,6 @@
+export const nowIso = () => new Date().toISOString()
+export const NO_ID = Object.freeze({ projection: { _id: 0 } })
+
 export function normalizeOptionalShortText(value, maxLength = 240) {
   const normalized = String(value ?? '').trim()
 

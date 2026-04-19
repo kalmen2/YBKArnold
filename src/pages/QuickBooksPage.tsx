@@ -30,7 +30,7 @@ import {
 } from '@mui/material'
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useAuth } from '../auth/useAuth'
+import { formatCurrency, formatDateTime } from '../lib/formatters'
 import {
   createQuickBooksAuthorizeUrl,
   fetchQuickBooksOverview,
@@ -123,14 +123,6 @@ const projectMetricTitleByType: Record<ProjectMetricType, string> = {
   payments: 'Payments',
 }
 
-function formatCurrency(value: number) {
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    maximumFractionDigits: 0,
-  }).format(value)
-}
-
 function formatInteger(value: number) {
   return new Intl.NumberFormat('en-US', {
     maximumFractionDigits: 0,
@@ -155,25 +147,6 @@ function formatDate(value: string | null) {
   }).format(parsed)
 }
 
-function formatDateTime(value: string | null | undefined) {
-  if (!value) {
-    return 'Unknown'
-  }
-
-  const parsed = new Date(value)
-
-  if (Number.isNaN(parsed.getTime())) {
-    return value
-  }
-
-  return new Intl.DateTimeFormat('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  }).format(parsed)
-}
 
 function formatCandidateRefs(refs: string[]) {
   if (!refs.length) {
@@ -925,7 +898,6 @@ function UnlinkedTransactionsTable({ rows }: { rows: QuickBooksUnlinkedTransacti
 }
 
 export default function QuickBooksPage() {
-  const { getIdToken } = useAuth()
   const queryClient = useQueryClient()
 
   const [isRefreshing, setIsRefreshing] = useState(false)
@@ -942,19 +914,13 @@ export default function QuickBooksPage() {
   // ---------------------------------------------------------------------------
   const statusQuery = useQuery({
     queryKey: ['quickbooks', 'status'],
-    queryFn: async () => {
-      const idToken = await getIdToken()
-      return fetchQuickBooksStatus(idToken)
-    },
+    queryFn: () => fetchQuickBooksStatus(),
     staleTime: 5 * 60 * 1000,
   })
 
   const overviewQuery = useQuery({
     queryKey: ['quickbooks', 'overview'],
-    queryFn: async () => {
-      const idToken = await getIdToken()
-      return fetchQuickBooksOverview(idToken, { refresh: false })
-    },
+    queryFn: () => fetchQuickBooksOverview({ refresh: false }),
     enabled: Boolean(statusQuery.data?.isConfigured && statusQuery.data?.connected),
     staleTime: 4 * 60 * 1000,
   })
@@ -1091,15 +1057,14 @@ export default function QuickBooksPage() {
     setErrorMessage(null)
 
     try {
-      const idToken = await getIdToken()
-      const freshOverview = await fetchQuickBooksOverview(idToken, { refresh: true })
+      const freshOverview = await fetchQuickBooksOverview({ refresh: true })
       queryClient.setQueryData(['quickbooks', 'overview'], freshOverview)
     } catch (error) {
       setErrorMessage(toErrorMessage(error, 'Failed to refresh QuickBooks data.'))
     } finally {
       setIsRefreshing(false)
     }
-  }, [getIdToken, queryClient])
+  }, [queryClient])
 
   const handleConnect = useCallback(async () => {
     setErrorMessage(null)
@@ -1107,15 +1072,14 @@ export default function QuickBooksPage() {
     setIsConnecting(true)
 
     try {
-      const idToken = await getIdToken()
-      const authorizeUrl = await createQuickBooksAuthorizeUrl(idToken, '/quickbooks')
+      const authorizeUrl = await createQuickBooksAuthorizeUrl('/quickbooks')
       window.location.assign(authorizeUrl)
     } catch (error) {
       setErrorMessage(toErrorMessage(error, 'Failed to start QuickBooks connection flow.'))
     } finally {
       setIsConnecting(false)
     }
-  }, [getIdToken])
+  }, [])
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)

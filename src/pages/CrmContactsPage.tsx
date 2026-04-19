@@ -2,12 +2,10 @@ import BusinessRoundedIcon from '@mui/icons-material/BusinessRounded'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded'
 import {
-  Alert,
   Avatar,
   Box,
   Button,
   Chip,
-  CircularProgress,
   FormControl,
   InputAdornment,
   InputLabel,
@@ -27,10 +25,14 @@ import {
 } from '@mui/material'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link as RouterLink, useSearchParams } from 'react-router-dom'
-import { useAuth } from '../auth/useAuth'
+import { LoadingPanel } from '../components/LoadingPanel'
+import { StatusAlerts } from '../components/StatusAlerts'
+import { useDataLoader } from '../hooks/useDataLoader'
+import { useDebounceValue } from '../hooks/useDebounceValue'
 import {
   fetchCrmContacts,
   type CrmContact,
+  type CrmContactsResponse,
 } from '../features/crm/api'
 import { useCrmDealers } from '../features/crm/CrmDealersContext'
 
@@ -47,23 +49,18 @@ function displayContactName(contact: CrmContact) {
 }
 
 export default function CrmContactsPage() {
-  const { getIdToken } = useAuth()
   const { dealers } = useCrmDealers()
   const [searchParams] = useSearchParams()
 
   const [contacts, setContacts] = useState<CrmContact[]>([])
   const [totalContacts, setTotalContacts] = useState(0)
 
-  const [isLoadingContacts, setIsLoadingContacts] = useState(true)
-  const [isRefreshing, setIsRefreshing] = useState(false)
-
-  const [errorMessage, setErrorMessage] = useState<string | null>(null)
 
   const [page, setPage] = useState(0)
   const [rowsPerPage, setRowsPerPage] = useState(50)
 
   const [searchInput, setSearchInput] = useState('')
-  const [search, setSearch] = useState('')
+  const search = useDebounceValue(searchInput)
   const [dealerSourceId, setDealerSourceId] = useState('')
   const [salesUnit, setSalesUnit] = useState('')
   const [stateFilter, setStateFilter] = useState('')
@@ -72,15 +69,6 @@ export default function CrmContactsPage() {
   const [hasEmailFilter, setHasEmailFilter] = useState<'all' | 'with' | 'without'>('all')
   const [includeArchived, setIncludeArchived] = useState(false)
 
-  useEffect(() => {
-    const timeoutId = window.setTimeout(() => {
-      setSearch(searchInput.trim())
-    }, 250)
-
-    return () => {
-      window.clearTimeout(timeoutId)
-    }
-  }, [searchInput])
 
   useEffect(() => {
     const dealerFromQuery = searchParams.get('dealerSourceId')?.trim() ?? ''
@@ -116,18 +104,9 @@ export default function CrmContactsPage() {
     return null
   }, [hasEmailFilter])
 
-  const loadContacts = useCallback(async (refreshRequested = false) => {
-    setErrorMessage(null)
-
-    if (refreshRequested) {
-      setIsRefreshing(true)
-    } else {
-      setIsLoadingContacts(true)
-    }
-
-    try {
-      const idToken = await getIdToken()
-      const response = await fetchCrmContacts(idToken, {
+  const { isLoading: isLoadingContacts, isRefreshing, errorMessage, load: loadContacts } = useDataLoader({
+    fetcher: useCallback(async () => {
+      return fetchCrmContacts({
         limit: rowsPerPage,
         offset: page * rowsPerPage,
         includeArchived,
@@ -139,34 +118,17 @@ export default function CrmContactsPage() {
         contactOrigin: contactOrigin === 'all' ? undefined : contactOrigin,
         hasEmail: hasEmailFilterValue,
       })
-
+    }, [contactOrigin, countryFilter, dealerSourceId, hasEmailFilterValue, includeArchived, page, rowsPerPage, salesUnit, search, stateFilter]),
+    onSuccess: useCallback((response: CrmContactsResponse) => {
       setContacts(Array.isArray(response.contacts) ? response.contacts : [])
       setTotalContacts(Number(response.total ?? 0))
-    } catch (error) {
+    }, []),
+    onError: useCallback(() => {
       setContacts([])
       setTotalContacts(0)
-      setErrorMessage(error instanceof Error ? error.message : 'Failed to load contacts.')
-    } finally {
-      setIsLoadingContacts(false)
-      setIsRefreshing(false)
-    }
-  }, [
-    contactOrigin,
-    countryFilter,
-    dealerSourceId,
-    getIdToken,
-    hasEmailFilterValue,
-    includeArchived,
-    page,
-    rowsPerPage,
-    salesUnit,
-    search,
-    stateFilter,
-  ])
-
-  useEffect(() => {
-    void loadContacts(false)
-  }, [loadContacts])
+    }, []),
+    fallbackErrorMessage: 'Failed to load contacts.',
+  })
 
   const dealersPageLink = dealerSourceId
     ? `/admin/crm/dealers?dealerSourceId=${encodeURIComponent(dealerSourceId)}`
@@ -209,7 +171,7 @@ export default function CrmContactsPage() {
         </Stack>
       </Paper>
 
-      {errorMessage ? <Alert severity="error">{errorMessage}</Alert> : null}
+      <StatusAlerts errorMessage={errorMessage} />
 
       <Paper variant="outlined" sx={{ p: 2 }}>
         <Stack spacing={1.25}>
@@ -343,7 +305,6 @@ export default function CrmContactsPage() {
             sx={{ alignSelf: 'flex-start' }}
             onClick={() => {
               setSearchInput('')
-              setSearch('')
               setDealerSourceId('')
               setSalesUnit('')
               setStateFilter('')
@@ -361,10 +322,7 @@ export default function CrmContactsPage() {
 
       <Paper variant="outlined" sx={{ p: 2 }}>
         {isLoadingContacts ? (
-          <Stack direction="row" spacing={1} alignItems="center" sx={{ py: 8 }}>
-            <CircularProgress size={18} />
-            <Typography color="text.secondary">Loading contacts...</Typography>
-          </Stack>
+          <LoadingPanel loading={isLoadingContacts} message="Loading contacts..." contained={false} size={18} />
         ) : (
           <>
             <TableContainer

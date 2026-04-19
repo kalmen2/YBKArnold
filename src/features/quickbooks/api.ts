@@ -109,44 +109,24 @@ function withQuery(path: string, query: Record<string, string | number | null | 
   return `${url.pathname}${url.search}`
 }
 
-async function requestWithAuth<T>(path: string, idToken: string, options: RequestInit = {}) {
-  const response = await fetch(path, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${idToken}`,
-      'x-client-platform': 'web',
-      ...(options.headers ?? {}),
-    },
-  })
+import { apiRequest } from '../api-client'
 
-  const payload = await response.json().catch(() => ({}))
-
-  if (!response.ok) {
-    throw new Error(typeof payload?.error === 'string' ? payload.error : 'Request failed.')
-  }
-
-  return payload as T
+export function fetchQuickBooksStatus() {
+  return apiRequest<QuickBooksStatusResponse>('/api/quickbooks/status')
 }
 
-export function fetchQuickBooksStatus(idToken: string) {
-  return requestWithAuth<QuickBooksStatusResponse>('/api/quickbooks/status', idToken)
-}
-
-export async function createQuickBooksAuthorizeUrl(idToken: string, redirectPath = '/quickbooks') {
-  const payload = await requestWithAuth<{ authorizeUrl: string }>(
+export async function createQuickBooksAuthorizeUrl(redirectPath = '/quickbooks') {
+  const payload = await apiRequest<{ authorizeUrl: string }>(
     withQuery('/api/quickbooks/oauth/start', { redirectPath }),
-    idToken,
   )
 
   return payload.authorizeUrl
 }
 
-export function fetchQuickBooksOverview(idToken: string, options: { refresh?: boolean } = {}) {
-  return requestWithAuth<QuickBooksOverviewResponse>(
+export function fetchQuickBooksOverview(options: { refresh?: boolean } = {}) {
+  return apiRequest<QuickBooksOverviewResponse>(
     withQuery('/api/quickbooks/overview', {
       refresh: options.refresh ? 1 : undefined,
     }),
-    idToken,
   )
 }
