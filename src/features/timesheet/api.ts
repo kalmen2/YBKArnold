@@ -17,6 +17,7 @@ export type TimesheetEntry = {
   date: string
   jobName: string
   hours: number
+  overtimeHours?: number
   payRate?: number
   notes: string
   createdAt: string
@@ -80,6 +81,7 @@ export type SyncDailyEntryRowInput = {
   stageId?: string
   jobName: string
   hours: number
+  overtimeHours?: number
   notes: string
 }
 
@@ -89,6 +91,7 @@ type UpdateEntryInput = {
   stageId?: string
   jobName: string
   hours: number
+  overtimeHours?: number
   notes: string
 }
 

@@ -45,10 +45,9 @@ export const navItems: NavItem[] = [
     managerOrAdminOnly: true,
   },
   {
-    label: 'Manager Sheet',
-    path: '/manager-progress',
+    label: 'Reports',
+    path: '/reports',
     icon: TrendingUpRoundedIcon,
-    managerOrAdminOnly: true,
   },
   {
     label: 'Support',

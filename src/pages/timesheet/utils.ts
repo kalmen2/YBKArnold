@@ -13,8 +13,11 @@ export type BulkWorkerRow = {
   stageId: string
   jobName: string
   hours: string
+  overtimeHours: string
   notes: string
 }
+
+export const OVERTIME_RATE_MULTIPLIER = 1.5
 
 export type MissingWorkerReview = {
   note: string
@@ -173,6 +176,41 @@ export function getEntryRate(entry: TimesheetEntry, workersById: Map<string, Tim
   return workersById.get(entry.workerId)?.hourlyRate ?? 0
 }
 
+export function getEntryRegularHours(entry: TimesheetEntry) {
+  const regularHours = Number(entry.hours)
+
+  if (!Number.isFinite(regularHours) || regularHours < 0) {
+    return 0
+  }
+
+  return regularHours
+}
+
+export function getEntryOvertimeHours(entry: TimesheetEntry) {
+  const overtimeHours = Number(entry.overtimeHours)
+
+  if (!Number.isFinite(overtimeHours) || overtimeHours < 0) {
+    return 0
+  }
+
+  return overtimeHours
+}
+
+export function getEntryTotalHours(entry: TimesheetEntry) {
+  return getEntryRegularHours(entry) + getEntryOvertimeHours(entry)
+}
+
+export function getEntryCost(
+  entry: TimesheetEntry,
+  workersById: Map<string, TimesheetWorker>,
+) {
+  const rate = getEntryRate(entry, workersById)
+  const regularHours = getEntryRegularHours(entry)
+  const overtimeHours = getEntryOvertimeHours(entry)
+
+  return (regularHours * rate) + (overtimeHours * rate * OVERTIME_RATE_MULTIPLIER)
+}
+
 export function buildExportRows(
   entries: TimesheetEntry[],
   workersById: Map<string, TimesheetWorker>,
@@ -182,15 +220,21 @@ export function buildExportRows(
     const worker = workersById.get(entry.workerId)
     const stageName = entry.stageId ? stagesById.get(entry.stageId)?.name ?? 'Unknown stage' : 'Unassigned'
     const rate = getEntryRate(entry, workersById)
+    const regularHours = getEntryRegularHours(entry)
+    const overtimeHours = getEntryOvertimeHours(entry)
+    const totalHours = getEntryTotalHours(entry)
+    const cost = getEntryCost(entry, workersById)
 
     return {
       Date: entry.date,
       Worker: worker?.fullName ?? 'Unknown worker',
       Stage: stageName,
       Job: entry.jobName,
-      Hours: Number(formatHours(entry.hours)),
+      'Regular Hours': Number(formatHours(regularHours)),
+      'Overtime Hours': Number(formatHours(overtimeHours)),
+      Hours: Number(formatHours(totalHours)),
       Rate: Number(rate.toFixed(2)),
-      Cost: Number((entry.hours * rate).toFixed(2)),
+      Cost: Number(cost.toFixed(2)),
       Notes: entry.notes,
     }
   })
@@ -258,6 +302,7 @@ export function createEmptyBulkRowForWorker(workerId: string, stageId = ''): Bul
     stageId,
     jobName: '',
     hours: '',
+    overtimeHours: '',
     notes: '',
   }
 }
@@ -298,6 +343,7 @@ export function buildBulkRowsForDate(
       stageId: entry.stageId ?? '',
       jobName: entry.jobName,
       hours: String(entry.hours),
+      overtimeHours: String(entry.overtimeHours ?? ''),
       notes: entry.notes,
     }))
   })

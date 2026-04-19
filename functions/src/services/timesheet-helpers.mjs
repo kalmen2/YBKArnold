@@ -239,6 +239,10 @@ export function validateEntryFields(input, date, path = 'entry') {
   const stageId = String(input?.stageId ?? '').trim()
   const jobName = String(input?.jobName ?? '').trim()
   const hours = Number(input?.hours)
+  const overtimeHoursRaw = input?.overtimeHours
+  const overtimeHours = overtimeHoursRaw === undefined
+    ? 0
+    : Number(overtimeHoursRaw)
   const notes = String(input?.notes ?? '').trim()
 
   if (!normalizedDate) {
@@ -253,8 +257,16 @@ export function validateEntryFields(input, date, path = 'entry') {
     throw new AppError(`${path}.jobName is required.`, 400)
   }
 
-  if (!Number.isFinite(hours) || hours <= 0) {
-    throw new AppError(`${path}.hours must be a positive number.`, 400)
+  if (!Number.isFinite(hours) || hours < 0) {
+    throw new AppError(`${path}.hours must be a non-negative number.`, 400)
+  }
+
+  if (!Number.isFinite(overtimeHours) || overtimeHours < 0) {
+    throw new AppError(`${path}.overtimeHours must be a non-negative number.`, 400)
+  }
+
+  if (hours <= 0 && overtimeHours <= 0) {
+    throw new AppError(`${path}.hours or ${path}.overtimeHours must be greater than zero.`, 400)
   }
 
   const fields = {
@@ -262,6 +274,7 @@ export function validateEntryFields(input, date, path = 'entry') {
     date: normalizedDate,
     jobName,
     hours,
+    overtimeHours,
     notes,
   }
 

@@ -17,6 +17,7 @@ import {
   IconButton,
   MenuItem,
   Paper,
+  Popover,
   Snackbar,
   Stack,
   Tab,
@@ -31,11 +32,14 @@ import {
   Typography,
 } from '@mui/material'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 import {
   fetchMondayDashboardSnapshot,
   type DashboardOrder,
 } from '../features/dashboard/api'
+import {
+  fetchQuickBooksOverview,
+  type QuickBooksProjectSummary,
+} from '../features/quickbooks/api'
 import { useAuth } from '../auth/useAuth'
 import {
   createStage,
@@ -53,6 +57,7 @@ import {
   updateEntry,
 } from '../features/timesheet/api'
 import {
+  OVERTIME_RATE_MULTIPLIER,
   addDaysToIsoDate,
   buildBulkRowsForDate,
   buildByJobExportRows,
@@ -69,7 +74,10 @@ import {
   formatHours,
   formatManagerDateLabel,
   formatMonthKeyLabel,
+  getEntryCost,
+  getEntryOvertimeHours,
   getEntryRate,
+  getEntryTotalHours,
   isDateInRange,
   monthKeyFromIsoDate,
   normalizeJobName,
@@ -92,6 +100,7 @@ type EntryEditForm = {
   stageId: string
   jobName: string
   hours: string
+  overtimeHours: string
   notes: string
 }
 
@@ -114,7 +123,14 @@ type ManagerProgressRow = {
 }
 
 type TimesheetPageProps = {
-  initialView?: 'timesheet' | 'manager-progress'
+  initialView?: 'timesheet' | 'reports'
+}
+
+type QuickBooksJobMetrics = {
+  purchaseOrderAmount: number
+  billAmount: number
+  invoiceAmount: number
+  paymentAmount: number
 }
 
 const WORKSHEET_TABLE_CONTAINER_SX = {
@@ -125,11 +141,11 @@ const WORKSHEET_TABLE_CONTAINER_SX = {
 } as const
 
 export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPageProps) {
-  const navigate = useNavigate()
   const { appUser } = useAuth()
   const canAccessManagerSheet = appUser?.isManager === true || appUser?.isAdmin === true
-  const isManagerProgressView = initialView === 'manager-progress'
-  const [activeTab, setActiveTab] = useState(0)
+  const isReportsView = initialView === 'reports'
+  const [worksheetTab, setWorksheetTab] = useState(0)
+  const [reportsTab, setReportsTab] = useState(0)
   const [workers, setWorkers] = useState<TimesheetWorker[]>([])
   const [entries, setEntries] = useState<TimesheetEntry[]>([])
   const [stages, setStages] = useState<TimesheetStage[]>([])
@@ -147,7 +163,6 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
   const [isLoading, setIsLoading] = useState(true)
 
   const [stagesDialogOpen, setStagesDialogOpen] = useState(false)
-  const [managerSheetOpen, setManagerSheetOpen] = useState(false)
   const [jobDetailsOpen, setJobDetailsOpen] = useState(false)
   const [selectedJobName, setSelectedJobName] = useState('')
   const [stageNameInput, setStageNameInput] = useState('')
@@ -167,6 +182,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     stageId: '',
     jobName: '',
     hours: '',
+    overtimeHours: '',
     notes: '',
   })
 
@@ -178,6 +194,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
   const [managerProgressByJob, setManagerProgressByJob] = useState<Record<string, string>>({})
   const [isSavingManagerProgress, setIsSavingManagerProgress] = useState(false)
   const [mondayOrders, setMondayOrders] = useState<DashboardOrder[]>([])
+  const [quickBooksProjects, setQuickBooksProjects] = useState<QuickBooksProjectSummary[]>([])
   const [managerWorkersPopupRow, setManagerWorkersPopupRow] =
     useState<ManagerProgressRow | null>(null)
   const [shopDrawingPreviewRow, setShopDrawingPreviewRow] =
@@ -191,15 +208,64 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     useState<WorkerRangePreset>('week')
   const [workerCustomStartDate, setWorkerCustomStartDate] = useState(todayIsoDate())
   const [workerCustomEndDate, setWorkerCustomEndDate] = useState(todayIsoDate())
+  const [profitInfoAnchorEl, setProfitInfoAnchorEl] = useState<HTMLElement | null>(null)
+  const [profitInfoPopup, setProfitInfoPopup] = useState<{
+    jobName: string
+    status: 'red' | 'yellow'
+    currentProfit: number
+    projectedProfitAfterFullBilling: number
+    remainingToBillAmount: number
+  } | null>(null)
+  const [readyInfoAnchorEl, setReadyInfoAnchorEl] = useState<HTMLElement | null>(null)
+  const [readyInfoPopup, setReadyInfoPopup] = useState<{
+    jobName: string
+    requiredReadyDate: string | null
+    lastWrittenDate: string | null
+  } | null>(null)
 
-  useEffect(() => {
-    if (isManagerProgressView) {
-      setActiveTab(0)
-      return
+  const handleCloseProfitInfoPopup = useCallback(() => {
+    setProfitInfoAnchorEl(null)
+    setProfitInfoPopup(null)
+  }, [])
+
+  const handleCloseReadyInfoPopup = useCallback(() => {
+    setReadyInfoAnchorEl(null)
+    setReadyInfoPopup(null)
+  }, [])
+
+  const splitQuickBooksProjectLabel = useCallback((projectName: string, fallbackProjectId: string) => {
+    const normalizedName = String(projectName || '').trim()
+
+    if (!normalizedName) {
+      return {
+        projectNumber: fallbackProjectId || '',
+      }
     }
 
-    setManagerSheetOpen(false)
-  }, [isManagerProgressView])
+    const hasColonSeparator = normalizedName.includes(':')
+    const hasHyphenSeparator = normalizedName.includes(' - ')
+    const segments = hasColonSeparator
+      ? normalizedName.split(':').map((segment) => segment.trim()).filter(Boolean)
+      : hasHyphenSeparator
+        ? normalizedName.split(' - ').map((segment) => segment.trim()).filter(Boolean)
+        : [normalizedName]
+
+    if (segments.length <= 1) {
+      return {
+        projectNumber: segments[0] || fallbackProjectId || '',
+      }
+    }
+
+    return {
+      projectNumber: segments[segments.length - 1] || fallbackProjectId || '',
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!canAccessManagerSheet && worksheetTab === 1) {
+      setWorksheetTab(0)
+    }
+  }, [canAccessManagerSheet, worksheetTab])
 
   const refreshState = useCallback(async () => {
     setIsLoading(true)
@@ -237,7 +303,20 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
         setMondayOrders(Array.isArray(result.orders) ? result.orders : [])
       })
       .catch(() => {})
-  }, [])
+
+    if (!canAccessManagerSheet) {
+      setQuickBooksProjects([])
+      return
+    }
+
+    fetchQuickBooksOverview()
+      .then((result) => {
+        setQuickBooksProjects(Array.isArray(result.projects) ? result.projects : [])
+      })
+      .catch(() => {
+        setQuickBooksProjects([])
+      })
+  }, [canAccessManagerSheet])
 
   useEffect(() => {
     void refreshState()
@@ -275,11 +354,11 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
   const totals = useMemo(() => {
     return sortedEntries.reduce(
       (accumulator, entry) => {
-        const workerRate = getEntryRate(entry, workersById)
-        const cost = entry.hours * workerRate
+        const totalHours = getEntryTotalHours(entry)
+        const cost = getEntryCost(entry, workersById)
 
         return {
-          totalHours: accumulator.totalHours + entry.hours,
+          totalHours: accumulator.totalHours + totalHours,
           totalSpend: accumulator.totalSpend + cost,
         }
       },
@@ -316,10 +395,10 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
         return
       }
 
-      const workerRate = getEntryRate(entry, workersById)
-      row.perDate[entry.date] = (row.perDate[entry.date] ?? 0) + entry.hours
-      row.totalHours += entry.hours
-      row.totalCost += entry.hours * workerRate
+      const totalHours = getEntryTotalHours(entry)
+      row.perDate[entry.date] = (row.perDate[entry.date] ?? 0) + totalHours
+      row.totalHours += totalHours
+      row.totalCost += getEntryCost(entry, workersById)
     })
 
     const rows = [...jobsMap.values()].sort(
@@ -328,6 +407,56 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
 
     return { dates, rows }
   }, [entries, workersById])
+
+  const quickBooksMetricsByJobKey = useMemo(() => {
+    const map = new Map<string, QuickBooksJobMetrics>()
+
+    quickBooksProjects.forEach((project) => {
+      const splitLabel = splitQuickBooksProjectLabel(project.projectName, project.projectId)
+      const jobKey = normalizeJobName(splitLabel.projectNumber)
+
+      if (!jobKey) {
+        return
+      }
+
+      const purchaseOrderAmount = Number(project.purchaseOrderAmount)
+      const billAmount = Number(project.billAmount)
+      const invoiceAmount = Number(project.invoiceAmount)
+      const paymentAmount = Number(project.paymentAmount)
+      const normalizedPurchaseOrderAmount = Number.isFinite(purchaseOrderAmount)
+        ? purchaseOrderAmount
+        : 0
+      const normalizedBillAmount = Number.isFinite(billAmount)
+        ? billAmount
+        : 0
+      const normalizedInvoiceAmount = Number.isFinite(invoiceAmount)
+        ? invoiceAmount
+        : 0
+      const normalizedPaymentAmount = Number.isFinite(paymentAmount)
+        ? paymentAmount
+        : 0
+      const existing = map.get(jobKey) ?? {
+        purchaseOrderAmount: 0,
+        billAmount: 0,
+        invoiceAmount: 0,
+        paymentAmount: 0,
+      }
+
+      const nextPurchaseOrderAmount = existing.purchaseOrderAmount + normalizedPurchaseOrderAmount
+      const nextBillAmount = existing.billAmount + normalizedBillAmount
+      const nextInvoiceAmount = existing.invoiceAmount + normalizedInvoiceAmount
+      const nextPaymentAmount = existing.paymentAmount + normalizedPaymentAmount
+
+      map.set(jobKey, {
+        purchaseOrderAmount: Number(nextPurchaseOrderAmount.toFixed(2)),
+        billAmount: Number(nextBillAmount.toFixed(2)),
+        invoiceAmount: Number(nextInvoiceAmount.toFixed(2)),
+        paymentAmount: Number(nextPaymentAmount.toFixed(2)),
+      })
+    })
+
+    return map
+  }, [quickBooksProjects, splitQuickBooksProjectLabel])
 
   const byStageView = useMemo(() => {
     const dates = [...new Set(entries.map((entry) => entry.date))].sort()
@@ -362,10 +491,10 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
         return
       }
 
-      const workerRate = getEntryRate(entry, workersById)
-      row.perDate[entry.date] = (row.perDate[entry.date] ?? 0) + entry.hours
-      row.totalHours += entry.hours
-      row.totalCost += entry.hours * workerRate
+      const totalHours = getEntryTotalHours(entry)
+      row.perDate[entry.date] = (row.perDate[entry.date] ?? 0) + totalHours
+      row.totalHours += totalHours
+      row.totalCost += getEntryCost(entry, workersById)
     })
 
     const rows = [...stagesMap.values()].sort(
@@ -434,10 +563,9 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
         return
       }
 
-      const rate = getEntryRate(entry, workersById)
       row.entries.push(entry)
-      row.totalHours += entry.hours
-      row.totalCost += entry.hours * rate
+      row.totalHours += getEntryTotalHours(entry)
+      row.totalCost += getEntryCost(entry, workersById)
       row.workerIds.add(entry.workerId)
     })
 
@@ -515,9 +643,8 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
   const workerTotals = useMemo(() => {
     return workerFilteredEntries.reduce(
       (accumulator, entry) => {
-        const rate = getEntryRate(entry, workersById)
-        accumulator.totalHours += entry.hours
-        accumulator.totalCost += entry.hours * rate
+        accumulator.totalHours += getEntryTotalHours(entry)
+        accumulator.totalCost += getEntryCost(entry, workersById)
         return accumulator
       },
       { totalHours: 0, totalCost: 0 },
@@ -549,9 +676,8 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
         return
       }
 
-      const rate = getEntryRate(entry, workersById)
-      row.totalHours += entry.hours
-      row.totalCost += entry.hours * rate
+      row.totalHours += getEntryTotalHours(entry)
+      row.totalCost += getEntryCost(entry, workersById)
     })
 
     return [...grouped.values()].sort((left, right) => right.totalHours - left.totalHours)
@@ -615,9 +741,8 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
   const dateViewTotals = useMemo(() => {
     return dateViewEntries.reduce(
       (accumulator, entry) => {
-        const rate = getEntryRate(entry, workersById)
-        accumulator.totalHours += entry.hours
-        accumulator.totalCost += entry.hours * rate
+        accumulator.totalHours += getEntryTotalHours(entry)
+        accumulator.totalCost += getEntryCost(entry, workersById)
         return accumulator
       },
       { totalHours: 0, totalCost: 0 },
@@ -692,22 +817,51 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     return map
   }, [orderProgress])
 
-  const latestReadyPercentByJobKey = useMemo(() => {
-    const map = new Map<string, number>()
-    const latestDateByJobKey = new Map<string, string>()
+  const latestReadyByJobKey = useMemo(() => {
+    const map = new Map<string, { readyPercent: number; date: string }>()
 
     orderProgress.forEach((progress) => {
       const jobKey = normalizeJobName(progress.jobName)
-      const existingDate = latestDateByJobKey.get(jobKey) ?? ''
+      const progressDate = String(progress.date ?? '').trim()
 
-      if (!existingDate || progress.date > existingDate) {
-        latestDateByJobKey.set(jobKey, progress.date)
-        map.set(jobKey, Number(progress.readyPercent))
+      if (!jobKey || !progressDate) {
+        return
+      }
+
+      const existing = map.get(jobKey)
+
+      if (!existing || progressDate > existing.date) {
+        map.set(jobKey, {
+          readyPercent: Number(progress.readyPercent),
+          date: progressDate,
+        })
       }
     })
 
     return map
   }, [orderProgress])
+
+  const latestDueWorksheetDateByJobKey = useMemo(() => {
+    const map = new Map<string, string>()
+    const yesterdayIsoDate = addDaysToIsoDate(todayIsoDate(), -1)
+
+    entries.forEach((entry) => {
+      const jobKey = normalizeJobName(entry.jobName)
+      const entryDate = String(entry.date ?? '').trim()
+
+      if (!jobKey || !entryDate || entryDate > yesterdayIsoDate) {
+        return
+      }
+
+      const existingDate = map.get(jobKey) ?? ''
+
+      if (!existingDate || entryDate > existingDate) {
+        map.set(jobKey, entryDate)
+      }
+    })
+
+    return map
+  }, [entries])
 
   const managerDayJobs = useMemo(() => {
     const jobNames = new Set<string>()
@@ -794,11 +948,12 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
         workerHoursById: new Map<string, number>(),
       }
 
-      existing.totalHours += entry.hours
+      const totalHours = getEntryTotalHours(entry)
+      existing.totalHours += totalHours
       existing.workerIds.add(entry.workerId)
       existing.workerHoursById.set(
         entry.workerId,
-        (existing.workerHoursById.get(entry.workerId) ?? 0) + entry.hours,
+        (existing.workerHoursById.get(entry.workerId) ?? 0) + totalHours,
       )
       entriesByJobKey.set(jobKey, existing)
     })
@@ -1048,12 +1203,6 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
   }, [editingEntryId, entries])
 
   useEffect(() => {
-    if (!isManagerProgressView && managerSheetOpen && managerAvailableDates.length === 0) {
-      setManagerSheetOpen(false)
-    }
-  }, [isManagerProgressView, managerAvailableDates.length, managerSheetOpen])
-
-  useEffect(() => {
     if (!success) {
       return
     }
@@ -1078,10 +1227,6 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
   }, [error])
 
   useEffect(() => {
-    if (!managerSheetOpen) {
-      return
-    }
-
     const nextDraftByJob: Record<string, string> = {}
 
     managerDayJobs.forEach((jobName) => {
@@ -1091,7 +1236,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     })
 
     setManagerProgressByJob(nextDraftByJob)
-  }, [managerDayJobs, managerSelectedDate, managerSheetOpen, orderProgressByDateJobKey])
+  }, [managerDayJobs, managerSelectedDate, orderProgressByDateJobKey])
 
   const handleBulkRowChange = (
     rowId: string,
@@ -1205,7 +1350,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     }
 
     if (syncRows.length === 0 && !hasEntriesForDate(entries, bulkDate)) {
-      setError('No valid rows to save. Fill job and hours for at least one worker.')
+      setError('No valid rows to save. Fill job and regular or overtime hours for at least one worker.')
       return
     }
 
@@ -1231,6 +1376,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
       stageId: entry.stageId ?? '',
       jobName: entry.jobName,
       hours: String(entry.hours),
+      overtimeHours: String(entry.overtimeHours ?? ''),
       notes: entry.notes,
     })
   }
@@ -1261,6 +1407,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     const jobName = entryEditForm.jobName.trim()
     const notes = entryEditForm.notes.trim()
     const hours = Number(entryEditForm.hours)
+    const overtimeHours = Number(entryEditForm.overtimeHours)
 
     if (!date) {
       setError('Entry date is required.')
@@ -1277,8 +1424,13 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
       return
     }
 
-    if (!Number.isFinite(hours) || hours <= 0) {
-      setError('Hours must be a positive number.')
+    if (!Number.isFinite(hours) || hours < 0 || !Number.isFinite(overtimeHours) || overtimeHours < 0) {
+      setError('Regular and overtime hours must be non-negative numbers.')
+      return
+    }
+
+    if (hours <= 0 && overtimeHours <= 0) {
+      setError('Regular hours or overtime hours must be greater than zero.')
       return
     }
 
@@ -1289,6 +1441,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
         stageId,
         jobName,
         hours,
+        overtimeHours,
         notes,
       })
 
@@ -1468,15 +1621,6 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     }))
   }, [])
 
-  const closeManagerSheet = useCallback(() => {
-    if (isManagerProgressView) {
-      navigate('/timesheet')
-      return
-    }
-
-    setManagerSheetOpen(false)
-  }, [isManagerProgressView, navigate])
-
   const handleCloseShopDrawingPreview = useCallback(() => {
     setIsShopDrawingPreviewLoading(false)
     setShopDrawingPreviewRow(null)
@@ -1573,10 +1717,6 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
 
       await refreshState()
       setSuccess(`Manager progress saved for ${managerSelectedDate}.`)
-
-      if (!isManagerProgressView) {
-        setManagerSheetOpen(false)
-      }
     } catch (requestError) {
       const message =
         requestError instanceof Error
@@ -1845,334 +1985,33 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     )
   }
 
-  if (isManagerProgressView) {
-    return (
-      <Stack spacing={2.5}>
-        <Box>
-          <Typography variant="h4" fontWeight={700}>
-            Manager Progress
-          </Typography>
-          <Typography color="text.secondary">
-            Daily order progress by date.
-          </Typography>
-        </Box>
-
-        {error ? (
-          <Alert severity="error" onClose={() => setError('')}>
-            {error}
-          </Alert>
-        ) : null}
-
-        {success ? (
-          <Alert severity="success" onClose={() => setSuccess('')}>
-            {success}
-          </Alert>
-        ) : null}
-
-        {isLoading ? (
-          <Paper variant="outlined" sx={{ p: 3 }}>
-            <Stack direction="row" spacing={1} alignItems="center">
-              <CircularProgress size={22} />
-              <Typography color="text.secondary">Loading timesheet data...</Typography>
-            </Stack>
-          </Paper>
-        ) : managerAvailableDates.length === 0 ? (
-          <Paper variant="outlined" sx={{ p: 3 }}>
-            <Typography color="text.secondary">
-              No manager progress dates are available yet. Add worksheet entries first.
-            </Typography>
-          </Paper>
-        ) : (
-          <Stack spacing={2}>
-            <Stack
-              direction={{ xs: 'column', md: 'row' }}
-              spacing={1}
-              alignItems={{ xs: 'stretch', md: 'center' }}
-              useFlexGap
-              flexWrap="wrap"
-            >
-              <TextField
-                select
-                size="small"
-                label="Month"
-                value={managerSelectedMonth}
-                onChange={(event) => handleSelectManagerMonth(event.target.value)}
-                sx={{ minWidth: 220 }}
-              >
-                {managerMonthOptions.map((month) => (
-                  <MenuItem key={month} value={month}>
-                    {formatMonthKeyLabel(month)}
-                  </MenuItem>
-                ))}
-              </TextField>
-            </Stack>
-
-            <Stack
-              direction={{ xs: 'column', md: 'row' }}
-              spacing={1}
-              alignItems={{ xs: 'stretch', md: 'center' }}
-              useFlexGap
-              flexWrap="wrap"
-            >
-              <TextField
-                select
-                size="small"
-                label="Date"
-                value={managerSelectedDate}
-                onChange={(event) => handleSelectManagerDate(event.target.value)}
-                sx={{ minWidth: 240 }}
-              >
-                {managerDatesInSelectedMonth.map((dateValue) => (
-                  <MenuItem key={dateValue} value={dateValue}>
-                    {formatManagerDateLabel(dateValue)}
-                  </MenuItem>
-                ))}
-              </TextField>
-            </Stack>
-
-            {managerProgressRows.length === 0 ? (
-              <Typography color="text.secondary">
-                No orders found for {managerSelectedDate || 'the selected date'}.
-              </Typography>
-            ) : (
-              <>
-                <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5}>
-                  <Paper variant="outlined" sx={{ p: 2, flex: 1 }}>
-                    <Typography variant="caption" color="text.secondary">Orders on date</Typography>
-                    <Typography variant="h6" fontWeight={700}>{managerProgressRows.length}</Typography>
-                  </Paper>
-                  <Paper variant="outlined" sx={{ p: 2, flex: 1 }}>
-                    <Typography variant="caption" color="text.secondary">Average ready</Typography>
-                    <Typography variant="h6" fontWeight={700}>{managerProgressSummary.averageReadyPercent.toFixed(1)}%</Typography>
-                  </Paper>
-                  <Paper variant="outlined" sx={{ p: 2, flex: 1 }}>
-                    <Typography variant="caption" color="text.secondary">Fully ready</Typography>
-                    <Typography variant="h6" fontWeight={700}>{managerProgressSummary.completeCount}</Typography>
-                  </Paper>
-                  <Paper variant="outlined" sx={{ p: 2, flex: 1 }}>
-                    <Typography variant="caption" color="text.secondary">In progress</Typography>
-                    <Typography variant="h6" fontWeight={700}>{managerProgressSummary.inProgressCount}</Typography>
-                  </Paper>
-                </Stack>
-
-                <Stack direction="row" spacing={1} justifyContent="flex-end">
-                  <Button
-                    variant="contained"
-                    disabled={isSavingManagerProgress || managerProgressRows.length === 0}
-                    onClick={handleSaveManagerProgress}
-                  >
-                    {isSavingManagerProgress ? 'Saving...' : 'Save Progress'}
-                  </Button>
-                </Stack>
-
-                <TableContainer sx={{ border: 1, borderColor: 'divider', borderRadius: 1.5 }}>
-                  <Table size="small">
-                    <TableHead>
-                      <TableRow>
-                        <TableCell>Order Number</TableCell>
-                        <TableCell>Item</TableCell>
-                        <TableCell>Shop Drawing</TableCell>
-                        <TableCell align="right">Hours</TableCell>
-                        <TableCell align="right">Workers</TableCell>
-                        <TableCell align="right">Current ready %</TableCell>
-                        <TableCell align="right">Set ready %</TableCell>
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
-                      {managerProgressRows.map((row) => (
-                        <TableRow key={row.jobName} hover>
-                          <TableCell>{row.mondayOrderId || row.jobName}</TableCell>
-                          <TableCell>
-                            {row.mondayItemName ?? (
-                              <Typography variant="body2" color="text.secondary">Not available</Typography>
-                            )}
-                          </TableCell>
-                          <TableCell>
-                            {row.shopDrawingCachedUrl || (row.shopDrawingUrl && row.mondayOrderId) ? (
-                              <Button
-                                size="small"
-                                variant="outlined"
-                                startIcon={<VisibilityRoundedIcon fontSize="small" />}
-                                onClick={() => handleOpenShopDrawingPreview(row)}
-                              >
-                                Preview
-                              </Button>
-                            ) : (
-                              <Typography variant="body2" color="text.secondary">Not available</Typography>
-                            )}
-                          </TableCell>
-                          <TableCell align="right">{formatHours(row.totalHours)}</TableCell>
-                          <TableCell align="right">
-                            {row.workerCount > 0 ? (
-                              <Button
-                                size="small"
-                                variant="text"
-                                onClick={() => handleOpenManagerWorkersPopup(row)}
-                                sx={{ color: 'primary.main', minWidth: 0, p: 0.5 }}
-                              >
-                                {row.workerCount}
-                              </Button>
-                            ) : (
-                              <Typography variant="body2" color="text.secondary">—</Typography>
-                            )}
-                          </TableCell>
-                          <TableCell align="right">{row.savedReadyPercent}%</TableCell>
-                          <TableCell align="right">
-                            <TextField
-                              size="small"
-                              type="number"
-                              value={managerProgressByJob[row.jobName] ?? ''}
-                              onChange={(event) => {
-                                setManagerProgressByJob((current) => ({
-                                  ...current,
-                                  [row.jobName]: event.target.value,
-                                }))
-                              }}
-                              placeholder={String(row.savedReadyPercent)}
-                              slotProps={{ input: { inputProps: { min: 0, max: 100, step: 1 } } }}
-                              sx={{ width: 90 }}
-                            />
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </TableContainer>
-              </>
-            )}
-          </Stack>
-        )}
-
-        {managerWorkersPopupRow ? (
-          <Dialog
-            open={Boolean(managerWorkersPopupRow)}
-            onClose={() => setManagerWorkersPopupRow(null)}
-            maxWidth="sm"
-            fullWidth
-          >
-            <DialogTitle>Workers — {managerWorkersPopupRow.jobName}</DialogTitle>
-            <DialogContent dividers>
-              <TableContainer>
-                <Table size="small">
-                  <TableHead>
-                    <TableRow>
-                      <TableCell>Worker</TableCell>
-                      <TableCell align="right">Hours</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {managerWorkersPopupRow.workerHoursByWorker.map((item) => (
-                      <TableRow key={item.workerId}>
-                        <TableCell>{item.workerName}</TableCell>
-                        <TableCell align="right">{formatHours(item.hours)}</TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </TableContainer>
-            </DialogContent>
-            <DialogActions>
-              <Button onClick={() => setManagerWorkersPopupRow(null)}>Close</Button>
-            </DialogActions>
-          </Dialog>
-        ) : null}
-
-        <Dialog
-          open={Boolean(shopDrawingPreviewRow)}
-          onClose={handleCloseShopDrawingPreview}
-          fullWidth
-          maxWidth="lg"
-        >
-          <DialogTitle>
-            {shopDrawingPreviewRow
-              ? `Shop Drawing Preview - ${shopDrawingPreviewRow.jobName}`
-              : 'Shop Drawing Preview'}
-          </DialogTitle>
-          <DialogContent dividers sx={{ p: 0 }}>
-            {shopDrawingPreviewSrc ? (
-              <Box sx={{ height: { xs: '72vh', md: '80vh' }, position: 'relative' }}>
-                {isShopDrawingPreviewLoading ? (
-                  <Stack
-                    spacing={1}
-                    alignItems="center"
-                    justifyContent="center"
-                    sx={{
-                      position: 'absolute',
-                      inset: 0,
-                      bgcolor: 'rgba(255, 255, 255, 0.85)',
-                      zIndex: 1,
-                    }}
-                  >
-                    <CircularProgress size={28} />
-                    <Typography variant="body2" color="text.secondary">
-                      Loading preview...
-                    </Typography>
-                  </Stack>
-                ) : null}
-                <iframe
-                  key={shopDrawingPreviewSrc}
-                  src={shopDrawingPreviewSrc}
-                  title="Shop Drawing Preview"
-                  onLoad={() => {
-                    setIsShopDrawingPreviewLoading(false)
-                  }}
-                  onError={() => {
-                    setIsShopDrawingPreviewLoading(false)
-                    setError('Could not load shop drawing preview.')
-                  }}
-                  style={{ width: '100%', height: '100%', border: 0 }}
-                />
-              </Box>
-            ) : (
-              <Stack sx={{ p: 2 }}>
-                <Typography color="text.secondary">No preview is available.</Typography>
-              </Stack>
-            )}
-          </DialogContent>
-          <DialogActions>
-            <Button onClick={handleCloseShopDrawingPreview}>Close</Button>
-          </DialogActions>
-        </Dialog>
-
-        <Snackbar
-          open={toastState.open}
-          autoHideDuration={3500}
-          onClose={handleCloseToast}
-          anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
-        >
-          <Alert onClose={handleCloseToast} severity={toastState.severity} variant="filled" sx={{ width: '100%' }}>
-            {toastState.message}
-          </Alert>
-        </Snackbar>
-      </Stack>
-    )
-  }
-
   return (
-    <Stack spacing={2.5}>
-      <Stack
-        direction={{ xs: 'column', sm: 'row' }}
-        justifyContent="space-between"
-        alignItems={{ xs: 'flex-start', sm: 'center' }}
-        gap={1.2}
-      >
-        <Box>
-          <Typography variant="h4" fontWeight={700}>
-            Work Sheet
-          </Typography>
-          <Typography color="text.secondary">
-            Daily bulk sheet, worker costs, and reporting by job or worker.
-          </Typography>
-        </Box>
-
-        <Button
-          variant="outlined"
-          startIcon={<CategoryRoundedIcon />}
-          onClick={() => setStagesDialogOpen(true)}
+    <Stack spacing={isReportsView ? 1.5 : 2.5}>
+      {!isReportsView ? (
+        <Stack
+          direction={{ xs: 'column', sm: 'row' }}
+          justifyContent="space-between"
+          alignItems={{ xs: 'flex-start', sm: 'center' }}
+          gap={1.2}
         >
-          Stages ({stages.length})
-        </Button>
-      </Stack>
+          <Box>
+            <Typography variant="h4" fontWeight={700}>
+              Work Sheet
+            </Typography>
+            <Typography color="text.secondary">
+              Daily bulk sheet and worksheet management.
+            </Typography>
+          </Box>
+
+          <Button
+            variant="outlined"
+            startIcon={<CategoryRoundedIcon />}
+            onClick={() => setStagesDialogOpen(true)}
+          >
+            Stages ({stages.length})
+          </Button>
+        </Stack>
+      ) : null}
 
       {error ? (
         <Alert severity="error" onClose={() => setError('')}>
@@ -2195,44 +2034,34 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
         </Paper>
       ) : null}
 
-      <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5}>
-        <Paper variant="outlined" sx={{ p: 2, flex: 1 }}>
-          <Typography variant="caption" color="text.secondary">
-            Total hours logged
-          </Typography>
-          <Typography variant="h5" fontWeight={700}>
-            {formatHours(totals.totalHours)} h
-          </Typography>
-        </Paper>
-
-        <Paper variant="outlined" sx={{ p: 2, flex: 1 }}>
-          <Typography variant="caption" color="text.secondary">
-            Total spend based on hourly rates
-          </Typography>
-          <Typography variant="h5" fontWeight={700}>
-            {formatCurrency(totals.totalSpend)}
-          </Typography>
-        </Paper>
-      </Stack>
-
       <Paper variant="outlined">
         <Tabs
-          value={activeTab}
-          onChange={(_event, value) => setActiveTab(Number(value))}
+          value={isReportsView ? reportsTab : worksheetTab}
           variant="scrollable"
           scrollButtons="auto"
         >
-          <Tab label="Daily Sheet" />
-          <Tab label="View By Job" />
-          <Tab label="View By Worker" />
-          <Tab label="View By Date" />
-          <Tab label="Missing Worker Info" />
+          {isReportsView ? (
+            <>
+              <Tab label="Summary" value={0} onClick={() => setReportsTab(0)} />
+              <Tab label="View By Job" value={1} onClick={() => setReportsTab(1)} />
+              <Tab label="View By Worker" value={2} onClick={() => setReportsTab(2)} />
+              <Tab label="View By Date" value={3} onClick={() => setReportsTab(3)} />
+            </>
+          ) : (
+            <>
+              <Tab label="Daily Sheet" value={0} onClick={() => setWorksheetTab(0)} />
+              {canAccessManagerSheet ? (
+                <Tab label="Manager Progress" value={1} onClick={() => setWorksheetTab(1)} />
+              ) : null}
+              <Tab label="Missing Worker Info" value={2} onClick={() => setWorksheetTab(2)} />
+            </>
+          )}
         </Tabs>
 
         <Divider />
 
         <Box sx={{ p: { xs: 1.5, md: 2 } }}>
-          {activeTab === 0 ? (
+          {!isReportsView && worksheetTab === 0 ? (
             <Stack spacing={2}>
              
 
@@ -2249,20 +2078,21 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
               />
 
               <TableContainer sx={WORKSHEET_TABLE_CONTAINER_SX}>
-                <Table size="small" stickyHeader sx={{ minWidth: 860 }}>
+                <Table size="small" stickyHeader sx={{ minWidth: 980 }}>
                   <TableHead>
                     <TableRow>
                       <TableCell>Worker</TableCell>
                       <TableCell>Stage</TableCell>
                       <TableCell>Job</TableCell>
                       <TableCell align="right">Hours</TableCell>
+                      <TableCell align="right">Overtime</TableCell>
                       <TableCell>Notes</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
                     {bulkRows.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={5}>
+                        <TableCell colSpan={6}>
                           <Typography color="text.secondary">
                             Add workers first, then fill this daily sheet.
                           </Typography>
@@ -2360,6 +2190,23 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                                 }
                               />
                             </TableCell>
+                            <TableCell align="right" sx={{ minWidth: 140 }}>
+                              <TextField
+                                size="small"
+                                fullWidth
+                                type="number"
+                                inputProps={{ min: 0, step: 0.25 }}
+                                placeholder="0"
+                                value={row.overtimeHours}
+                                onChange={(event) =>
+                                  handleBulkRowChange(
+                                    row.id,
+                                    'overtimeHours',
+                                    event.target.value,
+                                  )
+                                }
+                              />
+                            </TableCell>
                             <TableCell sx={{ minWidth: 260 }}>
                               <TextField
                                 size="small"
@@ -2387,29 +2234,242 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                 <Button variant="contained" onClick={handleSaveDailySheet}>
                   Save Daily Sheet
                 </Button>
-
-                {canAccessManagerSheet && managerAvailableDates.length > 0 ? (
-                  <Button
-                    variant="outlined"
-                    startIcon={<OpenInNewRoundedIcon />}
-                    onClick={() => setManagerSheetOpen(true)}
-                  >
-                    Manager Sheet
-                  </Button>
-                ) : null}
               </Stack>
 
               <Typography variant="body2" color="text.secondary">
                 {!canAccessManagerSheet
-                  ? 'Manager Sheet is available for manager or admin accounts only.'
-                  : managerAvailableDates.length > 0
-                    ? `Manager Sheet has its own date selector. Current manager date: ${managerSelectedDate || 'not selected'}.`
-                    : 'Use the table above to add first entries, then Manager Sheet dates will appear.'}
+                  ? 'Manager Progress tab is available for manager or admin accounts only.'
+                  : 'Use the Manager Progress tab to update ready percentages by date.'}
               </Typography>
             </Stack>
           ) : null}
 
-          {activeTab === 1 ? (
+          {!isReportsView && canAccessManagerSheet && worksheetTab === 1 ? (
+            <Stack spacing={2}>
+              {managerAvailableDates.length === 0 ? (
+                <Typography color="text.secondary">
+                  No manager progress dates are available yet. Add worksheet entries first.
+                </Typography>
+              ) : (
+                <>
+                  <Stack
+                    direction={{ xs: 'column', md: 'row' }}
+                    spacing={1}
+                    alignItems={{ xs: 'stretch', md: 'center' }}
+                    useFlexGap
+                    flexWrap="wrap"
+                  >
+                    <TextField
+                      select
+                      size="small"
+                      label="Month"
+                      value={managerSelectedMonth}
+                      onChange={(event) => handleSelectManagerMonth(event.target.value)}
+                      sx={{ minWidth: 220 }}
+                    >
+                      {managerMonthOptions.map((month) => (
+                        <MenuItem key={month} value={month}>
+                          {formatMonthKeyLabel(month)}
+                        </MenuItem>
+                      ))}
+                    </TextField>
+
+                    <TextField
+                      select
+                      size="small"
+                      label="Date"
+                      value={managerSelectedDate}
+                      onChange={(event) => handleSelectManagerDate(event.target.value)}
+                      sx={{ minWidth: 240 }}
+                    >
+                      {managerDatesInSelectedMonth.map((dateValue) => (
+                        <MenuItem key={dateValue} value={dateValue}>
+                          {formatManagerDateLabel(dateValue)}
+                        </MenuItem>
+                      ))}
+                    </TextField>
+                  </Stack>
+
+                  {managerProgressRows.length === 0 ? (
+                    <Typography color="text.secondary">
+                      No orders found for {managerSelectedDate || 'the selected date'}.
+                    </Typography>
+                  ) : (
+                    <>
+                      <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5}>
+                        <Paper variant="outlined" sx={{ p: 2, flex: 1 }}>
+                          <Typography variant="caption" color="text.secondary">
+                            Orders on date
+                          </Typography>
+                          <Typography variant="h6" fontWeight={700}>
+                            {managerProgressRows.length}
+                          </Typography>
+                        </Paper>
+
+                        <Paper variant="outlined" sx={{ p: 2, flex: 1 }}>
+                          <Typography variant="caption" color="text.secondary">
+                            Average ready
+                          </Typography>
+                          <Typography variant="h6" fontWeight={700}>
+                            {managerProgressSummary.averageReadyPercent.toFixed(1)}%
+                          </Typography>
+                        </Paper>
+
+                        <Paper variant="outlined" sx={{ p: 2, flex: 1 }}>
+                          <Typography variant="caption" color="text.secondary">
+                            Fully ready
+                          </Typography>
+                          <Typography variant="h6" fontWeight={700}>
+                            {managerProgressSummary.completeCount}
+                          </Typography>
+                        </Paper>
+
+                        <Paper variant="outlined" sx={{ p: 2, flex: 1 }}>
+                          <Typography variant="caption" color="text.secondary">
+                            In progress
+                          </Typography>
+                          <Typography variant="h6" fontWeight={700}>
+                            {managerProgressSummary.inProgressCount}
+                          </Typography>
+                        </Paper>
+                      </Stack>
+
+                      <Stack direction="row" spacing={1} justifyContent="flex-end">
+                        <Button
+                          variant="contained"
+                          onClick={() => void handleSaveManagerProgress()}
+                          disabled={isSavingManagerProgress || managerProgressRows.length === 0}
+                        >
+                          {isSavingManagerProgress ? 'Saving...' : 'Save'}
+                        </Button>
+                      </Stack>
+
+                      <TableContainer sx={{ border: 1, borderColor: 'divider', borderRadius: 1.5 }}>
+                        <Table size="small">
+                          <TableHead>
+                            <TableRow>
+                              <TableCell>Order Number</TableCell>
+                              <TableCell>Item</TableCell>
+                              <TableCell>Shop Drawing</TableCell>
+                              <TableCell align="right">Hours</TableCell>
+                              <TableCell align="right">Workers</TableCell>
+                              <TableCell align="right">Current ready %</TableCell>
+                              <TableCell align="right">Set ready %</TableCell>
+                            </TableRow>
+                          </TableHead>
+                          <TableBody>
+                            {managerProgressRows.map((row) => (
+                              <TableRow key={row.jobName} hover>
+                                <TableCell>{row.mondayOrderId || row.jobName}</TableCell>
+                                <TableCell>
+                                  {row.mondayItemName ? (
+                                    row.mondayItemName
+                                  ) : (
+                                    <Typography variant="body2" color="text.secondary">
+                                      Not available
+                                    </Typography>
+                                  )}
+                                </TableCell>
+                                <TableCell>
+                                  {row.shopDrawingCachedUrl || (row.shopDrawingUrl && row.mondayOrderId) ? (
+                                    <Button
+                                      size="small"
+                                      variant="outlined"
+                                      startIcon={<VisibilityRoundedIcon fontSize="small" />}
+                                      onClick={() => {
+                                        handleOpenShopDrawingPreview(row)
+                                      }}
+                                    >
+                                      Preview
+                                    </Button>
+                                  ) : (
+                                    <Typography variant="body2" color="text.secondary">
+                                      Not available
+                                    </Typography>
+                                  )}
+                                </TableCell>
+                                <TableCell align="right">{formatHours(row.totalHours)}</TableCell>
+                                <TableCell align="right">
+                                  {row.workerCount > 0 ? (
+                                    <Button
+                                      size="small"
+                                      variant="text"
+                                      onClick={() => {
+                                        handleOpenManagerWorkersPopup(row)
+                                      }}
+                                      sx={{
+                                        color: 'primary.main',
+                                        fontWeight: 700,
+                                        minWidth: 0,
+                                        p: 0,
+                                        textDecoration: 'underline',
+                                        '&:hover': {
+                                          textDecoration: 'underline',
+                                          backgroundColor: 'transparent',
+                                        },
+                                      }}
+                                    >
+                                      {row.workerCount}
+                                    </Button>
+                                  ) : (
+                                    <Typography variant="body2" color="text.secondary">
+                                      0
+                                    </Typography>
+                                  )}
+                                </TableCell>
+                                <TableCell align="right">{row.savedReadyPercent.toFixed(1)}%</TableCell>
+                                <TableCell align="right" sx={{ width: 180 }}>
+                                  <TextField
+                                    size="small"
+                                    type="number"
+                                    value={row.editReadyPercent.toString()}
+                                    onChange={(event) =>
+                                      handleManagerProgressChange(row.jobName, event.target.value)
+                                    }
+                                    inputProps={{ min: 0, max: 100, step: 1 }}
+                                  />
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </TableContainer>
+                    </>
+                  )}
+                </>
+              )}
+            </Stack>
+          ) : null}
+
+          {isReportsView && reportsTab === 0 ? (
+            <Stack spacing={2}>
+              <Typography variant="subtitle1" fontWeight={700}>
+                Report Summary
+              </Typography>
+
+              <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5}>
+                <Paper variant="outlined" sx={{ p: 2, flex: 1 }}>
+                  <Typography variant="caption" color="text.secondary">
+                    Total hours logged
+                  </Typography>
+                  <Typography variant="h5" fontWeight={700}>
+                    {formatHours(totals.totalHours)} h
+                  </Typography>
+                </Paper>
+
+                <Paper variant="outlined" sx={{ p: 2, flex: 1 }}>
+                  <Typography variant="caption" color="text.secondary">
+                    Total spend based on hourly rates
+                  </Typography>
+                  <Typography variant="h5" fontWeight={700}>
+                    {formatCurrency(totals.totalSpend)}
+                  </Typography>
+                </Paper>
+              </Stack>
+            </Stack>
+          ) : null}
+
+          {isReportsView && reportsTab === 1 ? (
             <Stack spacing={2}>
               <Stack
                 direction={{ xs: 'column', md: 'row' }}
@@ -2418,7 +2478,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                 gap={1.2}
               >
                 <Typography variant="subtitle1" fontWeight={700}>
-                  {byJobGrouping === 'stage' ? 'Hours By Stage And Date' : 'Hours By Job And Date'}
+                  {byJobGrouping === 'stage' ? 'Hours By Stage And Date' : 'Hours By Job'}
                 </Typography>
 
                 <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
@@ -2458,21 +2518,41 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                   <TableHead>
                     <TableRow>
                       <TableCell>{byJobGrouping === 'stage' ? 'Stage' : 'Job'}</TableCell>
-                      {(byJobGrouping === 'stage' ? byStageView.dates : byJobView.dates).map((date) => (
-                        <TableCell key={date} align="right">
-                          {date}
-                        </TableCell>
-                      ))}
-                      <TableCell align="right">Ready %</TableCell>
-                      <TableCell align="right">Total hours</TableCell>
-                      <TableCell align="right">Total cost</TableCell>
+                      {byJobGrouping === 'stage'
+                        ? byStageView.dates.map((date) => (
+                          <TableCell key={date} align="right">
+                            {date}
+                          </TableCell>
+                        ))
+                        : null}
+                      {byJobGrouping === 'stage' ? (
+                        <>
+                          <TableCell align="right">Total hours</TableCell>
+                          <TableCell align="right">Total cost</TableCell>
+                        </>
+                      ) : (
+                        <>
+                          <TableCell align="right">PO Amount</TableCell>
+                          <TableCell align="right">Bills Amount</TableCell>
+                          <TableCell align="right">Invoice Amount</TableCell>
+                          <TableCell align="right">Paid?</TableCell>
+                          <TableCell align="right">Profit</TableCell>
+                          <TableCell align="right">Ready %</TableCell>
+                          <TableCell align="right">Total hours</TableCell>
+                          <TableCell align="right">Total cost</TableCell>
+                        </>
+                      )}
                     </TableRow>
                   </TableHead>
                   <TableBody>
                     {(byJobGrouping === 'stage' ? byStageView.rows : byJobView.rows).length === 0 ? (
                       <TableRow>
                         <TableCell
-                          colSpan={(byJobGrouping === 'stage' ? byStageView.dates.length : byJobView.dates.length) + 4}
+                          colSpan={
+                            byJobGrouping === 'stage'
+                              ? byStageView.dates.length + 3
+                              : 9
+                          }
                         >
                           <Typography color="text.secondary">No entries yet.</Typography>
                         </TableCell>
@@ -2487,8 +2567,6 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                               {row.perDate[date] ? formatHours(row.perDate[date]) : '-'}
                             </TableCell>
                           ))}
-
-                          <TableCell align="right">-</TableCell>
 
                           <TableCell align="right">
                             <Typography fontWeight={700}>{formatHours(row.totalHours)}</Typography>
@@ -2512,25 +2590,161 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                             </Button>
                           </TableCell>
 
-                          {byJobView.dates.map((date) => (
-                            <TableCell key={`${row.jobName}-${date}`} align="right">
-                              {row.perDate[date] ? formatHours(row.perDate[date]) : '-'}
-                            </TableCell>
-                          ))}
+                          {(() => {
+                            const jobKey = normalizeJobName(row.jobName)
+                            const jobMetrics = quickBooksMetricsByJobKey.get(jobKey)
+                            const purchaseOrderAmount = jobMetrics?.purchaseOrderAmount ?? 0
+                            const billAmount = jobMetrics?.billAmount ?? 0
+                            const invoiceAmount = jobMetrics?.invoiceAmount ?? 0
+                            const paymentAmount = jobMetrics?.paymentAmount ?? 0
+                            const latestReady = latestReadyByJobKey.get(jobKey)
+                            const latestReadyPercent = latestReady?.readyPercent ?? null
+                            const lastWrittenDate = latestReady?.date ?? null
+                            const requiredReadyDate = latestDueWorksheetDateByJobKey.get(jobKey) ?? null
+                            const hasRequiredReadyUpdate = requiredReadyDate
+                              ? orderProgressByDateJobKey.has(`${requiredReadyDate}:${jobKey}`)
+                              : true
+                            const readyColor: 'error.main' | 'success.main' =
+                              hasRequiredReadyUpdate
+                                ? 'success.main'
+                                : 'error.main'
+                            const hasInvoice = invoiceAmount > 0
+                            const isPaid = hasInvoice && paymentAmount + 0.01 >= invoiceAmount
+                            const isFullyBilled = Math.abs(purchaseOrderAmount - billAmount) <= 0.01
+                            const profitAmount = invoiceAmount - billAmount - row.totalCost
+                            const projectedProfitAfterFullBilling =
+                              invoiceAmount - purchaseOrderAmount - row.totalCost
+                            const remainingToBillAmount = Math.max(0, purchaseOrderAmount - billAmount)
+                            const profitStatus: 'red' | 'yellow' | 'green' =
+                              isFullyBilled
+                                ? (isPaid ? 'green' : 'yellow')
+                                : 'red'
+                            const profitColor: 'error.main' | 'warning.main' | 'success.main' =
+                              isFullyBilled
+                                ? (isPaid ? 'success.main' : 'warning.main')
+                                : 'error.main'
 
-                          <TableCell align="right">
-                            {Number.isFinite(latestReadyPercentByJobKey.get(normalizeJobName(row.jobName)) ?? NaN)
-                              ? `${Number(latestReadyPercentByJobKey.get(normalizeJobName(row.jobName))).toFixed(1)}%`
-                              : '-'}
-                          </TableCell>
+                            return (
+                              <>
+                                <TableCell align="right">
+                                  <Typography fontWeight={700}>
+                                    {formatCurrency(purchaseOrderAmount)}
+                                  </Typography>
+                                </TableCell>
 
-                          <TableCell align="right">
-                            <Typography fontWeight={700}>{formatHours(row.totalHours)}</Typography>
-                          </TableCell>
+                                <TableCell align="right">
+                                  <Typography fontWeight={700}>
+                                    {formatCurrency(billAmount)}
+                                  </Typography>
+                                </TableCell>
 
-                          <TableCell align="right">
-                            <Typography fontWeight={700}>{formatCurrency(row.totalCost)}</Typography>
-                          </TableCell>
+                                <TableCell align="right">
+                                  <Typography fontWeight={700}>
+                                    {hasInvoice ? formatCurrency(invoiceAmount) : '-'}
+                                  </Typography>
+                                </TableCell>
+
+                                <TableCell align="right">
+                                  <Typography
+                                    fontWeight={700}
+                                    color={
+                                      !hasInvoice
+                                        ? 'text.secondary'
+                                        : isPaid
+                                          ? 'success.main'
+                                          : paymentAmount > 0
+                                            ? 'warning.main'
+                                            : 'error.main'
+                                    }
+                                  >
+                                    {!hasInvoice
+                                      ? '-'
+                                      : isPaid
+                                        ? 'Yes'
+                                        : paymentAmount > 0
+                                          ? `Partial (${formatCurrency(paymentAmount)})`
+                                          : 'No'}
+                                  </Typography>
+                                </TableCell>
+
+                                <TableCell align="right">
+                                  <Typography
+                                    fontWeight={700}
+                                    color={profitColor}
+                                    onClick={
+                                      profitStatus === 'green'
+                                        ? undefined
+                                        : (event) => {
+                                          setProfitInfoAnchorEl(event.currentTarget)
+                                          setProfitInfoPopup({
+                                            jobName: row.jobName,
+                                            status: profitStatus,
+                                            currentProfit: Number(profitAmount.toFixed(2)),
+                                            projectedProfitAfterFullBilling: Number(
+                                              projectedProfitAfterFullBilling.toFixed(2),
+                                            ),
+                                            remainingToBillAmount: Number(
+                                              remainingToBillAmount.toFixed(2),
+                                            ),
+                                          })
+                                        }
+                                    }
+                                    sx={
+                                      profitStatus === 'green'
+                                        ? undefined
+                                        : {
+                                          cursor: 'pointer',
+                                          textDecoration: 'underline',
+                                          textUnderlineOffset: '2px',
+                                        }
+                                    }
+                                  >
+                                    {formatCurrency(profitAmount)}
+                                  </Typography>
+                                </TableCell>
+
+                                <TableCell align="right">
+                                  <Typography
+                                    fontWeight={700}
+                                    color={readyColor}
+                                    onClick={
+                                      hasRequiredReadyUpdate
+                                        ? undefined
+                                        : (event) => {
+                                          setReadyInfoAnchorEl(event.currentTarget)
+                                          setReadyInfoPopup({
+                                            jobName: row.jobName,
+                                            requiredReadyDate,
+                                            lastWrittenDate,
+                                          })
+                                        }
+                                    }
+                                    sx={
+                                      hasRequiredReadyUpdate
+                                        ? undefined
+                                        : {
+                                          cursor: 'pointer',
+                                          textDecoration: 'underline',
+                                          textUnderlineOffset: '2px',
+                                        }
+                                    }
+                                  >
+                                    {Number.isFinite(latestReadyPercent ?? NaN)
+                                      ? `${Number(latestReadyPercent).toFixed(1)}%`
+                                      : '-'}
+                                  </Typography>
+                                </TableCell>
+
+                                <TableCell align="right">
+                                  <Typography fontWeight={700}>{formatHours(row.totalHours)}</Typography>
+                                </TableCell>
+
+                                <TableCell align="right">
+                                  <Typography fontWeight={700}>{formatCurrency(row.totalCost)}</Typography>
+                                </TableCell>
+                              </>
+                            )
+                          })()}
                         </TableRow>
                       ))
                     )}
@@ -2540,7 +2754,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
             </Stack>
           ) : null}
 
-          {activeTab === 2 ? (
+          {isReportsView && reportsTab === 2 ? (
             <Stack spacing={2}>
               <Typography variant="subtitle1" fontWeight={700}>
                 Worker History
@@ -2716,7 +2930,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                     ) : (
                       workerFilteredEntries.map((entry) => {
                         const rate = getEntryRate(entry, workersById)
-                        const cost = entry.hours * rate
+                        const cost = getEntryCost(entry, workersById)
 
                         return (
                           <TableRow key={entry.id} hover>
@@ -2725,7 +2939,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                               {entry.stageId ? stagesById.get(entry.stageId)?.name ?? 'Unknown stage' : '-'}
                             </TableCell>
                             <TableCell>{entry.jobName}</TableCell>
-                            <TableCell align="right">{formatHours(entry.hours)}</TableCell>
+                            <TableCell align="right">{formatHours(getEntryTotalHours(entry))}</TableCell>
                             <TableCell align="right">{formatCurrency(rate)}</TableCell>
                             <TableCell align="right">{formatCurrency(cost)}</TableCell>
                             <TableCell>{entry.notes || '-'}</TableCell>
@@ -2739,7 +2953,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
             </Stack>
           ) : null}
 
-          {activeTab === 3 ? (
+          {isReportsView && reportsTab === 3 ? (
             <Stack spacing={2}>
               <Stack
                 direction={{ xs: 'column', md: 'row' }}
@@ -2807,7 +3021,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
               </Stack>
 
               <TableContainer sx={WORKSHEET_TABLE_CONTAINER_SX}>
-                <Table size="small" stickyHeader sx={{ minWidth: 1080 }}>
+                <Table size="small" stickyHeader sx={{ minWidth: 1200 }}>
                   <TableHead>
                     <TableRow>
                       <TableCell>Date</TableCell>
@@ -2815,6 +3029,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                       <TableCell>Stage</TableCell>
                       <TableCell>Job</TableCell>
                       <TableCell align="right">Hours</TableCell>
+                      <TableCell align="right">Overtime</TableCell>
                       <TableCell align="right">Rate</TableCell>
                       <TableCell align="right">Cost</TableCell>
                       <TableCell>Notes</TableCell>
@@ -2824,7 +3039,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                   <TableBody>
                     {dateViewEntries.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={9}>
+                        <TableCell colSpan={10}>
                           <Typography color="text.secondary">
                             No entries in the selected date range.
                           </Typography>
@@ -2834,12 +3049,17 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                       dateViewEntries.map((entry) => {
                         const isEditing = editingEntryId === entry.id
                         const activeWorkerId = isEditing ? entryEditForm.workerId : entry.workerId
-                        const rawHours = isEditing ? Number(entryEditForm.hours) : entry.hours
-                        const hours = Number.isFinite(rawHours) ? rawHours : 0
+                        const rawRegularHours = isEditing ? Number(entryEditForm.hours) : Number(entry.hours)
+                        const regularHours = Number.isFinite(rawRegularHours) ? rawRegularHours : 0
+                        const rawOvertimeHours = isEditing
+                          ? Number(entryEditForm.overtimeHours)
+                          : Number(entry.overtimeHours ?? 0)
+                        const overtimeHours = Number.isFinite(rawOvertimeHours) ? rawOvertimeHours : 0
+                        const totalHours = regularHours + overtimeHours
                         const rate = isEditing
                           ? workersById.get(activeWorkerId)?.hourlyRate ?? 0
                           : getEntryRate(entry, workersById)
-                        const cost = hours * rate
+                        const cost = (regularHours * rate) + (overtimeHours * rate * OVERTIME_RATE_MULTIPLIER)
 
                         return (
                           <TableRow key={entry.id} hover>
@@ -2933,7 +3153,23 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                                   }
                                 />
                               ) : (
-                                formatHours(entry.hours)
+                                formatHours(totalHours)
+                              )}
+                            </TableCell>
+
+                            <TableCell align="right" sx={{ minWidth: 120 }}>
+                              {isEditing ? (
+                                <TextField
+                                  size="small"
+                                  type="number"
+                                  inputProps={{ min: 0, step: 0.25 }}
+                                  value={entryEditForm.overtimeHours}
+                                  onChange={(event) =>
+                                    handleEditEntryFieldChange('overtimeHours', event.target.value)
+                                  }
+                                />
+                              ) : (
+                                formatHours(getEntryOvertimeHours(entry))
                               )}
                             </TableCell>
 
@@ -3043,7 +3279,74 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
             </Stack>
           ) : null}
 
-          {activeTab === 4 ? (
+          <Popover
+            open={Boolean(profitInfoAnchorEl) && Boolean(profitInfoPopup)}
+            anchorEl={profitInfoAnchorEl}
+            onClose={handleCloseProfitInfoPopup}
+            anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+            transformOrigin={{ vertical: 'top', horizontal: 'left' }}
+          >
+            <Stack spacing={0.8} sx={{ p: 1.5, maxWidth: 360 }}>
+              <Typography variant="subtitle2" fontWeight={700}>
+                {profitInfoPopup?.jobName ? `${profitInfoPopup.jobName} Profit` : 'Profit'}
+              </Typography>
+
+              {profitInfoPopup?.status === 'red' ? (
+                <>
+                  <Typography variant="body2" color="text.secondary">
+                    Red means not all PO amount has been billed yet.
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Remaining to bill: {formatCurrency(profitInfoPopup.remainingToBillAmount)}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Current profit: {formatCurrency(profitInfoPopup.currentProfit)}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Profit after full PO billing: {formatCurrency(profitInfoPopup.projectedProfitAfterFullBilling)}
+                  </Typography>
+                </>
+              ) : profitInfoPopup?.status === 'yellow' ? (
+                <Typography variant="body2" color="text.secondary">
+                  Yellow means billing is complete, but payment is still pending.
+                </Typography>
+              ) : null}
+            </Stack>
+          </Popover>
+
+          <Popover
+            open={Boolean(readyInfoAnchorEl) && Boolean(readyInfoPopup)}
+            anchorEl={readyInfoAnchorEl}
+            onClose={handleCloseReadyInfoPopup}
+            anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+            transformOrigin={{ vertical: 'top', horizontal: 'left' }}
+          >
+            <Stack spacing={0.8} sx={{ p: 1.5, maxWidth: 360 }}>
+              <Typography variant="subtitle2" fontWeight={700}>
+                {readyInfoPopup?.jobName ? `${readyInfoPopup.jobName} Ready %` : 'Ready %'}
+              </Typography>
+
+              <Typography variant="body2" color="text.secondary">
+                Red means the manager has not updated Ready % for the latest worksheet date that now requires an update.
+              </Typography>
+
+              <Typography variant="body2" color="text.secondary">
+                Latest worksheet date requiring update:{' '}
+                {readyInfoPopup?.requiredReadyDate
+                  ? formatManagerDateLabel(readyInfoPopup.requiredReadyDate)
+                  : 'Not available'}
+              </Typography>
+
+              <Typography variant="body2" color="text.secondary">
+                Last Ready % written:{' '}
+                {readyInfoPopup?.lastWrittenDate
+                  ? formatManagerDateLabel(readyInfoPopup.lastWrittenDate)
+                  : 'Never'}
+              </Typography>
+            </Stack>
+          </Popover>
+
+          {!isReportsView && worksheetTab === 2 ? (
             <Stack spacing={2}>
               <Stack
                 direction={{ xs: 'column', md: 'row' }}
@@ -3264,223 +3567,6 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setStagesDialogOpen(false)}>Close</Button>
-        </DialogActions>
-      </Dialog>
-
-      <Dialog
-        open={managerSheetOpen}
-        onClose={closeManagerSheet}
-        fullWidth
-        maxWidth="xl"
-      >
-        <DialogTitle>
-          Manager Progress - {managerSelectedDate ? formatManagerDateLabel(managerSelectedDate) : 'No Date Selected'}
-        </DialogTitle>
-        <DialogContent dividers>
-          {managerAvailableDates.length === 0 ? (
-            <Typography color="text.secondary">
-              No manager progress dates are available yet. Add worksheet entries first.
-            </Typography>
-          ) : (
-            <Stack spacing={2}>
-              <Stack
-                direction={{ xs: 'column', md: 'row' }}
-                spacing={1}
-                alignItems={{ xs: 'stretch', md: 'center' }}
-                useFlexGap
-                flexWrap="wrap"
-              >
-                <TextField
-                  select
-                  size="small"
-                  label="Month"
-                  value={managerSelectedMonth}
-                  onChange={(event) => handleSelectManagerMonth(event.target.value)}
-                  sx={{ minWidth: 220 }}
-                >
-                  {managerMonthOptions.map((month) => (
-                    <MenuItem key={month} value={month}>
-                      {formatMonthKeyLabel(month)}
-                    </MenuItem>
-                  ))}
-                </TextField>
-              </Stack>
-
-              <Stack
-                direction={{ xs: 'column', md: 'row' }}
-                spacing={1}
-                alignItems={{ xs: 'stretch', md: 'center' }}
-                useFlexGap
-                flexWrap="wrap"
-              >
-                <TextField
-                  select
-                  size="small"
-                  label="Date"
-                  value={managerSelectedDate}
-                  onChange={(event) => handleSelectManagerDate(event.target.value)}
-                  sx={{ minWidth: 240 }}
-                >
-                  {managerDatesInSelectedMonth.map((dateValue) => (
-                    <MenuItem key={dateValue} value={dateValue}>
-                      {formatManagerDateLabel(dateValue)}
-                    </MenuItem>
-                  ))}
-                </TextField>
-              </Stack>
-
-              {managerProgressRows.length === 0 ? (
-                <Typography color="text.secondary">
-                  No orders found for {managerSelectedDate || 'the selected date'}.
-                </Typography>
-              ) : (
-                <>
-                  <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5}>
-                    <Paper variant="outlined" sx={{ p: 2, flex: 1 }}>
-                      <Typography variant="caption" color="text.secondary">
-                        Orders on date
-                      </Typography>
-                      <Typography variant="h6" fontWeight={700}>
-                        {managerProgressRows.length}
-                      </Typography>
-                    </Paper>
-
-                    <Paper variant="outlined" sx={{ p: 2, flex: 1 }}>
-                      <Typography variant="caption" color="text.secondary">
-                        Average ready
-                      </Typography>
-                      <Typography variant="h6" fontWeight={700}>
-                        {managerProgressSummary.averageReadyPercent.toFixed(1)}%
-                      </Typography>
-                    </Paper>
-
-                    <Paper variant="outlined" sx={{ p: 2, flex: 1 }}>
-                      <Typography variant="caption" color="text.secondary">
-                        Fully ready
-                      </Typography>
-                      <Typography variant="h6" fontWeight={700}>
-                        {managerProgressSummary.completeCount}
-                      </Typography>
-                    </Paper>
-
-                    <Paper variant="outlined" sx={{ p: 2, flex: 1 }}>
-                      <Typography variant="caption" color="text.secondary">
-                        In progress
-                      </Typography>
-                      <Typography variant="h6" fontWeight={700}>
-                        {managerProgressSummary.inProgressCount}
-                      </Typography>
-                    </Paper>
-                  </Stack>
-
-                  <Typography variant="subtitle1" fontWeight={700}>
-                    Daily Order Progress
-                  </Typography>
-
-                  <TableContainer sx={{ border: 1, borderColor: 'divider', borderRadius: 1.5 }}>
-                    <Table size="small">
-                      <TableHead>
-                        <TableRow>
-                          <TableCell>Order Number</TableCell>
-                          <TableCell>Item</TableCell>
-                          <TableCell>Shop Drawing</TableCell>
-                          <TableCell align="right">Hours</TableCell>
-                          <TableCell align="right">Workers</TableCell>
-                          <TableCell align="right">Current ready %</TableCell>
-                          <TableCell align="right">Set ready %</TableCell>
-                        </TableRow>
-                      </TableHead>
-                      <TableBody>
-                        {managerProgressRows.map((row) => (
-                          <TableRow key={row.jobName} hover>
-                            <TableCell>{row.mondayOrderId || row.jobName}</TableCell>
-                            <TableCell>
-                              {row.mondayItemName ? (
-                                row.mondayItemName
-                              ) : (
-                                <Typography variant="body2" color="text.secondary">
-                                  Not available
-                                </Typography>
-                              )}
-                            </TableCell>
-                            <TableCell>
-                              {row.shopDrawingCachedUrl || (row.shopDrawingUrl && row.mondayOrderId) ? (
-                                <Button
-                                  size="small"
-                                  variant="outlined"
-                                  startIcon={<VisibilityRoundedIcon fontSize="small" />}
-                                  onClick={() => {
-                                    handleOpenShopDrawingPreview(row)
-                                  }}
-                                >
-                                  Preview
-                                </Button>
-                              ) : (
-                                <Typography variant="body2" color="text.secondary">
-                                  Not available
-                                </Typography>
-                              )}
-                            </TableCell>
-                            <TableCell align="right">{formatHours(row.totalHours)}</TableCell>
-                            <TableCell align="right">
-                              {row.workerCount > 0 ? (
-                                <Button
-                                  size="small"
-                                  variant="text"
-                                  onClick={() => {
-                                    handleOpenManagerWorkersPopup(row)
-                                  }}
-                                  sx={{
-                                    color: 'primary.main',
-                                    fontWeight: 700,
-                                    minWidth: 0,
-                                    p: 0,
-                                    textDecoration: 'underline',
-                                    '&:hover': {
-                                      textDecoration: 'underline',
-                                      backgroundColor: 'transparent',
-                                    },
-                                  }}
-                                >
-                                  {row.workerCount}
-                                </Button>
-                              ) : (
-                                <Typography variant="body2" color="text.secondary">
-                                  0
-                                </Typography>
-                              )}
-                            </TableCell>
-                            <TableCell align="right">{row.savedReadyPercent.toFixed(1)}%</TableCell>
-                            <TableCell align="right" sx={{ width: 180 }}>
-                              <TextField
-                                size="small"
-                                type="number"
-                                value={row.editReadyPercent.toString()}
-                                onChange={(event) =>
-                                  handleManagerProgressChange(row.jobName, event.target.value)
-                                }
-                                inputProps={{ min: 0, max: 100, step: 1 }}
-                              />
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </TableContainer>
-                </>
-              )}
-            </Stack>
-          )}
-        </DialogContent>
-        <DialogActions>
-          <Button
-            variant="contained"
-            onClick={() => void handleSaveManagerProgress()}
-            disabled={isSavingManagerProgress || managerProgressRows.length === 0}
-          >
-            {isSavingManagerProgress ? 'Saving...' : 'Save'}
-          </Button>
-          <Button onClick={closeManagerSheet}>Close</Button>
         </DialogActions>
       </Dialog>
 
@@ -3729,13 +3815,13 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                           const groupRows = group.entries.map((entry) => {
                             const worker = workersById.get(entry.workerId)
                             const rate = getEntryRate(entry, workersById)
-                            const cost = entry.hours * rate
+                            const cost = getEntryCost(entry, workersById)
 
                             return (
                               <TableRow key={entry.id} hover>
                                 <TableCell>{entry.date}</TableCell>
                                 <TableCell>{worker?.fullName ?? 'Unknown worker'}</TableCell>
-                                <TableCell align="right">{formatHours(entry.hours)}</TableCell>
+                                <TableCell align="right">{formatHours(getEntryTotalHours(entry))}</TableCell>
                                 <TableCell align="right">{formatCurrency(rate)}</TableCell>
                                 <TableCell align="right">{formatCurrency(cost)}</TableCell>
                                 <TableCell>{entry.notes || '-'}</TableCell>
@@ -3784,7 +3870,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                       selectedJobEntries.map((entry) => {
                         const worker = workersById.get(entry.workerId)
                         const rate = getEntryRate(entry, workersById)
-                        const cost = entry.hours * rate
+                        const cost = getEntryCost(entry, workersById)
 
                         return (
                           <TableRow key={entry.id} hover>
@@ -3793,7 +3879,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                             <TableCell>
                               {entry.stageId ? stagesById.get(entry.stageId)?.name ?? 'Unknown stage' : '-'}
                             </TableCell>
-                            <TableCell align="right">{formatHours(entry.hours)}</TableCell>
+                            <TableCell align="right">{formatHours(getEntryTotalHours(entry))}</TableCell>
                             <TableCell align="right">{formatCurrency(rate)}</TableCell>
                             <TableCell align="right">{formatCurrency(cost)}</TableCell>
                             <TableCell>{entry.notes || '-'}</TableCell>

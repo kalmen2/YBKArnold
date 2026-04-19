@@ -13,7 +13,12 @@ export function buildDailySheetSyncRows(
   const invalidWorkerNames = new Set<string>()
 
   bulkRows.forEach((row) => {
-    const hasInput = row.jobName.trim() || row.hours.trim() || row.notes.trim() || row.stageId.trim()
+    const hasInput =
+      row.jobName.trim()
+      || row.hours.trim()
+      || row.overtimeHours.trim()
+      || row.notes.trim()
+      || row.stageId.trim()
 
     if (!hasInput) {
       return
@@ -22,8 +27,18 @@ export function buildDailySheetSyncRows(
     const jobName = row.jobName.trim()
     const stageId = row.stageId.trim()
     const hours = Number(row.hours)
+    const overtimeHours = Number(row.overtimeHours)
+    const normalizedHours = Number.isFinite(hours) ? hours : NaN
+    const normalizedOvertimeHours = Number.isFinite(overtimeHours) ? overtimeHours : 0
 
-    if (!jobName || !Number.isFinite(hours) || hours <= 0) {
+    if (
+      !jobName
+      || !Number.isFinite(normalizedHours)
+      || normalizedHours < 0
+      || !Number.isFinite(normalizedOvertimeHours)
+      || normalizedOvertimeHours < 0
+      || (normalizedHours <= 0 && normalizedOvertimeHours <= 0)
+    ) {
       const workerName = workersById.get(row.workerId)?.fullName ?? 'Unknown worker'
       invalidWorkerNames.add(workerName)
       return
@@ -37,7 +52,8 @@ export function buildDailySheetSyncRows(
         : {}),
       workerId: row.workerId,
       jobName,
-      hours,
+      hours: normalizedHours,
+      overtimeHours: normalizedOvertimeHours,
       notes: row.notes.trim(),
       ...(stageId
         ? {

@@ -34,12 +34,8 @@ export const router = createBrowserRouter([
         element: withRouteSuspense(<TimesheetPage />),
       },
       {
-        path: 'manager-progress',
-        element: withRouteSuspense(
-          <RequireManagerOrAdminRoute>
-            <TimesheetPage initialView="manager-progress" />
-          </RequireManagerOrAdminRoute>,
-        ),
+        path: 'reports',
+        element: withRouteSuspense(<TimesheetPage initialView="reports" />),
       },
       {
         path: 'workers',

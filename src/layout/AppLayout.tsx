@@ -15,9 +15,10 @@ import {
   useMediaQuery,
   useTheme,
 } from '@mui/material'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Outlet, useLocation } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
+import { navItems } from '../navigation/navItems'
 import Sidebar from './Sidebar'
 
 const EXPANDED_DRAWER_WIDTH = 248
@@ -66,6 +67,27 @@ export default function AppLayout() {
       ? 'primary'
       : 'default'
 
+  const headerTitle = useMemo(() => {
+    const normalizedPath = (location.pathname || '/').replace(/\/+$/, '') || '/'
+
+    const matchedItem = [...navItems]
+      .sort((left, right) => right.path.length - left.path.length)
+      .find((item) => normalizedPath === item.path || normalizedPath.startsWith(`${item.path}/`))
+
+    if (matchedItem) {
+      return matchedItem.label
+    }
+
+    if (normalizedPath === '/') {
+      return 'Dashboard'
+    }
+
+    const lastSegment = normalizedPath.split('/').filter(Boolean).pop() ?? 'Dashboard'
+    return lastSegment
+      .replace(/-/g, ' ')
+      .replace(/\b\w/g, (character) => character.toUpperCase())
+  }, [location.pathname])
+
   return (
     <Box sx={{ display: 'flex', minHeight: '100vh', bgcolor: 'background.default' }}>
       <AppBar
@@ -103,7 +125,7 @@ export default function AppLayout() {
           </IconButton>
 
           <Typography variant="h6" sx={{ fontWeight: 700 }}>
-            Integrations Hub
+            {headerTitle}
           </Typography>
 
           <Box sx={{ flexGrow: 1 }} />
