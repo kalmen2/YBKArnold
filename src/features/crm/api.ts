@@ -146,6 +146,7 @@ export type CrmOverviewResponse = {
 export type CrmDealer = {
   sourceId: string
   name: string
+  pictureUrl?: string | null
   phone?: string | null
   city?: string | null
   state?: string | null
@@ -168,7 +169,10 @@ export type CrmDealerDetail = CrmDealer & {
   zip: string | null
   accountText: string | null
   owner: string | null
+  pictureUrl: string | null
+  pictureUrlSource: string | null
   socialMedia: string | null
+  socialMediaLinks: Record<string, string> | null
   isFavorite: boolean
   createdDateSource: string | null
   modifiedDateSource: string | null
@@ -209,6 +213,7 @@ export type CrmContact = {
   city: string | null
   state: string | null
   country: string | null
+  photoUrl: string | null
   isArchived: boolean
   contactOrigin: string
   createdDateSource: string | null

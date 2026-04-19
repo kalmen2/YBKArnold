@@ -1,4 +1,5 @@
 import AdminPanelSettingsRoundedIcon from '@mui/icons-material/AdminPanelSettingsRounded'
+import AccountBalanceRoundedIcon from '@mui/icons-material/AccountBalanceRounded'
 import BusinessRoundedIcon from '@mui/icons-material/BusinessRounded'
 import ContactsRoundedIcon from '@mui/icons-material/ContactsRounded'
 import DashboardRoundedIcon from '@mui/icons-material/DashboardRounded'
@@ -17,6 +18,8 @@ export type NavItem = {
   path: string
   icon: ElementType
   adminOnly?: boolean
+  managerOnly?: boolean
+  managerOrAdminOnly?: boolean
 }
 
 export const navItems: NavItem[] = [
@@ -31,14 +34,21 @@ export const navItems: NavItem[] = [
     icon: TableChartRoundedIcon,
   },
   {
-    label: 'Manager Progress',
-    path: '/manager-progress',
-    icon: TrendingUpRoundedIcon,
-  },
-  {
     label: 'Workers',
     path: '/workers',
     icon: GroupRoundedIcon,
+  },
+  {
+    label: 'QuickBooks',
+    path: '/quickbooks',
+    icon: AccountBalanceRoundedIcon,
+    managerOrAdminOnly: true,
+  },
+  {
+    label: 'Manager Sheet',
+    path: '/manager-progress',
+    icon: TrendingUpRoundedIcon,
+    managerOrAdminOnly: true,
   },
   {
     label: 'Support',
@@ -75,15 +85,13 @@ export const navItems: NavItem[] = [
     adminOnly: true,
   },
   {
-    label: 'Dealers',
-    path: '/admin/crm/dealers',
-    icon: StoreRoundedIcon,
-    adminOnly: true,
-  },
-  {
     label: 'Contacts',
     path: '/admin/crm/contacts',
     icon: ContactsRoundedIcon,
-    adminOnly: true,
+  },
+  {
+    label: 'Dealers',
+    path: '/admin/crm/dealers',
+    icon: StoreRoundedIcon,
   },
 ]

@@ -12,6 +12,7 @@ export function registerDashboardSupportRoutes(app, deps) {
     getDashboardSnapshotFromCache,
     isDashboardRefreshRequested,
     persistNewMondayOrders,
+    requireFirebaseAuth,
     setDashboardSnapshotCache,
     toBoundedInteger,
   } = deps
@@ -140,7 +141,7 @@ export function registerDashboardSupportRoutes(app, deps) {
   }
 
 
-app.get('/api/dashboard/monday', async (req, res, next) => {
+app.get('/api/dashboard/monday', requireFirebaseAuth, async (req, res, next) => {
   try {
     const refreshRequested = isDashboardRefreshRequested(req)
     let snapshot = null
@@ -179,7 +180,7 @@ app.get('/api/dashboard/monday', async (req, res, next) => {
   }
 })
 
-app.get('/api/dashboard/monday/shop-drawing/download', async (req, res, next) => {
+app.get('/api/dashboard/monday/shop-drawing/download', requireFirebaseAuth, async (req, res, next) => {
   try {
     const orderId = String(req.query?.orderId ?? '').trim()
     const renderInline = String(req.query?.inline ?? '').trim() === '1'
@@ -285,7 +286,7 @@ app.get('/api/dashboard/monday/shop-drawing/download', async (req, res, next) =>
   }
 })
 
-app.get('/api/dashboard/zendesk', async (req, res, next) => {
+app.get('/api/dashboard/zendesk', requireFirebaseAuth, async (req, res, next) => {
   try {
     const refreshRequested = isDashboardRefreshRequested(req)
 
@@ -306,7 +307,7 @@ app.get('/api/dashboard/zendesk', async (req, res, next) => {
   }
 })
 
-app.get('/api/support/alerts', async (req, res, next) => {
+app.get('/api/support/alerts', requireFirebaseAuth, async (req, res, next) => {
   try {
     const refreshRequested = isDashboardRefreshRequested(req)
     const snapshotKey = 'support_alerts'
@@ -327,7 +328,7 @@ app.get('/api/support/alerts', async (req, res, next) => {
   }
 })
 
-app.get('/api/support/alerts/tickets', async (req, res, next) => {
+app.get('/api/support/alerts/tickets', requireFirebaseAuth, async (req, res, next) => {
   try {
     const refreshRequested = isDashboardRefreshRequested(req)
     const limitPerBucket = toBoundedInteger(req.query?.limitPerBucket, 10, 200, 100)
@@ -349,7 +350,7 @@ app.get('/api/support/alerts/tickets', async (req, res, next) => {
   }
 })
 
-app.get('/api/support/tickets', async (req, res, next) => {
+app.get('/api/support/tickets', requireFirebaseAuth, async (req, res, next) => {
   try {
     const refreshRequested = isDashboardRefreshRequested(req)
     const limit = toBoundedInteger(req.query?.limit, 10, 100, 50)
@@ -371,7 +372,7 @@ app.get('/api/support/tickets', async (req, res, next) => {
   }
 })
 
-app.get('/api/support/tickets/:ticketId/conversation', async (req, res, next) => {
+app.get('/api/support/tickets/:ticketId/conversation', requireFirebaseAuth, async (req, res, next) => {
   try {
     const ticketId = String(req.params.ticketId ?? '').trim()
 
@@ -386,7 +387,7 @@ app.get('/api/support/tickets/:ticketId/conversation', async (req, res, next) =>
   }
 })
 
-app.post('/api/support/tickets', async (req, res, next) => {
+app.post('/api/support/tickets', requireFirebaseAuth, async (req, res, next) => {
   try {
     const subject = String(req.body?.subject ?? '').trim()
     const description = String(req.body?.description ?? '').trim()

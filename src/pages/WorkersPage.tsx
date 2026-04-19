@@ -20,6 +20,7 @@ import {
   Typography,
 } from '@mui/material'
 import { useCallback, useEffect, useState } from 'react'
+import { useAuth } from '../auth/AuthContext'
 import {
   createWorkersBulk,
   deleteWorker,
@@ -73,6 +74,8 @@ function createEmptyBulkWorkerDraft(): BulkWorkerDraftRow {
 }
 
 export default function WorkersPage() {
+  const { appUser } = useAuth()
+  const canManageWorkers = appUser?.isAdmin === true
   const [workers, setWorkers] = useState<TimesheetWorker[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [isRefreshing, setIsRefreshing] = useState(false)
@@ -159,6 +162,11 @@ export default function WorkersPage() {
     setError('')
     setSuccess('')
 
+    if (!canManageWorkers) {
+      setError('Only admin users can add workers.')
+      return
+    }
+
     const validWorkers: CreateWorkerInput[] = []
     const invalidRows: string[] = []
     let hasAnyInput = false
@@ -226,6 +234,11 @@ export default function WorkersPage() {
     setError('')
     setSuccess('')
 
+    if (!canManageWorkers) {
+      setError('Only admin users can remove workers.')
+      return
+    }
+
     const confirmed = window.confirm('Remove this worker?')
 
     if (!confirmed) {
@@ -246,6 +259,11 @@ export default function WorkersPage() {
   }
 
   const handleStartEditWorker = (worker: TimesheetWorker) => {
+    if (!canManageWorkers) {
+      setError('Only admin users can edit workers.')
+      return
+    }
+
     setError('')
     setSuccess('')
     setEditingWorkerId(worker.id)
@@ -272,6 +290,11 @@ export default function WorkersPage() {
   const handleSaveEditedWorker = async () => {
     setError('')
     setSuccess('')
+
+    if (!canManageWorkers) {
+      setError('Only admin users can edit workers.')
+      return
+    }
 
     if (!editingWorkerId) {
       return
@@ -361,7 +384,14 @@ export default function WorkersPage() {
         </Paper>
       ) : null}
 
-      <Paper variant="outlined" sx={{ p: 2 }}>
+      {!canManageWorkers ? (
+        <Alert severity="info">
+          You can view workers, but only admin users can add, edit, or remove workers.
+        </Alert>
+      ) : null}
+
+      {canManageWorkers ? (
+        <Paper variant="outlined" sx={{ p: 2 }}>
         <Stack spacing={2}>
           <Typography variant="subtitle1" fontWeight={700}>
             Add Workers
@@ -477,7 +507,8 @@ export default function WorkersPage() {
             </Button>
           </Stack>
         </Stack>
-      </Paper>
+        </Paper>
+      ) : null}
 
       <Paper variant="outlined" sx={{ p: 2 }}>
         <Stack spacing={1.5}>
@@ -591,7 +622,11 @@ export default function WorkersPage() {
                         </TableCell>
 
                         <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>
-                          {isEditing ? (
+                          {!canManageWorkers ? (
+                            <Typography variant="body2" color="text.secondary">
+                              View only
+                            </Typography>
+                          ) : isEditing ? (
                             <Stack direction="row" spacing={1} justifyContent="flex-end">
                               <Button
                                 size="small"

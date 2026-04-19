@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { AppError } from '../utils/app-error.mjs'
 
 export function normalizeWorkerNumber(value) {
   const normalized = String(value ?? '').trim()
@@ -35,10 +36,7 @@ export async function allocateWorkerNumbers(workersCollection, requestedCount) {
   )
 
   if (usedNumbers.size + count > 9000) {
-    throw {
-      status: 500,
-      message: 'No available worker IDs remain.',
-    }
+    throw new AppError('No available worker IDs remain.', 500)
   }
 
   const allocatedNumbers = []
@@ -57,10 +55,7 @@ export async function allocateWorkerNumbers(workersCollection, requestedCount) {
   }
 
   if (allocatedNumbers.length !== count) {
-    throw {
-      status: 500,
-      message: 'Unable to allocate worker IDs.',
-    }
+    throw new AppError('Unable to allocate worker IDs.', 500)
   }
 
   return allocatedNumbers
@@ -212,17 +207,11 @@ export function validateWorkerInput(input, path = 'worker') {
   const hourlyRate = Number(input?.hourlyRate)
 
   if (!fullName) {
-    throw {
-      status: 400,
-      message: `${path}.fullName is required.`,
-    }
+    throw new AppError(`${path}.fullName is required.`, 400)
   }
 
   if (!Number.isFinite(hourlyRate) || hourlyRate <= 0) {
-    throw {
-      status: 400,
-      message: `${path}.hourlyRate must be a positive number.`,
-    }
+    throw new AppError(`${path}.hourlyRate must be a positive number.`, 400)
   }
 
   return {
@@ -253,31 +242,19 @@ export function validateEntryFields(input, date, path = 'entry') {
   const notes = String(input?.notes ?? '').trim()
 
   if (!normalizedDate) {
-    throw {
-      status: 400,
-      message: 'date is required.',
-    }
+    throw new AppError('date is required.', 400)
   }
 
   if (!workerId) {
-    throw {
-      status: 400,
-      message: `${path}.workerId is required.`,
-    }
+    throw new AppError(`${path}.workerId is required.`, 400)
   }
 
   if (!jobName) {
-    throw {
-      status: 400,
-      message: `${path}.jobName is required.`,
-    }
+    throw new AppError(`${path}.jobName is required.`, 400)
   }
 
   if (!Number.isFinite(hours) || hours <= 0) {
-    throw {
-      status: 400,
-      message: `${path}.hours must be a positive number.`,
-    }
+    throw new AppError(`${path}.hours must be a positive number.`, 400)
   }
 
   const fields = {

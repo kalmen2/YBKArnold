@@ -234,12 +234,67 @@ function normalizeMetadata(metadataInput) {
   }
 }
 
+function normalizeSocialMediaLinks(input) {
+  let sourceValue = input
+
+  if (typeof sourceValue === 'string') {
+    const normalizedText = toTrimmedText(sourceValue, 4000)
+
+    if (!normalizedText) {
+      return {}
+    }
+
+    try {
+      sourceValue = JSON.parse(normalizedText)
+    } catch {
+      return {}
+    }
+  }
+
+  const sourceObject = toOptionalObject(sourceValue)
+  const normalizedLinks = {}
+
+  for (const [rawKey, rawValue] of Object.entries(sourceObject)) {
+    const key = toLowerText(rawKey, 80)
+      .replace(/[^a-z0-9_-]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .slice(0, 80)
+    const value = toTrimmedText(rawValue, 600)
+
+    if (!key || !value) {
+      continue
+    }
+
+    normalizedLinks[key] = value
+  }
+
+  return normalizedLinks
+}
+
+function toCompactSocialMediaText(links) {
+  const sourceObject = toOptionalObject(links)
+  const normalizedEntries = Object.entries(sourceObject)
+    .filter(([key, value]) => Boolean(toTrimmedText(key, 80) && toTrimmedText(value, 600)))
+    .map(([key, value]) => `${key}: ${value}`)
+
+  if (normalizedEntries.length === 0) {
+    return ''
+  }
+
+  return normalizedEntries.join(' | ').slice(0, 2000)
+}
+
 function normalizeAccount(rawAccount) {
   const account = toOptionalObject(rawAccount)
+  const socialMediaLinks = normalizeSocialMediaLinks(account.social_media)
+  const socialMediaText = typeof account.social_media === 'string'
+    ? toTrimmedText(account.social_media, 2000)
+    : toCompactSocialMediaText(socialMediaLinks)
 
   return {
     sourceId: toTrimmedText(account.id, 160),
     name: toTrimmedText(account.name, 240),
+    pictureUrlSource: toTrimmedText(account.picture_url, 500),
     phone: toTrimmedText(account.phone, 80),
     phone2: toTrimmedText(account.phone2, 80),
     email: toTrimmedText(account.email, 200),
@@ -258,7 +313,8 @@ function normalizeAccount(rawAccount) {
     modifiedDate: toIsoDateOrNull(account.modified),
     owner: toTrimmedText(account.owner, 200),
     ownerEmail: toTrimmedText(account.owner_email, 200),
-    socialMedia: toTrimmedText(account.social_media, 200),
+    socialMedia: socialMediaText,
+    socialMediaLinks,
     isArchived: toBoolean(account.is_archived),
     isFavorite: toBoolean(account.is_favorite),
     contacts: toOptionalArray(account.contacts),
@@ -795,7 +851,7 @@ export function registerCrmRoutes(app, deps) {
     }
   })
 
-  app.get('/api/crm/dealers', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+  app.get('/api/crm/dealers', requireFirebaseAuth, async (req, res, next) => {
     try {
       const searchRegex = buildContainsRegex(req.query?.search, 200)
       const includeArchived = toBoolean(req.query?.includeArchived)
@@ -917,6 +973,7 @@ export function registerCrmRoutes(app, deps) {
                 accountType: 1,
                 accountClass: 1,
                 website: 1,
+                pictureUrl: 1,
                 contactCountSource: 1,
                 isArchived: 1,
                 lastImportedAt: 1,
@@ -941,7 +998,7 @@ export function registerCrmRoutes(app, deps) {
     }
   })
 
-  app.get('/api/crm/dealers/:dealerSourceId', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+  app.get('/api/crm/dealers/:dealerSourceId', requireFirebaseAuth, async (req, res, next) => {
     try {
       const dealerSourceId = toTrimmedText(req.params.dealerSourceId, 160)
 
@@ -986,7 +1043,10 @@ export function registerCrmRoutes(app, deps) {
             accountText: 1,
             owner: 1,
             ownerEmail: 1,
+            pictureUrl: 1,
+            pictureUrlSource: 1,
             socialMedia: 1,
+            socialMediaLinks: 1,
             isArchived: 1,
             isFavorite: 1,
             contactCountSource: 1,
@@ -1078,6 +1138,7 @@ export function registerCrmRoutes(app, deps) {
                 phone: 1,
                 phone2: 1,
                 phoneAlt: 1,
+                photoUrl: 1,
                 city: 1,
                 state: 1,
                 country: 1,
@@ -1107,7 +1168,7 @@ export function registerCrmRoutes(app, deps) {
     }
   })
 
-  app.get('/api/crm/contacts', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+  app.get('/api/crm/contacts', requireFirebaseAuth, async (req, res, next) => {
     try {
       const includeArchived = toBoolean(req.query?.includeArchived)
       const searchRegex = buildContainsRegex(req.query?.search, 200)
@@ -1311,6 +1372,7 @@ export function registerCrmRoutes(app, deps) {
                 phone: 1,
                 phone2: 1,
                 phoneAlt: 1,
+                photoUrl: 1,
                 city: 1,
                 state: 1,
                 country: 1,
@@ -1339,7 +1401,7 @@ export function registerCrmRoutes(app, deps) {
     }
   })
 
-  app.get('/api/crm/quotes', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+  app.get('/api/crm/quotes', requireFirebaseAuth, async (req, res, next) => {
     try {
       const status = toLowerText(req.query?.status, 60)
       const dealerSourceId = toTrimmedText(req.query?.dealerSourceId, 160)
@@ -1587,7 +1649,7 @@ export function registerCrmRoutes(app, deps) {
     }
   })
 
-  app.get('/api/crm/orders', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+  app.get('/api/crm/orders', requireFirebaseAuth, async (req, res, next) => {
     try {
       const status = toLowerText(req.query?.status, 60)
       const dealerSourceId = toTrimmedText(req.query?.dealerSourceId, 160)
@@ -1921,6 +1983,9 @@ export function registerCrmRoutes(app, deps) {
         const sourceId = account.sourceId
         const emailLower = toLowerText(account.email, 200)
         const ownerEmailLower = toLowerText(account.ownerEmail, 200)
+        const socialMediaLinks = Object.keys(toOptionalObject(account.socialMediaLinks)).length > 0
+          ? account.socialMediaLinks
+          : null
 
         return {
           updateOne: {
@@ -1953,7 +2018,9 @@ export function registerCrmRoutes(app, deps) {
                 owner: account.owner || null,
                 ownerEmail: account.ownerEmail || null,
                 ownerEmailLower: ownerEmailLower || null,
+                pictureUrlSource: account.pictureUrlSource || null,
                 socialMedia: account.socialMedia || null,
+                socialMediaLinks,
                 isArchived: account.isArchived,
                 isFavorite: account.isFavorite,
                 contactCountSource: account.contacts.length,

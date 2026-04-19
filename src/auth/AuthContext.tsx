@@ -23,6 +23,8 @@ import type { AppAuthUser } from './types'
 
 const ownerEmail = 'kal@ybkarnold.com'
 const authProfileRequestTimeoutMs = 7000
+const clickProfileSyncIntervalMs = 60000
+const clickActivityCooldownMs = 20000
 const cachedAuthUserStorageKey = 'arnold.auth.cached-user.v1'
 
 type AuthContextValue = {
@@ -136,6 +138,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [profileError, setProfileError] = useState<string | null>(null)
   const [ownerEmailValue, setOwnerEmailValue] = useState(ownerEmail)
   const activityCooldownByKeyRef = useRef<Map<string, number>>(new Map())
+  const lastClickProfileSyncAtRef = useRef(0)
 
   const logActivity = useCallback(async (input: {
     action: string
@@ -156,17 +159,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     const target = String(input?.target ?? '').trim().slice(0, 180)
-    if (action !== 'click') {
-      const key = `${action}:${target}`
-      const now = Date.now()
-      const lastSentAt = activityCooldownByKeyRef.current.get(key) ?? 0
+    const key = action === 'click'
+      ? 'click-global'
+      : `${action}:${target}`
+    const cooldownMs = action === 'click' ? clickActivityCooldownMs : 1200
+    const now = Date.now()
+    const lastSentAt = activityCooldownByKeyRef.current.get(key) ?? 0
 
-      if (now - lastSentAt < 1200) {
-        return
-      }
-
-      activityCooldownByKeyRef.current.set(key, now)
+    if (now - lastSentAt < cooldownMs) {
+      return
     }
+
+    activityCooldownByKeyRef.current.set(key, now)
 
     try {
       const idToken = await activeUser.getIdToken()
@@ -357,7 +361,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         },
       })
 
-      void syncProfile(firebaseUser)
+      const now = Date.now()
+
+      if (now - lastClickProfileSyncAtRef.current >= clickProfileSyncIntervalMs) {
+        lastClickProfileSyncAtRef.current = now
+        void syncProfile(firebaseUser)
+      }
     }
 
     document.addEventListener('click', handleDocumentClick, true)

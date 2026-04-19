@@ -36,6 +36,7 @@ import {
   fetchMondayDashboardSnapshot,
   type DashboardOrder,
 } from '../features/dashboard/api'
+import { useAuth } from '../auth/AuthContext'
 import {
   createStage,
   deleteEntry,
@@ -125,6 +126,8 @@ const WORKSHEET_TABLE_CONTAINER_SX = {
 
 export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPageProps) {
   const navigate = useNavigate()
+  const { appUser } = useAuth()
+  const canAccessManagerSheet = appUser?.isManager === true || appUser?.isAdmin === true
   const isManagerProgressView = initialView === 'manager-progress'
   const [activeTab, setActiveTab] = useState(0)
   const [workers, setWorkers] = useState<TimesheetWorker[]>([])
@@ -190,28 +193,19 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
   const [workerCustomEndDate, setWorkerCustomEndDate] = useState(todayIsoDate())
 
   useEffect(() => {
-    if (!isManagerProgressView) {
+    if (isManagerProgressView) {
+      setActiveTab(0)
       return
     }
 
-    setActiveTab(0)
-    setManagerSheetOpen(true)
+    setManagerSheetOpen(false)
   }, [isManagerProgressView])
 
   const refreshState = useCallback(async () => {
     setIsLoading(true)
 
     try {
-      const [timesheetResult, mondayResult] = await Promise.allSettled([
-        fetchTimesheetState(),
-        fetchMondayDashboardSnapshot(),
-      ])
-
-      if (timesheetResult.status !== 'fulfilled') {
-        throw timesheetResult.reason
-      }
-
-      const payload = timesheetResult.value
+      const payload = await fetchTimesheetState()
 
       setWorkers(payload.workers)
       setEntries(payload.entries)
@@ -227,10 +221,6 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
 
         return payload.workers[0]?.id ?? ''
       })
-
-      if (mondayResult.status === 'fulfilled') {
-        setMondayOrders(Array.isArray(mondayResult.value.orders) ? mondayResult.value.orders : [])
-      }
     } catch (requestError) {
       const message =
         requestError instanceof Error
@@ -240,6 +230,13 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     } finally {
       setIsLoading(false)
     }
+
+    // Monday snapshot loads in background — doesn't block the page
+    fetchMondayDashboardSnapshot()
+      .then((result) => {
+        setMondayOrders(Array.isArray(result.orders) ? result.orders : [])
+      })
+      .catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -1524,17 +1521,6 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     }
   }, [managerSelectedMonth])
 
-  const managerCurrentMonthIndex = managerMonthOptions.indexOf(managerSelectedMonth)
-  const managerCurrentDateIndex = managerDatesInSelectedMonth.indexOf(managerSelectedDate)
-  const canGoToNewerManagerMonth = managerCurrentMonthIndex > 0
-  const canGoToOlderManagerMonth =
-    managerCurrentMonthIndex >= 0
-    && managerCurrentMonthIndex < managerMonthOptions.length - 1
-  const canGoToNewerManagerDate = managerCurrentDateIndex > 0
-  const canGoToOlderManagerDate =
-    managerCurrentDateIndex >= 0
-    && managerCurrentDateIndex < managerDatesInSelectedMonth.length - 1
-
   const handleManagerProgressChange = (jobName: string, value: string) => {
     setManagerProgressByJob((current) => ({
       ...current,
@@ -1859,6 +1845,309 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     )
   }
 
+  if (isManagerProgressView) {
+    return (
+      <Stack spacing={2.5}>
+        <Box>
+          <Typography variant="h4" fontWeight={700}>
+            Manager Progress
+          </Typography>
+          <Typography color="text.secondary">
+            Daily order progress by date.
+          </Typography>
+        </Box>
+
+        {error ? (
+          <Alert severity="error" onClose={() => setError('')}>
+            {error}
+          </Alert>
+        ) : null}
+
+        {success ? (
+          <Alert severity="success" onClose={() => setSuccess('')}>
+            {success}
+          </Alert>
+        ) : null}
+
+        {isLoading ? (
+          <Paper variant="outlined" sx={{ p: 3 }}>
+            <Stack direction="row" spacing={1} alignItems="center">
+              <CircularProgress size={22} />
+              <Typography color="text.secondary">Loading timesheet data...</Typography>
+            </Stack>
+          </Paper>
+        ) : managerAvailableDates.length === 0 ? (
+          <Paper variant="outlined" sx={{ p: 3 }}>
+            <Typography color="text.secondary">
+              No manager progress dates are available yet. Add worksheet entries first.
+            </Typography>
+          </Paper>
+        ) : (
+          <Stack spacing={2}>
+            <Stack
+              direction={{ xs: 'column', md: 'row' }}
+              spacing={1}
+              alignItems={{ xs: 'stretch', md: 'center' }}
+              useFlexGap
+              flexWrap="wrap"
+            >
+              <TextField
+                select
+                size="small"
+                label="Month"
+                value={managerSelectedMonth}
+                onChange={(event) => handleSelectManagerMonth(event.target.value)}
+                sx={{ minWidth: 220 }}
+              >
+                {managerMonthOptions.map((month) => (
+                  <MenuItem key={month} value={month}>
+                    {formatMonthKeyLabel(month)}
+                  </MenuItem>
+                ))}
+              </TextField>
+            </Stack>
+
+            <Stack
+              direction={{ xs: 'column', md: 'row' }}
+              spacing={1}
+              alignItems={{ xs: 'stretch', md: 'center' }}
+              useFlexGap
+              flexWrap="wrap"
+            >
+              <TextField
+                select
+                size="small"
+                label="Date"
+                value={managerSelectedDate}
+                onChange={(event) => handleSelectManagerDate(event.target.value)}
+                sx={{ minWidth: 240 }}
+              >
+                {managerDatesInSelectedMonth.map((dateValue) => (
+                  <MenuItem key={dateValue} value={dateValue}>
+                    {formatManagerDateLabel(dateValue)}
+                  </MenuItem>
+                ))}
+              </TextField>
+            </Stack>
+
+            {managerProgressRows.length === 0 ? (
+              <Typography color="text.secondary">
+                No orders found for {managerSelectedDate || 'the selected date'}.
+              </Typography>
+            ) : (
+              <>
+                <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5}>
+                  <Paper variant="outlined" sx={{ p: 2, flex: 1 }}>
+                    <Typography variant="caption" color="text.secondary">Orders on date</Typography>
+                    <Typography variant="h6" fontWeight={700}>{managerProgressRows.length}</Typography>
+                  </Paper>
+                  <Paper variant="outlined" sx={{ p: 2, flex: 1 }}>
+                    <Typography variant="caption" color="text.secondary">Average ready</Typography>
+                    <Typography variant="h6" fontWeight={700}>{managerProgressSummary.averageReadyPercent.toFixed(1)}%</Typography>
+                  </Paper>
+                  <Paper variant="outlined" sx={{ p: 2, flex: 1 }}>
+                    <Typography variant="caption" color="text.secondary">Fully ready</Typography>
+                    <Typography variant="h6" fontWeight={700}>{managerProgressSummary.completeCount}</Typography>
+                  </Paper>
+                  <Paper variant="outlined" sx={{ p: 2, flex: 1 }}>
+                    <Typography variant="caption" color="text.secondary">In progress</Typography>
+                    <Typography variant="h6" fontWeight={700}>{managerProgressSummary.inProgressCount}</Typography>
+                  </Paper>
+                </Stack>
+
+                <Stack direction="row" spacing={1} justifyContent="flex-end">
+                  <Button
+                    variant="contained"
+                    disabled={isSavingManagerProgress || managerProgressRows.length === 0}
+                    onClick={handleSaveManagerProgress}
+                  >
+                    {isSavingManagerProgress ? 'Saving...' : 'Save Progress'}
+                  </Button>
+                </Stack>
+
+                <TableContainer sx={{ border: 1, borderColor: 'divider', borderRadius: 1.5 }}>
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>Order Number</TableCell>
+                        <TableCell>Item</TableCell>
+                        <TableCell>Shop Drawing</TableCell>
+                        <TableCell align="right">Hours</TableCell>
+                        <TableCell align="right">Workers</TableCell>
+                        <TableCell align="right">Current ready %</TableCell>
+                        <TableCell align="right">Set ready %</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {managerProgressRows.map((row) => (
+                        <TableRow key={row.jobName} hover>
+                          <TableCell>{row.mondayOrderId || row.jobName}</TableCell>
+                          <TableCell>
+                            {row.mondayItemName ?? (
+                              <Typography variant="body2" color="text.secondary">Not available</Typography>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            {row.shopDrawingCachedUrl || (row.shopDrawingUrl && row.mondayOrderId) ? (
+                              <Button
+                                size="small"
+                                variant="outlined"
+                                startIcon={<VisibilityRoundedIcon fontSize="small" />}
+                                onClick={() => handleOpenShopDrawingPreview(row)}
+                              >
+                                Preview
+                              </Button>
+                            ) : (
+                              <Typography variant="body2" color="text.secondary">Not available</Typography>
+                            )}
+                          </TableCell>
+                          <TableCell align="right">{formatHours(row.totalHours)}</TableCell>
+                          <TableCell align="right">
+                            {row.workerCount > 0 ? (
+                              <Button
+                                size="small"
+                                variant="text"
+                                onClick={() => handleOpenManagerWorkersPopup(row)}
+                                sx={{ color: 'primary.main', minWidth: 0, p: 0.5 }}
+                              >
+                                {row.workerCount}
+                              </Button>
+                            ) : (
+                              <Typography variant="body2" color="text.secondary">—</Typography>
+                            )}
+                          </TableCell>
+                          <TableCell align="right">{row.savedReadyPercent}%</TableCell>
+                          <TableCell align="right">
+                            <TextField
+                              size="small"
+                              type="number"
+                              value={managerProgressByJob[row.jobName] ?? ''}
+                              onChange={(event) => {
+                                setManagerProgressByJob((current) => ({
+                                  ...current,
+                                  [row.jobName]: event.target.value,
+                                }))
+                              }}
+                              placeholder={String(row.savedReadyPercent)}
+                              slotProps={{ input: { inputProps: { min: 0, max: 100, step: 1 } } }}
+                              sx={{ width: 90 }}
+                            />
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              </>
+            )}
+          </Stack>
+        )}
+
+        {managerWorkersPopupRow ? (
+          <Dialog
+            open={Boolean(managerWorkersPopupRow)}
+            onClose={() => setManagerWorkersPopupRow(null)}
+            maxWidth="sm"
+            fullWidth
+          >
+            <DialogTitle>Workers — {managerWorkersPopupRow.jobName}</DialogTitle>
+            <DialogContent dividers>
+              <TableContainer>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Worker</TableCell>
+                      <TableCell align="right">Hours</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {managerWorkersPopupRow.workerHoursByWorker.map((item) => (
+                      <TableRow key={item.workerId}>
+                        <TableCell>{item.workerName}</TableCell>
+                        <TableCell align="right">{formatHours(item.hours)}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            </DialogContent>
+            <DialogActions>
+              <Button onClick={() => setManagerWorkersPopupRow(null)}>Close</Button>
+            </DialogActions>
+          </Dialog>
+        ) : null}
+
+        <Dialog
+          open={Boolean(shopDrawingPreviewRow)}
+          onClose={handleCloseShopDrawingPreview}
+          fullWidth
+          maxWidth="lg"
+        >
+          <DialogTitle>
+            {shopDrawingPreviewRow
+              ? `Shop Drawing Preview - ${shopDrawingPreviewRow.jobName}`
+              : 'Shop Drawing Preview'}
+          </DialogTitle>
+          <DialogContent dividers sx={{ p: 0 }}>
+            {shopDrawingPreviewSrc ? (
+              <Box sx={{ height: { xs: '72vh', md: '80vh' }, position: 'relative' }}>
+                {isShopDrawingPreviewLoading ? (
+                  <Stack
+                    spacing={1}
+                    alignItems="center"
+                    justifyContent="center"
+                    sx={{
+                      position: 'absolute',
+                      inset: 0,
+                      bgcolor: 'rgba(255, 255, 255, 0.85)',
+                      zIndex: 1,
+                    }}
+                  >
+                    <CircularProgress size={28} />
+                    <Typography variant="body2" color="text.secondary">
+                      Loading preview...
+                    </Typography>
+                  </Stack>
+                ) : null}
+                <iframe
+                  key={shopDrawingPreviewSrc}
+                  src={shopDrawingPreviewSrc}
+                  title="Shop Drawing Preview"
+                  onLoad={() => {
+                    setIsShopDrawingPreviewLoading(false)
+                  }}
+                  onError={() => {
+                    setIsShopDrawingPreviewLoading(false)
+                    setError('Could not load shop drawing preview.')
+                  }}
+                  style={{ width: '100%', height: '100%', border: 0 }}
+                />
+              </Box>
+            ) : (
+              <Stack sx={{ p: 2 }}>
+                <Typography color="text.secondary">No preview is available.</Typography>
+              </Stack>
+            )}
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={handleCloseShopDrawingPreview}>Close</Button>
+          </DialogActions>
+        </Dialog>
+
+        <Snackbar
+          open={toastState.open}
+          autoHideDuration={3500}
+          onClose={handleCloseToast}
+          anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+        >
+          <Alert onClose={handleCloseToast} severity={toastState.severity} variant="filled" sx={{ width: '100%' }}>
+            {toastState.message}
+          </Alert>
+        </Snackbar>
+      </Stack>
+    )
+  }
+
   return (
     <Stack spacing={2.5}>
       <Stack
@@ -2099,21 +2388,23 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                   Save Daily Sheet
                 </Button>
 
-                {managerAvailableDates.length > 0 ? (
+                {canAccessManagerSheet && managerAvailableDates.length > 0 ? (
                   <Button
                     variant="outlined"
                     startIcon={<OpenInNewRoundedIcon />}
                     onClick={() => setManagerSheetOpen(true)}
                   >
-                    Manager Progress
+                    Manager Sheet
                   </Button>
                 ) : null}
               </Stack>
 
               <Typography variant="body2" color="text.secondary">
-                {managerAvailableDates.length > 0
-                  ? `Manager Progress has its own date selector. Current manager date: ${managerSelectedDate || 'not selected'}.`
-                  : 'Use the table above to add first entries, then Manager Progress dates will appear.'}
+                {!canAccessManagerSheet
+                  ? 'Manager Sheet is available for manager or admin accounts only.'
+                  : managerAvailableDates.length > 0
+                    ? `Manager Sheet has its own date selector. Current manager date: ${managerSelectedDate || 'not selected'}.`
+                    : 'Use the table above to add first entries, then Manager Sheet dates will appear.'}
               </Typography>
             </Stack>
           ) : null}
@@ -3013,44 +3304,6 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                     </MenuItem>
                   ))}
                 </TextField>
-
-                <Button
-                  size="small"
-                  variant="outlined"
-                  disabled={!canGoToNewerManagerMonth}
-                  onClick={() => {
-                    if (!canGoToNewerManagerMonth) {
-                      return
-                    }
-
-                    const nextMonth = managerMonthOptions[managerCurrentMonthIndex - 1]
-
-                    if (nextMonth) {
-                      handleSelectManagerMonth(nextMonth)
-                    }
-                  }}
-                >
-                  Newer Month
-                </Button>
-
-                <Button
-                  size="small"
-                  variant="outlined"
-                  disabled={!canGoToOlderManagerMonth}
-                  onClick={() => {
-                    if (!canGoToOlderManagerMonth) {
-                      return
-                    }
-
-                    const nextMonth = managerMonthOptions[managerCurrentMonthIndex + 1]
-
-                    if (nextMonth) {
-                      handleSelectManagerMonth(nextMonth)
-                    }
-                  }}
-                >
-                  Older Month
-                </Button>
               </Stack>
 
               <Stack
@@ -3074,44 +3327,6 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                     </MenuItem>
                   ))}
                 </TextField>
-
-                <Button
-                  size="small"
-                  variant="outlined"
-                  disabled={!canGoToNewerManagerDate}
-                  onClick={() => {
-                    if (!canGoToNewerManagerDate) {
-                      return
-                    }
-
-                    const nextDate = managerDatesInSelectedMonth[managerCurrentDateIndex - 1]
-
-                    if (nextDate) {
-                      handleSelectManagerDate(nextDate)
-                    }
-                  }}
-                >
-                  Newer Day
-                </Button>
-
-                <Button
-                  size="small"
-                  variant="outlined"
-                  disabled={!canGoToOlderManagerDate}
-                  onClick={() => {
-                    if (!canGoToOlderManagerDate) {
-                      return
-                    }
-
-                    const nextDate = managerDatesInSelectedMonth[managerCurrentDateIndex + 1]
-
-                    if (nextDate) {
-                      handleSelectManagerDate(nextDate)
-                    }
-                  }}
-                >
-                  Older Day
-                </Button>
               </Stack>
 
               {managerProgressRows.length === 0 ? (

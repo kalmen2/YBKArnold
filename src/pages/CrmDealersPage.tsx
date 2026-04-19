@@ -1,17 +1,34 @@
 import ContactsRoundedIcon from '@mui/icons-material/ContactsRounded'
+import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded'
+import FacebookRoundedIcon from '@mui/icons-material/FacebookRounded'
+import LanguageRoundedIcon from '@mui/icons-material/LanguageRounded'
+import LinkedInIcon from '@mui/icons-material/LinkedIn'
+import LocalShippingRoundedIcon from '@mui/icons-material/LocalShippingRounded'
+import PinterestIcon from '@mui/icons-material/Pinterest'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded'
+import TwitterIcon from '@mui/icons-material/Twitter'
+import YouTubeIcon from '@mui/icons-material/YouTube'
 import {
   Alert,
+  Avatar,
   Box,
   Button,
   Chip,
+  Collapse,
   CircularProgress,
+  Divider,
   FormControl,
+  IconButton,
   InputAdornment,
   InputLabel,
+  List,
+  ListItemButton,
+  ListItemText,
   MenuItem,
   Paper,
+  Tab,
+  Tabs,
   Select,
   Stack,
   Table,
@@ -22,16 +39,20 @@ import {
   TablePagination,
   TableRow,
   TextField,
+  Tooltip,
   Typography,
 } from '@mui/material'
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link as RouterLink, Navigate, useSearchParams } from 'react-router-dom'
+import { alpha } from '@mui/material/styles'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { Link as RouterLink, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
 import {
   fetchCrmDealerDetail,
   fetchCrmDealers,
+  fetchCrmOrders,
   type CrmDealer,
   type CrmDealerDetailResponse,
+  type CrmOrder,
 } from '../features/crm/api'
 
 function formatDateTime(value: string | null | undefined) {
@@ -54,6 +75,133 @@ function formatDateTime(value: string | null | undefined) {
   }).format(parsed)
 }
 
+function formatDate(value: string | null | undefined) {
+  if (!value) {
+    return '-'
+  }
+
+  const parsed = new Date(value)
+
+  if (Number.isNaN(parsed.getTime())) {
+    return value
+  }
+
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  }).format(parsed)
+}
+
+function formatStatus(value: string | null | undefined) {
+  if (!value) {
+    return '-'
+  }
+
+  return value
+    .split('_')
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
+}
+
+function toExternalUrl(value: string | null | undefined) {
+  const normalized = String(value ?? '').trim()
+
+  if (!normalized) {
+    return ''
+  }
+
+  const withProtocol = /^https?:\/\//i.test(normalized)
+    ? normalized
+    : `https://${normalized}`
+
+  try {
+    const parsed = new URL(withProtocol)
+
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return ''
+    }
+
+    parsed.hash = ''
+
+    return parsed.toString()
+  } catch {
+    return ''
+  }
+}
+
+function formatSocialLabel(value: string) {
+  const normalized = String(value)
+    .trim()
+    .replace(/[_-]+/g, ' ')
+
+  if (!normalized) {
+    return 'Link'
+  }
+
+  return normalized
+    .split(' ')
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
+}
+
+function resolveSocialVisual(platform: string, href: string) {
+  const source = `${platform} ${href}`.toLowerCase()
+
+  if (source.includes('facebook')) {
+    return {
+      icon: <FacebookRoundedIcon sx={{ fontSize: 16 }} />,
+      foreground: '#1877f2',
+      background: '#eaf2ff',
+      hoverBackground: '#dbe9ff',
+    }
+  }
+
+  if (source.includes('linkedin')) {
+    return {
+      icon: <LinkedInIcon sx={{ fontSize: 16 }} />,
+      foreground: '#0a66c2',
+      background: '#e8f2ff',
+      hoverBackground: '#dbe9ff',
+    }
+  }
+
+  if (source.includes('twitter') || source.includes('x.com')) {
+    return {
+      icon: <TwitterIcon sx={{ fontSize: 16 }} />,
+      foreground: '#1d9bf0',
+      background: '#eaf6ff',
+      hoverBackground: '#daf0ff',
+    }
+  }
+
+  if (source.includes('youtube') || source.includes('youtu.be')) {
+    return {
+      icon: <YouTubeIcon sx={{ fontSize: 16 }} />,
+      foreground: '#ff0033',
+      background: '#ffeaf0',
+      hoverBackground: '#ffdbe6',
+    }
+  }
+
+  if (source.includes('pinterest')) {
+    return {
+      icon: <PinterestIcon sx={{ fontSize: 16 }} />,
+      foreground: '#bd081c',
+      background: '#ffebed',
+      hoverBackground: '#ffe0e4',
+    }
+  }
+
+  return {
+    icon: <LanguageRoundedIcon sx={{ fontSize: 16 }} />,
+    foreground: '#0f4c81',
+    background: '#eaf2fb',
+    hoverBackground: '#ddeafb',
+  }
+}
+
 function displayContactName(contact: CrmDealerDetailResponse['contacts'][number]) {
   if (contact.name) {
     return contact.name
@@ -66,8 +214,34 @@ function displayContactName(contact: CrmDealerDetailResponse['contacts'][number]
   return nameFromParts || 'Unnamed contact'
 }
 
+function DetailField({ label, value }: { label: string; value: ReactNode }) {
+  return (
+    <Paper variant="outlined" sx={{ px: 1, py: 0.7 }}>
+      <Stack
+        direction={{ xs: 'column', sm: 'row' }}
+        spacing={0.6}
+        alignItems={{ xs: 'flex-start', sm: 'center' }}
+      >
+        <Typography
+          variant="caption"
+          color="text.secondary"
+          sx={{
+            minWidth: { sm: 104 },
+            fontWeight: 600,
+            letterSpacing: '0.01em',
+            lineHeight: 1.1,
+          }}
+        >
+          {label}
+        </Typography>
+        <Box sx={{ fontSize: 13, lineHeight: 1.3 }}>{value}</Box>
+      </Stack>
+    </Paper>
+  )
+}
+
 export default function CrmDealersPage() {
-  const { appUser, getIdToken } = useAuth()
+  const { getIdToken } = useAuth()
   const [searchParams] = useSearchParams()
 
   const [dealers, setDealers] = useState<CrmDealer[]>([])
@@ -75,11 +249,17 @@ export default function CrmDealersPage() {
   const [selectedDealerId, setSelectedDealerId] = useState('')
   const [dealerDetail, setDealerDetail] = useState<CrmDealerDetailResponse | null>(null)
 
+  const [dealerOrders, setDealerOrders] = useState<CrmOrder[]>([])
+  const [detailsTab, setDetailsTab] = useState<'contacts' | 'orders'>('contacts')
+  const [isAccountInfoExpanded, setIsAccountInfoExpanded] = useState(true)
+
   const [isLoadingDealers, setIsLoadingDealers] = useState(true)
   const [isRefreshingDealers, setIsRefreshingDealers] = useState(false)
   const [isLoadingDetail, setIsLoadingDetail] = useState(false)
+  const [isLoadingSalesData, setIsLoadingSalesData] = useState(false)
 
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const [salesDataError, setSalesDataError] = useState<string | null>(null)
 
   const [dealerPage, setDealerPage] = useState(0)
   const [dealerRowsPerPage, setDealerRowsPerPage] = useState(25)
@@ -173,7 +353,7 @@ export default function CrmDealersPage() {
     } catch (error) {
       setDealers([])
       setDealersTotal(0)
-      setErrorMessage(error instanceof Error ? error.message : 'Failed to load dealers.')
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to load accounts.')
     } finally {
       setIsLoadingDealers(false)
       setIsRefreshingDealers(false)
@@ -210,7 +390,7 @@ export default function CrmDealersPage() {
       setDealerDetail(response)
     } catch (error) {
       setDealerDetail(null)
-      setErrorMessage(error instanceof Error ? error.message : 'Failed to load dealer details.')
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to load account details.')
     } finally {
       setIsLoadingDetail(false)
     }
@@ -223,6 +403,32 @@ export default function CrmDealersPage() {
     selectedDealerId,
   ])
 
+  const loadDealerSalesData = useCallback(async () => {
+    if (!selectedDealerId) {
+      setDealerOrders([])
+      setSalesDataError(null)
+      return
+    }
+
+    setSalesDataError(null)
+    setIsLoadingSalesData(true)
+
+    try {
+      const idToken = await getIdToken()
+      const ordersPayload = await fetchCrmOrders(idToken, {
+        dealerSourceId: selectedDealerId,
+        limit: 150,
+      })
+
+      setDealerOrders(Array.isArray(ordersPayload.orders) ? ordersPayload.orders : [])
+    } catch (error) {
+      setDealerOrders([])
+      setSalesDataError(error instanceof Error ? error.message : 'Failed to load orders.')
+    } finally {
+      setIsLoadingSalesData(false)
+    }
+  }, [getIdToken, selectedDealerId])
+
   useEffect(() => {
     void loadDealers(false)
   }, [loadDealers])
@@ -231,18 +437,55 @@ export default function CrmDealersPage() {
     void loadDealerDetail()
   }, [loadDealerDetail])
 
+  useEffect(() => {
+    void loadDealerSalesData()
+  }, [loadDealerSalesData])
+
   const selectedDealer = dealerDetail?.dealer ?? null
+  const selectedDealerSocialLinks = useMemo(() => {
+    const socialLinks = selectedDealer?.socialMediaLinks ?? {}
+
+    return Object.entries(socialLinks)
+      .map(([platform, url]) => {
+        const href = toExternalUrl(url)
+
+        if (!href) {
+          return null
+        }
+
+        return {
+          id: `${platform}:${href}`,
+          platform,
+          label: formatSocialLabel(platform),
+          href,
+        }
+      })
+      .filter((entry): entry is { id: string; platform: string; label: string; href: string } => Boolean(entry))
+      .sort((left, right) => left.label.localeCompare(right.label))
+  }, [selectedDealer?.socialMediaLinks])
+
+  const selectedDealerWebsiteUrl = toExternalUrl(selectedDealer?.website)
   const contactsPageLink = selectedDealerId
     ? `/admin/crm/contacts?dealerSourceId=${encodeURIComponent(selectedDealerId)}`
     : '/admin/crm/contacts'
 
-  if (!appUser?.isAdmin) {
-    return <Navigate to="/dashboard" replace />
-  }
+  const orderRows = useMemo(() => {
+    return [...dealerOrders]
+      .sort(
+        (left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime(),
+      )
+  }, [dealerOrders])
 
   return (
     <Stack spacing={2.5}>
-      <Paper variant="outlined" sx={{ p: { xs: 2, md: 2.5 } }}>
+      <Paper
+        variant="outlined"
+        sx={{
+          p: { xs: 2, md: 2.5 },
+          borderColor: (theme) => alpha(theme.palette.primary.main, 0.28),
+          background: (theme) => `linear-gradient(125deg, ${alpha(theme.palette.primary.main, 0.15)} 0%, ${alpha(theme.palette.info.main, 0.08)} 42%, ${alpha(theme.palette.background.paper, 0.98)} 100%)`,
+        }}
+      >
         <Stack
           direction={{ xs: 'column', md: 'row' }}
           spacing={1.5}
@@ -251,16 +494,16 @@ export default function CrmDealersPage() {
         >
           <Stack spacing={0.5}>
             <Typography variant="h5" sx={{ fontWeight: 700 }}>
-              Dealers
+              Accounts
             </Typography>
             <Typography color="text.secondary">
-              Click any dealer to inspect profile details and all linked contacts.
+              Select an account from the left to open full profile information, contacts, and orders.
             </Typography>
           </Stack>
 
           <Stack direction="row" spacing={1}>
             <Button component={RouterLink} to={contactsPageLink} variant="outlined" startIcon={<ContactsRoundedIcon />}>
-              Open Contacts Page
+              Contacts
             </Button>
             <Button
               variant="outlined"
@@ -270,6 +513,7 @@ export default function CrmDealersPage() {
               onClick={() => {
                 void loadDealers(true)
                 void loadDealerDetail()
+                void loadDealerSalesData()
               }}
             >
               {isRefreshingDealers ? 'Refreshing...' : 'Refresh'}
@@ -285,351 +529,563 @@ export default function CrmDealersPage() {
           display: 'grid',
           gridTemplateColumns: {
             xs: '1fr',
-            xl: 'minmax(0, 1.05fr) minmax(0, 1.25fr)',
+            xl: 'minmax(280px, 320px) minmax(0, 1fr)',
           },
           gap: 2,
         }}
       >
-        <Paper variant="outlined" sx={{ p: 2 }}>
-          <Stack spacing={1.5}>
+        <Paper
+          variant="outlined"
+          sx={{
+            p: 1.5,
+            borderColor: (theme) => alpha(theme.palette.primary.main, 0.22),
+            background: (theme) => `linear-gradient(180deg, ${alpha(theme.palette.primary.main, 0.06)} 0%, ${theme.palette.background.paper} 36%)`,
+          }}
+        >
+          <Stack spacing={1.25}>
             <Typography variant="h6" sx={{ fontWeight: 700 }}>
-              Dealer Directory
+              Account Names
             </Typography>
+
+            <TextField
+              size="small"
+              label="Search account"
+              value={dealerSearchInput}
+              onChange={(event) => {
+                setDealerSearchInput(event.target.value)
+              }}
+              InputProps={{
+                startAdornment: (
+                  <InputAdornment position="start">
+                    <SearchRoundedIcon fontSize="small" />
+                  </InputAdornment>
+                ),
+              }}
+            />
+
+            <TextField
+              size="small"
+              label="Owner email"
+              value={ownerEmailFilter}
+              onChange={(event) => {
+                setOwnerEmailFilter(event.target.value)
+              }}
+            />
 
             <Box
               sx={{
                 display: 'grid',
-                gridTemplateColumns: {
-                  xs: '1fr',
-                  md: 'repeat(2, minmax(0, 1fr))',
-                },
+                gridTemplateColumns: '1fr 1fr',
                 gap: 1,
               }}
             >
-              <TextField
-                size="small"
-                label="Search dealer"
-                value={dealerSearchInput}
-                onChange={(event) => {
-                  setDealerSearchInput(event.target.value)
-                }}
-                InputProps={{
-                  startAdornment: (
-                    <InputAdornment position="start">
-                      <SearchRoundedIcon fontSize="small" />
-                    </InputAdornment>
-                  ),
-                }}
-              />
-
-              <TextField
-                size="small"
-                label="Owner email"
-                value={ownerEmailFilter}
-                onChange={(event) => {
-                  setOwnerEmailFilter(event.target.value)
-                }}
-              />
-
               <FormControl size="small">
-                <InputLabel id="dealer-email-filter">Email</InputLabel>
+                <InputLabel id="accounts-email-filter">Email</InputLabel>
                 <Select
-                  labelId="dealer-email-filter"
+                  labelId="accounts-email-filter"
                   value={hasEmailFilter}
                   label="Email"
                   onChange={(event) => {
                     setHasEmailFilter(event.target.value as 'all' | 'with' | 'without')
                   }}
                 >
-                  <MenuItem value="all">All dealers</MenuItem>
+                  <MenuItem value="all">All</MenuItem>
                   <MenuItem value="with">With email</MenuItem>
-                  <MenuItem value="without">Without email</MenuItem>
+                  <MenuItem value="without">No email</MenuItem>
                 </Select>
               </FormControl>
 
               <FormControl size="small">
-                <InputLabel id="dealer-archive-filter">Archived</InputLabel>
+                <InputLabel id="accounts-archive-filter">Archived</InputLabel>
                 <Select
-                  labelId="dealer-archive-filter"
+                  labelId="accounts-archive-filter"
                   value={includeArchivedDealers ? 'all' : 'active'}
                   label="Archived"
                   onChange={(event) => {
                     setIncludeArchivedDealers(event.target.value === 'all')
                   }}
                 >
-                  <MenuItem value="active">Active only</MenuItem>
-                  <MenuItem value="all">Include archived</MenuItem>
+                  <MenuItem value="active">Active</MenuItem>
+                  <MenuItem value="all">Include</MenuItem>
                 </Select>
               </FormControl>
             </Box>
 
+            <Divider />
+
             {isLoadingDealers ? (
-              <Stack direction="row" spacing={1} alignItems="center" sx={{ py: 6 }}>
+              <Stack direction="row" spacing={1} alignItems="center" sx={{ py: 4 }}>
                 <CircularProgress size={18} />
-                <Typography color="text.secondary">Loading dealers...</Typography>
+                <Typography color="text.secondary">Loading accounts...</Typography>
               </Stack>
+            ) : dealers.length === 0 ? (
+              <Typography color="text.secondary">No accounts found for this filter.</Typography>
             ) : (
-              <>
-                <TableContainer
-                  sx={{
-                    border: 1,
-                    borderColor: 'divider',
-                    borderRadius: 1,
-                    maxHeight: { xs: 340, md: 540 },
-                  }}
-                >
-                  <Table size="small" stickyHeader>
-                    <TableHead>
-                      <TableRow>
-                        <TableCell sx={{ fontWeight: 700 }}>Dealer</TableCell>
-                        <TableCell sx={{ fontWeight: 700 }}>Owner</TableCell>
-                        <TableCell sx={{ fontWeight: 700 }}>Email</TableCell>
-                        <TableCell sx={{ fontWeight: 700 }}>Location</TableCell>
-                        <TableCell sx={{ fontWeight: 700 }}>Contacts</TableCell>
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
-                      {dealers.map((dealer) => {
-                        const isSelected = selectedDealerId === dealer.sourceId
+              <Paper
+                variant="outlined"
+                sx={{
+                  maxHeight: { xs: 320, xl: 640 },
+                  overflow: 'auto',
+                }}
+              >
+                <List disablePadding>
+                  {dealers.map((dealer, index) => {
+                    const isSelected = selectedDealerId === dealer.sourceId
+                    const accountName = dealer.name || dealer.sourceId
+                    const accountInitial = accountName.charAt(0).toUpperCase()
+                    const accountLocation = [dealer.city, dealer.state].filter(Boolean).join(', ') || 'No location'
 
-                        return (
-                          <TableRow
-                            key={dealer.sourceId}
-                            hover
-                            selected={isSelected}
-                            onClick={() => {
-                              setSelectedDealerId(dealer.sourceId)
-                              setContactPage(0)
-                            }}
-                            sx={{ cursor: 'pointer' }}
-                          >
-                            <TableCell>
-                              <Stack spacing={0.2}>
-                                <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                                  {dealer.name || dealer.sourceId}
-                                </Typography>
-                                <Typography variant="caption" color="text.secondary">
-                                  {dealer.sourceId}
-                                </Typography>
-                                {dealer.isArchived ? (
-                                  <Chip size="small" color="warning" variant="outlined" label="Archived" sx={{ width: 'fit-content' }} />
-                                ) : null}
-                              </Stack>
-                            </TableCell>
-                            <TableCell>{dealer.ownerEmail || 'Unknown'}</TableCell>
-                            <TableCell>{dealer.email || 'No email'}</TableCell>
-                            <TableCell>{[dealer.city, dealer.state].filter(Boolean).join(', ') || 'Unknown'}</TableCell>
-                            <TableCell>{dealer.contactCountSource ?? '-'}</TableCell>
-                          </TableRow>
-                        )
-                      })}
-                    </TableBody>
-                  </Table>
-                </TableContainer>
+                    return (
+                      <ListItemButton
+                        key={dealer.sourceId}
+                        selected={isSelected}
+                        onClick={() => {
+                          setSelectedDealerId(dealer.sourceId)
+                          setContactPage(0)
+                        }}
+                        sx={{
+                          py: 1,
+                          px: 1,
+                          gap: 1,
+                          borderBottom: index < dealers.length - 1 ? '1px solid' : 'none',
+                          borderColor: 'divider',
+                          '&.Mui-selected': {
+                            bgcolor: (theme) => alpha(theme.palette.primary.main, 0.14),
+                            borderLeft: '3px solid',
+                            borderColor: 'primary.main',
+                          },
+                          '&.Mui-selected:hover': {
+                            bgcolor: (theme) => alpha(theme.palette.primary.main, 0.2),
+                          },
+                        }}
+                      >
+                        <Avatar
+                          src={dealer.pictureUrl || undefined}
+                          alt={accountName}
+                          sx={{ width: 32, height: 32, fontSize: 12, fontWeight: 700 }}
+                          imgProps={{ loading: 'lazy', referrerPolicy: 'no-referrer' }}
+                        >
+                          {accountInitial}
+                        </Avatar>
 
-                <TablePagination
-                  component="div"
-                  count={dealersTotal}
-                  page={dealerPage}
-                  onPageChange={(_event, nextPage) => {
-                    setDealerPage(nextPage)
-                  }}
-                  rowsPerPage={dealerRowsPerPage}
-                  onRowsPerPageChange={(event) => {
-                    setDealerRowsPerPage(Number(event.target.value))
-                    setDealerPage(0)
-                  }}
-                  rowsPerPageOptions={[10, 25, 50, 100]}
-                />
-              </>
+                        <ListItemText
+                          primary={accountName}
+                          secondary={accountLocation}
+                          primaryTypographyProps={{
+                            fontSize: 14,
+                            fontWeight: isSelected ? 700 : 500,
+                          }}
+                          secondaryTypographyProps={{
+                            fontSize: 12,
+                            color: 'text.secondary',
+                          }}
+                        />
+                      </ListItemButton>
+                    )
+                  })}
+                </List>
+              </Paper>
             )}
+
+            <TablePagination
+              component="div"
+              count={dealersTotal}
+              page={dealerPage}
+              onPageChange={(_event, nextPage) => {
+                setDealerPage(nextPage)
+              }}
+              rowsPerPage={dealerRowsPerPage}
+              onRowsPerPageChange={(event) => {
+                setDealerRowsPerPage(Number(event.target.value))
+                setDealerPage(0)
+              }}
+              rowsPerPageOptions={[25, 50, 100]}
+            />
           </Stack>
         </Paper>
 
-        <Paper variant="outlined" sx={{ p: 2 }}>
+        <Paper
+          variant="outlined"
+          sx={{
+            p: 1.5,
+            borderColor: (theme) => alpha(theme.palette.primary.main, 0.22),
+          }}
+        >
           {!selectedDealerId ? (
             <Stack spacing={1} sx={{ py: 8 }} alignItems="center" justifyContent="center">
               <Typography variant="h6" sx={{ fontWeight: 700 }}>
-                Select a dealer
+                Select an account
               </Typography>
               <Typography color="text.secondary">
-                Choose a row on the left to inspect dealer profile and contacts.
+                Choose an account name from the left list.
               </Typography>
             </Stack>
           ) : isLoadingDetail && !dealerDetail ? (
             <Stack direction="row" spacing={1} alignItems="center" sx={{ py: 6 }}>
               <CircularProgress size={18} />
-              <Typography color="text.secondary">Loading dealer details...</Typography>
+              <Typography color="text.secondary">Loading account details...</Typography>
             </Stack>
           ) : selectedDealer ? (
-            <Stack spacing={1.5}>
-              <Stack
-                direction={{ xs: 'column', md: 'row' }}
-                spacing={1}
-                justifyContent="space-between"
-                alignItems={{ xs: 'flex-start', md: 'center' }}
-              >
-                <Stack spacing={0.3}>
-                  <Typography variant="h6" sx={{ fontWeight: 700 }}>
-                    {selectedDealer.name || selectedDealer.sourceId}
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    {selectedDealer.sourceId}
-                  </Typography>
-                </Stack>
-
-                <Stack direction="row" spacing={1}>
-                  {selectedDealer.isArchived ? <Chip size="small" label="Archived" color="warning" variant="outlined" /> : null}
-                  <Chip size="small" label={`Last import: ${formatDateTime(selectedDealer.lastImportedAt)}`} />
-                </Stack>
-              </Stack>
-
-              <Box
+            <Stack spacing={1.1}>
+              <Paper
+                variant="outlined"
                 sx={{
-                  display: 'grid',
-                  gridTemplateColumns: {
-                    xs: '1fr',
-                    md: 'repeat(2, minmax(0, 1fr))',
-                  },
-                  gap: 1,
+                  p: 1,
+                  borderColor: (theme) => alpha(theme.palette.primary.main, 0.24),
+                  background: (theme) => `linear-gradient(120deg, ${alpha(theme.palette.primary.main, 0.1)} 0%, ${alpha(theme.palette.background.paper, 0.9)} 80%)`,
                 }}
               >
-                <Paper variant="outlined" sx={{ p: 1.25 }}>
-                  <Typography variant="caption" color="text.secondary">Owner</Typography>
-                  <Typography variant="body2">{selectedDealer.ownerEmail || selectedDealer.owner || 'Unknown'}</Typography>
-                </Paper>
-                <Paper variant="outlined" sx={{ p: 1.25 }}>
-                  <Typography variant="caption" color="text.secondary">Email</Typography>
-                  <Typography variant="body2">{selectedDealer.email || selectedDealer.email2 || 'No email'}</Typography>
-                </Paper>
-                <Paper variant="outlined" sx={{ p: 1.25 }}>
-                  <Typography variant="caption" color="text.secondary">Phone</Typography>
-                  <Typography variant="body2">{selectedDealer.phone || selectedDealer.phone2 || 'No phone'}</Typography>
-                </Paper>
-                <Paper variant="outlined" sx={{ p: 1.25 }}>
-                  <Typography variant="caption" color="text.secondary">Location</Typography>
-                  <Typography variant="body2">
-                    {[selectedDealer.city, selectedDealer.state, selectedDealer.country].filter(Boolean).join(', ') || 'Unknown'}
-                  </Typography>
-                </Paper>
-              </Box>
+                <Stack
+                  direction={{ xs: 'column', md: 'row' }}
+                  spacing={1}
+                  justifyContent="space-between"
+                  alignItems={{ xs: 'flex-start', md: 'center' }}
+                >
+                  <Stack direction="row" spacing={1.25} alignItems="center">
+                    <Avatar
+                      src={selectedDealer.pictureUrl || undefined}
+                      alt={selectedDealer.name || selectedDealer.sourceId}
+                      sx={{ width: 44, height: 44, fontSize: 16 }}
+                      imgProps={{ loading: 'lazy', referrerPolicy: 'no-referrer' }}
+                    >
+                      {(selectedDealer.name || selectedDealer.sourceId).charAt(0).toUpperCase()}
+                    </Avatar>
 
-              <Typography variant="h6" sx={{ fontWeight: 700, pt: 1 }}>
-                Linked Contacts
-              </Typography>
+                    <Stack spacing={0.3}>
+                      <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                        {selectedDealer.name || selectedDealer.sourceId}
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        ID: {selectedDealer.sourceId}
+                      </Typography>
+                    </Stack>
+                  </Stack>
 
-              <Box
-                sx={{
-                  display: 'grid',
-                  gridTemplateColumns: {
-                    xs: '1fr',
-                    md: '2fr 1fr',
-                  },
-                  gap: 1,
-                }}
-              >
-                <TextField
-                  size="small"
-                  label="Search contacts"
-                  value={contactSearchInput}
-                  onChange={(event) => {
-                    setContactSearchInput(event.target.value)
-                    setContactPage(0)
-                  }}
-                  InputProps={{
-                    startAdornment: (
-                      <InputAdornment position="start">
-                        <SearchRoundedIcon fontSize="small" />
-                      </InputAdornment>
-                    ),
-                  }}
-                />
-
-                <FormControl size="small">
-                  <InputLabel id="dealer-contact-archive-filter">Archived contacts</InputLabel>
-                  <Select
-                    labelId="dealer-contact-archive-filter"
-                    value={includeArchivedContacts ? 'all' : 'active'}
-                    label="Archived contacts"
-                    onChange={(event) => {
-                      setIncludeArchivedContacts(event.target.value === 'all')
-                      setContactPage(0)
+                  <Stack
+                    direction="row"
+                    spacing={0.75}
+                    alignItems="center"
+                    sx={{
+                      width: { xs: '100%', md: 'auto' },
+                      justifyContent: { xs: 'space-between', md: 'flex-end' },
                     }}
                   >
-                    <MenuItem value="active">Active only</MenuItem>
-                    <MenuItem value="all">Include archived</MenuItem>
-                  </Select>
-                </FormControl>
-              </Box>
+                    <Stack direction="row" spacing={0.75}>
+                      {selectedDealer.isArchived ? (
+                        <Chip size="small" label="Archived" color="warning" variant="outlined" />
+                      ) : null}
+                      <Chip size="small" label={`Contacts: ${dealerDetail?.contactsTotal ?? 0}`} variant="outlined" />
+                    </Stack>
 
-              <TableContainer
-                sx={{
-                  border: 1,
-                  borderColor: 'divider',
-                  borderRadius: 1,
-                  maxHeight: { xs: 320, md: 420 },
+                    <Tooltip
+                      title={isAccountInfoExpanded ? 'Collapse account info' : 'Expand account info'}
+                      arrow
+                    >
+                      <IconButton
+                        size="small"
+                        onClick={() => {
+                          setIsAccountInfoExpanded((current) => !current)
+                        }}
+                        aria-label={isAccountInfoExpanded ? 'Collapse account info' : 'Expand account info'}
+                        sx={{
+                          border: '1px solid',
+                          borderColor: 'divider',
+                          bgcolor: 'background.paper',
+                          transition: 'transform 0.2s ease',
+                          transform: isAccountInfoExpanded ? 'rotate(180deg)' : 'rotate(0deg)',
+                        }}
+                      >
+                        <ExpandMoreRoundedIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                  </Stack>
+                </Stack>
+              </Paper>
+
+              <Collapse in={isAccountInfoExpanded} timeout="auto" unmountOnExit>
+                <Box
+                  sx={{
+                    display: 'grid',
+                    gridTemplateColumns: {
+                      xs: '1fr',
+                      md: 'repeat(2, minmax(0, 1fr))',
+                    },
+                    gap: 0.7,
+                  }}
+                >
+                  <DetailField label="Owner" value={selectedDealer.ownerEmail || selectedDealer.owner || 'Unknown'} />
+                  <DetailField label="Primary email" value={selectedDealer.email || selectedDealer.email2 || 'No email'} />
+                  <DetailField label="Primary phone" value={selectedDealer.phone || selectedDealer.phone2 || 'No phone'} />
+                  <DetailField
+                    label="Website"
+                    value={selectedDealerWebsiteUrl ? (
+                      <a href={selectedDealerWebsiteUrl} target="_blank" rel="noreferrer">{selectedDealer.website}</a>
+                    ) : 'No website'}
+                  />
+                  <DetailField
+                    label="Social links"
+                    value={selectedDealerSocialLinks.length > 0 ? (
+                      <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                        {selectedDealerSocialLinks.map((entry) => {
+                          const visual = resolveSocialVisual(entry.platform, entry.href)
+
+                          return (
+                            <Tooltip key={entry.id} title={entry.label} arrow>
+                              <IconButton
+                                component="a"
+                                href={entry.href}
+                                target="_blank"
+                                rel="noreferrer"
+                                size="small"
+                                aria-label={entry.label}
+                                sx={{
+                                  width: 24,
+                                  height: 24,
+                                  border: '1px solid',
+                                  borderColor: 'divider',
+                                  bgcolor: visual.background,
+                                  color: visual.foreground,
+                                  transition: 'all 0.18s ease',
+                                  '&:hover': {
+                                    bgcolor: visual.hoverBackground,
+                                    transform: 'translateY(-1px)',
+                                  },
+                                }}
+                              >
+                                {visual.icon}
+                              </IconButton>
+                            </Tooltip>
+                          )
+                        })}
+                      </Box>
+                    ) : (selectedDealer.socialMedia || 'No social links')}
+                  />
+                  <DetailField
+                    label="Location"
+                    value={[
+                      selectedDealer.address,
+                      selectedDealer.city,
+                      selectedDealer.state,
+                      selectedDealer.zip,
+                      selectedDealer.country,
+                    ].filter(Boolean).join(', ') || 'Unknown'}
+                  />
+                  <DetailField
+                    label="Classification"
+                    value={[
+                      selectedDealer.industry,
+                      selectedDealer.accountType,
+                      selectedDealer.accountClass,
+                    ].filter(Boolean).join(' / ') || 'Unknown'}
+                  />
+                  <DetailField label="Created" value={formatDateTime(selectedDealer.createdDateSource)} />
+                  <DetailField label="Last import" value={formatDateTime(selectedDealer.lastImportedAt)} />
+                </Box>
+              </Collapse>
+
+              <Divider />
+
+              <Tabs
+                value={detailsTab}
+                onChange={(_event, nextValue: 'contacts' | 'orders') => {
+                  setDetailsTab(nextValue)
                 }}
+                variant="scrollable"
+                allowScrollButtonsMobile
+                sx={{ mt: -0.5 }}
               >
-                <Table size="small" stickyHeader>
-                  <TableHead>
-                    <TableRow>
-                      <TableCell sx={{ fontWeight: 700 }}>Contact</TableCell>
-                      <TableCell sx={{ fontWeight: 700 }}>Email</TableCell>
-                      <TableCell sx={{ fontWeight: 700 }}>Sales Unit</TableCell>
-                      <TableCell sx={{ fontWeight: 700 }}>Phones</TableCell>
-                      <TableCell sx={{ fontWeight: 700 }}>State</TableCell>
-                      <TableCell sx={{ fontWeight: 700 }}>Origin</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {(dealerDetail?.contacts ?? []).map((contact) => (
-                      <TableRow key={contact.sourceId}>
-                        <TableCell>
-                          <Stack spacing={0.2}>
-                            <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                              {displayContactName(contact)}
-                            </Typography>
-                            <Typography variant="caption" color="text.secondary">
-                              {contact.sourceId}
-                            </Typography>
-                            {contact.isArchived ? (
-                              <Chip size="small" variant="outlined" color="warning" label="Archived" sx={{ width: 'fit-content' }} />
-                            ) : null}
-                          </Stack>
-                        </TableCell>
-                        <TableCell>{contact.primaryEmail || contact.secondaryEmail || 'No email'}</TableCell>
-                        <TableCell>{contact.salesUnit || '-'}</TableCell>
-                        <TableCell>{[contact.phone, contact.phone2, contact.phoneAlt].filter(Boolean).join(' / ') || '-'}</TableCell>
-                        <TableCell>{contact.state || '-'}</TableCell>
-                        <TableCell>{contact.contactOrigin || '-'}</TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </TableContainer>
+                <Tab value="contacts" label={`Contacts (${dealerDetail?.contactsTotal ?? 0})`} />
+                <Tab value="orders" label={`Orders (${dealerOrders.length})`} />
+              </Tabs>
 
-              <TablePagination
-                component="div"
-                count={dealerDetail?.contactsTotal ?? 0}
-                page={contactPage}
-                onPageChange={(_event, nextPage) => {
-                  setContactPage(nextPage)
-                }}
-                rowsPerPage={contactRowsPerPage}
-                onRowsPerPageChange={(event) => {
-                  setContactRowsPerPage(Number(event.target.value))
-                  setContactPage(0)
-                }}
-                rowsPerPageOptions={[10, 25, 50, 100]}
-              />
+              {detailsTab === 'contacts' ? (
+                <>
+                  <Box
+                    sx={{
+                      display: 'grid',
+                      gridTemplateColumns: {
+                        xs: '1fr',
+                        md: '2fr 1fr',
+                      },
+                      gap: 1,
+                    }}
+                  >
+                    <TextField
+                      size="small"
+                      label="Search contacts"
+                      value={contactSearchInput}
+                      onChange={(event) => {
+                        setContactSearchInput(event.target.value)
+                        setContactPage(0)
+                      }}
+                      InputProps={{
+                        startAdornment: (
+                          <InputAdornment position="start">
+                            <SearchRoundedIcon fontSize="small" />
+                          </InputAdornment>
+                        ),
+                      }}
+                    />
+
+                    <FormControl size="small">
+                      <InputLabel id="account-contact-archive-filter">Archived contacts</InputLabel>
+                      <Select
+                        labelId="account-contact-archive-filter"
+                        value={includeArchivedContacts ? 'all' : 'active'}
+                        label="Archived contacts"
+                        onChange={(event) => {
+                          setIncludeArchivedContacts(event.target.value === 'all')
+                          setContactPage(0)
+                        }}
+                      >
+                        <MenuItem value="active">Active only</MenuItem>
+                        <MenuItem value="all">Include archived</MenuItem>
+                      </Select>
+                    </FormControl>
+                  </Box>
+
+                  <TableContainer
+                    sx={{
+                      border: 1,
+                      borderColor: 'divider',
+                      borderRadius: 1,
+                      maxHeight: { xs: 320, xl: 520 },
+                    }}
+                  >
+                    <Table size="small" stickyHeader>
+                      <TableHead>
+                        <TableRow>
+                          <TableCell sx={{ fontWeight: 700, width: 72 }}>Img</TableCell>
+                          <TableCell sx={{ fontWeight: 700 }}>Contact</TableCell>
+                          <TableCell sx={{ fontWeight: 700 }}>Email</TableCell>
+                          <TableCell sx={{ fontWeight: 700 }}>Phone</TableCell>
+                          <TableCell sx={{ fontWeight: 700 }}>Location</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {(dealerDetail?.contacts ?? []).map((contact) => {
+                          const contactName = displayContactName(contact)
+
+                          return (
+                            <TableRow key={contact.sourceId}>
+                              <TableCell>
+                                <Avatar
+                                  src={contact.photoUrl || undefined}
+                                  alt={contactName}
+                                  sx={{ width: 34, height: 34, mx: 'auto', fontSize: 13 }}
+                                  imgProps={{ loading: 'lazy', referrerPolicy: 'no-referrer' }}
+                                >
+                                  {contactName.charAt(0).toUpperCase()}
+                                </Avatar>
+                              </TableCell>
+
+                              <TableCell>
+                                <Stack spacing={0.2}>
+                                  <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                                    {contactName}
+                                  </Typography>
+                                  {contact.isArchived ? (
+                                    <Chip
+                                      size="small"
+                                      variant="outlined"
+                                      color="warning"
+                                      label="Archived"
+                                      sx={{ width: 'fit-content' }}
+                                    />
+                                  ) : null}
+                                </Stack>
+                              </TableCell>
+                              <TableCell>{contact.primaryEmail || contact.secondaryEmail || '-'}</TableCell>
+                              <TableCell>{[contact.phone, contact.phone2, contact.phoneAlt].filter(Boolean).join(' / ') || '-'}</TableCell>
+                              <TableCell>{[contact.city, contact.state, contact.country].filter(Boolean).join(', ') || '-'}</TableCell>
+                            </TableRow>
+                          )
+                        })}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+
+                  <TablePagination
+                    component="div"
+                    count={dealerDetail?.contactsTotal ?? 0}
+                    page={contactPage}
+                    onPageChange={(_event, nextPage) => {
+                      setContactPage(nextPage)
+                    }}
+                    rowsPerPage={contactRowsPerPage}
+                    onRowsPerPageChange={(event) => {
+                      setContactRowsPerPage(Number(event.target.value))
+                      setContactPage(0)
+                    }}
+                    rowsPerPageOptions={[10, 25, 50, 100]}
+                  />
+                </>
+              ) : (
+                <Stack spacing={1.25}>
+                  {salesDataError ? <Alert severity="warning">{salesDataError}</Alert> : null}
+
+                  {isLoadingSalesData ? (
+                    <Stack direction="row" spacing={1} alignItems="center" sx={{ py: 2 }}>
+                      <CircularProgress size={18} />
+                      <Typography color="text.secondary">Loading orders...</Typography>
+                    </Stack>
+                  ) : orderRows.length === 0 ? (
+                    <Typography color="text.secondary" variant="body2">
+                      No orders linked to this account yet.
+                    </Typography>
+                  ) : (
+                    <TableContainer
+                      sx={{
+                        border: 1,
+                        borderColor: 'divider',
+                        borderRadius: 1,
+                        maxHeight: { xs: 320, xl: 560 },
+                      }}
+                    >
+                      <Table size="small" stickyHeader>
+                        <TableHead>
+                          <TableRow>
+                            <TableCell sx={{ fontWeight: 700 }}>Order</TableCell>
+                            <TableCell sx={{ fontWeight: 700 }}>Status</TableCell>
+                            <TableCell sx={{ fontWeight: 700 }}>Due</TableCell>
+                            <TableCell sx={{ fontWeight: 700 }} align="right">Progress</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {orderRows.map((order) => (
+                            <TableRow key={order.id}>
+                              <TableCell>
+                                <Stack spacing={0.2}>
+                                  <Stack direction="row" spacing={0.75} alignItems="center">
+                                    <LocalShippingRoundedIcon fontSize="inherit" color="action" />
+                                    <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                                      {order.orderNumber || order.title}
+                                    </Typography>
+                                  </Stack>
+                                  <Typography variant="caption" color="text.secondary">
+                                    Updated {formatDate(order.updatedAt)}
+                                  </Typography>
+                                </Stack>
+                              </TableCell>
+                              <TableCell>{formatStatus(order.status)}</TableCell>
+                              <TableCell>{formatDate(order.dueDate)}</TableCell>
+                              <TableCell align="right">{Math.round(order.progressPercent)}%</TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  )}
+                </Stack>
+              )}
             </Stack>
           ) : (
             <Stack spacing={1} sx={{ py: 8 }} alignItems="center" justifyContent="center">
               <Typography variant="h6" sx={{ fontWeight: 700 }}>
-                Dealer not found
+                Account not found
               </Typography>
               <Typography color="text.secondary">
-                The selected dealer could not be loaded. Refresh and try again.
+                The selected account could not be loaded. Refresh and try again.
               </Typography>
             </Stack>
           )}

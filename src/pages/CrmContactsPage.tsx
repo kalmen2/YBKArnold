@@ -3,6 +3,7 @@ import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded'
 import {
   Alert,
+  Avatar,
   Box,
   Button,
   Chip,
@@ -25,7 +26,7 @@ import {
   Typography,
 } from '@mui/material'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link as RouterLink, Navigate, useSearchParams } from 'react-router-dom'
+import { Link as RouterLink, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
 import {
   fetchCrmContacts,
@@ -47,7 +48,7 @@ function displayContactName(contact: CrmContact) {
 }
 
 export default function CrmContactsPage() {
-  const { appUser, getIdToken } = useAuth()
+  const { getIdToken } = useAuth()
   const [searchParams] = useSearchParams()
 
   const [contacts, setContacts] = useState<CrmContact[]>([])
@@ -196,10 +197,6 @@ export default function CrmContactsPage() {
     ? `/admin/crm/dealers?dealerSourceId=${encodeURIComponent(dealerSourceId)}`
     : '/admin/crm/dealers'
 
-  if (!appUser?.isAdmin) {
-    return <Navigate to="/dashboard" replace />
-  }
-
   return (
     <Stack spacing={2.5}>
       <Paper variant="outlined" sx={{ p: { xs: 2, md: 2.5 } }}>
@@ -220,7 +217,7 @@ export default function CrmContactsPage() {
 
           <Stack direction="row" spacing={1}>
             <Button component={RouterLink} to={dealersPageLink} variant="outlined" startIcon={<BusinessRoundedIcon />}>
-              Open Dealers Page
+              Open Accounts Page
             </Button>
             <Button
               variant="outlined"
@@ -406,6 +403,7 @@ export default function CrmContactsPage() {
               <Table size="small" stickyHeader>
                 <TableHead>
                   <TableRow>
+                    <TableCell sx={{ fontWeight: 700, width: 72 }}>Img</TableCell>
                     <TableCell sx={{ fontWeight: 700 }}>Contact</TableCell>
                     <TableCell sx={{ fontWeight: 700 }}>Dealer</TableCell>
                     <TableCell sx={{ fontWeight: 700 }}>Emails</TableCell>
@@ -416,12 +414,26 @@ export default function CrmContactsPage() {
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {contacts.map((contact) => (
+                  {contacts.map((contact) => {
+                    const contactName = displayContactName(contact)
+
+                    return (
                     <TableRow key={contact.sourceId}>
+                      <TableCell>
+                        <Avatar
+                          src={contact.photoUrl || undefined}
+                          alt={contactName}
+                          sx={{ width: 34, height: 34, mx: 'auto', fontSize: 13 }}
+                          imgProps={{ loading: 'lazy', referrerPolicy: 'no-referrer' }}
+                        >
+                          {contactName.charAt(0).toUpperCase()}
+                        </Avatar>
+                      </TableCell>
+
                       <TableCell>
                         <Stack spacing={0.2}>
                           <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                            {displayContactName(contact)}
+                            {contactName}
                           </Typography>
                           <Typography variant="caption" color="text.secondary">
                             {contact.sourceId}
@@ -468,7 +480,8 @@ export default function CrmContactsPage() {
 
                       <TableCell>{contact.contactOrigin || '-'}</TableCell>
                     </TableRow>
-                  ))}
+                    )
+                  })}
                 </TableBody>
               </Table>
             </TableContainer>

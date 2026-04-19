@@ -88,23 +88,7 @@ type DashboardFetchOptions = {
   refresh?: boolean
 }
 
-async function request<T>(path: string, options: RequestInit = {}) {
-  const response = await fetch(path, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(options.headers ?? {}),
-    },
-  })
-
-  const payload = await response.json().catch(() => ({}))
-
-  if (!response.ok) {
-    throw new Error(payload.error ?? 'Request failed.')
-  }
-
-  return payload as T
-}
+import { apiRequest } from '../api-client'
 
 function withRefreshQuery(path: string, refresh = false) {
   if (!refresh) {
@@ -116,13 +100,13 @@ function withRefreshQuery(path: string, refresh = false) {
 }
 
 export function fetchMondayDashboardSnapshot(options: DashboardFetchOptions = {}) {
-  return request<MondayDashboardSnapshot>(
+  return apiRequest<MondayDashboardSnapshot>(
     withRefreshQuery('/api/dashboard/monday', options.refresh === true),
   )
 }
 
 export function fetchZendeskTicketSummary(options: DashboardFetchOptions = {}) {
-  return request<ZendeskTicketSummarySnapshot>(
+  return apiRequest<ZendeskTicketSummarySnapshot>(
     withRefreshQuery('/api/dashboard/zendesk', options.refresh === true),
   )
 }

@@ -109,77 +109,61 @@ type UpsertOrderProgressInput = {
   readyPercent: number
 }
 
-async function request<T>(path: string, options: RequestInit = {}) {
-  const response = await fetch(path, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(options.headers ?? {}),
-    },
-  })
-
-  const payload = await response.json().catch(() => ({}))
-
-  if (!response.ok) {
-    throw new Error(payload.error ?? 'Request failed.')
-  }
-
-  return payload as T
-}
+import { apiRequest } from '../api-client'
 
 export function fetchTimesheetState() {
-  return request<TimesheetStateResponse>('/api/timesheet/state')
+  return apiRequest<TimesheetStateResponse>('/api/timesheet/state')
 }
 
 export function createWorker(input: CreateWorkerInput) {
-  return request<{ worker: TimesheetWorker }>('/api/timesheet/workers', {
+  return apiRequest<{ worker: TimesheetWorker }>('/api/timesheet/workers', {
     method: 'POST',
     body: JSON.stringify(input),
   })
 }
 
 export function createWorkersBulk(inputs: CreateWorkerInput[]) {
-  return request<{ insertedCount: number }>('/api/timesheet/workers/bulk', {
+  return apiRequest<{ insertedCount: number }>('/api/timesheet/workers/bulk', {
     method: 'POST',
     body: JSON.stringify({ workers: inputs }),
   })
 }
 
 export function deleteWorker(workerId: string) {
-  return request<{ ok: boolean }>(`/api/timesheet/workers/${workerId}`, {
+  return apiRequest<{ ok: boolean }>(`/api/timesheet/workers/${workerId}`, {
     method: 'DELETE',
   })
 }
 
 export function updateWorker(workerId: string, input: UpdateWorkerInput) {
-  return request<{ worker: TimesheetWorker }>(`/api/timesheet/workers/${workerId}`, {
+  return apiRequest<{ worker: TimesheetWorker }>(`/api/timesheet/workers/${workerId}`, {
     method: 'PATCH',
     body: JSON.stringify(input),
   })
 }
 
 export function createStage(input: CreateStageInput) {
-  return request<{ stage: TimesheetStage }>('/api/timesheet/stages', {
+  return apiRequest<{ stage: TimesheetStage }>('/api/timesheet/stages', {
     method: 'POST',
     body: JSON.stringify(input),
   })
 }
 
 export function deleteStage(stageId: string) {
-  return request<{ ok: boolean }>(`/api/timesheet/stages/${stageId}`, {
+  return apiRequest<{ ok: boolean }>(`/api/timesheet/stages/${stageId}`, {
     method: 'DELETE',
   })
 }
 
 export function reorderStages(stageIds: string[]) {
-  return request<{ ok: boolean }>('/api/timesheet/stages/reorder', {
+  return apiRequest<{ ok: boolean }>('/api/timesheet/stages/reorder', {
     method: 'PATCH',
     body: JSON.stringify({ stageIds }),
   })
 }
 
 export function syncDailyEntries(date: string, rows: SyncDailyEntryRowInput[]) {
-  return request<{
+  return apiRequest<{
     insertedCount: number
     updatedCount: number
     deletedCount: number
@@ -190,27 +174,27 @@ export function syncDailyEntries(date: string, rows: SyncDailyEntryRowInput[]) {
 }
 
 export function updateEntry(entryId: string, input: UpdateEntryInput) {
-  return request<{ entry: TimesheetEntry }>(`/api/timesheet/entries/${entryId}`, {
+  return apiRequest<{ entry: TimesheetEntry }>(`/api/timesheet/entries/${entryId}`, {
     method: 'PATCH',
     body: JSON.stringify(input),
   })
 }
 
 export function deleteEntry(entryId: string) {
-  return request<{ ok: boolean }>(`/api/timesheet/entries/${entryId}`, {
+  return apiRequest<{ ok: boolean }>(`/api/timesheet/entries/${entryId}`, {
     method: 'DELETE',
   })
 }
 
 export function upsertMissingWorkerReview(input: UpsertMissingWorkerReviewInput) {
-  return request<{ review: TimesheetMissingWorkerReview }>('/api/timesheet/missing-worker-reviews', {
+  return apiRequest<{ review: TimesheetMissingWorkerReview }>('/api/timesheet/missing-worker-reviews', {
     method: 'PUT',
     body: JSON.stringify(input),
   })
 }
 
 export function upsertOrderProgress(input: UpsertOrderProgressInput) {
-  return request<{ progress: TimesheetOrderProgress }>('/api/timesheet/order-progress', {
+  return apiRequest<{ progress: TimesheetOrderProgress }>('/api/timesheet/order-progress', {
     method: 'PUT',
     body: JSON.stringify(input),
   })

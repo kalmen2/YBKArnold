@@ -66,23 +66,7 @@ type SupportFetchOptions = {
   refresh?: boolean
 }
 
-async function request<T>(path: string, options: RequestInit = {}) {
-  const response = await fetch(path, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(options.headers ?? {}),
-    },
-  })
-
-  const payload = await response.json().catch(() => ({}))
-
-  if (!response.ok) {
-    throw new Error(payload.error ?? 'Request failed.')
-  }
-
-  return payload as T
-}
+import { apiRequest } from '../api-client'
 
 function withRefreshQuery(path: string, refresh = false) {
   if (!refresh) {
@@ -94,13 +78,13 @@ function withRefreshQuery(path: string, refresh = false) {
 }
 
 export function fetchSupportAlerts(options: SupportFetchOptions = {}) {
-  return request<SupportAlertsSnapshot>(
+  return apiRequest<SupportAlertsSnapshot>(
     withRefreshQuery('/api/support/alerts', options.refresh === true),
   )
 }
 
 export function fetchSupportAlertTickets(limitPerBucket = 100, options: SupportFetchOptions = {}) {
-  return request<SupportAlertTicketsSnapshot>(
+  return apiRequest<SupportAlertTicketsSnapshot>(
     withRefreshQuery(
       `/api/support/alerts/tickets?limitPerBucket=${limitPerBucket}`,
       options.refresh === true,
@@ -109,19 +93,19 @@ export function fetchSupportAlertTickets(limitPerBucket = 100, options: SupportF
 }
 
 export function fetchSupportTickets(limit = 50, options: SupportFetchOptions = {}) {
-  return request<SupportTicketsSnapshot>(
+  return apiRequest<SupportTicketsSnapshot>(
     withRefreshQuery(`/api/support/tickets?limit=${limit}`, options.refresh === true),
   )
 }
 
 export function fetchSupportTicketConversation(ticketId: number) {
-  return request<SupportTicketConversationSnapshot>(
+  return apiRequest<SupportTicketConversationSnapshot>(
     `/api/support/tickets/${ticketId}/conversation`,
   )
 }
 
 export function createSupportTicket(input: CreateSupportTicketInput) {
-  return request<{ ticket: SupportTicket }>('/api/support/tickets', {
+  return apiRequest<{ ticket: SupportTicket }>('/api/support/tickets', {
     method: 'POST',
     body: JSON.stringify(input),
   })

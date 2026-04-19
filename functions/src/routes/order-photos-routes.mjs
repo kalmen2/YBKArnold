@@ -9,6 +9,7 @@ export function registerOrderPhotoRoutes(app, deps) {
     listOrderPhotoRecords,
     normalizeOrderPhotoOrderId,
     normalizeOrderPhotoPath,
+    requireFirebaseAuth,
     saveOrderPhotoRecord,
   } = deps
 
@@ -86,7 +87,7 @@ app.get('/api/orders/:orderId/photos/download', async (req, res, next) => {
   }
 })
 
-app.post('/api/orders/:orderId/photos', async (req, res, next) => {
+app.post('/api/orders/:orderId/photos', requireFirebaseAuth, async (req, res, next) => {
   try {
     const orderId = normalizeOrderPhotoOrderId(req.params.orderId)
 
@@ -120,7 +121,7 @@ app.post('/api/orders/:orderId/photos', async (req, res, next) => {
   }
 })
 
-app.delete('/api/orders/:orderId/photos', async (req, res, next) => {
+app.delete('/api/orders/:orderId/photos', requireFirebaseAuth, async (req, res, next) => {
   try {
     const orderId = normalizeOrderPhotoOrderId(req.params.orderId)
 

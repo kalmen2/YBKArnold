@@ -1,73 +1,109 @@
 import { Navigate, createBrowserRouter } from 'react-router-dom'
-import AdminAlertsPage from '../pages/AdminAlertsPage'
-import AppLayout from '../layout/AppLayout'
-import AdminLogsPage from '../pages/AdminLogsPage'
-import CrmContactsPage from '../pages/CrmContactsPage'
-import CrmDealersPage from '../pages/CrmDealersPage'
-import CrmPage from '../pages/CrmPage'
-import AdminUsersPage from '../pages/AdminUsersPage'
-import DashboardPage from '../pages/DashboardPage'
-import PicturesPage from '../pages/PicturesPage.tsx'
-import SupportPage from '../pages/SupportPage'
-import TimesheetPage from '../pages/TimesheetPage'
-import WorkersPage from '../pages/WorkersPage'
+import {
+  RequireAdminRoute,
+  RequireManagerOrAdminRoute,
+} from './RouteGuards'
+import {
+  AdminAlertsPage,
+  AdminLogsPage,
+  AdminUsersPage,
+  AppLayout,
+  CrmContactsPage,
+  CrmDealersPage,
+  CrmPage,
+  DashboardPage,
+  PicturesPage,
+  QuickBooksPage,
+  SupportPage,
+  TimesheetPage,
+  WorkersPage,
+  withRouteSuspense,
+} from './RouteLazyPages'
 
 export const router = createBrowserRouter([
   {
     path: '/',
-    element: <AppLayout />,
+    element: withRouteSuspense(<AppLayout />),
     children: [
       {
         index: true,
-        element: <Navigate to="/timesheet" replace />,
+        element: <Navigate to="/dashboard" replace />,
       },
       {
         path: 'timesheet',
-        element: <TimesheetPage />,
+        element: withRouteSuspense(<TimesheetPage />),
       },
       {
         path: 'manager-progress',
-        element: <TimesheetPage initialView="manager-progress" />,
+        element: withRouteSuspense(
+          <RequireManagerOrAdminRoute>
+            <TimesheetPage initialView="manager-progress" />
+          </RequireManagerOrAdminRoute>,
+        ),
       },
       {
         path: 'workers',
-        element: <WorkersPage />,
+        element: withRouteSuspense(<WorkersPage />),
+      },
+      {
+        path: 'quickbooks',
+        element: withRouteSuspense(
+          <RequireManagerOrAdminRoute>
+            <QuickBooksPage />
+          </RequireManagerOrAdminRoute>,
+        ),
       },
       {
         path: 'dashboard',
-        element: <DashboardPage />,
+        element: withRouteSuspense(<DashboardPage />),
       },
       {
         path: 'support',
-        element: <SupportPage />,
+        element: withRouteSuspense(<SupportPage />),
       },
       {
         path: 'pictures',
-        element: <PicturesPage />,
+        element: withRouteSuspense(<PicturesPage />),
       },
       {
         path: 'admin/users',
-        element: <AdminUsersPage />,
+        element: withRouteSuspense(
+          <RequireAdminRoute>
+            <AdminUsersPage />
+          </RequireAdminRoute>,
+        ),
       },
       {
         path: 'admin/alerts',
-        element: <AdminAlertsPage />,
+        element: withRouteSuspense(
+          <RequireAdminRoute>
+            <AdminAlertsPage />
+          </RequireAdminRoute>,
+        ),
       },
       {
         path: 'admin/logs',
-        element: <AdminLogsPage />,
+        element: withRouteSuspense(
+          <RequireAdminRoute>
+            <AdminLogsPage />
+          </RequireAdminRoute>,
+        ),
       },
       {
         path: 'admin/crm',
-        element: <CrmPage />,
+        element: withRouteSuspense(
+          <RequireAdminRoute>
+            <CrmPage />
+          </RequireAdminRoute>,
+        ),
       },
       {
         path: 'admin/crm/dealers',
-        element: <CrmDealersPage />,
+        element: withRouteSuspense(<CrmDealersPage />),
       },
       {
         path: 'admin/crm/contacts',
-        element: <CrmContactsPage />,
+        element: withRouteSuspense(<CrmContactsPage />),
       },
     ],
   },

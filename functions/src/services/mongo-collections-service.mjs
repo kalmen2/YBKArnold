@@ -179,6 +179,15 @@ export function createMongoCollectionsService({
             crmOrdersCollection.createIndex({ orderNumber: 1 }, { sparse: true }),
             crmOrdersCollection.createIndex({ status: 1, updatedAt: -1 }),
             crmOrdersCollection.createIndex({ createdAt: -1 }),
+            // Text search indexes for CRM
+            crmAccountsCollection.createIndex(
+              { name: 'text', email: 'text' },
+              { name: 'crm_accounts_text', weights: { name: 10, email: 5 } },
+            ),
+            crmContactsCollection.createIndex(
+              { fullName: 'text', primaryEmail: 'text', phone: 'text' },
+              { name: 'crm_contacts_text', weights: { fullName: 10, primaryEmail: 5, phone: 3 } },
+            ),
           ]).then(async () => {
             await removeLegacyTimesheetEntryIndexes(entriesCollection)
             await ensureDefaultStages()

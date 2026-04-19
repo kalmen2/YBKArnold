@@ -1,3 +1,5 @@
+import { AppError } from '../utils/app-error.mjs'
+
 export function registerTimesheetRoutes(app, deps) {
   const {
     allocateWorkerNumbers,
@@ -7,6 +9,8 @@ export function registerTimesheetRoutes(app, deps) {
     normalizeJobName,
     normalizeStageName,
     randomUUID,
+    requireAdminRole,
+    requireManagerOrAdminRole,
     requireApprovedLinkedWorker,
     requireFirebaseAuth,
     validateEntryFields,
@@ -23,10 +27,7 @@ export function registerTimesheetRoutes(app, deps) {
   }
 
   function buildDuplicateKeyError() {
-    return {
-      status: 400,
-      message: duplicateConstraintMessage,
-    }
+    return new AppError(duplicateConstraintMessage, 400)
   }
 
   async function fetchWorkerRateById(workersCollection, workerIds) {
@@ -54,10 +55,7 @@ export function registerTimesheetRoutes(app, deps) {
       .toArray()
 
     if (validWorkers.length !== uniqueWorkerIds.length) {
-      throw {
-        status: 400,
-        message: 'One or more worker IDs are invalid.',
-      }
+      throw new AppError('One or more worker IDs are invalid.', 400)
     }
 
     return new Map(
@@ -119,7 +117,7 @@ export function registerTimesheetRoutes(app, deps) {
   }
 
 
-app.get('/api/timesheet/state', async (_req, res, next) => {
+app.get('/api/timesheet/state', requireFirebaseAuth, async (req, res, next) => {
   try {
     const {
       workersCollection,
@@ -128,6 +126,16 @@ app.get('/api/timesheet/state', async (_req, res, next) => {
       orderProgressCollection,
       missingWorkerReviewsCollection,
     } = await getCollections()
+
+    // Optional date range filter — defaults to the last 90 days if not specified
+    const fromDate = String(req.query?.from ?? '').trim()
+    const toDate = String(req.query?.to ?? '').trim()
+    const defaultFrom = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+    const dateFrom = (isoDatePattern.test(fromDate) ? fromDate : defaultFrom)
+    const dateTo = isoDatePattern.test(toDate) ? toDate : undefined
+    const dateFilter = dateTo
+      ? { date: { $gte: dateFrom, $lte: dateTo } }
+      : { date: { $gte: dateFrom } }
 
     const [workers, entries, stages, orderProgress, missingWorkerReviews] = await Promise.all([
       workersCollection
@@ -143,7 +151,7 @@ app.get('/api/timesheet/state', async (_req, res, next) => {
         .toArray(),
       entriesCollection
         .find(
-          {},
+          dateFilter,
           {
             projection: {
               _id: 0,
@@ -166,7 +174,7 @@ app.get('/api/timesheet/state', async (_req, res, next) => {
         .toArray(),
       orderProgressCollection
         .find(
-          {},
+          dateFilter,
           {
             projection: {
               _id: 0,
@@ -178,7 +186,7 @@ app.get('/api/timesheet/state', async (_req, res, next) => {
         .toArray(),
       missingWorkerReviewsCollection
         .find(
-          {},
+          dateFilter,
           {
             projection: {
               _id: 0,
@@ -208,7 +216,7 @@ app.get('/api/timesheet/state', async (_req, res, next) => {
   }
 })
 
-app.put('/api/timesheet/missing-worker-reviews', async (req, res, next) => {
+app.put('/api/timesheet/missing-worker-reviews', requireFirebaseAuth, async (req, res, next) => {
   try {
     const { workersCollection, missingWorkerReviewsCollection } = await getCollections()
     const date = String(req.body?.date ?? '').trim()
@@ -300,7 +308,7 @@ app.put('/api/timesheet/missing-worker-reviews', async (req, res, next) => {
   }
 })
 
-app.put('/api/timesheet/order-progress', async (req, res, next) => {
+app.put('/api/timesheet/order-progress', requireFirebaseAuth, requireManagerOrAdminRole, async (req, res, next) => {
   try {
     const { orderProgressCollection } = await getCollections()
     const date = String(req.body?.date ?? '').trim()
@@ -486,7 +494,7 @@ app.post('/api/timesheet/my-entries', requireFirebaseAuth, requireApprovedLinked
   }
 })
 
-app.post('/api/timesheet/stages', async (req, res, next) => {
+app.post('/api/timesheet/stages', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
   try {
     const { stagesCollection } = await getCollections()
     const name = String(req.body?.name ?? '').trim()
@@ -548,7 +556,7 @@ app.post('/api/timesheet/stages', async (req, res, next) => {
   }
 })
 
-app.delete('/api/timesheet/stages/:stageId', async (req, res, next) => {
+app.delete('/api/timesheet/stages/:stageId', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
   try {
     const { stagesCollection, entriesCollection } = await getCollections()
     const stageId = String(req.params.stageId ?? '').trim()
@@ -577,7 +585,7 @@ app.delete('/api/timesheet/stages/:stageId', async (req, res, next) => {
   }
 })
 
-app.patch('/api/timesheet/stages/reorder', async (req, res, next) => {
+app.patch('/api/timesheet/stages/reorder', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
   try {
     const { stagesCollection } = await getCollections()
     const stageIds = Array.isArray(req.body?.stageIds) ? req.body.stageIds : []
@@ -636,7 +644,7 @@ app.patch('/api/timesheet/stages/reorder', async (req, res, next) => {
   }
 })
 
-app.post('/api/timesheet/workers', async (req, res, next) => {
+app.post('/api/timesheet/workers', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
   try {
     const { workersCollection } = await getCollections()
     const input = req.body ?? {}
@@ -659,7 +667,7 @@ app.post('/api/timesheet/workers', async (req, res, next) => {
   }
 })
 
-app.post('/api/timesheet/workers/bulk', async (req, res, next) => {
+app.post('/api/timesheet/workers/bulk', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
   try {
     const { workersCollection } = await getCollections()
     const payloadWorkers = Array.isArray(req.body?.workers) ? req.body.workers : []
@@ -689,7 +697,7 @@ app.post('/api/timesheet/workers/bulk', async (req, res, next) => {
   }
 })
 
-app.patch('/api/timesheet/workers/:workerId', async (req, res, next) => {
+app.patch('/api/timesheet/workers/:workerId', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
   try {
     const { workersCollection } = await getCollections()
     const workerId = String(req.params.workerId ?? '').trim()
@@ -754,7 +762,7 @@ app.patch('/api/timesheet/workers/:workerId', async (req, res, next) => {
   }
 })
 
-app.delete('/api/timesheet/workers/:workerId', async (req, res, next) => {
+app.delete('/api/timesheet/workers/:workerId', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
   try {
     const { workersCollection, entriesCollection } = await getCollections()
     const workerId = String(req.params.workerId ?? '')
@@ -779,7 +787,7 @@ app.delete('/api/timesheet/workers/:workerId', async (req, res, next) => {
   }
 })
 
-app.post('/api/timesheet/entries/bulk', async (req, res, next) => {
+app.post('/api/timesheet/entries/bulk', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
   try {
     const { workersCollection, entriesCollection, stagesCollection } = await getCollections()
     const date = String(req.body?.date ?? '').trim()
@@ -830,7 +838,7 @@ app.post('/api/timesheet/entries/bulk', async (req, res, next) => {
   }
 })
 
-app.post('/api/timesheet/entries/sync', async (req, res, next) => {
+app.post('/api/timesheet/entries/sync', requireFirebaseAuth, async (req, res, next) => {
   try {
     const { workersCollection, entriesCollection, stagesCollection } = await getCollections()
     const date = String(req.body?.date ?? '').trim()
@@ -1007,7 +1015,7 @@ app.post('/api/timesheet/entries/sync', async (req, res, next) => {
   }
 })
 
-app.patch('/api/timesheet/entries/:entryId', async (req, res, next) => {
+app.patch('/api/timesheet/entries/:entryId', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
   try {
     const { workersCollection, entriesCollection, stagesCollection } = await getCollections()
     const entryId = String(req.params.entryId ?? '').trim()
@@ -1102,7 +1110,7 @@ app.patch('/api/timesheet/entries/:entryId', async (req, res, next) => {
   }
 })
 
-app.delete('/api/timesheet/entries/:entryId', async (req, res, next) => {
+app.delete('/api/timesheet/entries/:entryId', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
   try {
     const { entriesCollection } = await getCollections()
     const entryId = String(req.params.entryId ?? '').trim()

@@ -202,7 +202,7 @@ export function createAuthRequestService({
       req.firebaseToken = decodedToken
       req.authUser = userDocument
       req.authClientPlatform = requestClientPlatform
-      await writeAuthApiRequestLog(req, publicUser)
+      void writeAuthApiRequestLog(req, publicUser)
       next()
     } catch (error) {
       next(error)
@@ -214,6 +214,23 @@ export function createAuthRequestService({
       return next({
         status: 403,
         message: 'Admin access is required.',
+      })
+    }
+
+    next()
+  }
+
+  function requireManagerOrAdminRole(req, _res, next) {
+    const publicUser = toPublicAuthUser(req.authUser)
+    const hasAccess = Boolean(
+      publicUser?.isApproved
+      && (publicUser?.isAdmin || publicUser?.isManager),
+    )
+
+    if (!hasAccess) {
+      return next({
+        status: 403,
+        message: 'Manager or admin access is required.',
       })
     }
 
@@ -246,6 +263,7 @@ export function createAuthRequestService({
 
   return {
     requireAdminRole,
+    requireManagerOrAdminRole,
     requireApprovedLinkedWorker,
     requireFirebaseAuth,
     resolveCurrentAuthUserFromRequest,

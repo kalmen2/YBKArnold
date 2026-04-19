@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import cors from 'cors'
 import express from 'express'
+import { rateLimit } from 'express-rate-limit'
 import * as functions from 'firebase-functions/v1'
 import { getApps, initializeApp } from 'firebase-admin/app'
 import { getAuth } from 'firebase-admin/auth'
@@ -9,6 +10,7 @@ import { registerAuthRoutes } from './src/routes/auth-routes.mjs'
 import { registerCrmRoutes } from './src/routes/crm-routes.mjs'
 import { registerDashboardSupportRoutes } from './src/routes/dashboard-support-routes.mjs'
 import { registerOrderPhotoRoutes } from './src/routes/order-photos-routes.mjs'
+import { registerQuickBooksRoutes } from './src/routes/quickbooks-routes.mjs'
 import { registerTimesheetRoutes } from './src/routes/timesheet-routes.mjs'
 import { createAuthUtils } from './src/services/auth-utils.mjs'
 import { createAuthActivityService } from './src/services/auth-activity-service.mjs'
@@ -44,8 +46,47 @@ import {
 
 export const app = express()
 
-app.use(cors({ origin: true }))
+const allowedOrigins = String(process.env.ALLOWED_ORIGINS ?? '').trim()
+  ? String(process.env.ALLOWED_ORIGINS).split(',').map((o) => o.trim()).filter(Boolean)
+  : []
+
+app.use(cors({
+  origin(origin, callback) {
+    // Allow requests with no origin (mobile apps, curl, server-to-server)
+    if (!origin) {
+      return callback(null, true)
+    }
+
+    if (allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+      return callback(null, true)
+    }
+
+    return callback(new Error(`Origin ${origin} not allowed by CORS`))
+  },
+  credentials: true,
+}))
 app.use(express.json({ limit: '12mb' }))
+
+// General API rate limit: 300 requests per minute per IP
+app.use('/api/', rateLimit({
+  windowMs: 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests. Please try again later.' },
+}))
+
+// Tighter limit on expensive write/import operations
+const heavyOperationsLimit = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests. Please try again later.' },
+})
+app.use('/api/crm/imports', heavyOperationsLimit)
+app.use('/api/orders/:orderId/photos', heavyOperationsLimit)
+
 app.use((req, res, next) => {
   if (req.path.startsWith('/api/')) {
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
@@ -70,12 +111,12 @@ const firebaseProjectId = String(
   process.env.FIREBASE_PROJECT_ID
     ?? process.env.GOOGLE_CLOUD_PROJECT
     ?? process.env.GCLOUD_PROJECT
-    ?? 'ybkarnold-b7ec0',
+    ?? '',
 ).trim()
 const firebaseStorageBucketName = String(
-  process.env.FIREBASE_STORAGE_BUCKET ?? 'ybkarnold-b7ec0.firebasestorage.app',
+  process.env.APP_STORAGE_BUCKET ?? '',
 ).trim()
-const ownerEmail = 'kal@ybkarnold.com'
+const ownerEmail = String(process.env.OWNER_EMAIL ?? '').trim()
 const authRoleStandard = 'standard'
 const authRoleManager = 'manager'
 const authRoleAdmin = 'admin'
@@ -94,14 +135,31 @@ const mobileAlertTargetModeAll = 'all'
 const mobileAlertTargetModeSelected = 'selected'
 const mobilePushTokenProviderExpo = 'expo'
 const mobilePushTokenProviderFcm = 'fcm'
-const defaultMobileAndroidUpdateUrl = 'https://ybkarnold-b7ec0.web.app/apk/YBK-APP-local-release.apk'
-const defaultMobileIosUpdateUrl = 'https://ybkarnold-b7ec0.web.app/ios-update.html'
-const defaultMobileAndroidLatestBuild = 14
-const defaultMobileIosLatestBuild = 6
-const defaultMobileLatestVersion = '1.6'
+const defaultMobileAndroidUpdateUrl = String(process.env.MOBILE_ANDROID_UPDATE_URL ?? '').trim()
+const defaultMobileIosUpdateUrl = String(process.env.MOBILE_IOS_UPDATE_URL ?? '').trim()
+const defaultMobileAndroidLatestBuild = Number(process.env.MOBILE_ANDROID_LATEST_BUILD ?? 0)
+const defaultMobileIosLatestBuild = Number(process.env.MOBILE_IOS_LATEST_BUILD ?? 0)
+const defaultMobileLatestVersion = String(process.env.MOBILE_LATEST_VERSION ?? '').trim()
 const expoPushApiUrl = 'https://exp.host/--/api/v2/push/send'
 const zendeskTicketFieldCacheTtlMs = 30 * 60 * 1000
 const zendeskTicketFieldErrorCacheTtlMs = 5 * 60 * 1000
+
+// Validate required environment variables at startup
+const missingEnvVars = [
+  !mongoUri && 'MONGODB_URI',
+  !ownerEmail && 'OWNER_EMAIL',
+  !firebaseStorageBucketName && 'APP_STORAGE_BUCKET',
+].filter(Boolean)
+
+const isCloudFunctionsRuntime = Boolean(
+  process.env.K_SERVICE
+  || process.env.FUNCTION_TARGET
+  || process.env.FUNCTION_NAME,
+)
+
+if (isCloudFunctionsRuntime && missingEnvVars.length > 0) {
+  console.error('Missing required environment variables:', missingEnvVars.join(', '))
+}
 
 if (getApps().length === 0) {
   const firebaseAdminOptions = {}
@@ -341,6 +399,7 @@ const { persistNewMondayOrders } = createMondayOrderPersistenceService({
 
 const {
   requireAdminRole,
+  requireManagerOrAdminRole,
   requireApprovedLinkedWorker,
   requireFirebaseAuth,
 } = createAuthRequestService({
@@ -430,6 +489,7 @@ const routeDeps = {
   randomUUID,
   redactPushTokenForLog,
   requireAdminRole,
+  requireManagerOrAdminRole,
   requireApprovedLinkedWorker,
   requireFirebaseAuth,
   saveOrderPhotoRecord,
@@ -451,6 +511,7 @@ registerAlertsRoutes(app, routeDeps)
 registerCrmRoutes(app, routeDeps)
 registerDashboardSupportRoutes(app, routeDeps)
 registerOrderPhotoRoutes(app, routeDeps)
+registerQuickBooksRoutes(app, routeDeps)
 registerTimesheetRoutes(app, routeDeps)
 app.use((error, _req, res, _next) => {
   const status = Number(error?.status ?? 500)
@@ -477,7 +538,7 @@ export async function closeMongoConnections() {
 export const apiV1 = functions
   .region('us-central1')
   .runWith({
-    timeoutSeconds: 60,
-    memory: '256MB',
+    timeoutSeconds: 300,
+    memory: '512MB',
   })
   .https.onRequest(app)

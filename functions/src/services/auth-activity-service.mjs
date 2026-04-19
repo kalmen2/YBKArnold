@@ -92,6 +92,13 @@ export function createAuthActivityService({
       return
     }
 
+    const requestMethod = String(req.method ?? '').trim().toUpperCase()
+
+    // Skip read-heavy traffic to keep auth telemetry costs under control.
+    if (requestMethod === 'GET' || requestMethod === 'HEAD' || requestMethod === 'OPTIONS') {
+      return
+    }
+
     const requestStartedAt = new Date().toISOString()
     const actionPath = String(req.path ?? req.originalUrl ?? '/').trim() || '/'
 

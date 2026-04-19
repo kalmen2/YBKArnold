@@ -607,7 +607,7 @@ export default function CrmPage() {
 
           <Stack direction="row" spacing={1}>
             <Button component={RouterLink} to="/admin/crm/dealers" variant="outlined" size="small">
-              Dealers
+              Accounts
             </Button>
             <Button component={RouterLink} to="/admin/crm/contacts" variant="outlined" size="small">
               Contacts
