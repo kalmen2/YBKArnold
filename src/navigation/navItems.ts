@@ -3,7 +3,6 @@ import AccountBalanceRoundedIcon from '@mui/icons-material/AccountBalanceRounded
 import BusinessRoundedIcon from '@mui/icons-material/BusinessRounded'
 import ContactsRoundedIcon from '@mui/icons-material/ContactsRounded'
 import DashboardRoundedIcon from '@mui/icons-material/DashboardRounded'
-import GroupRoundedIcon from '@mui/icons-material/GroupRounded'
 import ManageHistoryRoundedIcon from '@mui/icons-material/ManageHistoryRounded'
 import NotificationsActiveRoundedIcon from '@mui/icons-material/NotificationsActiveRounded'
 import PhotoLibraryRoundedIcon from '@mui/icons-material/PhotoLibraryRounded'
@@ -18,6 +17,7 @@ export type NavItem = {
   path: string
   icon: ElementType
   adminOnly?: boolean
+  adminSection?: boolean
   managerOnly?: boolean
   managerOrAdminOnly?: boolean
 }
@@ -34,14 +34,10 @@ export const navItems: NavItem[] = [
     icon: TableChartRoundedIcon,
   },
   {
-    label: 'Workers',
-    path: '/workers',
-    icon: GroupRoundedIcon,
-  },
-  {
     label: 'QuickBooks',
     path: '/quickbooks',
     icon: AccountBalanceRoundedIcon,
+    adminSection: true,
     managerOrAdminOnly: true,
   },
   {

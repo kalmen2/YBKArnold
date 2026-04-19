@@ -3,7 +3,6 @@ import { Suspense, lazy, type ReactElement } from 'react'
 export const AppLayout = lazy(() => import('../layout/AppLayout'))
 export const DashboardPage = lazy(() => import('../pages/DashboardPage'))
 export const TimesheetPage = lazy(() => import('../pages/TimesheetPage'))
-export const WorkersPage = lazy(() => import('../pages/WorkersPage'))
 export const QuickBooksPage = lazy(() => import('../pages/QuickBooksPage'))
 export const SupportPage = lazy(() => import('../pages/SupportPage'))
 export const PicturesPage = lazy(() => import('../pages/PicturesPage.tsx'))

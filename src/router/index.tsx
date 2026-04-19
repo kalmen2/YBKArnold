@@ -16,7 +16,6 @@ import {
   QuickBooksPage,
   SupportPage,
   TimesheetPage,
-  WorkersPage,
   withRouteSuspense,
 } from './RouteLazyPages'
 
@@ -39,7 +38,7 @@ export const router = createBrowserRouter([
       },
       {
         path: 'workers',
-        element: withRouteSuspense(<WorkersPage />),
+        element: <Navigate to="/timesheet" replace />,
       },
       {
         path: 'quickbooks',

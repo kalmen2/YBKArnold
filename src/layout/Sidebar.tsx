@@ -56,8 +56,12 @@ function SidebarContent({ showText, onNavigate }: SidebarContentProps) {
   }
 
   const visibleNavItems = navItems.filter(canAccessNavItem)
-  const regularNavItems = visibleNavItems.filter((item) => !item.adminOnly)
-  const adminNavItems = visibleNavItems.filter((item) => item.adminOnly)
+  const regularNavItems = visibleNavItems.filter(
+    (item) => !item.adminOnly && !item.adminSection,
+  )
+  const adminNavItems = visibleNavItems.filter(
+    (item) => item.adminOnly || item.adminSection,
+  )
 
   const salesPaths = new Set(['/admin/crm/dealers', '/admin/crm/contacts'])
   const supportPaths = new Set(['/support', '/pictures'])
