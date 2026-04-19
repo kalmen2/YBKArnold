@@ -27,13 +27,12 @@ import {
   TableRow,
   Typography,
 } from '@mui/material'
-import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
+import { type ReactNode, useCallback, useMemo, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   fetchMondayDashboardSnapshot,
-  type MondayDashboardSnapshot,
   fetchZendeskTicketSummary,
   type DashboardOrder,
-  type ZendeskTicketSummarySnapshot,
 } from '../features/dashboard/api'
 
 type DrilldownKey =
@@ -140,57 +139,30 @@ function dueColor(order: DashboardOrder): 'error' | 'warning' | 'success' | 'def
 }
 
 export default function DashboardPage() {
-  const [snapshot, setSnapshot] = useState<MondayDashboardSnapshot | null>(null)
-  const [zendeskSnapshot, setZendeskSnapshot] = useState<ZendeskTicketSummarySnapshot | null>(null)
-  const [isLoading, setIsLoading] = useState(true)
-  const [errorMessage, setErrorMessage] = useState<string | null>(null)
-  const [zendeskErrorMessage, setZendeskErrorMessage] = useState<string | null>(null)
+  const queryClient = useQueryClient()
   const [activeDrilldown, setActiveDrilldown] = useState<DrilldownKey | null>(null)
 
-  const loadDashboard = useCallback(async (refreshRequested = false) => {
-    setIsLoading(true)
-    setErrorMessage(null)
-    setZendeskErrorMessage(null)
+  const mondayQuery = useQuery({
+    queryKey: ['dashboard', 'monday'],
+    queryFn: () => fetchMondayDashboardSnapshot({ refresh: false }),
+    staleTime: 3 * 60 * 1000,
+  })
 
-    const [mondayResult, zendeskResult] = await Promise.allSettled([
-      fetchMondayDashboardSnapshot({ refresh: refreshRequested }),
-      fetchZendeskTicketSummary({ refresh: refreshRequested }),
-    ])
+  const zendeskQuery = useQuery({
+    queryKey: ['dashboard', 'zendesk'],
+    queryFn: () => fetchZendeskTicketSummary({ refresh: false }),
+    staleTime: 3 * 60 * 1000,
+  })
 
-    if (mondayResult.status === 'fulfilled') {
-      setSnapshot(mondayResult.value)
-    } else {
-      setSnapshot(null)
-      setErrorMessage(
-        mondayResult.reason instanceof Error
-          ? mondayResult.reason.message
-          : 'Failed to load dashboard data.',
-      )
-    }
+  const snapshot = mondayQuery.data ?? null
+  const zendeskSnapshot = zendeskQuery.data ?? null
+  const isLoading = (mondayQuery.isLoading || zendeskQuery.isLoading) && !snapshot && !zendeskSnapshot
+  const errorMessage = mondayQuery.error instanceof Error ? mondayQuery.error.message : null
+  const zendeskErrorMessage = zendeskQuery.error instanceof Error ? zendeskQuery.error.message : null
 
-    if (zendeskResult.status === 'fulfilled') {
-      setZendeskSnapshot(zendeskResult.value)
-    } else {
-      setZendeskSnapshot(null)
-      setZendeskErrorMessage(
-        zendeskResult.reason instanceof Error
-          ? zendeskResult.reason.message
-          : 'Failed to load Zendesk ticket summary.',
-      )
-    }
-
-    setIsLoading(false)
-  }, [])
-
-  useEffect(() => {
-    const timeoutId = window.setTimeout(() => {
-      void loadDashboard(false)
-    }, 0)
-
-    return () => {
-      window.clearTimeout(timeoutId)
-    }
-  }, [loadDashboard])
+  const handleRefresh = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+  }, [queryClient])
 
   const summaryCards = useMemo<SummaryCard[]>(() => {
     if (!snapshot) {
@@ -343,9 +315,9 @@ export default function DashboardPage() {
         <Stack direction="row" spacing={1.25}>
           <Button
             variant="contained"
-            onClick={() => void loadDashboard(true)}
+            onClick={handleRefresh}
             startIcon={<RefreshRoundedIcon />}
-            disabled={isLoading}
+            disabled={mondayQuery.isFetching || zendeskQuery.isFetching}
           >
             Refresh
           </Button>

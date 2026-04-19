@@ -11,7 +11,7 @@ import {
   Typography,
 } from '@mui/material'
 import { useState, type ReactNode } from 'react'
-import { useAuth } from './AuthContext'
+import { useAuth } from './useAuth'
 
 export default function AuthGate({ children }: { children: ReactNode }) {
   const {

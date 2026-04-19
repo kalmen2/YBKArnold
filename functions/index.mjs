@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import compression from 'compression'
 import cors from 'cors'
 import express from 'express'
 import { rateLimit } from 'express-rate-limit'
@@ -49,6 +50,10 @@ export const app = express()
 const allowedOrigins = String(process.env.ALLOWED_ORIGINS ?? '').trim()
   ? String(process.env.ALLOWED_ORIGINS).split(',').map((o) => o.trim()).filter(Boolean)
   : []
+
+// Gzip compress all API responses — reduces payload size by 60-80% on large
+// dealer/contact lists, cutting both transfer time and Firebase egress costs.
+app.use(compression())
 
 app.use(cors({
   origin(origin, callback) {
@@ -402,6 +407,7 @@ const {
   requireManagerOrAdminRole,
   requireApprovedLinkedWorker,
   requireFirebaseAuth,
+  invalidateAuthUserCache,
 } = createAuthRequestService({
   authApprovalApproved,
   authApprovalPending,
@@ -488,6 +494,7 @@ const routeDeps = {
   persistNewMondayOrders,
   randomUUID,
   redactPushTokenForLog,
+  invalidateAuthUserCache,
   requireAdminRole,
   requireManagerOrAdminRole,
   requireApprovedLinkedWorker,

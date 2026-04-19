@@ -20,20 +20,17 @@ import {
   TableRow,
   Typography,
 } from '@mui/material'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   fetchSupportAlertTickets,
   fetchSupportAlerts,
   fetchSupportTicketConversation,
   fetchSupportTickets,
-  type SupportAlertTicketsSnapshot,
-  type SupportAlertsSnapshot,
   type SupportTicketConversationSnapshot,
-  type SupportTicketsSnapshot,
 } from '../features/support/api'
 import {
   fetchZendeskTicketSummary,
-  type ZendeskTicketSummarySnapshot,
 } from '../features/dashboard/api'
 
 type AlertBucketKey =
@@ -134,14 +131,8 @@ function buildPreviewParagraph(body: string, maxChars = 220) {
 }
 
 export default function SupportPage() {
-  const [alertsSnapshot, setAlertsSnapshot] = useState<SupportAlertsSnapshot | null>(null)
-  const [alertTicketsSnapshot, setAlertTicketsSnapshot] =
-    useState<SupportAlertTicketsSnapshot | null>(null)
-  const [zendeskSummarySnapshot, setZendeskSummarySnapshot] =
-    useState<ZendeskTicketSummarySnapshot | null>(null)
-  const [ticketsSnapshot, setTicketsSnapshot] = useState<SupportTicketsSnapshot | null>(null)
-  const [conversationSnapshot, setConversationSnapshot] =
-    useState<SupportTicketConversationSnapshot | null>(null)
+  const queryClient = useQueryClient()
+
   const [selectedTicketId, setSelectedTicketId] = useState<number | null>(null)
   const [pendingSidebarTicketScrollId, setPendingSidebarTicketScrollId] = useState<number | null>(
     null,
@@ -151,143 +142,78 @@ export default function SupportPage() {
   >(null)
   const [selectedAlertBucket, setSelectedAlertBucket] = useState<AlertBucketKey | null>(null)
   const [expandedTicketPreviewId, setExpandedTicketPreviewId] = useState<number | false>(false)
-  const [previewSnapshotsByTicketId, setPreviewSnapshotsByTicketId] = useState<
-    Record<number, SupportTicketConversationSnapshot>
-  >({})
-  const [previewErrorsByTicketId, setPreviewErrorsByTicketId] = useState<
-    Record<number, string>
-  >({})
-
-  const [isLoadingPage, setIsLoadingPage] = useState(true)
-  const [isLoadingAlertTickets, setIsLoadingAlertTickets] = useState(false)
-  const [isLoadingConversation, setIsLoadingConversation] = useState(false)
-  const [loadingPreviewTicketId, setLoadingPreviewTicketId] = useState<number | null>(null)
   const [isMetricsPanelExpanded, setIsMetricsPanelExpanded] = useState(true)
 
-  const [pageError, setPageError] = useState<string | null>(null)
-  const [alertTicketError, setAlertTicketError] = useState<string | null>(null)
-  const [conversationError, setConversationError] = useState<string | null>(null)
+  // ---------------------------------------------------------------------------
+  // Data queries — all 4 page queries share staleTime: 3 min (matches backend cache)
+  // zendeskQuery uses the shared ['dashboard', 'zendesk'] key so navigating
+  // Dashboard → Support never fires a duplicate Zendesk request.
+  // ---------------------------------------------------------------------------
+  const alertsQuery = useQuery({
+    queryKey: ['support', 'alerts'],
+    queryFn: () => fetchSupportAlerts({ refresh: false }),
+    staleTime: 3 * 60 * 1000,
+  })
 
-  const loadPage = useCallback(async (refreshRequested = false) => {
-    setIsLoadingPage(true)
-    setPageError(null)
+  const alertTicketsQuery = useQuery({
+    queryKey: ['support', 'alert-tickets', 100],
+    queryFn: () => fetchSupportAlertTickets(100, { refresh: false }),
+    staleTime: 3 * 60 * 1000,
+  })
 
-    const [alertsResult, alertTicketsResult, ticketsResult, zendeskSummaryResult] = await Promise.allSettled([
-      fetchSupportAlerts({ refresh: refreshRequested }),
-      fetchSupportAlertTickets(100, { refresh: refreshRequested }),
-      fetchSupportTickets(100, { refresh: refreshRequested }),
-      fetchZendeskTicketSummary({ refresh: refreshRequested }),
-    ])
+  const ticketsQuery = useQuery({
+    queryKey: ['support', 'tickets', 100],
+    queryFn: () => fetchSupportTickets(100, { refresh: false }),
+    staleTime: 3 * 60 * 1000,
+  })
 
-    if (alertsResult.status === 'fulfilled') {
-      setAlertsSnapshot(alertsResult.value)
-    }
+  const zendeskQuery = useQuery({
+    queryKey: ['dashboard', 'zendesk'],
+    queryFn: () => fetchZendeskTicketSummary({ refresh: false }),
+    staleTime: 3 * 60 * 1000,
+  })
 
-    if (alertTicketsResult.status === 'fulfilled') {
-      setAlertTicketsSnapshot(alertTicketsResult.value)
-      setAlertTicketError(null)
-    }
+  // Conversation for the selected ticket — cached 15 min so re-selecting a ticket
+  // is instant (no network call). gcTime keeps prior conversations alive in memory.
+  const conversationQuery = useQuery({
+    queryKey: ['support', 'conversation', selectedTicketId],
+    queryFn: () => fetchSupportTicketConversation(selectedTicketId!),
+    enabled: selectedTicketId !== null,
+    staleTime: 10 * 60 * 1000,
+    gcTime: 15 * 60 * 1000,
+  })
 
-    if (ticketsResult.status === 'fulfilled') {
-      setTicketsSnapshot(ticketsResult.value)
-    }
+  // Derived values from queries
+  const alertsSnapshot = alertsQuery.data ?? null
+  const alertTicketsSnapshot = alertTicketsQuery.data ?? null
+  const ticketsSnapshot = ticketsQuery.data ?? null
+  const zendeskSummarySnapshot = zendeskQuery.data ?? null
+  const conversationSnapshot = conversationQuery.data ?? null
 
-    if (zendeskSummaryResult.status === 'fulfilled') {
-      setZendeskSummarySnapshot(zendeskSummaryResult.value)
-    } else {
-      setZendeskSummarySnapshot(null)
-    }
+  const isLoadingPage =
+    (alertsQuery.isLoading || ticketsQuery.isLoading || zendeskQuery.isLoading) &&
+    !alertsSnapshot && !ticketsSnapshot && !zendeskSummarySnapshot
 
-    if (
-      alertsResult.status === 'rejected' ||
-      alertTicketsResult.status === 'rejected' ||
-      ticketsResult.status === 'rejected' ||
-      zendeskSummaryResult.status === 'rejected'
-    ) {
-      setPageError('Failed to load Zendesk support data.')
-    }
+  const isLoadingConversation = conversationQuery.isFetching && !conversationSnapshot
 
-    setIsLoadingPage(false)
-  }, [])
+  const pageError =
+    (alertsQuery.isError || ticketsQuery.isError || zendeskQuery.isError) &&
+    !alertsSnapshot && !ticketsSnapshot && !zendeskSummarySnapshot
+      ? 'Failed to load Zendesk support data.'
+      : null
 
-  const loadAlertTickets = useCallback(async () => {
-    setIsLoadingAlertTickets(true)
-    setAlertTicketError(null)
+  const conversationError = conversationQuery.isError
+    ? (conversationQuery.error instanceof Error
+        ? conversationQuery.error.message
+        : 'Failed to load conversation.')
+    : null
 
-    try {
-      const snapshot = await fetchSupportAlertTickets(100)
-      setAlertTicketsSnapshot(snapshot)
-    } catch (error) {
-      setAlertTicketError(
-        error instanceof Error ? error.message : 'Failed to load alert ticket lists.',
-      )
-    } finally {
-      setIsLoadingAlertTickets(false)
-    }
-  }, [])
+  function handleRefresh() {
+    void queryClient.invalidateQueries({ queryKey: ['support'] })
+    void queryClient.invalidateQueries({ queryKey: ['dashboard', 'zendesk'] })
+  }
 
-  const loadConversation = useCallback(async (ticketId: number) => {
-    setIsLoadingConversation(true)
-    setConversationError(null)
-
-    try {
-      const snapshot = await fetchSupportTicketConversation(ticketId)
-      setConversationSnapshot(snapshot)
-      setPreviewSnapshotsByTicketId((prev) => ({
-        ...prev,
-        [ticketId]: snapshot,
-      }))
-    } catch (error) {
-      setConversationSnapshot(null)
-      setConversationError(error instanceof Error ? error.message : 'Failed to load conversation.')
-    } finally {
-      setIsLoadingConversation(false)
-    }
-  }, [])
-
-  const loadTicketPreview = useCallback(async (ticketId: number) => {
-    if (previewSnapshotsByTicketId[ticketId]) {
-      return
-    }
-
-    setLoadingPreviewTicketId(ticketId)
-
-    try {
-      const snapshot = await fetchSupportTicketConversation(ticketId)
-      setPreviewSnapshotsByTicketId((prev) => ({
-        ...prev,
-        [ticketId]: snapshot,
-      }))
-      setPreviewErrorsByTicketId((prev) => {
-        const next = { ...prev }
-        delete next[ticketId]
-        return next
-      })
-    } catch (error) {
-      setPreviewErrorsByTicketId((prev) => ({
-        ...prev,
-        [ticketId]:
-          error instanceof Error ? error.message : 'Failed to load preview conversation.',
-      }))
-    } finally {
-      setLoadingPreviewTicketId((current) => (current === ticketId ? null : current))
-    }
-  }, [previewSnapshotsByTicketId])
-
-  useEffect(() => {
-    void loadPage(false)
-  }, [loadPage])
-
-  useEffect(() => {
-    if (!selectedTicketId) {
-      setConversationSnapshot(null)
-      setConversationError(null)
-      return
-    }
-
-    void loadConversation(selectedTicketId)
-  }, [loadConversation, selectedTicketId])
-
+  // Scroll to a specific comment once the conversation loads
   useEffect(() => {
     if (!pendingConversationJump || !conversationSnapshot) {
       return
@@ -321,6 +247,7 @@ export default function SupportPage() {
     return () => cancelAnimationFrame(frameId)
   }, [conversationSnapshot, pendingConversationJump])
 
+  // Scroll the sidebar ticket row into view after selecting from an alert table
   useEffect(() => {
     if (!pendingSidebarTicketScrollId) {
       return
@@ -470,7 +397,7 @@ export default function SupportPage() {
     )[0]
   }, [alertsSnapshot, ticketsSnapshot, zendeskSummarySnapshot, alertTicketsSnapshot])
 
-  const handleAlertCardClick = async (bucketKey: AlertBucketKey) => {
+  function handleAlertCardClick(bucketKey: AlertBucketKey) {
     const isSameBucket = selectedAlertBucket === bucketKey
 
     if (isSameBucket) {
@@ -479,10 +406,7 @@ export default function SupportPage() {
     }
 
     setSelectedAlertBucket(bucketKey)
-
-    if (!alertTicketsSnapshot) {
-      await loadAlertTickets()
-    }
+    // alertTicketsQuery is always fetched on mount; no manual load needed
   }
 
   return (
@@ -494,15 +418,14 @@ export default function SupportPage() {
         gap={1.25}
       >
         <Box>
-          
-          
+
+
         </Box>
       </Stack>
 
       {pageError ? <Alert severity="warning">{pageError}</Alert> : null}
-      {alertTicketError ? <Alert severity="warning">{alertTicketError}</Alert> : null}
 
-      {isLoadingPage && !alertsSnapshot && !ticketsSnapshot && !zendeskSummarySnapshot ? (
+      {isLoadingPage ? (
         <Paper variant="outlined" sx={{ p: 4 }}>
           <Stack direction="row" spacing={1.25} alignItems="center">
             <CircularProgress size={22} />
@@ -552,16 +475,16 @@ export default function SupportPage() {
 
               <Button
                 variant="contained"
-                onClick={() => void loadPage(true)}
+                onClick={handleRefresh}
                 startIcon={<RefreshRoundedIcon />}
-                disabled={isLoadingPage}
+                disabled={alertsQuery.isFetching || ticketsQuery.isFetching || zendeskQuery.isFetching}
               >
                 Refresh
               </Button>
             </Stack>
 
             <Stack spacing={1}>
-              
+
               <Box
                 sx={{
                   display: 'grid',
@@ -615,7 +538,7 @@ export default function SupportPage() {
                   <Paper
                     key={card.key}
                     variant="outlined"
-                    onClick={() => void handleAlertCardClick(card.key as AlertBucketKey)}
+                    onClick={() => handleAlertCardClick(card.key as AlertBucketKey)}
                     sx={{
                       p: 2,
                       borderLeft: `4px solid ${card.color}`,
@@ -648,7 +571,7 @@ export default function SupportPage() {
               {alertBucketLabelMap[selectedAlertBucket]} Tickets
             </Typography>
 
-            {isLoadingAlertTickets && !alertTicketsSnapshot ? (
+            {alertTicketsQuery.isLoading ? (
               <Stack direction="row" spacing={1.25} alignItems="center">
                 <CircularProgress size={20} />
                 <Typography color="text.secondary">Loading alert tickets...</Typography>
@@ -676,7 +599,6 @@ export default function SupportPage() {
                         setSelectedTicketId(ticket.id)
                         setExpandedTicketPreviewId(ticket.id)
                         setPendingSidebarTicketScrollId(ticket.id)
-                        void loadTicketPreview(ticket.id)
                       }}
                       sx={{ cursor: 'pointer' }}
                     >
@@ -741,11 +663,21 @@ export default function SupportPage() {
 
             <Stack spacing={0.65} sx={{ flex: 1, minHeight: 0, overflowY: 'auto', pr: 0.5 }}>
               {openTickets.map((ticket) => {
-                const previewSnapshot =
-                  previewSnapshotsByTicketId[ticket.id] ||
-                  (conversationSnapshot?.ticket.id === ticket.id ? conversationSnapshot : null)
-                const previewError = previewErrorsByTicketId[ticket.id]
-                const isPreviewLoading = loadingPreviewTicketId === ticket.id
+                // Preview data comes from the conversation query cache.
+                // React Query caches each ticket's conversation for 15 min,
+                // so switching between tickets is instant after the first load.
+                const previewSnapshot: SupportTicketConversationSnapshot | null =
+                  expandedTicketPreviewId === ticket.id && conversationQuery.data?.ticket.id === ticket.id
+                    ? conversationQuery.data
+                    : null
+                const isPreviewLoading =
+                  conversationQuery.isFetching && selectedTicketId === ticket.id && !previewSnapshot
+                const previewError =
+                  conversationQuery.isError && selectedTicketId === ticket.id
+                    ? (conversationQuery.error instanceof Error
+                        ? conversationQuery.error.message
+                        : 'Failed to load preview conversation.')
+                    : null
 
                 return (
                   <Accordion
@@ -755,10 +687,6 @@ export default function SupportPage() {
                     onChange={(_event, expanded) => {
                       setExpandedTicketPreviewId(expanded ? ticket.id : false)
                       setSelectedTicketId(ticket.id)
-
-                      if (expanded) {
-                        void loadTicketPreview(ticket.id)
-                      }
                     }}
                     disableGutters
                     sx={{

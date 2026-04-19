@@ -17,7 +17,7 @@ import {
 } from '@mui/material'
 import { useEffect, useState } from 'react'
 import { Outlet, useLocation } from 'react-router-dom'
-import { useAuth } from '../auth/AuthContext'
+import { useAuth } from '../auth/useAuth'
 import Sidebar from './Sidebar'
 
 const EXPANDED_DRAWER_WIDTH = 248

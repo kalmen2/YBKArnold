@@ -1,7 +1,5 @@
 import {
-  createContext,
   useCallback,
-  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -19,6 +17,8 @@ import {
   googleAuthProvider,
   isFirebaseAuthConfigured,
 } from './firebase'
+import { AuthContext, type AuthContextValue } from './auth-context.ts'
+import { clearCachedToken } from '../features/api-client'
 import type { AppAuthUser } from './types'
 
 const ownerEmail = 'kal@ybkarnold.com'
@@ -26,28 +26,10 @@ const authProfileRequestTimeoutMs = 7000
 const clickProfileSyncIntervalMs = 60000
 const clickActivityCooldownMs = 20000
 const cachedAuthUserStorageKey = 'arnold.auth.cached-user.v1'
-
-type AuthContextValue = {
-  firebaseUser: User | null
-  appUser: AppAuthUser | null
-  isInitializing: boolean
-  isAuthenticated: boolean
-  profileError: string | null
-  ownerEmail: string
-  isFirebaseConfigured: boolean
-  signInWithGoogle: () => Promise<void>
-  signOutFromApp: () => Promise<void>
-  refreshProfile: () => Promise<void>
-  getIdToken: () => Promise<string>
-  logActivity: (input: {
-    action: string
-    target?: string | null
-    path?: string | null
-    metadata?: unknown
-  }) => Promise<void>
-}
-
-const AuthContext = createContext<AuthContextValue | null>(null)
+// Collect activity events in memory and flush them in a single request every
+// ACTIVITY_FLUSH_INTERVAL_MS instead of firing one request per event. This
+// reduces activity-logging API calls from ~1 per click to ~1 per 30 seconds.
+const ACTIVITY_FLUSH_INTERVAL_MS = 30_000
 
 function readCachedAuthUser() {
   if (typeof window === 'undefined') {
@@ -139,8 +121,72 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [ownerEmailValue, setOwnerEmailValue] = useState(ownerEmail)
   const activityCooldownByKeyRef = useRef<Map<string, number>>(new Map())
   const lastClickProfileSyncAtRef = useRef(0)
+  // Pending activity events waiting to be flushed. We keep only the most
+  // recent event per key so a burst of clicks collapses to a single request.
+  const activityQueueRef = useRef<Map<string, {
+    action: string
+    target: string | null
+    path: string
+    metadata: unknown
+  }>>(new Map())
 
-  const logActivity = useCallback(async (input: {
+  const flushActivityQueue = useCallback(async () => {
+    const queue = activityQueueRef.current
+
+    if (queue.size === 0) {
+      return
+    }
+
+    const activeUser = firebaseAuth.currentUser
+
+    if (!activeUser) {
+      queue.clear()
+      return
+    }
+
+    const events = Array.from(queue.values())
+    queue.clear()
+
+    try {
+      const idToken = await activeUser.getIdToken()
+
+      // Send each queued event. In practice after throttling this is 1–3
+      // events per flush window, far fewer than firing on every interaction.
+      for (const event of events) {
+        const response = await fetch('/api/auth/activity', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${idToken}`,
+            'x-client-platform': 'web',
+          },
+          body: JSON.stringify(event),
+        })
+
+        if (response.status === 401 || response.status === 403) {
+          clearCachedToken()
+          await signOut(firebaseAuth)
+          return
+        }
+      }
+    } catch {
+      // Best-effort telemetry only; never block UX.
+    }
+  }, [])
+
+  // Flush the activity queue on a fixed interval instead of immediately on
+  // every event. This batches bursts of clicks into a single network round-trip.
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      void flushActivityQueue()
+    }, ACTIVITY_FLUSH_INTERVAL_MS)
+
+    return () => {
+      window.clearInterval(intervalId)
+    }
+  }, [flushActivityQueue])
+
+  const logActivity = useCallback((input: {
     action: string
     target?: string | null
     path?: string | null
@@ -152,9 +198,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return
     }
 
-    const activeUser = firebaseAuth.currentUser
-
-    if (!activeUser) {
+    if (!firebaseAuth.currentUser) {
       return
     }
 
@@ -172,30 +216,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     activityCooldownByKeyRef.current.set(key, now)
 
-    try {
-      const idToken = await activeUser.getIdToken()
-
-      const response = await fetch('/api/auth/activity', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${idToken}`,
-          'x-client-platform': 'web',
-        },
-        body: JSON.stringify({
-          action,
-          target: target || null,
-          path: String(input?.path ?? '').trim().slice(0, 240) || window.location.pathname,
-          metadata: input?.metadata,
-        }),
-      })
-
-      if (response.status === 401 || response.status === 403) {
-        await signOut(firebaseAuth)
-      }
-    } catch {
-      // Best-effort telemetry only; never block UX.
-    }
+    // Enqueue (overwrite any prior event with same key so only the latest wins).
+    activityQueueRef.current.set(key, {
+      action,
+      target: target || null,
+      path: String(input?.path ?? '').trim().slice(0, 240) || window.location.pathname,
+      metadata: input?.metadata,
+    })
   }, [])
 
   const syncProfile = useCallback(async (user: User) => {
@@ -227,6 +254,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setAppUser(null)
           persistCachedAuthUser(null)
           setProfileError(responseErrorMessage || 'Session expired. Please sign in again.')
+          clearCachedToken()
           await signOut(firebaseAuth)
           return
         }
@@ -239,6 +267,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setAppUser(null)
           persistCachedAuthUser(null)
           setProfileError(responseErrorMessage || 'Access is currently blocked.')
+          clearCachedToken()
           await signOut(firebaseAuth)
           return
         }
@@ -279,7 +308,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       if (!nextUser) {
         setAppUser(null)
-        persistCachedAuthUser(null)
+        // Keep local cached profile across sign-outs so repeat logins can
+        // hydrate instantly while we re-validate with /api/auth/me.
         setHasResolvedProfile(true)
         setIsFirebaseResolved(true)
         return
@@ -313,7 +343,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     if (!firebaseUser) {
       setAppUser(null)
-      persistCachedAuthUser(null)
       setHasResolvedProfile(true)
       setOwnerEmailValue(ownerEmail)
       return
@@ -387,6 +416,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signOutFromApp = useCallback(async () => {
     setProfileError(null)
+    clearCachedToken()
     await signOut(firebaseAuth)
   }, [])
 
@@ -443,14 +473,4 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   ])
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
-}
-
-export function useAuth() {
-  const context = useContext(AuthContext)
-
-  if (!context) {
-    throw new Error('useAuth must be used within AuthProvider.')
-  }
-
-  return context
 }

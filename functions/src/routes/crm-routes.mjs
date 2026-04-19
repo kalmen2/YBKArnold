@@ -1,5 +1,53 @@
 import { createHash } from 'node:crypto'
 
+// ---------------------------------------------------------------------------
+// Simple in-memory cache
+// ---------------------------------------------------------------------------
+// Stores expensive read results so repeated requests within the TTL window
+// hit memory instead of MongoDB. Each entry is keyed by a string and expires
+// after `ttlMs` milliseconds. Entries are lazily evicted on next access.
+//
+// This is intentionally simple — no LRU, no max-size, because the number of
+// distinct cache keys is small and bounded.
+
+const _cacheStore = new Map()
+
+function cacheGet(key) {
+  const entry = _cacheStore.get(key)
+
+  if (!entry) {
+    return undefined
+  }
+
+  if (Date.now() > entry.expiresAt) {
+    _cacheStore.delete(key)
+    return undefined
+  }
+
+  return entry.value
+}
+
+function cacheSet(key, value, ttlMs) {
+  _cacheStore.set(key, { value, expiresAt: Date.now() + ttlMs })
+}
+
+function cacheDelete(key) {
+  _cacheStore.delete(key)
+}
+
+function cacheDeleteByPrefix(prefix) {
+  for (const key of _cacheStore.keys()) {
+    if (key.startsWith(prefix)) {
+      _cacheStore.delete(key)
+    }
+  }
+}
+
+const DEALERS_CACHE_PREFIX = 'crm:dealers:'
+const OVERVIEW_CACHE_KEY = 'crm:overview'
+const DEALERS_CACHE_TTL_MS = 10 * 60 * 1000  // 10 minutes
+const OVERVIEW_CACHE_TTL_MS = 3 * 60 * 1000  // 3 minutes
+
 const importConfirmText = 'I_UNDERSTAND_IMPORT_OVERWRITES'
 const maxConflictGroupsInResponse = 200
 const maxIdsPerConflictGroup = 25
@@ -859,6 +907,25 @@ export function registerCrmRoutes(app, deps) {
       const hasEmail = toNullableBoolean(req.query?.hasEmail)
       const offset = toNonNegativeInteger(req.query?.offset, 0)
       const limit = Math.min(2500, Math.max(1, toNonNegativeInteger(req.query?.limit, 1200)))
+
+      // Build a stable cache key from the normalized query params. Requests
+      // without filters (the bulk "load all dealers for dropdown" calls) will
+      // almost always hit the same key, so they only touch MongoDB once per TTL.
+      const cacheKey = `${DEALERS_CACHE_PREFIX}${JSON.stringify({
+        search: req.query?.search ?? '',
+        includeArchived,
+        ownerEmail,
+        hasEmail,
+        offset,
+        limit,
+      })}`
+
+      const cached = cacheGet(cacheKey)
+
+      if (cached) {
+        return res.json(cached)
+      }
+
       const { crmAccountsCollection } = await getCollections()
       const filterClauses = []
 
@@ -986,13 +1053,17 @@ export function registerCrmRoutes(app, deps) {
           .toArray(),
       ])
 
-      return res.json({
+      const payload = {
         dealers,
         total,
         offset,
         limit,
         hasMore: offset + dealers.length < total,
-      })
+      }
+
+      cacheSet(cacheKey, payload, DEALERS_CACHE_TTL_MS)
+
+      return res.json(payload)
     } catch (error) {
       next(error)
     }
@@ -2149,6 +2220,11 @@ export function registerCrmRoutes(app, deps) {
 
       await crmImportRunsCollection.insertOne(importRunDocument)
 
+      // Dealers and overview data have changed — bust both caches so the next
+      // request reflects the newly imported data instead of stale values.
+      cacheDeleteByPrefix(DEALERS_CACHE_PREFIX)
+      cacheDelete(OVERVIEW_CACHE_KEY)
+
       return res.json({
         ok: true,
         importRun: {
@@ -2230,6 +2306,12 @@ export function registerCrmRoutes(app, deps) {
 
   app.get('/api/crm/overview', requireFirebaseAuth, requireAdminRole, async (_req, res, next) => {
     try {
+      const cached = cacheGet(OVERVIEW_CACHE_KEY)
+
+      if (cached) {
+        return res.json(cached)
+      }
+
       const {
         crmAccountsCollection,
         crmContactsCollection,
@@ -2247,6 +2329,8 @@ export function registerCrmRoutes(app, deps) {
         crmQuotesCollection,
         crmOrdersCollection,
       })
+
+      cacheSet(OVERVIEW_CACHE_KEY, overview, OVERVIEW_CACHE_TTL_MS)
 
       return res.json(overview)
     } catch (error) {

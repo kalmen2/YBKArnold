@@ -30,13 +30,12 @@ import {
 } from '@mui/material'
 import { type ChangeEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
 import { Link as RouterLink, Navigate } from 'react-router-dom'
-import { useAuth } from '../auth/AuthContext'
+import { useAuth } from '../auth/useAuth'
 import {
   commitCrmImport,
   createCrmOrder,
   createCrmQuote,
   fetchCrmConflicts,
-  fetchCrmDealers,
   fetchCrmImports,
   fetchCrmOrders,
   fetchCrmOverview,
@@ -46,7 +45,6 @@ import {
   updateCrmQuote,
   type CrmConflictGroup,
   type CrmConflictRecord,
-  type CrmDealer,
   type CrmImportPreviewResponse,
   type CrmImportRunRecord,
   type CrmOrder,
@@ -55,6 +53,7 @@ import {
   type CrmQuote,
   type CrmQuoteStatus,
 } from '../features/crm/api'
+import { invalidateCrmDealersCache, useCrmDealers } from '../features/crm/CrmDealersContext'
 
 const importConfirmPhrase = 'I_UNDERSTAND_IMPORT_OVERWRITES'
 const quoteStatusOptions: CrmQuoteStatus[] = ['draft', 'sent', 'accepted', 'rejected', 'cancelled']
@@ -200,9 +199,9 @@ function ConflictSection({ title, groups, emptyText }: ConflictSectionProps) {
 
 export default function CrmPage() {
   const { appUser, getIdToken } = useAuth()
+  const { dealers, refetch: refetchDealers } = useCrmDealers()
 
   const [overview, setOverview] = useState<CrmOverviewResponse | null>(null)
-  const [dealers, setDealers] = useState<CrmDealer[]>([])
   const [quotes, setQuotes] = useState<CrmQuote[]>([])
   const [orders, setOrders] = useState<CrmOrder[]>([])
   const [importRuns, setImportRuns] = useState<CrmImportRunRecord[]>([])
@@ -259,14 +258,12 @@ export default function CrmPage() {
         overviewPayload,
         importsPayload,
         conflictsPayload,
-        dealersPayload,
         quotesPayload,
         ordersPayload,
       ] = await Promise.all([
         fetchCrmOverview(idToken),
         fetchCrmImports(idToken, 12),
         fetchCrmConflicts(idToken, 'open', 120),
-        fetchCrmDealers(idToken, 2500, false),
         fetchCrmQuotes(idToken, { limit: 200 }),
         fetchCrmOrders(idToken, { limit: 200 }),
       ])
@@ -274,12 +271,10 @@ export default function CrmPage() {
       setOverview(overviewPayload)
       setImportRuns(Array.isArray(importsPayload.imports) ? importsPayload.imports : [])
       setOpenConflicts(Array.isArray(conflictsPayload.conflicts) ? conflictsPayload.conflicts : [])
-      setDealers(Array.isArray(dealersPayload.dealers) ? dealersPayload.dealers : [])
       setQuotes(Array.isArray(quotesPayload.quotes) ? quotesPayload.quotes : [])
       setOrders(Array.isArray(ordersPayload.orders) ? ordersPayload.orders : [])
     } catch (error) {
       setOverview(null)
-      setDealers([])
       setQuotes([])
       setOrders([])
       setImportRuns([])
@@ -390,6 +385,8 @@ export default function CrmPage() {
         `Import committed at ${formatDateTime(result.importRun.importedAt)}. Accounts upserted: ${result.importRun.writeSummary.accountUpsertedCount}. Contacts upserted: ${result.importRun.writeSummary.contactUpsertedCount}.`,
       )
 
+      invalidateCrmDealersCache()
+      refetchDealers()
       await loadCrmPageData(true)
       setConfirmText('')
     } catch (error) {

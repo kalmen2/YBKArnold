@@ -17,7 +17,7 @@ import StoreRoundedIcon from '@mui/icons-material/StoreRounded'
 import SupportAgentRoundedIcon from '@mui/icons-material/SupportAgentRounded'
 import { useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { useAuth } from '../auth/AuthContext'
+import { useAuth } from '../auth/useAuth'
 import { navItems, type NavItem } from '../navigation/navItems'
 
 type SidebarProps = {

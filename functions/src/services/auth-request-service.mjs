@@ -19,6 +19,32 @@ export function createAuthRequestService({
   writeAuthApiRequestLog,
   extractRequestUserAgent,
 }) {
+  // ---------------------------------------------------------------------------
+  // Per-uid auth user cache
+  // ---------------------------------------------------------------------------
+  // Caches the MongoDB user document for 2 minutes so that every API request
+  // doesn't need a MongoDB findOneAndUpdate roundtrip. Role/approval changes
+  // made by admins propagate within the TTL window. Call invalidateAuthUserCache
+  // after any admin write that changes role, approvalStatus, clientAccessMode,
+  // or allowedLoginHours so the affected user picks up changes immediately.
+  const _authUserCache = new Map()  // uid → { userDocument, expiresAt }
+  const AUTH_USER_CACHE_TTL_MS = 2 * 60 * 1000  // 2 minutes
+
+  function authCacheGet(uid) {
+    const entry = _authUserCache.get(uid)
+    if (!entry) return undefined
+    if (Date.now() > entry.expiresAt) { _authUserCache.delete(uid); return undefined }
+    return entry.userDocument
+  }
+
+  function authCacheSet(uid, userDocument) {
+    _authUserCache.set(uid, { userDocument, expiresAt: Date.now() + AUTH_USER_CACHE_TTL_MS })
+  }
+
+  function invalidateAuthUserCache(uid) {
+    _authUserCache.delete(uid)
+  }
+
   async function resolveCurrentAuthUserFromRequest(req) {
     const bearerToken = String(req.headers?.authorization ?? '').trim()
 
@@ -64,6 +90,15 @@ export function createAuthRequestService({
     const photoURL = String(decodedToken?.picture ?? '').trim()
     const clientPlatform = resolveAuthClientPlatformFromRequest(req)
     const requestUserAgent = extractRequestUserAgent(req)
+
+    // Return cached user document if still fresh. The cache stores the full
+    // MongoDB document so all downstream auth checks (role, approval, login
+    // hours) work exactly as before — just without the DB roundtrip.
+    const cachedUserDocument = authCacheGet(uid)
+    if (cachedUserDocument) {
+      return { decodedToken, userDocument: cachedUserDocument }
+    }
+
     const { authUsersCollection } = await getCollections()
     const now = new Date().toISOString()
     const isOwner = emailLower === ownerEmail
@@ -158,6 +193,10 @@ export function createAuthRequestService({
         },
       },
     )
+
+    if (upsertResult) {
+      authCacheSet(uid, upsertResult)
+    }
 
     return {
       decodedToken,
@@ -267,5 +306,6 @@ export function createAuthRequestService({
     requireApprovedLinkedWorker,
     requireFirebaseAuth,
     resolveCurrentAuthUserFromRequest,
+    invalidateAuthUserCache,
   }
 }

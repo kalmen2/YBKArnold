@@ -12,6 +12,7 @@ export function registerAuthRoutes(app, deps) {
     extractRequestIpAddress,
     extractRequestUserAgent,
     getCollections,
+    invalidateAuthUserCache,
     normalizeAuthAccessTimeZone,
     normalizeAuthClientAccessMode,
     normalizeAuthRole,
@@ -290,6 +291,8 @@ app.patch('/api/auth/users/:uid/approval', requireFirebaseAuth, requireAdminRole
       },
     )
 
+    invalidateAuthUserCache(targetUid)
+
     return res.json({
       user: toPublicAuthUser(updatedUser),
     })
@@ -355,6 +358,8 @@ app.patch('/api/auth/users/:uid/client-access', requireFirebaseAuth, requireAdmi
       },
     )
 
+    invalidateAuthUserCache(targetUid)
+
     return res.json({
       user: toPublicAuthUser(updatedUser),
     })
@@ -412,6 +417,8 @@ app.patch('/api/auth/users/:uid/unapprove', requireFirebaseAuth, requireAdminRol
       },
     )
 
+    invalidateAuthUserCache(targetUid)
+
     return res.json({
       user: toPublicAuthUser(updatedUser),
     })
@@ -456,6 +463,8 @@ app.delete('/api/auth/users/:uid', requireFirebaseAuth, requireAdminRole, async 
       authUsersCollection.deleteOne({ uid: targetUid }),
       authActivityLogsCollection.deleteMany({ uid: targetUid }),
     ])
+
+    invalidateAuthUserCache(targetUid)
 
     return res.json({
       ok: true,

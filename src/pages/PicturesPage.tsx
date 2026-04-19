@@ -28,14 +28,15 @@ import {
   TextField,
   Typography,
 } from '@mui/material'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import Lightbox from 'yet-another-react-lightbox'
 import Zoom from 'yet-another-react-lightbox/plugins/zoom'
 import 'yet-another-react-lightbox/styles.css'
 import {
   fetchMondayDashboardSnapshot,
 } from '../features/dashboard/api'
-import { useAuth } from '../auth/AuthContext'
+import { useAuth } from '../auth/useAuth'
 
 const DEPLOYED_API_BASE_URL = 'https://us-central1-ybkarnold-b7ec0.cloudfunctions.net/apiV1'
 const API_BASE_CANDIDATES = [DEPLOYED_API_BASE_URL, '']
@@ -257,11 +258,9 @@ async function deleteOrderPhoto(orderId: string, path: string) {
 
 export default function PicturesPage() {
   const { logActivity } = useAuth()
-  const [pictureOrders, setPictureOrders] = useState<PictureOrder[]>([])
-  const [generatedAt, setGeneratedAt] = useState<string | null>(null)
+  const queryClient = useQueryClient()
+
   const [searchQuery, setSearchQuery] = useState('')
-  const [isLoading, setIsLoading] = useState(true)
-  const [isRefreshing, setIsRefreshing] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [actionMessage, setActionMessage] = useState<string | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null)
@@ -273,80 +272,46 @@ export default function PicturesPage() {
   const [photoMenuTarget, setPhotoMenuTarget] = useState<DeleteTarget | null>(null)
   const [viewerTarget, setViewerTarget] = useState<ViewerTarget | null>(null)
 
-  const loadPictures = useCallback(async (refreshRequested = false) => {
-    setErrorMessage(null)
+  // ---------------------------------------------------------------------------
+  // Data queries
+  // mondayQuery shares ['dashboard','monday'] with DashboardPage — free cache hit on nav.
+  // photosIndexQuery has its own key since only PicturesPage uses it.
+  // ---------------------------------------------------------------------------
+  const mondayQuery = useQuery({
+    queryKey: ['dashboard', 'monday'],
+    queryFn: () => fetchMondayDashboardSnapshot({ refresh: false }),
+    staleTime: 3 * 60 * 1000,
+  })
 
-    if (refreshRequested) {
-      setIsRefreshing(true)
-    } else {
-      setIsLoading(true)
-    }
+  const photosIndexQuery = useQuery({
+    queryKey: ['pictures', 'photos-index'],
+    queryFn: () => fetchOrderPhotosIndex(),
+    staleTime: 5 * 60 * 1000,
+  })
 
-    try {
-      const [mondayResult, photosIndexResult] = await Promise.allSettled([
-        fetchMondayDashboardSnapshot({ refresh: refreshRequested }),
-        fetchOrderPhotosIndex(),
-      ])
+  // Derive pictureOrders by joining both query results
+  const pictureOrders = useMemo(() => {
+    const mondayOrders = Array.isArray(mondayQuery.data?.orders) ? mondayQuery.data.orders : []
+    const orderNameById = new Map(mondayOrders.map((order) => [String(order.id), order.name]))
+    const groupedPhotos = Array.isArray(photosIndexQuery.data?.orders) ? photosIndexQuery.data.orders : []
 
-      const mondayOrders =
-        mondayResult.status === 'fulfilled' && Array.isArray(mondayResult.value.orders)
-          ? mondayResult.value.orders
-          : []
-      const orderNameById = new Map(
-        mondayOrders.map((order) => [String(order.id), order.name]),
-      )
+    return groupedPhotos
+      .filter((group) => Array.isArray(group.photos) && group.photos.length > 0)
+      .map((group) => ({
+        id: String(group.orderId),
+        name: orderNameById.get(String(group.orderId)) ?? `Order #${String(group.orderId)}`,
+        photos: group.photos,
+      }))
+  }, [mondayQuery.data, photosIndexQuery.data])
 
-      if (photosIndexResult.status !== 'fulfilled') {
-        throw photosIndexResult.reason
-      }
-
-      const groupedPhotos = Array.isArray(photosIndexResult.value.orders)
-        ? photosIndexResult.value.orders
-        : []
-      const ordersNext = groupedPhotos
-        .filter((group) => Array.isArray(group.photos) && group.photos.length > 0)
-        .map((group) => ({
-          id: String(group.orderId),
-          name:
-            orderNameById.get(String(group.orderId)) ??
-            `Order #${String(group.orderId)}`,
-          photos: group.photos,
-        }))
-
-      setPictureOrders(ordersNext)
-      setExpandedOrderIds((currentExpanded) => {
-        const validOrderIds = new Set(ordersNext.map((order) => order.id))
-
-        return new Set(
-          [...currentExpanded].filter((orderId) => validOrderIds.has(orderId)),
-        )
-      })
-
-      if (mondayResult.status === 'fulfilled') {
-        setGeneratedAt(mondayResult.value.generatedAt)
-      } else {
-        setGeneratedAt(photosIndexResult.value.generatedAt)
-        setErrorMessage('Loaded pictures, but could not refresh order names from Monday.')
-      }
-    } catch (error) {
-      setPictureOrders([])
-      setGeneratedAt(null)
-      setErrorMessage(readErrorMessage(error, 'Failed to load pictures.'))
-    } finally {
-      setIsLoading(false)
-      setIsRefreshing(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    const timeoutId = window.setTimeout(() => {
-      void loadPictures(false)
-    }, 0)
-
-    return () => {
-      window.clearTimeout(timeoutId)
-    }
-  }, [loadPictures])
+  const generatedAt = mondayQuery.data?.generatedAt ?? photosIndexQuery.data?.generatedAt ?? null
+  const isLoading = photosIndexQuery.isLoading
+  const isRefreshing = photosIndexQuery.isFetching && !photosIndexQuery.isLoading
+  const loadingError = photosIndexQuery.isError
+    ? readErrorMessage(photosIndexQuery.error, 'Failed to load pictures.')
+    : mondayQuery.isError
+      ? 'Loaded pictures, but could not refresh order names from Monday.'
+      : null
 
   const filteredOrders = useMemo(() => {
     const normalized = searchQuery.trim().toLowerCase()
@@ -371,21 +336,19 @@ export default function PicturesPage() {
 
     try {
       await deleteOrderPhoto(deleteTarget.orderId, deleteTarget.path)
-      setPictureOrders((currentOrders) => {
-        const nextOrders = currentOrders
-          .map((order) => {
-            if (order.id !== deleteTarget.orderId) {
-              return order
-            }
-
-            return {
-              ...order,
-              photos: order.photos.filter((photo) => photo.path !== deleteTarget.path),
-            }
-          })
-          .filter((order) => order.photos.length > 0)
-
-        return nextOrders
+      // Optimistically remove the photo from the cache — no refetch needed
+      queryClient.setQueryData<PhotosIndexResponse>(['pictures', 'photos-index'], (old) => {
+        if (!old) return old
+        return {
+          ...old,
+          orders: old.orders
+            .map((group) =>
+              group.orderId !== deleteTarget.orderId
+                ? group
+                : { ...group, photos: group.photos.filter((photo) => photo.path !== deleteTarget.path) },
+            )
+            .filter((group) => group.photos.length > 0),
+        }
       })
       setActionMessage('Picture deleted successfully.')
       void logActivity({
@@ -553,7 +516,10 @@ export default function PicturesPage() {
 
         <Button
           variant="contained"
-          onClick={() => void loadPictures(true)}
+          onClick={() => {
+            void queryClient.invalidateQueries({ queryKey: ['pictures', 'photos-index'] })
+            void queryClient.invalidateQueries({ queryKey: ['dashboard', 'monday'] })
+          }}
           startIcon={<RefreshRoundedIcon />}
           disabled={isRefreshing}
         >
@@ -577,7 +543,7 @@ export default function PicturesPage() {
       </Paper>
 
       {actionMessage ? <Alert severity="success">{actionMessage}</Alert> : null}
-      {errorMessage ? <Alert severity="error">{errorMessage}</Alert> : null}
+      {(errorMessage || loadingError) ? <Alert severity="error">{errorMessage || loadingError}</Alert> : null}
 
       {isLoading ? (
         <Paper variant="outlined" sx={{ p: 4 }}>

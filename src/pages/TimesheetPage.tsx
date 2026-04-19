@@ -36,7 +36,7 @@ import {
   fetchMondayDashboardSnapshot,
   type DashboardOrder,
 } from '../features/dashboard/api'
-import { useAuth } from '../auth/AuthContext'
+import { useAuth } from '../auth/useAuth'
 import {
   createStage,
   deleteEntry,

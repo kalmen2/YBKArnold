@@ -25,18 +25,18 @@ import {
   TableContainer,
   TableHead,
   TableRow,
+  TextField,
   Typography,
 } from '@mui/material'
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
-import { useAuth } from '../auth/AuthContext'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useAuth } from '../auth/useAuth'
 import {
   createQuickBooksAuthorizeUrl,
   fetchQuickBooksOverview,
   fetchQuickBooksStatus,
   type QuickBooksDetailRow,
-  type QuickBooksOverviewResponse,
   type QuickBooksProjectSummary,
-  type QuickBooksStatusResponse,
   type QuickBooksUnlinkedTransaction,
 } from '../features/quickbooks/api'
 
@@ -492,6 +492,25 @@ function ProjectSummaryTable({
     metricType: ProjectMetricType
   }) => void
 }) {
+  const [searchText, setSearchText] = useState('')
+
+  const filteredRows = useMemo(() => {
+    const normalizedQuery = searchText.trim().toLowerCase()
+
+    if (!normalizedQuery) {
+      return rows
+    }
+
+    return rows.filter((row) => {
+      const rollup = projectRollupsById.get(row.projectId)
+      const projectName = rollup?.projectName || row.projectName
+      const splitLabel = splitQuickBooksProjectLabel(projectName, row.projectId)
+      const projectNumber = String(splitLabel.projectNumber || '').toLowerCase()
+
+      return projectNumber.includes(normalizedQuery)
+    })
+  }, [projectRollupsById, rows, searchText])
+
   if (rows.length === 0) {
     return (
       <Typography color="text.secondary" sx={{ py: 2 }}>
@@ -542,114 +561,132 @@ function ProjectSummaryTable({
   }
 
   return (
-    <TableContainer sx={{ maxHeight: 600 }}>
-      <Table size="small" stickyHeader>
-        <TableHead>
-          <TableRow>
-            <TableCell>Customer</TableCell>
-            <TableCell>Project #</TableCell>
-            <TableCell>Active</TableCell>
-            <TableCell align="right">Transactions</TableCell>
-            <TableCell align="right">PO</TableCell>
-            <TableCell align="right">Bills</TableCell>
-            <TableCell align="right">Invoices</TableCell>
-            <TableCell align="right">Payments</TableCell>
-            <TableCell align="right">Outstanding</TableCell>
-          </TableRow>
-        </TableHead>
-        <TableBody>
-          {rows.map((row) => {
-            const rollup = projectRollupsById.get(row.projectId)
-            const projectName = rollup?.projectName || row.projectName
-            const transactionCount = rollup?.transactionCount ?? row.transactionCount
-            const purchaseOrderCount = rollup?.purchaseOrderCount ?? row.purchaseOrderCount
-            const purchaseOrderAmount = rollup?.purchaseOrderAmount ?? row.purchaseOrderAmount
-            const billCount = rollup?.billCount ?? row.billCount
-            const billAmount = rollup?.billAmount ?? row.billAmount
-            const invoiceCount = rollup?.invoiceCount ?? row.invoiceCount
-            const invoiceAmount = rollup?.invoiceAmount ?? row.invoiceAmount
-            const paymentCount = rollup?.paymentCount ?? row.paymentCount
-            const paymentAmount = rollup?.paymentAmount ?? row.paymentAmount
-            const outstandingAmount = rollup?.outstandingAmount ?? row.outstandingAmount
-            const splitLabel = splitQuickBooksProjectLabel(projectName, row.projectId)
+    <Stack spacing={1.25}>
+      <TextField
+        size="small"
+        label="Search Projects"
+        placeholder="Search project number"
+        value={searchText}
+        onChange={(event) => {
+          setSearchText(event.target.value)
+        }}
+      />
 
-            return (
-              <TableRow key={row.projectId} hover>
-                <TableCell sx={{ maxWidth: 260, wordBreak: 'break-word' }}>
-                  <Typography variant="body2" fontWeight={600}>
-                    {splitLabel.customerName}
-                  </Typography>
-                </TableCell>
-                <TableCell>
-                  <Stack spacing={0.3}>
-                    <Typography variant="body2" fontWeight={600}>
-                      {splitLabel.projectNumber}
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary">
-                      {row.projectId}
-                    </Typography>
-                  </Stack>
-                </TableCell>
-                <TableCell>
-                  <Chip
-                    size="small"
-                    label={row.active ? 'Active' : 'Inactive'}
-                    color={row.active ? 'success' : 'default'}
-                    variant="outlined"
-                  />
-                </TableCell>
-                <TableCell align="right">{formatInteger(transactionCount)}</TableCell>
-                <TableCell align="right">
-                  {renderMetricCell({
-                    metricType: 'purchaseOrders',
-                    count: purchaseOrderCount,
-                    amount: purchaseOrderAmount,
-                    projectId: row.projectId,
-                    projectName,
-                  })}
-                </TableCell>
-                <TableCell align="right">
-                  {renderMetricCell({
-                    metricType: 'bills',
-                    count: billCount,
-                    amount: billAmount,
-                    projectId: row.projectId,
-                    projectName,
-                  })}
-                </TableCell>
-                <TableCell align="right">
-                  {renderMetricCell({
-                    metricType: 'invoices',
-                    count: invoiceCount,
-                    amount: invoiceAmount,
-                    projectId: row.projectId,
-                    projectName,
-                  })}
-                </TableCell>
-                <TableCell align="right">
-                  {renderMetricCell({
-                    metricType: 'payments',
-                    count: paymentCount,
-                    amount: paymentAmount,
-                    projectId: row.projectId,
-                    projectName,
-                  })}
-                </TableCell>
-                <TableCell align="right">
-                  <Typography
-                    variant="body2"
-                    fontWeight={700}
-                    color={outstandingAmount > 0 ? 'warning.main' : 'text.primary'}
-                  >
-                    {formatCurrency(outstandingAmount)}
-                  </Typography>
-                </TableCell>
+      {filteredRows.length === 0 ? (
+        <Typography color="text.secondary" sx={{ py: 2 }}>
+          No projects match your search.
+        </Typography>
+      ) : (
+        <TableContainer sx={{ maxHeight: 600 }}>
+          <Table size="small" stickyHeader>
+            <TableHead>
+              <TableRow>
+                <TableCell>Customer</TableCell>
+                <TableCell>Project #</TableCell>
+                <TableCell>Active</TableCell>
+                <TableCell align="right">Transactions</TableCell>
+                <TableCell align="right">PO</TableCell>
+                <TableCell align="right">Bills</TableCell>
+                <TableCell align="right">Invoices</TableCell>
+                <TableCell align="right">Payments</TableCell>
+                <TableCell align="right">Outstanding</TableCell>
               </TableRow>
-            )
-          })}
-        </TableBody>
-      </Table>
-    </TableContainer>
+            </TableHead>
+            <TableBody>
+              {filteredRows.map((row) => {
+                const rollup = projectRollupsById.get(row.projectId)
+                const projectName = rollup?.projectName || row.projectName
+                const transactionCount = rollup?.transactionCount ?? row.transactionCount
+                const purchaseOrderCount = rollup?.purchaseOrderCount ?? row.purchaseOrderCount
+                const purchaseOrderAmount = rollup?.purchaseOrderAmount ?? row.purchaseOrderAmount
+                const billCount = rollup?.billCount ?? row.billCount
+                const billAmount = rollup?.billAmount ?? row.billAmount
+                const invoiceCount = rollup?.invoiceCount ?? row.invoiceCount
+                const invoiceAmount = rollup?.invoiceAmount ?? row.invoiceAmount
+                const paymentCount = rollup?.paymentCount ?? row.paymentCount
+                const paymentAmount = rollup?.paymentAmount ?? row.paymentAmount
+                const outstandingAmount = rollup?.outstandingAmount ?? row.outstandingAmount
+                const splitLabel = splitQuickBooksProjectLabel(projectName, row.projectId)
+
+                return (
+                  <TableRow key={row.projectId} hover>
+                    <TableCell sx={{ maxWidth: 260, wordBreak: 'break-word' }}>
+                      <Typography variant="body2" fontWeight={600}>
+                        {splitLabel.customerName}
+                      </Typography>
+                    </TableCell>
+                    <TableCell>
+                      <Stack spacing={0.3}>
+                        <Typography variant="body2" fontWeight={600}>
+                          {splitLabel.projectNumber}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          {row.projectId}
+                        </Typography>
+                      </Stack>
+                    </TableCell>
+                    <TableCell>
+                      <Chip
+                        size="small"
+                        label={row.active ? 'Active' : 'Inactive'}
+                        color={row.active ? 'success' : 'default'}
+                        variant="outlined"
+                      />
+                    </TableCell>
+                    <TableCell align="right">{formatInteger(transactionCount)}</TableCell>
+                    <TableCell align="right">
+                      {renderMetricCell({
+                        metricType: 'purchaseOrders',
+                        count: purchaseOrderCount,
+                        amount: purchaseOrderAmount,
+                        projectId: row.projectId,
+                        projectName,
+                      })}
+                    </TableCell>
+                    <TableCell align="right">
+                      {renderMetricCell({
+                        metricType: 'bills',
+                        count: billCount,
+                        amount: billAmount,
+                        projectId: row.projectId,
+                        projectName,
+                      })}
+                    </TableCell>
+                    <TableCell align="right">
+                      {renderMetricCell({
+                        metricType: 'invoices',
+                        count: invoiceCount,
+                        amount: invoiceAmount,
+                        projectId: row.projectId,
+                        projectName,
+                      })}
+                    </TableCell>
+                    <TableCell align="right">
+                      {renderMetricCell({
+                        metricType: 'payments',
+                        count: paymentCount,
+                        amount: paymentAmount,
+                        projectId: row.projectId,
+                        projectName,
+                      })}
+                    </TableCell>
+                    <TableCell align="right">
+                      <Typography
+                        variant="body2"
+                        fontWeight={700}
+                        color={outstandingAmount > 0 ? 'warning.main' : 'text.primary'}
+                      >
+                        {formatCurrency(outstandingAmount)}
+                      </Typography>
+                    </TableCell>
+                  </TableRow>
+                )
+              })}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      )}
+    </Stack>
   )
 }
 
@@ -889,16 +926,45 @@ function UnlinkedTransactionsTable({ rows }: { rows: QuickBooksUnlinkedTransacti
 
 export default function QuickBooksPage() {
   const { getIdToken } = useAuth()
+  const queryClient = useQueryClient()
 
-  const [status, setStatus] = useState<QuickBooksStatusResponse | null>(null)
-  const [overview, setOverview] = useState<QuickBooksOverviewResponse | null>(null)
-  const [isLoading, setIsLoading] = useState(true)
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [isConnecting, setIsConnecting] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [oauthNotice, setOauthNotice] = useState<OAuthNotice | null>(null)
   const [activeDrilldown, setActiveDrilldown] = useState<QuickBooksDrilldownKey | null>(null)
   const [projectMetricDrilldown, setProjectMetricDrilldown] = useState<ProjectMetricDrilldown | null>(null)
+
+  // ---------------------------------------------------------------------------
+  // Status & overview queries
+  // Overview is only enabled when QB is configured + connected.
+  // staleTime: 4 min frontend < 5 min backend TTL — always has room in backend cache.
+  // ---------------------------------------------------------------------------
+  const statusQuery = useQuery({
+    queryKey: ['quickbooks', 'status'],
+    queryFn: async () => {
+      const idToken = await getIdToken()
+      return fetchQuickBooksStatus(idToken)
+    },
+    staleTime: 5 * 60 * 1000,
+  })
+
+  const overviewQuery = useQuery({
+    queryKey: ['quickbooks', 'overview'],
+    queryFn: async () => {
+      const idToken = await getIdToken()
+      return fetchQuickBooksOverview(idToken, { refresh: false })
+    },
+    enabled: Boolean(statusQuery.data?.isConfigured && statusQuery.data?.connected),
+    staleTime: 4 * 60 * 1000,
+  })
+
+  // Derived values
+  const status = statusQuery.data ?? null
+  const overview = overviewQuery.data ?? null
+  const isLoading =
+    statusQuery.isLoading ||
+    (Boolean(statusQuery.data?.isConfigured && statusQuery.data?.connected) && overviewQuery.isLoading)
 
   const purchaseOrderRecords = useMemo(
     () => buildPurchaseOrderRecords(overview?.details.purchaseOrderLines ?? []),
@@ -1018,38 +1084,22 @@ export default function QuickBooksPage() {
     ]
   }, [overview, outstandingProjects.length])
 
-  const loadQuickBooksData = useCallback(async (refreshRequested = false) => {
-    if (refreshRequested) {
-      setIsRefreshing(true)
-    } else {
-      setIsLoading(true)
-    }
-
+  // Force-refresh bypasses the 5-min backend cache by sending refresh=true,
+  // then seeds the React Query cache so the next navigation is instant.
+  const handleRefresh = useCallback(async () => {
+    setIsRefreshing(true)
     setErrorMessage(null)
 
     try {
       const idToken = await getIdToken()
-      const nextStatus = await fetchQuickBooksStatus(idToken)
-
-      setStatus(nextStatus)
-
-      if (!nextStatus.isConfigured || !nextStatus.connected) {
-        setOverview(null)
-        return
-      }
-
-      const nextOverview = await fetchQuickBooksOverview(idToken, {
-        refresh: refreshRequested,
-      })
-
-      setOverview(nextOverview)
+      const freshOverview = await fetchQuickBooksOverview(idToken, { refresh: true })
+      queryClient.setQueryData(['quickbooks', 'overview'], freshOverview)
     } catch (error) {
-      setErrorMessage(toErrorMessage(error, 'Failed to load QuickBooks data.'))
+      setErrorMessage(toErrorMessage(error, 'Failed to refresh QuickBooks data.'))
     } finally {
-      setIsLoading(false)
       setIsRefreshing(false)
     }
-  }, [getIdToken])
+  }, [getIdToken, queryClient])
 
   const handleConnect = useCallback(async () => {
     setErrorMessage(null)
@@ -1102,10 +1152,6 @@ export default function QuickBooksPage() {
 
     window.history.replaceState({}, '', nextLocation)
   }, [])
-
-  useEffect(() => {
-    void loadQuickBooksData(false)
-  }, [loadQuickBooksData])
 
   const projectMetricRows = useMemo(() => {
     if (!projectMetricDrilldown || !overview) {
@@ -1228,7 +1274,7 @@ export default function QuickBooksPage() {
 
           <Button
             variant="contained"
-            onClick={() => void loadQuickBooksData(true)}
+            onClick={() => void handleRefresh()}
             startIcon={<RefreshRoundedIcon />}
             disabled={isLoading || isRefreshing || !status?.connected}
           >

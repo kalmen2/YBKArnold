@@ -12,6 +12,29 @@ const quickBooksMaxQueryPages = 8
 const quickBooksMaxUnlinkedTransactions = 500
 const quickBooksMaxDetailRowsPerType = 1200
 
+// ---------------------------------------------------------------------------
+// In-memory cache for the QuickBooks overview endpoint
+// ---------------------------------------------------------------------------
+// The overview fires 5–40 live QB API calls (5 entity types × up to 8 pages
+// each). Caching for 5 minutes means repeat navigations hit memory instead
+// of QuickBooks. forceRefresh=1 bypasses the read but still seeds the cache
+// for the next visitor.
+const _qbCacheStore = new Map()
+
+function qbCacheGet(key) {
+  const entry = _qbCacheStore.get(key)
+  if (!entry) return undefined
+  if (Date.now() > entry.expiresAt) { _qbCacheStore.delete(key); return undefined }
+  return entry.value
+}
+
+function qbCacheSet(key, value, ttlMs) {
+  _qbCacheStore.set(key, { value, expiresAt: Date.now() + ttlMs })
+}
+
+const QB_OVERVIEW_CACHE_KEY = 'qb:overview'
+const QB_OVERVIEW_CACHE_TTL_MS = 5 * 60 * 1000  // 5 minutes
+
 const txnTypeConfigByKey = {
   purchaseOrder: {
     entityName: 'PurchaseOrder',
@@ -802,6 +825,14 @@ export function registerQuickBooksRoutes(app, deps) {
       const { quickBooksTokensCollection } = await getQuickBooksCollections()
       const forceRefresh = String(req.query?.refresh ?? '').trim() === '1'
 
+      // Return cached result when available and no refresh is requested.
+      // forceRefresh still writes the fresh result into cache so the next
+      // visitor benefits immediately.
+      if (!forceRefresh) {
+        const cached = qbCacheGet(QB_OVERVIEW_CACHE_KEY)
+        if (cached) return res.json(cached)
+      }
+
       let tokenDoc = await resolveQuickBooksAccessToken({
         quickBooksTokensCollection,
         clientId: quickBooksConfig.clientId,
@@ -1172,7 +1203,7 @@ export function registerQuickBooksRoutes(app, deps) {
         },
       )
 
-      return res.json({
+      const overviewPayload = {
         generatedAt: new Date().toISOString(),
         realmId: normalizeText(tokenDoc.realmId, 160),
         companyInfo,
@@ -1187,7 +1218,11 @@ export function registerQuickBooksRoutes(app, deps) {
           unlinkedPurchaseOrderLines: visibleUnlinkedPurchaseOrderLines,
         },
         warnings,
-      })
+      }
+
+      qbCacheSet(QB_OVERVIEW_CACHE_KEY, overviewPayload, QB_OVERVIEW_CACHE_TTL_MS)
+
+      return res.json(overviewPayload)
     } catch (error) {
       next(error)
     }

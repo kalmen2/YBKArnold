@@ -45,7 +45,7 @@ import {
 import { alpha } from '@mui/material/styles'
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Link as RouterLink, useSearchParams } from 'react-router-dom'
-import { useAuth } from '../auth/AuthContext'
+import { useAuth } from '../auth/useAuth'
 import {
   fetchCrmDealerDetail,
   fetchCrmDealers,

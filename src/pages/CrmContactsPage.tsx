@@ -27,13 +27,12 @@ import {
 } from '@mui/material'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link as RouterLink, useSearchParams } from 'react-router-dom'
-import { useAuth } from '../auth/AuthContext'
+import { useAuth } from '../auth/useAuth'
 import {
   fetchCrmContacts,
-  fetchCrmDealers,
   type CrmContact,
-  type CrmDealer,
 } from '../features/crm/api'
+import { useCrmDealers } from '../features/crm/CrmDealersContext'
 
 function displayContactName(contact: CrmContact) {
   if (contact.name) {
@@ -49,15 +48,14 @@ function displayContactName(contact: CrmContact) {
 
 export default function CrmContactsPage() {
   const { getIdToken } = useAuth()
+  const { dealers } = useCrmDealers()
   const [searchParams] = useSearchParams()
 
   const [contacts, setContacts] = useState<CrmContact[]>([])
   const [totalContacts, setTotalContacts] = useState(0)
-  const [dealers, setDealers] = useState<CrmDealer[]>([])
 
   const [isLoadingContacts, setIsLoadingContacts] = useState(true)
   const [isRefreshing, setIsRefreshing] = useState(false)
-  const [isLoadingDealers, setIsLoadingDealers] = useState(true)
 
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
 
@@ -118,25 +116,6 @@ export default function CrmContactsPage() {
     return null
   }, [hasEmailFilter])
 
-  const loadDealers = useCallback(async () => {
-    setIsLoadingDealers(true)
-
-    try {
-      const idToken = await getIdToken()
-      const response = await fetchCrmDealers(idToken, {
-        includeArchived: true,
-        limit: 2500,
-      })
-
-      setDealers(Array.isArray(response.dealers) ? response.dealers : [])
-    } catch (error) {
-      setDealers([])
-      setErrorMessage(error instanceof Error ? error.message : 'Failed to load dealers filter options.')
-    } finally {
-      setIsLoadingDealers(false)
-    }
-  }, [getIdToken])
-
   const loadContacts = useCallback(async (refreshRequested = false) => {
     setErrorMessage(null)
 
@@ -184,10 +163,6 @@ export default function CrmContactsPage() {
     search,
     stateFilter,
   ])
-
-  useEffect(() => {
-    void loadDealers()
-  }, [loadDealers])
 
   useEffect(() => {
     void loadContacts(false)
@@ -269,7 +244,7 @@ export default function CrmContactsPage() {
               }}
             />
 
-            <FormControl size="small" disabled={isLoadingDealers}>
+            <FormControl size="small">
               <InputLabel id="contacts-dealer-filter">Dealer</InputLabel>
               <Select
                 labelId="contacts-dealer-filter"
