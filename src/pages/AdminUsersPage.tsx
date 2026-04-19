@@ -184,7 +184,7 @@ export default function AdminUsersPage() {
         setActiveUserId(null)
       }
     },
-    [],
+    [setErrorMessage],
   )
 
   const handleSaveHours = useCallback(async () => {
@@ -228,7 +228,7 @@ export default function AdminUsersPage() {
     } finally {
       setActiveUserId(null)
     }
-  }, [hoursEnd, hoursRestricted, hoursStart, hoursTarget, hoursTimeZone])
+  }, [hoursEnd, hoursRestricted, hoursStart, hoursTarget, hoursTimeZone, setErrorMessage])
 
   const handleSetClientAccess = useCallback(
     async (targetUid: string, mode: ClientAccessMode) => {
@@ -267,7 +267,7 @@ export default function AdminUsersPage() {
         setActiveUserId(null)
       }
     },
-    [],
+    [setErrorMessage],
   )
 
   const openRowActions = useCallback((anchorElement: HTMLElement, user: AppAuthUser) => {
@@ -306,7 +306,7 @@ export default function AdminUsersPage() {
     } finally {
       setActiveUserId(null)
     }
-  }, [])
+  }, [setErrorMessage])
 
   const handleDeleteUser = useCallback(async () => {
     if (!deleteTarget) {
@@ -337,7 +337,7 @@ export default function AdminUsersPage() {
     } finally {
       setActiveUserId(null)
     }
-  }, [deleteTarget])
+  }, [deleteTarget, setErrorMessage])
 
   const openHoursEditor = useCallback((user: AppAuthUser) => {
     setHoursTarget(user)
@@ -387,7 +387,7 @@ export default function AdminUsersPage() {
     } finally {
       setActiveUserId(null)
     }
-  }, [apiRequest, workerLinkTarget, workerLinkWorkerId])
+  }, [workerLinkTarget, workerLinkWorkerId, setErrorMessage])
 
   const closePromotionDialog = useCallback(() => {
     setPromotionTarget(null)
@@ -446,7 +446,7 @@ export default function AdminUsersPage() {
     } finally {
       setActiveUserId(null)
     }
-  }, [apiRequest, workerApproveTarget, workerApproveWorkerId])
+  }, [workerApproveTarget, workerApproveWorkerId, setErrorMessage])
 
   const canConfirmPromotion = useMemo(() => {
     if (!promotionTarget) {

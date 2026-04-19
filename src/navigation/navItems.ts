@@ -1,7 +1,6 @@
 import AdminPanelSettingsRoundedIcon from '@mui/icons-material/AdminPanelSettingsRounded'
 import AccountBalanceRoundedIcon from '@mui/icons-material/AccountBalanceRounded'
 import BusinessRoundedIcon from '@mui/icons-material/BusinessRounded'
-import ContactsRoundedIcon from '@mui/icons-material/ContactsRounded'
 import DashboardRoundedIcon from '@mui/icons-material/DashboardRounded'
 import ManageHistoryRoundedIcon from '@mui/icons-material/ManageHistoryRounded'
 import NotificationsActiveRoundedIcon from '@mui/icons-material/NotificationsActiveRounded'
@@ -80,13 +79,8 @@ export const navItems: NavItem[] = [
     adminOnly: true,
   },
   {
-    label: 'Contacts',
-    path: '/admin/crm/contacts',
-    icon: ContactsRoundedIcon,
-  },
-  {
-    label: 'Dealers',
-    path: '/admin/crm/dealers',
+    label: 'Sales',
+    path: '/sales',
     icon: StoreRoundedIcon,
   },
 ]

@@ -12,6 +12,7 @@ export const AdminLogsPage = lazy(() => import('../pages/AdminLogsPage'))
 export const CrmPage = lazy(() => import('../pages/CrmPage'))
 export const CrmDealersPage = lazy(() => import('../pages/CrmDealersPage'))
 export const CrmContactsPage = lazy(() => import('../pages/CrmContactsPage'))
+export const SalesPage = lazy(() => import('../pages/SalesPage'))
 
 const routeLoadingFallback = (
   <div

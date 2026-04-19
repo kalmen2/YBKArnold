@@ -8,12 +8,11 @@ import {
   AdminLogsPage,
   AdminUsersPage,
   AppLayout,
-  CrmContactsPage,
-  CrmDealersPage,
   CrmPage,
   DashboardPage,
   PicturesPage,
   QuickBooksPage,
+  SalesPage,
   SupportPage,
   TimesheetPage,
   withRouteSuspense,
@@ -34,7 +33,11 @@ export const router = createBrowserRouter([
       },
       {
         path: 'reports',
-        element: withRouteSuspense(<TimesheetPage initialView="reports" />),
+        element: withRouteSuspense(
+          <RequireManagerOrAdminRoute>
+            <TimesheetPage initialView="reports" />
+          </RequireManagerOrAdminRoute>,
+        ),
       },
       {
         path: 'workers',
@@ -59,6 +62,19 @@ export const router = createBrowserRouter([
       {
         path: 'pictures',
         element: withRouteSuspense(<PicturesPage />),
+      },
+      {
+        path: 'sales',
+        element: withRouteSuspense(<SalesPage />),
+      },
+      // Redirect old individual routes to the unified Sales page
+      {
+        path: 'admin/crm/dealers',
+        element: <Navigate to="/sales?tab=dealers" replace />,
+      },
+      {
+        path: 'admin/crm/contacts',
+        element: <Navigate to="/sales?tab=contacts" replace />,
       },
       {
         path: 'admin/users',
@@ -91,14 +107,6 @@ export const router = createBrowserRouter([
             <CrmPage />
           </RequireAdminRoute>,
         ),
-      },
-      {
-        path: 'admin/crm/dealers',
-        element: withRouteSuspense(<CrmDealersPage />),
-      },
-      {
-        path: 'admin/crm/contacts',
-        element: withRouteSuspense(<CrmContactsPage />),
       },
     ],
   },

@@ -297,12 +297,56 @@ function toCompactSocialMediaText(links) {
   return normalizedEntries.join(' | ').slice(0, 2000)
 }
 
+function normalizeEmailList(input, maxItems = 12) {
+  const sourceItems = Array.isArray(input)
+    ? input
+    : [input]
+
+  const seen = new Set()
+  const normalizedEmails = []
+
+  for (const rawValue of sourceItems) {
+    const nextEmail = toTrimmedText(rawValue, 200)
+
+    if (!nextEmail) {
+      continue
+    }
+
+    const dedupeKey = toLowerText(nextEmail, 200)
+
+    if (!dedupeKey || seen.has(dedupeKey)) {
+      continue
+    }
+
+    seen.add(dedupeKey)
+    normalizedEmails.push(nextEmail)
+
+    if (normalizedEmails.length >= maxItems) {
+      break
+    }
+  }
+
+  return normalizedEmails
+}
+
 function normalizeAccount(rawAccount) {
   const account = toOptionalObject(rawAccount)
   const socialMediaLinks = normalizeSocialMediaLinks(account.social_media)
   const socialMediaText = typeof account.social_media === 'string'
     ? toTrimmedText(account.social_media, 2000)
     : toCompactSocialMediaText(socialMediaLinks)
+  const normalizedEmails = normalizeEmailList([
+    account.email,
+    account.email2,
+    account.email_2,
+    account.email3,
+    account.email_3,
+    account.email4,
+    account.email_4,
+    ...toOptionalArray(account.emails),
+  ])
+  const primaryEmail = normalizedEmails[0] || ''
+  const secondaryEmail = normalizedEmails[1] || ''
 
   return {
     sourceId: toTrimmedText(account.id, 160),
@@ -310,8 +354,9 @@ function normalizeAccount(rawAccount) {
     pictureUrlSource: toTrimmedText(account.picture_url, 500),
     phone: toTrimmedText(account.phone, 80),
     phone2: toTrimmedText(account.phone2, 80),
-    email: toTrimmedText(account.email, 200),
-    email2: toTrimmedText(account.email2, 200),
+    email: primaryEmail,
+    email2: secondaryEmail,
+    emails: normalizedEmails,
     address: toTrimmedText(account.address, 400),
     city: toTrimmedText(account.city, 160),
     state: toTrimmedText(account.state, 80),
@@ -320,6 +365,7 @@ function normalizeAccount(rawAccount) {
     industry: toTrimmedText(account.industry, 160),
     accountClass: toTrimmedText(account.account_class, 160),
     accountType: toTrimmedText(account.account_type, 160),
+    salesRep: toTrimmedText(account.sales_rep ?? account.salesRep, 200),
     website: toTrimmedText(account.website, 240),
     accountText: toTrimmedText(account.account_text, 4000),
     createdDate: toIsoDateOrNull(account.created),
@@ -891,8 +937,9 @@ export function registerCrmRoutes(app, deps) {
         return res.json(cached)
       }
 
-      const { crmAccountsCollection } = await getCollections()
+      const { crmAccountsCollection, crmContactsCollection } = await getCollections()
       const filterClauses = []
+      let accountSourceIdsFromContactSearch = []
 
       if (!includeArchived) {
         filterClauses.push({
@@ -953,6 +1000,46 @@ export function registerCrmRoutes(app, deps) {
       }
 
       if (searchRegex) {
+        const matchedAccountSourceIds = await crmContactsCollection.distinct(
+          'accountSourceId',
+          {
+            accountSourceId: {
+              $nin: [null, ''],
+            },
+            $or: [
+              {
+                primaryEmail: searchRegex,
+              },
+              {
+                secondaryEmail: searchRegex,
+              },
+              {
+                email3: searchRegex,
+              },
+              {
+                email4: searchRegex,
+              },
+              {
+                name: searchRegex,
+              },
+              {
+                firstName: searchRegex,
+              },
+              {
+                lastName: searchRegex,
+              },
+              {
+                accountName: searchRegex,
+              },
+            ],
+          },
+        )
+        accountSourceIdsFromContactSearch = [...new Set(
+          matchedAccountSourceIds
+            .map((value) => String(value ?? '').trim())
+            .filter(Boolean),
+        )]
+
         filterClauses.push({
           $or: [
             {
@@ -971,6 +1058,9 @@ export function registerCrmRoutes(app, deps) {
               ownerEmail: searchRegex,
             },
             {
+              salesRep: searchRegex,
+            },
+            {
               city: searchRegex,
             },
             {
@@ -979,6 +1069,18 @@ export function registerCrmRoutes(app, deps) {
             {
               country: searchRegex,
             },
+            {
+              emails: searchRegex,
+            },
+            ...(accountSourceIdsFromContactSearch.length > 0
+              ? [
+                {
+                  sourceId: {
+                    $in: accountSourceIdsFromContactSearch,
+                  },
+                },
+              ]
+              : []),
           ],
         })
       }
@@ -1004,7 +1106,9 @@ export function registerCrmRoutes(app, deps) {
                 industry: 1,
                 accountType: 1,
                 accountClass: 1,
+                salesRep: 1,
                 website: 1,
+                emails: 1,
                 pictureUrl: 1,
                 contactCountSource: 1,
                 isArchived: 1,
@@ -1075,7 +1179,9 @@ export function registerCrmRoutes(app, deps) {
             industry: 1,
             accountClass: 1,
             accountType: 1,
+            salesRep: 1,
             website: 1,
+            emails: 1,
             accountText: 1,
             owner: 1,
             ownerEmail: 1,
@@ -1123,10 +1229,22 @@ export function registerCrmRoutes(app, deps) {
               name: contactSearchRegex,
             },
             {
+              firstName: contactSearchRegex,
+            },
+            {
+              lastName: contactSearchRegex,
+            },
+            {
               primaryEmail: contactSearchRegex,
             },
             {
               secondaryEmail: contactSearchRegex,
+            },
+            {
+              email3: contactSearchRegex,
+            },
+            {
+              email4: contactSearchRegex,
             },
             {
               salesUnit: contactSearchRegex,
@@ -1175,9 +1293,13 @@ export function registerCrmRoutes(app, deps) {
                 phone2: 1,
                 phoneAlt: 1,
                 photoUrl: 1,
+                address: 1,
                 city: 1,
                 state: 1,
+                zip: 1,
                 country: 1,
+                gender: 1,
+                contactTypeId: 1,
                 isArchived: 1,
                 contactOrigin: 1,
                 createdDateSource: 1,
@@ -1198,6 +1320,671 @@ export function registerCrmRoutes(app, deps) {
         contactOffset,
         contactLimit,
         hasMoreContacts: contactOffset + contacts.length < contactsTotal,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.patch('/api/crm/dealers/:dealerSourceId', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+    try {
+      const dealerSourceId = toTrimmedText(req.params.dealerSourceId, 160)
+
+      if (!dealerSourceId) {
+        return res.status(400).json({
+          error: 'dealerSourceId is required.',
+        })
+      }
+
+      const body = toOptionalObject(req.body)
+      const { crmAccountsCollection } = await getCollections()
+
+      const existingDealer = await crmAccountsCollection.findOne(
+        {
+          sourceId: dealerSourceId,
+        },
+        {
+          projection: {
+            _id: 0,
+            sourceId: 1,
+          },
+        },
+      )
+
+      if (!existingDealer) {
+        return res.status(404).json({
+          error: 'Dealer not found.',
+        })
+      }
+
+      const updates = {}
+
+      if (Object.prototype.hasOwnProperty.call(body, 'name')) {
+        const nextName = toTrimmedText(body.name, 240)
+
+        if (!nextName) {
+          return res.status(400).json({
+            error: 'name cannot be empty.',
+          })
+        }
+
+        updates.name = nextName
+        updates.nameLower = toLowerText(nextName, 240)
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'phone')) {
+        updates.phone = toTrimmedText(body.phone, 80) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'phone2')) {
+        updates.phone2 = toTrimmedText(body.phone2, 80) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'email')) {
+        const nextEmail = toTrimmedText(body.email, 200)
+        updates.email = nextEmail || null
+        updates.emailLower = toLowerText(nextEmail, 200) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'email2')) {
+        updates.email2 = toTrimmedText(body.email2, 200) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'address')) {
+        updates.address = toTrimmedText(body.address, 400) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'city')) {
+        updates.city = toTrimmedText(body.city, 160) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'state')) {
+        updates.state = toTrimmedText(body.state, 80) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'zip')) {
+        updates.zip = toTrimmedText(body.zip, 40) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'country')) {
+        updates.country = toTrimmedText(body.country, 120) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'industry')) {
+        updates.industry = toTrimmedText(body.industry, 160) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'accountClass')) {
+        updates.accountClass = toTrimmedText(body.accountClass, 160) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'accountType')) {
+        updates.accountType = toTrimmedText(body.accountType, 160) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'salesRep')) {
+        updates.salesRep = toTrimmedText(body.salesRep, 200) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'website')) {
+        updates.website = toTrimmedText(body.website, 240) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'emails')) {
+        const normalizedEmails = normalizeEmailList(body.emails)
+
+        if (normalizedEmails.length === 0) {
+          return res.status(400).json({
+            error: 'emails must include at least one valid email.',
+          })
+        }
+
+        updates.emails = normalizedEmails
+        updates.email = normalizedEmails[0] || null
+        updates.emailLower = toLowerText(normalizedEmails[0], 200) || null
+        updates.email2 = normalizedEmails[1] || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'accountText')) {
+        updates.accountText = toTrimmedText(body.accountText, 4000) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'owner')) {
+        updates.owner = toTrimmedText(body.owner, 200) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'ownerEmail')) {
+        const nextOwnerEmail = toTrimmedText(body.ownerEmail, 200)
+        updates.ownerEmail = nextOwnerEmail || null
+        updates.ownerEmailLower = toLowerText(nextOwnerEmail, 200) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'pictureUrl')) {
+        updates.pictureUrl = toTrimmedText(body.pictureUrl, 500) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'pictureUrlSource')) {
+        updates.pictureUrlSource = toTrimmedText(body.pictureUrlSource, 500) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'socialMedia')) {
+        updates.socialMedia = toTrimmedText(body.socialMedia, 2000) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'socialMediaLinks')) {
+        const normalizedLinks = normalizeSocialMediaLinks(body.socialMediaLinks)
+        const hasLinks = Object.keys(normalizedLinks).length > 0
+
+        updates.socialMediaLinks = hasLinks
+          ? normalizedLinks
+          : null
+
+        if (!Object.prototype.hasOwnProperty.call(body, 'socialMedia')) {
+          updates.socialMedia = hasLinks
+            ? toCompactSocialMediaText(normalizedLinks)
+            : null
+        }
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'isArchived')) {
+        updates.isArchived = toBoolean(body.isArchived)
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'isFavorite')) {
+        updates.isFavorite = toBoolean(body.isFavorite)
+      }
+
+      if (Object.keys(updates).length === 0) {
+        const dealer = await crmAccountsCollection.findOne(
+          {
+            sourceId: dealerSourceId,
+          },
+          {
+            projection: {
+              _id: 0,
+              sourceId: 1,
+              name: 1,
+              phone: 1,
+              phone2: 1,
+              email: 1,
+              email2: 1,
+              address: 1,
+              city: 1,
+              state: 1,
+              zip: 1,
+              country: 1,
+              industry: 1,
+              accountClass: 1,
+              accountType: 1,
+              salesRep: 1,
+              website: 1,
+              emails: 1,
+              accountText: 1,
+              owner: 1,
+              ownerEmail: 1,
+              pictureUrl: 1,
+              pictureUrlSource: 1,
+              socialMedia: 1,
+              socialMediaLinks: 1,
+              isArchived: 1,
+              isFavorite: 1,
+              contactCountSource: 1,
+              createdDateSource: 1,
+              modifiedDateSource: 1,
+              lastImportedAt: 1,
+            },
+          },
+        )
+
+        return res.json({
+          dealer,
+        })
+      }
+
+      const now = nowIso()
+
+      updates.modifiedDateSource = now
+      updates.updatedAt = now
+
+      const dealer = await crmAccountsCollection.findOneAndUpdate(
+        {
+          sourceId: dealerSourceId,
+        },
+        {
+          $set: updates,
+        },
+        {
+          returnDocument: 'after',
+          projection: {
+            _id: 0,
+            sourceId: 1,
+            name: 1,
+            phone: 1,
+            phone2: 1,
+            email: 1,
+            email2: 1,
+            address: 1,
+            city: 1,
+            state: 1,
+            zip: 1,
+            country: 1,
+            industry: 1,
+            accountClass: 1,
+            accountType: 1,
+            salesRep: 1,
+            website: 1,
+            emails: 1,
+            accountText: 1,
+            owner: 1,
+            ownerEmail: 1,
+            pictureUrl: 1,
+            pictureUrlSource: 1,
+            socialMedia: 1,
+            socialMediaLinks: 1,
+            isArchived: 1,
+            isFavorite: 1,
+            contactCountSource: 1,
+            createdDateSource: 1,
+            modifiedDateSource: 1,
+            lastImportedAt: 1,
+          },
+        },
+      )
+
+      cacheDeleteByPrefix(DEALERS_CACHE_PREFIX)
+      cacheDelete(OVERVIEW_CACHE_KEY)
+
+      return res.json({
+        dealer,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.post('/api/crm/dealers/:dealerSourceId/contacts', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+    try {
+      const dealerSourceId = toTrimmedText(req.params.dealerSourceId, 160)
+
+      if (!dealerSourceId) {
+        return res.status(400).json({
+          error: 'dealerSourceId is required.',
+        })
+      }
+
+      const body = toOptionalObject(req.body)
+      const {
+        crmAccountsCollection,
+        crmContactsCollection,
+      } = await getCollections()
+
+      const dealer = await resolveDealerOrThrow(crmAccountsCollection, dealerSourceId)
+      const requestedSourceId = toTrimmedText(body.sourceId, 160)
+      const contactSourceId = requestedSourceId || `manual-${randomUUID()}`
+
+      const existingContact = await crmContactsCollection.findOne(
+        {
+          sourceId: contactSourceId,
+        },
+        {
+          projection: {
+            _id: 0,
+            sourceId: 1,
+          },
+        },
+      )
+
+      if (existingContact) {
+        return res.status(409).json({
+          error: 'sourceId already exists. Use a unique sourceId or omit it for auto-generation.',
+        })
+      }
+
+      const firstName = toTrimmedText(body.firstName, 160)
+      const lastName = toTrimmedText(body.lastName, 160)
+      const explicitName = toTrimmedText(body.name, 240)
+      const combinedName = [firstName, lastName].filter(Boolean).join(' ')
+      const name = explicitName || combinedName
+
+      if (!name) {
+        return res.status(400).json({
+          error: 'name is required (or provide firstName/lastName).',
+        })
+      }
+
+      const primaryEmail = toTrimmedText(body.primaryEmail, 200)
+      const secondaryEmail = toTrimmedText(body.secondaryEmail, 200)
+      const now = nowIso()
+
+      const contact = {
+        id: contactSourceId,
+        sourceId: contactSourceId,
+        name,
+        nameLower: toLowerText(name, 240),
+        firstName: firstName || null,
+        lastName: lastName || null,
+        primaryEmail: primaryEmail || null,
+        primaryEmailLower: toLowerText(primaryEmail, 200) || null,
+        secondaryEmail: secondaryEmail || null,
+        secondaryEmailLower: toLowerText(secondaryEmail, 200) || null,
+        email3: toTrimmedText(body.email3, 200) || null,
+        email4: toTrimmedText(body.email4, 200) || null,
+        salesUnit: toTrimmedText(body.salesUnit, 160) || null,
+        accountSourceId: dealer.sourceId,
+        accountName: dealer.name || dealer.sourceId,
+        phone: toTrimmedText(body.phone, 80) || null,
+        phone2: toTrimmedText(body.phone2, 80) || null,
+        phoneAlt: toTrimmedText(body.phoneAlt, 80) || null,
+        address: toTrimmedText(body.address, 400) || null,
+        city: toTrimmedText(body.city, 160) || null,
+        state: toTrimmedText(body.state, 80) || null,
+        zip: toTrimmedText(body.zip, 40) || null,
+        country: toTrimmedText(body.country, 120) || null,
+        gender: toTrimmedText(body.gender, 50) || null,
+        contactTypeId: toTrimmedText(body.contactTypeId, 160) || null,
+        photoUrl: toTrimmedText(body.photoUrl, 500) || null,
+        isArchived: toBoolean(body.isArchived),
+        contactOrigin: 'manual',
+        createdDateSource: toIsoDateOrNull(body.createdDateSource) || now,
+        lastImportedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      }
+
+      await crmContactsCollection.insertOne(contact)
+
+      cacheDeleteByPrefix(DEALERS_CACHE_PREFIX)
+      cacheDelete(OVERVIEW_CACHE_KEY)
+
+      return res.status(201).json({
+        contact,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.patch('/api/crm/contacts/:contactSourceId', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+    try {
+      const contactSourceId = toTrimmedText(req.params.contactSourceId, 160)
+
+      if (!contactSourceId) {
+        return res.status(400).json({
+          error: 'contactSourceId is required.',
+        })
+      }
+
+      const body = toOptionalObject(req.body)
+      const {
+        crmAccountsCollection,
+        crmContactsCollection,
+      } = await getCollections()
+
+      const existingContact = await crmContactsCollection.findOne(
+        {
+          sourceId: contactSourceId,
+        },
+        {
+          projection: {
+            _id: 0,
+          },
+        },
+      )
+
+      if (!existingContact) {
+        return res.status(404).json({
+          error: 'Contact not found.',
+        })
+      }
+
+      const updates = {}
+
+      const hasFirstName = Object.prototype.hasOwnProperty.call(body, 'firstName')
+      const hasLastName = Object.prototype.hasOwnProperty.call(body, 'lastName')
+      const hasName = Object.prototype.hasOwnProperty.call(body, 'name')
+
+      if (hasFirstName) {
+        updates.firstName = toTrimmedText(body.firstName, 160) || null
+      }
+
+      if (hasLastName) {
+        updates.lastName = toTrimmedText(body.lastName, 160) || null
+      }
+
+      if (hasName) {
+        const nextName = toTrimmedText(body.name, 240)
+
+        if (!nextName) {
+          return res.status(400).json({
+            error: 'name cannot be empty.',
+          })
+        }
+
+        updates.name = nextName
+        updates.nameLower = toLowerText(nextName, 240)
+      } else if (hasFirstName || hasLastName) {
+        const firstName = hasFirstName
+          ? updates.firstName
+          : (toTrimmedText(existingContact.firstName, 160) || null)
+        const lastName = hasLastName
+          ? updates.lastName
+          : (toTrimmedText(existingContact.lastName, 160) || null)
+        const combinedName = [firstName, lastName].filter(Boolean).join(' ')
+
+        if (combinedName) {
+          updates.name = combinedName
+          updates.nameLower = toLowerText(combinedName, 240)
+        }
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'primaryEmail')) {
+        const nextPrimaryEmail = toTrimmedText(body.primaryEmail, 200)
+        updates.primaryEmail = nextPrimaryEmail || null
+        updates.primaryEmailLower = toLowerText(nextPrimaryEmail, 200) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'secondaryEmail')) {
+        const nextSecondaryEmail = toTrimmedText(body.secondaryEmail, 200)
+        updates.secondaryEmail = nextSecondaryEmail || null
+        updates.secondaryEmailLower = toLowerText(nextSecondaryEmail, 200) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'email3')) {
+        updates.email3 = toTrimmedText(body.email3, 200) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'email4')) {
+        updates.email4 = toTrimmedText(body.email4, 200) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'salesUnit')) {
+        updates.salesUnit = toTrimmedText(body.salesUnit, 160) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'phone')) {
+        updates.phone = toTrimmedText(body.phone, 80) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'phone2')) {
+        updates.phone2 = toTrimmedText(body.phone2, 80) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'phoneAlt')) {
+        updates.phoneAlt = toTrimmedText(body.phoneAlt, 80) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'address')) {
+        updates.address = toTrimmedText(body.address, 400) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'city')) {
+        updates.city = toTrimmedText(body.city, 160) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'state')) {
+        updates.state = toTrimmedText(body.state, 80) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'zip')) {
+        updates.zip = toTrimmedText(body.zip, 40) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'country')) {
+        updates.country = toTrimmedText(body.country, 120) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'gender')) {
+        updates.gender = toTrimmedText(body.gender, 50) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'contactTypeId')) {
+        updates.contactTypeId = toTrimmedText(body.contactTypeId, 160) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'photoUrl')) {
+        updates.photoUrl = toTrimmedText(body.photoUrl, 500) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'isArchived')) {
+        updates.isArchived = toBoolean(body.isArchived)
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'dealerSourceId')) {
+        const nextDealerSourceId = toTrimmedText(body.dealerSourceId, 160)
+
+        if (!nextDealerSourceId) {
+          updates.accountSourceId = null
+          updates.accountName = null
+
+          if (!Object.prototype.hasOwnProperty.call(body, 'contactOrigin')) {
+            updates.contactOrigin = 'unlinked'
+          }
+        } else {
+          const dealer = await resolveDealerOrThrow(crmAccountsCollection, nextDealerSourceId)
+
+          updates.accountSourceId = dealer.sourceId
+          updates.accountName = dealer.name || dealer.sourceId
+
+          if (!Object.prototype.hasOwnProperty.call(body, 'contactOrigin')) {
+            updates.contactOrigin = 'linked'
+          }
+        }
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'contactOrigin')) {
+        const nextContactOrigin = toLowerText(body.contactOrigin, 40)
+
+        if (!nextContactOrigin) {
+          return res.status(400).json({
+            error: 'contactOrigin cannot be empty.',
+          })
+        }
+
+        const allowedContactOrigins = ['linked', 'unlinked', 'manual']
+
+        if (!allowedContactOrigins.includes(nextContactOrigin)) {
+          return res.status(400).json({
+            error: `contactOrigin must be one of: ${allowedContactOrigins.join(', ')}`,
+          })
+        }
+
+        updates.contactOrigin = nextContactOrigin
+      }
+
+      if (Object.keys(updates).length === 0) {
+        return res.json({
+          contact: existingContact,
+        })
+      }
+
+      const now = nowIso()
+
+      updates.updatedAt = now
+
+      const contact = await crmContactsCollection.findOneAndUpdate(
+        {
+          sourceId: contactSourceId,
+        },
+        {
+          $set: updates,
+        },
+        {
+          returnDocument: 'after',
+          projection: {
+            _id: 0,
+          },
+        },
+      )
+
+      cacheDeleteByPrefix(DEALERS_CACHE_PREFIX)
+      cacheDelete(OVERVIEW_CACHE_KEY)
+
+      return res.json({
+        contact,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.delete('/api/crm/contacts/:contactSourceId', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+    try {
+      const contactSourceId = toTrimmedText(req.params.contactSourceId, 160)
+
+      if (!contactSourceId) {
+        return res.status(400).json({
+          error: 'contactSourceId is required.',
+        })
+      }
+
+      const { crmContactsCollection } = await getCollections()
+
+      const existingContact = await crmContactsCollection.findOne(
+        {
+          sourceId: contactSourceId,
+        },
+        {
+          projection: {
+            _id: 0,
+          },
+        },
+      )
+
+      if (!existingContact) {
+        return res.status(404).json({
+          error: 'Contact not found.',
+        })
+      }
+
+      if (toBoolean(existingContact.isArchived)) {
+        return res.json({
+          contact: existingContact,
+        })
+      }
+
+      const contact = await crmContactsCollection.findOneAndUpdate(
+        {
+          sourceId: contactSourceId,
+        },
+        {
+          $set: {
+            isArchived: true,
+            updatedAt: nowIso(),
+          },
+        },
+        {
+          returnDocument: 'after',
+          projection: {
+            _id: 0,
+          },
+        },
+      )
+
+      cacheDeleteByPrefix(DEALERS_CACHE_PREFIX)
+      cacheDelete(OVERVIEW_CACHE_KEY)
+
+      return res.json({
+        contact,
       })
     } catch (error) {
       next(error)
@@ -1358,6 +2145,12 @@ export function registerCrmRoutes(app, deps) {
             },
             {
               secondaryEmail: searchRegex,
+            },
+            {
+              email3: searchRegex,
+            },
+            {
+              email4: searchRegex,
             },
             {
               salesUnit: searchRegex,
@@ -2022,6 +2815,7 @@ export function registerCrmRoutes(app, deps) {
         const socialMediaLinks = Object.keys(toOptionalObject(account.socialMediaLinks)).length > 0
           ? account.socialMediaLinks
           : null
+        const normalizedEmails = normalizeEmailList(account.emails)
 
         return {
           updateOne: {
@@ -2039,6 +2833,7 @@ export function registerCrmRoutes(app, deps) {
                 email: account.email || null,
                 emailLower: emailLower || null,
                 email2: account.email2 || null,
+                emails: normalizedEmails,
                 address: account.address || null,
                 city: account.city || null,
                 state: account.state || null,
@@ -2047,6 +2842,7 @@ export function registerCrmRoutes(app, deps) {
                 industry: account.industry || null,
                 accountClass: account.accountClass || null,
                 accountType: account.accountType || null,
+                salesRep: account.salesRep || null,
                 website: account.website || null,
                 accountText: account.accountText || null,
                 createdDateSource: account.createdDate,

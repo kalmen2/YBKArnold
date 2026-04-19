@@ -154,7 +154,9 @@ export type CrmDealer = {
   industry?: string | null
   accountType?: string | null
   accountClass?: string | null
+  salesRep?: string | null
   website?: string | null
+  emails?: string[] | null
   contactCountSource?: number
   email: string | null
   ownerEmail: string | null
@@ -210,9 +212,13 @@ export type CrmContact = {
   phone: string | null
   phone2: string | null
   phoneAlt: string | null
+  address: string | null
   city: string | null
   state: string | null
+  zip: string | null
   country: string | null
+  gender: string | null
+  contactTypeId: string | null
   photoUrl: string | null
   isArchived: boolean
   contactOrigin: string
@@ -256,6 +262,61 @@ export type CrmDealerContactsQueryOptions = {
   contactOffset?: number
   contactLimit?: number
 }
+
+export type CrmDealerUpdateInput = Partial<{
+  name: string | null
+  phone: string | null
+  phone2: string | null
+  emails: string[]
+  email: string | null
+  email2: string | null
+  address: string | null
+  city: string | null
+  state: string | null
+  zip: string | null
+  country: string | null
+  industry: string | null
+  accountClass: string | null
+  accountType: string | null
+  salesRep: string | null
+  website: string | null
+  accountText: string | null
+  owner: string | null
+  ownerEmail: string | null
+  pictureUrl: string | null
+  pictureUrlSource: string | null
+  socialMedia: string | null
+  socialMediaLinks: Record<string, string> | null
+  isArchived: boolean
+  isFavorite: boolean
+}>
+
+export type CrmContactMutationInput = Partial<{
+  sourceId: string
+  name: string | null
+  firstName: string | null
+  lastName: string | null
+  primaryEmail: string | null
+  secondaryEmail: string | null
+  email3: string | null
+  email4: string | null
+  salesUnit: string | null
+  phone: string | null
+  phone2: string | null
+  phoneAlt: string | null
+  address: string | null
+  city: string | null
+  state: string | null
+  zip: string | null
+  country: string | null
+  gender: string | null
+  contactTypeId: string | null
+  photoUrl: string | null
+  isArchived: boolean
+  dealerSourceId: string | null
+  contactOrigin: 'linked' | 'unlinked' | 'manual'
+  createdDateSource: string | null
+}>
 
 export type CrmQuoteStatus = 'draft' | 'sent' | 'accepted' | 'rejected' | 'cancelled'
 
@@ -427,6 +488,33 @@ export function fetchCrmDealerDetail(
       contactLimit: options.contactLimit ?? 250,
     }),
   )
+}
+
+export function updateCrmDealer(dealerSourceId: string, input: CrmDealerUpdateInput) {
+  return apiRequest<{ dealer: CrmDealerDetail }>(`/api/crm/dealers/${encodeURIComponent(dealerSourceId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(input),
+  })
+}
+
+export function createCrmDealerContact(dealerSourceId: string, input: CrmContactMutationInput) {
+  return apiRequest<{ contact: CrmContact }>(`/api/crm/dealers/${encodeURIComponent(dealerSourceId)}/contacts`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export function updateCrmContact(contactSourceId: string, input: CrmContactMutationInput) {
+  return apiRequest<{ contact: CrmContact }>(`/api/crm/contacts/${encodeURIComponent(contactSourceId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(input),
+  })
+}
+
+export function removeCrmContact(contactSourceId: string) {
+  return apiRequest<{ contact: CrmContact }>(`/api/crm/contacts/${encodeURIComponent(contactSourceId)}`, {
+    method: 'DELETE',
+  })
 }
 
 export function fetchCrmContacts(options: CrmContactsQueryOptions = {}) {

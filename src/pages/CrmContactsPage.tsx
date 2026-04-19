@@ -3,15 +3,10 @@ import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded'
 import {
   Avatar,
-  Box,
   Button,
   Chip,
-  FormControl,
   InputAdornment,
-  InputLabel,
-  MenuItem,
   Paper,
-  Select,
   Stack,
   Table,
   TableBody,
@@ -23,7 +18,8 @@ import {
   TextField,
   Typography,
 } from '@mui/material'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { alpha } from '@mui/material/styles'
+import { useCallback, useState } from 'react'
 import { Link as RouterLink, useSearchParams } from 'react-router-dom'
 import { LoadingPanel } from '../components/LoadingPanel'
 import { StatusAlerts } from '../components/StatusAlerts'
@@ -34,7 +30,6 @@ import {
   type CrmContact,
   type CrmContactsResponse,
 } from '../features/crm/api'
-import { useCrmDealers } from '../features/crm/CrmDealersContext'
 
 function displayContactName(contact: CrmContact) {
   if (contact.name) {
@@ -49,76 +44,31 @@ function displayContactName(contact: CrmContact) {
 }
 
 export default function CrmContactsPage() {
-  const { dealers } = useCrmDealers()
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
 
   const [contacts, setContacts] = useState<CrmContact[]>([])
   const [totalContacts, setTotalContacts] = useState(0)
 
 
-  const [page, setPage] = useState(0)
   const [rowsPerPage, setRowsPerPage] = useState(50)
 
   const [searchInput, setSearchInput] = useState('')
   const search = useDebounceValue(searchInput)
-  const [dealerSourceId, setDealerSourceId] = useState('')
-  const [salesUnit, setSalesUnit] = useState('')
-  const [stateFilter, setStateFilter] = useState('')
-  const [countryFilter, setCountryFilter] = useState('')
-  const [contactOrigin, setContactOrigin] = useState<'all' | 'linked' | 'unlinked'>('all')
-  const [hasEmailFilter, setHasEmailFilter] = useState<'all' | 'with' | 'without'>('all')
-  const [includeArchived, setIncludeArchived] = useState(false)
+  const dealerSourceId = searchParams.get('dealerSourceId')?.trim() ?? ''
 
-
-  useEffect(() => {
-    const dealerFromQuery = searchParams.get('dealerSourceId')?.trim() ?? ''
-
-    if (dealerFromQuery && dealerFromQuery !== dealerSourceId) {
-      setDealerSourceId(dealerFromQuery)
-      setPage(0)
-    }
-  }, [dealerSourceId, searchParams])
-
-  useEffect(() => {
-    setPage(0)
-  }, [
-    contactOrigin,
-    countryFilter,
-    dealerSourceId,
-    hasEmailFilter,
-    includeArchived,
-    salesUnit,
-    search,
-    stateFilter,
-  ])
-
-  const hasEmailFilterValue = useMemo(() => {
-    if (hasEmailFilter === 'with') {
-      return true
-    }
-
-    if (hasEmailFilter === 'without') {
-      return false
-    }
-
-    return null
-  }, [hasEmailFilter])
+  const [pagesByFilter, setPagesByFilter] = useState<Record<string, number>>({})
+  const paginationFilterKey = `${dealerSourceId}::${search}`
+  const page = pagesByFilter[paginationFilterKey] ?? 0
 
   const { isLoading: isLoadingContacts, isRefreshing, errorMessage, load: loadContacts } = useDataLoader({
     fetcher: useCallback(async () => {
       return fetchCrmContacts({
         limit: rowsPerPage,
         offset: page * rowsPerPage,
-        includeArchived,
         search: search || undefined,
         dealerSourceId: dealerSourceId || undefined,
-        salesUnit: salesUnit.trim() || undefined,
-        state: stateFilter.trim() || undefined,
-        country: countryFilter.trim() || undefined,
-        contactOrigin: contactOrigin === 'all' ? undefined : contactOrigin,
-        hasEmail: hasEmailFilterValue,
       })
-    }, [contactOrigin, countryFilter, dealerSourceId, hasEmailFilterValue, includeArchived, page, rowsPerPage, salesUnit, search, stateFilter]),
+    }, [dealerSourceId, page, rowsPerPage, search]),
     onSuccess: useCallback((response: CrmContactsResponse) => {
       setContacts(Array.isArray(response.contacts) ? response.contacts : [])
       setTotalContacts(Number(response.total ?? 0))
@@ -136,20 +86,65 @@ export default function CrmContactsPage() {
 
   return (
     <Stack spacing={2.5}>
-      <Paper variant="outlined" sx={{ p: { xs: 2, md: 2.5 } }}>
+      <Paper
+        variant="outlined"
+        sx={{
+          p: { xs: 2, md: 2.5 },
+          borderColor: (theme) => alpha(theme.palette.primary.main, 0.28),
+          background: (theme) => `linear-gradient(125deg, ${alpha(theme.palette.primary.main, 0.15)} 0%, ${alpha(theme.palette.info.main, 0.08)} 42%, ${alpha(theme.palette.background.paper, 0.98)} 100%)`,
+        }}
+      >
         <Stack
           direction={{ xs: 'column', md: 'row' }}
           spacing={1.5}
           justifyContent="space-between"
           alignItems={{ xs: 'flex-start', md: 'center' }}
         >
-          <Stack spacing={0.5}>
+          <Stack spacing={1} sx={{ width: { xs: '100%', md: 'min(560px, 100%)' } }}>
             <Typography variant="h5" sx={{ fontWeight: 700 }}>
               Contacts
             </Typography>
-            <Typography color="text.secondary">
-              Filter all CRM contacts by dealer, location, origin, and communication readiness.
-            </Typography>
+   
+
+            <TextField
+              size="small"
+              label="Search contacts"
+              placeholder="Contact, account, email, phone, location"
+              value={searchInput}
+              onChange={(event) => {
+                setSearchInput(event.target.value)
+              }}
+              InputProps={{
+                startAdornment: (
+                  <InputAdornment position="start">
+                    <SearchRoundedIcon fontSize="small" />
+                  </InputAdornment>
+                ),
+              }}
+            />
+
+            {dealerSourceId ? (
+              <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+                <Chip
+                  size="small"
+                  color="info"
+                  variant="outlined"
+                  label={`Scoped to account: ${dealerSourceId}`}
+                />
+                <Button
+                  size="small"
+                  onClick={() => {
+                    setSearchParams((current) => {
+                      const next = new URLSearchParams(current)
+                      next.delete('dealerSourceId')
+                      return next
+                    })
+                  }}
+                >
+                  Show all contacts
+                </Button>
+              </Stack>
+            ) : null}
           </Stack>
 
           <Stack direction="row" spacing={1}>
@@ -172,153 +167,6 @@ export default function CrmContactsPage() {
       </Paper>
 
       <StatusAlerts errorMessage={errorMessage} />
-
-      <Paper variant="outlined" sx={{ p: 2 }}>
-        <Stack spacing={1.25}>
-          <Typography variant="h6" sx={{ fontWeight: 700 }}>
-            Filters
-          </Typography>
-
-          <Box
-            sx={{
-              display: 'grid',
-              gridTemplateColumns: {
-                xs: '1fr',
-                md: 'repeat(3, minmax(0, 1fr))',
-                xl: 'repeat(4, minmax(0, 1fr))',
-              },
-              gap: 1,
-            }}
-          >
-            <TextField
-              size="small"
-              label="Search contacts"
-              value={searchInput}
-              onChange={(event) => {
-                setSearchInput(event.target.value)
-              }}
-              InputProps={{
-                startAdornment: (
-                  <InputAdornment position="start">
-                    <SearchRoundedIcon fontSize="small" />
-                  </InputAdornment>
-                ),
-              }}
-            />
-
-            <FormControl size="small">
-              <InputLabel id="contacts-dealer-filter">Dealer</InputLabel>
-              <Select
-                labelId="contacts-dealer-filter"
-                label="Dealer"
-                value={dealerSourceId}
-                onChange={(event) => {
-                  setDealerSourceId(event.target.value)
-                }}
-              >
-                <MenuItem value="">All dealers</MenuItem>
-                {dealers.map((dealer) => (
-                  <MenuItem key={dealer.sourceId} value={dealer.sourceId}>
-                    {dealer.name || dealer.sourceId}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-
-            <TextField
-              size="small"
-              label="Sales unit"
-              value={salesUnit}
-              onChange={(event) => {
-                setSalesUnit(event.target.value)
-              }}
-            />
-
-            <TextField
-              size="small"
-              label="State"
-              value={stateFilter}
-              onChange={(event) => {
-                setStateFilter(event.target.value)
-              }}
-            />
-
-            <TextField
-              size="small"
-              label="Country"
-              value={countryFilter}
-              onChange={(event) => {
-                setCountryFilter(event.target.value)
-              }}
-            />
-
-            <FormControl size="small">
-              <InputLabel id="contacts-email-filter">Email</InputLabel>
-              <Select
-                labelId="contacts-email-filter"
-                label="Email"
-                value={hasEmailFilter}
-                onChange={(event) => {
-                  setHasEmailFilter(event.target.value as 'all' | 'with' | 'without')
-                }}
-              >
-                <MenuItem value="all">All contacts</MenuItem>
-                <MenuItem value="with">With email</MenuItem>
-                <MenuItem value="without">Without email</MenuItem>
-              </Select>
-            </FormControl>
-
-            <FormControl size="small">
-              <InputLabel id="contacts-origin-filter">Origin</InputLabel>
-              <Select
-                labelId="contacts-origin-filter"
-                label="Origin"
-                value={contactOrigin}
-                onChange={(event) => {
-                  setContactOrigin(event.target.value as 'all' | 'linked' | 'unlinked')
-                }}
-              >
-                <MenuItem value="all">All origins</MenuItem>
-                <MenuItem value="linked">Linked</MenuItem>
-                <MenuItem value="unlinked">Unlinked</MenuItem>
-              </Select>
-            </FormControl>
-
-            <FormControl size="small">
-              <InputLabel id="contacts-archive-filter">Archived</InputLabel>
-              <Select
-                labelId="contacts-archive-filter"
-                label="Archived"
-                value={includeArchived ? 'all' : 'active'}
-                onChange={(event) => {
-                  setIncludeArchived(event.target.value === 'all')
-                }}
-              >
-                <MenuItem value="active">Active only</MenuItem>
-                <MenuItem value="all">Include archived</MenuItem>
-              </Select>
-            </FormControl>
-          </Box>
-
-          <Button
-            variant="text"
-            sx={{ alignSelf: 'flex-start' }}
-            onClick={() => {
-              setSearchInput('')
-              setDealerSourceId('')
-              setSalesUnit('')
-              setStateFilter('')
-              setCountryFilter('')
-              setContactOrigin('all')
-              setHasEmailFilter('all')
-              setIncludeArchived(false)
-              setPage(0)
-            }}
-          >
-            Clear filters
-          </Button>
-        </Stack>
-      </Paper>
 
       <Paper variant="outlined" sx={{ p: 2 }}>
         {isLoadingContacts ? (
@@ -424,12 +272,18 @@ export default function CrmContactsPage() {
               count={totalContacts}
               page={page}
               onPageChange={(_event, nextPage) => {
-                setPage(nextPage)
+                setPagesByFilter((current) => ({
+                  ...current,
+                  [paginationFilterKey]: nextPage,
+                }))
               }}
               rowsPerPage={rowsPerPage}
               onRowsPerPageChange={(event) => {
                 setRowsPerPage(Number(event.target.value))
-                setPage(0)
+                setPagesByFilter((current) => ({
+                  ...current,
+                  [paginationFilterKey]: 0,
+                }))
               }}
               rowsPerPageOptions={[25, 50, 100, 200]}
             />
