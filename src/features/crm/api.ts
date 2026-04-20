@@ -197,6 +197,24 @@ export type CrmDealersQueryOptions = {
   hasEmail?: boolean | null
 }
 
+export type CrmSalesRep = {
+  id: string
+  name: string
+  states: string[]
+  createdAt: string | null
+  updatedAt: string | null
+}
+
+export type CrmSalesRepsResponse = {
+  salesReps: CrmSalesRep[]
+  availableStates: string[]
+}
+
+export type CrmSalesRepUpsertInput = {
+  name: string
+  states: string[]
+}
+
 export type CrmContact = {
   sourceId: string
   name: string | null
@@ -474,6 +492,30 @@ export function fetchCrmDealers(
         : (options.hasEmail ? 'true' : 'false'),
     }),
   )
+}
+
+export function fetchCrmSalesReps() {
+  return apiRequest<CrmSalesRepsResponse>('/api/crm/sales-reps')
+}
+
+export function createCrmSalesRep(input: CrmSalesRepUpsertInput) {
+  return apiRequest<{ salesRep: CrmSalesRep }>('/api/crm/sales-reps', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export function updateCrmSalesRep(salesRepId: string, input: Partial<CrmSalesRepUpsertInput>) {
+  return apiRequest<{ salesRep: CrmSalesRep }>(`/api/crm/sales-reps/${encodeURIComponent(salesRepId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(input),
+  })
+}
+
+export function removeCrmSalesRep(salesRepId: string) {
+  return apiRequest<{ ok: boolean; salesRepId: string }>(`/api/crm/sales-reps/${encodeURIComponent(salesRepId)}`, {
+    method: 'DELETE',
+  })
 }
 
 export function fetchCrmDealerDetail(

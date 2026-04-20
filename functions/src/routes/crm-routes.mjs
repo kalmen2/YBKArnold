@@ -27,6 +27,14 @@ const orderStatuses = [
   'delivered',
   'cancelled',
 ]
+const usStateCodes = [
+  'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA',
+  'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD',
+  'MA', 'MI', 'MN', 'MS', 'MO', 'MT', 'NE', 'NV', 'NH', 'NJ',
+  'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI', 'SC',
+  'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY',
+]
+const usStateCodeSet = new Set(usStateCodes)
 
 function toTrimmedText(value, maxLength = 4000) {
   if (value === null || value === undefined) {
@@ -327,6 +335,102 @@ function normalizeEmailList(input, maxItems = 12) {
   }
 
   return normalizedEmails
+}
+
+function normalizeUsStateCode(value) {
+  const normalized = toTrimmedText(value, 4).toUpperCase()
+
+  return usStateCodeSet.has(normalized)
+    ? normalized
+    : ''
+}
+
+function normalizeUsStateList(input) {
+  const sourceItems = Array.isArray(input)
+    ? input
+    : [input]
+  const seen = new Set()
+  const normalizedStates = []
+
+  for (const rawValue of sourceItems) {
+    const nextState = normalizeUsStateCode(rawValue)
+
+    if (!nextState || seen.has(nextState)) {
+      continue
+    }
+
+    seen.add(nextState)
+    normalizedStates.push(nextState)
+  }
+
+  return normalizedStates.sort((left, right) => left.localeCompare(right))
+}
+
+function toSalesRepResponse(rawSalesRep) {
+  const salesRep = toOptionalObject(rawSalesRep)
+
+  return {
+    id: toTrimmedText(salesRep.id, 160),
+    name: toTrimmedText(salesRep.name, 200),
+    states: normalizeUsStateList(salesRep.states),
+    createdAt: toIsoDateOrNull(salesRep.createdAt),
+    updatedAt: toIsoDateOrNull(salesRep.updatedAt),
+  }
+}
+
+async function assertNoSalesRepStateConflicts({
+  crmSalesRepsCollection,
+  excludedSalesRepId = null,
+  states,
+}) {
+  if (!Array.isArray(states) || states.length === 0) {
+    return
+  }
+
+  const filter = {
+    states: {
+      $in: states,
+    },
+  }
+
+  if (excludedSalesRepId) {
+    filter.id = {
+      $ne: excludedSalesRepId,
+    }
+  }
+
+  const conflictingSalesReps = await crmSalesRepsCollection
+    .find(
+      filter,
+      {
+        projection: {
+          _id: 0,
+          id: 1,
+          name: 1,
+          states: 1,
+        },
+      },
+    )
+    .toArray()
+
+  if (conflictingSalesReps.length === 0) {
+    return
+  }
+
+  const conflictingStates = uniqueSorted(
+    conflictingSalesReps
+      .flatMap((salesRep) => normalizeUsStateList(salesRep.states))
+      .filter((stateCode) => states.includes(stateCode)),
+  )
+
+  const conflictingRepNames = uniqueSorted(
+    conflictingSalesReps.map((salesRep) => toTrimmedText(salesRep.name, 200)),
+  )
+
+  throw {
+    status: 409,
+    message: `State assignments already in use (${conflictingStates.join(', ')}) by ${conflictingRepNames.join(', ')}.`,
+  }
 }
 
 function normalizeAccount(rawAccount) {
@@ -905,6 +1009,222 @@ export function registerCrmRoutes(app, deps) {
       const analysis = buildImportAnalysis(req.body?.payload)
 
       return res.json(toImportResponse(analysis))
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/crm/sales-reps', requireFirebaseAuth, async (_req, res, next) => {
+    try {
+      const { crmSalesRepsCollection } = await getCollections()
+
+      const salesReps = await crmSalesRepsCollection
+        .find(
+          {},
+          {
+            projection: {
+              _id: 0,
+              id: 1,
+              name: 1,
+              states: 1,
+              createdAt: 1,
+              updatedAt: 1,
+            },
+          },
+        )
+        .sort({ nameLower: 1, name: 1, id: 1 })
+        .toArray()
+
+      return res.json({
+        salesReps: salesReps.map((salesRep) => toSalesRepResponse(salesRep)),
+        availableStates: usStateCodes,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.post('/api/crm/sales-reps', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+    try {
+      const body = toOptionalObject(req.body)
+      const name = toTrimmedText(body.name, 200)
+      const states = normalizeUsStateList(body.states)
+
+      if (!name) {
+        return res.status(400).json({
+          error: 'name is required.',
+        })
+      }
+
+      const { crmSalesRepsCollection } = await getCollections()
+
+      await assertNoSalesRepStateConflicts({
+        crmSalesRepsCollection,
+        states,
+      })
+
+      const now = nowIso()
+      const salesRep = {
+        id: randomUUID(),
+        name,
+        nameLower: toLowerText(name, 200),
+        states,
+        createdAt: now,
+        updatedAt: now,
+      }
+
+      try {
+        await crmSalesRepsCollection.insertOne(salesRep)
+      } catch (error) {
+        if (Number(error?.code) === 11000) {
+          return res.status(409).json({
+            error: 'Sales rep name already exists.',
+          })
+        }
+
+        throw error
+      }
+
+      return res.status(201).json({
+        salesRep: toSalesRepResponse(salesRep),
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.patch('/api/crm/sales-reps/:salesRepId', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+    try {
+      const salesRepId = toTrimmedText(req.params.salesRepId, 160)
+
+      if (!salesRepId) {
+        return res.status(400).json({
+          error: 'salesRepId is required.',
+        })
+      }
+
+      const body = toOptionalObject(req.body)
+      const { crmSalesRepsCollection } = await getCollections()
+      const existingSalesRep = await crmSalesRepsCollection.findOne(
+        {
+          id: salesRepId,
+        },
+        {
+          projection: {
+            _id: 0,
+            id: 1,
+            name: 1,
+            states: 1,
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        },
+      )
+
+      if (!existingSalesRep) {
+        return res.status(404).json({
+          error: 'Sales rep not found.',
+        })
+      }
+
+      const updates = {}
+      let nextStates = normalizeUsStateList(existingSalesRep.states)
+
+      if (Object.prototype.hasOwnProperty.call(body, 'name')) {
+        const name = toTrimmedText(body.name, 200)
+
+        if (!name) {
+          return res.status(400).json({
+            error: 'name cannot be empty.',
+          })
+        }
+
+        updates.name = name
+        updates.nameLower = toLowerText(name, 200)
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'states')) {
+        nextStates = normalizeUsStateList(body.states)
+        updates.states = nextStates
+      }
+
+      if (Object.keys(updates).length === 0) {
+        return res.json({
+          salesRep: toSalesRepResponse(existingSalesRep),
+        })
+      }
+
+      await assertNoSalesRepStateConflicts({
+        crmSalesRepsCollection,
+        excludedSalesRepId: salesRepId,
+        states: nextStates,
+      })
+
+      updates.updatedAt = nowIso()
+
+      let updatedSalesRep
+
+      try {
+        updatedSalesRep = await crmSalesRepsCollection.findOneAndUpdate(
+          {
+            id: salesRepId,
+          },
+          {
+            $set: updates,
+          },
+          {
+            returnDocument: 'after',
+            projection: {
+              _id: 0,
+              id: 1,
+              name: 1,
+              states: 1,
+              createdAt: 1,
+              updatedAt: 1,
+            },
+          },
+        )
+      } catch (error) {
+        if (Number(error?.code) === 11000) {
+          return res.status(409).json({
+            error: 'Sales rep name already exists.',
+          })
+        }
+
+        throw error
+      }
+
+      return res.json({
+        salesRep: toSalesRepResponse(updatedSalesRep),
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.delete('/api/crm/sales-reps/:salesRepId', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+    try {
+      const salesRepId = toTrimmedText(req.params.salesRepId, 160)
+
+      if (!salesRepId) {
+        return res.status(400).json({
+          error: 'salesRepId is required.',
+        })
+      }
+
+      const { crmSalesRepsCollection } = await getCollections()
+      const result = await crmSalesRepsCollection.deleteOne({ id: salesRepId })
+
+      if (!result.deletedCount) {
+        return res.status(404).json({
+          error: 'Sales rep not found.',
+        })
+      }
+
+      return res.json({
+        ok: true,
+        salesRepId,
+      })
     } catch (error) {
       next(error)
     }

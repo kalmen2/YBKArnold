@@ -1,4 +1,5 @@
 import { Navigate, createBrowserRouter } from 'react-router-dom'
+import { CrmDealersProvider } from '../features/crm/CrmDealersContext'
 import {
   RequireAdminRoute,
   RequireManagerOrAdminRoute,
@@ -103,9 +104,11 @@ export const router = createBrowserRouter([
       {
         path: 'admin/crm',
         element: withRouteSuspense(
-          <RequireAdminRoute>
-            <CrmPage />
-          </RequireAdminRoute>,
+          <CrmDealersProvider>
+            <RequireAdminRoute>
+              <CrmPage />
+            </RequireAdminRoute>
+          </CrmDealersProvider>,
         ),
       },
     ],

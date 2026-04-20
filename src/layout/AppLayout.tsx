@@ -18,6 +18,7 @@ import {
 import { useEffect, useMemo, useState } from 'react'
 import { Outlet, useLocation } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
+import { roleColor, roleLabel } from '../lib/formatters'
 import { navItems } from '../navigation/navItems'
 import Sidebar from './Sidebar'
 
@@ -56,17 +57,7 @@ export default function AppLayout() {
     })
   }, [location.pathname, logActivity])
 
-  const appUserRoleLabel = appUser?.role === 'admin'
-    ? 'Admin'
-    : appUser?.role === 'manager'
-      ? 'Manager'
-      : 'Standard'
-  const appUserRoleColor: 'default' | 'primary' | 'secondary' = appUser?.role === 'admin'
-    ? 'secondary'
-    : appUser?.role === 'manager'
-      ? 'primary'
-      : 'default'
-
+  const appUserRole = appUser?.role ?? 'standard'
   const headerTitle = useMemo(() => {
     const normalizedPath = (location.pathname || '/').replace(/\/+$/, '') || '/'
 
@@ -133,8 +124,8 @@ export default function AppLayout() {
           <Stack direction="row" spacing={1} alignItems="center">
             <Chip
               size="small"
-              color={appUserRoleColor}
-              label={appUserRoleLabel}
+              color={roleColor(appUserRole)}
+              label={roleLabel(appUserRole)}
               variant="outlined"
             />
 

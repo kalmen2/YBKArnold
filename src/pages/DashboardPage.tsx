@@ -43,17 +43,8 @@ type DrilldownKey =
   | 'activeOrders'
   | 'missingDueDateOrders'
 
-type SummaryCard = {
-  key: DrilldownKey
-  label: string
-  value: number
-  helper: string
-  icon: ReactNode
-  color: string
-}
-
-type ZendeskSummaryCard = {
-  key: 'newTickets' | 'inProgressTickets' | 'openTickets' | 'pendingTickets' | 'solvedTickets'
+type SummaryCard<K extends string = string> = {
+  key: K
   label: string
   value: number
   helper: string
@@ -160,17 +151,20 @@ export default function DashboardPage() {
     ])
   }, [queryClient])
 
-  const summaryCards = useMemo<SummaryCard[]>(() => {
-    if (!snapshot) {
-      return []
-    }
-
-    const dueInTwoWeeksOrders = snapshot.orders.filter(
+  const dueInTwoWeeksOrders = useMemo(
+    () => (snapshot?.orders ?? []).filter(
       (order) => !order.isDone
         && typeof order.daysUntilDue === 'number'
         && order.daysUntilDue >= 0
         && order.daysUntilDue <= 14,
-    )
+    ),
+    [snapshot],
+  )
+
+  const summaryCards = useMemo<SummaryCard<DrilldownKey>[]>(() => {
+    if (!snapshot) {
+      return []
+    }
 
     return [
       {
@@ -214,19 +208,9 @@ export default function DashboardPage() {
         color: '#6a1b9a',
       },
     ]
-  }, [snapshot])
+  }, [snapshot, dueInTwoWeeksOrders])
 
-  const dueInTwoWeeksOrders = useMemo(
-    () => (snapshot?.orders ?? []).filter(
-      (order) => !order.isDone
-        && typeof order.daysUntilDue === 'number'
-        && order.daysUntilDue >= 0
-        && order.daysUntilDue <= 14,
-    ),
-    [snapshot],
-  )
-
-  const zendeskSummaryCards = useMemo<ZendeskSummaryCard[]>(() => {
+  const zendeskSummaryCards = useMemo<SummaryCard[]>(() => {
     if (!zendeskSnapshot) {
       return []
     }
@@ -328,7 +312,7 @@ export default function DashboardPage() {
         <Alert severity="warning">{zendeskErrorMessage}</Alert>
       ) : null}
 
-      {isLoading && !snapshot && !zendeskSnapshot ? (
+      {isLoading ? (
         <Paper variant="outlined" sx={{ p: 4 }}>
           <Stack direction="row" spacing={1.25} alignItems="center">
             <CircularProgress size={22} />
@@ -384,7 +368,7 @@ export default function DashboardPage() {
                   <Paper
                     key={card.key}
                     variant="outlined"
-                    onClick={() => setActiveDrilldown(card.key)}
+                    onClick={() => setActiveDrilldown(card.key as DrilldownKey)}
                     sx={{
                       p: 2,
                       borderLeft: `4px solid ${card.color}`,

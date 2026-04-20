@@ -51,12 +51,16 @@ export type TimesheetOrderProgress = {
   updatedAt: string
 }
 
-type TimesheetStateResponse = {
+export type TimesheetStateResponse = {
   workers: TimesheetWorker[]
   entries: TimesheetEntry[]
   stages: TimesheetStage[]
   orderProgress?: TimesheetOrderProgress[]
   missingWorkerReviews?: TimesheetMissingWorkerReview[]
+}
+
+export type TimesheetBootstrapResponse = TimesheetStateResponse & {
+  mondaySnapshot: MondayDashboardSnapshot | null
 }
 
 type CreateWorkerInput = {
@@ -112,10 +116,15 @@ type UpsertOrderProgressInput = {
   readyPercent: number
 }
 
+import type { MondayDashboardSnapshot } from '../dashboard/api'
 import { apiRequest } from '../api-client'
 
 export function fetchTimesheetState() {
   return apiRequest<TimesheetStateResponse>('/api/timesheet/state')
+}
+
+export function fetchTimesheetBootstrap() {
+  return apiRequest<TimesheetBootstrapResponse>('/api/timesheet/bootstrap')
 }
 
 export function createWorker(input: CreateWorkerInput) {

@@ -108,6 +108,7 @@ export function createMongoCollectionsService({
         const crmImportRunsCollection = database.collection('crm_import_runs')
         const crmAccountsCollection = database.collection('crm_accounts')
         const crmContactsCollection = database.collection('crm_contacts')
+        const crmSalesRepsCollection = database.collection('crm_sales_reps')
         const crmDuplicateQueueCollection = database.collection('crm_duplicate_queue')
         const crmQuotesCollection = database.collection('crm_quotes')
         const crmOrdersCollection = database.collection('crm_orders')
@@ -165,6 +166,10 @@ export function createMongoCollectionsService({
             crmContactsCollection.createIndex({ primaryEmailLower: 1 }, { sparse: true }),
             crmContactsCollection.createIndex({ contactOrigin: 1 }),
             crmContactsCollection.createIndex({ lastImportRunId: 1 }),
+            crmSalesRepsCollection.createIndex({ id: 1 }, { unique: true }),
+            crmSalesRepsCollection.createIndex({ nameLower: 1 }, { unique: true }),
+            crmSalesRepsCollection.createIndex({ states: 1 }),
+            crmSalesRepsCollection.createIndex({ updatedAt: -1 }),
             crmDuplicateQueueCollection.createIndex({ id: 1 }, { unique: true }),
             crmDuplicateQueueCollection.createIndex({ status: 1, createdAt: -1 }),
             crmDuplicateQueueCollection.createIndex({ importRunId: 1, status: 1 }),
@@ -219,6 +224,7 @@ export function createMongoCollectionsService({
           crmImportRunsCollection,
           crmAccountsCollection,
           crmContactsCollection,
+          crmSalesRepsCollection,
           crmDuplicateQueueCollection,
           crmQuotesCollection,
           crmOrdersCollection,

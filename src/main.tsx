@@ -5,7 +5,6 @@ import { CssBaseline, ThemeProvider } from '@mui/material'
 import './index.css'
 import App from './App.tsx'
 import { AuthProvider } from './auth/AuthContext.tsx'
-import { CrmDealersProvider } from './features/crm/CrmDealersContext.tsx'
 import theme from './theme/theme.ts'
 
 const queryClient = new QueryClient({
@@ -29,9 +28,7 @@ createRoot(document.getElementById('root')!).render(
       <CssBaseline />
       <QueryClientProvider client={queryClient}>
         <AuthProvider>
-          <CrmDealersProvider>
-            <App />
-          </CrmDealersProvider>
+          <App />
         </AuthProvider>
       </QueryClientProvider>
     </ThemeProvider>

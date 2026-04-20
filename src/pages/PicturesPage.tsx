@@ -366,7 +366,7 @@ export default function PicturesPage() {
     } finally {
       setIsDeletingPhoto(false)
     }
-  }, [deleteTarget, logActivity])
+  }, [deleteTarget, logActivity, queryClient])
 
   const handleToggleOrder = useCallback((orderId: string, isExpanded: boolean) => {
     setExpandedOrderIds((currentExpanded) => {
@@ -609,124 +609,129 @@ export default function PicturesPage() {
                 </AccordionSummary>
 
                 <AccordionDetails sx={{ px: 2, pt: 0, pb: 2 }}>
-                  <Stack direction="row" justifyContent="flex-end" sx={{ pb: 1.25 }}>
-                    <Button
-                      size="small"
-                      variant="outlined"
-                      startIcon={<DownloadRoundedIcon fontSize="small" />}
-                      disabled={downloadingOrderId === order.id}
-                      onClick={() => {
-                        void handleDownloadAllOrderPhotos(order)
-                      }}
-                    >
-                      {downloadingOrderId === order.id ? 'Downloading...' : 'Download All'}
-                    </Button>
-                  </Stack>
-
-                  <Box
-                    sx={{
-                      display: 'grid',
-                      gridTemplateColumns: {
-                        xs: 'repeat(2, minmax(0, 1fr))',
-                        md: 'repeat(4, minmax(0, 1fr))',
-                        xl: 'repeat(6, minmax(0, 1fr))',
-                      },
-                      gap: 1,
-                    }}
-                  >
-                    {photos.map((photo, index) => (
-                      <Paper
-                        key={photo.path}
-                        variant="outlined"
-                        sx={{ overflow: 'hidden' }}
-                      >
-                        <Box
-                          sx={{
-                            position: 'relative',
-                            '&:hover .photo-action-button': {
-                              opacity: 1,
-                            },
+                  {isExpanded ? (
+                    <>
+                      <Stack direction="row" justifyContent="flex-end" sx={{ pb: 1.25 }}>
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          startIcon={<DownloadRoundedIcon fontSize="small" />}
+                          disabled={downloadingOrderId === order.id}
+                          onClick={() => {
+                            void handleDownloadAllOrderPhotos(order)
                           }}
                         >
-                          <Box
-                            component="img"
-                            src={photo.url}
-                            alt={`Order ${order.id} photo`}
-                            onClick={() => {
-                              handleOpenViewer(order, photo)
-                            }}
-                            sx={{
-                              width: '100%',
-                              aspectRatio: '1 / 1',
-                              objectFit: 'cover',
-                              display: 'block',
-                              bgcolor: 'grey.100',
-                              cursor: 'zoom-in',
-                            }}
-                          />
+                          {downloadingOrderId === order.id ? 'Downloading...' : 'Download All'}
+                        </Button>
+                      </Stack>
 
-                          <IconButton
-                            size="small"
-                            aria-label="Download picture"
-                            className="photo-action-button"
-                            disabled={downloadingPhotoPath === photo.path || downloadingOrderId === order.id}
-                            onClick={() => {
-                              void handleDownloadPhoto(order, photo, index)
-                            }}
-                            sx={{
-                              position: 'absolute',
-                              right: 8,
-                              bottom: 8,
-                              opacity: 0,
-                              transition: 'opacity 140ms ease',
-                              bgcolor: 'rgba(25, 33, 52, 0.78)',
-                              color: 'common.white',
-                              '&:hover': {
-                                bgcolor: 'rgba(15, 20, 34, 0.9)',
-                              },
-                            }}
+                      <Box
+                        sx={{
+                          display: 'grid',
+                          gridTemplateColumns: {
+                            xs: 'repeat(2, minmax(0, 1fr))',
+                            md: 'repeat(4, minmax(0, 1fr))',
+                            xl: 'repeat(6, minmax(0, 1fr))',
+                          },
+                          gap: 1,
+                        }}
+                      >
+                        {photos.map((photo, index) => (
+                          <Paper
+                            key={photo.path}
+                            variant="outlined"
+                            sx={{ overflow: 'hidden' }}
                           >
-                            <DownloadRoundedIcon fontSize="small" />
-                          </IconButton>
+                            <Box
+                              sx={{
+                                position: 'relative',
+                                '&:hover .photo-action-button': {
+                                  opacity: 1,
+                                },
+                              }}
+                            >
+                              <Box
+                                component="img"
+                                src={photo.url}
+                                alt={`Order ${order.id} photo`}
+                                loading="lazy"
+                                onClick={() => {
+                                  handleOpenViewer(order, photo)
+                                }}
+                                sx={{
+                                  width: '100%',
+                                  aspectRatio: '1 / 1',
+                                  objectFit: 'cover',
+                                  display: 'block',
+                                  bgcolor: 'grey.100',
+                                  cursor: 'zoom-in',
+                                }}
+                              />
 
-                          <IconButton
-                            size="small"
-                            aria-label="Open picture actions"
-                            className="photo-action-button"
-                            onClick={(event) => {
-                              event.preventDefault()
-                              event.stopPropagation()
-                              setPhotoMenuAnchorEl(event.currentTarget)
-                              setPhotoMenuTarget({
-                                orderId: order.id,
-                                path: photo.path,
-                              })
-                            }}
-                            sx={{
-                              position: 'absolute',
-                              right: 8,
-                              top: 8,
-                              opacity: 0,
-                              transition: 'opacity 140ms ease',
-                              bgcolor: 'rgba(25, 33, 52, 0.78)',
-                              color: 'common.white',
-                              '&:hover': {
-                                bgcolor: 'rgba(15, 20, 34, 0.9)',
-                              },
-                            }}
-                          >
-                            <MoreVertRoundedIcon fontSize="small" />
-                          </IconButton>
-                        </Box>
+                              <IconButton
+                                size="small"
+                                aria-label="Download picture"
+                                className="photo-action-button"
+                                disabled={downloadingPhotoPath === photo.path || downloadingOrderId === order.id}
+                                onClick={() => {
+                                  void handleDownloadPhoto(order, photo, index)
+                                }}
+                                sx={{
+                                  position: 'absolute',
+                                  right: 8,
+                                  bottom: 8,
+                                  opacity: 0,
+                                  transition: 'opacity 140ms ease',
+                                  bgcolor: 'rgba(25, 33, 52, 0.78)',
+                                  color: 'common.white',
+                                  '&:hover': {
+                                    bgcolor: 'rgba(15, 20, 34, 0.9)',
+                                  },
+                                }}
+                              >
+                                <DownloadRoundedIcon fontSize="small" />
+                              </IconButton>
 
-                        <Box sx={{ p: 1 }}>
-                          <Typography variant="caption" color="text.secondary">
-                            {formatDisplayDate(photo.createdAt)}
-                          </Typography>
-                        </Box>
-                      </Paper>
-                    ))}
-                  </Box>
+                              <IconButton
+                                size="small"
+                                aria-label="Open picture actions"
+                                className="photo-action-button"
+                                onClick={(event) => {
+                                  event.preventDefault()
+                                  event.stopPropagation()
+                                  setPhotoMenuAnchorEl(event.currentTarget)
+                                  setPhotoMenuTarget({
+                                    orderId: order.id,
+                                    path: photo.path,
+                                  })
+                                }}
+                                sx={{
+                                  position: 'absolute',
+                                  right: 8,
+                                  top: 8,
+                                  opacity: 0,
+                                  transition: 'opacity 140ms ease',
+                                  bgcolor: 'rgba(25, 33, 52, 0.78)',
+                                  color: 'common.white',
+                                  '&:hover': {
+                                    bgcolor: 'rgba(15, 20, 34, 0.9)',
+                                  },
+                                }}
+                              >
+                                <MoreVertRoundedIcon fontSize="small" />
+                              </IconButton>
+                            </Box>
+
+                            <Box sx={{ p: 1 }}>
+                              <Typography variant="caption" color="text.secondary">
+                                {formatDisplayDate(photo.createdAt)}
+                              </Typography>
+                            </Box>
+                          </Paper>
+                        ))}
+                      </Box>
+                    </>
+                  ) : null}
                 </AccordionDetails>
               </Accordion>
             )

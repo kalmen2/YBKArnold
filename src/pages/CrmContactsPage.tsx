@@ -81,8 +81,8 @@ export default function CrmContactsPage() {
   })
 
   const dealersPageLink = dealerSourceId
-    ? `/admin/crm/dealers?dealerSourceId=${encodeURIComponent(dealerSourceId)}`
-    : '/admin/crm/dealers'
+    ? `/sales?tab=dealers&dealerSourceId=${encodeURIComponent(dealerSourceId)}`
+    : '/sales?tab=dealers'
 
   return (
     <Stack spacing={2.5}>
@@ -202,10 +202,8 @@ export default function CrmContactsPage() {
                     <TableRow key={contact.sourceId}>
                       <TableCell>
                         <Avatar
-                          src={contact.photoUrl || undefined}
                           alt={contactName}
                           sx={{ width: 34, height: 34, mx: 'auto', fontSize: 13 }}
-                          imgProps={{ loading: 'lazy', referrerPolicy: 'no-referrer' }}
                         >
                           {contactName.charAt(0).toUpperCase()}
                         </Avatar>
@@ -231,7 +229,7 @@ export default function CrmContactsPage() {
                             <Button
                               size="small"
                               component={RouterLink}
-                              to={`/admin/crm/dealers?dealerSourceId=${encodeURIComponent(contact.accountSourceId)}`}
+                              to={`/sales?tab=dealers&dealerSourceId=${encodeURIComponent(contact.accountSourceId)}`}
                               sx={{ justifyContent: 'flex-start', px: 0, minWidth: 0 }}
                             >
                               {contact.accountName || contact.accountSourceId}

@@ -2,10 +2,13 @@ import { AppError } from '../utils/app-error.mjs'
 
 export function registerTimesheetRoutes(app, deps) {
   const {
+    fetchMondayDashboardSnapshot,
     allocateWorkerNumbers,
     ensureEntriesHavePayRates,
     ensureWorkersHaveWorkerNumbers,
     getCollections,
+    getDashboardSnapshotFromCache,
+    isDashboardRefreshRequested,
     normalizeJobName,
     normalizeStageName,
     randomUUID,
@@ -13,6 +16,7 @@ export function registerTimesheetRoutes(app, deps) {
     requireManagerOrAdminRole,
     requireApprovedLinkedWorker,
     requireFirebaseAuth,
+    setDashboardSnapshotCache,
     validateEntryFields,
     validateEntryInput,
     validateWorkerInput,
@@ -116,9 +120,7 @@ export function registerTimesheetRoutes(app, deps) {
     return shouldUseWorkerRate ? parsedWorkerRate : null
   }
 
-
-app.get('/api/timesheet/state', requireFirebaseAuth, async (req, res, next) => {
-  try {
+  async function buildTimesheetStatePayload(req) {
     const {
       workersCollection,
       entriesCollection,
@@ -204,12 +206,51 @@ app.get('/api/timesheet/state', requireFirebaseAuth, async (req, res, next) => {
       entries,
     )
 
-    res.json({
+    return {
       workers: workersWithNumbers,
       entries: entriesWithPayRates,
       stages,
       orderProgress,
       missingWorkerReviews,
+    }
+  }
+
+  async function loadMondaySnapshot(req) {
+    const refreshRequested = isDashboardRefreshRequested(req)
+    let snapshot = null
+
+    if (!refreshRequested) {
+      snapshot = await getDashboardSnapshotFromCache('monday')
+    }
+
+    if (!snapshot) {
+      snapshot = await fetchMondayDashboardSnapshot()
+    }
+
+    await setDashboardSnapshotCache('monday', snapshot)
+    return snapshot
+  }
+
+
+app.get('/api/timesheet/state', requireFirebaseAuth, async (req, res, next) => {
+  try {
+    const payload = await buildTimesheetStatePayload(req)
+    res.json(payload)
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.get('/api/timesheet/bootstrap', requireFirebaseAuth, async (req, res, next) => {
+  try {
+    const [timesheetState, mondaySnapshot] = await Promise.all([
+      buildTimesheetStatePayload(req),
+      loadMondaySnapshot(req),
+    ])
+
+    res.json({
+      ...timesheetState,
+      mondaySnapshot,
     })
   } catch (error) {
     next(error)

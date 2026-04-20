@@ -32,8 +32,8 @@ import {
   Typography,
 } from '@mui/material'
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import {
-  fetchMondayDashboardSnapshot,
   type DashboardOrder,
 } from '../features/dashboard/api'
 import {
@@ -45,7 +45,7 @@ import {
   createStage,
   deleteEntry,
   deleteStage,
-  fetchTimesheetState,
+  fetchTimesheetBootstrap,
   upsertMissingWorkerReview,
   upsertOrderProgress,
   reorderStages,
@@ -198,7 +198,17 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
   const [managerProgressByJob, setManagerProgressByJob] = useState<Record<string, string>>({})
   const [isSavingManagerProgress, setIsSavingManagerProgress] = useState(false)
   const [mondayOrders, setMondayOrders] = useState<DashboardOrder[]>([])
-  const [quickBooksProjects, setQuickBooksProjects] = useState<QuickBooksProjectSummary[]>([])
+
+  const quickBooksQuery = useQuery({
+    queryKey: ['quickbooks', 'overview'],
+    queryFn: () => fetchQuickBooksOverview(),
+    staleTime: 3 * 60 * 1000,
+    enabled: canAccessManagerSheet,
+  })
+  const quickBooksProjects = useMemo<QuickBooksProjectSummary[]>(
+    () => quickBooksQuery.data?.projects ?? [],
+    [quickBooksQuery.data],
+  )
   const [managerWorkersPopupRow, setManagerWorkersPopupRow] =
     useState<ManagerProgressRow | null>(null)
   const [shopDrawingPreviewRow, setShopDrawingPreviewRow] =
@@ -283,12 +293,13 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     setIsLoading(true)
 
     try {
-      const payload = await fetchTimesheetState()
+      const payload = await fetchTimesheetBootstrap()
 
       setWorkers(payload.workers)
       setEntries(payload.entries)
       setStages(payload.stages)
       setOrderProgress(payload.orderProgress ?? [])
+      setMondayOrders(Array.isArray(payload.mondaySnapshot?.orders) ? payload.mondaySnapshot.orders : [])
       setMissingReviewByKey(
         buildMissingReviewMap(payload.missingWorkerReviews ?? []),
       )
@@ -309,26 +320,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
       setIsLoading(false)
     }
 
-    // Monday snapshot loads in background — doesn't block the page
-    fetchMondayDashboardSnapshot()
-      .then((result) => {
-        setMondayOrders(Array.isArray(result.orders) ? result.orders : [])
-      })
-      .catch(() => {})
-
-    if (!canAccessManagerSheet) {
-      setQuickBooksProjects([])
-      return
-    }
-
-    fetchQuickBooksOverview()
-      .then((result) => {
-        setQuickBooksProjects(Array.isArray(result.projects) ? result.projects : [])
-      })
-      .catch(() => {
-        setQuickBooksProjects([])
-      })
-  }, [canAccessManagerSheet])
+  }, [])
 
   useEffect(() => {
     void refreshState()

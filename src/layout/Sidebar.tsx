@@ -11,9 +11,9 @@ import {
   Toolbar,
   Typography,
 } from '@mui/material'
+import AdminPanelSettingsRoundedIcon from '@mui/icons-material/AdminPanelSettingsRounded'
 import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded'
 import KeyboardArrowRightRoundedIcon from '@mui/icons-material/KeyboardArrowRightRounded'
-import StoreRoundedIcon from '@mui/icons-material/StoreRounded'
 import SupportAgentRoundedIcon from '@mui/icons-material/SupportAgentRounded'
 import { useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
@@ -63,33 +63,23 @@ function SidebarContent({ showText, onNavigate }: SidebarContentProps) {
     (item) => item.adminOnly || item.adminSection,
   )
 
-  const salesPaths = new Set(['/admin/crm/dealers', '/admin/crm/contacts'])
   const supportPaths = new Set(['/support', '/pictures'])
 
-  const salesNavItems = regularNavItems.filter((item) => salesPaths.has(item.path))
   const supportNavItems = regularNavItems.filter((item) => supportPaths.has(item.path))
-  const primaryNavItems = regularNavItems.filter(
-    (item) => !salesPaths.has(item.path) && !supportPaths.has(item.path),
-  )
+  const primaryNavItems = regularNavItems.filter((item) => !supportPaths.has(item.path))
 
   const isPathActive = (path: string) => (
     location.pathname === path
     || location.pathname.startsWith(`${path}/`)
   )
 
-  const isSalesRouteActive = salesNavItems.some((item) => isPathActive(item.path))
   const isSupportRouteActive = supportNavItems.some((item) => isPathActive(item.path))
   const isAdminRouteActive = adminNavItems.some((item) => isPathActive(item.path))
 
-  const [salesExpanded, setSalesExpanded] = useState(isSalesRouteActive)
   const [supportExpanded, setSupportExpanded] = useState(isSupportRouteActive)
   const [adminExpanded, setAdminExpanded] = useState(isAdminRouteActive)
 
   useEffect(() => {
-    if (isSalesRouteActive) {
-      setSalesExpanded(true)
-    }
-
     if (isSupportRouteActive) {
       setSupportExpanded(true)
     }
@@ -97,7 +87,7 @@ function SidebarContent({ showText, onNavigate }: SidebarContentProps) {
     if (isAdminRouteActive) {
       setAdminExpanded(true)
     }
-  }, [isAdminRouteActive, isSalesRouteActive, isSupportRouteActive])
+  }, [isAdminRouteActive, isSupportRouteActive])
 
   const renderItem = (path: string, label: string, Icon: (typeof navItems)[number]['icon'], nested = false) => {
     const isSelected = isPathActive(path)
@@ -204,8 +194,6 @@ function SidebarContent({ showText, onNavigate }: SidebarContentProps) {
     )
   }
 
-  const flatNavItems = visibleNavItems
-
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       <Toolbar sx={{ px: 2 }}>
@@ -226,24 +214,11 @@ function SidebarContent({ showText, onNavigate }: SidebarContentProps) {
 
       <List sx={{ px: 1, py: 1.5 }}>
         {!showText
-          ? flatNavItems.map((item) => renderItem(item.path, item.label, item.icon))
+          ? visibleNavItems.map((item) => renderItem(item.path, item.label, item.icon))
           : null}
 
         {showText
           ? primaryNavItems.map((item) => renderItem(item.path, item.label, item.icon))
-          : null}
-
-        {showText
-          ? renderGroup(
-            'Sales',
-            StoreRoundedIcon,
-            salesNavItems,
-            salesExpanded,
-            () => {
-              setSalesExpanded((current) => !current)
-            },
-            isSalesRouteActive,
-          )
           : null}
 
         {showText
@@ -259,53 +234,18 @@ function SidebarContent({ showText, onNavigate }: SidebarContentProps) {
           )
           : null}
 
-        {showText && adminNavItems.length > 0 ? (
-          <>
-            <ListItem disablePadding sx={{ mb: 0.5 }}>
-              <ListItemButton
-                selected={isAdminRouteActive}
-                onClick={() => {
-                  setAdminExpanded((current) => !current)
-                }}
-                sx={{
-                  minHeight: 44,
-                  borderRadius: 1.5,
-                  px: 1.5,
-                }}
-              >
-                <ListItemIcon
-                  sx={{
-                    minWidth: 0,
-                    justifyContent: 'center',
-                    mr: 1.5,
-                  }}
-                >
-                  {adminExpanded ? (
-                    <KeyboardArrowDownRoundedIcon fontSize="small" />
-                  ) : (
-                    <KeyboardArrowRightRoundedIcon fontSize="small" />
-                  )}
-                </ListItemIcon>
-
-                <ListItemText
-                  primary="Admin"
-                  sx={{
-                    '& .MuiListItemText-primary': {
-                      fontSize: 14,
-                      fontWeight: 600,
-                    },
-                  }}
-                />
-              </ListItemButton>
-            </ListItem>
-
-            <Collapse in={adminExpanded} timeout="auto" unmountOnExit>
-              <List disablePadding>
-                {adminNavItems.map((item) => renderItem(item.path, item.label, item.icon, true))}
-              </List>
-            </Collapse>
-          </>
-        ) : null}
+        {showText
+          ? renderGroup(
+            'Admin',
+            AdminPanelSettingsRoundedIcon,
+            adminNavItems,
+            adminExpanded,
+            () => {
+              setAdminExpanded((current) => !current)
+            },
+            isAdminRouteActive,
+          )
+          : null}
       </List>
     </Box>
   )

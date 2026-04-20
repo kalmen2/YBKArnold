@@ -12,6 +12,7 @@ import SearchRoundedIcon from '@mui/icons-material/SearchRounded'
 import AddRoundedIcon from '@mui/icons-material/AddRounded'
 import TwitterIcon from '@mui/icons-material/Twitter'
 import YouTubeIcon from '@mui/icons-material/YouTube'
+import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage'
 import {
   Alert,
   Avatar,
@@ -50,8 +51,9 @@ import {
   Typography,
 } from '@mui/material'
 import { alpha } from '@mui/material/styles'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
 import { Link as RouterLink, unstable_usePrompt, useBeforeUnload, useSearchParams } from 'react-router-dom'
+import { firebaseStorage } from '../auth/firebase'
 import { StatusAlerts } from '../components/StatusAlerts'
 import { useDataLoader } from '../hooks/useDataLoader'
 import { useDebounceValue } from '../hooks/useDebounceValue'
@@ -70,76 +72,16 @@ import {
   type CrmOrder,
 } from '../features/crm/api'
 
-function formatSocialLabel(value: string) {
-  const normalized = String(value)
-    .trim()
-    .replace(/[_-]+/g, ' ')
-
-  if (!normalized) {
-    return 'Link'
-  }
-
-  return normalized
-    .split(' ')
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(' ')
-}
-
 function resolveSocialVisual(platform: string, href: string) {
   const source = `${platform} ${href}`.toLowerCase()
 
-  if (source.includes('facebook')) {
-    return {
-      icon: <FacebookRoundedIcon sx={{ fontSize: 16 }} />,
-      foreground: '#1877f2',
-      background: '#eaf2ff',
-      hoverBackground: '#dbe9ff',
-    }
-  }
+  if (source.includes('facebook')) return { icon: <FacebookRoundedIcon sx={{ fontSize: 16 }} />, foreground: '#1877f2', background: '#eaf2ff' }
+  if (source.includes('linkedin')) return { icon: <LinkedInIcon sx={{ fontSize: 16 }} />, foreground: '#0a66c2', background: '#e8f2ff' }
+  if (source.includes('twitter') || source.includes('x.com')) return { icon: <TwitterIcon sx={{ fontSize: 16 }} />, foreground: '#1d9bf0', background: '#eaf6ff' }
+  if (source.includes('youtube') || source.includes('youtu.be')) return { icon: <YouTubeIcon sx={{ fontSize: 16 }} />, foreground: '#ff0033', background: '#ffeaf0' }
+  if (source.includes('pinterest')) return { icon: <PinterestIcon sx={{ fontSize: 16 }} />, foreground: '#bd081c', background: '#ffebed' }
 
-  if (source.includes('linkedin')) {
-    return {
-      icon: <LinkedInIcon sx={{ fontSize: 16 }} />,
-      foreground: '#0a66c2',
-      background: '#e8f2ff',
-      hoverBackground: '#dbe9ff',
-    }
-  }
-
-  if (source.includes('twitter') || source.includes('x.com')) {
-    return {
-      icon: <TwitterIcon sx={{ fontSize: 16 }} />,
-      foreground: '#1d9bf0',
-      background: '#eaf6ff',
-      hoverBackground: '#daf0ff',
-    }
-  }
-
-  if (source.includes('youtube') || source.includes('youtu.be')) {
-    return {
-      icon: <YouTubeIcon sx={{ fontSize: 16 }} />,
-      foreground: '#ff0033',
-      background: '#ffeaf0',
-      hoverBackground: '#ffdbe6',
-    }
-  }
-
-  if (source.includes('pinterest')) {
-    return {
-      icon: <PinterestIcon sx={{ fontSize: 16 }} />,
-      foreground: '#bd081c',
-      background: '#ffebed',
-      hoverBackground: '#ffe0e4',
-    }
-  }
-
-  return {
-    icon: <LanguageRoundedIcon sx={{ fontSize: 16 }} />,
-    foreground: '#0f4c81',
-    background: '#eaf2fb',
-    hoverBackground: '#ddeafb',
-  }
+  return { icon: <LanguageRoundedIcon sx={{ fontSize: 16 }} />, foreground: '#0f4c81', background: '#eaf2fb' }
 }
 
 function displayContactName(contact: CrmDealerDetailResponse['contacts'][number]) {
@@ -245,6 +187,34 @@ function createSocialLinkRow(platform = 'website', url = '', index = 0): DealerS
     platform: resolveSocialPlatformChoice(platform),
     url,
   }
+}
+
+function sanitizeStoragePathSegment(value: string, fallback = 'item') {
+  const normalized = String(value)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+
+  return normalized || fallback
+}
+
+function resolveImageFileExtension(file: File) {
+  const normalizedName = String(file.name || '').toLowerCase()
+  const extensionMatch = normalizedName.match(/\.(png|jpe?g|gif|webp|bmp|svg)$/)
+
+  if (extensionMatch) {
+    return extensionMatch[0]
+  }
+
+  if (file.type === 'image/png') return '.png'
+  if (file.type === 'image/jpeg') return '.jpg'
+  if (file.type === 'image/gif') return '.gif'
+  if (file.type === 'image/webp') return '.webp'
+  if (file.type === 'image/bmp') return '.bmp'
+  if (file.type === 'image/svg+xml') return '.svg'
+
+  return '.jpg'
 }
 
 type DealerFormState = {
@@ -460,9 +430,14 @@ export default function CrmDealersPage() {
   const [dealerForm, setDealerForm] = useState<DealerFormState | null>(null)
   const [dealerFormSavedSnapshot, setDealerFormSavedSnapshot] = useState('')
   const [isSavingDealer, setIsSavingDealer] = useState(false)
+  const [isAccountEditing, setIsAccountEditing] = useState(false)
+  const [isUploadingDealerPicture, setIsUploadingDealerPicture] = useState(false)
+  const [dealerPictureUploadError, setDealerPictureUploadError] = useState<string | null>(null)
 
   const dealerFormRef = useRef<DealerFormState | null>(null)
+  dealerFormRef.current = dealerForm
   const dealerFormSavedSnapshotRef = useRef('')
+  dealerFormSavedSnapshotRef.current = dealerFormSavedSnapshot
 
   const [contactEditorMode, setContactEditorMode] = useState<'create' | 'edit' | null>(null)
   const [editingContactSourceId, setEditingContactSourceId] = useState('')
@@ -471,23 +446,20 @@ export default function CrmDealersPage() {
   const [removingContactSourceId, setRemovingContactSourceId] = useState('')
 
   useEffect(() => {
-    dealerFormRef.current = dealerForm
-  }, [dealerForm])
-
-  useEffect(() => {
-    dealerFormSavedSnapshotRef.current = dealerFormSavedSnapshot
-  }, [dealerFormSavedSnapshot])
-
-  const requestedDealerId = useMemo(() => {
-    return searchParams.get('dealerSourceId')?.trim() ?? ''
-  }, [searchParams])
-
-  useEffect(() => {
+    const requestedDealerId = searchParams.get('dealerSourceId')?.trim() ?? ''
     if (requestedDealerId && requestedDealerId !== selectedDealerId) {
       setSelectedDealerId(requestedDealerId)
       setContactPage(0)
     }
-  }, [requestedDealerId, selectedDealerId])
+  }, [searchParams, selectedDealerId])
+
+  useEffect(() => {
+    setIsAccountEditing(false)
+  }, [selectedDealerId])
+
+  useEffect(() => {
+    setDealerPictureUploadError(null)
+  }, [selectedDealerId])
 
   useEffect(() => {
     setDealerPage(0)
@@ -503,10 +475,11 @@ export default function CrmDealersPage() {
       const nextDealers = Array.isArray(response.dealers) ? response.dealers : []
       setDealers(nextDealers)
       setDealersTotal(Number(response.total ?? nextDealers.length))
-      if (!selectedDealerId && nextDealers.length > 0) {
-        setSelectedDealerId(nextDealers[0].sourceId)
-      }
-    }, [selectedDealerId]),
+      setSelectedDealerId((current) => {
+        if (!current && nextDealers.length > 0) return nextDealers[0].sourceId
+        return current
+      })
+    }, []),
     onError: useCallback(() => {
       setDealers([])
       setDealersTotal(0)
@@ -590,20 +563,20 @@ export default function CrmDealersPage() {
   }, [loadDealerDetail])
 
   useEffect(() => {
-    void loadDealerSalesData()
-  }, [loadDealerSalesData])
+    if (detailsTab === 'orders') {
+      void loadDealerSalesData()
+    }
+  }, [loadDealerSalesData, detailsTab])
 
   const selectedDealer = dealerDetail?.dealer ?? null
   const contactsPageLink = selectedDealerId
-    ? `/admin/crm/contacts?dealerSourceId=${encodeURIComponent(selectedDealerId)}`
-    : '/admin/crm/contacts'
+    ? `/sales?tab=contacts&dealerSourceId=${encodeURIComponent(selectedDealerId)}`
+    : '/sales?tab=contacts'
 
-  const orderRows = useMemo(() => {
-    return [...dealerOrders]
-      .sort(
-        (left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime(),
-      )
-  }, [dealerOrders])
+  const orderRows = useMemo(
+    () => [...dealerOrders].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()),
+    [dealerOrders],
+  )
 
   const dealerFormSnapshot = useMemo(
     () => serializeDealerFormState(dealerForm),
@@ -635,169 +608,106 @@ export default function CrmDealersPage() {
     return window.confirm('You have unsaved dealership edits. Leave without saving?')
   }, [hasUnsavedDealerChanges])
 
-  const setDealerTextField = useCallback((
-    field: keyof Pick<
-      DealerFormState,
-      | 'name'
-      | 'owner'
-      | 'ownerEmail'
-      | 'salesRep'
-      | 'phone'
-      | 'phone2'
-      | 'website'
-      | 'address'
-      | 'city'
-      | 'state'
-      | 'zip'
-      | 'country'
-      | 'accountText'
-      | 'pictureUrl'
-    >,
-    value: string,
-  ) => {
-    setDealerForm((current) => {
-      if (!current) {
-        return current
-      }
+  type DealerStringField = 'name' | 'owner' | 'ownerEmail' | 'salesRep' | 'phone' | 'phone2' | 'website' | 'address' | 'city' | 'state' | 'zip' | 'country' | 'accountText' | 'pictureUrl'
 
-      return {
-        ...current,
-        [field]: value,
-      }
-    })
+  const setDealerTextField = useCallback((field: DealerStringField, value: string) => {
+    setDealerForm((current) => current ? { ...current, [field]: value } : current)
   }, [])
 
-  const setDealerFlagField = useCallback((field: 'isArchived' | 'isFavorite', value: boolean) => {
-    setDealerForm((current) => {
-      if (!current) {
-        return current
-      }
+  const handleDealerPictureUpload = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0] ?? null
+    event.target.value = ''
 
-      return {
-        ...current,
-        [field]: value,
-      }
-    })
-  }, [])
+    if (!file) {
+      return
+    }
+
+    if (!selectedDealerId) {
+      setDealerPictureUploadError('Select an account before uploading a picture.')
+      return
+    }
+
+    if (!file.type.startsWith('image/')) {
+      setDealerPictureUploadError('Please upload an image file.')
+      return
+    }
+
+    const maxUploadBytes = 10 * 1024 * 1024
+
+    if (file.size > maxUploadBytes) {
+      setDealerPictureUploadError('Image is too large. Maximum size is 10MB.')
+      return
+    }
+
+    setDealerPictureUploadError(null)
+    setErrorMessage(null)
+    setIsUploadingDealerPicture(true)
+
+    try {
+      const dealerSegment = sanitizeStoragePathSegment(selectedDealerId, 'dealer')
+      const fileBaseName = sanitizeStoragePathSegment(file.name.replace(/\.[^.]+$/, ''), 'picture')
+      const fileExtension = resolveImageFileExtension(file)
+      const objectPath = `crm/dealer-pictures/${dealerSegment}/${Date.now()}-${fileBaseName}${fileExtension}`
+      const uploadTarget = storageRef(firebaseStorage, objectPath)
+
+      await uploadBytes(uploadTarget, file, {
+        contentType: file.type || undefined,
+        cacheControl: 'public,max-age=31536000',
+      })
+
+      const downloadUrl = await getDownloadURL(uploadTarget)
+      setDealerTextField('pictureUrl', downloadUrl)
+    } catch (error) {
+      setDealerPictureUploadError(error instanceof Error ? error.message : 'Failed to upload image to Firebase.')
+    } finally {
+      setIsUploadingDealerPicture(false)
+    }
+  }, [selectedDealerId, setDealerTextField, setErrorMessage])
 
   const setDealerEmailAtIndex = useCallback((index: number, value: string) => {
     setDealerForm((current) => {
-      if (!current) {
-        return current
-      }
-
-      const nextEmails = current.emails.map((entry, entryIndex) => (
-        entryIndex === index
-          ? {
-            ...entry,
-            value,
-          }
-          : entry
-      ))
-
-      return {
-        ...current,
-        emails: nextEmails,
-      }
+      if (!current) return current
+      return { ...current, emails: current.emails.map((e, i) => i === index ? { ...e, value } : e) }
     })
   }, [])
 
   const addDealerEmailField = useCallback(() => {
-    setDealerForm((current) => {
-      if (!current) {
-        return current
-      }
-
-      return {
-        ...current,
-        emails: [...current.emails, createEmailRow('', current.emails.length)],
-      }
-    })
+    setDealerForm((current) => current ? { ...current, emails: [...current.emails, createEmailRow('', current.emails.length)] } : current)
   }, [])
 
   const removeDealerEmailField = useCallback((index: number) => {
     setDealerForm((current) => {
-      if (!current) {
-        return current
-      }
-
-      if (current.emails.length <= 1) {
-        return {
-          ...current,
-          emails: [{
-            ...current.emails[0],
-            value: '',
-          }],
-        }
-      }
-
-      const nextEmails = current.emails.filter((_, entryIndex) => entryIndex !== index)
-
-      return {
-        ...current,
-        emails: nextEmails,
-      }
+      if (!current) return current
+      if (current.emails.length <= 1) return { ...current, emails: [{ ...current.emails[0], value: '' }] }
+      return { ...current, emails: current.emails.filter((_, i) => i !== index) }
     })
   }, [])
 
   const setDealerSocialLinkAtIndex = useCallback((index: number, field: 'platform' | 'url', value: string) => {
     setDealerForm((current) => {
-      if (!current) {
-        return current
-      }
-
-      const nextSocialLinks = current.socialLinks.map((entry, entryIndex) => {
-        if (entryIndex !== index) {
-          return entry
-        }
-
-        if (field === 'platform') {
-          return {
-            ...entry,
-            platform: resolveSocialPlatformChoice(value),
-          }
-        }
-
-        return {
-          ...entry,
-          url: value,
-        }
-      })
-
+      if (!current) return current
       return {
         ...current,
-        socialLinks: nextSocialLinks,
+        socialLinks: current.socialLinks.map((entry, i) => {
+          if (i !== index) return entry
+          return field === 'platform' ? { ...entry, platform: resolveSocialPlatformChoice(value) } : { ...entry, url: value }
+        }),
       }
     })
   }, [])
 
   const addDealerSocialLink = useCallback(() => {
-    setDealerForm((current) => {
-      if (!current) {
-        return current
-      }
-
-      return {
-        ...current,
-        socialLinks: [
-          ...current.socialLinks,
-          createSocialLinkRow('website', '', current.socialLinks.length),
-        ],
-      }
-    })
+    setDealerForm((current) => current ? {
+      ...current,
+      socialLinks: [...current.socialLinks, createSocialLinkRow('website', '', current.socialLinks.length)],
+    } : current)
   }, [])
 
   const removeDealerSocialLink = useCallback((index: number) => {
-    setDealerForm((current) => {
-      if (!current) {
-        return current
-      }
-
-      return {
-        ...current,
-        socialLinks: current.socialLinks.filter((_, entryIndex) => entryIndex !== index),
-      }
-    })
+    setDealerForm((current) => current ? {
+      ...current,
+      socialLinks: current.socialLinks.filter((_, i) => i !== index),
+    } : current)
   }, [])
 
   const resetDealerForm = useCallback(() => {
@@ -812,6 +722,24 @@ export default function CrmDealersPage() {
     setErrorMessage(null)
   }, [selectedDealer, setErrorMessage])
 
+  const cancelDealerEdit = useCallback(() => {
+    if (!isAccountEditing || isSavingDealer) {
+      return
+    }
+
+    if (hasUnsavedDealerChanges) {
+      const shouldDiscard = window.confirm('Discard unsaved account edits?')
+
+      if (!shouldDiscard) {
+        return
+      }
+
+      resetDealerForm()
+    }
+
+    setIsAccountEditing(false)
+  }, [hasUnsavedDealerChanges, isAccountEditing, isSavingDealer, resetDealerForm])
+
   const handleSelectDealer = useCallback((nextDealerId: string) => {
     if (!nextDealerId || nextDealerId === selectedDealerId) {
       return
@@ -823,6 +751,7 @@ export default function CrmDealersPage() {
 
     setSelectedDealerId(nextDealerId)
     setContactPage(0)
+    setIsAccountEditing(false)
   }, [confirmDiscardDealerChanges, selectedDealerId])
 
   const setContactFormField = useCallback((field: keyof ContactFormState, value: string | boolean) => {
@@ -922,6 +851,7 @@ export default function CrmDealersPage() {
         loadDealerDetail(),
         loadDealers(true),
       ])
+      setIsAccountEditing(false)
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Failed to update account.')
     } finally {
@@ -1155,10 +1085,8 @@ export default function CrmDealersPage() {
                         }}
                       >
                         <Avatar
-                          src={dealer.pictureUrl || undefined}
                           alt={accountName}
                           sx={{ width: 32, height: 32, fontSize: 12, fontWeight: 700 }}
-                          imgProps={{ loading: 'lazy', referrerPolicy: 'no-referrer' }}
                         >
                           {accountInitial}
                         </Avatar>
@@ -1238,7 +1166,7 @@ export default function CrmDealersPage() {
                 >
                   <Stack direction="row" spacing={1.25} alignItems="center">
                     <Avatar
-                      src={selectedDealer.pictureUrl || undefined}
+                      src={(dealerForm?.pictureUrl || selectedDealer.pictureUrl) || undefined}
                       alt={selectedDealer.name || selectedDealer.sourceId}
                       sx={{ width: 44, height: 44, fontSize: 16 }}
                       imgProps={{ loading: 'lazy', referrerPolicy: 'no-referrer' }}
@@ -1270,30 +1198,46 @@ export default function CrmDealersPage() {
                         <Chip size="small" label="Archived" color="warning" variant="outlined" />
                       ) : null}
                       <Chip size="small" label={`Contacts: ${dealerDetail?.contactsTotal ?? 0}`} variant="outlined" />
-                      {hasUnsavedDealerChanges ? (
+                      {isAccountEditing && hasUnsavedDealerChanges ? (
                         <Chip size="small" label="Unsaved" color="warning" variant="outlined" />
                       ) : null}
                     </Stack>
 
-                    <Button
-                      size="small"
-                      variant="outlined"
-                      disabled={!hasUnsavedDealerChanges || isSavingDealer}
-                      onClick={resetDealerForm}
-                    >
-                      Reset
-                    </Button>
+                    {isAccountEditing ? (
+                      <>
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          disabled={isSavingDealer}
+                          onClick={cancelDealerEdit}
+                        >
+                          Cancel
+                        </Button>
 
-                    <Button
-                      size="small"
-                      variant="contained"
-                      disabled={!hasUnsavedDealerChanges || isSavingDealer || !dealerForm}
-                      onClick={() => {
-                        void handleSaveDealer()
-                      }}
-                    >
-                      {isSavingDealer ? 'Saving...' : 'Save'}
-                    </Button>
+                        <Button
+                          size="small"
+                          variant="contained"
+                          disabled={!hasUnsavedDealerChanges || isSavingDealer || isUploadingDealerPicture || !dealerForm}
+                          onClick={() => {
+                            void handleSaveDealer()
+                          }}
+                        >
+                          {isSavingDealer ? 'Saving...' : 'Save'}
+                        </Button>
+                      </>
+                    ) : (
+                      <Button
+                        size="small"
+                        variant="contained"
+                        startIcon={<EditRoundedIcon fontSize="small" />}
+                        disabled={isLoadingDetail || !dealerForm}
+                        onClick={() => {
+                          setIsAccountEditing(true)
+                        }}
+                      >
+                        Edit
+                      </Button>
+                    )}
 
                     <Tooltip
                       title={isAccountInfoExpanded ? 'Collapse account info' : 'Expand account info'}
@@ -1322,318 +1266,277 @@ export default function CrmDealersPage() {
 
               <Collapse in={isAccountInfoExpanded} timeout="auto" unmountOnExit>
                 {dealerForm ? (
-                  <Stack spacing={1}>
-                    <Box
-                      sx={{
-                        display: 'grid',
-                        gridTemplateColumns: {
-                          xs: '1fr',
-                          md: 'repeat(2, minmax(0, 1fr))',
-                        },
-                        gap: 0.7,
-                      }}
-                    >
-                      <TextField
-                        size="small"
-                        label="Account name"
-                        value={dealerForm.name}
-                        onChange={(event) => {
-                          setDealerTextField('name', event.target.value)
+                  <fieldset
+                    disabled={!isAccountEditing || isSavingDealer}
+                    style={{
+                      border: 0,
+                      padding: 0,
+                      margin: 0,
+                      minInlineSize: 0,
+                    }}
+                  >
+                    <Stack spacing={1} sx={{ opacity: isAccountEditing ? 1 : 0.82 }}>
+                      <Box
+                        sx={{
+                          display: 'grid',
+                          gridTemplateColumns: {
+                            xs: '1fr',
+                            md: 'repeat(2, minmax(0, 1fr))',
+                          },
+                          gap: 0.7,
                         }}
-                      />
-                      <TextField
-                        size="small"
-                        label="Owner"
-                        value={dealerForm.owner}
-                        onChange={(event) => {
-                          setDealerTextField('owner', event.target.value)
-                        }}
-                      />
-                      <TextField
-                        size="small"
-                        label="Owner email"
-                        value={dealerForm.ownerEmail}
-                        onChange={(event) => {
-                          setDealerTextField('ownerEmail', event.target.value)
-                        }}
-                      />
-                      <TextField
-                        size="small"
-                        label="Sales rep"
-                        value={dealerForm.salesRep}
-                        onChange={(event) => {
-                          setDealerTextField('salesRep', event.target.value)
-                        }}
-                      />
-                      <TextField
-                        size="small"
-                        label="Primary phone"
-                        value={dealerForm.phone}
-                        onChange={(event) => {
-                          setDealerTextField('phone', event.target.value)
-                        }}
-                      />
-                      <TextField
-                        size="small"
-                        label="Secondary phone"
-                        value={dealerForm.phone2}
-                        onChange={(event) => {
-                          setDealerTextField('phone2', event.target.value)
-                        }}
-                      />
-                      <TextField
-                        size="small"
-                        label="Website"
-                        value={dealerForm.website}
-                        onChange={(event) => {
-                          setDealerTextField('website', event.target.value)
-                        }}
-                      />
-                      <TextField
-                        size="small"
-                        label="Picture URL"
-                        value={dealerForm.pictureUrl}
-                        onChange={(event) => {
-                          setDealerTextField('pictureUrl', event.target.value)
-                        }}
-                      />
-                      <TextField
-                        size="small"
-                        label="Address"
-                        value={dealerForm.address}
-                        onChange={(event) => {
-                          setDealerTextField('address', event.target.value)
-                        }}
-                      />
-                      <TextField
-                        size="small"
-                        label="City"
-                        value={dealerForm.city}
-                        onChange={(event) => {
-                          setDealerTextField('city', event.target.value)
-                        }}
-                      />
-                      <TextField
-                        size="small"
-                        label="State"
-                        value={dealerForm.state}
-                        onChange={(event) => {
-                          setDealerTextField('state', event.target.value)
-                        }}
-                      />
-                      <TextField
-                        size="small"
-                        label="Zip"
-                        value={dealerForm.zip}
-                        onChange={(event) => {
-                          setDealerTextField('zip', event.target.value)
-                        }}
-                      />
-                      <TextField
-                        size="small"
-                        label="Country"
-                        value={dealerForm.country}
-                        onChange={(event) => {
-                          setDealerTextField('country', event.target.value)
-                        }}
-                      />
+                      >
+                        <TextField size="small" label="Account name" value={dealerForm.name} onChange={(e) => setDealerTextField('name', e.target.value)} />
+                        <TextField size="small" label="Owner" value={dealerForm.owner} onChange={(e) => setDealerTextField('owner', e.target.value)} />
+                        <TextField size="small" label="Owner email" value={dealerForm.ownerEmail} onChange={(e) => setDealerTextField('ownerEmail', e.target.value)} />
+                        <TextField size="small" label="Sales rep" value={dealerForm.salesRep} onChange={(e) => setDealerTextField('salesRep', e.target.value)} />
+                        <TextField size="small" label="Primary phone" value={dealerForm.phone} onChange={(e) => setDealerTextField('phone', e.target.value)} />
+                        <TextField size="small" label="Secondary phone" value={dealerForm.phone2} onChange={(e) => setDealerTextField('phone2', e.target.value)} />
+                        <TextField size="small" label="Website" value={dealerForm.website} onChange={(e) => setDealerTextField('website', e.target.value)} />
+                        <TextField size="small" label="Address" value={dealerForm.address} onChange={(e) => setDealerTextField('address', e.target.value)} />
+                        <TextField size="small" label="City" value={dealerForm.city} onChange={(e) => setDealerTextField('city', e.target.value)} />
+                        <TextField size="small" label="State" value={dealerForm.state} onChange={(e) => setDealerTextField('state', e.target.value)} />
+                        <TextField size="small" label="Zip" value={dealerForm.zip} onChange={(e) => setDealerTextField('zip', e.target.value)} />
+                        <TextField size="small" label="Country" value={dealerForm.country} onChange={(e) => setDealerTextField('country', e.target.value)} />
 
-                      <FormControl size="small">
-                        <InputLabel id="dealer-archived-status-label">Archived</InputLabel>
-                        <Select
-                          labelId="dealer-archived-status-label"
-                          label="Archived"
-                          value={dealerForm.isArchived ? 'true' : 'false'}
-                          onChange={(event) => {
-                            setDealerFlagField('isArchived', event.target.value === 'true')
+                        <Box
+                          sx={{
+                            gridColumn: '1 / -1',
+                            border: '1px solid',
+                            borderColor: 'divider',
+                            borderRadius: 1,
+                            p: 1,
                           }}
                         >
-                          <MenuItem value="false">No</MenuItem>
-                          <MenuItem value="true">Yes</MenuItem>
-                        </Select>
-                      </FormControl>
-
-                      <FormControl size="small">
-                        <InputLabel id="dealer-favorite-status-label">Favorite</InputLabel>
-                        <Select
-                          labelId="dealer-favorite-status-label"
-                          label="Favorite"
-                          value={dealerForm.isFavorite ? 'true' : 'false'}
-                          onChange={(event) => {
-                            setDealerFlagField('isFavorite', event.target.value === 'true')
-                          }}
-                        >
-                          <MenuItem value="false">No</MenuItem>
-                          <MenuItem value="true">Yes</MenuItem>
-                        </Select>
-                      </FormControl>
-                    </Box>
-
-                    <Box
-                      sx={{
-                        border: 1,
-                        borderColor: 'divider',
-                        borderRadius: 1,
-                        p: 1,
-                      }}
-                    >
-                      <Stack spacing={0.8}>
-                        <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
-                          Dealership emails
-                        </Typography>
-
-                        {dealerForm.emails.map((entry, index) => (
                           <Stack
-                            key={entry.id}
                             direction={{ xs: 'column', sm: 'row' }}
-                            spacing={0.75}
-                            alignItems={{ xs: 'stretch', sm: 'center' }}
+                            spacing={1}
+                            alignItems={{ xs: 'flex-start', sm: 'center' }}
+                            justifyContent="space-between"
                           >
-                            <TextField
-                              size="small"
-                              fullWidth
-                              label={index === 0 ? 'Primary email' : `Email ${index + 1}`}
-                              value={entry.value}
-                              onChange={(event) => {
-                                setDealerEmailAtIndex(index, event.target.value)
-                              }}
-                            />
-                            <Button
-                              size="small"
-                              color="inherit"
-                              variant="outlined"
-                              onClick={() => {
-                                removeDealerEmailField(index)
-                              }}
-                            >
-                              Remove
-                            </Button>
+                            <Stack direction="row" spacing={1} alignItems="center">
+                              <Avatar
+                                src={dealerForm.pictureUrl || undefined}
+                                alt={dealerForm.name || dealerForm.sourceId}
+                                sx={{ width: 52, height: 52, fontSize: 18 }}
+                                imgProps={{ loading: 'lazy', referrerPolicy: 'no-referrer' }}
+                              >
+                                {(dealerForm.name || dealerForm.sourceId || '?').charAt(0).toUpperCase()}
+                              </Avatar>
+
+                              <Stack spacing={0.15}>
+                                <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                                  Account picture
+                                </Typography>
+                                <Typography variant="caption" color="text.secondary">
+                                  Upload a picture and it is stored in Firebase Storage automatically.
+                                </Typography>
+                                {dealerPictureUploadError ? (
+                                  <Typography variant="caption" color="error.main">
+                                    {dealerPictureUploadError}
+                                  </Typography>
+                                ) : null}
+                              </Stack>
+                            </Stack>
+
+                            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.6}>
+                              <Button
+                                size="small"
+                                variant="outlined"
+                                component="label"
+                                disabled={isUploadingDealerPicture}
+                              >
+                                {isUploadingDealerPicture ? 'Uploading...' : (dealerForm.pictureUrl ? 'Change picture' : 'Upload picture')}
+                                <input
+                                  hidden
+                                  accept="image/*"
+                                  type="file"
+                                  onChange={handleDealerPictureUpload}
+                                />
+                              </Button>
+
+                              <Button
+                                size="small"
+                                color="inherit"
+                                variant="outlined"
+                                disabled={isUploadingDealerPicture || !dealerForm.pictureUrl}
+                                onClick={() => {
+                                  setDealerPictureUploadError(null)
+                                  setDealerTextField('pictureUrl', '')
+                                }}
+                              >
+                                Remove picture
+                              </Button>
+                            </Stack>
                           </Stack>
-                        ))}
+                        </Box>
+                      </Box>
 
-                        <Button
-                          size="small"
-                          startIcon={<AddRoundedIcon fontSize="small" />}
-                          onClick={addDealerEmailField}
-                          sx={{ width: 'fit-content' }}
-                        >
-                          Add another email
-                        </Button>
-                      </Stack>
-                    </Box>
-
-                    <Box
-                      sx={{
-                        border: 1,
-                        borderColor: 'divider',
-                        borderRadius: 1,
-                        p: 1,
-                      }}
-                    >
-                      <Stack spacing={0.8}>
-                        <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
-                          Social links
-                        </Typography>
-
-                        {dealerForm.socialLinks.length === 0 ? (
-                          <Typography variant="body2" color="text.secondary">
-                            No social links yet.
+                      <Box
+                        sx={{
+                          border: 1,
+                          borderColor: 'divider',
+                          borderRadius: 1,
+                          p: 1,
+                        }}
+                      >
+                        <Stack spacing={0.8}>
+                          <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                            Dealership emails
                           </Typography>
-                        ) : null}
 
-                        {dealerForm.socialLinks.map((entry, index) => {
-                          const selectedPlatform = resolveSocialPlatformChoice(entry.platform)
-                          const option = socialPlatformOptions.find((candidate) => candidate.value === selectedPlatform)
-                          const platformLabel = option?.label || formatSocialLabel(entry.platform)
-                          const iconVisual = resolveSocialVisual(entry.platform, entry.url)
-
-                          return (
+                          {dealerForm.emails.map((entry, index) => (
                             <Stack
                               key={entry.id}
-                              direction={{ xs: 'column', md: 'row' }}
+                              direction={{ xs: 'column', sm: 'row' }}
                               spacing={0.75}
-                              alignItems={{ xs: 'stretch', md: 'center' }}
+                              alignItems={{ xs: 'stretch', sm: 'center' }}
                             >
-                              <Tooltip title={platformLabel} arrow>
-                                <IconButton
-                                  size="small"
-                                  aria-label={platformLabel}
-                                  sx={{
-                                    border: '1px solid',
-                                    borderColor: 'divider',
-                                    bgcolor: iconVisual.background,
-                                    color: iconVisual.foreground,
-                                  }}
-                                >
-                                  {iconVisual.icon}
-                                </IconButton>
-                              </Tooltip>
-
-                              <FormControl size="small" sx={{ minWidth: 160 }}>
-                                <InputLabel id={`dealer-social-platform-${entry.id}`}>Platform</InputLabel>
-                                <Select
-                                  labelId={`dealer-social-platform-${entry.id}`}
-                                  label="Platform"
-                                  value={selectedPlatform}
-                                  onChange={(event) => {
-                                    setDealerSocialLinkAtIndex(index, 'platform', event.target.value)
-                                  }}
-                                >
-                                  {socialPlatformOptions.map((optionEntry) => (
-                                    <MenuItem key={optionEntry.value} value={optionEntry.value}>
-                                      {optionEntry.label}
-                                    </MenuItem>
-                                  ))}
-                                </Select>
-                              </FormControl>
-
                               <TextField
                                 size="small"
                                 fullWidth
-                                label={`${platformLabel} URL`}
-                                value={entry.url}
+                                label={index === 0 ? 'Primary email' : `Email ${index + 1}`}
+                                value={entry.value}
                                 onChange={(event) => {
-                                  setDealerSocialLinkAtIndex(index, 'url', event.target.value)
+                                  setDealerEmailAtIndex(index, event.target.value)
                                 }}
                               />
-
-                              <IconButton
+                              <Button
                                 size="small"
-                                color="error"
-                                aria-label="Remove social link"
+                                color="inherit"
+                                variant="outlined"
                                 onClick={() => {
-                                  removeDealerSocialLink(index)
+                                  removeDealerEmailField(index)
                                 }}
-                                sx={{ border: '1px solid', borderColor: 'divider' }}
                               >
-                                <DeleteOutlineRoundedIcon fontSize="small" />
-                              </IconButton>
+                                Remove
+                              </Button>
                             </Stack>
-                          )
-                        })}
+                          ))}
 
-                        <Button
-                          size="small"
-                          startIcon={<AddRoundedIcon fontSize="small" />}
-                          onClick={addDealerSocialLink}
-                          sx={{ width: 'fit-content' }}
-                        >
-                          Add social link
-                        </Button>
-                      </Stack>
-                    </Box>
+                          <Button
+                            size="small"
+                            startIcon={<AddRoundedIcon fontSize="small" />}
+                            onClick={addDealerEmailField}
+                            sx={{ width: 'fit-content' }}
+                          >
+                            Add another email
+                          </Button>
+                        </Stack>
+                      </Box>
 
-                    <TextField
-                      size="small"
-                      multiline
-                      minRows={3}
-                      label="Account notes"
-                      value={dealerForm.accountText}
-                      onChange={(event) => {
-                        setDealerTextField('accountText', event.target.value)
-                      }}
-                    />
-                  </Stack>
+                      <Box
+                        sx={{
+                          border: 1,
+                          borderColor: 'divider',
+                          borderRadius: 1,
+                          p: 1,
+                        }}
+                      >
+                        <Stack spacing={0.8}>
+                          <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                            Social links
+                          </Typography>
+
+                          {dealerForm.socialLinks.length === 0 ? (
+                            <Typography variant="body2" color="text.secondary">
+                              No social links yet.
+                            </Typography>
+                          ) : null}
+
+                          {dealerForm.socialLinks.map((entry, index) => {
+                            const selectedPlatform = resolveSocialPlatformChoice(entry.platform)
+                            const platformLabel = socialPlatformOptions.find((c) => c.value === selectedPlatform)!.label
+                            const iconVisual = resolveSocialVisual(entry.platform, entry.url)
+
+                            return (
+                              <Stack
+                                key={entry.id}
+                                direction={{ xs: 'column', md: 'row' }}
+                                spacing={0.75}
+                                alignItems={{ xs: 'stretch', md: 'center' }}
+                              >
+                                <Tooltip title={platformLabel} arrow>
+                                  <IconButton
+                                    size="small"
+                                    aria-label={platformLabel}
+                                    sx={{
+                                      border: '1px solid',
+                                      borderColor: 'divider',
+                                      bgcolor: iconVisual.background,
+                                      color: iconVisual.foreground,
+                                    }}
+                                  >
+                                    {iconVisual.icon}
+                                  </IconButton>
+                                </Tooltip>
+
+                                <FormControl size="small" sx={{ minWidth: 160 }}>
+                                  <InputLabel id={`dealer-social-platform-${entry.id}`}>Platform</InputLabel>
+                                  <Select
+                                    labelId={`dealer-social-platform-${entry.id}`}
+                                    label="Platform"
+                                    value={selectedPlatform}
+                                    onChange={(event) => {
+                                      setDealerSocialLinkAtIndex(index, 'platform', event.target.value)
+                                    }}
+                                  >
+                                    {socialPlatformOptions.map((optionEntry) => (
+                                      <MenuItem key={optionEntry.value} value={optionEntry.value}>
+                                        {optionEntry.label}
+                                      </MenuItem>
+                                    ))}
+                                  </Select>
+                                </FormControl>
+
+                                <TextField
+                                  size="small"
+                                  fullWidth
+                                  label={`${platformLabel} URL`}
+                                  value={entry.url}
+                                  onChange={(event) => {
+                                    setDealerSocialLinkAtIndex(index, 'url', event.target.value)
+                                  }}
+                                />
+
+                                <IconButton
+                                  size="small"
+                                  color="error"
+                                  aria-label="Remove social link"
+                                  onClick={() => {
+                                    removeDealerSocialLink(index)
+                                  }}
+                                  sx={{ border: '1px solid', borderColor: 'divider' }}
+                                >
+                                  <DeleteOutlineRoundedIcon fontSize="small" />
+                                </IconButton>
+                              </Stack>
+                            )
+                          })}
+
+                          <Button
+                            size="small"
+                            startIcon={<AddRoundedIcon fontSize="small" />}
+                            onClick={addDealerSocialLink}
+                            sx={{ width: 'fit-content' }}
+                          >
+                            Add social link
+                          </Button>
+                        </Stack>
+                      </Box>
+
+                      <TextField
+                        size="small"
+                        multiline
+                        minRows={3}
+                        label="Account notes"
+                        value={dealerForm.accountText}
+                        onChange={(event) => {
+                          setDealerTextField('accountText', event.target.value)
+                        }}
+                      />
+                    </Stack>
+                  </fieldset>
                 ) : (
                   <Typography color="text.secondary" sx={{ py: 1 }}>
                     Account form is loading...
@@ -1740,10 +1643,8 @@ export default function CrmDealersPage() {
                             <TableRow key={contact.sourceId}>
                               <TableCell>
                                 <Avatar
-                                  src={contact.photoUrl || undefined}
                                   alt={contactName}
                                   sx={{ width: 34, height: 34, mx: 'auto', fontSize: 13 }}
-                                  imgProps={{ loading: 'lazy', referrerPolicy: 'no-referrer' }}
                                 >
                                   {contactName.charAt(0).toUpperCase()}
                                 </Avatar>
@@ -1903,168 +1804,28 @@ export default function CrmDealersPage() {
               pt: 0.5,
             }}
           >
-            <TextField
-              size="small"
-              label="Contact name"
-              value={contactForm.name}
-              onChange={(event) => {
-                setContactFormField('name', event.target.value)
-              }}
-            />
-            <TextField
-              size="small"
-              label="First name"
-              value={contactForm.firstName}
-              onChange={(event) => {
-                setContactFormField('firstName', event.target.value)
-              }}
-            />
-            <TextField
-              size="small"
-              label="Last name"
-              value={contactForm.lastName}
-              onChange={(event) => {
-                setContactFormField('lastName', event.target.value)
-              }}
-            />
-            <TextField
-              size="small"
-              label="Primary email"
-              value={contactForm.primaryEmail}
-              onChange={(event) => {
-                setContactFormField('primaryEmail', event.target.value)
-              }}
-            />
-            <TextField
-              size="small"
-              label="Secondary email"
-              value={contactForm.secondaryEmail}
-              onChange={(event) => {
-                setContactFormField('secondaryEmail', event.target.value)
-              }}
-            />
-            <TextField
-              size="small"
-              label="Email 3"
-              value={contactForm.email3}
-              onChange={(event) => {
-                setContactFormField('email3', event.target.value)
-              }}
-            />
-            <TextField
-              size="small"
-              label="Email 4"
-              value={contactForm.email4}
-              onChange={(event) => {
-                setContactFormField('email4', event.target.value)
-              }}
-            />
-            <TextField
-              size="small"
-              label="Sales unit"
-              value={contactForm.salesUnit}
-              onChange={(event) => {
-                setContactFormField('salesUnit', event.target.value)
-              }}
-            />
-            <TextField
-              size="small"
-              label="Phone"
-              value={contactForm.phone}
-              onChange={(event) => {
-                setContactFormField('phone', event.target.value)
-              }}
-            />
-            <TextField
-              size="small"
-              label="Phone 2"
-              value={contactForm.phone2}
-              onChange={(event) => {
-                setContactFormField('phone2', event.target.value)
-              }}
-            />
-            <TextField
-              size="small"
-              label="Phone Alt"
-              value={contactForm.phoneAlt}
-              onChange={(event) => {
-                setContactFormField('phoneAlt', event.target.value)
-              }}
-            />
-            <TextField
-              size="small"
-              label="Address"
-              value={contactForm.address}
-              onChange={(event) => {
-                setContactFormField('address', event.target.value)
-              }}
-            />
-            <TextField
-              size="small"
-              label="City"
-              value={contactForm.city}
-              onChange={(event) => {
-                setContactFormField('city', event.target.value)
-              }}
-            />
-            <TextField
-              size="small"
-              label="State"
-              value={contactForm.state}
-              onChange={(event) => {
-                setContactFormField('state', event.target.value)
-              }}
-            />
-            <TextField
-              size="small"
-              label="Zip"
-              value={contactForm.zip}
-              onChange={(event) => {
-                setContactFormField('zip', event.target.value)
-              }}
-            />
-            <TextField
-              size="small"
-              label="Country"
-              value={contactForm.country}
-              onChange={(event) => {
-                setContactFormField('country', event.target.value)
-              }}
-            />
-            <TextField
-              size="small"
-              label="Gender"
-              value={contactForm.gender}
-              onChange={(event) => {
-                setContactFormField('gender', event.target.value)
-              }}
-            />
-            <TextField
-              size="small"
-              label="Contact Type ID"
-              value={contactForm.contactTypeId}
-              onChange={(event) => {
-                setContactFormField('contactTypeId', event.target.value)
-              }}
-            />
-            <TextField
-              size="small"
-              label="Photo URL"
-              value={contactForm.photoUrl}
-              onChange={(event) => {
-                setContactFormField('photoUrl', event.target.value)
-              }}
-            />
+            <TextField size="small" label="Contact name" value={contactForm.name} onChange={(e) => setContactFormField('name', e.target.value)} />
+            <TextField size="small" label="First name" value={contactForm.firstName} onChange={(e) => setContactFormField('firstName', e.target.value)} />
+            <TextField size="small" label="Last name" value={contactForm.lastName} onChange={(e) => setContactFormField('lastName', e.target.value)} />
+            <TextField size="small" label="Primary email" value={contactForm.primaryEmail} onChange={(e) => setContactFormField('primaryEmail', e.target.value)} />
+            <TextField size="small" label="Secondary email" value={contactForm.secondaryEmail} onChange={(e) => setContactFormField('secondaryEmail', e.target.value)} />
+            <TextField size="small" label="Email 3" value={contactForm.email3} onChange={(e) => setContactFormField('email3', e.target.value)} />
+            <TextField size="small" label="Email 4" value={contactForm.email4} onChange={(e) => setContactFormField('email4', e.target.value)} />
+            <TextField size="small" label="Sales unit" value={contactForm.salesUnit} onChange={(e) => setContactFormField('salesUnit', e.target.value)} />
+            <TextField size="small" label="Phone" value={contactForm.phone} onChange={(e) => setContactFormField('phone', e.target.value)} />
+            <TextField size="small" label="Phone 2" value={contactForm.phone2} onChange={(e) => setContactFormField('phone2', e.target.value)} />
+            <TextField size="small" label="Phone Alt" value={contactForm.phoneAlt} onChange={(e) => setContactFormField('phoneAlt', e.target.value)} />
+            <TextField size="small" label="Address" value={contactForm.address} onChange={(e) => setContactFormField('address', e.target.value)} />
+            <TextField size="small" label="City" value={contactForm.city} onChange={(e) => setContactFormField('city', e.target.value)} />
+            <TextField size="small" label="State" value={contactForm.state} onChange={(e) => setContactFormField('state', e.target.value)} />
+            <TextField size="small" label="Zip" value={contactForm.zip} onChange={(e) => setContactFormField('zip', e.target.value)} />
+            <TextField size="small" label="Country" value={contactForm.country} onChange={(e) => setContactFormField('country', e.target.value)} />
+            <TextField size="small" label="Gender" value={contactForm.gender} onChange={(e) => setContactFormField('gender', e.target.value)} />
+            <TextField size="small" label="Contact Type ID" value={contactForm.contactTypeId} onChange={(e) => setContactFormField('contactTypeId', e.target.value)} />
+            <TextField size="small" label="Photo URL" value={contactForm.photoUrl} onChange={(e) => setContactFormField('photoUrl', e.target.value)} />
             <FormControl size="small">
-              <InputLabel id="contact-archived-status-label">Archived</InputLabel>
-              <Select
-                labelId="contact-archived-status-label"
-                label="Archived"
-                value={contactForm.isArchived ? 'true' : 'false'}
-                onChange={(event) => {
-                  setContactFormField('isArchived', event.target.value === 'true')
-                }}
-              >
+              <InputLabel id="contact-archived-label">Archived</InputLabel>
+              <Select labelId="contact-archived-label" label="Archived" value={contactForm.isArchived ? 'true' : 'false'} onChange={(e) => setContactFormField('isArchived', e.target.value === 'true')}>
                 <MenuItem value="false">No</MenuItem>
                 <MenuItem value="true">Yes</MenuItem>
               </Select>
