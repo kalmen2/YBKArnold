@@ -96,11 +96,6 @@ function displayContactName(contact: CrmDealerDetailResponse['contacts'][number]
   return nameFromParts || 'Unnamed contact'
 }
 
-type DealerEmailDraft = {
-  id: string
-  value: string
-}
-
 type DealerSocialLinkDraft = {
   id: string
   platform: string
@@ -174,13 +169,6 @@ function resolveSocialPlatformChoice(value: string) {
   return 'other'
 }
 
-function createEmailRow(value = '', index = 0): DealerEmailDraft {
-  return {
-    id: `email-${index}-${Math.random().toString(36).slice(2, 9)}`,
-    value,
-  }
-}
-
 function createSocialLinkRow(platform = 'website', url = '', index = 0): DealerSocialLinkDraft {
   return {
     id: `social-${index}-${Math.random().toString(36).slice(2, 9)}`,
@@ -222,6 +210,8 @@ type DealerFormState = {
   name: string
   owner: string
   ownerEmail: string
+  primaryEmail: string
+  secondaryEmail: string
   salesRep: string
   phone: string
   phone2: string
@@ -233,7 +223,6 @@ type DealerFormState = {
   country: string
   accountText: string
   pictureUrl: string
-  emails: DealerEmailDraft[]
   socialLinks: DealerSocialLinkDraft[]
   isArchived: boolean
   isFavorite: boolean
@@ -271,8 +260,9 @@ function createDealerFormState(dealer: CrmDealerDetailResponse['dealer']): Deale
   const fallbackEmails = [dealer.email, dealer.email2]
     .map((value) => String(value ?? '').trim())
     .filter(Boolean)
-  const emailRows = (normalizedEmails.length > 0 ? normalizedEmails : fallbackEmails)
-    .map((value, index) => createEmailRow(value, index))
+  const [primaryEmail = '', secondaryEmail = ''] = normalizedEmails.length > 0
+    ? normalizedEmails
+    : fallbackEmails
 
   const socialLinkRows = Object.entries(dealer.socialMediaLinks ?? {})
     .map(([platform, url], index) => {
@@ -291,6 +281,8 @@ function createDealerFormState(dealer: CrmDealerDetailResponse['dealer']): Deale
     name: dealer.name || '',
     owner: dealer.owner || '',
     ownerEmail: dealer.ownerEmail || '',
+    primaryEmail,
+    secondaryEmail,
     salesRep: dealer.salesRep || '',
     phone: dealer.phone || '',
     phone2: dealer.phone2 || '',
@@ -302,7 +294,6 @@ function createDealerFormState(dealer: CrmDealerDetailResponse['dealer']): Deale
     country: dealer.country || '',
     accountText: dealer.accountText || '',
     pictureUrl: dealer.pictureUrl || '',
-    emails: emailRows.length > 0 ? emailRows : [createEmailRow('', 0)],
     socialLinks: socialLinkRows,
     isArchived: Boolean(dealer.isArchived),
     isFavorite: Boolean(dealer.isFavorite),
@@ -314,8 +305,8 @@ function serializeDealerFormState(form: DealerFormState | null) {
     return ''
   }
 
-  const normalizedEmails = form.emails
-    .map((entry) => entry.value.trim())
+  const normalizedEmails = [form.primaryEmail, form.secondaryEmail]
+    .map((value) => value.trim())
     .filter(Boolean)
 
   const normalizedSocialLinks = form.socialLinks
@@ -331,6 +322,8 @@ function serializeDealerFormState(form: DealerFormState | null) {
     name: form.name.trim(),
     owner: form.owner.trim(),
     ownerEmail: form.ownerEmail.trim(),
+    primaryEmail: form.primaryEmail.trim(),
+    secondaryEmail: form.secondaryEmail.trim(),
     salesRep: form.salesRep.trim(),
     phone: form.phone.trim(),
     phone2: form.phone2.trim(),
@@ -608,7 +601,23 @@ export default function CrmDealersPage() {
     return window.confirm('You have unsaved dealership edits. Leave without saving?')
   }, [hasUnsavedDealerChanges])
 
-  type DealerStringField = 'name' | 'owner' | 'ownerEmail' | 'salesRep' | 'phone' | 'phone2' | 'website' | 'address' | 'city' | 'state' | 'zip' | 'country' | 'accountText' | 'pictureUrl'
+  type DealerStringField =
+    | 'name'
+    | 'owner'
+    | 'ownerEmail'
+    | 'primaryEmail'
+    | 'secondaryEmail'
+    | 'salesRep'
+    | 'phone'
+    | 'phone2'
+    | 'website'
+    | 'address'
+    | 'city'
+    | 'state'
+    | 'zip'
+    | 'country'
+    | 'accountText'
+    | 'pictureUrl'
 
   const setDealerTextField = useCallback((field: DealerStringField, value: string) => {
     setDealerForm((current) => current ? { ...current, [field]: value } : current)
@@ -663,25 +672,6 @@ export default function CrmDealersPage() {
       setIsUploadingDealerPicture(false)
     }
   }, [selectedDealerId, setDealerTextField, setErrorMessage])
-
-  const setDealerEmailAtIndex = useCallback((index: number, value: string) => {
-    setDealerForm((current) => {
-      if (!current) return current
-      return { ...current, emails: current.emails.map((e, i) => i === index ? { ...e, value } : e) }
-    })
-  }, [])
-
-  const addDealerEmailField = useCallback(() => {
-    setDealerForm((current) => current ? { ...current, emails: [...current.emails, createEmailRow('', current.emails.length)] } : current)
-  }, [])
-
-  const removeDealerEmailField = useCallback((index: number) => {
-    setDealerForm((current) => {
-      if (!current) return current
-      if (current.emails.length <= 1) return { ...current, emails: [{ ...current.emails[0], value: '' }] }
-      return { ...current, emails: current.emails.filter((_, i) => i !== index) }
-    })
-  }, [])
 
   const setDealerSocialLinkAtIndex = useCallback((index: number, field: 'platform' | 'url', value: string) => {
     setDealerForm((current) => {
@@ -790,8 +780,8 @@ export default function CrmDealersPage() {
       return
     }
 
-    const normalizedEmails = dealerForm.emails
-      .map((entry) => entry.value.trim())
+    const normalizedEmails = [dealerForm.primaryEmail, dealerForm.secondaryEmail]
+      .map((value) => value.trim())
       .filter(Boolean)
 
     if (normalizedEmails.length === 0) {
@@ -1289,6 +1279,8 @@ export default function CrmDealersPage() {
                         <TextField size="small" label="Account name" value={dealerForm.name} onChange={(e) => setDealerTextField('name', e.target.value)} />
                         <TextField size="small" label="Owner" value={dealerForm.owner} onChange={(e) => setDealerTextField('owner', e.target.value)} />
                         <TextField size="small" label="Owner email" value={dealerForm.ownerEmail} onChange={(e) => setDealerTextField('ownerEmail', e.target.value)} />
+                        <TextField size="small" label="Primary email" value={dealerForm.primaryEmail} onChange={(e) => setDealerTextField('primaryEmail', e.target.value)} />
+                        <TextField size="small" label="Optional email" value={dealerForm.secondaryEmail} onChange={(e) => setDealerTextField('secondaryEmail', e.target.value)} />
                         <TextField size="small" label="Sales rep" value={dealerForm.salesRep} onChange={(e) => setDealerTextField('salesRep', e.target.value)} />
                         <TextField size="small" label="Primary phone" value={dealerForm.phone} onChange={(e) => setDealerTextField('phone', e.target.value)} />
                         <TextField size="small" label="Secondary phone" value={dealerForm.phone2} onChange={(e) => setDealerTextField('phone2', e.target.value)} />
@@ -1370,59 +1362,6 @@ export default function CrmDealersPage() {
                             </Stack>
                           </Stack>
                         </Box>
-                      </Box>
-
-                      <Box
-                        sx={{
-                          border: 1,
-                          borderColor: 'divider',
-                          borderRadius: 1,
-                          p: 1,
-                        }}
-                      >
-                        <Stack spacing={0.8}>
-                          <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
-                            Dealership emails
-                          </Typography>
-
-                          {dealerForm.emails.map((entry, index) => (
-                            <Stack
-                              key={entry.id}
-                              direction={{ xs: 'column', sm: 'row' }}
-                              spacing={0.75}
-                              alignItems={{ xs: 'stretch', sm: 'center' }}
-                            >
-                              <TextField
-                                size="small"
-                                fullWidth
-                                label={index === 0 ? 'Primary email' : `Email ${index + 1}`}
-                                value={entry.value}
-                                onChange={(event) => {
-                                  setDealerEmailAtIndex(index, event.target.value)
-                                }}
-                              />
-                              <Button
-                                size="small"
-                                color="inherit"
-                                variant="outlined"
-                                onClick={() => {
-                                  removeDealerEmailField(index)
-                                }}
-                              >
-                                Remove
-                              </Button>
-                            </Stack>
-                          ))}
-
-                          <Button
-                            size="small"
-                            startIcon={<AddRoundedIcon fontSize="small" />}
-                            onClick={addDealerEmailField}
-                            sx={{ width: 'fit-content' }}
-                          >
-                            Add another email
-                          </Button>
-                        </Stack>
                       </Box>
 
                       <Box

@@ -168,6 +168,7 @@ export function createMongoCollectionsService({
             crmContactsCollection.createIndex({ lastImportRunId: 1 }),
             crmSalesRepsCollection.createIndex({ id: 1 }, { unique: true }),
             crmSalesRepsCollection.createIndex({ nameLower: 1 }, { unique: true }),
+            crmSalesRepsCollection.createIndex({ companyNameLower: 1 }),
             crmSalesRepsCollection.createIndex({ states: 1 }),
             crmSalesRepsCollection.createIndex({ updatedAt: -1 }),
             crmDuplicateQueueCollection.createIndex({ id: 1 }, { unique: true }),

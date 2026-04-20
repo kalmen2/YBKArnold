@@ -368,10 +368,22 @@ function normalizeUsStateList(input) {
 
 function toSalesRepResponse(rawSalesRep) {
   const salesRep = toOptionalObject(rawSalesRep)
+  const companyName = toTrimmedText(salesRep.companyName, 200)
+  const logoUrl = toTrimmedText(salesRep.logoUrl, 800)
+  const email = toTrimmedText(salesRep.email, 200)
+  const email2 = toTrimmedText(salesRep.email2, 200)
+  const phone = toTrimmedText(salesRep.phone, 80)
+  const phone2 = toTrimmedText(salesRep.phone2, 80)
 
   return {
     id: toTrimmedText(salesRep.id, 160),
     name: toTrimmedText(salesRep.name, 200),
+    companyName: companyName || null,
+    logoUrl: logoUrl || null,
+    email: email || null,
+    email2: email2 || null,
+    phone: phone || null,
+    phone2: phone2 || null,
     states: normalizeUsStateList(salesRep.states),
     createdAt: toIsoDateOrNull(salesRep.createdAt),
     updatedAt: toIsoDateOrNull(salesRep.updatedAt),
@@ -1026,13 +1038,19 @@ export function registerCrmRoutes(app, deps) {
               _id: 0,
               id: 1,
               name: 1,
+              companyName: 1,
+              logoUrl: 1,
+              email: 1,
+              email2: 1,
+              phone: 1,
+              phone2: 1,
               states: 1,
               createdAt: 1,
               updatedAt: 1,
             },
           },
         )
-        .sort({ nameLower: 1, name: 1, id: 1 })
+        .sort({ companyNameLower: 1, nameLower: 1, name: 1, id: 1 })
         .toArray()
 
       return res.json({
@@ -1048,6 +1066,12 @@ export function registerCrmRoutes(app, deps) {
     try {
       const body = toOptionalObject(req.body)
       const name = toTrimmedText(body.name, 200)
+      const companyName = toTrimmedText(body.companyName, 200)
+      const logoUrl = toTrimmedText(body.logoUrl, 800)
+      const email = toTrimmedText(body.email, 200)
+      const email2 = toTrimmedText(body.email2, 200)
+      const phone = toTrimmedText(body.phone, 80)
+      const phone2 = toTrimmedText(body.phone2, 80)
       const states = normalizeUsStateList(body.states)
 
       if (!name) {
@@ -1068,6 +1092,13 @@ export function registerCrmRoutes(app, deps) {
         id: randomUUID(),
         name,
         nameLower: toLowerText(name, 200),
+        companyName: companyName || null,
+        companyNameLower: toLowerText(companyName, 200),
+        logoUrl: logoUrl || null,
+        email: email || null,
+        email2: email2 || null,
+        phone: phone || null,
+        phone2: phone2 || null,
         states,
         createdAt: now,
         updatedAt: now,
@@ -1114,6 +1145,12 @@ export function registerCrmRoutes(app, deps) {
             _id: 0,
             id: 1,
             name: 1,
+            companyName: 1,
+            logoUrl: 1,
+            email: 1,
+            email2: 1,
+            phone: 1,
+            phone2: 1,
             states: 1,
             createdAt: 1,
             updatedAt: 1,
@@ -1141,6 +1178,37 @@ export function registerCrmRoutes(app, deps) {
 
         updates.name = name
         updates.nameLower = toLowerText(name, 200)
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'companyName')) {
+        const companyName = toTrimmedText(body.companyName, 200)
+        updates.companyName = companyName || null
+        updates.companyNameLower = toLowerText(companyName, 200)
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'logoUrl')) {
+        const logoUrl = toTrimmedText(body.logoUrl, 800)
+        updates.logoUrl = logoUrl || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'email')) {
+        const email = toTrimmedText(body.email, 200)
+        updates.email = email || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'email2')) {
+        const email2 = toTrimmedText(body.email2, 200)
+        updates.email2 = email2 || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'phone')) {
+        const phone = toTrimmedText(body.phone, 80)
+        updates.phone = phone || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'phone2')) {
+        const phone2 = toTrimmedText(body.phone2, 80)
+        updates.phone2 = phone2 || null
       }
 
       if (Object.prototype.hasOwnProperty.call(body, 'states')) {
@@ -1178,6 +1246,12 @@ export function registerCrmRoutes(app, deps) {
               _id: 0,
               id: 1,
               name: 1,
+              companyName: 1,
+              logoUrl: 1,
+              email: 1,
+              email2: 1,
+              phone: 1,
+              phone2: 1,
               states: 1,
               createdAt: 1,
               updatedAt: 1,

@@ -200,6 +200,12 @@ export type CrmDealersQueryOptions = {
 export type CrmSalesRep = {
   id: string
   name: string
+  companyName: string | null
+  logoUrl: string | null
+  email: string | null
+  email2: string | null
+  phone: string | null
+  phone2: string | null
   states: string[]
   createdAt: string | null
   updatedAt: string | null
@@ -212,6 +218,12 @@ export type CrmSalesRepsResponse = {
 
 export type CrmSalesRepUpsertInput = {
   name: string
+  companyName?: string | null
+  logoUrl?: string | null
+  email?: string | null
+  email2?: string | null
+  phone?: string | null
+  phone2?: string | null
   states: string[]
 }
 
