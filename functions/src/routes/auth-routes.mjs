@@ -144,6 +144,39 @@ app.get('/api/auth/workers', requireFirebaseAuth, requireAdminRole, async (_req,
   }
 })
 
+app.get('/api/auth/bootstrap', requireFirebaseAuth, requireAdminRole, async (_req, res, next) => {
+  try {
+    const { authUsersCollection, workersCollection } = await getCollections()
+
+    const [users, workers] = await Promise.all([
+      authUsersCollection
+        .find({}, NO_ID)
+        .sort({ approvalStatus: -1, createdAt: -1, emailLower: 1 })
+        .toArray(),
+      workersCollection
+        .find({}, NO_ID)
+        .sort({ fullName: 1 })
+        .toArray(),
+    ])
+
+    const workersWithNumbers = await ensureWorkersHaveWorkerNumbers(workersCollection, workers)
+
+    return res.json({
+      users: users.map((document) => toPublicAuthUser(document)),
+      ownerEmail,
+      workers: workersWithNumbers.map((worker) => ({
+        id: String(worker.id ?? '').trim(),
+        workerNumber: normalizeWorkerNumber(worker.workerNumber),
+        fullName: String(worker.fullName ?? '').trim(),
+        role: String(worker.role ?? '').trim(),
+        email: String(worker.email ?? '').trim(),
+      })),
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
 app.patch('/api/auth/users/:uid/worker-link', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
   try {
     const targetUid = String(req.params.uid ?? '').trim()

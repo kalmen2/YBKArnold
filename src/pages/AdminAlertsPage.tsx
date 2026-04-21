@@ -18,19 +18,17 @@ import {
   TextField,
   Typography,
 } from '@mui/material'
-import { useCallback, useMemo, useState } from 'react'
-import { useDataLoader } from '../hooks/useDataLoader'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Navigate } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
 import { apiRequest } from '../features/api-client'
+import { fetchAdminBootstrap } from '../features/auth/api'
 import type { AppAuthUser } from '../auth/types'
 import { LoadingPanel } from '../components/LoadingPanel'
 import { StatusAlerts } from '../components/StatusAlerts'
 import { formatDateTime } from '../lib/formatters'
-
-type ListUsersResponse = {
-  users: AppAuthUser[]
-}
+import { QUERY_KEYS } from '../lib/queryKeys'
 
 type AdminAlertRecord = {
   id: string
@@ -44,10 +42,6 @@ type AdminAlertRecord = {
   pushErrorCount: number
   createdAt: string | null
   createdByEmail: string | null
-}
-
-type ListAdminAlertsResponse = {
-  alerts: AdminAlertRecord[]
 }
 
 type SendAdminAlertResponse = {
@@ -86,6 +80,37 @@ export default function AdminAlertsPage() {
   const [actionMessage, setActionMessage] = useState<string | null>(null)
 
 
+  const queryClient = useQueryClient()
+
+  const bootstrapQuery = useQuery({
+    queryKey: QUERY_KEYS.adminBootstrap,
+    queryFn: () => fetchAdminBootstrap(80),
+    staleTime: 2 * 60 * 1000,
+  })
+
+  const isLoading = bootstrapQuery.isLoading
+  const isRefreshing = bootstrapQuery.isFetching && !bootstrapQuery.isLoading
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
+
+  useEffect(() => {
+    const data = bootstrapQuery.data
+    if (!data) return
+    const nextUsers = Array.isArray(data.users) ? data.users : []
+    const nextAlerts = Array.isArray(data.alerts) ? (data.alerts as AdminAlertRecord[]) : []
+    setUsers(nextUsers)
+    setRecentAlerts(nextAlerts)
+    setSelectedRecipientUids((current) => {
+      const allowedIds = new Set(nextUsers.map((user) => user.uid))
+      return current.filter((uid) => allowedIds.has(uid))
+    })
+  }, [bootstrapQuery.data])
+
+  useEffect(() => {
+    if (bootstrapQuery.error instanceof Error) {
+      setErrorMessage(bootstrapQuery.error.message)
+    }
+  }, [bootstrapQuery.error])
+
   const eligibleUsers = useMemo(() => {
     return users.filter((user) => user.isApproved && user.hasAppAccess)
   }, [users])
@@ -95,32 +120,6 @@ export default function AdminAlertsPage() {
 
     return eligibleUsers.filter((user) => selectedSet.has(user.uid)).length
   }, [eligibleUsers, selectedRecipientUids])
-
-  const { isLoading, isRefreshing, errorMessage, load: loadPageData, setErrorMessage } = useDataLoader({
-    fetcher: useCallback(async () => {
-      const [usersPayload, alertsPayload] = await Promise.all([
-        apiRequest<ListUsersResponse>('/api/auth/users'),
-        apiRequest<ListAdminAlertsResponse>('/api/admin/alerts?limit=80'),
-      ])
-      return {
-        users: Array.isArray(usersPayload.users) ? usersPayload.users : [],
-        alerts: Array.isArray(alertsPayload.alerts) ? alertsPayload.alerts : [],
-      }
-    }, []),
-    onSuccess: useCallback(({ users, alerts }: { users: AppAuthUser[]; alerts: AdminAlertRecord[] }) => {
-      setUsers(users)
-      setRecentAlerts(alerts)
-      setSelectedRecipientUids((current) => {
-        const allowedIds = new Set(users.map((user) => user.uid))
-        return current.filter((uid) => allowedIds.has(uid))
-      })
-    }, []),
-    onError: useCallback(() => {
-      setUsers([])
-      setRecentAlerts([])
-    }, []),
-    fallbackErrorMessage: 'Could not load notifications page.',
-  })
 
   const toggleRecipient = useCallback((uid: string) => {
     setSelectedRecipientUids((current) => {
@@ -249,7 +248,7 @@ export default function AdminAlertsPage() {
               startIcon={<RefreshRoundedIcon />}
               disabled={isRefreshing || isLoading}
               onClick={() => {
-                void loadPageData(true)
+                void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.adminBootstrap })
               }}
             >
               {isRefreshing ? 'Refreshing...' : 'Refresh'}

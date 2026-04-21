@@ -25,6 +25,7 @@ export function registerAlertsRoutes(app, deps) {
     requireFirebaseAuth,
     sendExpoPushMessages,
     sendFcmPushMessages,
+    ownerEmail,
     toBoundedInteger,
     toNonNegativeInteger,
     toPublicAuthUser,
@@ -361,6 +362,33 @@ app.get('/api/admin/alerts', requireFirebaseAuth, requireAdminRole, async (req, 
       .toArray()
 
     return res.json({
+      alerts: alerts.map((document) => toPublicMobileAlert(document)),
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.get('/api/admin/bootstrap', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+  try {
+    const limit = toBoundedInteger(req.query?.alertsLimit, 10, 200, 80)
+    const { authUsersCollection, mobileAlertsCollection } = await getCollections()
+
+    const [users, alerts] = await Promise.all([
+      authUsersCollection
+        .find({}, { projection: { _id: 0 } })
+        .sort({ approvalStatus: -1, createdAt: -1, emailLower: 1 })
+        .toArray(),
+      mobileAlertsCollection
+        .find({}, { projection: { _id: 0 } })
+        .sort({ createdAt: -1 })
+        .limit(limit)
+        .toArray(),
+    ])
+
+    return res.json({
+      users: users.map((document) => toPublicAuthUser(document)),
+      ownerEmail,
       alerts: alerts.map((document) => toPublicMobileAlert(document)),
     })
   } catch (error) {

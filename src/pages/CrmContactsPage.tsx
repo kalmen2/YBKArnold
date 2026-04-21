@@ -19,17 +19,17 @@ import {
   Typography,
 } from '@mui/material'
 import { alpha } from '@mui/material/styles'
-import { useCallback, useState } from 'react'
+import { useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link as RouterLink, useSearchParams } from 'react-router-dom'
 import { LoadingPanel } from '../components/LoadingPanel'
 import { StatusAlerts } from '../components/StatusAlerts'
-import { useDataLoader } from '../hooks/useDataLoader'
 import { useDebounceValue } from '../hooks/useDebounceValue'
 import {
   fetchCrmContacts,
   type CrmContact,
-  type CrmContactsResponse,
 } from '../features/crm/api'
+import { QUERY_KEYS } from '../lib/queryKeys'
 
 function displayContactName(contact: CrmContact) {
   if (contact.name) {
@@ -46,12 +46,8 @@ function displayContactName(contact: CrmContact) {
 export default function CrmContactsPage() {
   const [searchParams, setSearchParams] = useSearchParams()
 
-  const [contacts, setContacts] = useState<CrmContact[]>([])
-  const [totalContacts, setTotalContacts] = useState(0)
-
-
+  const queryClient = useQueryClient()
   const [rowsPerPage, setRowsPerPage] = useState(50)
-
   const [searchInput, setSearchInput] = useState('')
   const search = useDebounceValue(searchInput)
   const dealerSourceId = searchParams.get('dealerSourceId')?.trim() ?? ''
@@ -60,25 +56,23 @@ export default function CrmContactsPage() {
   const paginationFilterKey = `${dealerSourceId}::${search}`
   const page = pagesByFilter[paginationFilterKey] ?? 0
 
-  const { isLoading: isLoadingContacts, isRefreshing, errorMessage, load: loadContacts } = useDataLoader({
-    fetcher: useCallback(async () => {
-      return fetchCrmContacts({
-        limit: rowsPerPage,
-        offset: page * rowsPerPage,
-        search: search || undefined,
-        dealerSourceId: dealerSourceId || undefined,
-      })
-    }, [dealerSourceId, page, rowsPerPage, search]),
-    onSuccess: useCallback((response: CrmContactsResponse) => {
-      setContacts(Array.isArray(response.contacts) ? response.contacts : [])
-      setTotalContacts(Number(response.total ?? 0))
-    }, []),
-    onError: useCallback(() => {
-      setContacts([])
-      setTotalContacts(0)
-    }, []),
-    fallbackErrorMessage: 'Failed to load contacts.',
+  const contactsQuery = useQuery({
+    queryKey: QUERY_KEYS.crmContacts({ limit: rowsPerPage, offset: page * rowsPerPage, search, dealerSourceId }),
+    queryFn: () => fetchCrmContacts({
+      limit: rowsPerPage,
+      offset: page * rowsPerPage,
+      search: search || undefined,
+      dealerSourceId: dealerSourceId || undefined,
+    }),
+    staleTime: 3 * 60 * 1000,
+    placeholderData: (prev) => prev,
   })
+
+  const contacts: CrmContact[] = Array.isArray(contactsQuery.data?.contacts) ? contactsQuery.data.contacts : []
+  const totalContacts = Number(contactsQuery.data?.total ?? 0)
+  const isLoadingContacts = contactsQuery.isLoading
+  const isRefreshing = contactsQuery.isFetching && !contactsQuery.isLoading
+  const errorMessage = contactsQuery.error instanceof Error ? contactsQuery.error.message : null
 
   const dealersPageLink = dealerSourceId
     ? `/sales?tab=dealers&dealerSourceId=${encodeURIComponent(dealerSourceId)}`
@@ -157,7 +151,7 @@ export default function CrmContactsPage() {
               startIcon={<RefreshRoundedIcon />}
               disabled={isLoadingContacts || isRefreshing}
               onClick={() => {
-                void loadContacts(true)
+                void queryClient.invalidateQueries({ queryKey: ['crm', 'contacts'] })
               }}
             >
               {isRefreshing ? 'Refreshing...' : 'Refresh'}

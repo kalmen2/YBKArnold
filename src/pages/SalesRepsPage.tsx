@@ -26,6 +26,7 @@ import {
 import { alpha } from '@mui/material/styles'
 import usaMap from '@svg-maps/usa'
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { firebaseStorage } from '../auth/firebase'
 import { LoadingPanel } from '../components/LoadingPanel'
 import { StatusAlerts } from '../components/StatusAlerts'
@@ -35,9 +36,8 @@ import {
   removeCrmSalesRep,
   updateCrmSalesRep,
   type CrmSalesRep,
-  type CrmSalesRepsResponse,
 } from '../features/crm/api'
-import { useDataLoader } from '../hooks/useDataLoader'
+import { QUERY_KEYS } from '../lib/queryKeys'
 
 type SalesRepDialogMode = 'create' | 'edit' | null
 
@@ -202,30 +202,36 @@ export default function SalesRepsPage() {
 
   const mapSvgRef = useRef<SVGSVGElement | null>(null)
 
-  const {
-    isLoading,
-    isRefreshing,
-    errorMessage,
-    load,
-    setErrorMessage,
-  } = useDataLoader({
-    fetcher: useCallback(() => fetchCrmSalesReps(), []),
-    onSuccess: useCallback((response: CrmSalesRepsResponse) => {
-      setSalesReps(Array.isArray(response.salesReps) ? response.salesReps : [])
-      setAvailableStates(
-        sortStateCodes(
-          Array.isArray(response.availableStates)
-            ? response.availableStates.map((value) => String(value ?? '').trim().toUpperCase())
-            : [],
-        ),
-      )
-    }, []),
-    onError: useCallback(() => {
-      setSalesReps([])
-      setAvailableStates([])
-    }, []),
-    fallbackErrorMessage: 'Failed to load sales reps.',
+  const queryClient = useQueryClient()
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
+
+  const salesRepsQuery = useQuery({
+    queryKey: QUERY_KEYS.crmSalesReps,
+    queryFn: () => fetchCrmSalesReps(),
+    staleTime: 5 * 60 * 1000,
   })
+
+  const isLoading = salesRepsQuery.isLoading
+  const isRefreshing = salesRepsQuery.isFetching && !salesRepsQuery.isLoading
+
+  useEffect(() => {
+    const data = salesRepsQuery.data
+    if (!data) return
+    setSalesReps(Array.isArray(data.salesReps) ? data.salesReps : [])
+    setAvailableStates(
+      sortStateCodes(
+        Array.isArray(data.availableStates)
+          ? data.availableStates.map((value) => String(value ?? '').trim().toUpperCase())
+          : [],
+      ),
+    )
+  }, [salesRepsQuery.data])
+
+  useEffect(() => {
+    if (salesRepsQuery.error instanceof Error) {
+      setErrorMessage(salesRepsQuery.error.message)
+    }
+  }, [salesRepsQuery.error])
 
   const isSalesRepDialogOpen = Boolean(salesRepDialogMode)
 
@@ -469,14 +475,14 @@ export default function SalesRepsPage() {
         setSuccessMessage('Sales rep added successfully.')
       }
 
-      await load(true)
+      await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.crmSalesReps })
       setSalesRepDialogMode(null)
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Failed to save sales rep.')
     } finally {
       setIsSavingSalesRep(false)
     }
-  }, [load, salesRepForm, selectedSalesRepId, setErrorMessage])
+  }, [queryClient, salesRepForm, selectedSalesRepId, setErrorMessage])
 
   const handleDeleteSalesRep = useCallback(async (salesRep: CrmSalesRep) => {
     const shouldDelete = window.confirm(`Delete sales rep "${salesRep.name}"?`)
@@ -499,14 +505,14 @@ export default function SalesRepsPage() {
         setSalesRepDialogMode(null)
       }
 
-      await load(true)
+      await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.crmSalesReps })
       setSuccessMessage('Sales rep removed successfully.')
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Failed to remove sales rep.')
     } finally {
       setDeletingSalesRepId('')
     }
-  }, [load, selectedSalesRepId, setErrorMessage])
+  }, [queryClient, selectedSalesRepId, setErrorMessage])
 
   const measureMapLabelPositions = useCallback(() => {
     const svgElement = mapSvgRef.current
@@ -575,10 +581,22 @@ export default function SalesRepsPage() {
       return
     }
 
-    const printWindow = window.open('', '_blank', 'noopener,noreferrer,width=1100,height=780')
+    const iframe = document.createElement('iframe')
+    iframe.setAttribute('aria-hidden', 'true')
+    iframe.style.position = 'fixed'
+    iframe.style.right = '0'
+    iframe.style.bottom = '0'
+    iframe.style.width = '0'
+    iframe.style.height = '0'
+    iframe.style.border = '0'
+    iframe.style.visibility = 'hidden'
+    document.body.appendChild(iframe)
+
+    const printWindow = iframe.contentWindow
 
     if (!printWindow) {
-      setErrorMessage('Unable to open print preview. Please allow popups and try again.')
+      iframe.remove()
+      setErrorMessage('Unable to open print preview. Please try again.')
       return
     }
 
@@ -587,8 +605,10 @@ export default function SalesRepsPage() {
       ...mapLegendEntries.map((entry) => `<li><span class="swatch" style="background:${entry.color}"></span><span>${escapeHtml(entry.label)}</span></li>`),
     ].join('')
 
-    printWindow.document.open()
-    printWindow.document.write(`<!doctype html>
+    const printDocument = printWindow.document
+
+    printDocument.open()
+    printDocument.write(`<!doctype html>
 <html>
   <head>
     <meta charset="utf-8" />
@@ -661,10 +681,21 @@ export default function SalesRepsPage() {
     <ul>${legendItemsHtml}</ul>
   </body>
 </html>`)
-    printWindow.document.close()
-    printWindow.focus()
-    printWindow.print()
-    printWindow.close()
+    printDocument.close()
+
+    const cleanup = () => {
+      if (iframe.parentNode) {
+        iframe.parentNode.removeChild(iframe)
+      }
+    }
+
+    printWindow.addEventListener('afterprint', cleanup, { once: true })
+
+    window.setTimeout(() => {
+      printWindow.focus()
+      printWindow.print()
+      window.setTimeout(cleanup, 1500)
+    }, 50)
   }, [mapLegendEntries, setErrorMessage])
 
   return (
@@ -726,7 +757,7 @@ export default function SalesRepsPage() {
               startIcon={<RefreshRoundedIcon />}
               disabled={isLoading || isRefreshing || isSavingSalesRep}
               onClick={() => {
-                void load(true)
+                void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.crmSalesReps })
               }}
             >
               {isRefreshing ? 'Refreshing...' : 'Refresh'}

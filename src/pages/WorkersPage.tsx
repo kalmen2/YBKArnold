@@ -18,17 +18,19 @@ import {
   TextField,
   Typography,
 } from '@mui/material'
-import { useCallback, useEffect, useState } from 'react'
+import { useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '../auth/useAuth'
 import { LoadingPanel } from '../components/LoadingPanel'
 import { formatCurrency } from '../lib/formatters'
 import {
   createWorkersBulk,
   deleteWorker,
-  fetchTimesheetState,
+  fetchTimesheetBootstrap,
   type TimesheetWorker,
   updateWorker,
 } from '../features/timesheet/api'
+import { QUERY_KEYS } from '../lib/queryKeys'
 
 type CreateWorkerInput = {
   fullName: string
@@ -69,11 +71,21 @@ function createEmptyBulkWorkerDraft(): BulkWorkerDraftRow {
 export default function WorkersPage() {
   const { appUser } = useAuth()
   const canManageWorkers = appUser?.isAdmin === true
-  const [workers, setWorkers] = useState<TimesheetWorker[]>([])
-  const [isLoading, setIsLoading] = useState(true)
-  const [isRefreshing, setIsRefreshing] = useState(false)
+  const queryClient = useQueryClient()
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
+
+  const bootstrapQuery = useQuery({
+    queryKey: QUERY_KEYS.timesheetBootstrap,
+    queryFn: () => fetchTimesheetBootstrap(),
+    staleTime: 3 * 60 * 1000,
+  })
+
+  const isLoading = bootstrapQuery.isLoading
+  const isRefreshing = bootstrapQuery.isFetching && !bootstrapQuery.isLoading
+  const workers = Array.isArray(bootstrapQuery.data?.workers) ? bootstrapQuery.data.workers : []
+  const queryErrorMessage = bootstrapQuery.error instanceof Error ? bootstrapQuery.error.message : ''
+  const errorMessage = error || queryErrorMessage
 
   const [bulkWorkerRows, setBulkWorkerRows] = useState<BulkWorkerDraftRow[]>([
     createEmptyBulkWorkerDraft(),
@@ -86,42 +98,6 @@ export default function WorkersPage() {
     phone: '',
     hourlyRate: '',
   })
-
-  const refreshWorkers = useCallback(async (refreshRequested = false) => {
-    if (refreshRequested) {
-      setIsRefreshing(true)
-    } else {
-      setIsLoading(true)
-    }
-
-    try {
-      const payload = await fetchTimesheetState()
-      setWorkers(payload.workers)
-    } catch (requestError) {
-      const message =
-        requestError instanceof Error
-          ? requestError.message
-          : 'Failed to load workers.'
-      setError(message)
-    } finally {
-      setIsLoading(false)
-      setIsRefreshing(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    void refreshWorkers(false)
-  }, [refreshWorkers])
-
-  useEffect(() => {
-    if (!editingWorkerId) {
-      return
-    }
-
-    if (!workers.some((worker) => worker.id === editingWorkerId)) {
-      setEditingWorkerId('')
-    }
-  }, [editingWorkerId, workers])
 
   const handleBulkWorkerRowChange = (
     rowId: string,
@@ -212,7 +188,7 @@ export default function WorkersPage() {
     try {
       const response = await createWorkersBulk(validWorkers)
       setBulkWorkerRows([createEmptyBulkWorkerDraft()])
-      await refreshWorkers(true)
+      await queryClient.refetchQueries({ queryKey: QUERY_KEYS.timesheetBootstrap })
       setSuccess(`Workers added: ${response.insertedCount}`)
     } catch (requestError) {
       const message =
@@ -240,7 +216,7 @@ export default function WorkersPage() {
 
     try {
       await deleteWorker(workerId)
-      await refreshWorkers(true)
+      await queryClient.refetchQueries({ queryKey: QUERY_KEYS.timesheetBootstrap })
       setSuccess('Worker removed.')
     } catch (requestError) {
       const message =
@@ -314,7 +290,7 @@ export default function WorkersPage() {
         phone: workerEditForm.phone.trim(),
         hourlyRate,
       })
-      await refreshWorkers(true)
+      await queryClient.refetchQueries({ queryKey: QUERY_KEYS.timesheetBootstrap })
       setEditingWorkerId('')
       setSuccess('Worker updated. New pay rate applies only to new entries.')
     } catch (requestError) {
@@ -349,16 +325,19 @@ export default function WorkersPage() {
         <Button
           variant="contained"
           startIcon={<RefreshRoundedIcon />}
-          onClick={() => void refreshWorkers(true)}
+          onClick={() => void queryClient.refetchQueries({ queryKey: QUERY_KEYS.timesheetBootstrap })}
           disabled={isRefreshing}
         >
           {isRefreshing ? 'Refreshing...' : 'Refresh'}
         </Button>
       </Stack>
 
-      {error ? (
-        <Alert severity="error" onClose={() => setError('')}>
-          {error}
+      {errorMessage ? (
+        <Alert
+          severity="error"
+          onClose={error ? () => setError('') : undefined}
+        >
+          {errorMessage}
         </Alert>
       ) : null}
 

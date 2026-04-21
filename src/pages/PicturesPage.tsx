@@ -34,9 +34,10 @@ import Lightbox from 'yet-another-react-lightbox'
 import Zoom from 'yet-another-react-lightbox/plugins/zoom'
 import 'yet-another-react-lightbox/styles.css'
 import {
-  fetchMondayDashboardSnapshot,
+  fetchDashboardBootstrap,
 } from '../features/dashboard/api'
 import { useAuth } from '../auth/useAuth'
+import { QUERY_KEYS } from '../lib/queryKeys'
 
 const DEPLOYED_API_BASE_URL = 'https://us-central1-ybkarnold-b7ec0.cloudfunctions.net/apiV1'
 const API_BASE_CANDIDATES = [DEPLOYED_API_BASE_URL, '']
@@ -274,12 +275,12 @@ export default function PicturesPage() {
 
   // ---------------------------------------------------------------------------
   // Data queries
-  // mondayQuery shares ['dashboard','monday'] with DashboardPage — free cache hit on nav.
-  // photosIndexQuery has its own key since only PicturesPage uses it.
+  // bootstrapQuery shares QUERY_KEYS.dashboardBootstrap with DashboardPage —
+  // free cache hit on nav. photosIndexQuery has its own key.
   // ---------------------------------------------------------------------------
-  const mondayQuery = useQuery({
-    queryKey: ['dashboard', 'monday'],
-    queryFn: () => fetchMondayDashboardSnapshot({ refresh: false }),
+  const bootstrapQuery = useQuery({
+    queryKey: QUERY_KEYS.dashboardBootstrap,
+    queryFn: () => fetchDashboardBootstrap({ refresh: false }),
     staleTime: 3 * 60 * 1000,
   })
 
@@ -291,7 +292,7 @@ export default function PicturesPage() {
 
   // Derive pictureOrders by joining both query results
   const pictureOrders = useMemo(() => {
-    const mondayOrders = Array.isArray(mondayQuery.data?.orders) ? mondayQuery.data.orders : []
+    const mondayOrders = Array.isArray(bootstrapQuery.data?.mondaySnapshot?.orders) ? bootstrapQuery.data.mondaySnapshot.orders : []
     const orderNameById = new Map(mondayOrders.map((order) => [String(order.id), order.name]))
     const groupedPhotos = Array.isArray(photosIndexQuery.data?.orders) ? photosIndexQuery.data.orders : []
 
@@ -302,14 +303,14 @@ export default function PicturesPage() {
         name: orderNameById.get(String(group.orderId)) ?? `Order #${String(group.orderId)}`,
         photos: group.photos,
       }))
-  }, [mondayQuery.data, photosIndexQuery.data])
+  }, [bootstrapQuery.data, photosIndexQuery.data])
 
-  const generatedAt = mondayQuery.data?.generatedAt ?? photosIndexQuery.data?.generatedAt ?? null
+  const generatedAt = bootstrapQuery.data?.mondaySnapshot?.generatedAt ?? photosIndexQuery.data?.generatedAt ?? null
   const isLoading = photosIndexQuery.isLoading
   const isRefreshing = photosIndexQuery.isFetching && !photosIndexQuery.isLoading
   const loadingError = photosIndexQuery.isError
     ? readErrorMessage(photosIndexQuery.error, 'Failed to load pictures.')
-    : mondayQuery.isError
+    : bootstrapQuery.isError
       ? 'Loaded pictures, but could not refresh order names from Monday.'
       : null
 
@@ -337,7 +338,7 @@ export default function PicturesPage() {
     try {
       await deleteOrderPhoto(deleteTarget.orderId, deleteTarget.path)
       // Optimistically remove the photo from the cache — no refetch needed
-      queryClient.setQueryData<PhotosIndexResponse>(['pictures', 'photos-index'], (old) => {
+      queryClient.setQueryData<PhotosIndexResponse>(QUERY_KEYS.photosIndex, (old) => {
         if (!old) return old
         return {
           ...old,
@@ -517,8 +518,8 @@ export default function PicturesPage() {
         <Button
           variant="contained"
           onClick={() => {
-            void queryClient.invalidateQueries({ queryKey: ['pictures', 'photos-index'] })
-            void queryClient.invalidateQueries({ queryKey: ['dashboard', 'monday'] })
+            void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.photosIndex })
+            void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.dashboardBootstrap })
           }}
           startIcon={<RefreshRoundedIcon />}
           disabled={isRefreshing}

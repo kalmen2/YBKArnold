@@ -454,6 +454,18 @@ function withQuery(path: string, query: Record<string, string | number | null | 
 
 import { apiRequest } from '../api-client'
 
+export type CrmPageBootstrapResponse = {
+  overview: CrmOverviewResponse
+  imports: CrmImportRunRecord[]
+  conflicts: CrmConflictRecord[]
+  quotes: CrmQuote[]
+  orders: CrmOrder[]
+}
+
+export function fetchCrmPageBootstrap() {
+  return apiRequest<CrmPageBootstrapResponse>('/api/crm/page-bootstrap')
+}
+
 export function previewCrmImport(payload: unknown) {
   return apiRequest<CrmImportPreviewResponse>('/api/crm/imports/preview', {
     method: 'POST',

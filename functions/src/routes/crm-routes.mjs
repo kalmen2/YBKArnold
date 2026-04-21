@@ -3492,4 +3492,77 @@ export function registerCrmRoutes(app, deps) {
       next(error)
     }
   })
+
+  app.get('/api/crm/page-bootstrap', requireFirebaseAuth, requireAdminRole, async (_req, res, next) => {
+    try {
+      const {
+        crmAccountsCollection,
+        crmContactsCollection,
+        crmDuplicateQueueCollection,
+        crmImportRunsCollection,
+        crmQuotesCollection,
+        crmOrdersCollection,
+      } = await getCollections()
+
+      async function loadOverview() {
+        const cached = cacheGet(OVERVIEW_CACHE_KEY)
+        if (cached) {
+          return cached
+        }
+        const overview = await computeCrmOverview({
+          crmAccountsCollection,
+          crmContactsCollection,
+          crmDuplicateQueueCollection,
+          crmImportRunsCollection,
+          crmQuotesCollection,
+          crmOrdersCollection,
+        })
+        cacheSet(OVERVIEW_CACHE_KEY, overview, OVERVIEW_CACHE_TTL_MS)
+        return overview
+      }
+
+      const [overview, imports, conflicts, quotes, orders] = await Promise.all([
+        loadOverview(),
+        crmImportRunsCollection
+          .find(
+            {},
+            {
+              projection: {
+                _id: 0,
+                id: 1,
+                status: 1,
+                importedAt: 1,
+                importedByEmail: 1,
+                metadata: 1,
+                summary: 1,
+                conflictGroupCounts: 1,
+                writeSummary: 1,
+              },
+            },
+          )
+          .sort({ importedAt: -1 })
+          .limit(12)
+          .toArray(),
+        crmDuplicateQueueCollection
+          .find({ status: 'open' }, { projection: { _id: 0 } })
+          .sort({ createdAt: -1, sourceCount: -1 })
+          .limit(120)
+          .toArray(),
+        crmQuotesCollection
+          .find({}, { projection: { _id: 0 } })
+          .sort({ createdAt: -1, updatedAt: -1 })
+          .limit(200)
+          .toArray(),
+        crmOrdersCollection
+          .find({}, { projection: { _id: 0 } })
+          .sort({ createdAt: -1, updatedAt: -1 })
+          .limit(200)
+          .toArray(),
+      ])
+
+      return res.json({ overview, imports, conflicts, quotes, orders })
+    } catch (error) {
+      next(error)
+    }
+  })
 }

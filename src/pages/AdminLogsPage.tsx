@@ -22,13 +22,14 @@ import {
   Typography,
 } from '@mui/material'
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Navigate } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
 import { apiRequest } from '../features/api-client'
 import type { AppAuthUser } from '../auth/types'
 import { LoadingPanel } from '../components/LoadingPanel'
 import { StatusAlerts } from '../components/StatusAlerts'
-import { useDataLoader } from '../hooks/useDataLoader'
+import { QUERY_KEYS } from '../lib/queryKeys'
 import {
   approvalColor,
   approvalLabel,
@@ -277,32 +278,36 @@ export default function AdminLogsPage() {
   const [selectedUserEvents, setSelectedUserEvents] = useState<ActivityEvent[]>([])
 
 
-  const {
-    isLoading: isLoadingUsers,
-    isRefreshing,
-    errorMessage,
-    load: loadUsers,
-    setErrorMessage,
-  } = useDataLoader({
-    fetcher: useCallback(async () => {
-      const payload = await apiRequest<ListLogUsersResponse>('/api/auth/logs/users?limit=300')
-      return Array.isArray(payload.users) ? payload.users : []
-    }, []),
-    onSuccess: useCallback((nextUsers: UserLogSummary[]) => {
-      setUserSummaries(nextUsers)
-      setSelectedUid((currentSelectedUid) => {
-        if (currentSelectedUid && nextUsers.some((row) => row.user.uid === currentSelectedUid)) {
-          return currentSelectedUid
-        }
-        return nextUsers[0]?.user.uid ?? null
-      })
-    }, []),
-    onError: useCallback(() => {
-      setUserSummaries([])
-      setSelectedUid(null)
-    }, []),
-    fallbackErrorMessage: 'Failed to load logs users.',
+  const queryClient = useQueryClient()
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
+
+  const logsQuery = useQuery({
+    queryKey: QUERY_KEYS.authLogs(300),
+    queryFn: () => apiRequest<ListLogUsersResponse>('/api/auth/logs/users?limit=300'),
+    staleTime: 2 * 60 * 1000,
   })
+
+  const isLoadingUsers = logsQuery.isLoading
+  const isRefreshing = logsQuery.isFetching && !logsQuery.isLoading
+
+  useEffect(() => {
+    const data = logsQuery.data
+    if (!data) return
+    const nextUsers = Array.isArray(data.users) ? data.users : []
+    setUserSummaries(nextUsers)
+    setSelectedUid((currentSelectedUid) => {
+      if (currentSelectedUid && nextUsers.some((row) => row.user.uid === currentSelectedUid)) {
+        return currentSelectedUid
+      }
+      return nextUsers[0]?.user.uid ?? null
+    })
+  }, [logsQuery.data])
+
+  useEffect(() => {
+    if (logsQuery.error instanceof Error) {
+      setErrorMessage(logsQuery.error.message)
+    }
+  }, [logsQuery.error])
 
   const loadUserPanel = useCallback(
     async (targetUid: string) => {
@@ -385,7 +390,7 @@ export default function AdminLogsPage() {
           startIcon={<RefreshRoundedIcon />}
           disabled={isRefreshing}
           onClick={() => {
-            void loadUsers(true)
+            void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.authLogs(300) })
           }}
         >
           {isRefreshing ? 'Refreshing…' : 'Refresh'}

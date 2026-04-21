@@ -313,6 +313,50 @@ app.get('/api/dashboard/zendesk', requireFirebaseAuth, async (req, res, next) =>
   }
 })
 
+app.get('/api/dashboard/bootstrap', requireFirebaseAuth, async (req, res, next) => {
+  try {
+    const refreshRequested = isDashboardRefreshRequested(req)
+
+    async function loadMonday() {
+      let snapshot = null
+
+      if (!refreshRequested) {
+        snapshot = await getDashboardSnapshotFromCache('monday')
+      }
+
+      if (!snapshot) {
+        snapshot = await fetchMondayDashboardSnapshot()
+      }
+
+      const shopDrawingCacheByOrderId = await loadShopDrawingCacheByOrderId(
+        Array.isArray(snapshot?.orders) ? snapshot.orders.map((order) => order?.id) : [],
+      )
+      const enrichedSnapshot = enrichMondaySnapshotWithShopDrawingCache(snapshot, shopDrawingCacheByOrderId)
+      await setDashboardSnapshotCache('monday', enrichedSnapshot)
+      return enrichedSnapshot
+    }
+
+    async function loadZendesk() {
+      if (!refreshRequested) {
+        const cachedSnapshot = await getDashboardSnapshotFromCache('zendesk')
+        if (cachedSnapshot) {
+          return cachedSnapshot
+        }
+      }
+
+      const snapshot = await fetchZendeskTicketSummary()
+      await setDashboardSnapshotCache('zendesk', snapshot)
+      return snapshot
+    }
+
+    const [mondaySnapshot, zendeskSnapshot] = await Promise.all([loadMonday(), loadZendesk()])
+
+    return res.json({ mondaySnapshot, zendeskSnapshot })
+  } catch (error) {
+    next(error)
+  }
+})
+
 app.get('/api/support/alerts', requireFirebaseAuth, async (req, res, next) => {
   try {
     const refreshRequested = isDashboardRefreshRequested(req)

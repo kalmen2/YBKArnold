@@ -32,7 +32,8 @@ import {
   Typography,
 } from '@mui/material'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { QUERY_KEYS } from '../lib/queryKeys'
 import {
   type DashboardOrder,
 } from '../features/dashboard/api'
@@ -200,7 +201,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
   const [mondayOrders, setMondayOrders] = useState<DashboardOrder[]>([])
 
   const quickBooksQuery = useQuery({
-    queryKey: ['quickbooks', 'overview'],
+    queryKey: QUERY_KEYS.quickbooksOverview,
     queryFn: () => fetchQuickBooksOverview(),
     staleTime: 3 * 60 * 1000,
     enabled: canAccessManagerSheet,
@@ -289,42 +290,38 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     }
   }, [canAccessManagerSheet, worksheetTab])
 
-  const refreshState = useCallback(async () => {
-    setIsLoading(true)
+  const queryClient = useQueryClient()
 
-    try {
-      const payload = await fetchTimesheetBootstrap()
-
-      setWorkers(payload.workers)
-      setEntries(payload.entries)
-      setStages(payload.stages)
-      setOrderProgress(payload.orderProgress ?? [])
-      setMondayOrders(Array.isArray(payload.mondaySnapshot?.orders) ? payload.mondaySnapshot.orders : [])
-      setMissingReviewByKey(
-        buildMissingReviewMap(payload.missingWorkerReviews ?? []),
-      )
-      setWorkerViewWorkerId((current) => {
-        if (current && payload.workers.some((worker) => worker.id === current)) {
-          return current
-        }
-
-        return payload.workers[0]?.id ?? ''
-      })
-    } catch (requestError) {
-      const message =
-        requestError instanceof Error
-          ? requestError.message
-          : 'Failed to load timesheet data from backend.'
-      setError(message)
-    } finally {
-      setIsLoading(false)
-    }
-
-  }, [])
+  const bootstrapQuery = useQuery({
+    queryKey: QUERY_KEYS.timesheetBootstrap,
+    queryFn: () => fetchTimesheetBootstrap(),
+    staleTime: 3 * 60 * 1000,
+  })
 
   useEffect(() => {
-    void refreshState()
-  }, [refreshState])
+    const payload = bootstrapQuery.data
+    if (!payload) return
+    setWorkers(payload.workers)
+    setEntries(payload.entries)
+    setStages(payload.stages)
+    setOrderProgress(payload.orderProgress ?? [])
+    setMondayOrders(Array.isArray(payload.mondaySnapshot?.orders) ? payload.mondaySnapshot.orders : [])
+    setMissingReviewByKey(buildMissingReviewMap(payload.missingWorkerReviews ?? []))
+    setWorkerViewWorkerId((current) => {
+      if (current && payload.workers.some((worker) => worker.id === current)) {
+        return current
+      }
+      return payload.workers[0]?.id ?? ''
+    })
+    setIsLoading(false)
+  }, [bootstrapQuery.data])
+
+  useEffect(() => {
+    if (bootstrapQuery.error instanceof Error) {
+      setError(bootstrapQuery.error.message)
+      setIsLoading(false)
+    }
+  }, [bootstrapQuery.error])
 
   const workersById = useMemo(
     () => new Map(workers.map((worker) => [worker.id, worker])),
@@ -1342,7 +1339,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
       try {
         await deleteEntry(row.entryId)
 
-        await refreshState()
+        await queryClient.refetchQueries({ queryKey: QUERY_KEYS.timesheetBootstrap })
         setSuccess('Entry removed.')
       } catch (requestError) {
         const message =
@@ -1404,7 +1401,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     try {
       const response = await syncDailyEntries(bulkDate, syncRows)
 
-      await refreshState()
+      await queryClient.refetchQueries({ queryKey: QUERY_KEYS.timesheetBootstrap })
       setSuccess(formatDailySheetSaveMessage(response))
     } catch (requestError) {
       const message =
@@ -1429,7 +1426,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     try {
       await createStage({ name })
       setStageNameInput('')
-      await refreshState()
+      await queryClient.refetchQueries({ queryKey: QUERY_KEYS.timesheetBootstrap })
       setSuccess('Stage added.')
     } catch (requestError) {
       const message =
@@ -1453,7 +1450,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     try {
       await deleteStage(stageId)
 
-      await refreshState()
+      await queryClient.refetchQueries({ queryKey: QUERY_KEYS.timesheetBootstrap })
       setSuccess('Stage removed.')
     } catch (requestError) {
       const message =
@@ -1638,7 +1635,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
         ),
       )
 
-      await refreshState()
+      await queryClient.refetchQueries({ queryKey: QUERY_KEYS.timesheetBootstrap })
       setSuccess(`Manager progress saved for ${managerSelectedDate}.`)
     } catch (requestError) {
       const message =

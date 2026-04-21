@@ -30,8 +30,9 @@ import {
   type SupportTicketConversationSnapshot,
 } from '../features/support/api'
 import {
-  fetchZendeskTicketSummary,
+  fetchDashboardBootstrap,
 } from '../features/dashboard/api'
+import { QUERY_KEYS } from '../lib/queryKeys'
 
 type AlertBucketKey =
   | 'newOver24Hours'
@@ -168,8 +169,8 @@ export default function SupportPage() {
   })
 
   const zendeskQuery = useQuery({
-    queryKey: ['dashboard', 'zendesk'],
-    queryFn: () => fetchZendeskTicketSummary({ refresh: false }),
+    queryKey: QUERY_KEYS.dashboardBootstrap,
+    queryFn: () => fetchDashboardBootstrap({ refresh: false }),
     staleTime: 3 * 60 * 1000,
   })
 
@@ -187,7 +188,7 @@ export default function SupportPage() {
   const alertsSnapshot = alertsQuery.data ?? null
   const alertTicketsSnapshot = alertTicketsQuery.data ?? null
   const ticketsSnapshot = ticketsQuery.data ?? null
-  const zendeskSummarySnapshot = zendeskQuery.data ?? null
+  const zendeskSummarySnapshot = zendeskQuery.data?.zendeskSnapshot ?? null
   const conversationSnapshot = conversationQuery.data ?? null
 
   const isLoadingPage =
@@ -210,7 +211,7 @@ export default function SupportPage() {
 
   function handleRefresh() {
     void queryClient.invalidateQueries({ queryKey: ['support'] })
-    void queryClient.invalidateQueries({ queryKey: ['dashboard', 'zendesk'] })
+    void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.dashboardBootstrap })
   }
 
   // Scroll to a specific comment once the conversation loads
@@ -477,7 +478,7 @@ export default function SupportPage() {
                 variant="contained"
                 onClick={handleRefresh}
                 startIcon={<RefreshRoundedIcon />}
-                disabled={alertsQuery.isFetching || ticketsQuery.isFetching || zendeskQuery.isFetching}
+                disabled={alertsQuery.isFetching || ticketsQuery.isFetching || zendeskQuery.isFetching || alertTicketsQuery.isFetching}
               >
                 Refresh
               </Button>

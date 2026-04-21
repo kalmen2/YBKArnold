@@ -30,11 +30,11 @@ import {
 import { type ReactNode, useCallback, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  fetchMondayDashboardSnapshot,
-  fetchZendeskTicketSummary,
+  fetchDashboardBootstrap,
   type DashboardOrder,
 } from '../features/dashboard/api'
 import { formatDateTime } from '../lib/formatters'
+import { QUERY_KEYS } from '../lib/queryKeys'
 
 type DrilldownKey =
   | 'lateOrders'
@@ -118,37 +118,23 @@ export default function DashboardPage() {
   const queryClient = useQueryClient()
   const [activeDrilldown, setActiveDrilldown] = useState<DrilldownKey | null>(null)
 
-  const mondayQuery = useQuery({
-    queryKey: ['dashboard', 'monday'],
-    queryFn: () => fetchMondayDashboardSnapshot({ refresh: false }),
+  const bootstrapQuery = useQuery({
+    queryKey: QUERY_KEYS.dashboardBootstrap,
+    queryFn: () => fetchDashboardBootstrap({ refresh: false }),
     staleTime: 3 * 60 * 1000,
   })
 
-  const zendeskQuery = useQuery({
-    queryKey: ['dashboard', 'zendesk'],
-    queryFn: () => fetchZendeskTicketSummary({ refresh: false }),
-    staleTime: 3 * 60 * 1000,
-  })
-
-  const snapshot = mondayQuery.data ?? null
-  const zendeskSnapshot = zendeskQuery.data ?? null
-  const isLoading = (mondayQuery.isLoading || zendeskQuery.isLoading) && !snapshot && !zendeskSnapshot
-  const errorMessage = mondayQuery.error instanceof Error ? mondayQuery.error.message : null
-  const zendeskErrorMessage = zendeskQuery.error instanceof Error ? zendeskQuery.error.message : null
+  const snapshot = bootstrapQuery.data?.mondaySnapshot ?? null
+  const zendeskSnapshot = bootstrapQuery.data?.zendeskSnapshot ?? null
+  const isLoading = bootstrapQuery.isLoading
+  const errorMessage = bootstrapQuery.error instanceof Error ? bootstrapQuery.error.message : null
 
   const handleRefresh = useCallback(() => {
-    void Promise.all([
-      queryClient.fetchQuery({
-        queryKey: ['dashboard', 'monday'],
-        queryFn: () => fetchMondayDashboardSnapshot({ refresh: true }),
-        staleTime: 0,
-      }),
-      queryClient.fetchQuery({
-        queryKey: ['dashboard', 'zendesk'],
-        queryFn: () => fetchZendeskTicketSummary({ refresh: true }),
-        staleTime: 0,
-      }),
-    ])
+    void queryClient.fetchQuery({
+      queryKey: QUERY_KEYS.dashboardBootstrap,
+      queryFn: () => fetchDashboardBootstrap({ refresh: true }),
+      staleTime: 0,
+    })
   }, [queryClient])
 
   const dueInTwoWeeksOrders = useMemo(
@@ -297,7 +283,7 @@ export default function DashboardPage() {
             variant="contained"
             onClick={handleRefresh}
             startIcon={<RefreshRoundedIcon />}
-            disabled={mondayQuery.isFetching || zendeskQuery.isFetching}
+            disabled={bootstrapQuery.isFetching}
           >
             Refresh
           </Button>
@@ -306,10 +292,6 @@ export default function DashboardPage() {
 
       {errorMessage ? (
         <Alert severity="error">{errorMessage}</Alert>
-      ) : null}
-
-      {zendeskErrorMessage ? (
-        <Alert severity="warning">{zendeskErrorMessage}</Alert>
       ) : null}
 
       {isLoading ? (

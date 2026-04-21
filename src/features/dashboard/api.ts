@@ -99,6 +99,17 @@ function withRefreshQuery(path: string, refresh = false) {
   return `${path}${separator}refresh=1`
 }
 
+export type DashboardBootstrapResponse = {
+  mondaySnapshot: MondayDashboardSnapshot
+  zendeskSnapshot: ZendeskTicketSummarySnapshot
+}
+
+export function fetchDashboardBootstrap(options: DashboardFetchOptions = {}) {
+  return apiRequest<DashboardBootstrapResponse>(
+    withRefreshQuery('/api/dashboard/bootstrap', options.refresh === true),
+  )
+}
+
 export function fetchMondayDashboardSnapshot(options: DashboardFetchOptions = {}) {
   return apiRequest<MondayDashboardSnapshot>(
     withRefreshQuery('/api/dashboard/monday', options.refresh === true),

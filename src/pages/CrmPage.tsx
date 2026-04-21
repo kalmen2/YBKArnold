@@ -27,36 +27,29 @@ import {
   TextField,
   Typography,
 } from '@mui/material'
-import { type ChangeEvent, type ReactNode, useCallback, useMemo, useState } from 'react'
+import { type ChangeEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link as RouterLink, Navigate } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
 import {
   commitCrmImport,
   createCrmOrder,
   createCrmQuote,
-  fetchCrmConflicts,
-  fetchCrmImports,
-  fetchCrmOrders,
-  fetchCrmOverview,
-  fetchCrmQuotes,
+  fetchCrmPageBootstrap,
   previewCrmImport,
   updateCrmOrder,
   updateCrmQuote,
   type CrmConflictGroup,
-  type CrmConflictRecord,
   type CrmImportPreviewResponse,
-  type CrmImportRunRecord,
   type CrmOrder,
   type CrmOrderStatus,
-  type CrmOverviewResponse,
-  type CrmQuote,
   type CrmQuoteStatus,
 } from '../features/crm/api'
 import { invalidateCrmDealersCache, useCrmDealers } from '../features/crm/CrmDealersContext'
 import { LoadingPanel } from '../components/LoadingPanel'
 import { StatusAlerts } from '../components/StatusAlerts'
-import { useDataLoader } from '../hooks/useDataLoader'
 import { formatCurrency, formatDateTime, formatStatusLabel } from '../lib/formatters'
+import { QUERY_KEYS } from '../lib/queryKeys'
 
 const importConfirmPhrase = 'I_UNDERSTAND_IMPORT_OVERWRITES'
 const quoteStatusOptions: CrmQuoteStatus[] = ['draft', 'sent', 'accepted', 'rejected', 'cancelled']
@@ -169,11 +162,6 @@ export default function CrmPage() {
   const { appUser } = useAuth()
   const { dealers, refetch: refetchDealers } = useCrmDealers()
 
-  const [overview, setOverview] = useState<CrmOverviewResponse | null>(null)
-  const [quotes, setQuotes] = useState<CrmQuote[]>([])
-  const [orders, setOrders] = useState<CrmOrder[]>([])
-  const [importRuns, setImportRuns] = useState<CrmImportRunRecord[]>([])
-  const [openConflicts, setOpenConflicts] = useState<CrmConflictRecord[]>([])
 
   const [isPreviewing, setIsPreviewing] = useState(false)
   const [isCommittingImport, setIsCommittingImport] = useState(false)
@@ -208,39 +196,29 @@ export default function CrmPage() {
     [dealers],
   )
 
-  const { isLoading, isRefreshing, errorMessage, load: loadCrmPageData, setErrorMessage } = useDataLoader({
-    fetcher: useCallback(async () => {
-      const [overviewPayload, importsPayload, conflictsPayload, quotesPayload, ordersPayload] = await Promise.all([
-        fetchCrmOverview(),
-        fetchCrmImports(12),
-        fetchCrmConflicts('open', 120),
-        fetchCrmQuotes({ limit: 200 }),
-        fetchCrmOrders({ limit: 200 }),
-      ])
-      return { overviewPayload, importsPayload, conflictsPayload, quotesPayload, ordersPayload }
-    }, []),
-    onSuccess: useCallback(({ overviewPayload, importsPayload, conflictsPayload, quotesPayload, ordersPayload }: {
-      overviewPayload: CrmOverviewResponse
-      importsPayload: { imports: CrmImportRunRecord[] }
-      conflictsPayload: { conflicts: CrmConflictRecord[] }
-      quotesPayload: { quotes: CrmQuote[] }
-      ordersPayload: { orders: CrmOrder[] }
-    }) => {
-      setOverview(overviewPayload)
-      setImportRuns(Array.isArray(importsPayload.imports) ? importsPayload.imports : [])
-      setOpenConflicts(Array.isArray(conflictsPayload.conflicts) ? conflictsPayload.conflicts : [])
-      setQuotes(Array.isArray(quotesPayload.quotes) ? quotesPayload.quotes : [])
-      setOrders(Array.isArray(ordersPayload.orders) ? ordersPayload.orders : [])
-    }, []),
-    onError: useCallback(() => {
-      setOverview(null)
-      setQuotes([])
-      setOrders([])
-      setImportRuns([])
-      setOpenConflicts([])
-    }, []),
-    fallbackErrorMessage: 'Failed to load CRM data.',
+  const queryClient = useQueryClient()
+
+  const bootstrapQuery = useQuery({
+    queryKey: QUERY_KEYS.crmPageBootstrap,
+    queryFn: () => fetchCrmPageBootstrap(),
+    staleTime: 3 * 60 * 1000,
   })
+
+  const overview = bootstrapQuery.data?.overview ?? null
+  const quotes = bootstrapQuery.data?.quotes ?? []
+  const orders = bootstrapQuery.data?.orders ?? []
+  const importRuns = bootstrapQuery.data?.imports ?? []
+  const openConflicts = bootstrapQuery.data?.conflicts ?? []
+  const isLoading = bootstrapQuery.isLoading
+  const isRefreshing = bootstrapQuery.isFetching && !bootstrapQuery.isLoading
+
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (bootstrapQuery.error instanceof Error) {
+      setErrorMessage(bootstrapQuery.error.message)
+    }
+  }, [bootstrapQuery.error])
 
   const handleImportFileChange = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
@@ -330,14 +308,14 @@ export default function CrmPage() {
 
       invalidateCrmDealersCache()
       refetchDealers()
-      await loadCrmPageData(true)
+      void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.crmPageBootstrap })
       setConfirmText('')
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Import commit failed.')
     } finally {
       setIsCommittingImport(false)
     }
-  }, [confirmText, importPayload, loadCrmPageData, previewResult])
+  }, [confirmText, importPayload, previewResult, queryClient, refetchDealers])
 
   const handleCreateQuote = useCallback(async () => {
     const normalizedTitle = quoteTitle.trim()
@@ -376,13 +354,13 @@ export default function CrmPage() {
       setQuoteNumber('')
       setQuoteAmountInput('')
       setQuoteStatus('sent')
-      await loadCrmPageData(true)
+      void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.crmPageBootstrap })
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Failed to create quote.')
     } finally {
       setIsSavingQuote(false)
     }
-  }, [loadCrmPageData, quoteAmountInput, quoteDealerSourceId, quoteNumber, quoteStatus, quoteTitle])
+  }, [quoteAmountInput, quoteDealerSourceId, quoteNumber, quoteStatus, quoteTitle, queryClient])
 
   const handleQuoteStatusUpdate = useCallback(async (quoteId: string, nextStatus: CrmQuoteStatus) => {
     setErrorMessage(null)
@@ -395,13 +373,13 @@ export default function CrmPage() {
       })
 
       setActionMessage(`Quote status updated to ${formatStatusLabel(nextStatus)}.`)
-      await loadCrmPageData(true)
+      void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.crmPageBootstrap })
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Failed to update quote status.')
     } finally {
       setUpdatingQuoteId(null)
     }
-  }, [loadCrmPageData])
+  }, [queryClient])
 
   const handleCreateOrder = useCallback(async () => {
     const normalizedTitle = orderTitle.trim()
@@ -450,13 +428,13 @@ export default function CrmPage() {
       setOrderValueInput('')
       setOrderProgressInput('')
       setOrderStatus('pending')
-      await loadCrmPageData(true)
+      void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.crmPageBootstrap })
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Failed to create order.')
     } finally {
       setIsSavingOrder(false)
     }
-  }, [loadCrmPageData, orderDealerSourceId, orderNumber, orderProgressInput, orderStatus, orderTitle, orderValueInput])
+  }, [orderDealerSourceId, orderNumber, orderProgressInput, orderStatus, orderTitle, orderValueInput, queryClient])
 
   const handleOrderStatusUpdate = useCallback(async (orderId: string, nextStatus: CrmOrderStatus) => {
     setErrorMessage(null)
@@ -469,13 +447,13 @@ export default function CrmPage() {
       })
 
       setActionMessage(`Order status updated to ${formatStatusLabel(nextStatus)}.`)
-      await loadCrmPageData(true)
+      void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.crmPageBootstrap })
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Failed to update order status.')
     } finally {
       setUpdatingOrderId(null)
     }
-  }, [loadCrmPageData])
+  }, [queryClient])
 
   const handleOrderProgressUpdate = useCallback(async (order: CrmOrder) => {
     const promptValue = window.prompt('Set order progress (0-100):', String(order.progressPercent ?? 0))
@@ -501,13 +479,13 @@ export default function CrmPage() {
       })
 
       setActionMessage('Order progress updated.')
-      await loadCrmPageData(true)
+      void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.crmPageBootstrap })
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Failed to update order progress.')
     } finally {
       setUpdatingOrderId(null)
     }
-  }, [loadCrmPageData])
+  }, [queryClient])
 
   const topDealersByAcceptedValue = useMemo(() => {
     return overview?.quotes.topDealersByAcceptedValue ?? []
@@ -551,7 +529,7 @@ export default function CrmPage() {
               startIcon={<RefreshRoundedIcon />}
               disabled={isLoading || isRefreshing}
               onClick={() => {
-                void loadCrmPageData(true)
+                void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.crmPageBootstrap })
               }}
             >
               {isRefreshing ? 'Refreshing...' : 'Refresh'}

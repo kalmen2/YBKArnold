@@ -28,12 +28,14 @@ import {
 } from '@mui/material'
 import { LoadingPanel } from '../components/LoadingPanel'
 import { StatusAlerts } from '../components/StatusAlerts'
-import { useCallback, useMemo, useState } from 'react'
-import { useDataLoader } from '../hooks/useDataLoader'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Navigate } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
 import { apiRequest } from '../features/api-client'
+import { fetchAuthBootstrap } from '../features/auth/api'
 import type { AppAuthRole, AppAuthUser } from '../auth/types'
+import { QUERY_KEYS } from '../lib/queryKeys'
 import {
   approvalColor,
   approvalLabel,
@@ -43,21 +45,12 @@ import {
   roleLabel,
 } from '../lib/formatters'
 
-type ListUsersResponse = {
-  users: AppAuthUser[]
-  ownerEmail?: string
-}
-
 type AdminWorkerOption = {
   id: string
   workerNumber: string | null
   fullName: string
   role: string
   email: string
-}
-
-type ListWorkersResponse = {
-  workers: AdminWorkerOption[]
 }
 
 type ClientAccessMode = 'web_and_app' | 'web_only' | 'app_only'
@@ -124,24 +117,30 @@ export default function AdminUsersPage() {
   const [actionsTarget, setActionsTarget] = useState<AppAuthUser | null>(null)
 
 
-  const { isLoading, isRefreshing, errorMessage, load: loadUsers, setErrorMessage } = useDataLoader({
-    fetcher: useCallback(async () => {
-      const [usersPayload, workersPayload] = await Promise.all([
-        apiRequest<ListUsersResponse>('/api/auth/users'),
-        apiRequest<ListWorkersResponse>('/api/auth/workers'),
-      ])
-      return { users: usersPayload.users, workers: workersPayload.workers }
-    }, []),
-    onSuccess: useCallback(({ users, workers }: { users: AppAuthUser[]; workers: AdminWorkerOption[] }) => {
-      setUsers(Array.isArray(users) ? users : [])
-      setWorkerOptions(Array.isArray(workers) ? workers : [])
-    }, []),
-    onError: useCallback(() => {
-      setUsers([])
-      setWorkerOptions([])
-    }, []),
-    fallbackErrorMessage: 'Failed to load users.',
+  const queryClient = useQueryClient()
+
+  const bootstrapQuery = useQuery({
+    queryKey: QUERY_KEYS.authBootstrap,
+    queryFn: () => fetchAuthBootstrap(),
+    staleTime: 2 * 60 * 1000,
   })
+
+  const isLoading = bootstrapQuery.isLoading
+  const isRefreshing = bootstrapQuery.isFetching && !bootstrapQuery.isLoading
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
+
+  useEffect(() => {
+    const data = bootstrapQuery.data
+    if (!data) return
+    setUsers(Array.isArray(data.users) ? data.users : [])
+    setWorkerOptions(Array.isArray(data.workers) ? data.workers : [])
+  }, [bootstrapQuery.data])
+
+  useEffect(() => {
+    if (bootstrapQuery.error instanceof Error) {
+      setErrorMessage(bootstrapQuery.error.message)
+    }
+  }, [bootstrapQuery.error])
 
   const handleApprove = useCallback(
     async (targetUid: string, role: AppAuthRole, confirmAdminPromotion = false) => {
@@ -494,7 +493,7 @@ export default function AdminUsersPage() {
 
         <Button
           variant="contained"
-          onClick={() => void loadUsers(true)}
+          onClick={() => void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.authBootstrap })}
           startIcon={<RefreshRoundedIcon />}
           disabled={isRefreshing}
         >
