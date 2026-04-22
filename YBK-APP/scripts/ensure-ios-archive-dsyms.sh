@@ -2,7 +2,15 @@
 set -eu
 
 ARCHIVE_PATH="${1:-ios/build/Arnold.xcarchive}"
-FRAMEWORKS_DIR="$ARCHIVE_PATH/Products/Applications/Arnold.app/Frameworks"
+APP_BUNDLE_GLOB="$ARCHIVE_PATH/Products/Applications"/*.app
+set -- $APP_BUNDLE_GLOB
+
+if [ ! -d "$1" ]; then
+  echo "App bundle not found in archive: $ARCHIVE_PATH/Products/Applications" >&2
+  exit 1
+fi
+
+FRAMEWORKS_DIR="$1/Frameworks"
 DSYMS_DIR="$ARCHIVE_PATH/dSYMs"
 
 if [ ! -d "$FRAMEWORKS_DIR" ]; then

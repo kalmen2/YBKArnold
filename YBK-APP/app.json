@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Arnold",
+    "name": "Arnold Contract",
     "slug": "YBK-APP",
     "scheme": "com.ybk.arnold",
     "version": "1.6",
@@ -30,6 +30,7 @@
       "buildNumber": "20",
       "usesAppleSignIn": true,
       "infoPlist": {
+        "CFBundleDisplayName": "Arnold Contract",
         "ITSAppUsesNonExemptEncryption": false
       }
     },
