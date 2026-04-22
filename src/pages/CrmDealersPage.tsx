@@ -1,7 +1,6 @@
 import ContactsRoundedIcon from '@mui/icons-material/ContactsRounded'
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
 import EditRoundedIcon from '@mui/icons-material/EditRounded'
-import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded'
 import FacebookRoundedIcon from '@mui/icons-material/FacebookRounded'
 import LanguageRoundedIcon from '@mui/icons-material/LanguageRounded'
 import LinkedInIcon from '@mui/icons-material/LinkedIn'
@@ -19,7 +18,6 @@ import {
   Box,
   Button,
   Chip,
-  Collapse,
   CircularProgress,
   Dialog,
   DialogActions,
@@ -57,12 +55,13 @@ import { firebaseStorage } from '../auth/firebase'
 import { StatusAlerts } from '../components/StatusAlerts'
 import { useDataLoader } from '../hooks/useDataLoader'
 import { useDebounceValue } from '../hooks/useDebounceValue'
-import { formatDate, formatStatusLabel } from '../lib/formatters'
+import { formatCurrency, formatDate, formatStatusLabel } from '../lib/formatters'
 import {
   createCrmDealerContact,
   fetchCrmDealerDetail,
   fetchCrmDealers,
   fetchCrmOrders,
+  fetchCrmQuotes,
   removeCrmContact,
   updateCrmContact,
   updateCrmDealer,
@@ -70,6 +69,7 @@ import {
   type CrmDealerDetailResponse,
   type CrmDealersResponse,
   type CrmOrder,
+  type CrmQuote,
 } from '../features/crm/api'
 
 function resolveSocialVisual(platform: string, href: string) {
@@ -400,14 +400,16 @@ export default function CrmDealersPage() {
   const [selectedDealerId, setSelectedDealerId] = useState('')
   const [dealerDetail, setDealerDetail] = useState<CrmDealerDetailResponse | null>(null)
 
+  const [dealerQuotes, setDealerQuotes] = useState<CrmQuote[]>([])
   const [dealerOrders, setDealerOrders] = useState<CrmOrder[]>([])
-  const [detailsTab, setDetailsTab] = useState<'contacts' | 'orders'>('contacts')
-  const [isAccountInfoExpanded, setIsAccountInfoExpanded] = useState(true)
+  const [detailsTab, setDetailsTab] = useState<'info' | 'contacts' | 'quotes' | 'orders'>('info')
 
   const [isLoadingDetail, setIsLoadingDetail] = useState(false)
   const [isLoadingSalesData, setIsLoadingSalesData] = useState(false)
+  const [isLoadingQuotesData, setIsLoadingQuotesData] = useState(false)
 
   const [salesDataError, setSalesDataError] = useState<string | null>(null)
+  const [quotesDataError, setQuotesDataError] = useState<string | null>(null)
 
   const [dealerPage, setDealerPage] = useState(0)
   const [dealerRowsPerPage, setDealerRowsPerPage] = useState(25)
@@ -419,6 +421,7 @@ export default function CrmDealersPage() {
   const [includeArchivedContacts, setIncludeArchivedContacts] = useState(false)
   const [contactPage, setContactPage] = useState(0)
   const [contactRowsPerPage, setContactRowsPerPage] = useState(25)
+  const desktopPanelsHeight = 'calc(100vh - 300px)'
 
   const [dealerForm, setDealerForm] = useState<DealerFormState | null>(null)
   const [dealerFormSavedSnapshot, setDealerFormSavedSnapshot] = useState('')
@@ -431,6 +434,8 @@ export default function CrmDealersPage() {
   dealerFormRef.current = dealerForm
   const dealerFormSavedSnapshotRef = useRef('')
   dealerFormSavedSnapshotRef.current = dealerFormSavedSnapshot
+  const selectedDealerIdRef = useRef(selectedDealerId)
+  selectedDealerIdRef.current = selectedDealerId
 
   const [contactEditorMode, setContactEditorMode] = useState<'create' | 'edit' | null>(null)
   const [editingContactSourceId, setEditingContactSourceId] = useState('')
@@ -440,11 +445,14 @@ export default function CrmDealersPage() {
 
   useEffect(() => {
     const requestedDealerId = searchParams.get('dealerSourceId')?.trim() ?? ''
-    if (requestedDealerId && requestedDealerId !== selectedDealerId) {
+    if (requestedDealerId) {
       setSelectedDealerId(requestedDealerId)
       setContactPage(0)
     }
-  }, [searchParams, selectedDealerId])
+    // Intentionally excludes selectedDealerId: this effect seeds the selection from
+    // the URL when navigating here (e.g. from the contacts page). It must NOT re-run
+    // when the user clicks a different dealer, or the URL would override their click.
+  }, [searchParams])
 
   useEffect(() => {
     setIsAccountEditing(false)
@@ -452,6 +460,13 @@ export default function CrmDealersPage() {
 
   useEffect(() => {
     setDealerPictureUploadError(null)
+  }, [selectedDealerId])
+
+  useEffect(() => {
+    setDealerQuotes([])
+    setDealerOrders([])
+    setQuotesDataError(null)
+    setSalesDataError(null)
   }, [selectedDealerId])
 
   useEffect(() => {
@@ -466,13 +481,22 @@ export default function CrmDealersPage() {
     }), [dealerPage, dealerRowsPerPage, dealerSearch]),
     onSuccess: useCallback((response: CrmDealersResponse) => {
       const nextDealers = Array.isArray(response.dealers) ? response.dealers : []
+      const normalizedTotal = typeof response.total === 'number' && Number.isFinite(response.total)
+        ? Math.max(0, response.total)
+        : null
+      const normalizedOffset = typeof response.offset === 'number' && Number.isFinite(response.offset)
+        ? Math.max(0, response.offset)
+        : dealerPage * dealerRowsPerPage
+      const visibleCount = normalizedOffset + nextDealers.length
+      const effectiveTotal = normalizedTotal ?? (response.hasMore ? visibleCount + 1 : visibleCount)
+
       setDealers(nextDealers)
-      setDealersTotal(Number(response.total ?? nextDealers.length))
+      setDealersTotal(effectiveTotal)
       setSelectedDealerId((current) => {
         if (!current && nextDealers.length > 0) return nextDealers[0].sourceId
         return current
       })
-    }, []),
+    }, [dealerPage, dealerRowsPerPage]),
     onError: useCallback(() => {
       setDealers([])
       setDealersTotal(0)
@@ -488,6 +512,7 @@ export default function CrmDealersPage() {
       return
     }
 
+    const fetchingForId = selectedDealerId
     setErrorMessage(null)
     setIsLoadingDetail(true)
 
@@ -498,6 +523,10 @@ export default function CrmDealersPage() {
         contactOffset: contactPage * contactRowsPerPage,
         contactLimit: contactRowsPerPage,
       })
+
+      if (selectedDealerIdRef.current !== fetchingForId) {
+        return
+      }
 
       setDealerDetail(response)
 
@@ -515,10 +544,15 @@ export default function CrmDealersPage() {
         setDealerForm(nextDealerForm)
         setDealerFormSavedSnapshot(serializeDealerFormState(nextDealerForm))
       }
+
+      setIsLoadingDetail(false)
     } catch (error) {
+      if (selectedDealerIdRef.current !== fetchingForId) {
+        return
+      }
+
       setDealerDetail(null)
       setErrorMessage(error instanceof Error ? error.message : 'Failed to load account details.')
-    } finally {
       setIsLoadingDetail(false)
     }
   }, [
@@ -537,17 +571,58 @@ export default function CrmDealersPage() {
       return
     }
 
+    const fetchingForId = selectedDealerId
     setSalesDataError(null)
     setIsLoadingSalesData(true)
 
     try {
       const ordersPayload = await fetchCrmOrders({ dealerSourceId: selectedDealerId, limit: 150 })
+
+      if (selectedDealerIdRef.current !== fetchingForId) {
+        return
+      }
+
       setDealerOrders(Array.isArray(ordersPayload.orders) ? ordersPayload.orders : [])
+      setIsLoadingSalesData(false)
     } catch (error) {
+      if (selectedDealerIdRef.current !== fetchingForId) {
+        return
+      }
+
       setDealerOrders([])
       setSalesDataError(error instanceof Error ? error.message : 'Failed to load orders.')
-    } finally {
       setIsLoadingSalesData(false)
+    }
+  }, [selectedDealerId])
+
+  const loadDealerQuotesData = useCallback(async () => {
+    if (!selectedDealerId) {
+      setDealerQuotes([])
+      setQuotesDataError(null)
+      return
+    }
+
+    const fetchingForId = selectedDealerId
+    setQuotesDataError(null)
+    setIsLoadingQuotesData(true)
+
+    try {
+      const quotesPayload = await fetchCrmQuotes({ dealerSourceId: selectedDealerId, limit: 150 })
+
+      if (selectedDealerIdRef.current !== fetchingForId) {
+        return
+      }
+
+      setDealerQuotes(Array.isArray(quotesPayload.quotes) ? quotesPayload.quotes : [])
+      setIsLoadingQuotesData(false)
+    } catch (error) {
+      if (selectedDealerIdRef.current !== fetchingForId) {
+        return
+      }
+
+      setDealerQuotes([])
+      setQuotesDataError(error instanceof Error ? error.message : 'Failed to load quotes.')
+      setIsLoadingQuotesData(false)
     }
   }, [selectedDealerId])
 
@@ -558,8 +633,13 @@ export default function CrmDealersPage() {
   useEffect(() => {
     if (detailsTab === 'orders') {
       void loadDealerSalesData()
+      return
     }
-  }, [loadDealerSalesData, detailsTab])
+
+    if (detailsTab === 'quotes') {
+      void loadDealerQuotesData()
+    }
+  }, [detailsTab, loadDealerQuotesData, loadDealerSalesData])
 
   const selectedDealer = dealerDetail?.dealer ?? null
   const contactsPageLink = selectedDealerId
@@ -569,6 +649,13 @@ export default function CrmDealersPage() {
   const orderRows = useMemo(
     () => [...dealerOrders].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()),
     [dealerOrders],
+  )
+
+  const canGoToNextDealerPage = (dealerPage + 1) * dealerRowsPerPage < dealersTotal
+
+  const quoteRows = useMemo(
+    () => [...dealerQuotes].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()),
+    [dealerQuotes],
   )
 
   const dealerFormSnapshot = useMemo(
@@ -993,6 +1080,7 @@ export default function CrmDealersPage() {
               onClick={() => {
                 void loadDealers(true)
                 void loadDealerDetail()
+                void loadDealerQuotesData()
                 void loadDealerSalesData()
               }}
             >
@@ -1020,9 +1108,13 @@ export default function CrmDealersPage() {
             p: 1.5,
             borderColor: (theme) => alpha(theme.palette.primary.main, 0.22),
             background: (theme) => `linear-gradient(180deg, ${alpha(theme.palette.primary.main, 0.06)} 0%, ${theme.palette.background.paper} 36%)`,
+            height: { xs: 'auto', xl: desktopPanelsHeight },
+            overflow: { xs: 'visible', xl: 'hidden' },
+            display: 'flex',
+            flexDirection: 'column',
           }}
         >
-          <Stack spacing={1.25}>
+          <Stack spacing={1.25} sx={{ height: '100%', minHeight: 0 }}>
             <Typography variant="h6" sx={{ fontWeight: 700 }}>
               Account Names
             </Typography>
@@ -1040,7 +1132,9 @@ export default function CrmDealersPage() {
               <Paper
                 variant="outlined"
                 sx={{
-                  maxHeight: { xs: 320, xl: 640 },
+                  flex: 1,
+                  minHeight: 0,
+                  maxHeight: { xs: 320, xl: 'none' },
                   overflow: 'auto',
                 }}
               >
@@ -1112,8 +1206,33 @@ export default function CrmDealersPage() {
                 setDealerRowsPerPage(Number(event.target.value))
                 setDealerPage(0)
               }}
+              showFirstButton
+              showLastButton
               rowsPerPageOptions={[25, 50, 100]}
             />
+
+            <Stack direction="row" justifyContent="space-between" sx={{ px: 0.5 }}>
+              <Button
+                size="small"
+                variant="outlined"
+                disabled={dealerPage === 0}
+                onClick={() => {
+                  setDealerPage((current) => Math.max(0, current - 1))
+                }}
+              >
+                Previous
+              </Button>
+              <Button
+                size="small"
+                variant="outlined"
+                disabled={!canGoToNextDealerPage}
+                onClick={() => {
+                  setDealerPage((current) => current + 1)
+                }}
+              >
+                Next
+              </Button>
+            </Stack>
           </Stack>
         </Paper>
 
@@ -1122,6 +1241,8 @@ export default function CrmDealersPage() {
           sx={{
             p: 1.5,
             borderColor: (theme) => alpha(theme.palette.primary.main, 0.22),
+            height: { xs: 'auto', xl: desktopPanelsHeight },
+            overflow: { xs: 'visible', xl: 'auto' },
           }}
         >
           {!selectedDealerId ? (
@@ -1222,50 +1343,92 @@ export default function CrmDealersPage() {
                         startIcon={<EditRoundedIcon fontSize="small" />}
                         disabled={isLoadingDetail || !dealerForm}
                         onClick={() => {
+                          setDetailsTab('info')
                           setIsAccountEditing(true)
                         }}
                       >
                         Edit
                       </Button>
                     )}
-
-                    <Tooltip
-                      title={isAccountInfoExpanded ? 'Collapse account info' : 'Expand account info'}
-                      arrow
-                    >
-                      <IconButton
-                        size="small"
-                        onClick={() => {
-                          setIsAccountInfoExpanded((current) => !current)
-                        }}
-                        aria-label={isAccountInfoExpanded ? 'Collapse account info' : 'Expand account info'}
-                        sx={{
-                          border: '1px solid',
-                          borderColor: 'divider',
-                          bgcolor: 'background.paper',
-                          transition: 'transform 0.2s ease',
-                          transform: isAccountInfoExpanded ? 'rotate(180deg)' : 'rotate(0deg)',
-                        }}
-                      >
-                        <ExpandMoreRoundedIcon fontSize="small" />
-                      </IconButton>
-                    </Tooltip>
                   </Stack>
                 </Stack>
               </Paper>
 
-              <Collapse in={isAccountInfoExpanded} timeout="auto" unmountOnExit>
-                {dealerForm ? (
-                  <fieldset
-                    disabled={!isAccountEditing || isSavingDealer}
-                    style={{
-                      border: 0,
-                      padding: 0,
-                      margin: 0,
-                      minInlineSize: 0,
-                    }}
-                  >
-                    <Stack spacing={1} sx={{ opacity: isAccountEditing ? 1 : 0.82 }}>
+              <Box
+                sx={{
+                  display: 'flex',
+                  justifyContent: { xs: 'flex-start', md: 'flex-end' },
+                }}
+              >
+                <Tabs
+                  value={detailsTab}
+                  onChange={(_event, nextValue: 'info' | 'contacts' | 'quotes' | 'orders') => {
+                    setDetailsTab(nextValue)
+                  }}
+                  variant="scrollable"
+                  allowScrollButtonsMobile
+                  sx={{
+                    minHeight: 32,
+                    '& .MuiTabs-flexContainer': {
+                      gap: 0.4,
+                    },
+                    '& .MuiTab-root': {
+                      minHeight: 32,
+                      py: 0.25,
+                      px: 1,
+                      fontSize: 12,
+                      lineHeight: 1.2,
+                      textTransform: 'none',
+                    },
+                  }}
+                >
+                  <Tab value="info" label="Dealer Info" />
+                  <Tab value="contacts" label={`Contacts (${dealerDetail?.contactsTotal ?? 0})`} />
+                  <Tab value="quotes" label={`Quotes (${dealerQuotes.length})`} />
+                  <Tab value="orders" label={`Orders (${dealerOrders.length})`} />
+                </Tabs>
+              </Box>
+
+              <Divider />
+
+              {detailsTab === 'info' ? (
+                dealerForm ? (
+                  <Box sx={{ position: 'relative' }}>
+                    {!isAccountEditing ? (
+                      <Tooltip title="Click Edit to make account changes." arrow placement="top">
+                        <Box
+                          role="button"
+                          tabIndex={0}
+                          aria-label="Account fields are read-only. Click Edit to change values."
+                          onClick={(event) => {
+                            event.preventDefault()
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault()
+                            }
+                          }}
+                          sx={{
+                            position: 'absolute',
+                            inset: 0,
+                            zIndex: 2,
+                            cursor: 'not-allowed',
+                            borderRadius: 1,
+                          }}
+                        />
+                      </Tooltip>
+                    ) : null}
+
+                    <fieldset
+                      disabled={!isAccountEditing || isSavingDealer}
+                      style={{
+                        border: 0,
+                        padding: 0,
+                        margin: 0,
+                        minInlineSize: 0,
+                      }}
+                    >
+                      <Stack spacing={1} sx={{ opacity: isAccountEditing ? 1 : 0.82 }}>
                       <Box
                         sx={{
                           display: 'grid',
@@ -1291,214 +1454,229 @@ export default function CrmDealersPage() {
                         <TextField size="small" label="Zip" value={dealerForm.zip} onChange={(e) => setDealerTextField('zip', e.target.value)} />
                         <TextField size="small" label="Country" value={dealerForm.country} onChange={(e) => setDealerTextField('country', e.target.value)} />
 
+                      </Box>
+
+                      <Box
+                        sx={{
+                          display: 'grid',
+                          gridTemplateColumns: {
+                            xs: '1fr',
+                            md: 'repeat(2, minmax(0, 1fr))',
+                          },
+                          gap: 0.7,
+                          alignItems: 'start',
+                        }}
+                      >
                         <Box
                           sx={{
-                            gridColumn: '1 / -1',
-                            border: '1px solid',
+                            border: 1,
                             borderColor: 'divider',
                             borderRadius: 1,
-                            p: 1,
+                            p: 0.8,
                           }}
                         >
-                          <Stack
-                            direction={{ xs: 'column', sm: 'row' }}
-                            spacing={1}
-                            alignItems={{ xs: 'flex-start', sm: 'center' }}
-                            justifyContent="space-between"
-                          >
-                            <Stack direction="row" spacing={1} alignItems="center">
-                              <Avatar
-                                src={dealerForm.pictureUrl || undefined}
-                                alt={dealerForm.name || dealerForm.sourceId}
-                                sx={{ width: 52, height: 52, fontSize: 18 }}
-                                imgProps={{ loading: 'lazy', referrerPolicy: 'no-referrer' }}
-                              >
-                                {(dealerForm.name || dealerForm.sourceId || '?').charAt(0).toUpperCase()}
-                              </Avatar>
+                          <Stack spacing={0.8}>
+                            <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                              Social links
+                            </Typography>
 
-                              <Stack spacing={0.15}>
-                                <Typography variant="body2" sx={{ fontWeight: 700 }}>
-                                  Account picture
-                                </Typography>
-                                <Typography variant="caption" color="text.secondary">
-                                  Upload a picture and it is stored in Firebase Storage automatically.
-                                </Typography>
-                                {dealerPictureUploadError ? (
-                                  <Typography variant="caption" color="error.main">
-                                    {dealerPictureUploadError}
-                                  </Typography>
-                                ) : null}
-                              </Stack>
-                            </Stack>
+                            {dealerForm.socialLinks.length === 0 ? (
+                              <Typography variant="body2" color="text.secondary">
+                                No social links yet.
+                              </Typography>
+                            ) : null}
 
-                            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.6}>
-                              <Button
-                                size="small"
-                                variant="outlined"
-                                component="label"
-                                disabled={isUploadingDealerPicture}
-                              >
-                                {isUploadingDealerPicture ? 'Uploading...' : (dealerForm.pictureUrl ? 'Change picture' : 'Upload picture')}
-                                <input
-                                  hidden
-                                  accept="image/*"
-                                  type="file"
-                                  onChange={handleDealerPictureUpload}
-                                />
-                              </Button>
+                            {dealerForm.socialLinks.map((entry, index) => {
+                              const selectedPlatform = resolveSocialPlatformChoice(entry.platform)
+                              const platformLabel = socialPlatformOptions.find((c) => c.value === selectedPlatform)!.label
+                              const iconVisual = resolveSocialVisual(entry.platform, entry.url)
 
-                              <Button
-                                size="small"
-                                color="inherit"
-                                variant="outlined"
-                                disabled={isUploadingDealerPicture || !dealerForm.pictureUrl}
-                                onClick={() => {
-                                  setDealerPictureUploadError(null)
-                                  setDealerTextField('pictureUrl', '')
-                                }}
-                              >
-                                Remove picture
-                              </Button>
-                            </Stack>
+                              return (
+                                <Stack
+                                  key={entry.id}
+                                  direction={{ xs: 'column', md: 'row' }}
+                                  spacing={0.75}
+                                  alignItems={{ xs: 'stretch', md: 'center' }}
+                                >
+                                  <Tooltip title={platformLabel} arrow>
+                                    <IconButton
+                                      size="small"
+                                      aria-label={platformLabel}
+                                      sx={{
+                                        border: '1px solid',
+                                        borderColor: 'divider',
+                                        bgcolor: iconVisual.background,
+                                        color: iconVisual.foreground,
+                                      }}
+                                    >
+                                      {iconVisual.icon}
+                                    </IconButton>
+                                  </Tooltip>
+
+                                  <FormControl size="small" sx={{ minWidth: 160 }}>
+                                    <InputLabel id={`dealer-social-platform-${entry.id}`}>Platform</InputLabel>
+                                    <Select
+                                      labelId={`dealer-social-platform-${entry.id}`}
+                                      label="Platform"
+                                      value={selectedPlatform}
+                                      onChange={(event) => {
+                                        setDealerSocialLinkAtIndex(index, 'platform', event.target.value)
+                                      }}
+                                    >
+                                      {socialPlatformOptions.map((optionEntry) => (
+                                        <MenuItem key={optionEntry.value} value={optionEntry.value}>
+                                          {optionEntry.label}
+                                        </MenuItem>
+                                      ))}
+                                    </Select>
+                                  </FormControl>
+
+                                  <TextField
+                                    size="small"
+                                    fullWidth
+                                    label={`${platformLabel} URL`}
+                                    value={entry.url}
+                                    onChange={(event) => {
+                                      setDealerSocialLinkAtIndex(index, 'url', event.target.value)
+                                    }}
+                                  />
+
+                                  <IconButton
+                                    size="small"
+                                    color="error"
+                                    aria-label="Remove social link"
+                                    onClick={() => {
+                                      removeDealerSocialLink(index)
+                                    }}
+                                    sx={{ border: '1px solid', borderColor: 'divider' }}
+                                  >
+                                    <DeleteOutlineRoundedIcon fontSize="small" />
+                                  </IconButton>
+                                </Stack>
+                              )
+                            })}
+
+                            <Button
+                              size="small"
+                              startIcon={<AddRoundedIcon fontSize="small" />}
+                              onClick={addDealerSocialLink}
+                              sx={{ width: 'fit-content' }}
+                            >
+                              Add social link
+                            </Button>
+                          </Stack>
+                        </Box>
+
+                        <Box
+                          sx={{
+                            border: 1,
+                            borderColor: 'divider',
+                            borderRadius: 1,
+                            p: 0.8,
+                          }}
+                        >
+                          <Stack spacing={0.6}>
+                            <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                              Account notes
+                            </Typography>
+                            <TextField
+                              size="small"
+                              multiline
+                              minRows={2}
+                              placeholder="Add account notes"
+                              value={dealerForm.accountText}
+                              onChange={(event) => {
+                                setDealerTextField('accountText', event.target.value)
+                              }}
+                              sx={{
+                                '& .MuiInputBase-root': {
+                                  fontSize: 13,
+                                },
+                              }}
+                            />
                           </Stack>
                         </Box>
                       </Box>
 
                       <Box
                         sx={{
-                          border: 1,
+                          border: '1px solid',
                           borderColor: 'divider',
                           borderRadius: 1,
-                          p: 1,
+                          p: 0.8,
                         }}
                       >
-                        <Stack spacing={0.8}>
-                          <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
-                            Social links
-                          </Typography>
+                        <Stack
+                          direction={{ xs: 'column', sm: 'row' }}
+                          spacing={1}
+                          alignItems={{ xs: 'flex-start', sm: 'center' }}
+                          justifyContent="space-between"
+                        >
+                          <Stack direction="row" spacing={1} alignItems="center">
+                            <Avatar
+                              src={dealerForm.pictureUrl || undefined}
+                              alt={dealerForm.name || dealerForm.sourceId}
+                              sx={{ width: 42, height: 42, fontSize: 14 }}
+                              imgProps={{ loading: 'lazy', referrerPolicy: 'no-referrer' }}
+                            >
+                              {(dealerForm.name || dealerForm.sourceId || '?').charAt(0).toUpperCase()}
+                            </Avatar>
 
-                          {dealerForm.socialLinks.length === 0 ? (
-                            <Typography variant="body2" color="text.secondary">
-                              No social links yet.
-                            </Typography>
-                          ) : null}
+                            <Stack spacing={0.15}>
+                              <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                                Account picture
+                              </Typography>
+                              <Typography variant="caption" color="text.secondary">
+                                Upload to Firebase Storage.
+                              </Typography>
+                              {dealerPictureUploadError ? (
+                                <Typography variant="caption" color="error.main">
+                                  {dealerPictureUploadError}
+                                </Typography>
+                              ) : null}
+                            </Stack>
+                          </Stack>
 
-                          {dealerForm.socialLinks.map((entry, index) => {
-                            const selectedPlatform = resolveSocialPlatformChoice(entry.platform)
-                            const platformLabel = socialPlatformOptions.find((c) => c.value === selectedPlatform)!.label
-                            const iconVisual = resolveSocialVisual(entry.platform, entry.url)
+                          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.6}>
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              component="label"
+                              disabled={isUploadingDealerPicture}
+                            >
+                              {isUploadingDealerPicture ? 'Uploading...' : (dealerForm.pictureUrl ? 'Change picture' : 'Upload picture')}
+                              <input
+                                hidden
+                                accept="image/*"
+                                type="file"
+                                onChange={handleDealerPictureUpload}
+                              />
+                            </Button>
 
-                            return (
-                              <Stack
-                                key={entry.id}
-                                direction={{ xs: 'column', md: 'row' }}
-                                spacing={0.75}
-                                alignItems={{ xs: 'stretch', md: 'center' }}
-                              >
-                                <Tooltip title={platformLabel} arrow>
-                                  <IconButton
-                                    size="small"
-                                    aria-label={platformLabel}
-                                    sx={{
-                                      border: '1px solid',
-                                      borderColor: 'divider',
-                                      bgcolor: iconVisual.background,
-                                      color: iconVisual.foreground,
-                                    }}
-                                  >
-                                    {iconVisual.icon}
-                                  </IconButton>
-                                </Tooltip>
-
-                                <FormControl size="small" sx={{ minWidth: 160 }}>
-                                  <InputLabel id={`dealer-social-platform-${entry.id}`}>Platform</InputLabel>
-                                  <Select
-                                    labelId={`dealer-social-platform-${entry.id}`}
-                                    label="Platform"
-                                    value={selectedPlatform}
-                                    onChange={(event) => {
-                                      setDealerSocialLinkAtIndex(index, 'platform', event.target.value)
-                                    }}
-                                  >
-                                    {socialPlatformOptions.map((optionEntry) => (
-                                      <MenuItem key={optionEntry.value} value={optionEntry.value}>
-                                        {optionEntry.label}
-                                      </MenuItem>
-                                    ))}
-                                  </Select>
-                                </FormControl>
-
-                                <TextField
-                                  size="small"
-                                  fullWidth
-                                  label={`${platformLabel} URL`}
-                                  value={entry.url}
-                                  onChange={(event) => {
-                                    setDealerSocialLinkAtIndex(index, 'url', event.target.value)
-                                  }}
-                                />
-
-                                <IconButton
-                                  size="small"
-                                  color="error"
-                                  aria-label="Remove social link"
-                                  onClick={() => {
-                                    removeDealerSocialLink(index)
-                                  }}
-                                  sx={{ border: '1px solid', borderColor: 'divider' }}
-                                >
-                                  <DeleteOutlineRoundedIcon fontSize="small" />
-                                </IconButton>
-                              </Stack>
-                            )
-                          })}
-
-                          <Button
-                            size="small"
-                            startIcon={<AddRoundedIcon fontSize="small" />}
-                            onClick={addDealerSocialLink}
-                            sx={{ width: 'fit-content' }}
-                          >
-                            Add social link
-                          </Button>
+                            <Button
+                              size="small"
+                              color="inherit"
+                              variant="outlined"
+                              disabled={isUploadingDealerPicture || !dealerForm.pictureUrl}
+                              onClick={() => {
+                                setDealerPictureUploadError(null)
+                                setDealerTextField('pictureUrl', '')
+                              }}
+                            >
+                              Remove picture
+                            </Button>
+                          </Stack>
                         </Stack>
                       </Box>
-
-                      <TextField
-                        size="small"
-                        multiline
-                        minRows={3}
-                        label="Account notes"
-                        value={dealerForm.accountText}
-                        onChange={(event) => {
-                          setDealerTextField('accountText', event.target.value)
-                        }}
-                      />
                     </Stack>
                   </fieldset>
+                  </Box>
                 ) : (
                   <Typography color="text.secondary" sx={{ py: 1 }}>
                     Account form is loading...
                   </Typography>
-                )}
-              </Collapse>
-
-              <Divider />
-
-              <Tabs
-                value={detailsTab}
-                onChange={(_event, nextValue: 'contacts' | 'orders') => {
-                  setDetailsTab(nextValue)
-                }}
-                variant="scrollable"
-                allowScrollButtonsMobile
-                sx={{ mt: -0.5 }}
-              >
-                <Tab value="contacts" label={`Contacts (${dealerDetail?.contactsTotal ?? 0})`} />
-                <Tab value="orders" label={`Orders (${dealerOrders.length})`} />
-              </Tabs>
-
-              {detailsTab === 'contacts' ? (
+                )
+              ) : detailsTab === 'contacts' ? (
                 <>
                   <Box
                     sx={{
@@ -1657,6 +1835,62 @@ export default function CrmDealersPage() {
                     rowsPerPageOptions={[10, 25, 50, 100]}
                   />
                 </>
+              ) : detailsTab === 'quotes' ? (
+                <Stack spacing={1.25}>
+                  {quotesDataError ? <Alert severity="warning">{quotesDataError}</Alert> : null}
+
+                  {isLoadingQuotesData ? (
+                    <Stack direction="row" spacing={1} alignItems="center" sx={{ py: 2 }}>
+                      <CircularProgress size={18} />
+                      <Typography color="text.secondary">Loading quotes...</Typography>
+                    </Stack>
+                  ) : quoteRows.length === 0 ? (
+                    <Typography color="text.secondary" variant="body2">
+                      No quotes linked to this account yet.
+                    </Typography>
+                  ) : (
+                    <TableContainer
+                      sx={{
+                        border: 1,
+                        borderColor: 'divider',
+                        borderRadius: 1,
+                        maxHeight: { xs: 320, xl: 560 },
+                      }}
+                    >
+                      <Table size="small" stickyHeader>
+                        <TableHead>
+                          <TableRow>
+                            <TableCell sx={{ fontWeight: 700 }}>Quote</TableCell>
+                            <TableCell sx={{ fontWeight: 700 }}>Status</TableCell>
+                            <TableCell sx={{ fontWeight: 700 }} align="right">Amount</TableCell>
+                            <TableCell sx={{ fontWeight: 700 }}>Updated</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {quoteRows.map((quote) => (
+                            <TableRow key={quote.id}>
+                              <TableCell>
+                                <Stack spacing={0.2}>
+                                  <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                                    {quote.quoteNumber || quote.title}
+                                  </Typography>
+                                  {quote.quoteNumber && quote.title ? (
+                                    <Typography variant="caption" color="text.secondary">
+                                      {quote.title}
+                                    </Typography>
+                                  ) : null}
+                                </Stack>
+                              </TableCell>
+                              <TableCell>{formatStatusLabel(quote.status)}</TableCell>
+                              <TableCell align="right">{formatCurrency(quote.totalAmount, 2)}</TableCell>
+                              <TableCell>{formatDate(quote.updatedAt)}</TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  )}
+                </Stack>
               ) : (
                 <Stack spacing={1.25}>
                   {salesDataError ? <Alert severity="warning">{salesDataError}</Alert> : null}
