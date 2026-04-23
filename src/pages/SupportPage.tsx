@@ -209,9 +209,29 @@ export default function SupportPage() {
         : 'Failed to load conversation.')
     : null
 
-  function handleRefresh() {
-    void queryClient.invalidateQueries({ queryKey: ['support'] })
-    void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.dashboardBootstrap })
+  async function handleRefresh() {
+    await Promise.all([
+      queryClient.fetchQuery({
+        queryKey: ['support', 'alerts'],
+        queryFn: () => fetchSupportAlerts({ refresh: true }),
+        staleTime: 0,
+      }),
+      queryClient.fetchQuery({
+        queryKey: ['support', 'alert-tickets', 100],
+        queryFn: () => fetchSupportAlertTickets(100, { refresh: true }),
+        staleTime: 0,
+      }),
+      queryClient.fetchQuery({
+        queryKey: ['support', 'tickets', 100],
+        queryFn: () => fetchSupportTickets(100, { refresh: true }),
+        staleTime: 0,
+      }),
+      queryClient.fetchQuery({
+        queryKey: QUERY_KEYS.dashboardBootstrap,
+        queryFn: () => fetchDashboardBootstrap({ refresh: true }),
+        staleTime: 0,
+      }),
+    ])
   }
 
   // Scroll to a specific comment once the conversation loads
