@@ -1,4 +1,5 @@
 import AddRoundedIcon from '@mui/icons-material/AddRounded'
+import SearchRoundedIcon from '@mui/icons-material/SearchRounded'
 import ArrowBackRoundedIcon from '@mui/icons-material/ArrowBackRounded'
 import ArrowForwardRoundedIcon from '@mui/icons-material/ArrowForwardRounded'
 import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded'
@@ -11,7 +12,6 @@ import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import WorkspacesRoundedIcon from '@mui/icons-material/WorkspacesRounded'
 import {
-  Alert,
   Autocomplete,
   Avatar,
   Box,
@@ -52,6 +52,7 @@ import {
   updateCrmQuote,
   type CrmContact,
   type CrmDealer,
+  type CrmQuoteDocument,
   type CrmOpportunityStage,
   type CrmOrder,
   type CrmQuote,
@@ -66,6 +67,8 @@ type OpportunityFormState = {
   salesRep: string
   opportunityDateInput: string
   quoteNumber: string
+  poNumber: string
+  acknowledgmentNumber: string
   title: string
   amountInput: string
   notes: string
@@ -74,7 +77,11 @@ type OpportunityFormState = {
 }
 
 type OpportunityDetailsFormState = {
+  contactSourceId: string
   quoteNumber: string
+  poNumber: string
+  acknowledgmentNumber: string
+  orderNumber: string
   title: string
   salesRep: string
   opportunityDateInput: string
@@ -205,6 +212,8 @@ function createEmptyOpportunityForm(): OpportunityFormState {
     salesRep: '',
     opportunityDateInput: getTodayEasternDateInputValue(),
     quoteNumber: '',
+    poNumber: '',
+    acknowledgmentNumber: '',
     title: '',
     amountInput: '',
     notes: '',
@@ -226,7 +235,11 @@ function resolveDateInputFromIso(value: string | null | undefined) {
 
 function createOpportunityDetailsFormState(quote: CrmQuote): OpportunityDetailsFormState {
   return {
+    contactSourceId: String(quote.contactSourceId || ''),
     quoteNumber: String(quote.quoteNumber || ''),
+    poNumber: String(quote.poNumber || ''),
+    acknowledgmentNumber: String(quote.acknowledgmentNumber || ''),
+    orderNumber: String(quote.orderNumber || ''),
     title: String(quote.title || ''),
     salesRep: String(quote.salesRep || ''),
     opportunityDateInput: resolveDateInputFromIso(quote.opportunityDate),
@@ -296,6 +309,36 @@ function resolveQuoteAgeDays(quote: CrmQuote) {
   }
 
   return Math.floor(diffMs / (24 * 60 * 60 * 1000))
+}
+
+function resolveQuoteDocuments(quote: CrmQuote | null | undefined): CrmQuoteDocument[] {
+  if (!quote) {
+    return []
+  }
+
+  const fromArray = Array.isArray(quote.documents)
+    ? quote.documents
+      .map((entry) => ({
+        url: String(entry?.url ?? '').trim(),
+        name: String(entry?.name ?? '').trim() || null,
+      }))
+      .filter((entry) => Boolean(entry.url))
+    : []
+
+  if (fromArray.length > 0) {
+    return fromArray
+  }
+
+  const legacyDocumentUrl = String(quote.documentUrl ?? '').trim()
+
+  if (!legacyDocumentUrl) {
+    return []
+  }
+
+  return [{
+    url: legacyDocumentUrl,
+    name: String(quote.documentName ?? '').trim() || null,
+  }]
 }
 
 function resolveOpportunityStage(quote: CrmQuote): CrmOpportunityStage {
@@ -392,9 +435,6 @@ function OpportunityCard({
             <Typography variant="subtitle2" sx={{ fontWeight: 700, lineHeight: 1.2 }}>
               {quote.quoteNumber || quote.title}
             </Typography>
-            <Typography variant="h6" sx={{ fontWeight: 800, lineHeight: 1.1, color: '#1f3552' }}>
-              {formatCurrency(quote.totalAmount, 2)}
-            </Typography>
             <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.1 }}>
               {dealerName}
             </Typography>
@@ -427,10 +467,6 @@ function OpportunityCard({
             ) : null}
           </Stack>
         </Stack>
-
-        <Typography variant="caption" color="text.secondary">
-          Click card to view and edit details.
-        </Typography>
 
         {canManage ? (
           <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap onClick={preventCardClick}>
@@ -567,23 +603,23 @@ function StageColumn({
   const isMenuOpen = Boolean(menuAnchorEl)
   const isSortSubmenuOpen = Boolean(sortSubmenuAnchorEl) && isMenuOpen
 
-  const resolveDealerName = (quote: CrmQuote) => String(
+  const resolveDealerName = useCallback((quote: CrmQuote) => String(
     dealersBySourceId.get(quote.dealerSourceId)?.name
       || quote.dealerName
       || quote.dealerSourceId
       || '',
-  ).trim()
+  ).trim(), [dealersBySourceId])
 
-  const resolveSalesRepLabel = (quote: CrmQuote) => String(quote.salesRep ?? '').trim() || '(Unassigned)'
+  const resolveSalesRepLabel = useCallback((quote: CrmQuote) => String(quote.salesRep ?? '').trim() || '(Unassigned)', [])
 
   const dealerNameOptions = useMemo(
     () => [...new Set(rows.map((quote) => resolveDealerName(quote)).filter(Boolean))].sort((left, right) => left.localeCompare(right)),
-    [dealersBySourceId, rows],
+    [rows, resolveDealerName],
   )
 
   const salesRepOptions = useMemo(
     () => [...new Set(rows.map((quote) => resolveSalesRepLabel(quote)).filter(Boolean))].sort((left, right) => left.localeCompare(right)),
-    [rows],
+    [rows, resolveSalesRepLabel],
   )
 
   const amountConditionIsActive = useMemo(() => {
@@ -721,6 +757,8 @@ function StageColumn({
     activeFilters.nameContains,
     activeFilters.selectedDealerNames,
     activeFilters.selectedSalesReps,
+    resolveDealerName,
+    resolveSalesRepLabel,
     rows,
     sortMode,
   ])
@@ -1153,12 +1191,14 @@ export default function SalesOpportunitiesPage() {
   const [formState, setFormState] = useState<OpportunityFormState>(createEmptyOpportunityForm)
   const [isSavingOpportunity, setIsSavingOpportunity] = useState(false)
   const [isUploadingQuoteDocument, setIsUploadingQuoteDocument] = useState(false)
+  const [isUploadingSelectedOpportunityDocument, setIsUploadingSelectedOpportunityDocument] = useState(false)
   const [isSavingOpportunityDetails, setIsSavingOpportunityDetails] = useState(false)
   const [busyQuoteId, setBusyQuoteId] = useState<string | null>(null)
   const [selectedOpportunity, setSelectedOpportunity] = useState<CrmQuote | null>(null)
   const [opportunityDetailsFormState, setOpportunityDetailsFormState] = useState<OpportunityDetailsFormState | null>(null)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
+  const [globalSearch, setGlobalSearch] = useState('')
 
   const dealersQuery = useQuery({
     queryKey: QUERY_KEYS.crmOpportunitiesDealers,
@@ -1196,6 +1236,18 @@ export default function SalesOpportunitiesPage() {
     staleTime: 2 * 60 * 1000,
   })
 
+  const detailsContactsQuery = useQuery({
+    queryKey: QUERY_KEYS.crmOpportunityContacts(selectedOpportunity?.dealerSourceId || 'none-details'),
+    queryFn: () => fetchCrmContacts({
+      dealerSourceId: selectedOpportunity?.dealerSourceId,
+      limit: 800,
+      offset: 0,
+      includeArchived: false,
+    }),
+    enabled: Boolean(selectedOpportunity?.dealerSourceId),
+    staleTime: 2 * 60 * 1000,
+  })
+
   const isLoading = dealersQuery.isLoading
     || quotesQuery.isLoading
     || ordersQuery.isLoading
@@ -1210,7 +1262,7 @@ export default function SalesOpportunitiesPage() {
   const queryError = [dealersQuery.error, quotesQuery.error, ordersQuery.error, salesRepsQuery.error, contactsQuery.error]
     .find((entry) => entry instanceof Error)
 
-  const canManage = Boolean(appUser?.isAdmin)
+  const canManage = Boolean(appUser?.uid)
 
   const dealers = useMemo(
     () => (Array.isArray(dealersQuery.data?.dealers) ? dealersQuery.data.dealers : [])
@@ -1241,6 +1293,16 @@ export default function SalesOpportunitiesPage() {
     [contactsQuery.data?.contacts],
   )
 
+  const detailsContacts = useMemo(
+    () => (Array.isArray(detailsContactsQuery.data?.contacts) ? detailsContactsQuery.data.contacts : []),
+    [detailsContactsQuery.data?.contacts],
+  )
+
+  const detailsContact = useMemo(
+    () => detailsContacts.find((contact) => contact.sourceId === (opportunityDetailsFormState?.contactSourceId || selectedOpportunity?.contactSourceId)) || null,
+    [detailsContacts, opportunityDetailsFormState?.contactSourceId, selectedOpportunity?.contactSourceId],
+  )
+
   const dealersBySourceId = useMemo(
     () => new Map(dealers.map((dealer) => [dealer.sourceId, dealer])),
     [dealers],
@@ -1251,6 +1313,32 @@ export default function SalesOpportunitiesPage() {
     [quotes],
   )
 
+  const filteredActiveQuotes = useMemo(() => {
+    const term = globalSearch.trim().toLowerCase()
+
+    if (!term) {
+      return activeQuotes
+    }
+
+    return activeQuotes.filter((quote) => {
+      const quoteNum = normalizeMatchValue(quote.quoteNumber)
+      const ackNum = normalizeMatchValue(quote.acknowledgmentNumber)
+      const orderNum = normalizeMatchValue(quote.orderNumber)
+      const poNum = normalizeMatchValue(quote.poNumber)
+      const title = normalizeMatchValue(quote.title)
+      const dealerName = normalizeMatchValue(quote.dealerName)
+
+      return (
+        quoteNum.includes(term)
+        || ackNum.includes(term)
+        || orderNum.includes(term)
+        || poNum.includes(term)
+        || title.includes(term)
+        || dealerName.includes(term)
+      )
+    })
+  }, [activeQuotes, globalSearch])
+
   const stageBuckets = useMemo(() => {
     const base: Record<CrmOpportunityStage, CrmQuote[]> = {
       concept: [],
@@ -1260,7 +1348,7 @@ export default function SalesOpportunitiesPage() {
       order_placement: [],
     }
 
-    for (const quote of activeQuotes) {
+    for (const quote of filteredActiveQuotes) {
       const stage = resolveOpportunityStage(quote)
       base[stage].push(quote)
     }
@@ -1270,7 +1358,7 @@ export default function SalesOpportunitiesPage() {
     }
 
     return base
-  }, [activeQuotes])
+  }, [filteredActiveQuotes])
 
   const selectedDealer = useMemo(
     () => dealers.find((dealer) => dealer.sourceId === formState.dealerSourceId) || null,
@@ -1299,6 +1387,11 @@ export default function SalesOpportunitiesPage() {
 
   const selectedOpportunityStage = useMemo(
     () => (selectedOpportunity ? resolveOpportunityStage(selectedOpportunity) : null),
+    [selectedOpportunity],
+  )
+
+  const selectedOpportunityDocuments = useMemo(
+    () => resolveQuoteDocuments(selectedOpportunity),
     [selectedOpportunity],
   )
 
@@ -1396,6 +1489,106 @@ export default function SalesOpportunitiesPage() {
     }
   }, [uploadQuoteDocumentFile])
 
+  const uploadSelectedOpportunityDocumentFile = useCallback(async (quote: CrmQuote, file: File) => {
+    const maxFileSize = 15 * 1024 * 1024
+
+    if (file.size > maxFileSize) {
+      throw new Error('File must be 15 MB or smaller.')
+    }
+
+    const dealerSegment = sanitizeStoragePathSegment(quote.dealerSourceId || 'dealer', 'dealer')
+    const quoteLabel = String(quote.quoteNumber ?? '').trim() || quote.id
+    const quoteSegment = sanitizeStoragePathSegment(quoteLabel, 'opportunity')
+    const extension = resolveFileExtension(file)
+    const fileStamp = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+    const filePath = `crm/opportunities/${dealerSegment}/${quoteSegment}-quote-${fileStamp}${extension}`
+    const fileRef = storageRef(firebaseStorage, filePath)
+
+    await uploadBytes(
+      fileRef,
+      file,
+      file.type ? { contentType: file.type } : undefined,
+    )
+
+    const downloadUrl = await getDownloadURL(fileRef)
+
+    return {
+      url: downloadUrl,
+      name: file.name,
+    }
+  }, [])
+
+  const handleSelectedOpportunityDocumentUpload = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+
+    if (!file || !selectedOpportunity) {
+      return
+    }
+
+    setErrorMessage(null)
+    setSuccessMessage(null)
+    setIsUploadingSelectedOpportunityDocument(true)
+    setBusyQuoteId(selectedOpportunity.id)
+
+    try {
+      const nextDocument = await uploadSelectedOpportunityDocumentFile(selectedOpportunity, file)
+      const existingDocuments = resolveQuoteDocuments(selectedOpportunity)
+      const nextDocuments = [...existingDocuments, nextDocument]
+      const payload = await updateCrmQuote(selectedOpportunity.id, {
+        documents: nextDocuments,
+      })
+
+      await invalidateOpportunityData()
+      setSelectedOpportunity(payload.quote)
+      setSuccessMessage('Document added to opportunity.')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to add document.'
+
+      if (/storage\/unauthorized/i.test(message)) {
+        setErrorMessage('Upload permission denied. If this keeps happening, Firebase Storage rules need CRM opportunities write access.')
+      } else {
+        setErrorMessage(message)
+      }
+    } finally {
+      setIsUploadingSelectedOpportunityDocument(false)
+      setBusyQuoteId(null)
+    }
+  }, [invalidateOpportunityData, selectedOpportunity, uploadSelectedOpportunityDocumentFile])
+
+  const handleRemoveSelectedOpportunityDocument = useCallback(async (documentUrl: string) => {
+    if (!selectedOpportunity) {
+      return
+    }
+
+    const confirmed = window.confirm('Remove this document from the opportunity?')
+
+    if (!confirmed) {
+      return
+    }
+
+    const existingDocuments = resolveQuoteDocuments(selectedOpportunity)
+    const nextDocuments = existingDocuments.filter((entry) => entry.url !== documentUrl)
+
+    setErrorMessage(null)
+    setSuccessMessage(null)
+    setBusyQuoteId(selectedOpportunity.id)
+
+    try {
+      const payload = await updateCrmQuote(selectedOpportunity.id, {
+        documents: nextDocuments,
+      })
+
+      await invalidateOpportunityData()
+      setSelectedOpportunity(payload.quote)
+      setSuccessMessage('Document removed from opportunity.')
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to remove document.')
+    } finally {
+      setBusyQuoteId(null)
+    }
+  }, [invalidateOpportunityData, selectedOpportunity])
+
   const handleOpenDialog = useCallback(() => {
     setErrorMessage(null)
     setSuccessMessage(null)
@@ -1419,20 +1612,15 @@ export default function SalesOpportunitiesPage() {
   }, [isSavingOpportunity, isUploadingQuoteDocument])
 
   const handleCloseOpportunityDetails = useCallback(() => {
-    if (isSavingOpportunityDetails) {
+    if (isSavingOpportunityDetails || isUploadingSelectedOpportunityDocument) {
       return
     }
 
     setSelectedOpportunity(null)
     setOpportunityDetailsFormState(null)
-  }, [isSavingOpportunityDetails])
+  }, [isSavingOpportunityDetails, isUploadingSelectedOpportunityDocument])
 
   const handleCreateOpportunity = useCallback(async () => {
-    if (!canManage) {
-      setErrorMessage('Only admins can create opportunities.')
-      return
-    }
-
     const quoteNumber = formState.quoteNumber.trim()
     const salesRep = formState.salesRep.trim()
     const opportunityDateInput = formState.opportunityDateInput.trim()
@@ -1485,6 +1673,8 @@ export default function SalesOpportunitiesPage() {
         contactName: fallbackContactName,
         salesRep,
         quoteNumber,
+        poNumber: formState.poNumber.trim() || null,
+        acknowledgmentNumber: formState.acknowledgmentNumber.trim() || null,
         title,
         status: 'draft',
         opportunityStage: 'concept',
@@ -1493,6 +1683,9 @@ export default function SalesOpportunitiesPage() {
         notes: formState.notes.trim() || null,
         documentUrl: formState.quoteDocumentUrl || null,
         documentName: formState.quoteDocumentName || null,
+        documents: formState.quoteDocumentUrl
+          ? [{ url: formState.quoteDocumentUrl, name: formState.quoteDocumentName || null }]
+          : [],
         revisionCount: 0,
       })
 
@@ -1507,12 +1700,13 @@ export default function SalesOpportunitiesPage() {
       setIsSavingOpportunity(false)
     }
   }, [
-    canManage,
+    formState.acknowledgmentNumber,
     formState.amountInput,
     formState.contactSourceId,
     formState.dealerSourceId,
     formState.notes,
     formState.opportunityDateInput,
+    formState.poNumber,
     formState.quoteDocumentName,
     formState.quoteDocumentUrl,
     formState.quoteNumber,
@@ -1524,11 +1718,6 @@ export default function SalesOpportunitiesPage() {
   ])
 
   const updateStage = useCallback(async (quote: CrmQuote, nextStage: CrmOpportunityStage, patch: Partial<CrmQuote> = {}) => {
-    if (!canManage) {
-      setErrorMessage('Only admins can update opportunities.')
-      return
-    }
-
     setErrorMessage(null)
     setSuccessMessage(null)
     setBusyQuoteId(quote.id)
@@ -1546,7 +1735,7 @@ export default function SalesOpportunitiesPage() {
     } finally {
       setBusyQuoteId(null)
     }
-  }, [canManage, invalidateOpportunityData])
+  }, [invalidateOpportunityData])
 
   const handleMoveBack = useCallback(async (quote: CrmQuote) => {
     const stage = resolveOpportunityStage(quote)
@@ -1570,6 +1759,11 @@ export default function SalesOpportunitiesPage() {
     const stage = resolveOpportunityStage(quote)
 
     if (stage === 'concept') {
+      if (!Number(quote.totalAmount)) {
+        setErrorMessage('A price is required before moving to Proposal Submitted. Open the opportunity details and set a price first.')
+        return
+      }
+
       await updateStage(quote, 'proposal_submission', {
         status: 'sent',
         sentAt: new Date().toISOString(),
@@ -1628,8 +1822,8 @@ export default function SalesOpportunitiesPage() {
   }, [])
 
   const handleMarkApproved = useCallback(async (quote: CrmQuote) => {
-    if (!canManage) {
-      setErrorMessage('Only admins can approve opportunities.')
+    if (!String(quote.acknowledgmentNumber || '').trim()) {
+      setErrorMessage('An acknowledgment number (customer order number) is required before moving to Order Placement. Open the opportunity details and set it first.')
       return
     }
 
@@ -1652,14 +1846,9 @@ export default function SalesOpportunitiesPage() {
     } finally {
       setBusyQuoteId(null)
     }
-  }, [canManage, createOrderFromQuote, invalidateOpportunityData, orders])
+  }, [createOrderFromQuote, invalidateOpportunityData, orders])
 
   const handleDeleteQuote = useCallback(async (quote: CrmQuote) => {
-    if (!canManage) {
-      setErrorMessage('Only admins can delete opportunities.')
-      return
-    }
-
     const confirmed = window.confirm(`Delete ${quote.quoteNumber || quote.title}? This cannot be undone.`)
 
     if (!confirmed) {
@@ -1679,15 +1868,10 @@ export default function SalesOpportunitiesPage() {
     } finally {
       setBusyQuoteId(null)
     }
-  }, [canManage, invalidateOpportunityData])
+  }, [invalidateOpportunityData])
 
   const handleSaveOpportunityDetails = useCallback(async () => {
     if (!selectedOpportunity || !opportunityDetailsFormState) {
-      return
-    }
-
-    if (!canManage) {
-      setErrorMessage('Only admins can edit opportunities.')
       return
     }
 
@@ -1728,8 +1912,17 @@ export default function SalesOpportunitiesPage() {
     setBusyQuoteId(selectedOpportunity.id)
 
     try {
+      const nextContactSourceId = opportunityDetailsFormState.contactSourceId.trim() || null
+      const nextContact = detailsContacts.find((c) => c.sourceId === nextContactSourceId) || null
+      const nextContactName = nextContact ? (resolveContactName(nextContact) || null) : null
+
       await updateCrmQuote(selectedOpportunity.id, {
+        contactSourceId: nextContactSourceId,
+        contactName: nextContactName,
         quoteNumber: quoteNumber || null,
+        poNumber: opportunityDetailsFormState.poNumber.trim() || null,
+        acknowledgmentNumber: opportunityDetailsFormState.acknowledgmentNumber.trim() || null,
+        orderNumber: opportunityDetailsFormState.orderNumber.trim() || null,
         title,
         salesRep,
         opportunityDate: opportunityDateInput,
@@ -1747,7 +1940,7 @@ export default function SalesOpportunitiesPage() {
       setIsSavingOpportunityDetails(false)
       setBusyQuoteId(null)
     }
-  }, [canManage, invalidateOpportunityData, opportunityDetailsFormState, salesReps, selectedOpportunity])
+  }, [detailsContacts, invalidateOpportunityData, opportunityDetailsFormState, salesReps, selectedOpportunity])
 
   if (isLoading) {
     return <LoadingPanel loading message="Fetching pipeline opportunities..." />
@@ -1781,7 +1974,23 @@ export default function SalesOpportunitiesPage() {
             </Typography>
           </Stack>
 
-          <Stack direction="row" spacing={0.75}>
+          <Stack direction="row" spacing={0.75} alignItems="center">
+            <TextField
+              size="small"
+              placeholder="Search by quote #, ack #, order #..."
+              value={globalSearch}
+              onChange={(event) => {
+                setGlobalSearch(event.target.value)
+              }}
+              InputProps={{
+                startAdornment: (
+                  <InputAdornment position="start">
+                    <SearchRoundedIcon fontSize="small" />
+                  </InputAdornment>
+                ),
+              }}
+              sx={{ width: 260 }}
+            />
             <Button
               variant="outlined"
               color="inherit"
@@ -1805,11 +2014,6 @@ export default function SalesOpportunitiesPage() {
           </Stack>
         </Stack>
 
-        {!canManage ? (
-          <Alert severity="info" sx={{ mt: 1 }}>
-            You can view the pipeline, but only admins can move stages or add/delete opportunities.
-          </Alert>
-        ) : null}
       </Paper>
 
       <Box sx={{ overflowX: 'auto', pb: 0.5 }}>
@@ -1853,7 +2057,7 @@ export default function SalesOpportunitiesPage() {
                   salesRep: matchedSalesRep?.name || '',
                 }))
               }}
-              getOptionLabel={(dealer) => `${dealer.name || dealer.sourceId} (${dealer.sourceId})`}
+              getOptionLabel={(dealer) => dealer.name || dealer.sourceId}
               isOptionEqualToValue={(left, right) => left.sourceId === right.sourceId}
               renderInput={(params) => (
                 <TextField
@@ -1877,7 +2081,7 @@ export default function SalesOpportunitiesPage() {
               disabled={!formState.dealerSourceId}
               getOptionLabel={(contact) => {
                 const name = resolveContactName(contact)
-                return name ? `${name} (${contact.sourceId})` : contact.sourceId
+                return name || contact.sourceId
               }}
               isOptionEqualToValue={(left, right) => left.sourceId === right.sourceId}
               renderInput={(params) => (
@@ -1888,6 +2092,24 @@ export default function SalesOpportunitiesPage() {
                 />
               )}
             />
+
+            {selectedContact ? (
+              <Stack direction="row" spacing={2} sx={{ px: 0.5 }}>
+                {selectedContact.primaryEmail ? (
+                  <Typography variant="body2" color="text.secondary">
+                    Email: <strong>{selectedContact.primaryEmail}</strong>
+                  </Typography>
+                ) : null}
+                {selectedContact.phone ? (
+                  <Typography variant="body2" color="text.secondary">
+                    Phone: <strong>{selectedContact.phone}</strong>
+                  </Typography>
+                ) : null}
+                {!selectedContact.primaryEmail && !selectedContact.phone ? (
+                  <Typography variant="body2" color="text.secondary">No email or phone on record.</Typography>
+                ) : null}
+              </Stack>
+            ) : null}
 
             <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.1}>
               <Autocomplete
@@ -1964,6 +2186,34 @@ export default function SalesOpportunitiesPage() {
               />
             </Stack>
 
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.1}>
+              <TextField
+                label="PO Number"
+                value={formState.poNumber}
+                onChange={(event) => {
+                  setFormState((current) => ({
+                    ...current,
+                    poNumber: event.target.value,
+                  }))
+                }}
+                placeholder="Optional"
+                sx={{ flex: 1 }}
+              />
+
+              <TextField
+                label="Acknowledgment Number (Customer Order #)"
+                value={formState.acknowledgmentNumber}
+                onChange={(event) => {
+                  setFormState((current) => ({
+                    ...current,
+                    acknowledgmentNumber: event.target.value,
+                  }))
+                }}
+                placeholder="Required for Order Placement"
+                sx={{ flex: 1 }}
+              />
+            </Stack>
+
             <TextField
               label="Opportunity Title"
               value={formState.title}
@@ -2021,15 +2271,30 @@ export default function SalesOpportunitiesPage() {
                   ) : null}
 
                   {formState.quoteDocumentUrl ? (
-                    <Button
-                      color="inherit"
-                      href={formState.quoteDocumentUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      endIcon={<OpenInNewRoundedIcon sx={{ fontSize: 14 }} />}
-                    >
-                      {formState.quoteDocumentName || 'Open document'}
-                    </Button>
+                    <Stack direction="row" spacing={0.5} alignItems="center">
+                      <Button
+                        color="inherit"
+                        href={formState.quoteDocumentUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        endIcon={<OpenInNewRoundedIcon sx={{ fontSize: 14 }} />}
+                      >
+                        {formState.quoteDocumentName || 'Open document'}
+                      </Button>
+                      <IconButton
+                        size="small"
+                        color="error"
+                        onClick={() => {
+                          setFormState((current) => ({
+                            ...current,
+                            quoteDocumentUrl: '',
+                            quoteDocumentName: '',
+                          }))
+                        }}
+                      >
+                        <DeleteOutlineRoundedIcon sx={{ fontSize: 16 }} />
+                      </IconButton>
+                    </Stack>
                   ) : (
                     <Typography variant="body2" color="text.secondary">
                       No quote document uploaded yet.
@@ -2089,6 +2354,72 @@ export default function SalesOpportunitiesPage() {
                   InputProps={{ readOnly: true }}
                   sx={{ flex: 1 }}
                 />
+              </Stack>
+
+              <Stack
+                spacing={1}
+                sx={{
+                  p: 1.2,
+                  borderRadius: 1.1,
+                  border: 1,
+                  borderColor: alpha('#0f4c81', 0.25),
+                  backgroundColor: alpha('#0f4c81', 0.04),
+                }}
+              >
+                <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                  Contact
+                </Typography>
+                <Autocomplete
+                  options={detailsContacts}
+                  value={detailsContact}
+                  onChange={(_event, contact) => {
+                    setOpportunityDetailsFormState((current) => {
+                      if (!current) {
+                        return current
+                      }
+
+                      return {
+                        ...current,
+                        contactSourceId: contact?.sourceId || '',
+                      }
+                    })
+                  }}
+                  loading={detailsContactsQuery.isFetching}
+                  getOptionLabel={(contact) => {
+                    const name = resolveContactName(contact)
+                    return name || contact.sourceId
+                  }}
+                  isOptionEqualToValue={(left, right) => left.sourceId === right.sourceId}
+                  disabled={!canManage}
+                  renderInput={(params) => (
+                    <TextField
+                      {...params}
+                      label="Select contact"
+                      placeholder="Search contacts for this dealer"
+                      size="small"
+                    />
+                  )}
+                />
+                {detailsContact ? (
+                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.1}>
+                    <TextField
+                      label="Email"
+                      value={detailsContact.primaryEmail || ''}
+                      InputProps={{ readOnly: true }}
+                      size="small"
+                      sx={{ flex: 1 }}
+                      placeholder="No email on record"
+                    />
+                    <TextField
+                      label="Phone"
+                      value={detailsContact.phone || ''}
+                      InputProps={{ readOnly: true }}
+                      size="small"
+                      sx={{ flex: 1 }}
+                      placeholder="No phone on record"
+                    />
+                  </Stack>
+                ) : null}
               </Stack>
 
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.1}>
@@ -2192,6 +2523,68 @@ export default function SalesOpportunitiesPage() {
                 />
               </Stack>
 
+              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.1}>
+                <TextField
+                  label="PO Number"
+                  value={opportunityDetailsFormState.poNumber}
+                  onChange={(event) => {
+                    setOpportunityDetailsFormState((current) => {
+                      if (!current) {
+                        return current
+                      }
+
+                      return {
+                        ...current,
+                        poNumber: event.target.value,
+                      }
+                    })
+                  }}
+                  disabled={!canManage}
+                  placeholder="Optional"
+                  sx={{ flex: 1 }}
+                />
+
+                <TextField
+                  label="Acknowledgment Number (Customer Order #)"
+                  value={opportunityDetailsFormState.acknowledgmentNumber}
+                  onChange={(event) => {
+                    setOpportunityDetailsFormState((current) => {
+                      if (!current) {
+                        return current
+                      }
+
+                      return {
+                        ...current,
+                        acknowledgmentNumber: event.target.value,
+                      }
+                    })
+                  }}
+                  disabled={!canManage}
+                  placeholder="Required for Order Placement"
+                  sx={{ flex: 1 }}
+                />
+
+                <TextField
+                  label="Order Number"
+                  value={opportunityDetailsFormState.orderNumber}
+                  onChange={(event) => {
+                    setOpportunityDetailsFormState((current) => {
+                      if (!current) {
+                        return current
+                      }
+
+                      return {
+                        ...current,
+                        orderNumber: event.target.value,
+                      }
+                    })
+                  }}
+                  disabled={!canManage}
+                  placeholder="Optional"
+                  sx={{ flex: 1 }}
+                />
+              </Stack>
+
               <TextField
                 label="Opportunity Title"
                 value={opportunityDetailsFormState.title}
@@ -2244,23 +2637,73 @@ export default function SalesOpportunitiesPage() {
                     Documents
                   </Typography>
 
-                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.75}>
-                    {selectedOpportunity.documentUrl ? (
-                      <Button
-                        color="inherit"
-                        href={selectedOpportunity.documentUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        endIcon={<OpenInNewRoundedIcon sx={{ fontSize: 14 }} />}
-                      >
-                        {selectedOpportunity.documentName || 'Open quote document'}
-                      </Button>
-                    ) : (
-                      <Typography variant="body2" color="text.secondary">
-                        No quote document attached.
-                      </Typography>
-                    )}
+                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.75} alignItems={{ xs: 'stretch', sm: 'center' }}>
+                    <Button
+                      variant="outlined"
+                      component="label"
+                      startIcon={<CloudUploadRoundedIcon sx={{ fontSize: 16 }} />}
+                      disabled={
+                        !canManage
+                        || isUploadingSelectedOpportunityDocument
+                        || isSavingOpportunityDetails
+                        || busyQuoteId === selectedOpportunity.id
+                      }
+                    >
+                      {isUploadingSelectedOpportunityDocument ? 'Uploading...' : 'Add Document'}
+                      <input hidden type="file" onChange={handleSelectedOpportunityDocumentUpload} />
+                    </Button>
 
+                    {isUploadingSelectedOpportunityDocument ? (
+                      <Typography variant="body2" color="text.secondary">
+                        Uploading document...
+                      </Typography>
+                    ) : null}
+                  </Stack>
+
+                  {selectedOpportunityDocuments.length === 0 ? (
+                    <Typography variant="body2" color="text.secondary">
+                      No quote documents attached.
+                    </Typography>
+                  ) : (
+                    <Stack spacing={0.6}>
+                      {selectedOpportunityDocuments.map((document) => (
+                        <Stack key={document.url} direction="row" spacing={0.5} alignItems="center" flexWrap="wrap">
+                          <Button
+                            color="inherit"
+                            href={document.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            endIcon={<OpenInNewRoundedIcon sx={{ fontSize: 14 }} />}
+                          >
+                            {document.name || 'Open quote document'}
+                          </Button>
+
+                          {canManage ? (
+                            <Tooltip title="Remove document">
+                              <span>
+                                <IconButton
+                                  size="small"
+                                  color="error"
+                                  disabled={
+                                    busyQuoteId === selectedOpportunity.id
+                                    || isSavingOpportunityDetails
+                                    || isUploadingSelectedOpportunityDocument
+                                  }
+                                  onClick={() => {
+                                    void handleRemoveSelectedOpportunityDocument(document.url)
+                                  }}
+                                >
+                                  <DeleteOutlineRoundedIcon sx={{ fontSize: 16 }} />
+                                </IconButton>
+                              </span>
+                            </Tooltip>
+                          ) : null}
+                        </Stack>
+                      ))}
+                    </Stack>
+                  )}
+
+                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.75}>
                     {selectedOpportunity.conceptImageUrl ? (
                       <Button
                         color="inherit"
@@ -2286,7 +2729,7 @@ export default function SalesOpportunitiesPage() {
         <DialogActions>
           <Button
             onClick={handleCloseOpportunityDetails}
-            disabled={isSavingOpportunityDetails}
+            disabled={isSavingOpportunityDetails || isUploadingSelectedOpportunityDocument}
           >
             Close
           </Button>
@@ -2295,7 +2738,12 @@ export default function SalesOpportunitiesPage() {
             onClick={() => {
               void handleSaveOpportunityDetails()
             }}
-            disabled={!canManage || isSavingOpportunityDetails || !opportunityDetailsFormState}
+            disabled={
+              !canManage
+              || isSavingOpportunityDetails
+              || isUploadingSelectedOpportunityDocument
+              || !opportunityDetailsFormState
+            }
           >
             {isSavingOpportunityDetails ? 'Saving...' : 'Save Changes'}
           </Button>

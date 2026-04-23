@@ -48,6 +48,13 @@ export type SupportTicketComment = {
   public: boolean
 }
 
+export type ZendeskSupportAgent = {
+  id: number
+  name: string
+  email: string | null
+  role: string
+}
+
 export type SupportTicketConversationSnapshot = {
   generatedAt: string
   ticket: SupportTicket
@@ -61,6 +68,14 @@ export type CreateSupportTicketInput = {
   requesterEmail?: string
   priority?: 'low' | 'normal' | 'high' | 'urgent'
 }
+
+export type ReplySupportTicketInput = {
+  body: string
+  isPublic: boolean
+  status?: SupportReplyStatus
+}
+
+export type SupportReplyStatus = 'open' | 'pending' | 'in_progress' | 'solved'
 
 type SupportFetchOptions = {
   refresh?: boolean
@@ -102,6 +117,30 @@ export function fetchSupportTicketConversation(ticketId: number) {
   return apiRequest<SupportTicketConversationSnapshot>(
     `/api/support/tickets/${ticketId}/conversation`,
   )
+}
+
+export function fetchZendeskSupportAgents(limit = 300) {
+  return apiRequest<{ generatedAt: string; agents: ZendeskSupportAgent[] }>(
+    `/api/support/zendesk-agents?limit=${limit}`,
+  )
+}
+
+export function replySupportTicket(ticketId: number, input: ReplySupportTicketInput) {
+  return apiRequest<{
+    conversation: SupportTicketConversationSnapshot | null
+    reply: {
+      ticketId: number
+      isPublic: boolean
+      authorId: number
+      authorName: string
+      status: SupportReplyStatus | null
+      appliedStatus: SupportReplyStatus | null
+      updatedAt: string
+    }
+  }>(`/api/support/tickets/${ticketId}/replies`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
 }
 
 export function createSupportTicket(input: CreateSupportTicketInput) {

@@ -259,6 +259,13 @@ export function createAuthUtils({
     const linkedWorkerId = String(document.linkedWorkerId ?? '').trim() || null
     const linkedWorkerNumber = normalizeWorkerNumber(document.linkedWorkerNumber)
     const linkedWorkerName = String(document.linkedWorkerName ?? '').trim() || null
+    const normalizedZendeskUserId = Number(document.linkedZendeskUserId)
+    const linkedZendeskUserId =
+      Number.isFinite(normalizedZendeskUserId) && normalizedZendeskUserId > 0
+        ? normalizedZendeskUserId
+        : null
+    const linkedZendeskUserEmail = String(document.linkedZendeskUserEmail ?? '').trim() || null
+    const linkedZendeskUserName = String(document.linkedZendeskUserName ?? '').trim() || null
     const rawClientPlatforms = Array.isArray(document.clientPlatforms)
       ? document.clientPlatforms
       : []
@@ -303,6 +310,9 @@ export function createAuthUtils({
       linkedWorkerId,
       linkedWorkerNumber,
       linkedWorkerName,
+      linkedZendeskUserId,
+      linkedZendeskUserEmail,
+      linkedZendeskUserName,
       clientPlatforms,
       lastLoginClientPlatform,
       clientAccessMode,

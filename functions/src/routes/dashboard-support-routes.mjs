@@ -3,8 +3,10 @@ import { createTtlCache } from '../utils/ttl-cache.mjs'
 export function registerDashboardSupportRoutes(app, deps) {
   const {
     clearSupportSnapshotCache,
+    createZendeskTicketReply,
     createZendeskSupportTicket,
     fetchMondayDashboardSnapshot,
+    fetchZendeskSupportAgents,
     fetchZendeskSupportAlertTicketsSnapshot,
     fetchZendeskSupportAlerts,
     fetchZendeskSupportTicketsSnapshot,
@@ -14,8 +16,10 @@ export function registerDashboardSupportRoutes(app, deps) {
     getDashboardSnapshotFromCache,
     isDashboardRefreshRequested,
     persistNewMondayOrders,
+    requireAdminRole,
     requireFirebaseAuth,
     setDashboardSnapshotCache,
+    toPublicAuthUser,
     toBoundedInteger,
   } = deps
 
@@ -26,6 +30,36 @@ export function registerDashboardSupportRoutes(app, deps) {
   const CONV_CACHE_TTL_MS = 5 * 60 * 1000
   const convCacheGet = (ticketId) => _convCache.get(ticketId)
   const convCacheSet = (ticketId, payload) => _convCache.set(ticketId, payload, CONV_CACHE_TTL_MS)
+  const convCacheDelete = (ticketId) => _convCache.delete(ticketId)
+
+  function normalizeReplyStatus(value) {
+    const normalized = String(value ?? '')
+      .trim()
+      .toLowerCase()
+      .replace(/[\s-]+/g, '_')
+
+    if (!normalized) {
+      return null
+    }
+
+    if (normalized === 'open') {
+      return 'open'
+    }
+
+    if (normalized === 'pending') {
+      return 'pending'
+    }
+
+    if (['in_progress', 'inprocess', 'processing', 'process', 'hold'].includes(normalized)) {
+      return 'in_progress'
+    }
+
+    if (['solved', 'solve', 'resolved', 'close', 'closed', 'done'].includes(normalized)) {
+      return 'solved'
+    }
+
+    return null
+  }
 
   function sanitizeDownloadFileName(value, fallbackFileName = 'shop-drawing.pdf') {
     const normalized = String(value ?? '').trim().replace(/[\\/:*?"<>|]+/g, '-')
@@ -422,6 +456,20 @@ app.get('/api/support/tickets', requireFirebaseAuth, async (req, res, next) => {
   }
 })
 
+app.get('/api/support/zendesk-agents', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+  try {
+    const limit = toBoundedInteger(req.query?.limit, 25, 1000, 300)
+    const agents = await fetchZendeskSupportAgents(limit)
+
+    return res.json({
+      generatedAt: new Date().toISOString(),
+      agents,
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
 app.get('/api/support/tickets/:ticketId/conversation', requireFirebaseAuth, async (req, res, next) => {
   try {
     const ticketId = String(req.params.ticketId ?? '').trim()
@@ -438,6 +486,112 @@ app.get('/api/support/tickets/:ticketId/conversation', requireFirebaseAuth, asyn
     const conversation = await fetchZendeskTicketConversation(ticketId)
     convCacheSet(ticketId, conversation)
     res.json(conversation)
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.post('/api/support/tickets/:ticketId/replies', requireFirebaseAuth, async (req, res, next) => {
+  try {
+    const ticketId = String(req.params.ticketId ?? '').trim()
+
+    if (!/^[0-9]+$/.test(ticketId)) {
+      return res.status(400).json({ error: 'ticketId must be numeric.' })
+    }
+
+    const body = String(req.body?.body ?? '').trim()
+
+    if (!body) {
+      return res.status(400).json({ error: 'body is required.' })
+    }
+
+    if (body.length > 64000) {
+      return res.status(400).json({ error: 'body exceeds 64kb limit.' })
+    }
+
+    const rawIsPublic = req.body?.isPublic
+    let isPublic = true
+
+    if (typeof rawIsPublic === 'boolean') {
+      isPublic = rawIsPublic
+    } else if (rawIsPublic !== undefined) {
+      const normalizedIsPublic = String(rawIsPublic).trim().toLowerCase()
+
+      if (['true', '1', 'yes', 'on'].includes(normalizedIsPublic)) {
+        isPublic = true
+      } else if (['false', '0', 'no', 'off'].includes(normalizedIsPublic)) {
+        isPublic = false
+      } else {
+        return res.status(400).json({ error: 'isPublic must be boolean.' })
+      }
+    }
+
+    const rawStatus = req.body?.status
+    const hasStatus =
+      rawStatus !== undefined
+      && rawStatus !== null
+      && String(rawStatus).trim() !== ''
+    const status = hasStatus ? normalizeReplyStatus(rawStatus) : null
+
+    if (hasStatus && !status) {
+      return res.status(400).json({
+        error: 'status must be one of open, pending, in_progress, solved.',
+      })
+    }
+
+    const publicUser = toPublicAuthUser(req.authUser)
+
+    if (!publicUser?.isApproved) {
+      return res.status(403).json({ error: 'Approved access is required.' })
+    }
+
+    const linkedZendeskUserId = Number(publicUser.linkedZendeskUserId)
+
+    if (!Number.isFinite(linkedZendeskUserId) || linkedZendeskUserId <= 0) {
+      return res.status(403).json({
+        error: 'Your account is not linked to a Zendesk agent yet. Ask an admin to assign one in Admin Users.',
+      })
+    }
+
+    const replyResult = await createZendeskTicketReply(ticketId, {
+      body,
+      isPublic,
+      authorId: linkedZendeskUserId,
+      status,
+    })
+
+    convCacheDelete(ticketId)
+
+    let conversation = null
+
+    try {
+      conversation = await fetchZendeskTicketConversation(ticketId)
+      convCacheSet(ticketId, conversation)
+    } catch (conversationError) {
+      console.warn('Unable to refresh support conversation after reply.', conversationError)
+    }
+
+    try {
+      await clearSupportSnapshotCache()
+    } catch (cacheError) {
+      console.warn('Unable to clear support snapshot cache after reply.', cacheError)
+    }
+
+    return res.status(201).json({
+      conversation,
+      reply: {
+        ticketId: Number(ticketId),
+        isPublic,
+        authorId: linkedZendeskUserId,
+        authorName:
+          String(publicUser.linkedZendeskUserName ?? '').trim()
+          || String(publicUser.displayName ?? '').trim()
+          || publicUser.email,
+        status,
+        appliedStatus: replyResult.appliedStatus,
+        updatedAt: replyResult.updatedAt,
+      },
+    })
   } catch (error) {
     next(error)
   }

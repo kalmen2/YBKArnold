@@ -299,7 +299,10 @@ const {
 })
 
 const {
+  createZendeskTicketReply,
   createZendeskSupportTicket,
+  fetchZendeskSupportAgentById,
+  fetchZendeskSupportAgents,
   fetchZendeskSupportAlertTicketsSnapshot,
   fetchZendeskSupportAlerts,
   fetchZendeskSupportTicketsSnapshot,
@@ -443,6 +446,7 @@ const routeDeps = {
   authRoleStandard,
   buildOrderPhotoDownloadFileName,
   clearSupportSnapshotCache,
+  createZendeskTicketReply,
   createZendeskSupportTicket,
   decodeBase64Image,
   defaultMobileAndroidLatestBuild,
@@ -457,6 +461,8 @@ const routeDeps = {
   extractRequestUserAgent,
   fetchMondayDashboardSnapshot,
   fetchMondayAssetDownloadInfo,
+  fetchZendeskSupportAgentById,
+  fetchZendeskSupportAgents,
   fetchZendeskSupportAlertTicketsSnapshot,
   fetchZendeskSupportAlerts,
   fetchZendeskSupportTicketsSnapshot,

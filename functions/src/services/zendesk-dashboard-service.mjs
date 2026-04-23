@@ -16,6 +16,7 @@ export function createZendeskDashboardService({
   let zendeskOrderNumberFieldId = null
   let zendeskOrderNumberFieldExpiresAt = 0
   let zendeskOrderNumberFieldPromise = null
+  const zendeskAssignableRoles = new Set(['agent', 'admin'])
 
   async function fetchZendeskTicketSummary() {
     ensureZendeskConfiguration()
@@ -363,6 +364,313 @@ export function createZendeskDashboardService({
         orderNumberFieldId,
       ),
     }
+  }
+
+  function normalizeZendeskReplyStatus(value) {
+    const normalized = String(value ?? '')
+      .trim()
+      .toLowerCase()
+      .replace(/[\s-]+/g, '_')
+
+    if (!normalized) {
+      return null
+    }
+
+    if (['new', 'open'].includes(normalized)) {
+      return 'open'
+    }
+
+    if (normalized === 'pending') {
+      return 'pending'
+    }
+
+    if (['hold', 'in_progress', 'inprocess', 'processing', 'process'].includes(normalized)) {
+      return 'in_progress'
+    }
+
+    if (['solved', 'closed', 'resolved', 'done'].includes(normalized)) {
+      return 'solved'
+    }
+
+    return null
+  }
+
+  async function resolveZendeskReplyStatusUpdate(targetStatus) {
+    if (!targetStatus) {
+      return {
+        statusContext: null,
+        ticketStatusUpdate: {},
+      }
+    }
+
+    const normalizedStatus = normalizeZendeskReplyStatus(targetStatus)
+
+    if (!normalizedStatus) {
+      throw {
+        status: 400,
+        message: 'status must be one of open, pending, in_progress, solved.',
+      }
+    }
+
+    const statusContext = await fetchZendeskStatusContext()
+
+    if (normalizedStatus === 'open') {
+      return {
+        statusContext,
+        ticketStatusUpdate: {
+          status: 'open',
+          ...(statusContext.openCustomStatusId
+            ? { custom_status_id: statusContext.openCustomStatusId }
+            : {}),
+        },
+      }
+    }
+
+    if (normalizedStatus === 'pending') {
+      return {
+        statusContext,
+        ticketStatusUpdate: {
+          status: 'pending',
+          ...(statusContext.pendingCustomStatusId
+            ? { custom_status_id: statusContext.pendingCustomStatusId }
+            : {}),
+        },
+      }
+    }
+
+    if (normalizedStatus === 'solved') {
+      return {
+        statusContext,
+        ticketStatusUpdate: {
+          status: 'solved',
+          ...(statusContext.solvedCustomStatusId
+            ? { custom_status_id: statusContext.solvedCustomStatusId }
+            : {}),
+        },
+      }
+    }
+
+    if (normalizedStatus === 'in_progress') {
+      if (statusContext.inProgressCustomStatusId) {
+        return {
+          statusContext,
+          ticketStatusUpdate: {
+            status: 'open',
+            custom_status_id: statusContext.inProgressCustomStatusId,
+          },
+        }
+      }
+
+      return {
+        statusContext,
+        ticketStatusUpdate: {
+          status: 'hold',
+        },
+      }
+    }
+
+    return {
+      statusContext,
+      ticketStatusUpdate: {},
+    }
+  }
+
+  async function createZendeskTicketReply(ticketId, input) {
+    ensureZendeskConfiguration()
+
+    const normalizedTicketId = Number(ticketId)
+
+    if (!Number.isFinite(normalizedTicketId) || normalizedTicketId <= 0) {
+      throw {
+        status: 400,
+        message: 'ticketId must be numeric.',
+      }
+    }
+
+    const body = String(input?.body ?? '').trim()
+
+    if (!body) {
+      throw {
+        status: 400,
+        message: 'body is required.',
+      }
+    }
+
+    const isPublic = input?.isPublic !== false
+    const normalizedAuthorId = Number(input?.authorId)
+    const authorId = Number.isFinite(normalizedAuthorId) && normalizedAuthorId > 0
+      ? normalizedAuthorId
+      : null
+    const hasStatusInput =
+      input?.status !== undefined
+      && input?.status !== null
+      && String(input?.status).trim() !== ''
+    const targetStatus = hasStatusInput
+      ? normalizeZendeskReplyStatus(input?.status)
+      : null
+
+    if (hasStatusInput && !targetStatus) {
+      throw {
+        status: 400,
+        message: 'status must be one of open, pending, in_progress, solved.',
+      }
+    }
+
+    const { ticketStatusUpdate, statusContext } = await resolveZendeskReplyStatusUpdate(targetStatus)
+    const commentPayload = {
+      body,
+      public: isPublic,
+      ...(authorId ? { author_id: authorId } : {}),
+    }
+
+    const payload = await callZendeskApi(`/tickets/${encodeURIComponent(normalizedTicketId)}.json`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        ticket: {
+          comment: commentPayload,
+          ...ticketStatusUpdate,
+        },
+      }),
+    })
+    const ticket = payload?.ticket ?? null
+
+    if (!ticket) {
+      throw {
+        status: 502,
+        message: 'Zendesk update ticket response did not include a ticket.',
+      }
+    }
+
+    const ticketCustomStatusId = Number(ticket?.custom_status_id)
+    let appliedStatus = normalizeZendeskReplyStatus(ticket?.status)
+
+    if (Number.isFinite(ticketCustomStatusId) && ticketCustomStatusId > 0 && statusContext) {
+      if (ticketCustomStatusId === statusContext.inProgressCustomStatusId) {
+        appliedStatus = 'in_progress'
+      } else if (ticketCustomStatusId === statusContext.openCustomStatusId) {
+        appliedStatus = 'open'
+      } else if (ticketCustomStatusId === statusContext.pendingCustomStatusId) {
+        appliedStatus = 'pending'
+      } else if (ticketCustomStatusId === statusContext.solvedCustomStatusId) {
+        appliedStatus = 'solved'
+      }
+    }
+
+    return {
+      ticketId: normalizedTicketId,
+      public: isPublic,
+      authorId,
+      requestedStatus: targetStatus,
+      appliedStatus,
+      updatedAt: String(ticket?.updated_at ?? '').trim() || new Date().toISOString(),
+    }
+  }
+
+  function toZendeskAgentSummary(userEntry) {
+    const id = Number(userEntry?.id)
+
+    if (!Number.isFinite(id) || id <= 0) {
+      return null
+    }
+
+    const role = String(userEntry?.role ?? '').trim().toLowerCase()
+
+    if (!zendeskAssignableRoles.has(role)) {
+      return null
+    }
+
+    return {
+      id,
+      name: String(userEntry?.name ?? '').trim() || `Zendesk User #${id}`,
+      email: String(userEntry?.email ?? '').trim() || null,
+      role,
+    }
+  }
+
+  async function fetchZendeskSupportAgentById(userId) {
+    ensureZendeskConfiguration()
+
+    const normalizedUserId = Number(userId)
+
+    if (!Number.isFinite(normalizedUserId) || normalizedUserId <= 0) {
+      throw {
+        status: 400,
+        message: 'zendeskUserId must be numeric.',
+      }
+    }
+
+    const payload = await callZendeskApi(`/users/${encodeURIComponent(normalizedUserId)}.json`, {
+      method: 'GET',
+    })
+    const normalizedAgent = toZendeskAgentSummary(payload?.user)
+
+    if (!normalizedAgent) {
+      throw {
+        status: 400,
+        message: 'Selected Zendesk user must be an agent or admin.',
+      }
+    }
+
+    return normalizedAgent
+  }
+
+  async function fetchZendeskSupportAgents(limit = 300) {
+    ensureZendeskConfiguration()
+
+    const maxResults = toBoundedInteger(limit, 25, 1000, 300)
+    const perPage = 100
+    const maxPages = 20
+    const agents = []
+    const seenAgentIds = new Set()
+
+    for (let page = 1; page <= maxPages && agents.length < maxResults; page += 1) {
+      const searchParams = new URLSearchParams({
+        page: String(page),
+        per_page: String(perPage),
+      })
+      searchParams.append('role[]', 'agent')
+      searchParams.append('role[]', 'admin')
+
+      const payload = await callZendeskApi(`/users.json?${searchParams.toString()}`, {
+        method: 'GET',
+      })
+      const users = Array.isArray(payload?.users) ? payload.users : []
+
+      for (const userEntry of users) {
+        const agent = toZendeskAgentSummary(userEntry)
+
+        if (!agent || seenAgentIds.has(agent.id)) {
+          continue
+        }
+
+        seenAgentIds.add(agent.id)
+        agents.push(agent)
+
+        if (agents.length >= maxResults) {
+          break
+        }
+      }
+
+      if (users.length < perPage) {
+        break
+      }
+    }
+
+    return agents
+      .slice(0, maxResults)
+      .sort((left, right) => {
+        const leftName = String(left.name ?? '').trim().toLowerCase()
+        const rightName = String(right.name ?? '').trim().toLowerCase()
+
+        if (leftName && rightName && leftName !== rightName) {
+          return leftName.localeCompare(rightName)
+        }
+
+        const leftEmail = String(left.email ?? '').trim().toLowerCase()
+        const rightEmail = String(right.email ?? '').trim().toLowerCase()
+
+        return leftEmail.localeCompare(rightEmail)
+      })
   }
 
   async function fetchZendeskStatusContext() {
@@ -717,7 +1025,10 @@ export function createZendeskDashboardService({
   }
 
   return {
+    createZendeskTicketReply,
     createZendeskSupportTicket,
+    fetchZendeskSupportAgentById,
+    fetchZendeskSupportAgents,
     fetchZendeskSupportAlertTicketsSnapshot,
     fetchZendeskSupportAlerts,
     fetchZendeskSupportTicketsSnapshot,

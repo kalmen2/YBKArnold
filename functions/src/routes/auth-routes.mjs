@@ -13,6 +13,7 @@ export function registerAuthRoutes(app, deps) {
     ensureWorkersHaveWorkerNumbers,
     extractRequestIpAddress,
     extractRequestUserAgent,
+    fetchZendeskSupportAgentById,
     getCollections,
     invalidateAuthUserCache,
     normalizeAuthAccessTimeZone,
@@ -257,6 +258,95 @@ app.patch('/api/auth/users/:uid/worker-link', requireFirebaseAuth, requireAdminR
         },
       },
     )
+    invalidateAuthUserCache(targetUid)
+
+    return res.json({
+      user: toPublicAuthUser(updatedUser),
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.patch('/api/auth/users/:uid/zendesk-link', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+  try {
+    const targetUid = String(req.params.uid ?? '').trim()
+
+    if (!targetUid) {
+      return res.status(400).json({ error: 'uid is required.' })
+    }
+
+    const rawZendeskUserId = req.body?.zendeskUserId
+    const hasRequestedZendeskLink = rawZendeskUserId !== undefined && rawZendeskUserId !== null && String(rawZendeskUserId).trim() !== ''
+    const parsedZendeskUserId = hasRequestedZendeskLink
+      ? Number(rawZendeskUserId)
+      : null
+
+    if (hasRequestedZendeskLink && (!Number.isFinite(parsedZendeskUserId) || parsedZendeskUserId <= 0)) {
+      return res.status(400).json({ error: 'zendeskUserId must be numeric when provided.' })
+    }
+
+    const { authUsersCollection } = await getCollections()
+    const existingUser = await authUsersCollection.findOne(
+      { uid: targetUid },
+      {
+        projection: {
+          _id: 0,
+        },
+      },
+    )
+
+    if (!existingUser) {
+      return res.status(404).json({ error: 'User not found.' })
+    }
+
+    let linkedZendeskUser = null
+
+    if (parsedZendeskUserId) {
+      linkedZendeskUser = await fetchZendeskSupportAgentById(parsedZendeskUserId)
+
+      const existingLinkedUser = await authUsersCollection.findOne(
+        {
+          linkedZendeskUserId: linkedZendeskUser.id,
+          uid: {
+            $ne: targetUid,
+          },
+        },
+        {
+          projection: {
+            _id: 0,
+            uid: 1,
+            email: 1,
+          },
+        },
+      )
+
+      if (existingLinkedUser) {
+        return res.status(400).json({
+          error: `Zendesk agent is already linked to ${String(existingLinkedUser.email ?? '').trim() || 'another user'}.`,
+        })
+      }
+    }
+
+    const now = nowIso()
+    const updatedUser = await authUsersCollection.findOneAndUpdate(
+      { uid: targetUid },
+      {
+        $set: {
+          linkedZendeskUserId: linkedZendeskUser?.id ?? null,
+          linkedZendeskUserEmail: linkedZendeskUser?.email ?? null,
+          linkedZendeskUserName: linkedZendeskUser?.name ?? null,
+          updatedAt: now,
+        },
+      },
+      {
+        returnDocument: 'after',
+        projection: {
+          _id: 0,
+        },
+      },
+    )
+    invalidateAuthUserCache(targetUid)
 
     return res.json({
       user: toPublicAuthUser(updatedUser),

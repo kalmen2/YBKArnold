@@ -34,6 +34,7 @@ import { Navigate } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
 import { apiRequest } from '../features/api-client'
 import { fetchAuthBootstrap } from '../features/auth/api'
+import { fetchZendeskSupportAgents, type ZendeskSupportAgent } from '../features/support/api'
 import type { AppAuthRole, AppAuthUser } from '../auth/types'
 import { QUERY_KEYS } from '../lib/queryKeys'
 import {
@@ -81,6 +82,16 @@ function formatLinkedWorkerLabel(user: AppAuthUser) {
   return `${workerNumber} • ${workerName}`
 }
 
+function formatLinkedZendeskLabel(user: AppAuthUser) {
+  if (!user.linkedZendeskUserId) {
+    return 'Not linked'
+  }
+
+  const agentName = String(user.linkedZendeskUserName ?? '').trim() || 'Zendesk agent'
+
+  return `${agentName} (#${user.linkedZendeskUserId})`
+}
+
 function formatClientAccessLabel(mode: ClientAccessMode) {
   if (mode === 'app_only') {
     return 'App only'
@@ -111,6 +122,8 @@ export default function AdminUsersPage() {
   const [hoursTimeZone, setHoursTimeZone] = useState<string>(newJerseyTimeZone)
   const [workerLinkTarget, setWorkerLinkTarget] = useState<AppAuthUser | null>(null)
   const [workerLinkWorkerId, setWorkerLinkWorkerId] = useState('')
+  const [zendeskLinkTarget, setZendeskLinkTarget] = useState<AppAuthUser | null>(null)
+  const [zendeskLinkUserId, setZendeskLinkUserId] = useState('')
   const [workerApproveTarget, setWorkerApproveTarget] = useState<AppAuthUser | null>(null)
   const [workerApproveWorkerId, setWorkerApproveWorkerId] = useState('')
   const [actionsAnchorEl, setActionsAnchorEl] = useState<HTMLElement | null>(null)
@@ -123,6 +136,13 @@ export default function AdminUsersPage() {
     queryKey: QUERY_KEYS.authBootstrap,
     queryFn: () => fetchAuthBootstrap(),
     staleTime: 2 * 60 * 1000,
+  })
+
+  const zendeskAgentsQuery = useQuery({
+    queryKey: QUERY_KEYS.supportZendeskAgents(300),
+    queryFn: () => fetchZendeskSupportAgents(300),
+    staleTime: 5 * 60 * 1000,
+    enabled: Boolean(appUser?.isAdmin),
   })
 
   const isLoading = bootstrapQuery.isLoading
@@ -351,6 +371,11 @@ export default function AdminUsersPage() {
     setWorkerLinkWorkerId(user.linkedWorkerId ?? '')
   }, [])
 
+  const openZendeskLinkDialog = useCallback((user: AppAuthUser) => {
+    setZendeskLinkTarget(user)
+    setZendeskLinkUserId(user.linkedZendeskUserId ? String(user.linkedZendeskUserId) : '')
+  }, [])
+
   const handleSaveWorkerLink = useCallback(async () => {
     if (!workerLinkTarget) {
       return
@@ -387,6 +412,64 @@ export default function AdminUsersPage() {
       setActiveUserId(null)
     }
   }, [workerLinkTarget, workerLinkWorkerId, setErrorMessage])
+
+  const handleSaveZendeskLink = useCallback(async () => {
+    if (!zendeskLinkTarget) {
+      return
+    }
+
+    const normalizedZendeskUserId = String(zendeskLinkUserId ?? '').trim()
+    const parsedZendeskUserId = normalizedZendeskUserId
+      ? Number(normalizedZendeskUserId)
+      : 0
+
+    if (normalizedZendeskUserId && (!Number.isFinite(parsedZendeskUserId) || parsedZendeskUserId <= 0)) {
+      setErrorMessage('Select a valid Zendesk agent.')
+      return
+    }
+
+    setErrorMessage(null)
+    setActionMessage(null)
+    setActiveUserId(zendeskLinkTarget.uid)
+
+    try {
+      const payload = await apiRequest<{ user: AppAuthUser }>(
+        `/api/auth/users/${zendeskLinkTarget.uid}/zendesk-link`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({
+            zendeskUserId: normalizedZendeskUserId ? parsedZendeskUserId : null,
+          }),
+        },
+      )
+
+      setUsers((currentUsers) =>
+        currentUsers.map((user) =>
+          user.uid === payload.user.uid ? payload.user : user,
+        ),
+      )
+
+      if (normalizedZendeskUserId) {
+        const selectedAgent = (zendeskAgentsQuery.data?.agents ?? []).find(
+          (agent: ZendeskSupportAgent) => agent.id === parsedZendeskUserId,
+        )
+        setActionMessage(
+          `Zendesk agent linked: ${selectedAgent?.name ?? `#${parsedZendeskUserId}`}.`,
+        )
+      } else {
+        setActionMessage('Zendesk agent unlinked.')
+      }
+
+      setZendeskLinkTarget(null)
+      setZendeskLinkUserId('')
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : 'Could not update Zendesk link.',
+      )
+    } finally {
+      setActiveUserId(null)
+    }
+  }, [zendeskAgentsQuery.data?.agents, zendeskLinkTarget, zendeskLinkUserId, setErrorMessage])
 
   const closePromotionDialog = useCallback(() => {
     setPromotionTarget(null)
@@ -459,10 +542,22 @@ export default function AdminUsersPage() {
     () => users.filter((user) => !user.isApproved).length,
     [users],
   )
+  const zendeskAgents = useMemo(
+    () => zendeskAgentsQuery.data?.agents ?? [],
+    [zendeskAgentsQuery.data?.agents],
+  )
+  const selectedZendeskAgentMissing = useMemo(() => {
+    if (!zendeskLinkUserId) {
+      return false
+    }
+
+    return !zendeskAgents.some((agent) => String(agent.id) === zendeskLinkUserId)
+  }, [zendeskAgents, zendeskLinkUserId])
 
   const actionsMenuOpen = Boolean(actionsAnchorEl && actionsTarget)
   const actionsTargetIsSaving = actionsTarget ? activeUserId === actionsTarget.uid : false
   const actionsTargetCanAssignStandard = Boolean(actionsTarget && !actionsTarget.isOwner)
+  const actionsTargetCanAssignZendesk = Boolean(actionsTarget)
   const actionsTargetCanEditHours = Boolean(actionsTarget && !actionsTarget.isAdmin)
   const actionsTargetCanDelete = Boolean(
     actionsTarget
@@ -523,6 +618,7 @@ export default function AdminUsersPage() {
                 <TableCell>Role</TableCell>
                 <TableCell>Login Hours</TableCell>
                 <TableCell>Worker Login</TableCell>
+                <TableCell>Zendesk Agent</TableCell>
                 <TableCell>Client Access</TableCell>
                 <TableCell>Last Login</TableCell>
                 <TableCell align="right">Actions</TableCell>
@@ -592,6 +688,15 @@ export default function AdminUsersPage() {
                         size="small"
                         variant="outlined"
                         color={user.linkedWorkerId ? 'primary' : 'default'}
+                      />
+                    </TableCell>
+
+                    <TableCell>
+                      <Chip
+                        label={formatLinkedZendeskLabel(user)}
+                        size="small"
+                        variant="outlined"
+                        color={user.linkedZendeskUserId ? 'primary' : 'default'}
                       />
                     </TableCell>
 
@@ -718,6 +823,20 @@ export default function AdminUsersPage() {
           }}
         >
           Assign Worker
+        </MenuItem>
+
+        <MenuItem
+          disabled={actionsTargetIsSaving || !actionsTargetCanAssignZendesk}
+          onClick={() => {
+            if (!actionsTarget) {
+              return
+            }
+
+            closeRowActions()
+            openZendeskLinkDialog(actionsTarget)
+          }}
+        >
+          Assign Zendesk Agent
         </MenuItem>
 
         <MenuItem
@@ -1058,6 +1177,83 @@ export default function AdminUsersPage() {
             }}
           >
             Approve As Worker
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(zendeskLinkTarget)}
+        onClose={() => {
+          if (!activeUserId) {
+            setZendeskLinkTarget(null)
+            setZendeskLinkUserId('')
+          }
+        }}
+        fullWidth
+        maxWidth="sm"
+      >
+        <DialogTitle>Assign Zendesk Agent</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ pt: 1 }}>
+            <Typography variant="body2" color="text.secondary">
+              {zendeskLinkTarget?.email}
+            </Typography>
+
+            {zendeskAgentsQuery.isError ? (
+              <Alert severity="warning">
+                {zendeskAgentsQuery.error instanceof Error
+                  ? zendeskAgentsQuery.error.message
+                  : 'Could not load Zendesk agents.'}
+              </Alert>
+            ) : null}
+
+            <TextField
+              select
+              fullWidth
+              label="Zendesk Agent"
+              value={zendeskLinkUserId}
+              onChange={(event) => {
+                setZendeskLinkUserId(event.target.value)
+              }}
+              helperText={zendeskAgentsQuery.isLoading ? 'Loading agents...' : undefined}
+            >
+              <MenuItem value="">Not linked</MenuItem>
+              {selectedZendeskAgentMissing && zendeskLinkUserId ? (
+                <MenuItem value={zendeskLinkUserId}>
+                  Current linked agent (ID #{zendeskLinkUserId})
+                </MenuItem>
+              ) : null}
+              {zendeskAgents.map((agent) => (
+                <MenuItem key={agent.id} value={String(agent.id)}>
+                  {agent.name}
+                  {agent.email ? ` (${agent.email})` : ''}
+                </MenuItem>
+              ))}
+            </TextField>
+
+            <Typography variant="caption" color="text.secondary">
+              Linked users can reply from Support as this Zendesk identity.
+            </Typography>
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={() => {
+              setZendeskLinkTarget(null)
+              setZendeskLinkUserId('')
+            }}
+            disabled={Boolean(activeUserId)}
+          >
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            onClick={() => {
+              void handleSaveZendeskLink()
+            }}
+            disabled={!zendeskLinkTarget || activeUserId === zendeskLinkTarget.uid}
+          >
+            Save Link
           </Button>
         </DialogActions>
       </Dialog>

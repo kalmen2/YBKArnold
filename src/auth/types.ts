@@ -24,6 +24,9 @@ export type AppAuthUser = {
   linkedWorkerId: string | null
   linkedWorkerNumber: string | null
   linkedWorkerName: string | null
+  linkedZendeskUserId: number | null
+  linkedZendeskUserEmail: string | null
+  linkedZendeskUserName: string | null
   clientPlatforms: Array<'web' | 'app'>
   lastLoginClientPlatform: 'web' | 'app' | null
   clientAccessMode: 'web_and_app' | 'web_only' | 'app_only'

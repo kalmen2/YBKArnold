@@ -387,6 +387,44 @@ function normalizeUsStateList(input) {
   return normalizedStates.sort((left, right) => left.localeCompare(right))
 }
 
+function normalizeQuoteDocuments(input) {
+  if (!Array.isArray(input)) {
+    return []
+  }
+
+  const maxDocuments = 20
+  const normalizedDocuments = []
+  const seenUrls = new Set()
+
+  for (const rawDocument of input) {
+    const documentEntry = toOptionalObject(rawDocument)
+    const url = toTrimmedText(documentEntry.url ?? documentEntry.documentUrl, 2000)
+
+    if (!url) {
+      continue
+    }
+
+    const dedupeKey = toLowerText(url, 2000)
+
+    if (!dedupeKey || seenUrls.has(dedupeKey)) {
+      continue
+    }
+
+    seenUrls.add(dedupeKey)
+
+    normalizedDocuments.push({
+      url,
+      name: toTrimmedText(documentEntry.name ?? documentEntry.documentName, 240) || null,
+    })
+
+    if (normalizedDocuments.length >= maxDocuments) {
+      break
+    }
+  }
+
+  return normalizedDocuments
+}
+
 function toSalesRepResponse(rawSalesRep) {
   const salesRep = toOptionalObject(rawSalesRep)
   const companyName = toTrimmedText(salesRep.companyName, 200)
@@ -2719,7 +2757,7 @@ export function registerCrmRoutes(app, deps) {
     }
   })
 
-  app.post('/api/crm/quotes', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+  app.post('/api/crm/quotes', requireFirebaseAuth, async (req, res, next) => {
     try {
       const body = toOptionalObject(req.body)
       const title = toTrimmedText(body.title, 240)
@@ -2802,6 +2840,18 @@ export function registerCrmRoutes(app, deps) {
       }
 
       const now = nowIso()
+      const explicitDocumentUrl = toTrimmedText(body.documentUrl, 2000) || null
+      const explicitDocumentName = toTrimmedText(body.documentName, 240) || null
+      const normalizedDocuments = normalizeQuoteDocuments(body.documents)
+
+      if (normalizedDocuments.length === 0 && explicitDocumentUrl) {
+        normalizedDocuments.push({
+          url: explicitDocumentUrl,
+          name: explicitDocumentName,
+        })
+      }
+
+      const primaryDocument = normalizedDocuments[0] || null
 
       const nextQuote = {
         id: randomUUID(),
@@ -2813,12 +2863,16 @@ export function registerCrmRoutes(app, deps) {
         contactSourceId: nextContactSourceId,
         contactName: nextContactName,
         quoteNumber: toTrimmedText(body.quoteNumber, 120) || null,
+        poNumber: toTrimmedText(body.poNumber, 120) || null,
+        acknowledgmentNumber: toTrimmedText(body.acknowledgmentNumber, 120) || null,
+        orderNumber: toTrimmedText(body.orderNumber, 120) || null,
         title,
         description: toTrimmedText(body.description, 2000) || null,
         conceptImageUrl: toTrimmedText(body.conceptImageUrl, 2000) || null,
         conceptImageName: toTrimmedText(body.conceptImageName, 240) || null,
-        documentUrl: toTrimmedText(body.documentUrl, 2000) || null,
-        documentName: toTrimmedText(body.documentName, 240) || null,
+        documentUrl: primaryDocument?.url || explicitDocumentUrl || null,
+        documentName: primaryDocument?.name || explicitDocumentName || null,
+        documents: normalizedDocuments,
         revisionCount,
         status,
         totalAmount: Number(totalAmount.toFixed(2)),
@@ -2848,7 +2902,7 @@ export function registerCrmRoutes(app, deps) {
     }
   })
 
-  app.patch('/api/crm/quotes/:quoteId', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+  app.patch('/api/crm/quotes/:quoteId', requireFirebaseAuth, async (req, res, next) => {
     try {
       const quoteId = toTrimmedText(req.params.quoteId, 160)
 
@@ -2884,6 +2938,10 @@ export function registerCrmRoutes(app, deps) {
 
       const updates = {}
       const now = nowIso()
+      const hasDocumentsInput = Object.prototype.hasOwnProperty.call(body, 'documents')
+      const hasLegacyDocumentUrlInput = Object.prototype.hasOwnProperty.call(body, 'documentUrl')
+      const hasLegacyDocumentNameInput = Object.prototype.hasOwnProperty.call(body, 'documentName')
+      const hasLegacyDocumentInput = hasLegacyDocumentUrlInput || hasLegacyDocumentNameInput
 
       if (Object.prototype.hasOwnProperty.call(body, 'title')) {
         const nextTitle = toTrimmedText(body.title, 240)
@@ -2916,6 +2974,18 @@ export function registerCrmRoutes(app, deps) {
 
       if (Object.prototype.hasOwnProperty.call(body, 'quoteNumber')) {
         updates.quoteNumber = toTrimmedText(body.quoteNumber, 120) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'poNumber')) {
+        updates.poNumber = toTrimmedText(body.poNumber, 120) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'acknowledgmentNumber')) {
+        updates.acknowledgmentNumber = toTrimmedText(body.acknowledgmentNumber, 120) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'orderNumber')) {
+        updates.orderNumber = toTrimmedText(body.orderNumber, 120) || null
       }
 
       if (Object.prototype.hasOwnProperty.call(body, 'salesRep')) {
@@ -3007,12 +3077,36 @@ export function registerCrmRoutes(app, deps) {
         updates.contactName = toTrimmedText(body.contactName, 240) || null
       }
 
-      if (Object.prototype.hasOwnProperty.call(body, 'documentUrl')) {
+      if (hasDocumentsInput) {
+        const normalizedDocuments = normalizeQuoteDocuments(body.documents)
+        const primaryDocument = normalizedDocuments[0] || null
+
+        updates.documents = normalizedDocuments
+        updates.documentUrl = primaryDocument?.url || null
+        updates.documentName = primaryDocument?.name || null
+      }
+
+      if (!hasDocumentsInput && hasLegacyDocumentUrlInput) {
         updates.documentUrl = toTrimmedText(body.documentUrl, 2000) || null
       }
 
-      if (Object.prototype.hasOwnProperty.call(body, 'documentName')) {
+      if (!hasDocumentsInput && hasLegacyDocumentNameInput) {
         updates.documentName = toTrimmedText(body.documentName, 240) || null
+      }
+
+      if (!hasDocumentsInput && hasLegacyDocumentInput) {
+        const nextDocumentUrl = toTrimmedText(
+          updates.documentUrl ?? existingQuote.documentUrl,
+          2000,
+        ) || null
+        const nextDocumentName = toTrimmedText(
+          updates.documentName ?? existingQuote.documentName,
+          240,
+        ) || null
+
+        updates.documents = nextDocumentUrl
+          ? [{ url: nextDocumentUrl, name: nextDocumentName }]
+          : []
       }
 
       if (Object.prototype.hasOwnProperty.call(body, 'sentAt')) {
@@ -3078,7 +3172,7 @@ export function registerCrmRoutes(app, deps) {
     }
   })
 
-  app.delete('/api/crm/quotes/:quoteId', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+  app.delete('/api/crm/quotes/:quoteId', requireFirebaseAuth, async (req, res, next) => {
     try {
       const quoteId = toTrimmedText(req.params.quoteId, 160)
 
@@ -3155,7 +3249,7 @@ export function registerCrmRoutes(app, deps) {
     }
   })
 
-  app.post('/api/crm/orders', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+  app.post('/api/crm/orders', requireFirebaseAuth, async (req, res, next) => {
     try {
       const body = toOptionalObject(req.body)
       const title = toTrimmedText(body.title, 240)

@@ -13,6 +13,7 @@ export const QUERY_KEYS = {
   supportAlertTickets: (limitPerBucket: number) =>
     ['support', 'alert-tickets', limitPerBucket] as const,
   supportTickets: (limit: number) => ['support', 'tickets', limit] as const,
+  supportZendeskAgents: (limit: number) => ['support', 'zendesk-agents', limit] as const,
   supportConversation: (ticketId: number) =>
     ['support', 'conversation', ticketId] as const,
 

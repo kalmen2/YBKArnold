@@ -13,23 +13,24 @@ import {
   Button,
   Chip,
   CircularProgress,
+  MenuItem,
   Paper,
   Stack,
-  Table,
-  TableBody,
-  TableCell,
-  TableContainer,
-  TableHead,
-  TableRow,
+  TextField,
+  ToggleButton,
+  ToggleButtonGroup,
   Typography,
 } from '@mui/material'
 import { useEffect, useMemo, useState } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useAuth } from '../auth/useAuth'
 import {
   fetchSupportAlertTickets,
   fetchSupportAlerts,
+  replySupportTicket,
   fetchSupportTicketConversation,
   fetchSupportTickets,
+  type SupportReplyStatus,
   type SupportTicketConversationSnapshot,
 } from '../features/support/api'
 
@@ -38,6 +39,8 @@ type AlertBucketKey =
   | 'openOver24Hours'
   | 'inProgressOver48Hours'
   | 'pendingOver48Hours'
+
+type SupportReplyStatusOption = SupportReplyStatus | 'no_change'
 
 function formatDateTime(value: string) {
   const parsed = new Date(value)
@@ -150,7 +153,24 @@ function getStatusAccentColor(status: string): string {
   return '#90a4ae'
 }
 
+function formatReplyStatusLabel(status: SupportReplyStatus): string {
+  if (status === 'in_progress') {
+    return 'In Progress'
+  }
+
+  if (status === 'pending') {
+    return 'Pending'
+  }
+
+  if (status === 'solved') {
+    return 'Solved'
+  }
+
+  return 'Open'
+}
+
 export default function SupportPage() {
+  const { appUser } = useAuth()
   const queryClient = useQueryClient()
 
   const [selectedTicketId, setSelectedTicketId] = useState<number | null>(null)
@@ -162,6 +182,11 @@ export default function SupportPage() {
   >(null)
   const [selectedAlertBucket, setSelectedAlertBucket] = useState<AlertBucketKey | null>(null)
   const [expandedTicketPreviewId, setExpandedTicketPreviewId] = useState<number | false>(false)
+  const [replyBody, setReplyBody] = useState('')
+  const [replyMode, setReplyMode] = useState<'public' | 'internal'>('public')
+  const [replyStatus, setReplyStatus] = useState<SupportReplyStatusOption>('no_change')
+  const [replySuccessMessage, setReplySuccessMessage] = useState<string | null>(null)
+  const [replyErrorMessage, setReplyErrorMessage] = useState<string | null>(null)
 
   const alertsQuery = useQuery({
     queryKey: ['support', 'alerts'],
@@ -217,6 +242,66 @@ export default function SupportPage() {
     ticketsQuery.isFetching ||
     alertTicketsQuery.isFetching
 
+  const linkedZendeskUserId = Number(appUser?.linkedZendeskUserId)
+  const canReplyAsLinkedZendeskUser =
+    Boolean(appUser?.isApproved)
+    && Number.isFinite(linkedZendeskUserId)
+    && linkedZendeskUserId > 0
+  const replyAuthorLabel =
+    String(appUser?.linkedZendeskUserName ?? '').trim()
+    || String(appUser?.displayName ?? '').trim()
+    || appUser?.email
+    || 'Linked Zendesk agent'
+  const trimmedReplyBody = replyBody.trim()
+  const replyCharacterLimit = 64000
+
+  const replyMutation = useMutation({
+    mutationFn: ({
+      ticketId,
+      body,
+      isPublic,
+      status,
+    }: {
+      ticketId: number
+      body: string
+      isPublic: boolean
+      status?: SupportReplyStatus
+    }) =>
+      replySupportTicket(ticketId, {
+        body,
+        isPublic,
+        status,
+      }),
+    onSuccess: async (payload, variables) => {
+      if (payload.conversation) {
+        queryClient.setQueryData(['support', 'conversation', variables.ticketId], payload.conversation)
+      } else {
+        await queryClient.invalidateQueries({
+          queryKey: ['support', 'conversation', variables.ticketId],
+        })
+      }
+
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['support', 'alerts'] }),
+        queryClient.invalidateQueries({ queryKey: ['support', 'tickets'] }),
+        queryClient.invalidateQueries({ queryKey: ['support', 'alert-tickets'] }),
+      ])
+
+      setReplyBody('')
+      const baseMessage = payload.reply.isPublic ? 'Public reply sent.' : 'Internal note added.'
+      const nextMessage = variables.status
+        ? `${baseMessage} Ticket set to ${formatReplyStatusLabel(variables.status)}.`
+        : baseMessage
+
+      setReplySuccessMessage(nextMessage)
+      setReplyErrorMessage(null)
+    },
+    onError: (error) => {
+      setReplySuccessMessage(null)
+      setReplyErrorMessage(error instanceof Error ? error.message : 'Could not send reply.')
+    },
+  })
+
   async function handleRefresh() {
     await Promise.all([
       queryClient.fetchQuery({
@@ -235,6 +320,38 @@ export default function SupportPage() {
         staleTime: 0,
       }),
     ])
+  }
+
+  async function handleSubmitReply() {
+    if (!conversationSnapshot) {
+      setReplyErrorMessage('Select a ticket before sending a reply.')
+      return
+    }
+
+    if (!canReplyAsLinkedZendeskUser) {
+      setReplyErrorMessage('Your account is not linked to a Zendesk agent. Ask an admin to assign one.')
+      return
+    }
+
+    if (!trimmedReplyBody) {
+      setReplyErrorMessage('Enter a reply message.')
+      return
+    }
+
+    if (trimmedReplyBody.length > replyCharacterLimit) {
+      setReplyErrorMessage(`Reply exceeds ${replyCharacterLimit.toLocaleString()} characters.`)
+      return
+    }
+
+    setReplyErrorMessage(null)
+    setReplySuccessMessage(null)
+
+    await replyMutation.mutateAsync({
+      ticketId: conversationSnapshot.ticket.id,
+      body: trimmedReplyBody,
+      isPublic: replyMode === 'public',
+      status: replyStatus === 'no_change' ? undefined : replyStatus,
+    })
   }
 
   useEffect(() => {
@@ -327,12 +444,18 @@ export default function SupportPage() {
     pendingOver48Hours: 'Pending > 48h',
   }
 
-  const alertBucketTickets = useMemo(() => {
+  const selectedAlertTicketIds = useMemo(() => {
     if (!selectedAlertBucket || !alertTicketsSnapshot) {
-      return []
+      return null
     }
 
-    return alertTicketsSnapshot.buckets[selectedAlertBucket] ?? []
+    const bucketTickets = alertTicketsSnapshot.buckets[selectedAlertBucket] ?? []
+
+    return new Set(
+      bucketTickets
+        .map((ticket) => Number(ticket?.id))
+        .filter((ticketId) => Number.isFinite(ticketId) && ticketId > 0),
+    )
   }, [alertTicketsSnapshot, selectedAlertBucket])
 
   const openTickets = useMemo(() => {
@@ -351,6 +474,18 @@ export default function SupportPage() {
       return right.id - left.id
     })
   }, [ticketsSnapshot])
+
+  const sidebarTickets = useMemo(() => {
+    if (!selectedAlertTicketIds) {
+      return openTickets
+    }
+
+    return openTickets.filter((ticket) => selectedAlertTicketIds.has(ticket.id))
+  }, [openTickets, selectedAlertTicketIds])
+
+  const activeAlertFilterLabel = selectedAlertBucket
+    ? alertBucketLabelMap[selectedAlertBucket]
+    : null
 
   const helpdeskUrl =
     alertsSnapshot?.agentUrl ||
@@ -384,6 +519,15 @@ export default function SupportPage() {
     }
 
     setSelectedAlertBucket(bucketKey)
+  }
+
+  function selectTicket(ticketId: number) {
+    setSelectedTicketId(ticketId)
+    setReplyBody('')
+    setReplyMode('public')
+    setReplyStatus('no_change')
+    setReplySuccessMessage(null)
+    setReplyErrorMessage(null)
   }
 
   return (
@@ -461,128 +605,6 @@ export default function SupportPage() {
         </Paper>
       ) : null}
 
-      {/* ── Ticket filters ── */}
-      <Paper variant="outlined" sx={{ p: 2.25, borderRadius: 1.5 }}>
-        <Box
-          sx={{
-            display: 'grid',
-            gridTemplateColumns: {
-              xs: 'repeat(2, minmax(0, 1fr))',
-              xl: 'repeat(4, minmax(0, 1fr))',
-            },
-            gap: 1.5,
-          }}
-        >
-          {alertCards.map((card) => (
-            <Paper
-              key={card.key}
-              variant="outlined"
-              onClick={() => handleAlertCardClick(card.key as AlertBucketKey)}
-              sx={{
-                p: 2,
-                borderLeft: `4px solid ${card.color}`,
-                borderRadius: 1.25,
-                cursor: 'pointer',
-                outline: selectedAlertBucket === card.key ? `2px solid ${card.color}` : 'none',
-                outlineOffset: -1,
-                transition: 'transform 120ms ease, box-shadow 120ms ease',
-                '&:hover': { transform: 'translateY(-2px)', boxShadow: 2 },
-              }}
-            >
-              <Typography variant="body2" color="text.secondary" fontWeight={500}>
-                {card.label}
-              </Typography>
-              <Typography variant="h4" fontWeight={800} lineHeight={1.1} sx={{ mt: 0.5 }}>
-                {card.value}
-              </Typography>
-            </Paper>
-          ))}
-        </Box>
-      </Paper>
-
-      {/* ── Alert bucket drill-down ── */}
-      {selectedAlertBucket ? (
-        <Paper variant="outlined" sx={{ borderRadius: 1.5, overflow: 'hidden' }}>
-          <Box
-            sx={{
-              px: 2.25,
-              py: 1.5,
-              bgcolor: '#fafafa',
-              borderBottom: '1px solid',
-              borderColor: 'divider',
-            }}
-          >
-            <Typography variant="subtitle1" fontWeight={700}>
-              {alertBucketLabelMap[selectedAlertBucket]} — Affected Tickets
-            </Typography>
-          </Box>
-          <Box sx={{ p: 2.25 }}>
-            {alertTicketsQuery.isLoading ? (
-              <Stack direction="row" spacing={1.25} alignItems="center" sx={{ mb: 1.5 }}>
-                <CircularProgress size={18} />
-                <Typography variant="body2" color="text.secondary">Loading…</Typography>
-              </Stack>
-            ) : null}
-            <TableContainer sx={{ maxHeight: 320 }}>
-              <Table size="small" stickyHeader>
-                <TableHead>
-                  <TableRow>
-                    <TableCell sx={{ fontWeight: 700 }}>ID</TableCell>
-                    <TableCell sx={{ fontWeight: 700 }}>Order #</TableCell>
-                    <TableCell sx={{ fontWeight: 700 }}>Subject</TableCell>
-                    <TableCell sx={{ fontWeight: 700 }}>Status</TableCell>
-                    <TableCell sx={{ fontWeight: 700 }}>Assignee</TableCell>
-                    <TableCell sx={{ fontWeight: 700 }}>Updated</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {alertBucketTickets.map((ticket) => (
-                    <TableRow
-                      key={`alert-${selectedAlertBucket}-${ticket.id}`}
-                      hover
-                      onClick={() => {
-                        setSelectedTicketId(ticket.id)
-                        setExpandedTicketPreviewId(ticket.id)
-                        setPendingSidebarTicketScrollId(ticket.id)
-                      }}
-                      sx={{ cursor: 'pointer' }}
-                    >
-                      <TableCell>
-                        <Typography variant="body2" fontWeight={600} color="#0078d4">
-                          #{ticket.id}
-                        </Typography>
-                      </TableCell>
-                      <TableCell>{ticket.orderNumber || '—'}</TableCell>
-                      <TableCell>{ticket.subject}</TableCell>
-                      <TableCell>
-                        <Chip
-                          size="small"
-                          label={ticket.statusLabel}
-                          color={statusChipColor(ticket.status)}
-                          variant="outlined"
-                        />
-                      </TableCell>
-                      <TableCell>{ticket.assigneeName}</TableCell>
-                      <TableCell>{formatDateTime(ticket.updatedAt)}</TableCell>
-                    </TableRow>
-                  ))}
-
-                  {alertBucketTickets.length === 0 ? (
-                    <TableRow>
-                      <TableCell colSpan={6}>
-                        <Typography color="text.secondary" variant="body2" sx={{ py: 1 }}>
-                          No tickets in this filter.
-                        </Typography>
-                      </TableCell>
-                    </TableRow>
-                  ) : null}
-                </TableBody>
-              </Table>
-            </TableContainer>
-          </Box>
-        </Paper>
-      ) : null}
-
       {/* ── Main two-column layout ── */}
       <Box
         sx={{
@@ -619,15 +641,26 @@ export default function SupportPage() {
                 Inbox
               </Typography>
               <Chip
-                label={openTickets.length}
+                label={sidebarTickets.length}
                 size="small"
                 sx={{ height: 18, fontSize: '0.68rem', fontWeight: 700 }}
               />
+              {activeAlertFilterLabel ? (
+                <Chip
+                  label={activeAlertFilterLabel}
+                  size="small"
+                  color="warning"
+                  variant="outlined"
+                  onDelete={() => {
+                    setSelectedAlertBucket(null)
+                  }}
+                />
+              ) : null}
             </Stack>
           </Box>
 
           <Stack spacing={0} sx={{ flex: 1, overflowY: 'auto' }}>
-            {openTickets.map((ticket) => {
+            {sidebarTickets.map((ticket) => {
               const previewSnapshot: SupportTicketConversationSnapshot | null =
                 expandedTicketPreviewId === ticket.id &&
                 conversationQuery.data?.ticket.id === ticket.id
@@ -654,7 +687,7 @@ export default function SupportPage() {
                   expanded={expandedTicketPreviewId === ticket.id}
                   onChange={(_event, expanded) => {
                     setExpandedTicketPreviewId(expanded ? ticket.id : false)
-                    setSelectedTicketId(ticket.id)
+                    selectTicket(ticket.id)
                   }}
                   disableGutters
                   sx={{
@@ -782,7 +815,7 @@ export default function SupportPage() {
                                 key={comment.id}
                                 variant="outlined"
                                 onClick={() => {
-                                  setSelectedTicketId(ticket.id)
+                                  selectTicket(ticket.id)
                                   setPendingConversationJump({
                                     ticketId: ticket.id,
                                     commentId: comment.id,
@@ -840,18 +873,60 @@ export default function SupportPage() {
               )
             })}
 
-            {openTickets.length === 0 && !isLoadingPage ? (
+            {sidebarTickets.length === 0 && !isLoadingPage ? (
               <Box sx={{ p: 4, textAlign: 'center' }}>
                 <Typography variant="body2" color="text.secondary">
-                  No open tickets.
+                  {activeAlertFilterLabel
+                    ? `No tickets match ${activeAlertFilterLabel}.`
+                    : 'No open tickets.'}
                 </Typography>
               </Box>
             ) : null}
           </Stack>
         </Paper>
 
-        {/* ── Conversation panel (email thread) ── */}
-        <Paper
+        <Stack spacing={1.5}>
+          {/* ── Ticket filters (right panel only) ── */}
+          <Paper variant="outlined" sx={{ p: 2.25, borderRadius: 1.5 }}>
+            <Box
+              sx={{
+                display: 'grid',
+                gridTemplateColumns: {
+                  xs: 'repeat(2, minmax(0, 1fr))',
+                  xl: 'repeat(4, minmax(0, 1fr))',
+                },
+                gap: 1.5,
+              }}
+            >
+              {alertCards.map((card) => (
+                <Paper
+                  key={card.key}
+                  variant="outlined"
+                  onClick={() => handleAlertCardClick(card.key as AlertBucketKey)}
+                  sx={{
+                    p: 2,
+                    borderLeft: `4px solid ${card.color}`,
+                    borderRadius: 1.25,
+                    cursor: 'pointer',
+                    outline: selectedAlertBucket === card.key ? `2px solid ${card.color}` : 'none',
+                    outlineOffset: -1,
+                    transition: 'transform 120ms ease, box-shadow 120ms ease',
+                    '&:hover': { transform: 'translateY(-2px)', boxShadow: 2 },
+                  }}
+                >
+                  <Typography variant="body2" color="text.secondary" fontWeight={500}>
+                    {card.label}
+                  </Typography>
+                  <Typography variant="h4" fontWeight={800} lineHeight={1.1} sx={{ mt: 0.5 }}>
+                    {card.value}
+                  </Typography>
+                </Paper>
+              ))}
+            </Box>
+          </Paper>
+
+          {/* ── Conversation panel (email thread) ── */}
+          <Paper
           variant="outlined"
           sx={{
             height: { xs: 620, md: 760, lg: 860 },
@@ -861,7 +936,7 @@ export default function SupportPage() {
             overflow: 'hidden',
             borderRadius: 1.5,
           }}
-        >
+          >
           {!selectedTicketId && !conversationSnapshot ? (
             <Box
               sx={{
@@ -1092,9 +1167,126 @@ export default function SupportPage() {
                   </Box>
                 ) : null}
               </Stack>
+
+              <Box
+                sx={{
+                  p: 2,
+                  borderTop: '1px solid',
+                  borderColor: 'divider',
+                  bgcolor: 'background.paper',
+                  flexShrink: 0,
+                }}
+              >
+                <Stack spacing={1.25}>
+                  {replySuccessMessage ? <Alert severity="success">{replySuccessMessage}</Alert> : null}
+                  {replyErrorMessage ? <Alert severity="warning">{replyErrorMessage}</Alert> : null}
+                  {!canReplyAsLinkedZendeskUser ? (
+                    <Alert severity="info">
+                      Your account is not linked to a Zendesk agent yet. Ask an admin to assign one in Admin Users.
+                    </Alert>
+                  ) : null}
+
+                  <Stack
+                    direction={{ xs: 'column', sm: 'row' }}
+                    spacing={1}
+                    alignItems={{ xs: 'stretch', sm: 'center' }}
+                    justifyContent="space-between"
+                  >
+                    <Stack
+                      direction={{ xs: 'column', sm: 'row' }}
+                      spacing={1}
+                      alignItems={{ xs: 'stretch', sm: 'center' }}
+                    >
+                      <ToggleButtonGroup
+                        size="small"
+                        exclusive
+                        value={replyMode}
+                        onChange={(_, value: 'public' | 'internal' | null) => {
+                          if (!value) {
+                            return
+                          }
+                          setReplyMode(value)
+                        }}
+                      >
+                        <ToggleButton value="public">Public Reply</ToggleButton>
+                        <ToggleButton value="internal">Internal Note</ToggleButton>
+                      </ToggleButtonGroup>
+
+                      <TextField
+                        select
+                        size="small"
+                        label="Set Status"
+                        value={replyStatus}
+                        onChange={(event) => {
+                          setReplyStatus(event.target.value as SupportReplyStatusOption)
+                        }}
+                        disabled={replyMutation.isPending || !canReplyAsLinkedZendeskUser}
+                        sx={{ minWidth: { xs: '100%', sm: 190 } }}
+                      >
+                        <MenuItem value="no_change">Keep Current</MenuItem>
+                        <MenuItem value="open">Open</MenuItem>
+                        <MenuItem value="pending">Pending</MenuItem>
+                        <MenuItem value="in_progress">In Progress</MenuItem>
+                        <MenuItem value="solved">Solved</MenuItem>
+                      </TextField>
+                    </Stack>
+
+                    <Typography variant="caption" color="text.secondary">
+                      Sending as {replyAuthorLabel}
+                    </Typography>
+                  </Stack>
+
+                  <TextField
+                    multiline
+                    minRows={3}
+                    maxRows={8}
+                    placeholder={
+                      replyMode === 'public'
+                        ? 'Write a reply visible to the requester...'
+                        : 'Write an internal note for your team...'
+                    }
+                    value={replyBody}
+                    onChange={(event) => {
+                      setReplyBody(event.target.value)
+                    }}
+                    disabled={replyMutation.isPending || !canReplyAsLinkedZendeskUser}
+                  />
+
+                  <Stack
+                    direction="row"
+                    alignItems="center"
+                    justifyContent="space-between"
+                    spacing={1}
+                  >
+                    <Typography variant="caption" color="text.secondary">
+                      {trimmedReplyBody.length.toLocaleString()} / {replyCharacterLimit.toLocaleString()}
+                    </Typography>
+
+                    <Button
+                      variant="contained"
+                      onClick={() => {
+                        void handleSubmitReply()
+                      }}
+                      disabled={
+                        replyMutation.isPending
+                        || !canReplyAsLinkedZendeskUser
+                        || !trimmedReplyBody
+                        || trimmedReplyBody.length > replyCharacterLimit
+                      }
+                    >
+                      {replyMutation.isPending
+                        ? 'Sending...'
+                        : replyMode === 'public'
+                          ? 'Send Public Reply'
+                          : 'Add Internal Note'}
+                    </Button>
+                  </Stack>
+                </Stack>
+              </Box>
             </>
           ) : null}
-        </Paper>
+          </Paper>
+        </Stack>
       </Box>
     </Stack>
   )

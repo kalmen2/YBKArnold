@@ -137,6 +137,7 @@ export function createMongoCollectionsService({
             authUsersCollection.createIndex({ uid: 1 }, { unique: true }),
             authUsersCollection.createIndex({ emailLower: 1 }, { unique: true }),
             authUsersCollection.createIndex({ linkedWorkerId: 1 }, { unique: true, sparse: true }),
+            authUsersCollection.createIndex({ linkedZendeskUserId: 1 }, { unique: true, sparse: true }),
             authUsersCollection.createIndex({ approvalStatus: 1, role: 1 }),
             authActivityLogsCollection.createIndex({ uid: 1, createdAt: -1 }),
             authActivityLogsCollection.createIndex({ createdAt: -1 }),

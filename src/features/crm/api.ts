@@ -357,6 +357,11 @@ export type CrmOpportunityStage =
   | 'waiting_response'
   | 'order_placement'
 
+export type CrmQuoteDocument = {
+  url: string
+  name: string | null
+}
+
 export type CrmQuote = {
   id: string
   dealerSourceId: string
@@ -367,12 +372,16 @@ export type CrmQuote = {
   contactSourceId?: string | null
   contactName?: string | null
   quoteNumber: string | null
+  poNumber?: string | null
+  acknowledgmentNumber?: string | null
+  orderNumber?: string | null
   title: string
   description: string | null
   conceptImageUrl?: string | null
   conceptImageName?: string | null
   documentUrl?: string | null
   documentName?: string | null
+  documents?: CrmQuoteDocument[] | null
   revisionCount?: number | null
   status: CrmQuoteStatus
   totalAmount: number
@@ -401,11 +410,15 @@ export type CrmQuoteUpsertInput = {
   contactSourceId?: string | null
   contactName?: string | null
   quoteNumber?: string | null
+  poNumber?: string | null
+  acknowledgmentNumber?: string | null
+  orderNumber?: string | null
   description?: string | null
   conceptImageUrl?: string | null
   conceptImageName?: string | null
   documentUrl?: string | null
   documentName?: string | null
+  documents?: CrmQuoteDocument[] | null
   revisionCount?: number | null
   status?: CrmQuoteStatus
   totalAmount: number
