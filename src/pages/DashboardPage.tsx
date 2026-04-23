@@ -1,4 +1,5 @@
 import AccessTimeRoundedIcon from '@mui/icons-material/AccessTimeRounded'
+import AssignmentTurnedInRoundedIcon from '@mui/icons-material/AssignmentTurnedInRounded'
 import EngineeringRoundedIcon from '@mui/icons-material/EngineeringRounded'
 import ErrorOutlineRoundedIcon from '@mui/icons-material/ErrorOutlineRounded'
 import FactCheckRoundedIcon from '@mui/icons-material/FactCheckRounded'
@@ -8,6 +9,7 @@ import PendingActionsRoundedIcon from '@mui/icons-material/PendingActionsRounded
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import ScheduleRoundedIcon from '@mui/icons-material/ScheduleRounded'
 import TaskAltRoundedIcon from '@mui/icons-material/TaskAltRounded'
+import WorkspacesRoundedIcon from '@mui/icons-material/WorkspacesRounded'
 import {
   Alert,
   Box,
@@ -30,6 +32,11 @@ import {
 import { type ReactNode, useCallback, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  fetchCrmQuotes,
+  type CrmOpportunityStage,
+  type CrmQuote,
+} from '../features/crm/api'
+import {
   fetchDashboardBootstrap,
   type DashboardOrder,
 } from '../features/dashboard/api'
@@ -51,6 +58,20 @@ type SummaryCard<K extends string = string> = {
   icon: ReactNode
   color: string
 }
+
+type PipelineStageSummary = {
+  id: CrmOpportunityStage
+  label: string
+  color: string
+}
+
+const pipelineStages: PipelineStageSummary[] = [
+  { id: 'concept', label: '1. Concept', color: '#0b5f93' },
+  { id: 'proposal_submission', label: '2. Proposal Submitted', color: '#0a6c99' },
+  { id: 'revision', label: '3. Revision', color: '#1d6ea5' },
+  { id: 'waiting_response', label: '4. Waiting Response', color: '#3f6597' },
+  { id: 'order_placement', label: '5. Order Placement', color: '#2f7b57' },
+]
 
 const drilldownTitles: Record<DrilldownKey, string> = {
   lateOrders: 'Late Orders',
@@ -114,6 +135,40 @@ function dueColor(order: DashboardOrder): 'error' | 'warning' | 'success' | 'def
   return 'default'
 }
 
+function resolveOpportunityStage(quote: CrmQuote): CrmOpportunityStage {
+  const explicitStage = String(quote.opportunityStage || '').trim()
+
+  if (pipelineStages.some((stage) => stage.id === explicitStage)) {
+    return explicitStage as CrmOpportunityStage
+  }
+
+  if (quote.status === 'accepted') {
+    return 'order_placement'
+  }
+
+  if (quote.status === 'sent') {
+    return 'waiting_response'
+  }
+
+  return 'concept'
+}
+
+function resolveQuoteAgeDays(quote: CrmQuote) {
+  const timestamp = new Date(quote.createdAt || quote.updatedAt)
+
+  if (Number.isNaN(timestamp.getTime())) {
+    return 0
+  }
+
+  const diffMs = Date.now() - timestamp.getTime()
+
+  if (diffMs <= 0) {
+    return 0
+  }
+
+  return Math.floor(diffMs / (24 * 60 * 60 * 1000))
+}
+
 export default function DashboardPage() {
   const queryClient = useQueryClient()
   const [activeDrilldown, setActiveDrilldown] = useState<DrilldownKey | null>(null)
@@ -124,10 +179,67 @@ export default function DashboardPage() {
     staleTime: 3 * 60 * 1000,
   })
 
+  const opportunitiesQuery = useQuery({
+    queryKey: QUERY_KEYS.crmOpportunitiesQuotes,
+    queryFn: () => fetchCrmQuotes({ limit: 700, status: 'all' }),
+    staleTime: 60 * 1000,
+  })
+
   const snapshot = bootstrapQuery.data?.mondaySnapshot ?? null
   const zendeskSnapshot = bootstrapQuery.data?.zendeskSnapshot ?? null
   const isLoading = bootstrapQuery.isLoading
   const errorMessage = bootstrapQuery.error instanceof Error ? bootstrapQuery.error.message : null
+  const opportunitiesErrorMessage = opportunitiesQuery.error instanceof Error
+    ? opportunitiesQuery.error.message
+    : null
+
+  const opportunities = useMemo(
+    () => Array.isArray(opportunitiesQuery.data?.quotes) ? opportunitiesQuery.data.quotes : [],
+    [opportunitiesQuery.data?.quotes],
+  )
+
+  const activeOpportunities = useMemo(
+    () => opportunities.filter((quote) => quote.status !== 'rejected' && quote.status !== 'cancelled'),
+    [opportunities],
+  )
+
+  const opportunitiesByStage = useMemo(() => {
+    const base: Record<CrmOpportunityStage, CrmQuote[]> = {
+      concept: [],
+      proposal_submission: [],
+      revision: [],
+      waiting_response: [],
+      order_placement: [],
+    }
+
+    for (const quote of activeOpportunities) {
+      const stage = resolveOpportunityStage(quote)
+      base[stage].push(quote)
+    }
+
+    return base
+  }, [activeOpportunities])
+
+  const pipelineMetrics = useMemo(() => {
+    const open = opportunitiesByStage.concept.length
+      + opportunitiesByStage.proposal_submission.length
+      + opportunitiesByStage.revision.length
+      + opportunitiesByStage.waiting_response.length
+    const converted = opportunitiesByStage.order_placement.length
+    const convertedAfterThirty = opportunitiesByStage.order_placement
+      .filter((quote) => resolveQuoteAgeDays(quote) > 30)
+      .length
+    const waitingThirty = opportunitiesByStage.waiting_response
+      .filter((quote) => resolveQuoteAgeDays(quote) > 30)
+      .length
+
+    return {
+      open,
+      converted,
+      convertedAfterThirty,
+      waitingThirty,
+    }
+  }, [opportunitiesByStage])
 
   const handleRefresh = useCallback(() => {
     void queryClient.fetchQuery({
@@ -293,6 +405,129 @@ export default function DashboardPage() {
       {errorMessage ? (
         <Alert severity="error">{errorMessage}</Alert>
       ) : null}
+
+      <Paper variant="outlined" sx={{ p: 2.25 }}>
+        <Stack spacing={1.5}>
+          <Stack
+            direction={{ xs: 'column', md: 'row' }}
+            justifyContent="space-between"
+            alignItems={{ xs: 'flex-start', md: 'center' }}
+            gap={1}
+          >
+            <Box>
+              <Typography variant="h6" fontWeight={700}>
+                Sales Pipeline Snapshot
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Overall opportunity health across all stages.
+              </Typography>
+            </Box>
+          </Stack>
+
+          {opportunitiesQuery.isLoading ? (
+            <Stack direction="row" spacing={1.25} alignItems="center">
+              <CircularProgress size={18} />
+              <Typography color="text.secondary">Loading pipeline data...</Typography>
+            </Stack>
+          ) : opportunitiesErrorMessage ? (
+            <Alert severity="warning">{opportunitiesErrorMessage}</Alert>
+          ) : (
+            <>
+              <Box
+                sx={{
+                  display: 'flex',
+                  width: '100%',
+                  height: 14,
+                  borderRadius: 999,
+                  overflow: 'hidden',
+                  border: 1,
+                  borderColor: 'divider',
+                }}
+              >
+                {pipelineStages.map((stage) => {
+                  const count = opportunitiesByStage[stage.id].length
+                  const flexGrow = count > 0 ? count : 0.4
+
+                  return (
+                    <Box
+                      key={stage.id}
+                      sx={{
+                        flexGrow,
+                        minWidth: 8,
+                        backgroundColor: count > 0 ? stage.color : `${stage.color}33`,
+                      }}
+                    />
+                  )
+                })}
+              </Box>
+
+              <Stack direction="row" spacing={1} justifyContent="space-between">
+                {pipelineStages.map((stage) => (
+                  <Stack key={stage.id} spacing={0.1} sx={{ minWidth: 0, width: `${100 / pipelineStages.length}%` }}>
+                    <Typography variant="caption" sx={{ fontWeight: 700, color: stage.color }}>
+                      {stage.label}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {opportunitiesByStage[stage.id].length}
+                    </Typography>
+                  </Stack>
+                ))}
+              </Stack>
+
+              <Box
+                sx={{
+                  display: 'grid',
+                  gridTemplateColumns: {
+                    xs: 'repeat(2, minmax(0, 1fr))',
+                    lg: 'repeat(4, minmax(0, 1fr))',
+                  },
+                  gap: 1,
+                }}
+              >
+                <Paper variant="outlined" sx={{ p: 1.25, borderLeft: '4px solid #0f4c81' }}>
+                  <Stack direction="row" spacing={1} justifyContent="space-between" alignItems="center">
+                    <Box>
+                      <Typography variant="caption" color="text.secondary">Open Opportunities</Typography>
+                      <Typography variant="h5" fontWeight={800}>{pipelineMetrics.open}</Typography>
+                    </Box>
+                    <WorkspacesRoundedIcon sx={{ color: '#0f4c81' }} />
+                  </Stack>
+                </Paper>
+
+                <Paper variant="outlined" sx={{ p: 1.25, borderLeft: '4px solid #166534' }}>
+                  <Stack direction="row" spacing={1} justifyContent="space-between" alignItems="center">
+                    <Box>
+                      <Typography variant="caption" color="text.secondary">Converted</Typography>
+                      <Typography variant="h5" fontWeight={800}>{pipelineMetrics.converted}</Typography>
+                    </Box>
+                    <AssignmentTurnedInRoundedIcon sx={{ color: '#166534' }} />
+                  </Stack>
+                </Paper>
+
+                <Paper variant="outlined" sx={{ p: 1.25, borderLeft: '4px solid #14532d' }}>
+                  <Stack direction="row" spacing={1} justifyContent="space-between" alignItems="center">
+                    <Box>
+                      <Typography variant="caption" color="text.secondary">30+ Day Converted</Typography>
+                      <Typography variant="h5" fontWeight={800}>{pipelineMetrics.convertedAfterThirty}</Typography>
+                    </Box>
+                    <TaskAltRoundedIcon sx={{ color: '#14532d' }} />
+                  </Stack>
+                </Paper>
+
+                <Paper variant="outlined" sx={{ p: 1.25, borderLeft: '4px solid #b45309' }}>
+                  <Stack direction="row" spacing={1} justifyContent="space-between" alignItems="center">
+                    <Box>
+                      <Typography variant="caption" color="text.secondary">Waiting 30+ Days</Typography>
+                      <Typography variant="h5" fontWeight={800}>{pipelineMetrics.waitingThirty}</Typography>
+                    </Box>
+                    <ScheduleRoundedIcon sx={{ color: '#b45309' }} />
+                  </Stack>
+                </Paper>
+              </Box>
+            </>
+          )}
+        </Stack>
+      </Paper>
 
       {isLoading ? (
         <Paper variant="outlined" sx={{ p: 4 }}>

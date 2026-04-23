@@ -19,6 +19,11 @@ export const QUERY_KEYS = {
   // CRM
   crmPageBootstrap: ['crm', 'page-bootstrap'] as const,
   crmDealers: ['crm', 'dealers'] as const,
+  crmOpportunitiesDealers: ['crm', 'opportunities', 'dealers'] as const,
+  crmOpportunitiesQuotes: ['crm', 'opportunities', 'quotes'] as const,
+  crmOpportunitiesOrders: ['crm', 'opportunities', 'orders'] as const,
+  crmOpportunityContacts: (dealerSourceId: string) =>
+    ['crm', 'opportunities', 'contacts', dealerSourceId] as const,
   crmContacts: (opts: { limit: number; offset: number; search: string; dealerSourceId: string }) =>
     ['crm', 'contacts', opts.limit, opts.offset, opts.search, opts.dealerSourceId] as const,
   crmSalesReps: ['crm', 'sales-reps'] as const,

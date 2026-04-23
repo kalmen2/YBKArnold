@@ -4,7 +4,6 @@ import EditRoundedIcon from '@mui/icons-material/EditRounded'
 import FacebookRoundedIcon from '@mui/icons-material/FacebookRounded'
 import LanguageRoundedIcon from '@mui/icons-material/LanguageRounded'
 import LinkedInIcon from '@mui/icons-material/LinkedIn'
-import LocalShippingRoundedIcon from '@mui/icons-material/LocalShippingRounded'
 import PinterestIcon from '@mui/icons-material/Pinterest'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded'
@@ -13,7 +12,6 @@ import TwitterIcon from '@mui/icons-material/Twitter'
 import YouTubeIcon from '@mui/icons-material/YouTube'
 import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage'
 import {
-  Alert,
   Avatar,
   Box,
   Button,
@@ -53,9 +51,10 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } f
 import { Link as RouterLink, unstable_usePrompt, useBeforeUnload, useSearchParams } from 'react-router-dom'
 import { firebaseStorage } from '../auth/firebase'
 import { StatusAlerts } from '../components/StatusAlerts'
+import { DealerOrdersTab } from '../features/crm/DealerOrdersTab'
+import { DealerQuotesTab } from '../features/crm/DealerQuotesTab'
 import { useDataLoader } from '../hooks/useDataLoader'
 import { useDebounceValue } from '../hooks/useDebounceValue'
-import { formatCurrency, formatDate, formatStatusLabel } from '../lib/formatters'
 import {
   createCrmDealerContact,
   fetchCrmDealerDetail,
@@ -1836,118 +1835,17 @@ export default function CrmDealersPage() {
                   />
                 </>
               ) : detailsTab === 'quotes' ? (
-                <Stack spacing={1.25}>
-                  {quotesDataError ? <Alert severity="warning">{quotesDataError}</Alert> : null}
-
-                  {isLoadingQuotesData ? (
-                    <Stack direction="row" spacing={1} alignItems="center" sx={{ py: 2 }}>
-                      <CircularProgress size={18} />
-                      <Typography color="text.secondary">Loading quotes...</Typography>
-                    </Stack>
-                  ) : quoteRows.length === 0 ? (
-                    <Typography color="text.secondary" variant="body2">
-                      No quotes linked to this account yet.
-                    </Typography>
-                  ) : (
-                    <TableContainer
-                      sx={{
-                        border: 1,
-                        borderColor: 'divider',
-                        borderRadius: 1,
-                        maxHeight: { xs: 320, xl: 560 },
-                      }}
-                    >
-                      <Table size="small" stickyHeader>
-                        <TableHead>
-                          <TableRow>
-                            <TableCell sx={{ fontWeight: 700 }}>Quote</TableCell>
-                            <TableCell sx={{ fontWeight: 700 }}>Status</TableCell>
-                            <TableCell sx={{ fontWeight: 700 }} align="right">Amount</TableCell>
-                            <TableCell sx={{ fontWeight: 700 }}>Updated</TableCell>
-                          </TableRow>
-                        </TableHead>
-                        <TableBody>
-                          {quoteRows.map((quote) => (
-                            <TableRow key={quote.id}>
-                              <TableCell>
-                                <Stack spacing={0.2}>
-                                  <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                                    {quote.quoteNumber || quote.title}
-                                  </Typography>
-                                  {quote.quoteNumber && quote.title ? (
-                                    <Typography variant="caption" color="text.secondary">
-                                      {quote.title}
-                                    </Typography>
-                                  ) : null}
-                                </Stack>
-                              </TableCell>
-                              <TableCell>{formatStatusLabel(quote.status)}</TableCell>
-                              <TableCell align="right">{formatCurrency(quote.totalAmount, 2)}</TableCell>
-                              <TableCell>{formatDate(quote.updatedAt)}</TableCell>
-                            </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
-                    </TableContainer>
-                  )}
-                </Stack>
+                <DealerQuotesTab
+                  isLoading={isLoadingQuotesData}
+                  error={quotesDataError}
+                  quotes={quoteRows}
+                />
               ) : (
-                <Stack spacing={1.25}>
-                  {salesDataError ? <Alert severity="warning">{salesDataError}</Alert> : null}
-
-                  {isLoadingSalesData ? (
-                    <Stack direction="row" spacing={1} alignItems="center" sx={{ py: 2 }}>
-                      <CircularProgress size={18} />
-                      <Typography color="text.secondary">Loading orders...</Typography>
-                    </Stack>
-                  ) : orderRows.length === 0 ? (
-                    <Typography color="text.secondary" variant="body2">
-                      No orders linked to this account yet.
-                    </Typography>
-                  ) : (
-                    <TableContainer
-                      sx={{
-                        border: 1,
-                        borderColor: 'divider',
-                        borderRadius: 1,
-                        maxHeight: { xs: 320, xl: 560 },
-                      }}
-                    >
-                      <Table size="small" stickyHeader>
-                        <TableHead>
-                          <TableRow>
-                            <TableCell sx={{ fontWeight: 700 }}>Order</TableCell>
-                            <TableCell sx={{ fontWeight: 700 }}>Status</TableCell>
-                            <TableCell sx={{ fontWeight: 700 }}>Due</TableCell>
-                            <TableCell sx={{ fontWeight: 700 }} align="right">Progress</TableCell>
-                          </TableRow>
-                        </TableHead>
-                        <TableBody>
-                          {orderRows.map((order) => (
-                            <TableRow key={order.id}>
-                              <TableCell>
-                                <Stack spacing={0.2}>
-                                  <Stack direction="row" spacing={0.75} alignItems="center">
-                                    <LocalShippingRoundedIcon fontSize="inherit" color="action" />
-                                    <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                                      {order.orderNumber || order.title}
-                                    </Typography>
-                                  </Stack>
-                                  <Typography variant="caption" color="text.secondary">
-                                    Updated {formatDate(order.updatedAt)}
-                                  </Typography>
-                                </Stack>
-                              </TableCell>
-                              <TableCell>{formatStatusLabel(order.status)}</TableCell>
-                              <TableCell>{formatDate(order.dueDate)}</TableCell>
-                              <TableCell align="right">{Math.round(order.progressPercent)}%</TableCell>
-                            </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
-                    </TableContainer>
-                  )}
-                </Stack>
+                <DealerOrdersTab
+                  isLoading={isLoadingSalesData}
+                  error={salesDataError}
+                  orders={orderRows}
+                />
               )}
             </Stack>
           ) : (

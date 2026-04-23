@@ -1,17 +1,23 @@
 import StoreRoundedIcon from '@mui/icons-material/StoreRounded'
 import ContactsRoundedIcon from '@mui/icons-material/ContactsRounded'
 import MapRoundedIcon from '@mui/icons-material/MapRounded'
+import WorkspacesRoundedIcon from '@mui/icons-material/WorkspacesRounded'
 import { Box, Tab, Tabs } from '@mui/material'
 import { useSearchParams } from 'react-router-dom'
 import CrmDealersPage from './CrmDealersPage'
 import CrmContactsPage from './CrmContactsPage'
+import SalesOpportunitiesPage from './SalesOpportunitiesPage'
 import SalesRepsPage from './SalesRepsPage'
 
-type SalesTab = 'dealers' | 'contacts' | 'sales-reps'
+type SalesTab = 'dealers' | 'contacts' | 'opportunities' | 'sales-reps'
 
 function resolveTab(value: string | null): SalesTab {
   if (value === 'contacts') {
     return 'contacts'
+  }
+
+  if (value === 'opportunities') {
+    return 'opportunities'
   }
 
   if (value === 'sales-reps') {
@@ -52,6 +58,13 @@ export default function SalesPage() {
             sx={{ minHeight: 44, textTransform: 'none', fontWeight: 600, gap: 0.75 }}
           />
           <Tab
+            value="opportunities"
+            label="Opportunities"
+            icon={<WorkspacesRoundedIcon fontSize="small" />}
+            iconPosition="start"
+            sx={{ minHeight: 44, textTransform: 'none', fontWeight: 600, gap: 0.75 }}
+          />
+          <Tab
             value="sales-reps"
             label="Sales Reps"
             icon={<MapRoundedIcon fontSize="small" />}
@@ -65,7 +78,9 @@ export default function SalesPage() {
         ? <CrmDealersPage />
         : activeTab === 'contacts'
           ? <CrmContactsPage />
-          : <SalesRepsPage />}
+          : activeTab === 'opportunities'
+            ? <SalesOpportunitiesPage />
+            : <SalesRepsPage />}
     </Box>
   )
 }

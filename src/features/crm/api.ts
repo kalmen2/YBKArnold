@@ -350,13 +350,30 @@ export type CrmContactMutationInput = Partial<{
 
 export type CrmQuoteStatus = 'draft' | 'sent' | 'accepted' | 'rejected' | 'cancelled'
 
+export type CrmOpportunityStage =
+  | 'concept'
+  | 'proposal_submission'
+  | 'revision'
+  | 'waiting_response'
+  | 'order_placement'
+
 export type CrmQuote = {
   id: string
   dealerSourceId: string
   dealerName: string
+  salesRep?: string | null
+  opportunityDate?: string | null
+  opportunityStage?: CrmOpportunityStage | null
+  contactSourceId?: string | null
+  contactName?: string | null
   quoteNumber: string | null
   title: string
   description: string | null
+  conceptImageUrl?: string | null
+  conceptImageName?: string | null
+  documentUrl?: string | null
+  documentName?: string | null
+  revisionCount?: number | null
   status: CrmQuoteStatus
   totalAmount: number
   currency: string
@@ -378,8 +395,18 @@ export type CrmQuotesResponse = {
 export type CrmQuoteUpsertInput = {
   dealerSourceId: string
   title: string
+  salesRep?: string | null
+  opportunityDate?: string | null
+  opportunityStage?: CrmOpportunityStage | null
+  contactSourceId?: string | null
+  contactName?: string | null
   quoteNumber?: string | null
   description?: string | null
+  conceptImageUrl?: string | null
+  conceptImageName?: string | null
+  documentUrl?: string | null
+  documentName?: string | null
+  revisionCount?: number | null
   status?: CrmQuoteStatus
   totalAmount: number
   currency?: string | null
@@ -623,6 +650,12 @@ export function updateCrmQuote(quoteId: string, input: Partial<CrmQuoteUpsertInp
   return apiRequest<{ quote: CrmQuote }>(`/api/crm/quotes/${encodeURIComponent(quoteId)}`, {
     method: 'PATCH',
     body: JSON.stringify(input),
+  })
+}
+
+export function removeCrmQuote(quoteId: string) {
+  return apiRequest<{ ok: boolean; quote: CrmQuote }>(`/api/crm/quotes/${encodeURIComponent(quoteId)}`, {
+    method: 'DELETE',
   })
 }
 

@@ -7,6 +7,62 @@ import App from './App.tsx'
 import { AuthProvider } from './auth/AuthContext.tsx'
 import theme from './theme/theme.ts'
 
+const dynamicImportReloadKey = 'ybk-last-dynamic-import-reload-at'
+
+function shouldRecoverFromDynamicImportFailure(reason: unknown) {
+  const message = (() => {
+    if (typeof reason === 'string') {
+      return reason
+    }
+
+    if (reason instanceof Error) {
+      return reason.message || String(reason)
+    }
+
+    if (reason && typeof reason === 'object' && 'message' in reason) {
+      const maybeMessage = (reason as { message?: unknown }).message
+
+      if (typeof maybeMessage === 'string') {
+        return maybeMessage
+      }
+    }
+
+    return ''
+  })()
+
+  return /(Failed to fetch dynamically imported module|Importing a module script failed|ChunkLoadError|Loading chunk \d+ failed)/i.test(
+    message,
+  )
+}
+
+function reloadOnceForDynamicImportFailure() {
+  const now = Date.now()
+  const previous = Number(window.sessionStorage.getItem(dynamicImportReloadKey) || '0')
+
+  if (Number.isFinite(previous) && now - previous < 60_000) {
+    return
+  }
+
+  window.sessionStorage.setItem(dynamicImportReloadKey, String(now))
+  window.location.reload()
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('vite:preloadError', (event: Event) => {
+    event.preventDefault()
+    reloadOnceForDynamicImportFailure()
+  })
+
+  window.addEventListener('unhandledrejection', (event) => {
+    if (!shouldRecoverFromDynamicImportFailure(event.reason)) {
+      return
+    }
+
+    event.preventDefault()
+    reloadOnceForDynamicImportFailure()
+  })
+}
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {

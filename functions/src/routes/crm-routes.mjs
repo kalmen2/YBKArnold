@@ -17,6 +17,13 @@ const importConfirmText = 'I_UNDERSTAND_IMPORT_OVERWRITES'
 const maxConflictGroupsInResponse = 200
 const maxIdsPerConflictGroup = 25
 const quoteStatuses = ['draft', 'sent', 'accepted', 'rejected', 'cancelled']
+const opportunityStages = [
+  'concept',
+  'proposal_submission',
+  'revision',
+  'waiting_response',
+  'order_placement',
+]
 const orderStatuses = [
   'draft',
   'pending',
@@ -240,6 +247,20 @@ function combineFilterClauses(clauses) {
   return {
     $and: normalizedClauses,
   }
+}
+
+function resolveContactDisplayName(contact) {
+  const name = toTrimmedText(contact?.name, 240)
+
+  if (name) {
+    return name
+  }
+
+  const firstName = toTrimmedText(contact?.firstName, 120)
+  const lastName = toTrimmedText(contact?.lastName, 120)
+  const fullName = `${firstName} ${lastName}`.trim()
+
+  return fullName || null
 }
 
 function normalizeMetadata(metadataInput) {
@@ -1032,7 +1053,7 @@ export function registerCrmRoutes(app, deps) {
 
       const salesReps = await crmSalesRepsCollection
         .find(
-          {},
+          { isDeleted: { $ne: true } },
           {
             projection: {
               _id: 0,
@@ -1287,13 +1308,36 @@ export function registerCrmRoutes(app, deps) {
       }
 
       const { crmSalesRepsCollection } = await getCollections()
-      const result = await crmSalesRepsCollection.deleteOne({ id: salesRepId })
 
-      if (!result.deletedCount) {
+      const existing = await crmSalesRepsCollection.findOne(
+        { id: salesRepId },
+        { projection: { _id: 0, id: 1, isDeleted: 1 } },
+      )
+
+      if (!existing) {
         return res.status(404).json({
           error: 'Sales rep not found.',
         })
       }
+
+      if (existing.isDeleted) {
+        return res.json({ ok: true, salesRepId })
+      }
+
+      const deletedAt = nowIso()
+      const deletedByEmail = toTrimmedText(req.authUser?.email, 200) || null
+
+      await crmSalesRepsCollection.updateOne(
+        { id: salesRepId },
+        {
+          $set: {
+            isDeleted: true,
+            deletedAt,
+            deletedByEmail,
+            updatedAt: deletedAt,
+          },
+        },
+      )
 
       return res.json({
         ok: true,
@@ -1882,6 +1926,15 @@ export function registerCrmRoutes(app, deps) {
 
       if (Object.prototype.hasOwnProperty.call(body, 'isArchived')) {
         updates.isArchived = toBoolean(body.isArchived)
+
+        if (updates.isArchived) {
+          updates.deletedAt = nowIso()
+          updates.deletedByEmail = toTrimmedText(req.authUser?.email, 200) || null
+        } else {
+          // Un-archiving clears the audit trail
+          updates.deletedAt = null
+          updates.deletedByEmail = null
+        }
       }
 
       if (Object.prototype.hasOwnProperty.call(body, 'isFavorite')) {
@@ -2356,6 +2409,9 @@ export function registerCrmRoutes(app, deps) {
         })
       }
 
+      const archivedAt = nowIso()
+      const archivedByEmail = toTrimmedText(req.authUser?.email, 200) || null
+
       const contact = await crmContactsCollection.findOneAndUpdate(
         {
           sourceId: contactSourceId,
@@ -2363,7 +2419,9 @@ export function registerCrmRoutes(app, deps) {
         {
           $set: {
             isArchived: true,
-            updatedAt: nowIso(),
+            deletedAt: archivedAt,
+            deletedByEmail: archivedByEmail,
+            updatedAt: archivedAt,
           },
         },
         {
@@ -2673,6 +2731,7 @@ export function registerCrmRoutes(app, deps) {
       }
 
       const status = normalizeStatus(body.status, quoteStatuses, 'draft')
+      const opportunityStage = normalizeStatus(body.opportunityStage, opportunityStages, 'concept')
 
       if (!status) {
         return res.status(400).json({
@@ -2680,7 +2739,14 @@ export function registerCrmRoutes(app, deps) {
         })
       }
 
+      if (!opportunityStage) {
+        return res.status(400).json({
+          error: `opportunityStage must be one of: ${opportunityStages.join(', ')}`,
+        })
+      }
+
       const totalAmount = toNonNegativeNumberOrNull(body.totalAmount)
+      const revisionCount = toNonNegativeInteger(body.revisionCount, 0)
 
       if (totalAmount === null) {
         return res.status(400).json({
@@ -2690,19 +2756,70 @@ export function registerCrmRoutes(app, deps) {
 
       const {
         crmAccountsCollection,
+        crmContactsCollection,
         crmQuotesCollection,
       } = await getCollections()
 
       const dealer = await resolveDealerOrThrow(crmAccountsCollection, body.dealerSourceId)
+      const requestedContactSourceId = toTrimmedText(body.contactSourceId, 160)
+      const requestedContactName = toTrimmedText(body.contactName, 240) || null
+      let nextContactSourceId = null
+      let nextContactName = requestedContactName
+
+      if (requestedContactSourceId) {
+        const linkedContact = await crmContactsCollection.findOne(
+          {
+            sourceId: requestedContactSourceId,
+          },
+          {
+            projection: {
+              _id: 0,
+              sourceId: 1,
+              accountSourceId: 1,
+              name: 1,
+              firstName: 1,
+              lastName: 1,
+            },
+          },
+        )
+
+        if (!linkedContact) {
+          return res.status(400).json({
+            error: 'Selected contact does not exist.',
+          })
+        }
+
+        const contactDealerSourceId = toTrimmedText(linkedContact.accountSourceId, 160)
+
+        if (contactDealerSourceId && contactDealerSourceId !== dealer.sourceId) {
+          return res.status(400).json({
+            error: 'Selected contact does not belong to the selected dealer.',
+          })
+        }
+
+        nextContactSourceId = linkedContact.sourceId
+        nextContactName = resolveContactDisplayName(linkedContact) || requestedContactName
+      }
+
       const now = nowIso()
 
       const nextQuote = {
         id: randomUUID(),
         dealerSourceId: dealer.sourceId,
         dealerName: dealer.name || dealer.sourceId,
+        salesRep: toTrimmedText(body.salesRep, 200) || null,
+        opportunityDate: toIsoDateOrNull(body.opportunityDate),
+        opportunityStage,
+        contactSourceId: nextContactSourceId,
+        contactName: nextContactName,
         quoteNumber: toTrimmedText(body.quoteNumber, 120) || null,
         title,
         description: toTrimmedText(body.description, 2000) || null,
+        conceptImageUrl: toTrimmedText(body.conceptImageUrl, 2000) || null,
+        conceptImageName: toTrimmedText(body.conceptImageName, 240) || null,
+        documentUrl: toTrimmedText(body.documentUrl, 2000) || null,
+        documentName: toTrimmedText(body.documentName, 240) || null,
+        revisionCount,
         status,
         totalAmount: Number(totalAmount.toFixed(2)),
         currency: toTrimmedText(body.currency, 16) || 'USD',
@@ -2744,6 +2861,7 @@ export function registerCrmRoutes(app, deps) {
       const body = toOptionalObject(req.body)
       const {
         crmAccountsCollection,
+        crmContactsCollection,
         crmQuotesCollection,
       } = await getCollections()
 
@@ -2783,12 +2901,45 @@ export function registerCrmRoutes(app, deps) {
         updates.description = toTrimmedText(body.description, 2000) || null
       }
 
+      if (Object.prototype.hasOwnProperty.call(body, 'opportunityStage')) {
+        const currentStage = normalizeStatus(existingQuote.opportunityStage, opportunityStages, 'concept') || 'concept'
+        const nextStage = normalizeStatus(body.opportunityStage, opportunityStages, currentStage)
+
+        if (!nextStage) {
+          return res.status(400).json({
+            error: `opportunityStage must be one of: ${opportunityStages.join(', ')}`,
+          })
+        }
+
+        updates.opportunityStage = nextStage
+      }
+
       if (Object.prototype.hasOwnProperty.call(body, 'quoteNumber')) {
         updates.quoteNumber = toTrimmedText(body.quoteNumber, 120) || null
       }
 
+      if (Object.prototype.hasOwnProperty.call(body, 'salesRep')) {
+        updates.salesRep = toTrimmedText(body.salesRep, 200) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'opportunityDate')) {
+        updates.opportunityDate = toIsoDateOrNull(body.opportunityDate)
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'conceptImageUrl')) {
+        updates.conceptImageUrl = toTrimmedText(body.conceptImageUrl, 2000) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'conceptImageName')) {
+        updates.conceptImageName = toTrimmedText(body.conceptImageName, 240) || null
+      }
+
       if (Object.prototype.hasOwnProperty.call(body, 'currency')) {
         updates.currency = toTrimmedText(body.currency, 16) || 'USD'
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'revisionCount')) {
+        updates.revisionCount = toNonNegativeInteger(body.revisionCount, 0)
       }
 
       if (Object.prototype.hasOwnProperty.call(body, 'totalAmount')) {
@@ -2807,6 +2958,61 @@ export function registerCrmRoutes(app, deps) {
         const dealer = await resolveDealerOrThrow(crmAccountsCollection, body.dealerSourceId)
         updates.dealerSourceId = dealer.sourceId
         updates.dealerName = dealer.name || dealer.sourceId
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'contactSourceId')) {
+        const nextContactSourceId = toTrimmedText(body.contactSourceId, 160)
+
+        if (!nextContactSourceId) {
+          updates.contactSourceId = null
+          updates.contactName = null
+        } else {
+          const effectiveDealerSourceId = updates.dealerSourceId || existingQuote.dealerSourceId
+          const linkedContact = await crmContactsCollection.findOne(
+            {
+              sourceId: nextContactSourceId,
+            },
+            {
+              projection: {
+                _id: 0,
+                sourceId: 1,
+                accountSourceId: 1,
+                name: 1,
+                firstName: 1,
+                lastName: 1,
+              },
+            },
+          )
+
+          if (!linkedContact) {
+            return res.status(400).json({
+              error: 'Selected contact does not exist.',
+            })
+          }
+
+          const contactDealerSourceId = toTrimmedText(linkedContact.accountSourceId, 160)
+
+          if (contactDealerSourceId && contactDealerSourceId !== effectiveDealerSourceId) {
+            return res.status(400).json({
+              error: 'Selected contact does not belong to the selected dealer.',
+            })
+          }
+
+          updates.contactSourceId = linkedContact.sourceId
+          updates.contactName = resolveContactDisplayName(linkedContact)
+        }
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'contactName')) {
+        updates.contactName = toTrimmedText(body.contactName, 240) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'documentUrl')) {
+        updates.documentUrl = toTrimmedText(body.documentUrl, 2000) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'documentName')) {
+        updates.documentName = toTrimmedText(body.documentName, 240) || null
       }
 
       if (Object.prototype.hasOwnProperty.call(body, 'sentAt')) {
@@ -2866,6 +3072,46 @@ export function registerCrmRoutes(app, deps) {
 
       return res.json({
         quote: updatedQuote,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.delete('/api/crm/quotes/:quoteId', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+    try {
+      const quoteId = toTrimmedText(req.params.quoteId, 160)
+
+      if (!quoteId) {
+        return res.status(400).json({
+          error: 'quoteId is required.',
+        })
+      }
+
+      const { crmQuotesCollection } = await getCollections()
+
+      const deletedQuote = await crmQuotesCollection.findOneAndDelete(
+        {
+          id: quoteId,
+        },
+        {
+          projection: {
+            _id: 0,
+          },
+        },
+      )
+
+      if (!deletedQuote) {
+        return res.status(404).json({
+          error: 'Quote not found.',
+        })
+      }
+
+      cacheDelete(OVERVIEW_CACHE_KEY)
+
+      return res.json({
+        ok: true,
+        quote: deletedQuote,
       })
     } catch (error) {
       next(error)
@@ -3195,6 +3441,7 @@ export function registerCrmRoutes(app, deps) {
         crmContactsCollection,
         crmDuplicateQueueCollection,
         crmImportRunsCollection,
+        mongoClient,
       } = await getCollections()
 
       const importedAt = nowIso()
@@ -3324,56 +3571,69 @@ export function registerCrmRoutes(app, deps) {
         randomUUID,
       })
 
-      const [accountWriteResult, contactWriteResult] = await Promise.all([
-        accountWrites.length > 0
-          ? crmAccountsCollection.bulkWrite(accountWrites, { ordered: false })
-          : null,
-        contactWrites.length > 0
-          ? crmContactsCollection.bulkWrite(contactWrites, { ordered: false })
-          : null,
-      ])
+      // All writes are wrapped in a single transaction so a partial failure
+      // (e.g. network drop after accounts are written but before contacts) can
+      // never leave the database in an inconsistent half-imported state.
+      let importRunDocument
+      const session = mongoClient.startSession()
 
-      await crmDuplicateQueueCollection.updateMany(
-        {
-          status: 'open',
-        },
-        {
-          $set: {
-            status: 'superseded',
-            supersededByImportRunId: importRunId,
+      try {
+        await session.withTransaction(async () => {
+          const [accountWriteResult, contactWriteResult] = await Promise.all([
+            accountWrites.length > 0
+              ? crmAccountsCollection.bulkWrite(accountWrites, { ordered: false, session })
+              : null,
+            contactWrites.length > 0
+              ? crmContactsCollection.bulkWrite(contactWrites, { ordered: false, session })
+              : null,
+          ])
+
+          await crmDuplicateQueueCollection.updateMany(
+            {
+              status: 'open',
+            },
+            {
+              $set: {
+                status: 'superseded',
+                supersededByImportRunId: importRunId,
+                updatedAt: importedAt,
+              },
+            },
+            { session },
+          )
+
+          if (conflictQueueEntries.length > 0) {
+            await crmDuplicateQueueCollection.insertMany(conflictQueueEntries, { session })
+          }
+
+          importRunDocument = {
+            id: importRunId,
+            status: 'completed',
+            importedAt,
+            importedByUid: importedByUid || null,
+            importedByEmail: importedByEmail || null,
+            importFingerprint: responsePreview.importFingerprint,
+            metadata: analysis.metadata,
+            summary: analysis.summary,
+            conflictGroupCounts: responsePreview.conflictGroupCounts,
+            writeSummary: {
+              accountMatchedCount: Number(accountWriteResult?.matchedCount ?? 0),
+              accountModifiedCount: Number(accountWriteResult?.modifiedCount ?? 0),
+              accountUpsertedCount: Number(accountWriteResult?.upsertedCount ?? 0),
+              contactMatchedCount: Number(contactWriteResult?.matchedCount ?? 0),
+              contactModifiedCount: Number(contactWriteResult?.modifiedCount ?? 0),
+              contactUpsertedCount: Number(contactWriteResult?.upsertedCount ?? 0),
+              duplicateQueueInsertedCount: conflictQueueEntries.length,
+            },
+            createdAt: importedAt,
             updatedAt: importedAt,
-          },
-        },
-      )
+          }
 
-      if (conflictQueueEntries.length > 0) {
-        await crmDuplicateQueueCollection.insertMany(conflictQueueEntries)
+          await crmImportRunsCollection.insertOne(importRunDocument, { session })
+        })
+      } finally {
+        await session.endSession()
       }
-
-      const importRunDocument = {
-        id: importRunId,
-        status: 'completed',
-        importedAt,
-        importedByUid: importedByUid || null,
-        importedByEmail: importedByEmail || null,
-        importFingerprint: responsePreview.importFingerprint,
-        metadata: analysis.metadata,
-        summary: analysis.summary,
-        conflictGroupCounts: responsePreview.conflictGroupCounts,
-        writeSummary: {
-          accountMatchedCount: Number(accountWriteResult?.matchedCount ?? 0),
-          accountModifiedCount: Number(accountWriteResult?.modifiedCount ?? 0),
-          accountUpsertedCount: Number(accountWriteResult?.upsertedCount ?? 0),
-          contactMatchedCount: Number(contactWriteResult?.matchedCount ?? 0),
-          contactModifiedCount: Number(contactWriteResult?.modifiedCount ?? 0),
-          contactUpsertedCount: Number(contactWriteResult?.upsertedCount ?? 0),
-          duplicateQueueInsertedCount: conflictQueueEntries.length,
-        },
-        createdAt: importedAt,
-        updatedAt: importedAt,
-      }
-
-      await crmImportRunsCollection.insertOne(importRunDocument)
 
       // Dealers and overview data have changed — bust both caches so the next
       // request reflects the newly imported data instead of stale values.

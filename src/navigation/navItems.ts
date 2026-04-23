@@ -37,7 +37,7 @@ export const navItems: NavItem[] = [
     path: '/quickbooks',
     icon: AccountBalanceRoundedIcon,
     adminSection: true,
-    managerOrAdminOnly: true,
+    adminOnly: true,
   },
   {
     label: 'Reports',

@@ -18,11 +18,13 @@ import {
   TimesheetPage,
   withRouteSuspense,
 } from './RouteLazyPages'
+import RouteErrorBoundary from './RouteErrorBoundary'
 
 export const router = createBrowserRouter([
   {
     path: '/',
     element: withRouteSuspense(<AppLayout />),
+    errorElement: <RouteErrorBoundary />,
     children: [
       {
         index: true,
@@ -47,9 +49,9 @@ export const router = createBrowserRouter([
       {
         path: 'quickbooks',
         element: withRouteSuspense(
-          <RequireManagerOrAdminRoute>
+          <RequireAdminRoute>
             <QuickBooksPage />
-          </RequireManagerOrAdminRoute>,
+          </RequireAdminRoute>,
         ),
       },
       {
