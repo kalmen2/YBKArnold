@@ -1,11 +1,14 @@
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded'
+import SupportAgentRoundedIcon from '@mui/icons-material/SupportAgentRounded'
+import LockOutlinedIcon from '@mui/icons-material/LockOutlined'
 import {
   Accordion,
   AccordionDetails,
   AccordionSummary,
   Alert,
+  Avatar,
   Box,
   Button,
   Chip,
@@ -29,10 +32,6 @@ import {
   fetchSupportTickets,
   type SupportTicketConversationSnapshot,
 } from '../features/support/api'
-import {
-  fetchDashboardBootstrap,
-} from '../features/dashboard/api'
-import { QUERY_KEYS } from '../lib/queryKeys'
 
 type AlertBucketKey =
   | 'newOver24Hours'
@@ -131,6 +130,26 @@ function buildPreviewParagraph(body: string, maxChars = 220) {
   return `${collapsedParagraph.slice(0, maxChars).trimEnd()}...`
 }
 
+function getInitials(name: string): string {
+  return String(name || '?')
+    .split(' ')
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0])
+    .join('')
+    .toUpperCase()
+}
+
+function getStatusAccentColor(status: string): string {
+  const normalized = String(status).trim().toLowerCase()
+  if (normalized === 'new') return '#1e88e5'
+  if (normalized === 'open') return '#fb8c00'
+  if (normalized === 'in_progress') return '#5e35b1'
+  if (normalized === 'pending') return '#8d6e63'
+  if (normalized === 'solved' || normalized === 'closed') return '#2e7d32'
+  return '#90a4ae'
+}
+
 export default function SupportPage() {
   const queryClient = useQueryClient()
 
@@ -143,13 +162,7 @@ export default function SupportPage() {
   >(null)
   const [selectedAlertBucket, setSelectedAlertBucket] = useState<AlertBucketKey | null>(null)
   const [expandedTicketPreviewId, setExpandedTicketPreviewId] = useState<number | false>(false)
-  const [isMetricsPanelExpanded, setIsMetricsPanelExpanded] = useState(true)
 
-  // ---------------------------------------------------------------------------
-  // Data queries — all 4 page queries share staleTime: 3 min (matches backend cache)
-  // zendeskQuery uses the shared ['dashboard', 'zendesk'] key so navigating
-  // Dashboard → Support never fires a duplicate Zendesk request.
-  // ---------------------------------------------------------------------------
   const alertsQuery = useQuery({
     queryKey: ['support', 'alerts'],
     queryFn: () => fetchSupportAlerts({ refresh: false }),
@@ -168,14 +181,6 @@ export default function SupportPage() {
     staleTime: 3 * 60 * 1000,
   })
 
-  const zendeskQuery = useQuery({
-    queryKey: QUERY_KEYS.dashboardBootstrap,
-    queryFn: () => fetchDashboardBootstrap({ refresh: false }),
-    staleTime: 3 * 60 * 1000,
-  })
-
-  // Conversation for the selected ticket — cached 15 min so re-selecting a ticket
-  // is instant (no network call). gcTime keeps prior conversations alive in memory.
   const conversationQuery = useQuery({
     queryKey: ['support', 'conversation', selectedTicketId],
     queryFn: () => fetchSupportTicketConversation(selectedTicketId!),
@@ -184,22 +189,20 @@ export default function SupportPage() {
     gcTime: 15 * 60 * 1000,
   })
 
-  // Derived values from queries
   const alertsSnapshot = alertsQuery.data ?? null
   const alertTicketsSnapshot = alertTicketsQuery.data ?? null
   const ticketsSnapshot = ticketsQuery.data ?? null
-  const zendeskSummarySnapshot = zendeskQuery.data?.zendeskSnapshot ?? null
   const conversationSnapshot = conversationQuery.data ?? null
 
   const isLoadingPage =
-    (alertsQuery.isLoading || ticketsQuery.isLoading || zendeskQuery.isLoading) &&
-    !alertsSnapshot && !ticketsSnapshot && !zendeskSummarySnapshot
+    (alertsQuery.isLoading || ticketsQuery.isLoading) &&
+    !alertsSnapshot && !ticketsSnapshot
 
   const isLoadingConversation = conversationQuery.isFetching && !conversationSnapshot
 
   const pageError =
-    (alertsQuery.isError || ticketsQuery.isError || zendeskQuery.isError) &&
-    !alertsSnapshot && !ticketsSnapshot && !zendeskSummarySnapshot
+    (alertsQuery.isError || ticketsQuery.isError) &&
+    !alertsSnapshot && !ticketsSnapshot
       ? 'Failed to load Zendesk support data.'
       : null
 
@@ -208,6 +211,11 @@ export default function SupportPage() {
         ? conversationQuery.error.message
         : 'Failed to load conversation.')
     : null
+
+  const isFetchingAny =
+    alertsQuery.isFetching ||
+    ticketsQuery.isFetching ||
+    alertTicketsQuery.isFetching
 
   async function handleRefresh() {
     await Promise.all([
@@ -226,15 +234,9 @@ export default function SupportPage() {
         queryFn: () => fetchSupportTickets(100, { refresh: true }),
         staleTime: 0,
       }),
-      queryClient.fetchQuery({
-        queryKey: QUERY_KEYS.dashboardBootstrap,
-        queryFn: () => fetchDashboardBootstrap({ refresh: true }),
-        staleTime: 0,
-      }),
     ])
   }
 
-  // Scroll to a specific comment once the conversation loads
   useEffect(() => {
     if (!pendingConversationJump || !conversationSnapshot) {
       return
@@ -249,8 +251,8 @@ export default function SupportPage() {
     )
 
     if (!hasTargetComment) {
-      setPendingConversationJump(null)
-      return
+      const timer = setTimeout(() => setPendingConversationJump(null), 0)
+      return () => clearTimeout(timer)
     }
 
     const frameId = requestAnimationFrame(() => {
@@ -268,7 +270,6 @@ export default function SupportPage() {
     return () => cancelAnimationFrame(frameId)
   }, [conversationSnapshot, pendingConversationJump])
 
-  // Scroll the sidebar ticket row into view after selecting from an alert table
   useEffect(() => {
     if (!pendingSidebarTicketScrollId) {
       return
@@ -287,48 +288,6 @@ export default function SupportPage() {
 
     return () => cancelAnimationFrame(frameId)
   }, [expandedTicketPreviewId, pendingSidebarTicketScrollId, ticketsSnapshot])
-
-  const ticketProgressCards = useMemo(() => {
-    const metrics = zendeskSummarySnapshot?.metrics
-
-    return [
-      {
-        key: 'newTickets',
-        label: 'New',
-        value: metrics?.newTickets ?? 0,
-        helper: 'Brand new tickets',
-        color: '#1e88e5',
-      },
-      {
-        key: 'inProgressTickets',
-        label: 'In Process',
-        value: metrics?.inProgressTickets ?? 0,
-        helper: 'Tickets in process',
-        color: '#5e35b1',
-      },
-      {
-        key: 'openTickets',
-        label: 'Open',
-        value: metrics?.openTickets ?? 0,
-        helper: 'Tickets with status open',
-        color: '#fb8c00',
-      },
-      {
-        key: 'pendingTickets',
-        label: 'Pending',
-        value: metrics?.pendingTickets ?? 0,
-        helper: 'Waiting for customer response',
-        color: '#8d6e63',
-      },
-      {
-        key: 'solvedTickets',
-        label: 'Solved',
-        value: metrics?.solvedTickets ?? 0,
-        helper: 'Done',
-        color: '#2e7d32',
-      },
-    ]
-  }, [zendeskSummarySnapshot])
 
   const alertCards = useMemo(() => {
     const alerts = alertsSnapshot?.alerts
@@ -396,14 +355,12 @@ export default function SupportPage() {
   const helpdeskUrl =
     alertsSnapshot?.agentUrl ||
     ticketsSnapshot?.agentUrl ||
-    zendeskSummarySnapshot?.agentUrl ||
     null
 
   const lastSyncTimestamp = useMemo(() => {
     const timestamps = [
       alertsSnapshot?.generatedAt,
       ticketsSnapshot?.generatedAt,
-      zendeskSummarySnapshot?.generatedAt,
       alertTicketsSnapshot?.generatedAt,
     ]
       .map((value) => String(value ?? '').trim())
@@ -416,7 +373,7 @@ export default function SupportPage() {
     return timestamps.sort(
       (left, right) => new Date(right).getTime() - new Date(left).getTime(),
     )[0]
-  }, [alertsSnapshot, ticketsSnapshot, zendeskSummarySnapshot, alertTicketsSnapshot])
+  }, [alertsSnapshot, ticketsSnapshot, alertTicketsSnapshot])
 
   function handleAlertCardClick(bucketKey: AlertBucketKey) {
     const isSameBucket = selectedAlertBucket === bucketKey
@@ -427,21 +384,70 @@ export default function SupportPage() {
     }
 
     setSelectedAlertBucket(bucketKey)
-    // alertTicketsQuery is always fetched on mount; no manual load needed
   }
 
   return (
     <Stack spacing={2.5}>
+      {/* ── Page header ── */}
       <Stack
-        direction={{ xs: 'column', md: 'row' }}
-        alignItems={{ xs: 'flex-start', md: 'center' }}
+        direction={{ xs: 'column', sm: 'row' }}
+        alignItems={{ xs: 'flex-start', sm: 'center' }}
         justifyContent="space-between"
-        gap={1.25}
+        gap={1.5}
       >
-        <Box>
+        <Stack direction="row" spacing={1.5} alignItems="center">
+          <Box
+            sx={{
+              width: 42,
+              height: 42,
+              bgcolor: '#0078d4',
+              borderRadius: 1.5,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0,
+            }}
+          >
+            <SupportAgentRoundedIcon sx={{ color: 'white', fontSize: 24 }} />
+          </Box>
+          <Box>
+            <Typography variant="h6" fontWeight={700} lineHeight={1.2}>
+              Support Tickets
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              Zendesk &middot;{' '}
+              {lastSyncTimestamp
+                ? `Last synced ${formatSyncTimestamp(lastSyncTimestamp)}`
+                : 'Sync pending'}
+            </Typography>
+          </Box>
+        </Stack>
 
-
-        </Box>
+        <Stack direction="row" spacing={1} alignItems="center">
+          {helpdeskUrl ? (
+            <Button
+              variant="outlined"
+              color="inherit"
+              href={helpdeskUrl}
+              target="_blank"
+              rel="noreferrer"
+              startIcon={<OpenInNewRoundedIcon />}
+              size="small"
+            >
+              Open Helpdesk
+            </Button>
+          ) : null}
+          <Button
+            variant="contained"
+            onClick={handleRefresh}
+            startIcon={isFetchingAny ? <CircularProgress size={14} color="inherit" /> : <RefreshRoundedIcon />}
+            disabled={isFetchingAny}
+            size="small"
+            sx={{ bgcolor: '#0078d4', '&:hover': { bgcolor: '#106ebe' }, minWidth: 100 }}
+          >
+            {isFetchingAny ? 'Syncing…' : 'Refresh'}
+          </Button>
+        </Stack>
       </Stack>
 
       {pageError ? <Alert severity="warning">{pageError}</Alert> : null}
@@ -450,165 +456,83 @@ export default function SupportPage() {
         <Paper variant="outlined" sx={{ p: 4 }}>
           <Stack direction="row" spacing={1.25} alignItems="center">
             <CircularProgress size={22} />
-            <Typography color="text.secondary">Loading support page...</Typography>
+            <Typography color="text.secondary">Loading support data…</Typography>
           </Stack>
         </Paper>
       ) : null}
 
-      <Accordion
-        disableGutters
-        expanded={isMetricsPanelExpanded}
-        onChange={(_event, expanded) => setIsMetricsPanelExpanded(expanded)}
-        sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 1.5, overflow: 'hidden' }}
-      >
-        <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />} sx={{ px: 2.25 }}>
-          <Stack spacing={0.35}>
-            <Typography variant="subtitle1" fontWeight={700}>
-              Tickets Progress & Aging Alerts
-            </Typography>
-            <Typography variant="body2" color="text.secondary">
-              {lastSyncTimestamp
-                ? `Last sync ${formatSyncTimestamp(lastSyncTimestamp)}`
-                : 'Last sync unavailable'}
-            </Typography>
-          </Stack>
-        </AccordionSummary>
-        <AccordionDetails sx={{ pt: 0, px: 2.25, pb: 2.25 }}>
-          <Stack spacing={2}>
-            <Stack
-              direction={{ xs: 'column', sm: 'row' }}
-              spacing={1.25}
-              justifyContent="flex-end"
-              alignItems={{ xs: 'stretch', sm: 'center' }}
+      {/* ── Ticket filters ── */}
+      <Paper variant="outlined" sx={{ p: 2.25, borderRadius: 1.5 }}>
+        <Box
+          sx={{
+            display: 'grid',
+            gridTemplateColumns: {
+              xs: 'repeat(2, minmax(0, 1fr))',
+              xl: 'repeat(4, minmax(0, 1fr))',
+            },
+            gap: 1.5,
+          }}
+        >
+          {alertCards.map((card) => (
+            <Paper
+              key={card.key}
+              variant="outlined"
+              onClick={() => handleAlertCardClick(card.key as AlertBucketKey)}
+              sx={{
+                p: 2,
+                borderLeft: `4px solid ${card.color}`,
+                borderRadius: 1.25,
+                cursor: 'pointer',
+                outline: selectedAlertBucket === card.key ? `2px solid ${card.color}` : 'none',
+                outlineOffset: -1,
+                transition: 'transform 120ms ease, box-shadow 120ms ease',
+                '&:hover': { transform: 'translateY(-2px)', boxShadow: 2 },
+              }}
             >
-              {helpdeskUrl ? (
-                <Button
-                  variant="outlined"
-                  color="inherit"
-                  href={helpdeskUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  startIcon={<OpenInNewRoundedIcon />}
-                >
-                  Open Helpdesk
-                </Button>
-              ) : null}
-
-              <Button
-                variant="contained"
-                onClick={handleRefresh}
-                startIcon={<RefreshRoundedIcon />}
-                disabled={alertsQuery.isFetching || ticketsQuery.isFetching || zendeskQuery.isFetching || alertTicketsQuery.isFetching}
-              >
-                Refresh
-              </Button>
-            </Stack>
-
-            <Stack spacing={1}>
-
-              <Box
-                sx={{
-                  display: 'grid',
-                  gridTemplateColumns: {
-                    xs: 'repeat(1, minmax(0, 1fr))',
-                    sm: 'repeat(2, minmax(0, 1fr))',
-                    xl: 'repeat(5, minmax(0, 1fr))',
-                  },
-                  gap: 1.5,
-                }}
-              >
-                {ticketProgressCards.map((card) => (
-                  <Paper
-                    key={card.key}
-                    variant="outlined"
-                    sx={{
-                      p: 2,
-                      borderLeft: `4px solid ${card.color}`,
-                    }}
-                  >
-                    <Typography variant="body2" color="text.secondary">
-                      {card.label}
-                    </Typography>
-                    <Typography variant="h4" fontWeight={800} lineHeight={1.1}>
-                      {card.value}
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary">
-                      {card.helper}
-                    </Typography>
-                  </Paper>
-                ))}
-              </Box>
-            </Stack>
-
-            <Stack spacing={1}>
-              <Typography variant="subtitle2" fontWeight={700}>
-                Aging Alerts
+              <Typography variant="body2" color="text.secondary" fontWeight={500}>
+                {card.label}
               </Typography>
-              <Box
-                sx={{
-                  display: 'grid',
-                  gridTemplateColumns: {
-                    xs: 'repeat(1, minmax(0, 1fr))',
-                    sm: 'repeat(2, minmax(0, 1fr))',
-                    xl: 'repeat(4, minmax(0, 1fr))',
-                  },
-                  gap: 1.5,
-                }}
-              >
-                {alertCards.map((card) => (
-                  <Paper
-                    key={card.key}
-                    variant="outlined"
-                    onClick={() => handleAlertCardClick(card.key as AlertBucketKey)}
-                    sx={{
-                      p: 2,
-                      borderLeft: `4px solid ${card.color}`,
-                      cursor: 'pointer',
-                      transition: 'transform 120ms ease, box-shadow 120ms ease',
-                      '&:hover': {
-                        transform: 'translateY(-2px)',
-                        boxShadow: 2,
-                      },
-                    }}
-                  >
-                    <Typography variant="body2" color="text.secondary">
-                      {card.label}
-                    </Typography>
-                    <Typography variant="h4" fontWeight={800} lineHeight={1.1}>
-                      {card.value}
-                    </Typography>
-                  </Paper>
-                ))}
-              </Box>
-            </Stack>
-          </Stack>
-        </AccordionDetails>
-      </Accordion>
+              <Typography variant="h4" fontWeight={800} lineHeight={1.1} sx={{ mt: 0.5 }}>
+                {card.value}
+              </Typography>
+            </Paper>
+          ))}
+        </Box>
+      </Paper>
 
+      {/* ── Alert bucket drill-down ── */}
       {selectedAlertBucket ? (
-        <Paper variant="outlined" sx={{ p: 2.25 }}>
-          <Stack spacing={1.25}>
-            <Typography variant="h6" fontWeight={700}>
-              {alertBucketLabelMap[selectedAlertBucket]} Tickets
+        <Paper variant="outlined" sx={{ borderRadius: 1.5, overflow: 'hidden' }}>
+          <Box
+            sx={{
+              px: 2.25,
+              py: 1.5,
+              bgcolor: '#fafafa',
+              borderBottom: '1px solid',
+              borderColor: 'divider',
+            }}
+          >
+            <Typography variant="subtitle1" fontWeight={700}>
+              {alertBucketLabelMap[selectedAlertBucket]} — Affected Tickets
             </Typography>
-
+          </Box>
+          <Box sx={{ p: 2.25 }}>
             {alertTicketsQuery.isLoading ? (
-              <Stack direction="row" spacing={1.25} alignItems="center">
-                <CircularProgress size={20} />
-                <Typography color="text.secondary">Loading alert tickets...</Typography>
+              <Stack direction="row" spacing={1.25} alignItems="center" sx={{ mb: 1.5 }}>
+                <CircularProgress size={18} />
+                <Typography variant="body2" color="text.secondary">Loading…</Typography>
               </Stack>
             ) : null}
-
             <TableContainer sx={{ maxHeight: 320 }}>
               <Table size="small" stickyHeader>
                 <TableHead>
                   <TableRow>
-                    <TableCell>ID</TableCell>
-                    <TableCell>Order #</TableCell>
-                    <TableCell>Subject</TableCell>
-                    <TableCell>Status</TableCell>
-                    <TableCell>Assignee</TableCell>
-                    <TableCell>Updated</TableCell>
+                    <TableCell sx={{ fontWeight: 700 }}>ID</TableCell>
+                    <TableCell sx={{ fontWeight: 700 }}>Order #</TableCell>
+                    <TableCell sx={{ fontWeight: 700 }}>Subject</TableCell>
+                    <TableCell sx={{ fontWeight: 700 }}>Status</TableCell>
+                    <TableCell sx={{ fontWeight: 700 }}>Assignee</TableCell>
+                    <TableCell sx={{ fontWeight: 700 }}>Updated</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
@@ -623,7 +547,11 @@ export default function SupportPage() {
                       }}
                       sx={{ cursor: 'pointer' }}
                     >
-                      <TableCell>#{ticket.id}</TableCell>
+                      <TableCell>
+                        <Typography variant="body2" fontWeight={600} color="#0078d4">
+                          #{ticket.id}
+                        </Typography>
+                      </TableCell>
                       <TableCell>{ticket.orderNumber || '—'}</TableCell>
                       <TableCell>{ticket.subject}</TableCell>
                       <TableCell>
@@ -642,8 +570,8 @@ export default function SupportPage() {
                   {alertBucketTickets.length === 0 ? (
                     <TableRow>
                       <TableCell colSpan={6}>
-                        <Typography color="text.secondary">
-                          No tickets in this alert bucket.
+                        <Typography color="text.secondary" variant="body2" sx={{ py: 1 }}>
+                          No tickets in this filter.
                         </Typography>
                       </TableCell>
                     </TableRow>
@@ -651,313 +579,523 @@ export default function SupportPage() {
                 </TableBody>
               </Table>
             </TableContainer>
-          </Stack>
+          </Box>
         </Paper>
       ) : null}
 
+      {/* ── Main two-column layout ── */}
       <Box
         sx={{
           display: 'grid',
-          gridTemplateColumns: {
-            xs: 'repeat(1, minmax(0, 1fr))',
-            lg: '380px minmax(0, 1fr)',
-          },
-          gap: 1.25,
+          gridTemplateColumns: { xs: '1fr', lg: '380px minmax(0, 1fr)' },
+          gap: 1.5,
           alignItems: 'start',
         }}
       >
+        {/* ── Ticket sidebar (inbox style) ── */}
         <Paper
           variant="outlined"
           sx={{
-            p: 1.25,
-            height: { xs: 560, md: 700, lg: 780 },
+            height: { xs: 620, md: 760, lg: 860 },
             display: 'flex',
             flexDirection: 'column',
             minHeight: 0,
             overflow: 'hidden',
+            borderRadius: 1.5,
           }}
         >
-          <Stack spacing={1} sx={{ minHeight: 0, height: '100%' }}>
-            <Typography variant="subtitle1" fontWeight={700}>
-              Tickets
-            </Typography>
+          <Box
+            sx={{
+              px: 2,
+              py: 1.25,
+              borderBottom: '1px solid',
+              borderColor: 'divider',
+              bgcolor: '#fafafa',
+              flexShrink: 0,
+            }}
+          >
+            <Stack direction="row" alignItems="center" spacing={1}>
+              <Typography variant="subtitle2" fontWeight={700}>
+                Inbox
+              </Typography>
+              <Chip
+                label={openTickets.length}
+                size="small"
+                sx={{ height: 18, fontSize: '0.68rem', fontWeight: 700 }}
+              />
+            </Stack>
+          </Box>
 
-            <Stack spacing={0.65} sx={{ flex: 1, minHeight: 0, overflowY: 'auto', pr: 0.5 }}>
-              {openTickets.map((ticket) => {
-                // Preview data comes from the conversation query cache.
-                // React Query caches each ticket's conversation for 15 min,
-                // so switching between tickets is instant after the first load.
-                const previewSnapshot: SupportTicketConversationSnapshot | null =
-                  expandedTicketPreviewId === ticket.id && conversationQuery.data?.ticket.id === ticket.id
-                    ? conversationQuery.data
-                    : null
-                const isPreviewLoading =
-                  conversationQuery.isFetching && selectedTicketId === ticket.id && !previewSnapshot
-                const previewError =
-                  conversationQuery.isError && selectedTicketId === ticket.id
-                    ? (conversationQuery.error instanceof Error
-                        ? conversationQuery.error.message
-                        : 'Failed to load preview conversation.')
-                    : null
+          <Stack spacing={0} sx={{ flex: 1, overflowY: 'auto' }}>
+            {openTickets.map((ticket) => {
+              const previewSnapshot: SupportTicketConversationSnapshot | null =
+                expandedTicketPreviewId === ticket.id &&
+                conversationQuery.data?.ticket.id === ticket.id
+                  ? conversationQuery.data
+                  : null
+              const isPreviewLoading =
+                conversationQuery.isFetching &&
+                selectedTicketId === ticket.id &&
+                !previewSnapshot
+              const previewError =
+                conversationQuery.isError && selectedTicketId === ticket.id
+                  ? (conversationQuery.error instanceof Error
+                      ? conversationQuery.error.message
+                      : 'Failed to load preview.')
+                  : null
 
-                return (
-                  <Accordion
-                    key={`ticket-${ticket.id}`}
-                    id={`sidebar-ticket-${ticket.id}`}
-                    expanded={expandedTicketPreviewId === ticket.id}
-                    onChange={(_event, expanded) => {
-                      setExpandedTicketPreviewId(expanded ? ticket.id : false)
-                      setSelectedTicketId(ticket.id)
-                    }}
-                    disableGutters
+              const isSelected = selectedTicketId === ticket.id
+              const accentColor = getStatusAccentColor(ticket.status)
+
+              return (
+                <Accordion
+                  key={`ticket-${ticket.id}`}
+                  id={`sidebar-ticket-${ticket.id}`}
+                  expanded={expandedTicketPreviewId === ticket.id}
+                  onChange={(_event, expanded) => {
+                    setExpandedTicketPreviewId(expanded ? ticket.id : false)
+                    setSelectedTicketId(ticket.id)
+                  }}
+                  disableGutters
+                  sx={{
+                    boxShadow: 'none',
+                    border: 'none',
+                    borderBottom: '1px solid',
+                    borderColor: 'divider',
+                    borderRadius: '0 !important',
+                    bgcolor: isSelected ? 'rgba(0,120,212,0.05)' : 'transparent',
+                    '&::before': { display: 'none' },
+                    '&.Mui-expanded': { margin: 0 },
+                  }}
+                >
+                  <AccordionSummary
+                    expandIcon={<ExpandMoreRoundedIcon sx={{ fontSize: 17 }} />}
                     sx={{
-                      border: '1px solid',
-                      borderColor: 'divider',
-                      borderRadius: 1,
-                      overflow: 'visible',
-                      '&:not(.Mui-expanded)': {
-                        minHeight: 130,
-                      },
+                      minHeight: 0,
+                      px: 0,
+                      py: 0,
+                      alignItems: 'flex-start',
+                      '&.Mui-expanded': { minHeight: 0 },
+                      '& .MuiAccordionSummary-content': { my: 0, minWidth: 0 },
+                      '& .MuiAccordionSummary-content.Mui-expanded': { my: 0 },
+                      '& .MuiAccordionSummary-expandIconWrapper': { mt: 1.5, mr: 1 },
                     }}
                   >
-                    <AccordionSummary
-                      expandIcon={<ExpandMoreRoundedIcon />}
+                    <Box
                       sx={{
-                        minHeight: 210,
-                        px: 1.25,
-                        py: 1.5,
-                        alignItems: 'flex-start',
-                        '&.Mui-expanded': {
-                          minHeight: 210,
-                        },
-                        '& .MuiAccordionSummary-content': {
-                          my: 0,
-                          minWidth: 0,
-                          alignItems: 'flex-start',
-                        },
-                        '& .MuiAccordionSummary-content.Mui-expanded': {
-                          my: 0,
-                        },
-                        '& .MuiAccordionSummary-expandIconWrapper': {
-                          mt: 0.25,
-                        },
+                        borderLeft: `3px solid ${accentColor}`,
+                        pl: 1.5,
+                        pr: 0.5,
+                        py: 1.25,
+                        width: '100%',
+                        minWidth: 0,
                       }}
                     >
-                      <Stack spacing={0.9} sx={{ minWidth: 0, width: '100%' }}>
-                        <Stack direction="row" spacing={0.75} alignItems="center" sx={{ minWidth: 0 }}>
-                          <Typography variant="body2" fontWeight={700} sx={{ flexShrink: 0 }}>
-                            #{ticket.id}
-                          </Typography>
-                          {ticket.orderNumber ? (
-                            <Typography variant="body2" fontWeight={700} color="text.secondary" noWrap>
-                              Order {ticket.orderNumber}
-                            </Typography>
-                          ) : null}
-                        </Stack>
+                      <Stack direction="row" justifyContent="space-between" alignItems="flex-start" sx={{ mb: 0.3 }}>
+                        <Typography variant="caption" color="text.secondary" fontWeight={600} noWrap>
+                          #{ticket.id}
+                          {ticket.orderNumber ? ` · Order #${ticket.orderNumber}` : ''}
+                        </Typography>
                         <Typography
-                          variant="body2"
-                          color="text.primary"
-                          sx={{
-                            display: '-webkit-box',
-                            WebkitLineClamp: 2,
-                            WebkitBoxOrient: 'vertical',
-                            overflow: 'hidden',
-                          }}
+                          variant="caption"
+                          color="text.secondary"
+                          sx={{ whiteSpace: 'nowrap', ml: 1, flexShrink: 0 }}
                         >
-                          Subject: {ticket.subject || 'No subject'}
+                          {formatDateTime(ticket.updatedAt)}
                         </Typography>
-                        <Stack direction="row" spacing={0.75} alignItems="center">
-                          <Chip
-                            size="small"
-                            label={ticket.statusLabel}
-                            color={statusChipColor(ticket.status)}
-                            variant="outlined"
-                          />
-                          <Typography variant="caption" color="text.secondary">
-                            {formatDateTime(ticket.updatedAt)}
-                          </Typography>
-                        </Stack>
                       </Stack>
-                    </AccordionSummary>
-                    <AccordionDetails sx={{ pt: 0, px: 1.25, pb: 1.25 }}>
-                      {isPreviewLoading ? (
-                        <Stack direction="row" spacing={1} alignItems="center">
-                          <CircularProgress size={16} />
-                          <Typography variant="body2" color="text.secondary">
-                            Loading preview...
+
+                      <Typography variant="caption" color="text.secondary" noWrap sx={{ display: 'block', mb: 0.35 }}>
+                        {ticket.requesterName}
+                      </Typography>
+
+                      <Typography
+                        variant="body2"
+                        fontWeight={isSelected ? 700 : 600}
+                        color={isSelected ? '#0078d4' : 'text.primary'}
+                        sx={{
+                          display: '-webkit-box',
+                          WebkitLineClamp: 2,
+                          WebkitBoxOrient: 'vertical',
+                          overflow: 'hidden',
+                          mb: 0.6,
+                          lineHeight: 1.4,
+                        }}
+                      >
+                        {ticket.subject || 'No subject'}
+                      </Typography>
+
+                      <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap">
+                        <Chip
+                          size="small"
+                          label={ticket.statusLabel}
+                          color={statusChipColor(ticket.status)}
+                          variant="outlined"
+                          sx={{ height: 18, fontSize: '0.68rem' }}
+                        />
+                        {ticket.assigneeName ? (
+                          <Typography variant="caption" color="text.secondary" noWrap>
+                            {ticket.assigneeName}
                           </Typography>
-                        </Stack>
-                      ) : null}
+                        ) : null}
+                      </Stack>
+                    </Box>
+                  </AccordionSummary>
 
-                      {previewError ? (
-                        <Typography variant="body2" color="error">
-                          {previewError}
+                  <AccordionDetails sx={{ pt: 0, px: 1.25, pb: 1.25, bgcolor: 'rgba(0,0,0,0.015)' }}>
+                    {isPreviewLoading ? (
+                      <Stack direction="row" spacing={1} alignItems="center" sx={{ py: 0.75 }}>
+                        <CircularProgress size={13} />
+                        <Typography variant="caption" color="text.secondary">
+                          Loading messages…
                         </Typography>
-                      ) : null}
+                      </Stack>
+                    ) : null}
 
-                      {previewSnapshot ? (
-                        <Stack spacing={0.6}>
-                          {[...previewSnapshot.comments]
-                            .sort(
-                              (left, right) =>
-                                new Date(left.createdAt).getTime() -
-                                new Date(right.createdAt).getTime(),
-                            )
-                            .map((comment) => (
-                            <Paper
-                              key={comment.id}
-                              variant="outlined"
-                              onClick={() => {
-                                setSelectedTicketId(ticket.id)
-                                setPendingConversationJump({
-                                  ticketId: ticket.id,
-                                  commentId: comment.id,
-                                })
-                              }}
-                              sx={{
-                                p: 0.9,
-                                height: 108,
-                                cursor: 'pointer',
-                                overflow: 'hidden',
-                                transition: 'border-color 120ms ease, box-shadow 120ms ease',
-                                '&:hover': {
-                                  borderColor: 'primary.main',
-                                  boxShadow: 1,
-                                },
-                              }}
-                            >
-                              <Typography variant="caption" color="text.secondary" noWrap>
-                                {comment.authorName} • {formatDateTime(comment.createdAt)}
-                              </Typography>
-                              <Typography
-                                variant="body2"
+                    {previewError ? (
+                      <Typography variant="caption" color="error">
+                        {previewError}
+                      </Typography>
+                    ) : null}
+
+                    {previewSnapshot ? (
+                      <Stack spacing={0.75} sx={{ mt: 0.75 }}>
+                        {[...previewSnapshot.comments]
+                          .sort(
+                            (left, right) =>
+                              new Date(left.createdAt).getTime() -
+                              new Date(right.createdAt).getTime(),
+                          )
+                          .map((comment) => {
+                            const isCustomer =
+                              comment.authorName === previewSnapshot.ticket.requesterName
+                            const isInternal = !comment.public
+
+                            const borderColor = isInternal
+                              ? '#f59e0b'
+                              : isCustomer
+                              ? '#0078d4'
+                              : '#5e35b1'
+
+                            return (
+                              <Paper
+                                key={comment.id}
+                                variant="outlined"
+                                onClick={() => {
+                                  setSelectedTicketId(ticket.id)
+                                  setPendingConversationJump({
+                                    ticketId: ticket.id,
+                                    commentId: comment.id,
+                                  })
+                                }}
                                 sx={{
-                                  mt: 0.35,
-                                  display: '-webkit-box',
-                                  WebkitLineClamp: 3,
-                                  WebkitBoxOrient: 'vertical',
+                                  px: 1.25,
+                                  py: 0.85,
+                                  cursor: 'pointer',
                                   overflow: 'hidden',
-                                  whiteSpace: 'normal',
+                                  borderLeft: `3px solid ${borderColor}`,
+                                  transition: 'box-shadow 120ms ease',
+                                  '&:hover': { boxShadow: 1 },
                                 }}
                               >
-                                {buildPreviewParagraph(comment.body)}
-                              </Typography>
-                            </Paper>
-                            ))}
+                                <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 0.2 }}>
+                                  <Stack direction="row" spacing={0.5} alignItems="center">
+                                    <Typography variant="caption" fontWeight={700} noWrap>
+                                      {comment.authorName}
+                                    </Typography>
+                                    {isInternal ? (
+                                      <LockOutlinedIcon sx={{ fontSize: 11, color: '#f59e0b' }} />
+                                    ) : null}
+                                  </Stack>
+                                  <Typography variant="caption" color="text.secondary" sx={{ ml: 1, flexShrink: 0 }}>
+                                    {formatDateTime(comment.createdAt)}
+                                  </Typography>
+                                </Stack>
+                                <Typography
+                                  variant="body2"
+                                  color="text.primary"
+                                  sx={{
+                                    display: '-webkit-box',
+                                    WebkitLineClamp: 3,
+                                    WebkitBoxOrient: 'vertical',
+                                    overflow: 'hidden',
+                                    lineHeight: 1.45,
+                                  }}
+                                >
+                                  {buildPreviewParagraph(comment.body, 120)}
+                                </Typography>
+                              </Paper>
+                            )
+                          })}
 
-                          {previewSnapshot.comments.length === 0 ? (
-                            <Typography variant="body2" color="text.secondary">
-                              No conversation comments yet.
-                            </Typography>
-                          ) : null}
-                        </Stack>
-                      ) : null}
-                    </AccordionDetails>
-                  </Accordion>
-                )
-              })}
+                        {previewSnapshot.comments.length === 0 ? (
+                          <Typography variant="caption" color="text.secondary">
+                            No messages yet.
+                          </Typography>
+                        ) : null}
+                      </Stack>
+                    ) : null}
+                  </AccordionDetails>
+                </Accordion>
+              )
+            })}
 
-              {openTickets.length === 0 ? (
-                <Typography color="text.secondary">No open tickets.</Typography>
-              ) : null}
-            </Stack>
+            {openTickets.length === 0 && !isLoadingPage ? (
+              <Box sx={{ p: 4, textAlign: 'center' }}>
+                <Typography variant="body2" color="text.secondary">
+                  No open tickets.
+                </Typography>
+              </Box>
+            ) : null}
           </Stack>
         </Paper>
 
+        {/* ── Conversation panel (email thread) ── */}
         <Paper
           variant="outlined"
           sx={{
-            p: 1.5,
-            height: { xs: 560, md: 700, lg: 780 },
+            height: { xs: 620, md: 760, lg: 860 },
             display: 'flex',
             flexDirection: 'column',
             minHeight: 0,
             overflow: 'hidden',
+            borderRadius: 1.5,
           }}
         >
-          <Stack spacing={1.25} sx={{ minHeight: 0, height: '100%', overflow: 'hidden' }}>
-            <Typography variant="h6" fontWeight={700}>
-              Conversation
-            </Typography>
+          {!selectedTicketId && !conversationSnapshot ? (
+            <Box
+              sx={{
+                flex: 1,
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 1.5,
+                p: 4,
+              }}
+            >
+              <SupportAgentRoundedIcon sx={{ fontSize: 52, color: 'text.disabled' }} />
+              <Typography variant="body2" color="text.secondary" textAlign="center">
+                Select a ticket from the sidebar to read the conversation
+              </Typography>
+            </Box>
+          ) : null}
 
-              {!selectedTicketId ? (
-                <Typography color="text.secondary">Select a ticket from the middle column.</Typography>
-              ) : null}
+          {isLoadingConversation ? (
+            <Box
+              sx={{
+                flex: 1,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 1.5,
+              }}
+            >
+              <CircularProgress size={22} />
+              <Typography color="text.secondary">Loading conversation…</Typography>
+            </Box>
+          ) : null}
 
-              {isLoadingConversation ? (
-                <Stack direction="row" spacing={1.25} alignItems="center">
-                  <CircularProgress size={20} />
-                  <Typography color="text.secondary">Loading conversation...</Typography>
-                </Stack>
-              ) : null}
+          {conversationError ? (
+            <Box sx={{ p: 2 }}>
+              <Alert severity="warning">{conversationError}</Alert>
+            </Box>
+          ) : null}
 
-              {conversationError ? <Alert severity="warning">{conversationError}</Alert> : null}
-
-              {conversationSnapshot ? (
-                <Stack spacing={1} sx={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
-                  <Paper variant="outlined" sx={{ p: 1.25 }}>
+          {conversationSnapshot ? (
+            <>
+              {/* Email-style subject header */}
+              <Box
+                sx={{
+                  px: 2.5,
+                  py: 1.75,
+                  borderBottom: '1px solid',
+                  borderColor: 'divider',
+                  bgcolor: '#fafafa',
+                  flexShrink: 0,
+                }}
+              >
+                <Stack
+                  direction={{ xs: 'column', md: 'row' }}
+                  justifyContent="space-between"
+                  alignItems={{ xs: 'flex-start', md: 'center' }}
+                  gap={1}
+                >
+                  <Box sx={{ minWidth: 0 }}>
+                    <Typography fontWeight={700} variant="subtitle1" noWrap>
+                      {conversationSnapshot.ticket.subject}
+                    </Typography>
                     <Stack
-                      direction={{ xs: 'column', md: 'row' }}
-                      justifyContent="space-between"
-                      gap={1}
+                      direction="row"
+                      spacing={0.75}
+                      alignItems="center"
+                      flexWrap="wrap"
+                      sx={{ mt: 0.4 }}
                     >
-                      <Box>
-                        <Typography fontWeight={700}>{conversationSnapshot.ticket.subject}</Typography>
-                        <Typography variant="body2" color="text.secondary">
-                          Ticket #{conversationSnapshot.ticket.id} • {conversationSnapshot.ticket.requesterName} → {conversationSnapshot.ticket.assigneeName}
-                        </Typography>
-                      </Box>
-
-                      {conversationSnapshot.ticket.url ? (
-                        <Button
-                          variant="outlined"
-                          size="small"
-                          color="inherit"
-                          href={conversationSnapshot.ticket.url}
-                          target="_blank"
-                          rel="noreferrer"
-                          startIcon={<OpenInNewRoundedIcon />}
-                        >
-                          Open Ticket
-                        </Button>
-                      ) : null}
+                      <Typography variant="caption" color="text.secondary">
+                        #{conversationSnapshot.ticket.id}
+                      </Typography>
+                      <Typography variant="caption" color="text.disabled">&middot;</Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        From: <strong>{conversationSnapshot.ticket.requesterName}</strong>
+                      </Typography>
+                      <Typography variant="caption" color="text.disabled">&middot;</Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        Assigned: <strong>{conversationSnapshot.ticket.assigneeName}</strong>
+                      </Typography>
                     </Stack>
-                  </Paper>
+                  </Box>
 
-                  <Stack spacing={1} sx={{ flex: 1, minHeight: 0, overflowY: 'auto', pr: 0.5 }}>
-                    {conversationSnapshot.comments.map((comment) => {
-                      const cleanedBody = normalizeCommentBody(comment.body)
-
-                      return (
-                        <Paper
-                          key={comment.id}
-                          id={`conversation-comment-${comment.id}`}
-                          variant="outlined"
-                          sx={{ p: 1.25 }}
-                        >
-                          <Stack direction="row" justifyContent="space-between" gap={1}>
-                            <Typography fontWeight={600}>{comment.authorName}</Typography>
-                            <Typography variant="caption" color="text.secondary">
-                              {formatDateTime(comment.createdAt)}
-                            </Typography>
-                          </Stack>
-                          <Typography variant="body2" sx={{ whiteSpace: 'pre-line', mt: 0.75 }}>
-                            {cleanedBody || 'No content'}
-                          </Typography>
-                        </Paper>
-                      )
-                    })}
-
-                    {conversationSnapshot.comments.length === 0 ? (
-                      <Typography color="text.secondary">No conversation comments yet.</Typography>
+                  <Stack direction="row" spacing={1} alignItems="center" flexShrink={0}>
+                    <Chip
+                      size="small"
+                      label={conversationSnapshot.ticket.statusLabel || conversationSnapshot.ticket.status}
+                      color={statusChipColor(conversationSnapshot.ticket.status)}
+                      variant="outlined"
+                    />
+                    {conversationSnapshot.ticket.url ? (
+                      <Button
+                        variant="outlined"
+                        size="small"
+                        color="inherit"
+                        href={conversationSnapshot.ticket.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        startIcon={<OpenInNewRoundedIcon />}
+                      >
+                        Open Ticket
+                      </Button>
                     ) : null}
                   </Stack>
                 </Stack>
-              ) : null}
-          </Stack>
+              </Box>
+
+              {/* Email thread */}
+              <Stack
+                spacing={1.5}
+                sx={{
+                  flex: 1,
+                  overflowY: 'auto',
+                  scrollbarGutter: 'stable both-edges',
+                  p: 1.75,
+                  bgcolor: '#f3f2f1',
+                }}
+              >
+                {conversationSnapshot.comments.map((comment) => {
+                  const isCustomer =
+                    comment.authorName === conversationSnapshot.ticket.requesterName
+                  const isInternal = !comment.public
+                  const cleanedBody = normalizeCommentBody(comment.body)
+                  const initials = getInitials(comment.authorName)
+
+                  const avatarColor = isInternal ? '#b45309' : isCustomer ? '#0078d4' : '#5e35b1'
+                  const headerBg = isInternal
+                    ? 'rgba(245, 158, 11, 0.07)'
+                    : isCustomer
+                    ? 'rgba(0, 120, 212, 0.06)'
+                    : '#fafafa'
+                  const headerBorderColor = isInternal
+                    ? 'rgba(245, 158, 11, 0.2)'
+                    : isCustomer
+                    ? 'rgba(0, 120, 212, 0.15)'
+                    : 'rgba(0,0,0,0.08)'
+                  const cardBorderColor = isInternal
+                    ? 'rgba(245, 158, 11, 0.3)'
+                    : isCustomer
+                    ? 'rgba(0, 120, 212, 0.25)'
+                    : 'rgba(0,0,0,0.1)'
+
+                  return (
+                    <Paper
+                      key={comment.id}
+                      id={`conversation-comment-${comment.id}`}
+                      elevation={0}
+                      sx={{
+                        border: '1px solid',
+                        borderColor: cardBorderColor,
+                        borderRadius: 1.5,
+                      }}
+                    >
+                      {/* Message header */}
+                      <Box
+                        sx={{
+                          px: 2,
+                          py: 1.25,
+                          bgcolor: headerBg,
+                          borderBottom: '1px solid',
+                          borderColor: headerBorderColor,
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 1.25,
+                        }}
+                      >
+                        <Avatar
+                          sx={{
+                            width: 34,
+                            height: 34,
+                            fontSize: '0.73rem',
+                            fontWeight: 700,
+                            bgcolor: avatarColor,
+                            flexShrink: 0,
+                          }}
+                        >
+                          {initials}
+                        </Avatar>
+                        <Box sx={{ flex: 1, minWidth: 0 }}>
+                          <Stack direction="row" spacing={0.75} alignItems="center">
+                            <Typography variant="body2" fontWeight={700} lineHeight={1.3}>
+                              {comment.authorName}
+                            </Typography>
+                            {isInternal ? (
+                              <Chip
+                                size="small"
+                                label="Internal Note"
+                                icon={<LockOutlinedIcon />}
+                                sx={{
+                                  height: 17,
+                                  fontSize: '0.64rem',
+                                  bgcolor: 'rgba(245,158,11,0.12)',
+                                  color: '#b45309',
+                                  border: '1px solid rgba(245,158,11,0.3)',
+                                  '& .MuiChip-icon': { fontSize: 11, color: '#b45309' },
+                                }}
+                              />
+                            ) : null}
+                          </Stack>
+                          <Typography variant="caption" color="text.secondary">
+                            {isInternal ? 'Internal Note' : isCustomer ? 'Customer' : 'Support Agent'}
+                          </Typography>
+                        </Box>
+                        <Typography variant="caption" color="text.secondary" sx={{ flexShrink: 0 }}>
+                          {formatDateTime(comment.createdAt)}
+                        </Typography>
+                      </Box>
+
+                      {/* Message body */}
+                      <Box sx={{ px: 2.5, py: 2, bgcolor: 'white' }}>
+                        <Typography
+                          variant="body1"
+                          sx={{ whiteSpace: 'pre-line', lineHeight: 1.75, color: 'text.primary' }}
+                        >
+                          {cleanedBody || 'No readable text in this message.'}
+                        </Typography>
+                      </Box>
+                    </Paper>
+                  )
+                })}
+
+                {conversationSnapshot.comments.length === 0 ? (
+                  <Box sx={{ textAlign: 'center', py: 4 }}>
+                    <Typography variant="body2" color="text.secondary">
+                      No messages in this conversation.
+                    </Typography>
+                  </Box>
+                ) : null}
+              </Stack>
+            </>
+          ) : null}
         </Paper>
       </Box>
-
     </Stack>
   )
 }

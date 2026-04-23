@@ -435,47 +435,6 @@ export default function DashboardPage() {
             <>
               <Box
                 sx={{
-                  display: 'flex',
-                  width: '100%',
-                  height: 14,
-                  borderRadius: 999,
-                  overflow: 'hidden',
-                  border: 1,
-                  borderColor: 'divider',
-                }}
-              >
-                {pipelineStages.map((stage) => {
-                  const count = opportunitiesByStage[stage.id].length
-                  const flexGrow = count > 0 ? count : 0.4
-
-                  return (
-                    <Box
-                      key={stage.id}
-                      sx={{
-                        flexGrow,
-                        minWidth: 8,
-                        backgroundColor: count > 0 ? stage.color : `${stage.color}33`,
-                      }}
-                    />
-                  )
-                })}
-              </Box>
-
-              <Stack direction="row" spacing={1} justifyContent="space-between">
-                {pipelineStages.map((stage) => (
-                  <Stack key={stage.id} spacing={0.1} sx={{ minWidth: 0, width: `${100 / pipelineStages.length}%` }}>
-                    <Typography variant="caption" sx={{ fontWeight: 700, color: stage.color }}>
-                      {stage.label}
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary">
-                      {opportunitiesByStage[stage.id].length}
-                    </Typography>
-                  </Stack>
-                ))}
-              </Stack>
-
-              <Box
-                sx={{
                   display: 'grid',
                   gridTemplateColumns: {
                     xs: 'repeat(2, minmax(0, 1fr))',
