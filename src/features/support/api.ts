@@ -45,7 +45,16 @@ export type SupportTicketComment = {
   authorName: string
   createdAt: string
   body: string
+  htmlBody: string | null
   public: boolean
+  attachments: Array<{
+    id: number | null
+    fileName: string
+    url: string
+    contentType: string | null
+    sizeBytes: number | null
+    thumbnailUrl: string | null
+  }>
 }
 
 export type ZendeskSupportAgent = {

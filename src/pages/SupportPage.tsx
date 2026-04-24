@@ -3,6 +3,7 @@ import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded'
 import SupportAgentRoundedIcon from '@mui/icons-material/SupportAgentRounded'
 import LockOutlinedIcon from '@mui/icons-material/LockOutlined'
+import DOMPurify from 'dompurify'
 import {
   Accordion,
   AccordionDetails,
@@ -21,7 +22,7 @@ import {
   ToggleButtonGroup,
   Typography,
 } from '@mui/material'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '../auth/useAuth'
 import {
@@ -93,26 +94,282 @@ function statusChipColor(status: string): 'default' | 'warning' | 'info' | 'succ
 
 function normalizeCommentBody(body: string) {
   const rawBody = String(body ?? '')
-
-  if (!rawBody.trim()) {
-    return ''
-  }
-
-  let decodedBody = rawBody
-
-  if (typeof window !== 'undefined' && typeof window.DOMParser !== 'undefined') {
-    const parser = new window.DOMParser()
-    const parsed = parser.parseFromString(rawBody, 'text/html')
-    decodedBody = parsed.documentElement.textContent ?? rawBody
-  }
-
-  return decodedBody
+  return rawBody
     .replace(/\u00a0/g, ' ')
     .replace(/\r\n/g, '\n')
     .replace(/[ \t]+\n/g, '\n')
     .replace(/[ \t]{2,}/g, ' ')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
+}
+
+function normalizeCommentText(plainBody: string, htmlBody: string | null | undefined) {
+  const rawHtmlBody = String(htmlBody ?? '').trim()
+  let decodedBody = String(plainBody ?? '')
+
+  if (rawHtmlBody && typeof window !== 'undefined' && typeof window.DOMParser !== 'undefined') {
+    const parser = new window.DOMParser()
+    const normalizedHtml = rawHtmlBody
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/(div|p|li|tr|h[1-6]|blockquote)>/gi, '\n')
+    const parsed = parser.parseFromString(normalizedHtml, 'text/html')
+
+    decodedBody =
+      parsed.body?.textContent
+      ?? parsed.documentElement.textContent
+      ?? String(plainBody ?? '')
+  }
+
+  const normalized = normalizeCommentBody(decodedBody)
+
+  if (normalized) {
+    return normalized
+  }
+
+  return normalizeCommentBody(String(plainBody ?? ''))
+}
+
+function sanitizeCommentHtml(htmlBody: string | null | undefined) {
+  const rawHtmlBody = String(htmlBody ?? '').trim()
+
+  if (!rawHtmlBody || typeof window === 'undefined' || typeof window.DOMParser === 'undefined') {
+    return null
+  }
+
+  const sanitized = DOMPurify.sanitize(rawHtmlBody, {
+    USE_PROFILES: {
+      html: true,
+    },
+    ADD_TAGS: ['style'],
+    FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'form', 'input', 'button'],
+  })
+
+  const sanitizedString = String(sanitized ?? '').trim()
+
+  if (!sanitizedString) {
+    return null
+  }
+
+  return sanitizedString
+}
+
+function buildCommentHtmlDocument(sanitizedHtmlBody: string) {
+  const fallbackHtml = String(sanitizedHtmlBody ?? '').trim()
+
+  if (!fallbackHtml || typeof window === 'undefined' || typeof window.DOMParser === 'undefined') {
+    return ''
+  }
+
+  const parser = new window.DOMParser()
+  const parsed = parser.parseFromString(fallbackHtml, 'text/html')
+
+  parsed.querySelectorAll('a[href]').forEach((anchor) => {
+    anchor.setAttribute('target', '_blank')
+    anchor.setAttribute('rel', 'noopener noreferrer')
+  })
+
+  const preparedHtml = String(parsed.body?.innerHTML ?? '').trim()
+
+  if (!preparedHtml) {
+    return ''
+  }
+
+  return [
+    '<!doctype html>',
+    '<html lang="en">',
+    '<head>',
+    '<meta charset="utf-8"/>',
+    '<meta name="viewport" content="width=device-width, initial-scale=1"/>',
+    '<style>',
+    'html,body{margin:0;padding:0;background:transparent;color:#1f2937;}',
+    'body{font:400 0.96rem/1.55 "Segoe UI",Arial,sans-serif;overflow-wrap:anywhere;}',
+    'img{max-width:100%;height:auto;}',
+    'table{max-width:100%;}',
+    '</style>',
+    '</head>',
+    '<body>',
+    preparedHtml,
+    '</body>',
+    '</html>',
+  ].join('')
+}
+
+function SupportCommentHtmlFrame({
+  sanitizedHtmlBody,
+}: {
+  sanitizedHtmlBody: string
+}) {
+  const iframeRef = useRef<HTMLIFrameElement | null>(null)
+  const [iframeHeight, setIframeHeight] = useState(120)
+  const sourceDocument = useMemo(
+    () => buildCommentHtmlDocument(sanitizedHtmlBody),
+    [sanitizedHtmlBody],
+  )
+
+  useEffect(() => {
+    const iframe = iframeRef.current
+
+    if (!iframe || !sourceDocument) {
+      return
+    }
+
+    let rafId = 0
+    let resizeObserver: ResizeObserver | null = null
+    let mutationObserver: MutationObserver | null = null
+    const imageListeners: Array<{ image: HTMLImageElement; listener: () => void }> = []
+
+    const updateHeight = () => {
+      const currentDocument = iframe.contentDocument
+
+      if (!currentDocument) {
+        return
+      }
+
+      const bodyHeight = Math.max(
+        currentDocument.body?.scrollHeight ?? 0,
+        currentDocument.body?.offsetHeight ?? 0,
+      )
+      const documentHeight = Math.max(
+        currentDocument.documentElement?.scrollHeight ?? 0,
+        currentDocument.documentElement?.offsetHeight ?? 0,
+      )
+      const nextHeight = Math.max(bodyHeight, documentHeight, 24)
+
+      setIframeHeight(nextHeight)
+    }
+
+    const scheduleHeightUpdate = () => {
+      cancelAnimationFrame(rafId)
+      rafId = requestAnimationFrame(updateHeight)
+    }
+
+    const clearImageListeners = () => {
+      imageListeners.forEach(({ image, listener }) => {
+        image.removeEventListener('load', listener)
+        image.removeEventListener('error', listener)
+      })
+      imageListeners.length = 0
+    }
+
+    const attachImageListeners = () => {
+      clearImageListeners()
+
+      const currentDocument = iframe.contentDocument
+
+      if (!currentDocument) {
+        return
+      }
+
+      currentDocument.querySelectorAll('img').forEach((image) => {
+        const listener = () => {
+          scheduleHeightUpdate()
+        }
+
+        image.addEventListener('load', listener)
+        image.addEventListener('error', listener)
+        imageListeners.push({ image, listener })
+      })
+    }
+
+    const connectObservers = () => {
+      const currentDocument = iframe.contentDocument
+
+      if (!currentDocument || !currentDocument.body) {
+        return
+      }
+
+      scheduleHeightUpdate()
+      attachImageListeners()
+
+      if (typeof window.ResizeObserver !== 'undefined') {
+        resizeObserver = new window.ResizeObserver(() => {
+          scheduleHeightUpdate()
+        })
+
+        resizeObserver.observe(currentDocument.body)
+        resizeObserver.observe(currentDocument.documentElement)
+      }
+
+      mutationObserver = new MutationObserver(() => {
+        attachImageListeners()
+        scheduleHeightUpdate()
+      })
+
+      mutationObserver.observe(currentDocument.body, {
+        subtree: true,
+        childList: true,
+        characterData: true,
+      })
+    }
+
+    const handleIframeLoad = () => {
+      connectObservers()
+    }
+
+    iframe.addEventListener('load', handleIframeLoad)
+
+    if (iframe.contentDocument?.readyState === 'complete') {
+      connectObservers()
+    }
+
+    const handleWindowResize = () => {
+      scheduleHeightUpdate()
+    }
+
+    window.addEventListener('resize', handleWindowResize)
+
+    return () => {
+      window.removeEventListener('resize', handleWindowResize)
+      iframe.removeEventListener('load', handleIframeLoad)
+
+      if (resizeObserver) {
+        resizeObserver.disconnect()
+      }
+
+      if (mutationObserver) {
+        mutationObserver.disconnect()
+      }
+
+      clearImageListeners()
+      cancelAnimationFrame(rafId)
+    }
+  }, [sourceDocument])
+
+  return (
+    <Box
+      component="iframe"
+      ref={iframeRef}
+      srcDoc={sourceDocument}
+      title="Support message"
+      sandbox="allow-popups allow-popups-to-escape-sandbox allow-same-origin"
+      referrerPolicy="no-referrer"
+      sx={{
+        width: '100%',
+        border: 0,
+        display: 'block',
+        height: `${iframeHeight}px`,
+        bgcolor: 'transparent',
+      }}
+    />
+  )
+}
+
+function formatAttachmentSize(sizeBytes: number | null | undefined) {
+  const sizeValue = Number(sizeBytes)
+
+  if (!Number.isFinite(sizeValue) || sizeValue <= 0) {
+    return null
+  }
+
+  if (sizeValue >= 1024 * 1024) {
+    return `${(sizeValue / (1024 * 1024)).toFixed(1)} MB`
+  }
+
+  if (sizeValue >= 1024) {
+    return `${Math.round(sizeValue / 1024)} KB`
+  }
+
+  return `${sizeValue} B`
 }
 
 function buildPreviewParagraph(body: string, maxChars = 220) {
@@ -567,7 +824,44 @@ export default function SupportPage() {
           </Box>
         </Stack>
 
-        <Stack direction="row" spacing={1} alignItems="center">
+        <Stack
+          direction="row"
+          spacing={0.75}
+          alignItems="center"
+          flexWrap={{ xs: 'wrap', md: 'nowrap' }}
+          useFlexGap
+          sx={{
+            maxWidth: '100%',
+            overflowX: { xs: 'visible', md: 'auto' },
+            '&::-webkit-scrollbar': { height: 6 },
+          }}
+        >
+          {alertCards.map((card) => {
+            const isSelected = selectedAlertBucket === card.key
+
+            return (
+              <Chip
+                key={`header-alert-${card.key}`}
+                size="small"
+                clickable
+                onClick={() => handleAlertCardClick(card.key as AlertBucketKey)}
+                label={`${card.label}: ${card.value}`}
+                variant={isSelected ? 'filled' : 'outlined'}
+                sx={{
+                  height: 24,
+                  borderColor: isSelected ? card.color : `${card.color}88`,
+                  bgcolor: isSelected ? card.color : 'transparent',
+                  color: isSelected ? '#fff' : card.color,
+                  '& .MuiChip-label': {
+                    px: 1,
+                    fontSize: '0.72rem',
+                    fontWeight: 700,
+                  },
+                }}
+              />
+            )
+          })}
+
           {helpdeskUrl ? (
             <Button
               variant="outlined"
@@ -577,6 +871,7 @@ export default function SupportPage() {
               rel="noreferrer"
               startIcon={<OpenInNewRoundedIcon />}
               size="small"
+              sx={{ minHeight: 30, fontSize: '0.76rem', px: 1.25 }}
             >
               Open Helpdesk
             </Button>
@@ -587,7 +882,14 @@ export default function SupportPage() {
             startIcon={isFetchingAny ? <CircularProgress size={14} color="inherit" /> : <RefreshRoundedIcon />}
             disabled={isFetchingAny}
             size="small"
-            sx={{ bgcolor: '#0078d4', '&:hover': { bgcolor: '#106ebe' }, minWidth: 100 }}
+            sx={{
+              bgcolor: '#0078d4',
+              '&:hover': { bgcolor: '#106ebe' },
+              minHeight: 30,
+              minWidth: 92,
+              fontSize: '0.76rem',
+              px: 1.25,
+            }}
           >
             {isFetchingAny ? 'Syncing…' : 'Refresh'}
           </Button>
@@ -803,6 +1105,7 @@ export default function SupportPage() {
                             const isCustomer =
                               comment.authorName === previewSnapshot.ticket.requesterName
                             const isInternal = !comment.public
+                            const previewText = normalizeCommentText(comment.body, comment.htmlBody)
 
                             const borderColor = isInternal
                               ? '#f59e0b'
@@ -855,7 +1158,7 @@ export default function SupportPage() {
                                     lineHeight: 1.45,
                                   }}
                                 >
-                                  {buildPreviewParagraph(comment.body, 120)}
+                                  {buildPreviewParagraph(previewText, 120)}
                                 </Typography>
                               </Paper>
                             )
@@ -886,45 +1189,6 @@ export default function SupportPage() {
         </Paper>
 
         <Stack spacing={1.5}>
-          {/* ── Ticket filters (right panel only) ── */}
-          <Paper variant="outlined" sx={{ p: 2.25, borderRadius: 1.5 }}>
-            <Box
-              sx={{
-                display: 'grid',
-                gridTemplateColumns: {
-                  xs: 'repeat(2, minmax(0, 1fr))',
-                  xl: 'repeat(4, minmax(0, 1fr))',
-                },
-                gap: 1.5,
-              }}
-            >
-              {alertCards.map((card) => (
-                <Paper
-                  key={card.key}
-                  variant="outlined"
-                  onClick={() => handleAlertCardClick(card.key as AlertBucketKey)}
-                  sx={{
-                    p: 2,
-                    borderLeft: `4px solid ${card.color}`,
-                    borderRadius: 1.25,
-                    cursor: 'pointer',
-                    outline: selectedAlertBucket === card.key ? `2px solid ${card.color}` : 'none',
-                    outlineOffset: -1,
-                    transition: 'transform 120ms ease, box-shadow 120ms ease',
-                    '&:hover': { transform: 'translateY(-2px)', boxShadow: 2 },
-                  }}
-                >
-                  <Typography variant="body2" color="text.secondary" fontWeight={500}>
-                    {card.label}
-                  </Typography>
-                  <Typography variant="h4" fontWeight={800} lineHeight={1.1} sx={{ mt: 0.5 }}>
-                    {card.value}
-                  </Typography>
-                </Paper>
-              ))}
-            </Box>
-          </Paper>
-
           {/* ── Conversation panel (email thread) ── */}
           <Paper
           variant="outlined"
@@ -1060,7 +1324,9 @@ export default function SupportPage() {
                   const isCustomer =
                     comment.authorName === conversationSnapshot.ticket.requesterName
                   const isInternal = !comment.public
-                  const cleanedBody = normalizeCommentBody(comment.body)
+                  const cleanedBody = normalizeCommentText(comment.body, comment.htmlBody)
+                  const sanitizedHtmlBody = sanitizeCommentHtml(comment.htmlBody)
+                  const attachments = Array.isArray(comment.attachments) ? comment.attachments : []
                   const initials = getInitials(comment.authorName)
 
                   const avatarColor = isInternal ? '#b45309' : isCustomer ? '#0078d4' : '#5e35b1'
@@ -1148,12 +1414,91 @@ export default function SupportPage() {
 
                       {/* Message body */}
                       <Box sx={{ px: 2.5, py: 2, bgcolor: 'white' }}>
-                        <Typography
-                          variant="body1"
-                          sx={{ whiteSpace: 'pre-line', lineHeight: 1.75, color: 'text.primary' }}
-                        >
-                          {cleanedBody || 'No readable text in this message.'}
-                        </Typography>
+                        {sanitizedHtmlBody ? (
+                          <SupportCommentHtmlFrame sanitizedHtmlBody={sanitizedHtmlBody} />
+                        ) : (
+                          <Typography
+                            variant="body1"
+                            sx={{ whiteSpace: 'pre-line', lineHeight: 1.75, color: 'text.primary' }}
+                          >
+                            {cleanedBody || 'No readable text in this message.'}
+                          </Typography>
+                        )}
+
+                        {attachments.length > 0 ? (
+                          <Stack spacing={0.9} sx={{ mt: 1.6 }}>
+                            <Typography variant="caption" color="text.secondary" fontWeight={700}>
+                              Attachments
+                            </Typography>
+
+                            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                              {attachments.map((attachment) => {
+                                const isImage = String(attachment.contentType ?? '')
+                                  .toLowerCase()
+                                  .startsWith('image/')
+                                const previewUrl = attachment.thumbnailUrl || (isImage ? attachment.url : null)
+                                const fileSizeLabel = formatAttachmentSize(attachment.sizeBytes)
+
+                                return (
+                                  <Paper
+                                    key={`${comment.id}-${attachment.id ?? attachment.url}`}
+                                    component="a"
+                                    href={attachment.url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    variant="outlined"
+                                    sx={{
+                                      width: { xs: '100%', sm: 190 },
+                                      textDecoration: 'none',
+                                      color: 'inherit',
+                                      overflow: 'hidden',
+                                      transition: 'box-shadow 120ms ease, border-color 120ms ease',
+                                      '&:hover': {
+                                        borderColor: 'primary.main',
+                                        boxShadow: 1,
+                                      },
+                                    }}
+                                  >
+                                    {previewUrl ? (
+                                      <Box
+                                        component="img"
+                                        src={previewUrl}
+                                        alt={attachment.fileName}
+                                        sx={{
+                                          width: '100%',
+                                          height: 96,
+                                          objectFit: 'cover',
+                                          display: 'block',
+                                          bgcolor: '#f5f5f5',
+                                        }}
+                                      />
+                                    ) : null}
+
+                                    <Box sx={{ px: 1.1, py: 0.95 }}>
+                                      <Typography
+                                        variant="caption"
+                                        sx={{
+                                          display: 'block',
+                                          color: 'text.primary',
+                                          fontWeight: 700,
+                                          lineHeight: 1.35,
+                                          wordBreak: 'break-word',
+                                        }}
+                                      >
+                                        {attachment.fileName}
+                                      </Typography>
+                                      {fileSizeLabel ? (
+                                        <Typography variant="caption" color="text.secondary">
+                                          {fileSizeLabel}
+                                        </Typography>
+                                      ) : null}
+                                    </Box>
+                                  </Paper>
+                                )
+                              })}
+                            </Stack>
+                          </Stack>
+                        ) : null}
                       </Box>
                     </Paper>
                   )

@@ -286,14 +286,53 @@ export function createZendeskDashboardService({
         const authorId = Number(comment?.author_id)
         const author = usersById.get(authorId)
         const plainBody = String(comment?.plain_body ?? '').trim()
-        const fallbackBody = String(comment?.body ?? comment?.html_body ?? '').trim()
+        const htmlBody = String(comment?.html_body ?? '').trim()
+        const fallbackBody = String(comment?.body ?? '').trim()
+        const rawAttachments = Array.isArray(comment?.attachments)
+          ? comment.attachments
+          : []
+        const attachments = rawAttachments
+          .map((attachment) => {
+            const id = Number(attachment?.id)
+            const fileName = String(attachment?.file_name ?? '').trim() || 'Attachment'
+            const url = String(
+              attachment?.content_url
+              ?? attachment?.mapped_content_url
+              ?? '',
+            ).trim()
+            const contentType = String(attachment?.content_type ?? '').trim() || null
+            const sizeValue = Number(attachment?.size)
+            const thumbnails = Array.isArray(attachment?.thumbnails)
+              ? attachment.thumbnails
+              : []
+            const thumbnailUrl = String(
+              thumbnails.find((thumbnail) => String(thumbnail?.content_url ?? '').trim())?.content_url
+              ?? '',
+            ).trim() || null
+
+            if (!url) {
+              return null
+            }
+
+            return {
+              id: Number.isFinite(id) && id > 0 ? id : null,
+              fileName,
+              url,
+              contentType,
+              sizeBytes: Number.isFinite(sizeValue) && sizeValue > 0 ? Math.round(sizeValue) : null,
+              thumbnailUrl,
+            }
+          })
+          .filter(Boolean)
 
         return {
           id: Number(comment?.id),
           authorName: String(author?.name ?? 'Unknown user'),
           createdAt: String(comment?.created_at ?? ''),
-          body: plainBody || fallbackBody,
+          body: plainBody || fallbackBody || htmlBody,
+          htmlBody: htmlBody || null,
           public: Boolean(comment?.public),
+          attachments,
         }
       })
       .filter((comment) => Number.isFinite(comment.id) && comment.id > 0)
