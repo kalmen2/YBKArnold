@@ -17,6 +17,17 @@ export type AppAuthUser = {
   createdAt: string | null
   updatedAt: string | null
   lastLoginAt: string | null
+  lastActivityAt: string | null
+  lastSignInIpAddress: string | null
+  lastSignInLocalIpAddress: string | null
+  lastSignInUserAgent: string | null
+  signInHistory: Array<{
+    signedInAt: string | null
+    clientPlatform: 'web' | 'app' | null
+    ipAddress: string | null
+    localIpAddress: string | null
+    userAgent: string | null
+  }>
   accessStartHourUtc: number | null
   accessEndHourUtc: number | null
   accessTimeZone: string | null

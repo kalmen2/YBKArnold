@@ -3,8 +3,6 @@ import { nowIso, NO_ID } from '../utils/value-utils.mjs'
 export function registerAuthRoutes(app, deps) {
   const {
     authAccessTimeZoneNewJersey,
-    authActivityTypeApiRequest,
-    authActivityTypeUiEvent,
     authApprovalApproved,
     authApprovalPending,
     authClientAccessModeWebAndApp,
@@ -12,6 +10,7 @@ export function registerAuthRoutes(app, deps) {
     authRoleStandard,
     ensureWorkersHaveWorkerNumbers,
     extractRequestIpAddress,
+    extractRequestLocalIpAddress,
     extractRequestUserAgent,
     fetchZendeskSupportAgentById,
     getCollections,
@@ -28,7 +27,6 @@ export function registerAuthRoutes(app, deps) {
     requireFirebaseAuth,
     toBoundedInteger,
     toPublicAuthUser,
-    writeAuthActivityLog,
   } = deps
 
   async function requireUserByUid(req, res) {
@@ -80,7 +78,7 @@ app.get('/api/auth/me', requireFirebaseAuth, async (req, res, next) => {
 
     if (!publicUser.isApproved) {
       return res.status(403).json({
-        error: 'Your account is waiting for admin approval.',
+        error: 'Please contact admin.',
         user: publicUser,
         ownerEmail,
       })
@@ -450,7 +448,7 @@ app.delete('/api/auth/users/:uid', requireFirebaseAuth, requireAdminRole, async 
       return res.status(400).json({ error: 'You cannot delete your own account.' })
     }
 
-    const { authUsersCollection, authActivityLogsCollection } = await getCollections()
+    const { authUsersCollection } = await getCollections()
     const existingUser = await authUsersCollection.findOne(
       { uid: targetUid },
       {
@@ -470,10 +468,7 @@ app.delete('/api/auth/users/:uid', requireFirebaseAuth, requireAdminRole, async 
       return res.status(400).json({ error: 'Owner account cannot be deleted.' })
     }
 
-    await Promise.all([
-      authUsersCollection.deleteOne({ uid: targetUid }),
-      authActivityLogsCollection.deleteMany({ uid: targetUid }),
-    ])
+    await authUsersCollection.deleteOne({ uid: targetUid })
 
     invalidateAuthUserCache(targetUid)
 
@@ -566,39 +561,33 @@ app.patch('/api/auth/users/:uid/access-hours', requireFirebaseAuth, requireAdmin
 
 app.post('/api/auth/activity', requireFirebaseAuth, async (req, res, next) => {
   try {
-    const publicUser = toPublicAuthUser(req.authUser)
+    const targetUid = String(req.authUser?.uid ?? '').trim()
 
-    if (!publicUser) {
+    if (!targetUid) {
       throw {
         status: 500,
-        message: 'Unable to resolve activity user.',
+        message: 'Unable to resolve authenticated user.',
       }
     }
 
-    const action = String(req.body?.action ?? '').trim().slice(0, 120)
+    const { authUsersCollection } = await getCollections()
+    const now = nowIso()
 
-    if (!action) {
-      return res.status(400).json({ error: 'action is required.' })
-    }
+    await authUsersCollection.updateOne(
+      { uid: targetUid },
+      {
+        $set: {
+          lastActivityAt: now,
+          lastActivityClientPlatform: String(req.authClientPlatform ?? '').trim() || null,
+          lastActivityIpAddress: extractRequestIpAddress(req),
+          lastActivityLocalIpAddress: extractRequestLocalIpAddress(req),
+          lastActivityUserAgent: extractRequestUserAgent(req),
+          updatedAt: now,
+        },
+      },
+    )
 
-    const target = String(req.body?.target ?? '').trim().slice(0, 180) || null
-    const path = String(req.body?.path ?? '').trim().slice(0, 240) || null
-
-    await writeAuthActivityLog({
-      uid: publicUser.uid,
-      email: publicUser.email,
-      type: authActivityTypeUiEvent,
-      action,
-      target,
-      path,
-      method: req.method,
-      statusCode: 201,
-      ipAddress: extractRequestIpAddress(req),
-      userAgent: extractRequestUserAgent(req),
-      metadata: req.body?.metadata,
-    })
-
-    return res.status(201).json({ ok: true })
+    return res.status(204).send()
   } catch (error) {
     next(error)
   }
@@ -607,58 +596,15 @@ app.post('/api/auth/activity', requireFirebaseAuth, async (req, res, next) => {
 app.get('/api/auth/logs/users', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
   try {
     const limit = toBoundedInteger(req.query?.limit, 25, 500, 200)
-    const { authUsersCollection, authActivityLogsCollection } = await getCollections()
-    const users = await authUsersCollection
-      .find(
-        {},
-        NO_ID,
-      )
+    const signInsLimit = toBoundedInteger(req.query?.signInsLimit, 1, 50, 20)
+    const { authUsersCollection } = await getCollections()
+    const userDocuments = await authUsersCollection
+      .find({}, NO_ID)
+      .sort({ lastLoginAt: -1, updatedAt: -1, emailLower: 1 })
+      .limit(limit)
       .toArray()
 
-    const activitySummaryRows = await authActivityLogsCollection
-      .aggregate([
-        {
-          $sort: {
-            createdAt: -1,
-          },
-        },
-        {
-          $group: {
-            _id: '$uid',
-            totalEvents: {
-              $sum: 1,
-            },
-            lastActivityAt: {
-              $first: '$createdAt',
-            },
-            lastIpAddress: {
-              $first: '$ipAddress',
-            },
-            lastUserAgent: {
-              $first: '$userAgent',
-            },
-            lastAction: {
-              $first: '$action',
-            },
-          },
-        },
-      ])
-      .toArray()
-
-    const summaryByUid = new Map(
-      activitySummaryRows.map((row) => [
-        String(row._id ?? '').trim(),
-        {
-          totalEvents: Number(row.totalEvents ?? 0),
-          lastActivityAt: String(row.lastActivityAt ?? '').trim() || null,
-          lastIpAddress: String(row.lastIpAddress ?? '').trim() || null,
-          lastUserAgent: String(row.lastUserAgent ?? '').trim() || null,
-          lastAction: String(row.lastAction ?? '').trim() || null,
-        },
-      ]),
-    )
-
-    const userSummaries = users
+    const users = userDocuments
       .map((document) => {
         const user = toPublicAuthUser(document)
 
@@ -666,147 +612,37 @@ app.get('/api/auth/logs/users', requireFirebaseAuth, requireAdminRole, async (re
           return null
         }
 
-        const activitySummary = summaryByUid.get(user.uid) ?? {
-          totalEvents: 0,
-          lastActivityAt: null,
-          lastIpAddress: null,
-          lastUserAgent: null,
-          lastAction: null,
-        }
+        const signIns = [...(Array.isArray(user.signInHistory) ? user.signInHistory : [])]
+          .sort((left, right) => {
+            const leftTs = Date.parse(String(left?.signedInAt ?? ''))
+            const rightTs = Date.parse(String(right?.signedInAt ?? ''))
+
+            if (Number.isFinite(leftTs) && Number.isFinite(rightTs)) {
+              return rightTs - leftTs
+            }
+
+            if (Number.isFinite(rightTs)) {
+              return 1
+            }
+
+            if (Number.isFinite(leftTs)) {
+              return -1
+            }
+
+            return 0
+          })
+          .slice(0, signInsLimit)
 
         return {
           user,
-          ...activitySummary,
+          lastLoginAt: user.lastLoginAt,
+          lastActivityAt: user.lastActivityAt,
+          signIns,
         }
       })
       .filter(Boolean)
 
-    userSummaries.sort((left, right) => {
-      const leftTimestamp = Date.parse(left.lastActivityAt ?? left.user.lastLoginAt ?? '')
-      const rightTimestamp = Date.parse(right.lastActivityAt ?? right.user.lastLoginAt ?? '')
-
-      if (Number.isFinite(leftTimestamp) && Number.isFinite(rightTimestamp)) {
-        return rightTimestamp - leftTimestamp
-      }
-
-      if (Number.isFinite(rightTimestamp)) {
-        return 1
-      }
-
-      if (Number.isFinite(leftTimestamp)) {
-        return -1
-      }
-
-      return left.user.email.localeCompare(right.user.email)
-    })
-
-    return res.json({
-      users: userSummaries.slice(0, limit),
-    })
-  } catch (error) {
-    next(error)
-  }
-})
-
-app.get('/api/auth/logs/users/:uid/info', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
-  try {
-    const targetUid = String(req.params.uid ?? '').trim()
-
-    if (!targetUid) {
-      return res.status(400).json({ error: 'uid is required.' })
-    }
-
-    const { authUsersCollection, authActivityLogsCollection } = await getCollections()
-    const userDocument = await authUsersCollection.findOne(
-      { uid: targetUid },
-      {
-        projection: {
-          _id: 0,
-        },
-      },
-    )
-
-    if (!userDocument) {
-      return res.status(404).json({ error: 'User not found.' })
-    }
-
-    const [totalEvents, latestEvent, latestLoginEvent] = await Promise.all([
-      authActivityLogsCollection.countDocuments({ uid: targetUid }),
-      authActivityLogsCollection.findOne(
-        { uid: targetUid },
-        {
-          sort: {
-            createdAt: -1,
-          },
-          projection: {
-            _id: 0,
-          },
-        },
-      ),
-      authActivityLogsCollection.findOne(
-        {
-          uid: targetUid,
-          path: '/api/auth/me',
-        },
-        {
-          sort: {
-            createdAt: -1,
-          },
-          projection: {
-            _id: 0,
-          },
-        },
-      ),
-    ])
-
-    return res.json({
-      user: toPublicAuthUser(userDocument),
-      summary: {
-        totalEvents,
-        lastActivityAt: String(latestEvent?.createdAt ?? '').trim() || null,
-        lastIpAddress: String(latestEvent?.ipAddress ?? '').trim() || null,
-        lastUserAgent: String(latestEvent?.userAgent ?? '').trim() || null,
-      },
-      latestEvent,
-      latestLoginEvent,
-    })
-  } catch (error) {
-    next(error)
-  }
-})
-
-app.get('/api/auth/logs/users/:uid/events', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
-  try {
-    const targetUid = String(req.params.uid ?? '').trim()
-
-    if (!targetUid) {
-      return res.status(400).json({ error: 'uid is required.' })
-    }
-
-    const eventType = String(req.query?.type ?? '').trim().toLowerCase()
-    const limit = toBoundedInteger(req.query?.limit, 20, 1000, 200)
-    const filter = {
-      uid: targetUid,
-    }
-
-    if ([authActivityTypeApiRequest, authActivityTypeUiEvent].includes(eventType)) {
-      filter.type = eventType
-    }
-
-    const { authActivityLogsCollection } = await getCollections()
-    const events = await authActivityLogsCollection
-      .find(filter, {
-        projection: {
-          _id: 0,
-        },
-      })
-      .sort({ createdAt: -1 })
-      .limit(limit)
-      .toArray()
-
-    return res.json({
-      events,
-    })
+    return res.json({ users })
   } catch (error) {
     next(error)
   }

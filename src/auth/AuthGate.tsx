@@ -19,7 +19,6 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     isInitializing,
     isAuthenticated,
     isFirebaseConfigured,
-    ownerEmail,
     profileError,
     refreshProfile,
     signInWithGoogle,
@@ -210,16 +209,12 @@ export default function AuthGate({ children }: { children: ReactNode }) {
           <Stack spacing={2}>
             <Box>
               <Typography variant="h5" fontWeight={700}>
-                Waiting for approval
+                Access pending
               </Typography>
               <Typography color="text.secondary">
-                Your account is signed in but still pending admin approval.
+                Please contact admin.
               </Typography>
             </Box>
-
-            <Alert severity="info">
-              Ask {ownerEmail} to approve your account as Standard or Admin.
-            </Alert>
 
             {profileError ? <Alert severity="warning">{profileError}</Alert> : null}
 

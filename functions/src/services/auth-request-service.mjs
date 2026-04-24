@@ -16,7 +16,8 @@ export function createAuthRequestService({
   ownerEmail,
   resolveAuthClientPlatformFromRequest,
   toPublicAuthUser,
-  writeAuthApiRequestLog,
+  extractRequestIpAddress,
+  extractRequestLocalIpAddress,
   extractRequestUserAgent,
 }) {
   // ---------------------------------------------------------------------------
@@ -89,38 +90,79 @@ export function createAuthRequestService({
     const displayName = String(decodedToken?.name ?? '').trim()
     const photoURL = String(decodedToken?.picture ?? '').trim()
     const clientPlatform = resolveAuthClientPlatformFromRequest(req)
+    const requestIpAddress = extractRequestIpAddress(req)
+    const requestLocalIpAddress = extractRequestLocalIpAddress(req)
     const requestUserAgent = extractRequestUserAgent(req)
+    const parsedSignInAuthTime = Number(decodedToken?.auth_time)
+    const signInAuthTimeSec =
+      Number.isFinite(parsedSignInAuthTime) && parsedSignInAuthTime > 0
+        ? Math.floor(parsedSignInAuthTime)
+        : null
 
     // Return cached user document if still fresh. The cache stores the full
     // MongoDB document so all downstream auth checks (role, approval, login
     // hours) work exactly as before — just without the DB roundtrip.
     const cachedUserDocument = authCacheGet(uid)
     if (cachedUserDocument) {
-      return { decodedToken, userDocument: cachedUserDocument }
+      const cachedAuthTime = Number(cachedUserDocument?.lastLoginAuthTimeSec)
+      const hasNewSignInOnCachedUser =
+        signInAuthTimeSec !== null
+        && (!Number.isFinite(cachedAuthTime) || signInAuthTimeSec > cachedAuthTime)
+
+      if (!hasNewSignInOnCachedUser) {
+        return { decodedToken, userDocument: cachedUserDocument }
+      }
     }
 
     const { authUsersCollection } = await getCollections()
     const now = new Date().toISOString()
     const isOwner = emailLower === ownerEmail
     const isReviewerEmail = !isOwner && isReviewerLoginEmail(emailLower)
+    const userLookupQuery = {
+      $or: [
+        { uid },
+        { emailLower },
+      ],
+    }
+
+    const existingUser = await authUsersCollection.findOne(userLookupQuery, {
+      projection: {
+        _id: 0,
+        uid: 1,
+        lastLoginAt: 1,
+        lastLoginAuthTimeSec: 1,
+      },
+    })
+
+    const previousSignInAuthTimeSec = Number(existingUser?.lastLoginAuthTimeSec)
+    const hasNewSignIn = signInAuthTimeSec !== null
+      ? !Number.isFinite(previousSignInAuthTimeSec) || signInAuthTimeSec > previousSignInAuthTimeSec
+      : !String(existingUser?.lastLoginAt ?? '').trim()
+    const signInAt =
+      signInAuthTimeSec !== null
+        ? new Date(signInAuthTimeSec * 1000).toISOString()
+        : now
+
+    const baseSetFields = {
+      uid,
+      email,
+      emailLower,
+      displayName: displayName || null,
+      photoURL: photoURL || null,
+      lastActivityAt: now,
+      lastActivityClientPlatform: clientPlatform,
+      updatedAt: now,
+    }
 
     const updateOperation = isOwner
       ? {
           $set: {
-            uid,
-            email,
-            emailLower,
-            displayName: displayName || null,
-            photoURL: photoURL || null,
+            ...baseSetFields,
             role: authRoleAdmin,
             approvalStatus: authApprovalApproved,
             approvedAt: now,
             approvedByEmail: ownerEmail,
-            lastLoginAt: now,
-            lastLoginClientPlatform: clientPlatform,
-            lastLoginUserAgent: requestUserAgent,
             clientAccessMode: authClientAccessModeWebAndApp,
-            updatedAt: now,
           },
           $addToSet: {
             clientPlatforms: clientPlatform,
@@ -132,20 +174,12 @@ export function createAuthRequestService({
       : isReviewerEmail
         ? {
             $set: {
-              uid,
-              email,
-              emailLower,
-              displayName: displayName || null,
-              photoURL: photoURL || null,
+              ...baseSetFields,
               role: authRoleStandard,
               approvalStatus: authApprovalApproved,
               approvedAt: now,
               approvedByEmail: ownerEmail,
-              lastLoginAt: now,
-              lastLoginClientPlatform: clientPlatform,
-              lastLoginUserAgent: requestUserAgent,
               clientAccessMode: authClientAccessModeAppOnly,
-              updatedAt: now,
             },
             $addToSet: {
               clientPlatforms: clientPlatform,
@@ -156,15 +190,7 @@ export function createAuthRequestService({
           }
         : {
             $set: {
-              uid,
-              email,
-              emailLower,
-              displayName: displayName || null,
-              photoURL: photoURL || null,
-              lastLoginAt: now,
-              lastLoginClientPlatform: clientPlatform,
-              lastLoginUserAgent: requestUserAgent,
-              updatedAt: now,
+              ...baseSetFields,
             },
             $addToSet: {
               clientPlatforms: clientPlatform,
@@ -177,13 +203,35 @@ export function createAuthRequestService({
             },
           }
 
+    if (hasNewSignIn) {
+      updateOperation.$set.lastLoginAt = signInAt
+      updateOperation.$set.lastLoginClientPlatform = clientPlatform
+      updateOperation.$set.lastLoginUserAgent = requestUserAgent
+      updateOperation.$set.lastLoginIpAddress = requestIpAddress
+      updateOperation.$set.lastLoginLocalIpAddress = requestLocalIpAddress
+
+      if (signInAuthTimeSec !== null) {
+        updateOperation.$set.lastLoginAuthTimeSec = signInAuthTimeSec
+      }
+
+      updateOperation.$push = {
+        signInHistory: {
+          $each: [
+            {
+              signedInAt: signInAt,
+              clientPlatform,
+              ipAddress: requestIpAddress,
+              localIpAddress: requestLocalIpAddress,
+              userAgent: requestUserAgent,
+            },
+          ],
+          $slice: -20,
+        },
+      }
+    }
+
     const upsertResult = await authUsersCollection.findOneAndUpdate(
-      {
-        $or: [
-          { uid },
-          { emailLower },
-        ],
-      },
+      userLookupQuery,
       updateOperation,
       {
         upsert: true,
@@ -241,7 +289,6 @@ export function createAuthRequestService({
       req.firebaseToken = decodedToken
       req.authUser = userDocument
       req.authClientPlatform = requestClientPlatform
-      void writeAuthApiRequestLog(req, publicUser)
       next()
     } catch (error) {
       next(error)

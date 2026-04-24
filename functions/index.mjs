@@ -127,8 +127,6 @@ const authRoleManager = 'manager'
 const authRoleAdmin = 'admin'
 const authApprovalPending = 'pending'
 const authApprovalApproved = 'approved'
-const authActivityTypeApiRequest = 'api_request'
-const authActivityTypeUiEvent = 'ui_event'
 const authAccessTimeZoneUtc = 'UTC'
 const authAccessTimeZoneNewJersey = 'America/New_York'
 const authClientPlatformWeb = 'web'
@@ -335,15 +333,9 @@ const {
 
 const {
   extractRequestIpAddress,
+  extractRequestLocalIpAddress,
   extractRequestUserAgent,
-  writeAuthActivityLog,
-  writeAuthApiRequestLog,
-} = createAuthActivityService({
-  authActivityTypeApiRequest,
-  authActivityTypeUiEvent,
-  getCollections,
-  randomUUID,
-})
+} = createAuthActivityService()
 
 const mondayItemsPageQuery = `
 query GetBoardItems($boardId: ID!, $limit: Int!, $cursor: String) {
@@ -429,15 +421,14 @@ const {
   ownerEmail,
   resolveAuthClientPlatformFromRequest,
   toPublicAuthUser,
-  writeAuthApiRequestLog,
+  extractRequestIpAddress,
+  extractRequestLocalIpAddress,
   extractRequestUserAgent,
 })
 
 const routeDeps = {
   allocateWorkerNumbers,
   authAccessTimeZoneNewJersey,
-  authActivityTypeApiRequest,
-  authActivityTypeUiEvent,
   authApprovalApproved,
   authApprovalPending,
   authClientAccessModeWebAndApp,
@@ -458,6 +449,7 @@ const routeDeps = {
   ensureEntriesHavePayRates,
   ensureWorkersHaveWorkerNumbers,
   extractRequestIpAddress,
+  extractRequestLocalIpAddress,
   extractRequestUserAgent,
   fetchMondayDashboardSnapshot,
   fetchMondayAssetDownloadInfo,
@@ -516,7 +508,6 @@ const routeDeps = {
   validateEntryFields,
   validateEntryInput,
   validateWorkerInput,
-  writeAuthActivityLog,
 }
 
 registerAuthRoutes(app, routeDeps)

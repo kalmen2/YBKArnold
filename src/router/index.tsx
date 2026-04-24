@@ -16,9 +16,9 @@ import {
   SalesPage,
   SupportPage,
   TimesheetPage,
-  withRouteSuspense,
 } from './RouteLazyPages'
 import RouteErrorBoundary from './RouteErrorBoundary'
+import { withRouteSuspense } from './withRouteSuspense'
 
 export const router = createBrowserRouter([
   {

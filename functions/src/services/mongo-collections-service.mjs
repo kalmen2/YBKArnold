@@ -101,7 +101,6 @@ export function createMongoCollectionsService({
         const dashboardSnapshotsCollection = database.collection('dashboard_snapshots')
         const mondayOrdersCollection = database.collection('monday_orders')
         const authUsersCollection = database.collection('auth_users')
-        const authActivityLogsCollection = database.collection('auth_activity_logs')
         const mobilePushTokensCollection = database.collection('mobile_push_tokens')
         const mobileAlertsCollection = database.collection('mobile_alerts')
         const mobileAlertReadsCollection = database.collection('mobile_alert_reads')
@@ -139,9 +138,6 @@ export function createMongoCollectionsService({
             authUsersCollection.createIndex({ linkedWorkerId: 1 }, { unique: true, sparse: true }),
             authUsersCollection.createIndex({ linkedZendeskUserId: 1 }, { unique: true, sparse: true }),
             authUsersCollection.createIndex({ approvalStatus: 1, role: 1 }),
-            authActivityLogsCollection.createIndex({ uid: 1, createdAt: -1 }),
-            authActivityLogsCollection.createIndex({ createdAt: -1 }),
-            authActivityLogsCollection.createIndex({ type: 1, createdAt: -1 }),
             mobilePushTokensCollection.createIndex({ token: 1 }, { unique: true }),
             mobilePushTokensCollection.createIndex({ uid: 1, active: 1, updatedAt: -1 }),
             mobilePushTokensCollection.createIndex({ emailLower: 1, active: 1 }),
@@ -200,6 +196,7 @@ export function createMongoCollectionsService({
             ),
           ]).then(async () => {
             await removeLegacyTimesheetEntryIndexes(entriesCollection)
+            await dropLegacyAuthActivityLogsCollection(database)
             await ensureDefaultStages()
             await ensureStageSortOrder(stagesCollection)
           })
@@ -223,7 +220,6 @@ export function createMongoCollectionsService({
           dashboardSnapshotsCollection,
           mondayOrdersCollection,
           authUsersCollection,
-          authActivityLogsCollection,
           mobilePushTokensCollection,
           mobileAlertsCollection,
           mobileAlertReadsCollection,
@@ -272,6 +268,18 @@ export function createMongoCollectionsService({
   async function ensureDefaultStages() {
     // Defaults are intentionally disabled; stages are user-managed.
     return
+  }
+
+  async function dropLegacyAuthActivityLogsCollection(database) {
+    try {
+      await database.collection('auth_activity_logs').drop()
+    } catch (error) {
+      if (String(error?.codeName ?? '') === 'NamespaceNotFound') {
+        return
+      }
+
+      throw error
+    }
   }
 
   async function removeLegacyTimesheetEntryIndexes(entriesCollection) {

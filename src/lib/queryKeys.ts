@@ -39,7 +39,8 @@ export const QUERY_KEYS = {
   // Admin
   authBootstrap: ['auth', 'bootstrap'] as const,
   adminBootstrap: ['admin', 'bootstrap'] as const,
-  authLogs: (limit: number) => ['auth', 'logs', limit] as const,
+  authSignInLogs: (limit: number, signInsLimit: number) =>
+    ['auth', 'sign-in-logs', limit, signInsLimit] as const,
 
   // Pictures
   photosIndex: ['pictures', 'photos-index'] as const,

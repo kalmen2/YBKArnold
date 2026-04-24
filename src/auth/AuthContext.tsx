@@ -24,11 +24,8 @@ import type { AppAuthUser } from './types'
 const ownerEmail = 'kal@ybkarnold.com'
 const authProfileRequestTimeoutMs = 7000
 const clickProfileSyncIntervalMs = 60000
-const clickActivityCooldownMs = 20000
 const cachedAuthUserStorageKey = 'arnold.auth.cached-user.v1'
-// Collect activity events in memory and flush them in a single request every
-// ACTIVITY_FLUSH_INTERVAL_MS instead of firing one request per event. This
-// reduces activity-logging API calls from ~1 per click to ~1 per 30 seconds.
+// Send an activity heartbeat at a low fixed cadence while the user is active.
 const ACTIVITY_FLUSH_INTERVAL_MS = 30_000
 
 function readCachedAuthUser() {
@@ -119,63 +116,42 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [hasResolvedProfile, setHasResolvedProfile] = useState(Boolean(initialCachedUserRef.current))
   const [profileError, setProfileError] = useState<string | null>(null)
   const [ownerEmailValue, setOwnerEmailValue] = useState(ownerEmail)
-  const activityCooldownByKeyRef = useRef<Map<string, number>>(new Map())
-  const lastClickProfileSyncAtRef = useRef(0)
-  // Pending activity events waiting to be flushed. We keep only the most
-  // recent event per key so a burst of clicks collapses to a single request.
-  const activityQueueRef = useRef<Map<string, {
-    action: string
-    target: string | null
-    path: string
-    metadata: unknown
-  }>>(new Map())
+  const hasPendingActivityRef = useRef(false)
 
   const flushActivityQueue = useCallback(async () => {
-    const queue = activityQueueRef.current
-
-    if (queue.size === 0) {
+    if (!hasPendingActivityRef.current) {
       return
     }
 
     const activeUser = firebaseAuth.currentUser
 
     if (!activeUser) {
-      queue.clear()
+      hasPendingActivityRef.current = false
       return
     }
 
-    const events = Array.from(queue.values())
-    queue.clear()
+    hasPendingActivityRef.current = false
 
     try {
       const idToken = await activeUser.getIdToken()
 
-      // Send each queued event. In practice after throttling this is 1–3
-      // events per flush window, far fewer than firing on every interaction.
-      for (const event of events) {
-        const response = await fetch('/api/auth/activity', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${idToken}`,
-            'x-client-platform': 'web',
-          },
-          body: JSON.stringify(event),
-        })
+      const response = await fetch('/api/auth/activity', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${idToken}`,
+          'x-client-platform': 'web',
+        },
+      })
 
-        if (response.status === 401 || response.status === 403) {
-          clearCachedToken()
-          await signOut(firebaseAuth)
-          return
-        }
+      if (response.status === 401 || response.status === 403) {
+        clearCachedToken()
+        await signOut(firebaseAuth)
       }
     } catch {
-      // Best-effort telemetry only; never block UX.
+      // Best-effort heartbeat only; never block UX.
     }
   }, [])
 
-  // Flush the activity queue on a fixed interval instead of immediately on
-  // every event. This batches bursts of clicks into a single network round-trip.
   useEffect(() => {
     const intervalId = window.setInterval(() => {
       void flushActivityQueue()
@@ -192,37 +168,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     path?: string | null
     metadata?: unknown
   }) => {
-    const action = String(input?.action ?? '').trim().slice(0, 120)
-
-    if (!action) {
-      return
-    }
+    void input
 
     if (!firebaseAuth.currentUser) {
       return
     }
 
-    const target = String(input?.target ?? '').trim().slice(0, 180)
-    const key = action === 'click'
-      ? 'click-global'
-      : `${action}:${target}`
-    const cooldownMs = action === 'click' ? clickActivityCooldownMs : 1200
-    const now = Date.now()
-    const lastSentAt = activityCooldownByKeyRef.current.get(key) ?? 0
-
-    if (now - lastSentAt < cooldownMs) {
-      return
-    }
-
-    activityCooldownByKeyRef.current.set(key, now)
-
-    // Enqueue (overwrite any prior event with same key so only the latest wins).
-    activityQueueRef.current.set(key, {
-      action,
-      target: target || null,
-      path: String(input?.path ?? '').trim().slice(0, 240) || window.location.pathname,
-      metadata: input?.metadata,
-    })
+    hasPendingActivityRef.current = true
   }, [])
 
   const syncProfile = useCallback(async (user: User) => {
@@ -355,55 +307,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!firebaseUser) {
       return
     }
-
-    const handleDocumentClick = (event: MouseEvent) => {
-      const eventTarget = event.target
-
-      if (!(eventTarget instanceof Element)) {
-        return
-      }
-
-      const clickableElement = eventTarget.closest(
-        'button, a, [role="button"], [data-log-action]',
-      )
-
-      if (!clickableElement) {
-        return
-      }
-
-      const inferredTarget = String(
-        clickableElement.getAttribute('data-log-action')
-          ?? clickableElement.getAttribute('aria-label')
-          ?? clickableElement.textContent
-          ?? clickableElement.id
-          ?? clickableElement.tagName.toLowerCase(),
-      )
-        .replace(/\s+/g, ' ')
-        .trim()
-        .slice(0, 180)
-
-      void logActivity({
-        action: 'click',
-        target: inferredTarget || clickableElement.tagName.toLowerCase(),
-        metadata: {
-          tag: clickableElement.tagName.toLowerCase(),
-        },
-      })
-
-      const now = Date.now()
-
-      if (now - lastClickProfileSyncAtRef.current >= clickProfileSyncIntervalMs) {
-        lastClickProfileSyncAtRef.current = now
-        void syncProfile(firebaseUser)
-      }
-    }
-
-    document.addEventListener('click', handleDocumentClick, true)
+    const intervalId = window.setInterval(() => {
+      void syncProfile(firebaseUser)
+    }, clickProfileSyncIntervalMs)
 
     return () => {
-      document.removeEventListener('click', handleDocumentClick, true)
+      window.clearInterval(intervalId)
     }
-  }, [firebaseUser, logActivity, syncProfile])
+  }, [firebaseUser, syncProfile])
 
   const signInWithGoogle = useCallback(async () => {
     if (!isFirebaseAuthConfigured) {

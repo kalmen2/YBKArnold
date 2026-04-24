@@ -1,8 +1,6 @@
-import CheckRoundedIcon from '@mui/icons-material/CheckRounded'
-import ManageAccountsRoundedIcon from '@mui/icons-material/ManageAccountsRounded'
+import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded'
 import MoreVertRoundedIcon from '@mui/icons-material/MoreVertRounded'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
-import ShieldRoundedIcon from '@mui/icons-material/ShieldRounded'
 import {
   Alert,
   Box,
@@ -28,7 +26,13 @@ import {
 } from '@mui/material'
 import { LoadingPanel } from '../components/LoadingPanel'
 import { StatusAlerts } from '../components/StatusAlerts'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import {
+  type MouseEvent as ReactMouseEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Navigate } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
@@ -39,10 +43,7 @@ import type { AppAuthRole, AppAuthUser } from '../auth/types'
 import { QUERY_KEYS } from '../lib/queryKeys'
 import {
   approvalColor,
-  approvalLabel,
-  formatDateTime,
   formatLoginHours,
-  roleColor,
   roleLabel,
 } from '../lib/formatters'
 
@@ -55,6 +56,8 @@ type AdminWorkerOption = {
 }
 
 type ClientAccessMode = 'web_and_app' | 'web_only' | 'app_only'
+type ActionsSubmenuSection = 'approval_role' | 'links' | 'access' | 'account_actions'
+type MenuCloseReason = 'backdropClick' | 'escapeKeyDown' | 'tabKeyDown'
 
 const newJerseyTimeZone = 'America/New_York'
 const utcTimeZone = 'UTC'
@@ -104,6 +107,13 @@ function formatClientAccessLabel(mode: ClientAccessMode) {
   return 'Web + App'
 }
 
+function formatUserStatusLabel(user: AppAuthUser) {
+  const approval = user.isApproved ? 'Approved' : 'Unapproved'
+  const role = user.isOwner ? 'Owner' : roleLabel(user.role)
+
+  return `${approval} • ${role}`
+}
+
 const hourOptions = Array.from({ length: 24 }, (_, index) => index)
 
 export default function AdminUsersPage() {
@@ -128,6 +138,9 @@ export default function AdminUsersPage() {
   const [workerApproveWorkerId, setWorkerApproveWorkerId] = useState('')
   const [actionsAnchorEl, setActionsAnchorEl] = useState<HTMLElement | null>(null)
   const [actionsTarget, setActionsTarget] = useState<AppAuthUser | null>(null)
+  const [actionsSubmenuAnchorEl, setActionsSubmenuAnchorEl] = useState<HTMLElement | null>(null)
+  const [actionsSubmenuSection, setActionsSubmenuSection] = useState<ActionsSubmenuSection | null>(null)
+  const [actionsPinnedSubmenuSection, setActionsPinnedSubmenuSection] = useState<ActionsSubmenuSection | null>(null)
 
 
   const queryClient = useQueryClient()
@@ -292,12 +305,43 @@ export default function AdminUsersPage() {
   const openRowActions = useCallback((anchorElement: HTMLElement, user: AppAuthUser) => {
     setActionsAnchorEl(anchorElement)
     setActionsTarget(user)
+    setActionsSubmenuAnchorEl(null)
+    setActionsSubmenuSection(null)
+    setActionsPinnedSubmenuSection(null)
   }, [])
 
   const closeRowActions = useCallback(() => {
     setActionsAnchorEl(null)
     setActionsTarget(null)
+    setActionsSubmenuAnchorEl(null)
+    setActionsSubmenuSection(null)
+    setActionsPinnedSubmenuSection(null)
   }, [])
+
+  const openActionsSubmenu = useCallback((anchorElement: HTMLElement, section: ActionsSubmenuSection) => {
+    setActionsSubmenuAnchorEl(anchorElement)
+    setActionsSubmenuSection(section)
+  }, [])
+
+  const closeActionsSubmenu = useCallback(() => {
+    setActionsSubmenuAnchorEl(null)
+    setActionsSubmenuSection(null)
+  }, [])
+
+  const handleActionsSectionHover = useCallback((anchorElement: HTMLElement, section: ActionsSubmenuSection) => {
+    if (actionsPinnedSubmenuSection && actionsPinnedSubmenuSection !== section) {
+      return
+    }
+
+    openActionsSubmenu(anchorElement, section)
+  }, [actionsPinnedSubmenuSection, openActionsSubmenu])
+
+  const handleActionsSectionClick = useCallback((event: ReactMouseEvent<HTMLElement>, section: ActionsSubmenuSection) => {
+    event.preventDefault()
+    event.stopPropagation()
+    setActionsPinnedSubmenuSection(section)
+    openActionsSubmenu(event.currentTarget, section)
+  }, [openActionsSubmenu])
 
   const handleUnapprove = useCallback(async (targetUid: string) => {
     setErrorMessage(null)
@@ -555,6 +599,7 @@ export default function AdminUsersPage() {
   }, [zendeskAgents, zendeskLinkUserId])
 
   const actionsMenuOpen = Boolean(actionsAnchorEl && actionsTarget)
+  const actionsSubmenuOpen = Boolean(actionsMenuOpen && actionsSubmenuAnchorEl && actionsSubmenuSection)
   const actionsTargetIsSaving = actionsTarget ? activeUserId === actionsTarget.uid : false
   const actionsTargetCanAssignStandard = Boolean(actionsTarget && !actionsTarget.isOwner)
   const actionsTargetCanAssignZendesk = Boolean(actionsTarget)
@@ -564,6 +609,21 @@ export default function AdminUsersPage() {
     && !actionsTarget.isOwner
     && actionsTarget.uid !== appUser?.uid,
   )
+  const handleActionsMenuClose = useCallback(() => {
+    closeRowActions()
+  }, [closeRowActions])
+  const handleActionsSubmenuClose = useCallback((_event: unknown, reason: MenuCloseReason) => {
+    if (reason === 'escapeKeyDown' || reason === 'tabKeyDown') {
+      closeRowActions()
+      return
+    }
+
+    if (actionsPinnedSubmenuSection) {
+      return
+    }
+
+    closeActionsSubmenu()
+  }, [actionsPinnedSubmenuSection, closeActionsSubmenu, closeRowActions])
 
   if (!appUser?.isAdmin) {
     return <Navigate to="/dashboard" replace />
@@ -615,12 +675,10 @@ export default function AdminUsersPage() {
                 <TableCell>Email</TableCell>
                 <TableCell>Name</TableCell>
                 <TableCell>Status</TableCell>
-                <TableCell>Role</TableCell>
                 <TableCell>Login Hours</TableCell>
                 <TableCell>Worker Login</TableCell>
                 <TableCell>Zendesk Agent</TableCell>
                 <TableCell>Client Access</TableCell>
-                <TableCell>Last Login</TableCell>
                 <TableCell align="right">Actions</TableCell>
               </TableRow>
             </TableHead>
@@ -649,27 +707,10 @@ export default function AdminUsersPage() {
 
                     <TableCell>
                       <Chip
-                        label={approvalLabel(user)}
+                        label={formatUserStatusLabel(user)}
                         size="small"
                         color={approvalColor(user)}
                         variant="outlined"
-                      />
-                    </TableCell>
-
-                    <TableCell>
-                      <Chip
-                        label={roleLabel(user.role)}
-                        size="small"
-                        color={roleColor(user.role)}
-                        icon={
-                          user.role === 'admin' ? (
-                            <ShieldRoundedIcon fontSize="small" />
-                          ) : user.role === 'manager' ? (
-                            <ManageAccountsRoundedIcon fontSize="small" />
-                          ) : (
-                            <CheckRoundedIcon fontSize="small" />
-                          )
-                        }
                       />
                     </TableCell>
 
@@ -709,8 +750,6 @@ export default function AdminUsersPage() {
                       />
                     </TableCell>
 
-                    <TableCell>{formatDateTime(user.lastLoginAt)}</TableCell>
-
                     <TableCell align="right">
                       <IconButton
                         size="small"
@@ -732,212 +771,286 @@ export default function AdminUsersPage() {
       <Menu
         anchorEl={actionsAnchorEl}
         open={actionsMenuOpen}
-        onClose={closeRowActions}
+        onClose={handleActionsMenuClose}
       >
-        <MenuItem disabled>
-          {actionsTarget?.email ?? 'User actions'}
+        <MenuItem
+          disabled={actionsTargetIsSaving || !actionsTarget}
+          selected={actionsSubmenuSection === 'approval_role'}
+          onMouseEnter={(event) => handleActionsSectionHover(event.currentTarget, 'approval_role')}
+          onClick={(event) => handleActionsSectionClick(event, 'approval_role')}
+          sx={{ minWidth: 220 }}
+        >
+          <Box sx={{ display: 'flex', width: '100%', alignItems: 'center', justifyContent: 'space-between' }}>
+            Approval &amp; Role
+            <ChevronRightRoundedIcon fontSize="small" color="action" />
+          </Box>
         </MenuItem>
 
         <MenuItem
-          disabled={actionsTargetIsSaving || !actionsTargetCanAssignStandard}
-          onClick={() => {
-            if (!actionsTarget) {
-              return
-            }
-
-            closeRowActions()
-            void handleApprove(actionsTarget.uid, 'standard')
-          }}
+          disabled={actionsTargetIsSaving || !actionsTarget}
+          selected={actionsSubmenuSection === 'links'}
+          onMouseEnter={(event) => handleActionsSectionHover(event.currentTarget, 'links')}
+          onClick={(event) => handleActionsSectionClick(event, 'links')}
+          sx={{ minWidth: 220 }}
         >
-          Set Standard
+          <Box sx={{ display: 'flex', width: '100%', alignItems: 'center', justifyContent: 'space-between' }}>
+            Links
+            <ChevronRightRoundedIcon fontSize="small" color="action" />
+          </Box>
         </MenuItem>
 
         <MenuItem
-          disabled={actionsTargetIsSaving || !actionsTargetCanAssignStandard}
-          onClick={() => {
-            if (!actionsTarget) {
-              return
-            }
-
-            closeRowActions()
-            void handleApprove(actionsTarget.uid, 'manager')
-          }}
+          disabled={actionsTargetIsSaving || !actionsTarget}
+          selected={actionsSubmenuSection === 'access'}
+          onMouseEnter={(event) => handleActionsSectionHover(event.currentTarget, 'access')}
+          onClick={(event) => handleActionsSectionClick(event, 'access')}
+          sx={{ minWidth: 220 }}
         >
-          {actionsTarget?.isApproved && actionsTarget.role === 'manager' ? 'Manager' : 'Set Manager'}
+          <Box sx={{ display: 'flex', width: '100%', alignItems: 'center', justifyContent: 'space-between' }}>
+            Access
+            <ChevronRightRoundedIcon fontSize="small" color="action" />
+          </Box>
         </MenuItem>
 
         <MenuItem
-          disabled={actionsTargetIsSaving || Boolean(actionsTarget?.isOwner)}
-          onClick={() => {
-            if (!actionsTarget) {
-              return
-            }
-
-            closeRowActions()
-            const requiresConfirmation = !(
-              actionsTarget.isApproved
-              && actionsTarget.role === 'admin'
-            )
-
-            if (requiresConfirmation) {
-              setPromotionTarget(actionsTarget)
-              setPromotionConfirmationText('')
-              return
-            }
-
-            void handleApprove(actionsTarget.uid, 'admin', true)
-          }}
+          disabled={actionsTargetIsSaving || !actionsTarget}
+          selected={actionsSubmenuSection === 'account_actions'}
+          onMouseEnter={(event) => handleActionsSectionHover(event.currentTarget, 'account_actions')}
+          onClick={(event) => handleActionsSectionClick(event, 'account_actions')}
+          sx={{ minWidth: 220 }}
         >
-          {actionsTarget?.isApproved && actionsTarget.role === 'admin' ? 'Admin' : 'Make Admin'}
+          <Box sx={{ display: 'flex', width: '100%', alignItems: 'center', justifyContent: 'space-between' }}>
+            Account Actions
+            <ChevronRightRoundedIcon fontSize="small" color="action" />
+          </Box>
         </MenuItem>
+      </Menu>
 
-        <MenuItem
-          disabled={
-            actionsTargetIsSaving
-            || Boolean(actionsTarget?.isOwner)
-            || Boolean(actionsTarget?.isAdmin)
-            || actionsTarget?.role === 'manager'
-          }
-          onClick={() => {
-            if (!actionsTarget) {
-              return
-            }
+      <Menu
+        anchorEl={actionsSubmenuAnchorEl}
+        open={actionsSubmenuOpen}
+        onClose={handleActionsSubmenuClose}
+        anchorOrigin={{ vertical: 'top', horizontal: 'left' }}
+        transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+        autoFocus={false}
+        disableAutoFocusItem
+      >
+        {actionsSubmenuSection === 'approval_role' ? (
+          <>
+            <MenuItem
+              disabled={actionsTargetIsSaving || !actionsTargetCanAssignStandard}
+              onClick={() => {
+                if (!actionsTarget) {
+                  return
+                }
 
-            closeRowActions()
-            setWorkerApproveTarget(actionsTarget)
-            setWorkerApproveWorkerId(actionsTarget.linkedWorkerId ?? '')
-          }}
-        >
-          Approve Worker
-        </MenuItem>
+                closeRowActions()
+                void handleApprove(actionsTarget.uid, 'standard')
+              }}
+            >
+              Set Standard
+            </MenuItem>
 
-        <MenuItem
-          disabled={actionsTargetIsSaving || Boolean(actionsTarget?.isOwner)}
-          onClick={() => {
-            if (!actionsTarget) {
-              return
-            }
+            <MenuItem
+              disabled={actionsTargetIsSaving || !actionsTargetCanAssignStandard}
+              onClick={() => {
+                if (!actionsTarget) {
+                  return
+                }
 
-            closeRowActions()
-            openWorkerLinkDialog(actionsTarget)
-          }}
-        >
-          Assign Worker
-        </MenuItem>
+                closeRowActions()
+                void handleApprove(actionsTarget.uid, 'manager')
+              }}
+            >
+              {actionsTarget?.isApproved && actionsTarget.role === 'manager' ? 'Manager' : 'Set Manager'}
+            </MenuItem>
 
-        <MenuItem
-          disabled={actionsTargetIsSaving || !actionsTargetCanAssignZendesk}
-          onClick={() => {
-            if (!actionsTarget) {
-              return
-            }
+            <MenuItem
+              disabled={actionsTargetIsSaving || Boolean(actionsTarget?.isOwner)}
+              onClick={() => {
+                if (!actionsTarget) {
+                  return
+                }
 
-            closeRowActions()
-            openZendeskLinkDialog(actionsTarget)
-          }}
-        >
-          Assign Zendesk Agent
-        </MenuItem>
+                closeRowActions()
+                const requiresConfirmation = !(
+                  actionsTarget.isApproved
+                  && actionsTarget.role === 'admin'
+                )
 
-        <MenuItem
-          disabled={actionsTargetIsSaving || !actionsTargetCanEditHours}
-          onClick={() => {
-            if (!actionsTarget) {
-              return
-            }
+                if (requiresConfirmation) {
+                  setPromotionTarget(actionsTarget)
+                  setPromotionConfirmationText('')
+                  return
+                }
 
-            closeRowActions()
-            openHoursEditor(actionsTarget)
-          }}
-        >
-          Set Login Hours
-        </MenuItem>
+                void handleApprove(actionsTarget.uid, 'admin', true)
+              }}
+            >
+              {actionsTarget?.isApproved && actionsTarget.role === 'admin' ? 'Admin' : 'Make Admin'}
+            </MenuItem>
 
-        <MenuItem
-          disabled={
-            actionsTargetIsSaving
-            || Boolean(actionsTarget?.isOwner)
-            || actionsTarget?.clientAccessMode === 'web_only'
-          }
-          onClick={() => {
-            if (!actionsTarget) {
-              return
-            }
+            <MenuItem
+              disabled={
+                actionsTargetIsSaving
+                || Boolean(actionsTarget?.isOwner)
+                || Boolean(actionsTarget?.isAdmin)
+                || actionsTarget?.role === 'manager'
+              }
+              onClick={() => {
+                if (!actionsTarget) {
+                  return
+                }
 
-            closeRowActions()
-            void handleSetClientAccess(actionsTarget.uid, 'web_only')
-          }}
-        >
-          Set Website Only Access
-        </MenuItem>
+                closeRowActions()
+                setWorkerApproveTarget(actionsTarget)
+                setWorkerApproveWorkerId(actionsTarget.linkedWorkerId ?? '')
+              }}
+            >
+              Approve Worker
+            </MenuItem>
+          </>
+        ) : null}
 
-        <MenuItem
-          disabled={
-            actionsTargetIsSaving
-            || Boolean(actionsTarget?.isOwner)
-            || actionsTarget?.clientAccessMode === 'app_only'
-          }
-          onClick={() => {
-            if (!actionsTarget) {
-              return
-            }
+        {actionsSubmenuSection === 'links' ? (
+          <>
+            <MenuItem
+              disabled={actionsTargetIsSaving || Boolean(actionsTarget?.isOwner)}
+              onClick={() => {
+                if (!actionsTarget) {
+                  return
+                }
 
-            closeRowActions()
-            void handleSetClientAccess(actionsTarget.uid, 'app_only')
-          }}
-        >
-          Set App Only Access
-        </MenuItem>
+                closeRowActions()
+                openWorkerLinkDialog(actionsTarget)
+              }}
+            >
+              Assign Worker
+            </MenuItem>
 
-        <MenuItem
-          disabled={
-            actionsTargetIsSaving
-            || Boolean(actionsTarget?.isOwner)
-            || actionsTarget?.clientAccessMode === 'web_and_app'
-          }
-          onClick={() => {
-            if (!actionsTarget) {
-              return
-            }
+            <MenuItem
+              disabled={actionsTargetIsSaving || !actionsTargetCanAssignZendesk}
+              onClick={() => {
+                if (!actionsTarget) {
+                  return
+                }
 
-            closeRowActions()
-            void handleSetClientAccess(actionsTarget.uid, 'web_and_app')
-          }}
-        >
-          Set Web + App Access
-        </MenuItem>
+                closeRowActions()
+                openZendeskLinkDialog(actionsTarget)
+              }}
+            >
+              Assign Zendesk Agent
+            </MenuItem>
+          </>
+        ) : null}
 
-        <MenuItem
-          disabled={
-            actionsTargetIsSaving
-            || Boolean(actionsTarget?.isOwner)
-            || !actionsTarget?.isApproved
-          }
-          onClick={() => {
-            if (!actionsTarget) {
-              return
-            }
+        {actionsSubmenuSection === 'access' ? (
+          <>
+            <MenuItem
+              disabled={actionsTargetIsSaving || !actionsTargetCanEditHours}
+              onClick={() => {
+                if (!actionsTarget) {
+                  return
+                }
 
-            closeRowActions()
-            void handleUnapprove(actionsTarget.uid)
-          }}
-        >
-          Unapprove
-        </MenuItem>
+                closeRowActions()
+                openHoursEditor(actionsTarget)
+              }}
+            >
+              Set Login Hours
+            </MenuItem>
 
-        <MenuItem
-          disabled={actionsTargetIsSaving || !actionsTargetCanDelete}
-          onClick={() => {
-            if (!actionsTarget) {
-              return
-            }
+            <MenuItem
+              disabled={
+                actionsTargetIsSaving
+                || Boolean(actionsTarget?.isOwner)
+                || actionsTarget?.clientAccessMode === 'web_only'
+              }
+              onClick={() => {
+                if (!actionsTarget) {
+                  return
+                }
 
-            closeRowActions()
-            setDeleteTarget(actionsTarget)
-          }}
-        >
-          Delete
-        </MenuItem>
+                closeRowActions()
+                void handleSetClientAccess(actionsTarget.uid, 'web_only')
+              }}
+            >
+              Set Website Only Access
+            </MenuItem>
+
+            <MenuItem
+              disabled={
+                actionsTargetIsSaving
+                || Boolean(actionsTarget?.isOwner)
+                || actionsTarget?.clientAccessMode === 'app_only'
+              }
+              onClick={() => {
+                if (!actionsTarget) {
+                  return
+                }
+
+                closeRowActions()
+                void handleSetClientAccess(actionsTarget.uid, 'app_only')
+              }}
+            >
+              Set App Only Access
+            </MenuItem>
+
+            <MenuItem
+              disabled={
+                actionsTargetIsSaving
+                || Boolean(actionsTarget?.isOwner)
+                || actionsTarget?.clientAccessMode === 'web_and_app'
+              }
+              onClick={() => {
+                if (!actionsTarget) {
+                  return
+                }
+
+                closeRowActions()
+                void handleSetClientAccess(actionsTarget.uid, 'web_and_app')
+              }}
+            >
+              Set Web + App Access
+            </MenuItem>
+          </>
+        ) : null}
+
+        {actionsSubmenuSection === 'account_actions' ? (
+          <>
+            <MenuItem
+              disabled={
+                actionsTargetIsSaving
+                || Boolean(actionsTarget?.isOwner)
+                || !actionsTarget?.isApproved
+              }
+              onClick={() => {
+                if (!actionsTarget) {
+                  return
+                }
+
+                closeRowActions()
+                void handleUnapprove(actionsTarget.uid)
+              }}
+            >
+              Unapprove
+            </MenuItem>
+
+            <MenuItem
+              disabled={actionsTargetIsSaving || !actionsTargetCanDelete}
+              onClick={() => {
+                if (!actionsTarget) {
+                  return
+                }
+
+                closeRowActions()
+                setDeleteTarget(actionsTarget)
+              }}
+            >
+              Delete
+            </MenuItem>
+          </>
+        ) : null}
       </Menu>
 
       <Dialog open={Boolean(promotionTarget)} onClose={closePromotionDialog} fullWidth maxWidth="sm">
@@ -945,7 +1058,7 @@ export default function AdminUsersPage() {
         <DialogContent>
           <Stack spacing={2} sx={{ pt: 1 }}>
             <Alert severity="warning">
-              Admin users can approve users, view all logs, and manage restricted hours.
+              Admin users can approve users, review sign-in metadata, and manage restricted hours.
               Double-check before continuing.
             </Alert>
 
@@ -987,7 +1100,7 @@ export default function AdminUsersPage() {
         <DialogContent>
           <Stack spacing={1.25} sx={{ pt: 1 }}>
             <Alert severity="warning">
-              This will remove the user from the admin list and delete their activity logs.
+              This will remove the user from the admin list.
             </Alert>
             <Typography variant="body2" color="text.secondary">
               Are you sure you want to delete <strong>{deleteTarget?.email}</strong>?

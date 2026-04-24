@@ -287,6 +287,34 @@ export function createAuthUtils({
       ? authClientAccessModeWebAndApp
       : resolveAuthClientAccessMode(document)
     const allowedClientPlatforms = getAllowedAuthClientPlatforms(clientAccessMode)
+    const lastActivityAt = String(document.lastActivityAt ?? '').trim() || null
+    const lastSignInIpAddress = String(document.lastLoginIpAddress ?? '').trim() || null
+    const lastSignInLocalIpAddress = String(document.lastLoginLocalIpAddress ?? '').trim() || null
+    const lastSignInUserAgent = String(document.lastLoginUserAgent ?? '').trim() || null
+    const rawSignInHistory = Array.isArray(document.signInHistory)
+      ? document.signInHistory
+      : []
+    const signInHistory = rawSignInHistory
+      .map((entry) => {
+        const signedInAt = String(entry?.signedInAt ?? '').trim() || null
+        const entryClientPlatform = normalizeAuthClientPlatform(entry?.clientPlatform)
+        const ipAddress = String(entry?.ipAddress ?? '').trim() || null
+        const localIpAddress = String(entry?.localIpAddress ?? '').trim() || null
+        const userAgent = String(entry?.userAgent ?? '').trim() || null
+
+        if (!signedInAt && !ipAddress && !localIpAddress && !userAgent) {
+          return null
+        }
+
+        return {
+          signedInAt,
+          clientPlatform: entryClientPlatform,
+          ipAddress,
+          localIpAddress,
+          userAgent,
+        }
+      })
+      .filter(Boolean)
 
     return {
       uid: String(document.uid ?? ''),
@@ -303,6 +331,11 @@ export function createAuthUtils({
       createdAt: String(document.createdAt ?? '').trim() || null,
       updatedAt: String(document.updatedAt ?? '').trim() || null,
       lastLoginAt: String(document.lastLoginAt ?? '').trim() || null,
+      lastActivityAt,
+      lastSignInIpAddress,
+      lastSignInLocalIpAddress,
+      lastSignInUserAgent,
+      signInHistory,
       accessStartHourUtc,
       accessEndHourUtc,
       accessTimeZone,

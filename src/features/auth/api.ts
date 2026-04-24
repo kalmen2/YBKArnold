@@ -35,8 +35,21 @@ export type AdminBootstrapResponse = {
   alerts: AdminAlertRecord[]
 }
 
-export type ListLogUsersResponse = {
-  users: unknown[]
+export type AdminUserSignInLog = {
+  user: AppAuthUser
+  lastLoginAt: string | null
+  lastActivityAt: string | null
+  signIns: Array<{
+    signedInAt: string | null
+    clientPlatform: 'web' | 'app' | null
+    ipAddress: string | null
+    localIpAddress: string | null
+    userAgent: string | null
+  }>
+}
+
+export type AuthSignInLogsResponse = {
+  users: AdminUserSignInLog[]
 }
 
 export function fetchAuthBootstrap() {
@@ -47,6 +60,6 @@ export function fetchAdminBootstrap(alertsLimit = 80) {
   return apiRequest<AdminBootstrapResponse>(`/api/admin/bootstrap?alertsLimit=${alertsLimit}`)
 }
 
-export function fetchAuthLogs(limit = 300) {
-  return apiRequest<{ users: unknown[] }>(`/api/auth/logs/users?limit=${limit}`)
+export function fetchAuthLogs(limit = 300, signInsLimit = 20) {
+  return apiRequest<AuthSignInLogsResponse>(`/api/auth/logs/users?limit=${limit}&signInsLimit=${signInsLimit}`)
 }
