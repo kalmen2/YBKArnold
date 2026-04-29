@@ -4,6 +4,22 @@ export function createMongoCollectionsService({
   mongoDbName,
   mongoUri,
 }) {
+  const shouldDropLegacyTimesheetCollections =
+    String(process.env.DROP_LEGACY_TIMESHEET_COLLECTIONS ?? '').trim() === '1'
+  const timesheetCollectionNames = {
+    workers: 'timesheets.workers',
+    entries: 'timesheets.entries',
+    stages: 'timesheets.stages',
+    orderProgress: 'timesheets.order_progress',
+    missingWorkerReviews: 'timesheets.missing_worker_reviews',
+  }
+  const legacyTimesheetCollectionNames = {
+    workers: 'workers',
+    entries: 'timesheet_entries',
+    stages: 'timesheet_stages',
+    orderProgress: 'timesheet_order_progress',
+    missingWorkerReviews: 'timesheet_missing_worker_reviews',
+  }
   const maxMongoConnectAttempts = 4
   let mongoClient = null
   let databasePromise
@@ -93,11 +109,11 @@ export function createMongoCollectionsService({
     for (let attempt = 0; attempt < maxMongoConnectAttempts; attempt += 1) {
       try {
         const database = await ensureDatabaseConnection()
-        const workersCollection = database.collection('workers')
-        const entriesCollection = database.collection('timesheet_entries')
-        const stagesCollection = database.collection('timesheet_stages')
-        const orderProgressCollection = database.collection('timesheet_order_progress')
-        const missingWorkerReviewsCollection = database.collection('timesheet_missing_worker_reviews')
+        const workersCollection = database.collection(timesheetCollectionNames.workers)
+        const entriesCollection = database.collection(timesheetCollectionNames.entries)
+        const stagesCollection = database.collection(timesheetCollectionNames.stages)
+        const orderProgressCollection = database.collection(timesheetCollectionNames.orderProgress)
+        const missingWorkerReviewsCollection = database.collection(timesheetCollectionNames.missingWorkerReviews)
         const dashboardSnapshotsCollection = database.collection('dashboard_snapshots')
         const mondayOrdersCollection = database.collection('monday_orders')
         const authUsersCollection = database.collection('auth_users')
@@ -115,96 +131,98 @@ export function createMongoCollectionsService({
         const aiCommentSummariesCollection = database.collection('ai_comment_summaries')
 
         if (!indexesPromise) {
-          indexesPromise = Promise.all([
-            workersCollection.createIndex({ id: 1 }, { unique: true }),
-            workersCollection.createIndex({ workerNumber: 1 }, { unique: true, sparse: true }),
-            entriesCollection.createIndex({ id: 1 }, { unique: true }),
-            entriesCollection.createIndex({ workerId: 1 }),
-            entriesCollection.createIndex({ stageId: 1 }),
-            entriesCollection.createIndex({ date: -1 }),
-            stagesCollection.createIndex({ id: 1 }, { unique: true }),
-            stagesCollection.createIndex({ normalizedName: 1 }, { unique: true }),
-            orderProgressCollection.createIndex({ id: 1 }, { unique: true }),
-            orderProgressCollection.createIndex({ date: -1, normalizedJobName: 1 }, { unique: true }),
-            orderProgressCollection.createIndex({ date: -1 }),
-            missingWorkerReviewsCollection.createIndex({ id: 1 }, { unique: true }),
-            missingWorkerReviewsCollection.createIndex({ date: -1, workerId: 1 }, { unique: true }),
-            missingWorkerReviewsCollection.createIndex({ date: -1 }),
-            missingWorkerReviewsCollection.createIndex({ approved: 1, date: -1 }),
-            dashboardSnapshotsCollection.createIndex({ snapshotKey: 1 }, { unique: true }),
-            mondayOrdersCollection.createIndex({ mondayItemId: 1 }, { unique: true }),
-            mondayOrdersCollection.createIndex({ createdAt: -1 }),
-            mondayOrdersCollection.createIndex({ orderName: 1 }),
-            authUsersCollection.createIndex({ uid: 1 }, { unique: true }),
-            authUsersCollection.createIndex({ emailLower: 1 }, { unique: true }),
-            authUsersCollection.createIndex({ linkedWorkerId: 1 }, { unique: true, sparse: true }),
-            authUsersCollection.createIndex({ linkedZendeskUserId: 1 }, { unique: true, sparse: true }),
-            authUsersCollection.createIndex({ approvalStatus: 1, role: 1 }),
-            mobilePushTokensCollection.createIndex({ token: 1 }, { unique: true }),
-            mobilePushTokensCollection.createIndex({ uid: 1, active: 1, updatedAt: -1 }),
-            mobilePushTokensCollection.createIndex({ emailLower: 1, active: 1 }),
-            mobilePushTokensCollection.createIndex({ active: 1, updatedAt: -1 }),
-            mobileAlertsCollection.createIndex({ id: 1 }, { unique: true }),
-            mobileAlertsCollection.createIndex({ createdAt: -1 }),
-            mobileAlertReadsCollection.createIndex({ id: 1 }, { unique: true }),
-            mobileAlertReadsCollection.createIndex({ uid: 1, alertId: 1 }, { unique: true }),
-            mobileAlertReadsCollection.createIndex({ uid: 1, readAt: -1 }),
-            mobileAlertReadsCollection.createIndex({ alertId: 1, readAt: -1 }),
-            crmImportRunsCollection.createIndex({ id: 1 }, { unique: true }),
-            crmImportRunsCollection.createIndex({ importedAt: -1 }),
-            crmImportRunsCollection.createIndex({ importFingerprint: 1 }),
-            crmAccountsCollection.createIndex({ id: 1 }, { unique: true }),
-            crmAccountsCollection.createIndex({ sourceId: 1 }, { unique: true }),
-            crmAccountsCollection.createIndex({ nameLower: 1 }),
-            crmAccountsCollection.createIndex({ emailLower: 1 }, { sparse: true }),
-            crmAccountsCollection.createIndex({ ownerEmailLower: 1 }, { sparse: true }),
-            crmAccountsCollection.createIndex({ lastImportRunId: 1 }),
-            crmAccountsCollection.createIndex({ deletedAt: 1 }, { sparse: true }),
-            crmContactsCollection.createIndex({ id: 1 }, { unique: true }),
-            crmContactsCollection.createIndex({ sourceId: 1 }, { unique: true }),
-            crmContactsCollection.createIndex({ accountSourceId: 1 }),
-            crmContactsCollection.createIndex({ primaryEmailLower: 1 }, { sparse: true }),
-            crmContactsCollection.createIndex({ contactOrigin: 1 }),
-            crmContactsCollection.createIndex({ lastImportRunId: 1 }),
-            crmContactsCollection.createIndex({ deletedAt: 1 }, { sparse: true }),
-            crmSalesRepsCollection.createIndex({ id: 1 }, { unique: true }),
-            crmSalesRepsCollection.createIndex({ nameLower: 1 }, { unique: true }),
-            crmSalesRepsCollection.createIndex({ companyNameLower: 1 }),
-            crmSalesRepsCollection.createIndex({ states: 1 }),
-            crmSalesRepsCollection.createIndex({ updatedAt: -1 }),
-            crmSalesRepsCollection.createIndex({ isDeleted: 1 }, { sparse: true }),
-            crmDuplicateQueueCollection.createIndex({ id: 1 }, { unique: true }),
-            crmDuplicateQueueCollection.createIndex({ status: 1, createdAt: -1 }),
-            crmDuplicateQueueCollection.createIndex({ importRunId: 1, status: 1 }),
-            crmDuplicateQueueCollection.createIndex({ conflictType: 1, status: 1 }),
-            crmQuotesCollection.createIndex({ id: 1 }, { unique: true }),
-            crmQuotesCollection.createIndex({ dealerSourceId: 1, status: 1 }),
-            crmQuotesCollection.createIndex({ quoteNumber: 1 }, { sparse: true }),
-            crmQuotesCollection.createIndex({ status: 1, updatedAt: -1 }),
-            crmQuotesCollection.createIndex({ createdAt: -1 }),
-            crmOrdersCollection.createIndex({ id: 1 }, { unique: true }),
-            crmOrdersCollection.createIndex({ dealerSourceId: 1, status: 1 }),
-            crmOrdersCollection.createIndex({ orderNumber: 1 }, { sparse: true }),
-            crmOrdersCollection.createIndex({ status: 1, updatedAt: -1 }),
-            crmOrdersCollection.createIndex({ createdAt: -1 }),
-            aiRulesCollection.createIndex({ category: 1 }, { unique: true }),
-            aiCommentSummariesCollection.createIndex({ commentId: 1 }, { unique: true }),
-            // Text search indexes for CRM
-            crmAccountsCollection.createIndex(
-              { name: 'text', email: 'text' },
-              { name: 'crm_accounts_text', weights: { name: 10, email: 5 } },
-            ),
-            crmContactsCollection.createIndex(
-              { fullName: 'text', primaryEmail: 'text', phone: 'text' },
-              { name: 'crm_contacts_text', weights: { fullName: 10, primaryEmail: 5, phone: 3 } },
-            ),
-          ]).then(async () => {
-            await removeLegacyTimesheetEntryIndexes(entriesCollection)
-            await dropLegacyAuthActivityLogsCollection(database)
-            await ensureDefaultStages()
-            await ensureStageSortOrder(stagesCollection)
-            await seedDefaultAiRules(aiRulesCollection)
-          })
+          indexesPromise = ensureTimesheetCollectionNamespace(database)
+            .then(() => Promise.all([
+              workersCollection.createIndex({ id: 1 }, { unique: true }),
+              workersCollection.createIndex({ workerNumber: 1 }, { unique: true, sparse: true }),
+              entriesCollection.createIndex({ id: 1 }, { unique: true }),
+              entriesCollection.createIndex({ workerId: 1 }),
+              entriesCollection.createIndex({ stageId: 1 }),
+              entriesCollection.createIndex({ date: -1 }),
+              stagesCollection.createIndex({ id: 1 }, { unique: true }),
+              stagesCollection.createIndex({ normalizedName: 1 }, { unique: true }),
+              orderProgressCollection.createIndex({ id: 1 }, { unique: true }),
+              orderProgressCollection.createIndex({ date: -1, normalizedJobName: 1 }, { unique: true }),
+              orderProgressCollection.createIndex({ date: -1 }),
+              missingWorkerReviewsCollection.createIndex({ id: 1 }, { unique: true }),
+              missingWorkerReviewsCollection.createIndex({ date: -1, workerId: 1 }, { unique: true }),
+              missingWorkerReviewsCollection.createIndex({ date: -1 }),
+              missingWorkerReviewsCollection.createIndex({ approved: 1, date: -1 }),
+              dashboardSnapshotsCollection.createIndex({ snapshotKey: 1 }, { unique: true }),
+              mondayOrdersCollection.createIndex({ mondayItemId: 1 }, { unique: true }),
+              mondayOrdersCollection.createIndex({ createdAt: -1 }),
+              mondayOrdersCollection.createIndex({ orderName: 1 }),
+              authUsersCollection.createIndex({ uid: 1 }, { unique: true }),
+              authUsersCollection.createIndex({ emailLower: 1 }, { unique: true }),
+              authUsersCollection.createIndex({ linkedWorkerId: 1 }, { unique: true, sparse: true }),
+              authUsersCollection.createIndex({ linkedZendeskUserId: 1 }, { unique: true, sparse: true }),
+              authUsersCollection.createIndex({ approvalStatus: 1, role: 1 }),
+              mobilePushTokensCollection.createIndex({ token: 1 }, { unique: true }),
+              mobilePushTokensCollection.createIndex({ uid: 1, active: 1, updatedAt: -1 }),
+              mobilePushTokensCollection.createIndex({ emailLower: 1, active: 1 }),
+              mobilePushTokensCollection.createIndex({ active: 1, updatedAt: -1 }),
+              mobileAlertsCollection.createIndex({ id: 1 }, { unique: true }),
+              mobileAlertsCollection.createIndex({ createdAt: -1 }),
+              mobileAlertReadsCollection.createIndex({ id: 1 }, { unique: true }),
+              mobileAlertReadsCollection.createIndex({ uid: 1, alertId: 1 }, { unique: true }),
+              mobileAlertReadsCollection.createIndex({ uid: 1, readAt: -1 }),
+              mobileAlertReadsCollection.createIndex({ alertId: 1, readAt: -1 }),
+              crmImportRunsCollection.createIndex({ id: 1 }, { unique: true }),
+              crmImportRunsCollection.createIndex({ importedAt: -1 }),
+              crmImportRunsCollection.createIndex({ importFingerprint: 1 }),
+              crmAccountsCollection.createIndex({ id: 1 }, { unique: true }),
+              crmAccountsCollection.createIndex({ sourceId: 1 }, { unique: true }),
+              crmAccountsCollection.createIndex({ nameLower: 1 }),
+              crmAccountsCollection.createIndex({ emailLower: 1 }, { sparse: true }),
+              crmAccountsCollection.createIndex({ ownerEmailLower: 1 }, { sparse: true }),
+              crmAccountsCollection.createIndex({ lastImportRunId: 1 }),
+              crmAccountsCollection.createIndex({ deletedAt: 1 }, { sparse: true }),
+              crmContactsCollection.createIndex({ id: 1 }, { unique: true }),
+              crmContactsCollection.createIndex({ sourceId: 1 }, { unique: true }),
+              crmContactsCollection.createIndex({ accountSourceId: 1 }),
+              crmContactsCollection.createIndex({ primaryEmailLower: 1 }, { sparse: true }),
+              crmContactsCollection.createIndex({ contactOrigin: 1 }),
+              crmContactsCollection.createIndex({ lastImportRunId: 1 }),
+              crmContactsCollection.createIndex({ deletedAt: 1 }, { sparse: true }),
+              crmSalesRepsCollection.createIndex({ id: 1 }, { unique: true }),
+              crmSalesRepsCollection.createIndex({ nameLower: 1 }, { unique: true }),
+              crmSalesRepsCollection.createIndex({ companyNameLower: 1 }),
+              crmSalesRepsCollection.createIndex({ states: 1 }),
+              crmSalesRepsCollection.createIndex({ updatedAt: -1 }),
+              crmSalesRepsCollection.createIndex({ isDeleted: 1 }, { sparse: true }),
+              crmDuplicateQueueCollection.createIndex({ id: 1 }, { unique: true }),
+              crmDuplicateQueueCollection.createIndex({ status: 1, createdAt: -1 }),
+              crmDuplicateQueueCollection.createIndex({ importRunId: 1, status: 1 }),
+              crmDuplicateQueueCollection.createIndex({ conflictType: 1, status: 1 }),
+              crmQuotesCollection.createIndex({ id: 1 }, { unique: true }),
+              crmQuotesCollection.createIndex({ dealerSourceId: 1, status: 1 }),
+              crmQuotesCollection.createIndex({ quoteNumber: 1 }, { sparse: true }),
+              crmQuotesCollection.createIndex({ status: 1, updatedAt: -1 }),
+              crmQuotesCollection.createIndex({ createdAt: -1 }),
+              crmOrdersCollection.createIndex({ id: 1 }, { unique: true }),
+              crmOrdersCollection.createIndex({ dealerSourceId: 1, status: 1 }),
+              crmOrdersCollection.createIndex({ orderNumber: 1 }, { sparse: true }),
+              crmOrdersCollection.createIndex({ status: 1, updatedAt: -1 }),
+              crmOrdersCollection.createIndex({ createdAt: -1 }),
+              aiRulesCollection.createIndex({ category: 1 }, { unique: true }),
+              aiCommentSummariesCollection.createIndex({ commentId: 1 }, { unique: true }),
+              // Text search indexes for CRM
+              crmAccountsCollection.createIndex(
+                { name: 'text', email: 'text' },
+                { name: 'crm_accounts_text', weights: { name: 10, email: 5 } },
+              ),
+              crmContactsCollection.createIndex(
+                { fullName: 'text', primaryEmail: 'text', phone: 'text' },
+                { name: 'crm_contacts_text', weights: { fullName: 10, primaryEmail: 5, phone: 3 } },
+              ),
+            ]))
+            .then(async () => {
+              await removeLegacyTimesheetEntryIndexes(entriesCollection)
+              await dropLegacyAuthActivityLogsCollection(database)
+              await ensureDefaultStages()
+              await ensureStageSortOrder(stagesCollection)
+              await seedDefaultAiRules(aiRulesCollection)
+            })
         }
 
         try {
@@ -293,9 +311,109 @@ export function createMongoCollectionsService({
     return
   }
 
+  async function ensureTimesheetCollectionNamespace(database) {
+    const mappings = [
+      {
+        legacyName: legacyTimesheetCollectionNames.workers,
+        targetName: timesheetCollectionNames.workers,
+      },
+      {
+        legacyName: legacyTimesheetCollectionNames.entries,
+        targetName: timesheetCollectionNames.entries,
+      },
+      {
+        legacyName: legacyTimesheetCollectionNames.stages,
+        targetName: timesheetCollectionNames.stages,
+      },
+      {
+        legacyName: legacyTimesheetCollectionNames.orderProgress,
+        targetName: timesheetCollectionNames.orderProgress,
+      },
+      {
+        legacyName: legacyTimesheetCollectionNames.missingWorkerReviews,
+        targetName: timesheetCollectionNames.missingWorkerReviews,
+      },
+    ]
+
+    for (const mapping of mappings) {
+      await migrateLegacyCollection(database, mapping)
+    }
+  }
+
+  async function migrateLegacyCollection(database, { legacyName, targetName }) {
+    if (!legacyName || !targetName || legacyName === targetName) {
+      return
+    }
+
+    const legacyCollectionExists = await database
+      .listCollections({ name: legacyName }, { nameOnly: true })
+      .hasNext()
+
+    if (!legacyCollectionExists) {
+      return
+    }
+
+    const legacyCollection = database.collection(legacyName)
+    const targetCollection = database.collection(targetName)
+    const legacyCount = await legacyCollection.estimatedDocumentCount()
+
+    if (legacyCount === 0) {
+      if (shouldDropLegacyTimesheetCollections) {
+        await dropCollectionIfExists(database, legacyName)
+      }
+      return
+    }
+
+    const writes = []
+    const writeBatchSize = 500
+
+    for await (const legacyDoc of legacyCollection.find({})) {
+      const legacyId = legacyDoc?._id
+
+      if (!legacyId) {
+        continue
+      }
+
+      const { _id, ...docWithoutId } = legacyDoc
+
+      writes.push({
+        updateOne: {
+          filter: { _id: legacyId },
+          update: { $setOnInsert: docWithoutId },
+          upsert: true,
+        },
+      })
+
+      if (writes.length >= writeBatchSize) {
+        await targetCollection.bulkWrite(writes, { ordered: false })
+        writes.length = 0
+      }
+    }
+
+    if (writes.length > 0) {
+      await targetCollection.bulkWrite(writes, { ordered: false })
+    }
+
+    if (shouldDropLegacyTimesheetCollections) {
+      await dropCollectionIfExists(database, legacyName)
+    }
+  }
+
   async function dropLegacyAuthActivityLogsCollection(database) {
     try {
       await database.collection('auth_activity_logs').drop()
+    } catch (error) {
+      if (String(error?.codeName ?? '') === 'NamespaceNotFound') {
+        return
+      }
+
+      throw error
+    }
+  }
+
+  async function dropCollectionIfExists(database, collectionName) {
+    try {
+      await database.collection(collectionName).drop()
     } catch (error) {
       if (String(error?.codeName ?? '') === 'NamespaceNotFound') {
         return
