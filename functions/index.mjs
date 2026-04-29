@@ -6,6 +6,7 @@ import { rateLimit } from 'express-rate-limit'
 import * as functions from 'firebase-functions/v1'
 import { getApps, initializeApp } from 'firebase-admin/app'
 import { getAuth } from 'firebase-admin/auth'
+import { registerAiRoutes } from './src/routes/ai-routes.mjs'
 import { registerAlertsRoutes } from './src/routes/alerts-routes.mjs'
 import { registerAuthRoutes } from './src/routes/auth-routes.mjs'
 import { registerCrmRoutes } from './src/routes/crm-routes.mjs'
@@ -24,6 +25,7 @@ import { createMongoCollectionsService } from './src/services/mongo-collections-
 import { createOrderPhotoService } from './src/services/order-photo-service.mjs'
 import { createPlatformConfigService } from './src/services/platform-config-service.mjs'
 import { createPushAlertService } from './src/services/push-alert-service.mjs'
+import { createOpenAiService } from './src/services/openai-service.mjs'
 import { createZendeskDashboardService } from './src/services/zendesk-dashboard-service.mjs'
 import { createZendeskHelperService } from './src/services/zendesk-helper-service.mjs'
 import {
@@ -144,6 +146,7 @@ const defaultMobileAndroidLatestBuild = Number(process.env.MOBILE_ANDROID_LATEST
 const defaultMobileIosLatestBuild = Number(process.env.MOBILE_IOS_LATEST_BUILD ?? 0)
 const defaultMobileLatestVersion = String(process.env.MOBILE_LATEST_VERSION ?? '').trim()
 const expoPushApiUrl = 'https://exp.host/--/api/v2/push/send'
+const openAiApiKey = String(process.env.OPENAI_API_KEY ?? '').trim()
 const zendeskTicketFieldCacheTtlMs = 30 * 60 * 1000
 const zendeskTicketFieldErrorCacheTtlMs = 5 * 60 * 1000
 
@@ -322,6 +325,8 @@ const {
   zendeskTicketFieldErrorCacheTtlMs,
 })
 
+const { generateSupportReply, chatForRules } = createOpenAiService({ openAiApiKey })
+
 const {
   clearSupportSnapshotCache,
   getDashboardSnapshotFromCache,
@@ -427,6 +432,8 @@ const {
 })
 
 const routeDeps = {
+  chatForRules,
+  generateSupportReply,
   allocateWorkerNumbers,
   authAccessTimeZoneNewJersey,
   authApprovalApproved,
@@ -510,6 +517,7 @@ const routeDeps = {
   validateWorkerInput,
 }
 
+registerAiRoutes(app, routeDeps)
 registerAuthRoutes(app, routeDeps)
 registerAlertsRoutes(app, routeDeps)
 registerCrmRoutes(app, routeDeps)

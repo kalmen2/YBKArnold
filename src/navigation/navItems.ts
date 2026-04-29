@@ -5,6 +5,7 @@ import DashboardRoundedIcon from '@mui/icons-material/DashboardRounded'
 import ManageHistoryRoundedIcon from '@mui/icons-material/ManageHistoryRounded'
 import NotificationsActiveRoundedIcon from '@mui/icons-material/NotificationsActiveRounded'
 import PhotoLibraryRoundedIcon from '@mui/icons-material/PhotoLibraryRounded'
+import SmartToyRoundedIcon from '@mui/icons-material/SmartToyRounded'
 import StoreRoundedIcon from '@mui/icons-material/StoreRounded'
 import SupportAgentRoundedIcon from '@mui/icons-material/SupportAgentRounded'
 import TableChartRoundedIcon from '@mui/icons-material/TableChartRounded'
@@ -76,6 +77,12 @@ export const navItems: NavItem[] = [
     label: 'CRM Control',
     path: '/admin/crm',
     icon: BusinessRoundedIcon,
+    adminOnly: true,
+  },
+  {
+    label: 'AI Config',
+    path: '/admin/ai-config',
+    icon: SmartToyRoundedIcon,
     adminOnly: true,
   },
   {

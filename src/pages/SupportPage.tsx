@@ -1,3 +1,4 @@
+import AutoAwesomeRoundedIcon from '@mui/icons-material/AutoAwesomeRounded'
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded'
@@ -14,17 +15,20 @@ import {
   Button,
   Chip,
   CircularProgress,
+  IconButton,
   MenuItem,
   Paper,
   Stack,
   TextField,
   ToggleButton,
   ToggleButtonGroup,
+  Tooltip,
   Typography,
 } from '@mui/material'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '../auth/useAuth'
+import { generateAiSupportReply } from '../features/ai/api'
 import {
   fetchSupportAlertTickets,
   fetchSupportAlerts,
@@ -444,6 +448,7 @@ export default function SupportPage() {
   const [replyStatus, setReplyStatus] = useState<SupportReplyStatusOption>('no_change')
   const [replySuccessMessage, setReplySuccessMessage] = useState<string | null>(null)
   const [replyErrorMessage, setReplyErrorMessage] = useState<string | null>(null)
+  const [isGeneratingReply, setIsGeneratingReply] = useState(false)
 
   const alertsQuery = useQuery({
     queryKey: ['support', 'alerts'],
@@ -776,6 +781,27 @@ export default function SupportPage() {
     }
 
     setSelectedAlertBucket(bucketKey)
+  }
+
+  async function handleGenerateReply() {
+    if (!selectedTicketId) {
+      return
+    }
+
+    setIsGeneratingReply(true)
+    setReplyErrorMessage(null)
+    setReplySuccessMessage(null)
+
+    try {
+      const { reply } = await generateAiSupportReply(selectedTicketId)
+      setReplyBody(reply)
+    } catch (error) {
+      setReplyErrorMessage(
+        error instanceof Error ? error.message : 'AI could not generate a reply.',
+      )
+    } finally {
+      setIsGeneratingReply(false)
+    }
   }
 
   function selectTicket(ticketId: number) {
@@ -1603,9 +1629,35 @@ export default function SupportPage() {
                     justifyContent="space-between"
                     spacing={1}
                   >
-                    <Typography variant="caption" color="text.secondary">
-                      {trimmedReplyBody.length.toLocaleString()} / {replyCharacterLimit.toLocaleString()}
-                    </Typography>
+                    <Stack direction="row" alignItems="center" spacing={0.5}>
+                      <Tooltip
+                        title={
+                          !conversationSnapshot
+                            ? 'Select a ticket first'
+                            : 'Generate AI reply draft'
+                        }
+                      >
+                        <span>
+                          <IconButton
+                            size="small"
+                            onClick={() => { void handleGenerateReply() }}
+                            disabled={
+                              !conversationSnapshot
+                              || isGeneratingReply
+                              || replyMutation.isPending
+                            }
+                            sx={{ color: '#7c3aed' }}
+                          >
+                            {isGeneratingReply
+                              ? <CircularProgress size={16} sx={{ color: '#7c3aed' }} />
+                              : <AutoAwesomeRoundedIcon sx={{ fontSize: 18 }} />}
+                          </IconButton>
+                        </span>
+                      </Tooltip>
+                      <Typography variant="caption" color="text.secondary">
+                        {trimmedReplyBody.length.toLocaleString()} / {replyCharacterLimit.toLocaleString()}
+                      </Typography>
+                    </Stack>
 
                     <Button
                       variant="contained"

@@ -5,6 +5,7 @@ import {
   RequireManagerOrAdminRoute,
 } from './RouteGuards'
 import {
+  AiConfigPage,
   AdminAlertsPage,
   AdminLogsPage,
   AdminUsersPage,
@@ -111,6 +112,14 @@ export const router = createBrowserRouter([
               <CrmPage />
             </RequireAdminRoute>
           </CrmDealersProvider>,
+        ),
+      },
+      {
+        path: 'admin/ai-config',
+        element: withRouteSuspense(
+          <RequireAdminRoute>
+            <AiConfigPage />
+          </RequireAdminRoute>,
         ),
       },
     ],

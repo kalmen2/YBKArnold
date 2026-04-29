@@ -111,6 +111,7 @@ export function createMongoCollectionsService({
         const crmDuplicateQueueCollection = database.collection('crm_duplicate_queue')
         const crmQuotesCollection = database.collection('crm_quotes')
         const crmOrdersCollection = database.collection('crm_orders')
+        const aiRulesCollection = database.collection('ai_rules')
 
         if (!indexesPromise) {
           indexesPromise = Promise.all([
@@ -185,6 +186,7 @@ export function createMongoCollectionsService({
             crmOrdersCollection.createIndex({ orderNumber: 1 }, { sparse: true }),
             crmOrdersCollection.createIndex({ status: 1, updatedAt: -1 }),
             crmOrdersCollection.createIndex({ createdAt: -1 }),
+            aiRulesCollection.createIndex({ category: 1 }, { unique: true }),
             // Text search indexes for CRM
             crmAccountsCollection.createIndex(
               { name: 'text', email: 'text' },
@@ -230,6 +232,7 @@ export function createMongoCollectionsService({
           crmDuplicateQueueCollection,
           crmQuotesCollection,
           crmOrdersCollection,
+          aiRulesCollection,
         }
       } catch (error) {
         lastError = error
