@@ -10,8 +10,19 @@ export function createMondaySnapshotService({
   detectMondayColumns,
   normalizeMondayOrder,
 }) {
-  async function fetchMondayDashboardSnapshot() {
+  async function fetchMondayDashboardSnapshot(options = {}) {
     ensureMondayConfiguration()
+
+    const boardId = String(options?.boardId ?? mondayBoardId).trim()
+    const boardUrl = String(options?.boardUrl ?? mondayBoardUrl).trim() || null
+    const fallbackBoardName = String(options?.boardName ?? 'Order Track').trim() || 'Order Track'
+
+    if (!boardId) {
+      throw {
+        status: 500,
+        message: 'Missing Monday board id for snapshot fetch.',
+      }
+    }
 
     let cursor = null
     let pageCount = 0
@@ -20,7 +31,7 @@ export function createMondaySnapshotService({
 
     while (pageCount < 10) {
       const data = await callMondayGraphql(mondayItemsPageQuery, {
-        boardId: mondayBoardId,
+        boardId,
         limit: 200,
         cursor,
       })
@@ -30,14 +41,14 @@ export function createMondaySnapshotService({
       if (!board) {
         throw {
           status: 404,
-          message: 'Monday board was not found. Check MONDAY_BOARD_ID.',
+          message: `Monday board ${boardId} was not found.`,
         }
       }
 
       boardInfo = {
-        id: String(board.id ?? mondayBoardId),
-        name: String(board.name ?? 'Order Track'),
-        url: mondayBoardUrl || null,
+        id: String(board.id ?? boardId),
+        name: String(board.name ?? fallbackBoardName),
+        url: boardUrl,
       }
 
       const pageItems = Array.isArray(board.items_page?.items)

@@ -1,13 +1,34 @@
 import { firebaseAuth } from '../auth/firebase'
 
-// Cache the Firebase ID token in memory. Firebase tokens are valid for 1 hour,
-// so we reuse the same token for 55 minutes before forcing a refresh. This
-// avoids the repeated async overhead of calling getIdToken() on every request.
+// Cache the Firebase ID token until its real JWT expiry, with a small buffer.
+// This avoids repeated getIdToken() overhead without reusing stale tokens.
 let cachedToken: string | null = null
 let cachedTokenExpiresAt = 0
 const TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000 // Refresh 5 min before expiry
+const FALLBACK_TOKEN_TTL_MS = 55 * 60 * 1000
 
-async function getAuthHeaders(): Promise<Record<string, string>> {
+function getTokenExpiresAt(token: string) {
+  try {
+    const payload = token.split('.')[1]
+
+    if (!payload) {
+      return Date.now() + FALLBACK_TOKEN_TTL_MS
+    }
+
+    const normalizedPayload = payload.replace(/-/g, '+').replace(/_/g, '/')
+    const paddedPayload = normalizedPayload.padEnd(Math.ceil(normalizedPayload.length / 4) * 4, '=')
+    const parsedPayload = JSON.parse(window.atob(paddedPayload)) as { exp?: unknown }
+    const expiresAtSeconds = Number(parsedPayload.exp)
+
+    return Number.isFinite(expiresAtSeconds) && expiresAtSeconds > 0
+      ? expiresAtSeconds * 1000
+      : Date.now() + FALLBACK_TOKEN_TTL_MS
+  } catch {
+    return Date.now() + FALLBACK_TOKEN_TTL_MS
+  }
+}
+
+async function getAuthHeaders(forceRefresh = false): Promise<Record<string, string>> {
   const user = firebaseAuth.currentUser
 
   if (!user) {
@@ -17,10 +38,9 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
   const now = Date.now()
   const tokenStillValid = cachedToken && now < cachedTokenExpiresAt - TOKEN_REFRESH_BUFFER_MS
 
-  if (!tokenStillValid) {
-    cachedToken = await user.getIdToken()
-    // Firebase tokens are valid for 1 hour
-    cachedTokenExpiresAt = now + 60 * 60 * 1000
+  if (forceRefresh || !tokenStillValid) {
+    cachedToken = await user.getIdToken(forceRefresh)
+    cachedTokenExpiresAt = getTokenExpiresAt(cachedToken)
   }
 
   return { Authorization: `Bearer ${cachedToken}` }
@@ -33,19 +53,28 @@ export function clearCachedToken() {
 }
 
 export async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const authHeaders = await getAuthHeaders()
+  async function send(forceRefresh = false) {
+    const authHeaders = await getAuthHeaders(forceRefresh)
 
-  const response = await fetch(path, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      'x-client-platform': 'web',
-      ...authHeaders,
-      ...(options.headers ?? {}),
-    },
-  })
+    return fetch(path, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        'x-client-platform': 'web',
+        ...authHeaders,
+        ...(options.headers ?? {}),
+      },
+    })
+  }
 
-  const payload = await response.json().catch(() => ({}))
+  let response = await send()
+  let payload = await response.json().catch(() => ({}))
+
+  if (response.status === 401 && firebaseAuth.currentUser) {
+    clearCachedToken()
+    response = await send(true)
+    payload = await response.json().catch(() => ({}))
+  }
 
   if (!response.ok) {
     // If the server says the token is invalid, clear our cache so the next

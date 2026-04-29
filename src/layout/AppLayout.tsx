@@ -34,6 +34,9 @@ export default function AppLayout() {
   const [mobileOpen, setMobileOpen] = useState(false)
   const [isSigningOut, setIsSigningOut] = useState(false)
 
+  const isSupportRoute =
+    location.pathname === '/support' || location.pathname.startsWith('/support/')
+
   const drawerWidth = collapsed ? COLLAPSED_DRAWER_WIDTH : EXPANDED_DRAWER_WIDTH
 
   const handleSidebarToggle = () => {
@@ -56,6 +59,14 @@ export default function AppLayout() {
       path: location.pathname,
     })
   }, [location.pathname, logActivity])
+
+  useEffect(() => {
+    if (isMobile || !isSupportRoute) {
+      return
+    }
+
+    setCollapsed(true)
+  }, [isMobile, isSupportRoute])
 
   const appUserRole = appUser?.role ?? 'standard'
   const headerTitle = useMemo(() => {

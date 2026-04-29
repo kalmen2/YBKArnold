@@ -104,6 +104,21 @@ export function formatManagerDateLabel(isoDate: string) {
   })
 }
 
+export function formatMissingInfoDateLabel(isoDate: string) {
+  const [year, month, day] = String(isoDate ?? '').split('-').map(Number)
+
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day) || !year || !month || !day) {
+    return isoDate
+  }
+
+  return new Date(year, month - 1, day).toLocaleDateString('en-US', {
+    weekday: 'long',
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  })
+}
+
 export function isDateInRange(dateValue: string, startDate?: string, endDate?: string) {
   if (startDate && dateValue < startDate) {
     return false

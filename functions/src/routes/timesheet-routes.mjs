@@ -9,6 +9,8 @@ export function registerTimesheetRoutes(app, deps) {
     getCollections,
     getDashboardSnapshotFromCache,
     isDashboardRefreshRequested,
+    mondayShippedBoardId,
+    mondayShippedBoardUrl,
     normalizeJobName,
     normalizeStageName,
     randomUUID,
@@ -216,19 +218,153 @@ export function registerTimesheetRoutes(app, deps) {
   }
 
   async function loadMondaySnapshot(req) {
+    async function loadShippedTransitionMetaByOrderId(orderIds) {
+      const normalizedOrderIds = [
+        ...new Set(
+          (Array.isArray(orderIds) ? orderIds : [])
+            .map((value) => String(value ?? '').trim())
+            .filter((value) => Boolean(value)),
+        ),
+      ]
+
+      if (normalizedOrderIds.length === 0) {
+        return new Map()
+      }
+
+      const { mondayOrdersCollection } = await getCollections()
+      const orderDocuments = await mondayOrdersCollection
+        .find(
+          {
+            mondayItemId: {
+              $in: normalizedOrderIds,
+            },
+          },
+          {
+            projection: {
+              _id: 0,
+              mondayItemId: 1,
+              movedToShippedAt: 1,
+              shippedAt: 1,
+            },
+          },
+        )
+        .toArray()
+
+      return new Map(
+        orderDocuments
+          .map((orderDocument) => {
+            const mondayItemId = String(orderDocument?.mondayItemId ?? '').trim()
+
+            if (!mondayItemId) {
+              return null
+            }
+
+            return [
+              mondayItemId,
+              {
+                movedToShippedAt: String(orderDocument?.movedToShippedAt ?? '').trim() || null,
+                persistedShippedAt: String(orderDocument?.shippedAt ?? '').trim() || null,
+              },
+            ]
+          })
+          .filter((entry) => entry !== null),
+      )
+    }
+
+    function enrichOrdersWithShippedTransitionMeta(orders, transitionMetaByOrderId) {
+      if (!Array.isArray(orders) || orders.length === 0) {
+        return Array.isArray(orders) ? orders : []
+      }
+
+      return orders.map((order) => {
+        const orderId = String(order?.id ?? '').trim()
+
+        if (!orderId) {
+          return order
+        }
+
+        const transitionMeta = transitionMetaByOrderId.get(orderId)
+
+        if (!transitionMeta) {
+          return {
+            ...order,
+            movedToShippedAt: null,
+          }
+        }
+
+        return {
+          ...order,
+          movedToShippedAt: transitionMeta.movedToShippedAt,
+          shippedAt: transitionMeta.persistedShippedAt || String(order?.shippedAt ?? '').trim() || null,
+        }
+      })
+    }
+
     const refreshRequested = isDashboardRefreshRequested(req)
-    let snapshot = null
+    const shippedBoardId = String(mondayShippedBoardId ?? '').trim()
+    const shippedBoardUrl = String(mondayShippedBoardUrl ?? '').trim() || null
+    let primarySnapshot = null
 
     if (!refreshRequested) {
-      snapshot = await getDashboardSnapshotFromCache('monday')
+      primarySnapshot = await getDashboardSnapshotFromCache('monday')
     }
 
-    if (!snapshot) {
-      snapshot = await fetchMondayDashboardSnapshot()
+    if (!primarySnapshot) {
+      primarySnapshot = await fetchMondayDashboardSnapshot()
     }
 
-    await setDashboardSnapshotCache('monday', snapshot)
-    return snapshot
+    await setDashboardSnapshotCache('monday', primarySnapshot)
+
+    let shippedSnapshot = null
+
+    if (shippedBoardId) {
+      const shippedSnapshotKey = `monday_shipped_${shippedBoardId}`
+
+      try {
+        if (!refreshRequested) {
+          shippedSnapshot = await getDashboardSnapshotFromCache(shippedSnapshotKey)
+        }
+
+        if (!shippedSnapshot) {
+          shippedSnapshot = await fetchMondayDashboardSnapshot({
+            boardId: shippedBoardId,
+            boardUrl: shippedBoardUrl,
+            boardName: 'Shipped Orders',
+          })
+        }
+
+        await setDashboardSnapshotCache(shippedSnapshotKey, shippedSnapshot)
+      } catch (error) {
+        console.error('Unable to load shipped Monday board snapshot for timesheet fallback.', error)
+      }
+    }
+
+    const primaryOrders = Array.isArray(primarySnapshot?.orders)
+      ? primarySnapshot.orders.map((order) => ({
+        ...order,
+        mondaySourceBoardType: 'orders_track',
+      }))
+      : []
+    const shippedOrders = Array.isArray(shippedSnapshot?.orders)
+      ? shippedSnapshot.orders.map((order) => ({
+        ...order,
+        mondaySourceBoardType: 'shipped_orders',
+      }))
+      : []
+    const combinedOrders = [...primaryOrders, ...shippedOrders]
+    const shippedTransitionMetaByOrderId = await loadShippedTransitionMetaByOrderId(
+      combinedOrders.map((order) => order?.id),
+    )
+    const enrichedOrders = enrichOrdersWithShippedTransitionMeta(
+      combinedOrders,
+      shippedTransitionMetaByOrderId,
+    )
+
+    return {
+      ...primarySnapshot,
+      orders: enrichedOrders,
+      shippedBoard: shippedSnapshot?.board ?? null,
+    }
   }
 
 

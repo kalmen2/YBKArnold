@@ -648,4 +648,38 @@ app.get('/api/auth/logs/users', requireFirebaseAuth, requireAdminRole, async (re
   }
 })
 
+app.get('/api/auth/logs/system', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+  try {
+    const limit = toBoundedInteger(req.query?.limit, 10, 500, 200)
+    const { dashboardSnapshotsCollection } = await getCollections()
+    const logsDocument = await dashboardSnapshotsCollection.findOne(
+      { snapshotKey: 'system_run_logs' },
+      {
+        projection: {
+          _id: 0,
+          logs: 1,
+        },
+      },
+    )
+    const logs = (Array.isArray(logsDocument?.logs) ? logsDocument.logs : [])
+      .slice(0, limit)
+      .map((entry) => ({
+        id: String(entry?.id ?? '').trim() || null,
+        jobName: String(entry?.jobName ?? '').trim() || 'unknown',
+        trigger: String(entry?.trigger ?? '').trim() || 'scheduled',
+        startedAt: String(entry?.startedAt ?? '').trim() || null,
+        completedAt: String(entry?.completedAt ?? '').trim() || null,
+        status: String(entry?.status ?? '').trim() || 'unknown',
+        message: String(entry?.message ?? '').trim() || null,
+        errorMessage: String(entry?.errorMessage ?? '').trim() || null,
+        summary: entry?.summary && typeof entry.summary === 'object' ? entry.summary : null,
+        createdAt: String(entry?.createdAt ?? '').trim() || null,
+      }))
+
+    return res.json({ logs })
+  } catch (error) {
+    next(error)
+  }
+})
+
 }

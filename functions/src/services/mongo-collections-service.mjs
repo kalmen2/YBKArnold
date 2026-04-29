@@ -112,6 +112,7 @@ export function createMongoCollectionsService({
         const crmQuotesCollection = database.collection('crm_quotes')
         const crmOrdersCollection = database.collection('crm_orders')
         const aiRulesCollection = database.collection('ai_rules')
+        const aiCommentSummariesCollection = database.collection('ai_comment_summaries')
 
         if (!indexesPromise) {
           indexesPromise = Promise.all([
@@ -187,6 +188,7 @@ export function createMongoCollectionsService({
             crmOrdersCollection.createIndex({ status: 1, updatedAt: -1 }),
             crmOrdersCollection.createIndex({ createdAt: -1 }),
             aiRulesCollection.createIndex({ category: 1 }, { unique: true }),
+            aiCommentSummariesCollection.createIndex({ commentId: 1 }, { unique: true }),
             // Text search indexes for CRM
             crmAccountsCollection.createIndex(
               { name: 'text', email: 'text' },
@@ -201,6 +203,7 @@ export function createMongoCollectionsService({
             await dropLegacyAuthActivityLogsCollection(database)
             await ensureDefaultStages()
             await ensureStageSortOrder(stagesCollection)
+            await seedDefaultAiRules(aiRulesCollection)
           })
         }
 
@@ -233,6 +236,7 @@ export function createMongoCollectionsService({
           crmQuotesCollection,
           crmOrdersCollection,
           aiRulesCollection,
+          aiCommentSummariesCollection,
         }
       } catch (error) {
         lastError = error
@@ -266,6 +270,22 @@ export function createMongoCollectionsService({
     mongoClient = null
     databasePromise = undefined
     indexesPromise = undefined
+  }
+
+  async function seedDefaultAiRules(aiRulesCollection) {
+    const now = new Date().toISOString()
+    const categories = ['support', 'summaries', 'general']
+
+    for (const category of categories) {
+      await aiRulesCollection.updateOne(
+        { category },
+        {
+          $set: { updatedAt: now },
+          $setOnInsert: { category, content: '', createdAt: now },
+        },
+        { upsert: true },
+      )
+    }
   }
 
   async function ensureDefaultStages() {

@@ -52,6 +52,23 @@ export type AuthSignInLogsResponse = {
   users: AdminUserSignInLog[]
 }
 
+export type AdminSystemRunLog = {
+  id: string | null
+  jobName: string
+  trigger: string
+  startedAt: string | null
+  completedAt: string | null
+  status: string
+  message: string | null
+  errorMessage: string | null
+  summary: Record<string, unknown> | null
+  createdAt: string | null
+}
+
+export type SystemRunLogsResponse = {
+  logs: AdminSystemRunLog[]
+}
+
 export function fetchAuthBootstrap() {
   return apiRequest<AuthBootstrapResponse>('/api/auth/bootstrap')
 }
@@ -62,4 +79,8 @@ export function fetchAdminBootstrap(alertsLimit = 80) {
 
 export function fetchAuthLogs(limit = 300, signInsLimit = 20) {
   return apiRequest<AuthSignInLogsResponse>(`/api/auth/logs/users?limit=${limit}&signInsLimit=${signInsLimit}`)
+}
+
+export function fetchSystemLogs(limit = 200) {
+  return apiRequest<SystemRunLogsResponse>(`/api/auth/logs/system?limit=${limit}`)
 }

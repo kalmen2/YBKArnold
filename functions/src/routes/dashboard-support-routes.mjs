@@ -15,6 +15,8 @@ export function registerDashboardSupportRoutes(app, deps) {
     getCollections,
     getDashboardSnapshotFromCache,
     isDashboardRefreshRequested,
+    mondayShippedBoardId,
+    mondayShippedBoardUrl,
     persistNewMondayOrders,
     requireAdminRole,
     requireFirebaseAuth,
@@ -184,6 +186,26 @@ export function registerDashboardSupportRoutes(app, deps) {
     }
   }
 
+  function snapshotHasInvoicePaymentFields(snapshot) {
+    const orders = Array.isArray(snapshot?.orders) ? snapshot.orders : []
+
+    if (orders.length === 0) {
+      return true
+    }
+
+    const sampleOrder = orders.find((order) => order && typeof order === 'object')
+
+    if (!sampleOrder) {
+      return true
+    }
+
+    return (
+      Object.prototype.hasOwnProperty.call(sampleOrder, 'invoiceNumber')
+      && Object.prototype.hasOwnProperty.call(sampleOrder, 'paidInFull')
+      && Object.prototype.hasOwnProperty.call(sampleOrder, 'amountOwed')
+    )
+  }
+
 
 app.get('/api/dashboard/monday', requireFirebaseAuth, async (req, res, next) => {
   try {
@@ -196,6 +218,10 @@ app.get('/api/dashboard/monday', requireFirebaseAuth, async (req, res, next) => 
       if (cachedSnapshot) {
         snapshot = cachedSnapshot
       }
+    }
+
+    if (snapshot && !snapshotHasInvoicePaymentFields(snapshot)) {
+      snapshot = null
     }
 
     if (!snapshot) {
@@ -250,6 +276,24 @@ app.get('/api/dashboard/monday/shop-drawing/download', requireFirebaseAuth, asyn
     async function refreshMondayOrders() {
       const snapshot = await fetchMondayDashboardSnapshot()
       await persistNewMondayOrders(snapshot)
+
+      const shippedBoardId = String(mondayShippedBoardId ?? '').trim()
+
+      if (shippedBoardId) {
+        try {
+          const shippedSnapshot = await fetchMondayDashboardSnapshot({
+            boardId: shippedBoardId,
+            boardUrl: String(mondayShippedBoardUrl ?? '').trim() || null,
+            boardName: 'Shipped Orders',
+          })
+
+          await persistNewMondayOrders(shippedSnapshot)
+          await setDashboardSnapshotCache(`monday_shipped_${shippedBoardId}`, shippedSnapshot)
+        } catch (error) {
+          console.error('Unable to refresh shipped Monday board for shop drawing lookup.', error)
+        }
+      }
+
       await setDashboardSnapshotCache('monday', snapshot)
     }
 
@@ -356,6 +400,10 @@ app.get('/api/dashboard/bootstrap', requireFirebaseAuth, async (req, res, next) 
 
       if (!refreshRequested) {
         snapshot = await getDashboardSnapshotFromCache('monday')
+      }
+
+      if (snapshot && !snapshotHasInvoicePaymentFields(snapshot)) {
+        snapshot = null
       }
 
       if (!snapshot) {

@@ -31,7 +31,7 @@ import {
   TextField,
   Typography,
 } from '@mui/material'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { QUERY_KEYS } from '../lib/queryKeys'
 import {
@@ -72,6 +72,7 @@ import {
   formatCurrency,
   formatHours,
   formatManagerDateLabel,
+  formatMissingInfoDateLabel,
   formatMonthKeyLabel,
   getEntryCost,
   getEntryRate,
@@ -121,6 +122,8 @@ type ManagerProgressRow = {
   jobName: string
   totalHours: number
   workerCount: number
+  isShippedFallback: boolean
+  readyPercentLocked: boolean
   workerHoursByWorker: Array<{
     workerId: string
     workerName: string
@@ -153,8 +156,39 @@ const WORKSHEET_TABLE_CONTAINER_SX = {
   maxHeight: { xs: 420, md: 560 },
 } as const
 
+const REPORT_VIEW_BY_JOB_TABLE_CONTAINER_SX = {
+  border: 1,
+  borderColor: 'divider',
+  borderRadius: 1.5,
+  maxHeight: { xs: '72vh', md: 'calc(100vh - 220px)' },
+} as const
+
+function toIsoDateOnly(value: string | null | undefined) {
+  const normalized = String(value ?? '').trim()
+
+  if (!normalized) {
+    return null
+  }
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+    return normalized
+  }
+
+  const parsed = new Date(normalized)
+
+  if (Number.isNaN(parsed.getTime())) {
+    return null
+  }
+
+  const year = parsed.getUTCFullYear()
+  const month = String(parsed.getUTCMonth() + 1).padStart(2, '0')
+  const day = String(parsed.getUTCDate()).padStart(2, '0')
+
+  return `${year}-${month}-${day}`
+}
+
 export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPageProps) {
-  const { appUser } = useAuth()
+  const { appUser, getIdToken } = useAuth()
   const canAccessManagerSheet = appUser?.isManager === true || appUser?.isAdmin === true
   const isReportsView = initialView === 'reports'
   const [worksheetTab, setWorksheetTab] = useState(0)
@@ -216,6 +250,8 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     useState<ManagerProgressRow | null>(null)
   const [isShopDrawingPreviewLoading, setIsShopDrawingPreviewLoading] =
     useState(false)
+  const [shopDrawingPreviewSrc, setShopDrawingPreviewSrc] = useState('')
+  const shopDrawingPreviewObjectUrlRef = useRef<string | null>(null)
   const [missingWorkersDate, setMissingWorkersDate] = useState('')
   const [missingReviewByKey, setMissingReviewByKey] =
     useState<Record<string, MissingWorkerReview>>({})
@@ -246,6 +282,13 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
   const handleCloseReadyInfoPopup = useCallback(() => {
     setReadyInfoAnchorEl(null)
     setReadyInfoPopup(null)
+  }, [])
+
+  const clearShopDrawingPreviewObjectUrl = useCallback(() => {
+    if (shopDrawingPreviewObjectUrlRef.current) {
+      URL.revokeObjectURL(shopDrawingPreviewObjectUrlRef.current)
+      shopDrawingPreviewObjectUrlRef.current = null
+    }
   }, [])
 
   const handleCloseDateReportLaborPopup = useCallback(() => {
@@ -880,38 +923,45 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
   }, [managerDayEntries, managerSelectedDate, orderProgress])
 
   const mondayOrderLookup = useMemo(() => {
-    const byNormalizedKey = new Map<string, DashboardOrder>()
-    const byDigits = new Map<string, DashboardOrder>()
+    const primaryByNormalizedKey = new Map<string, DashboardOrder>()
+    const primaryByDigits = new Map<string, DashboardOrder>()
+    const shippedByNormalizedKey = new Map<string, DashboardOrder>()
+    const shippedByDigits = new Map<string, DashboardOrder>()
 
     mondayOrders.forEach((order) => {
+      const isShippedSource = order.mondaySourceBoardType === 'shipped_orders'
+      const targetByNormalizedKey = isShippedSource ? shippedByNormalizedKey : primaryByNormalizedKey
+      const targetByDigits = isShippedSource ? shippedByDigits : primaryByDigits
       const nameKey = normalizeJobName(order.name)
 
-      if (nameKey && !byNormalizedKey.has(nameKey)) {
-        byNormalizedKey.set(nameKey, order)
+      if (nameKey && !targetByNormalizedKey.has(nameKey)) {
+        targetByNormalizedKey.set(nameKey, order)
       }
 
       const idKey = normalizeJobName(order.id)
 
-      if (idKey && !byNormalizedKey.has(idKey)) {
-        byNormalizedKey.set(idKey, order)
+      if (idKey && !targetByNormalizedKey.has(idKey)) {
+        targetByNormalizedKey.set(idKey, order)
       }
 
       const nameDigits = extractDigits(order.name)
 
-      if (nameDigits && !byDigits.has(nameDigits)) {
-        byDigits.set(nameDigits, order)
+      if (nameDigits && !targetByDigits.has(nameDigits)) {
+        targetByDigits.set(nameDigits, order)
       }
 
       const idDigits = extractDigits(order.id)
 
-      if (idDigits && !byDigits.has(idDigits)) {
-        byDigits.set(idDigits, order)
+      if (idDigits && !targetByDigits.has(idDigits)) {
+        targetByDigits.set(idDigits, order)
       }
     })
 
     return {
-      byNormalizedKey,
-      byDigits,
+      primaryByNormalizedKey,
+      primaryByDigits,
+      shippedByNormalizedKey,
+      shippedByDigits,
     }
   }, [mondayOrders])
 
@@ -951,14 +1001,31 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     return managerDayJobs.map((jobName) => {
       const jobKey = normalizeJobName(jobName)
       const jobDigits = extractDigits(jobName)
-      const matchedMondayOrder =
-        mondayOrderLookup.byNormalizedKey.get(jobKey) ||
-        (jobDigits ? mondayOrderLookup.byDigits.get(jobDigits) : null) ||
-        null
+      const primaryMatchedMondayOrder =
+        mondayOrderLookup.primaryByNormalizedKey.get(jobKey)
+        || (jobDigits ? mondayOrderLookup.primaryByDigits.get(jobDigits) : null)
+        || null
+      const shippedMatchedMondayOrder =
+        mondayOrderLookup.shippedByNormalizedKey.get(jobKey)
+        || (jobDigits ? mondayOrderLookup.shippedByDigits.get(jobDigits) : null)
+        || null
+      const primaryMatchedDrawingUrl = String(
+        primaryMatchedMondayOrder?.shopDrawingCachedUrl
+        || primaryMatchedMondayOrder?.shopDrawingUrl
+        || '',
+      ).trim()
+      const matchedMondayOrder = primaryMatchedDrawingUrl
+        ? primaryMatchedMondayOrder
+        : shippedMatchedMondayOrder || primaryMatchedMondayOrder
+      const isShippedFallback = Boolean(
+        matchedMondayOrder
+        && matchedMondayOrder.mondaySourceBoardType === 'shipped_orders',
+      )
       const totals = entriesByJobKey.get(jobKey)
       const progressKey = `${managerSelectedDate}:${jobKey}`
       const savedProgress = orderProgressByDateJobKey.get(progressKey)
       const savedReadyPercent = savedProgress ? Number(savedProgress.readyPercent) : 0
+      const readyPercentLocked = /^0+$/.test(String(jobName ?? '').trim())
       const rawDraft = String(managerProgressByJob[jobName] ?? '').trim()
       const parsedDraft = Number(rawDraft)
       const workerHoursByWorker = [...(totals?.workerHoursById.entries() ?? [])]
@@ -968,8 +1035,9 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
           hours,
         }))
         .sort((left, right) => right.hours - left.hours || left.workerName.localeCompare(right.workerName))
-      const editReadyPercent =
-        rawDraft === '' || !Number.isFinite(parsedDraft)
+      const editReadyPercent = readyPercentLocked
+        ? 0
+        : rawDraft === '' || !Number.isFinite(parsedDraft)
           ? savedReadyPercent
           : Math.min(100, Math.max(0, parsedDraft))
 
@@ -977,6 +1045,8 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
         jobName,
         totalHours: totals?.totalHours ?? 0,
         workerCount: workerHoursByWorker.length,
+        isShippedFallback,
+        readyPercentLocked,
         workerHoursByWorker,
         savedReadyPercent,
         editReadyPercent,
@@ -992,14 +1062,18 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     managerDayJobs,
     managerProgressByJob,
     managerSelectedDate,
-    mondayOrderLookup.byDigits,
-    mondayOrderLookup.byNormalizedKey,
+    mondayOrderLookup.primaryByDigits,
+    mondayOrderLookup.primaryByNormalizedKey,
+    mondayOrderLookup.shippedByDigits,
+    mondayOrderLookup.shippedByNormalizedKey,
     orderProgressByDateJobKey,
     workersById,
   ])
 
   const managerProgressSummary = useMemo(() => {
-    if (managerProgressRows.length === 0) {
+    const editableRows = managerProgressRows.filter((row) => !row.readyPercentLocked)
+
+    if (editableRows.length === 0) {
       return {
         averageReadyPercent: 0,
         completeCount: 0,
@@ -1007,24 +1081,225 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
       }
     }
 
-    const totalReady = managerProgressRows.reduce(
+    const totalReady = editableRows.reduce(
       (accumulator, row) => accumulator + row.editReadyPercent,
       0,
     )
 
     return {
-      averageReadyPercent: totalReady / managerProgressRows.length,
-      completeCount: managerProgressRows.filter((row) => row.editReadyPercent >= 100).length,
-      inProgressCount: managerProgressRows.filter(
+      averageReadyPercent: totalReady / editableRows.length,
+      completeCount: editableRows.filter((row) => row.editReadyPercent >= 100).length,
+      inProgressCount: editableRows.filter(
         (row) => row.editReadyPercent > 0 && row.editReadyPercent < 100,
       ).length,
     }
   }, [managerProgressRows])
 
+  const reportWorkedJobsSummary = useMemo(() => {
+    const workedJobsByKey = new Map<string, {
+      jobName: string
+      totalHours: number
+      totalCost: number
+    }>()
+
+    entries.forEach((entry) => {
+      const jobName = String(entry.jobName ?? '').trim()
+      const jobKey = normalizeJobName(jobName)
+
+      if (!jobName || !jobKey) {
+        return
+      }
+
+      const existing = workedJobsByKey.get(jobKey) ?? {
+        jobName,
+        totalHours: 0,
+        totalCost: 0,
+      }
+
+      existing.totalHours += getEntryTotalHours(entry)
+      existing.totalCost += getEntryCost(entry, workersById)
+      workedJobsByKey.set(jobKey, existing)
+    })
+
+    const notFoundRows: Array<{
+      jobName: string
+      totalHours: number
+      totalCost: number
+    }> = []
+
+    workedJobsByKey.forEach((row) => {
+      const jobKey = normalizeJobName(row.jobName)
+      const jobDigits = extractDigits(row.jobName)
+      const isGeneralJob = Boolean(jobDigits && /^0+$/.test(jobDigits))
+      const primaryMatch =
+        mondayOrderLookup.primaryByNormalizedKey.get(jobKey)
+        || (jobDigits ? mondayOrderLookup.primaryByDigits.get(jobDigits) : null)
+        || null
+      const shippedMatch =
+        mondayOrderLookup.shippedByNormalizedKey.get(jobKey)
+        || (jobDigits ? mondayOrderLookup.shippedByDigits.get(jobDigits) : null)
+        || null
+      const hasMatch = Boolean(primaryMatch || shippedMatch)
+
+      if (!hasMatch && !isGeneralJob) {
+        notFoundRows.push({
+          jobName: row.jobName,
+          totalHours: row.totalHours,
+          totalCost: row.totalCost,
+        })
+      }
+    })
+
+    notFoundRows.sort(
+      (left, right) => right.totalHours - left.totalHours || left.jobName.localeCompare(right.jobName),
+    )
+
+    const notFoundTotals = notFoundRows.reduce(
+      (accumulator, row) => ({
+        totalHours: accumulator.totalHours + row.totalHours,
+        totalCost: accumulator.totalCost + row.totalCost,
+      }),
+      { totalHours: 0, totalCost: 0 },
+    )
+
+    return {
+      notFoundRows,
+      notFoundTotals,
+    }
+  }, [
+    entries,
+    mondayOrderLookup.primaryByDigits,
+    mondayOrderLookup.primaryByNormalizedKey,
+    mondayOrderLookup.shippedByDigits,
+    mondayOrderLookup.shippedByNormalizedKey,
+    workersById,
+  ])
+
+  const selectedJobPostShippedSummary = useMemo(() => {
+    const fullJobTotals = selectedJobEntries.reduce(
+      (accumulator, entry) => ({
+        totalHours: accumulator.totalHours + getEntryTotalHours(entry),
+        totalCost: accumulator.totalCost + getEntryCost(entry, workersById),
+      }),
+      {
+        totalHours: 0,
+        totalCost: 0,
+      },
+    )
+
+    if (!selectedJobName) {
+      return {
+        sourceLabel: null,
+        matchedOrderId: null,
+        shippedSinceDate: null,
+        beforeTotals: {
+          totalHours: 0,
+          totalCost: 0,
+        },
+        afterTotals: {
+          totalHours: 0,
+          totalCost: 0,
+        },
+      }
+    }
+
+    const jobKey = normalizeJobName(selectedJobName)
+    const jobDigits = extractDigits(selectedJobName)
+    const primaryMatch =
+      mondayOrderLookup.primaryByNormalizedKey.get(jobKey)
+      || (jobDigits ? mondayOrderLookup.primaryByDigits.get(jobDigits) : null)
+      || null
+    const shippedMatch =
+      mondayOrderLookup.shippedByNormalizedKey.get(jobKey)
+      || (jobDigits ? mondayOrderLookup.shippedByDigits.get(jobDigits) : null)
+      || null
+    const matchedOrder = shippedMatch || primaryMatch
+    const shippedSinceDate = toIsoDateOnly(
+      shippedMatch?.movedToShippedAt
+      || primaryMatch?.movedToShippedAt
+      || shippedMatch?.shippedAt
+      || primaryMatch?.shippedAt,
+    )
+
+    if (!matchedOrder || !shippedSinceDate) {
+      return {
+        sourceLabel: null,
+        matchedOrderId: matchedOrder?.id ?? null,
+        shippedSinceDate,
+        beforeTotals: fullJobTotals,
+        afterTotals: {
+          totalHours: 0,
+          totalCost: 0,
+        },
+      }
+    }
+
+    const totals = selectedJobEntries.reduce(
+      (accumulator, entry) => {
+        const entryDate = String(entry.date ?? '').trim()
+        const entryHours = getEntryTotalHours(entry)
+        const entryCost = getEntryCost(entry, workersById)
+
+        if (entryDate && entryDate > shippedSinceDate) {
+          return {
+            beforeTotals: accumulator.beforeTotals,
+            afterTotals: {
+              totalHours: accumulator.afterTotals.totalHours + entryHours,
+              totalCost: accumulator.afterTotals.totalCost + entryCost,
+            },
+          }
+        }
+
+        return {
+          beforeTotals: {
+            totalHours: accumulator.beforeTotals.totalHours + entryHours,
+            totalCost: accumulator.beforeTotals.totalCost + entryCost,
+          },
+          afterTotals: accumulator.afterTotals,
+        }
+      },
+      {
+        beforeTotals: {
+          totalHours: 0,
+          totalCost: 0,
+        },
+        afterTotals: {
+          totalHours: 0,
+          totalCost: 0,
+        },
+      },
+    )
+
+    return {
+      sourceLabel: shippedMatch ? 'Shipped Orders board' : 'Orders Track (shipped)',
+      matchedOrderId: matchedOrder.id ?? null,
+      shippedSinceDate,
+      beforeTotals: totals.beforeTotals,
+      afterTotals: totals.afterTotals,
+    }
+  }, [
+    mondayOrderLookup.primaryByDigits,
+    mondayOrderLookup.primaryByNormalizedKey,
+    mondayOrderLookup.shippedByDigits,
+    mondayOrderLookup.shippedByNormalizedKey,
+    selectedJobEntries,
+    selectedJobName,
+    workersById,
+  ])
+
   const selectedJobDateReadyRows = useMemo(() => {
     if (!selectedJobName) {
       return []
     }
+
+    const totalHoursByDate = new Map<string, number>()
+
+    selectedJobEntries.forEach((entry) => {
+      totalHoursByDate.set(
+        entry.date,
+        (totalHoursByDate.get(entry.date) ?? 0) + getEntryTotalHours(entry),
+      )
+    })
 
     const dates = [...new Set(selectedJobEntries.map((entry) => entry.date))].sort()
 
@@ -1034,6 +1309,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
 
       return {
         date,
+        totalHours: totalHoursByDate.get(date) ?? 0,
         readyPercent: progress ? Number(progress.readyPercent) : null,
       }
     })
@@ -1280,7 +1556,13 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     managerDayJobs.forEach((jobName) => {
       const key = `${managerSelectedDate}:${normalizeJobName(jobName)}`
       const progress = orderProgressByDateJobKey.get(key)
-      nextDraftByJob[jobName] = progress ? String(progress.readyPercent) : '0'
+      const readyPercentLocked = /^0+$/.test(String(jobName ?? '').trim())
+
+      nextDraftByJob[jobName] = readyPercentLocked
+        ? ''
+        : progress
+          ? String(progress.readyPercent)
+          : '0'
     })
 
     setManagerProgressByJob(nextDraftByJob)
@@ -1507,7 +1789,13 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     }
   }
 
-  const handleOpenShopDrawingPreview = useCallback((row: ManagerProgressRow) => {
+  useEffect(() => {
+    return () => {
+      clearShopDrawingPreviewObjectUrl()
+    }
+  }, [clearShopDrawingPreviewObjectUrl])
+
+  const handleOpenShopDrawingPreview = useCallback(async (row: ManagerProgressRow) => {
     const cachedPreviewUrl = String(row.shopDrawingCachedUrl ?? '').trim()
     const mondayOrderId = String(row.mondayOrderId ?? '').trim()
 
@@ -1518,9 +1806,54 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
 
     setError('')
     setSuccess('')
+    clearShopDrawingPreviewObjectUrl()
+    setShopDrawingPreviewSrc('')
     setIsShopDrawingPreviewLoading(true)
     setShopDrawingPreviewRow(row)
-  }, [])
+
+    if (cachedPreviewUrl) {
+      setShopDrawingPreviewSrc(cachedPreviewUrl)
+      return
+    }
+
+    try {
+      const idToken = await getIdToken()
+      const query = new URLSearchParams({
+        orderId: mondayOrderId,
+      })
+      const response = await fetch(
+        `/api/dashboard/monday/shop-drawing/download?${query.toString()}`,
+        {
+          headers: {
+            Authorization: `Bearer ${idToken}`,
+            'x-client-platform': 'web',
+          },
+        },
+      )
+
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}))
+        const message = typeof payload?.error === 'string'
+          ? payload.error
+          : 'Could not load shop drawing preview.'
+        throw new Error(message)
+      }
+
+      const blob = await response.blob()
+      const objectUrl = URL.createObjectURL(blob)
+      shopDrawingPreviewObjectUrlRef.current = objectUrl
+      setShopDrawingPreviewSrc(objectUrl)
+    } catch (requestError) {
+      setIsShopDrawingPreviewLoading(false)
+      setShopDrawingPreviewRow(null)
+      setShopDrawingPreviewSrc('')
+      setError(
+        requestError instanceof Error
+          ? requestError.message
+          : 'Could not load shop drawing preview.',
+      )
+    }
+  }, [clearShopDrawingPreviewObjectUrl, getIdToken])
 
   const handleOpenManagerWorkersPopup = useCallback((row: ManagerProgressRow) => {
     if (row.workerHoursByWorker.length === 0) {
@@ -1542,28 +1875,11 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
   }, [])
 
   const handleCloseShopDrawingPreview = useCallback(() => {
+    clearShopDrawingPreviewObjectUrl()
     setIsShopDrawingPreviewLoading(false)
+    setShopDrawingPreviewSrc('')
     setShopDrawingPreviewRow(null)
-  }, [])
-
-  const shopDrawingPreviewSrc = useMemo(() => {
-    const cachedPreviewUrl = String(shopDrawingPreviewRow?.shopDrawingCachedUrl ?? '').trim()
-
-    if (cachedPreviewUrl) {
-      return cachedPreviewUrl
-    }
-
-    if (!shopDrawingPreviewRow?.mondayOrderId) {
-      return ''
-    }
-
-    const query = new URLSearchParams({
-      orderId: shopDrawingPreviewRow.mondayOrderId,
-      inline: '1',
-    })
-
-    return `/api/dashboard/monday/shop-drawing/download?${query.toString()}`
-  }, [shopDrawingPreviewRow])
+  }, [clearShopDrawingPreviewObjectUrl])
 
   const handleSelectManagerMonth = useCallback((nextMonth: string) => {
     setManagerSelectedMonth(nextMonth)
@@ -1606,9 +1922,17 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
       return
     }
 
+    const editableRows = managerProgressRows.filter((row) => !row.readyPercentLocked)
+
+    if (editableRows.length === 0) {
+      setSuccess('No editable ready % rows for this date.')
+      return
+    }
+
     const invalidJobs: string[] = []
 
-    managerDayJobs.forEach((jobName) => {
+    editableRows.forEach((row) => {
+      const jobName = row.jobName
       const rawValue = String(managerProgressByJob[jobName] ?? '').trim()
       const readyPercent = Number(rawValue)
 
@@ -1626,11 +1950,11 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
 
     try {
       await Promise.all(
-        managerDayJobs.map((jobName) =>
+        editableRows.map((row) =>
           upsertOrderProgress({
             date: managerSelectedDate,
-            jobName,
-            readyPercent: Number(String(managerProgressByJob[jobName] ?? '').trim()),
+            jobName: row.jobName,
+            readyPercent: Number(String(managerProgressByJob[row.jobName] ?? '').trim()),
           }),
         ),
       )
@@ -2255,6 +2579,10 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                         </Button>
                       </Stack>
 
+                      <Typography variant="body2" color="text.secondary">
+                        Yellow rows are fallback matches from the Shipped Orders board. Order number 0 is a general line and does not accept ready % updates.
+                      </Typography>
+
                       <TableContainer sx={{ border: 1, borderColor: 'divider', borderRadius: 1.5 }}>
                         <Table size="small">
                           <TableHead>
@@ -2270,15 +2598,42 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                           </TableHead>
                           <TableBody>
                             {managerProgressRows.map((row) => (
-                              <TableRow key={row.jobName} hover>
+                              <TableRow
+                                key={row.jobName}
+                                hover
+                                sx={
+                                  row.isShippedFallback
+                                    ? {
+                                      backgroundColor: 'rgba(245, 158, 11, 0.16)',
+                                      '&:hover': {
+                                        backgroundColor: 'rgba(245, 158, 11, 0.22)',
+                                      },
+                                    }
+                                    : undefined
+                                }
+                              >
                                 <TableCell>{row.mondayOrderId || row.jobName}</TableCell>
                                 <TableCell>
                                   {row.mondayItemName ? (
-                                    row.mondayItemName
+                                    <Stack spacing={0.3}>
+                                      <Typography variant="body2">{row.mondayItemName}</Typography>
+                                      {row.isShippedFallback ? (
+                                        <Typography variant="caption" color="warning.dark" fontWeight={700}>
+                                          From shipped board
+                                        </Typography>
+                                      ) : null}
+                                    </Stack>
                                   ) : (
-                                    <Typography variant="body2" color="text.secondary">
-                                      Not available
-                                    </Typography>
+                                    <Stack spacing={0.3}>
+                                      <Typography variant="body2" color="text.secondary">
+                                        Not available
+                                      </Typography>
+                                      {row.isShippedFallback ? (
+                                        <Typography variant="caption" color="warning.dark" fontWeight={700}>
+                                          From shipped board
+                                        </Typography>
+                                      ) : null}
+                                    </Stack>
                                   )}
                                 </TableCell>
                                 <TableCell>
@@ -2328,17 +2683,31 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                                     </Typography>
                                   )}
                                 </TableCell>
-                                <TableCell align="right">{row.savedReadyPercent.toFixed(1)}%</TableCell>
+                                <TableCell align="right">
+                                  {row.readyPercentLocked
+                                    ? (
+                                      <Typography variant="body2" color="text.secondary">
+                                        N/A
+                                      </Typography>
+                                    )
+                                    : `${row.savedReadyPercent.toFixed(1)}%`}
+                                </TableCell>
                                 <TableCell align="right" sx={{ width: 180 }}>
-                                  <TextField
-                                    size="small"
-                                    type="number"
-                                    value={row.editReadyPercent.toString()}
-                                    onChange={(event) =>
-                                      handleManagerProgressChange(row.jobName, event.target.value)
-                                    }
-                                    inputProps={{ min: 0, max: 100, step: 1 }}
-                                  />
+                                  {row.readyPercentLocked ? (
+                                    <Typography variant="body2" color="text.secondary">
+                                      N/A
+                                    </Typography>
+                                  ) : (
+                                    <TextField
+                                      size="small"
+                                      type="number"
+                                      value={row.editReadyPercent.toString()}
+                                      onChange={(event) =>
+                                        handleManagerProgressChange(row.jobName, event.target.value)
+                                      }
+                                      inputProps={{ min: 0, max: 100, step: 1 }}
+                                    />
+                                  )}
                                 </TableCell>
                               </TableRow>
                             ))}
@@ -2366,6 +2735,9 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                   <Typography variant="h5" fontWeight={700}>
                     {formatHours(totals.totalHours)} h
                   </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Includes all entries (before and after shipped).
+                  </Typography>
                 </Paper>
 
                 <Paper variant="outlined" sx={{ p: 2, flex: 1 }}>
@@ -2375,8 +2747,64 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                   <Typography variant="h5" fontWeight={700}>
                     {formatCurrency(totals.totalSpend)}
                   </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Includes overtime labor at 1.5x rate.
+                  </Typography>
                 </Paper>
               </Stack>
+
+              <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5}>
+                <Paper variant="outlined" sx={{ p: 2, flex: 1 }}>
+                  <Typography variant="caption" color="text.secondary">
+                    Jobs not found in Order Track or Shipped Orders
+                  </Typography>
+                  <Typography variant="h6" fontWeight={700}>
+                    {reportWorkedJobsSummary.notFoundRows.length}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Hours: {formatHours(reportWorkedJobsSummary.notFoundTotals.totalHours)} h
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Cost: {formatCurrency(reportWorkedJobsSummary.notFoundTotals.totalCost)}
+                  </Typography>
+                </Paper>
+              </Stack>
+
+              <Typography variant="body2" color="text.secondary">
+                Before-shipped and after-shipped labor totals are shown per job in View By Job after you open a specific job.
+              </Typography>
+
+              <Typography variant="subtitle2" fontWeight={700}>
+                Worked Jobs Not Found In Monday Boards
+              </Typography>
+              <TableContainer sx={{ border: 1, borderColor: 'divider', borderRadius: 1.5, maxHeight: 320 }}>
+                <Table size="small" stickyHeader>
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Job</TableCell>
+                      <TableCell align="right">Hours</TableCell>
+                      <TableCell align="right">Cost</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {reportWorkedJobsSummary.notFoundRows.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={3}>
+                          <Typography color="text.secondary">All worked jobs matched Monday boards.</Typography>
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      reportWorkedJobsSummary.notFoundRows.map((row) => (
+                        <TableRow key={row.jobName} hover>
+                          <TableCell>{row.jobName}</TableCell>
+                          <TableCell align="right">{formatHours(row.totalHours)}</TableCell>
+                          <TableCell align="right">{formatCurrency(row.totalCost)}</TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                  </TableBody>
+                </Table>
+              </TableContainer>
             </Stack>
           ) : null}
 
@@ -2424,7 +2852,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                 </Stack>
               </Stack>
 
-              <TableContainer sx={WORKSHEET_TABLE_CONTAINER_SX}>
+              <TableContainer sx={REPORT_VIEW_BY_JOB_TABLE_CONTAINER_SX}>
                 <Table size="small" stickyHeader sx={{ minWidth: 880 }}>
                   <TableHead>
                     <TableRow>
@@ -3131,7 +3559,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
 
                   {missingInfoDates.map((date) => (
                     <MenuItem key={date} value={date}>
-                      {date}
+                      {formatMissingInfoDateLabel(date)}
                     </MenuItem>
                   ))}
                 </TextField>
@@ -3382,7 +3810,22 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
             : 'Shop Drawing Preview'}
         </DialogTitle>
         <DialogContent dividers sx={{ p: 0 }}>
-          {shopDrawingPreviewSrc ? (
+            {isShopDrawingPreviewLoading && !shopDrawingPreviewSrc ? (
+              <Stack
+                spacing={1}
+                alignItems="center"
+                justifyContent="center"
+                sx={{
+                  height: { xs: '56vh', md: '64vh' },
+                  p: 2,
+                }}
+              >
+                <CircularProgress size={28} />
+                <Typography variant="body2" color="text.secondary">
+                  Loading preview...
+                </Typography>
+              </Stack>
+            ) : shopDrawingPreviewSrc ? (
             <Box sx={{ height: { xs: '72vh', md: '80vh' }, position: 'relative' }}>
               {isShopDrawingPreviewLoading ? (
                 <Stack
@@ -3466,6 +3909,66 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                     {selectedJobWorkerCount}
                   </Typography>
                 </Paper>
+
+                <Paper variant="outlined" sx={{ p: 2, flex: 1 }}>
+                  <Typography variant="caption" color="text.secondary">
+                    Labor split before/after shipped
+                  </Typography>
+                  <TableContainer sx={{ mt: 1, border: 1, borderColor: 'divider', borderRadius: 1 }}>
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Period</TableCell>
+                          <TableCell align="right">Hours</TableCell>
+                          <TableCell align="right">Labor cost</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        <TableRow>
+                          <TableCell>Before shipped</TableCell>
+                          <TableCell align="right">
+                            {formatHours(selectedJobPostShippedSummary.beforeTotals.totalHours)} h
+                          </TableCell>
+                          <TableCell align="right">
+                            {formatCurrency(selectedJobPostShippedSummary.beforeTotals.totalCost)}
+                          </TableCell>
+                        </TableRow>
+                        <TableRow>
+                          <TableCell>After shipped</TableCell>
+                          <TableCell align="right">
+                            {formatHours(selectedJobPostShippedSummary.afterTotals.totalHours)} h
+                          </TableCell>
+                          <TableCell align="right">
+                            {formatCurrency(selectedJobPostShippedSummary.afterTotals.totalCost)}
+                          </TableCell>
+                        </TableRow>
+                        <TableRow>
+                          <TableCell>
+                            <Typography variant="body2" fontWeight={700}>Total</Typography>
+                          </TableCell>
+                          <TableCell align="right">
+                            <Typography fontWeight={700}>{formatHours(selectedJobSummary.totalHours)} h</Typography>
+                          </TableCell>
+                          <TableCell align="right">
+                            <Typography fontWeight={700}>{formatCurrency(selectedJobSummary.totalCost)}</Typography>
+                          </TableCell>
+                        </TableRow>
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+                    Labor cost includes overtime at 1.5x.
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Shipped date: {selectedJobPostShippedSummary.shippedSinceDate ?? '-'}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Matched order: {selectedJobPostShippedSummary.matchedOrderId ?? '-'}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Source: {selectedJobPostShippedSummary.sourceLabel ?? '-'}
+                  </Typography>
+                </Paper>
               </Stack>
 
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
@@ -3510,13 +4013,14 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                   <TableHead>
                     <TableRow>
                       <TableCell>Date</TableCell>
+                      <TableCell align="right">Total hours</TableCell>
                       <TableCell align="right">Ready %</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
                     {selectedJobDateReadyRows.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={2}>
+                        <TableCell colSpan={3}>
                           <Typography color="text.secondary">No dates found for this job.</Typography>
                         </TableCell>
                       </TableRow>
@@ -3524,6 +4028,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                       selectedJobDateReadyRows.map((row) => (
                         <TableRow key={row.date} hover>
                           <TableCell>{row.date}</TableCell>
+                          <TableCell align="right">{formatHours(row.totalHours)}</TableCell>
                           <TableCell align="right">
                             {row.readyPercent === null ? '-' : `${row.readyPercent.toFixed(1)}%`}
                           </TableCell>

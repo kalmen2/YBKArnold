@@ -54,6 +54,28 @@ export function createMondayDashboardService({
       ['shop drawing', 'shop drawings', 'drawing', 'drawings'],
       ['file', 'link', 'text', 'long-text'],
     )
+    const invoiceNumberColumnId = pickColumnId(
+      columns,
+      ['invoice #', 'invoice number', 'invoice no', 'invoice'],
+      ['numbers', 'numeric', 'text', 'long-text'],
+    )
+    const paidInFullColumnId = pickColumnId(
+      columns,
+      ['paid in full', 'payment status', 'paid status', 'paid'],
+      ['status', 'color', 'text', 'long-text', 'numbers', 'numeric'],
+    )
+    const amountOwedColumnId = pickColumnId(
+      columns,
+      [
+        'amount owed',
+        'amount due',
+        'balance due',
+        'remaining balance',
+        'unpaid balance',
+        'open balance',
+      ],
+      ['numbers', 'numeric', 'text', 'long-text', 'formula'],
+    )
     let orderDateColumnId = pickColumnId(
       columns,
       ['order date', 'ordered', 'po date', 'received', 'start'],
@@ -79,6 +101,9 @@ export function createMondayDashboardService({
       leadTimeColumnId,
       dueDateColumnId,
       shopDrawingColumnId,
+      invoiceNumberColumnId,
+      paidInFullColumnId,
+      amountOwedColumnId,
       orderDateColumnId,
       progressStatusColumns,
     }
@@ -141,6 +166,18 @@ export function createMondayDashboardService({
     const shopDrawingColumn =
       findColumnById(columnValues, columnMap.shopDrawingColumnId) ||
       findColumnByKeywords(columnValues, ['shop drawing', 'drawing'])
+    const invoiceNumberColumn =
+      findColumnById(columnValues, columnMap.invoiceNumberColumnId) ||
+      findColumnByKeywords(columnValues, ['invoice #', 'invoice number', 'invoice no', 'invoice'])
+    const paidInFullColumn =
+      findColumnById(columnValues, columnMap.paidInFullColumnId) ||
+      findColumnByKeywords(columnValues, ['paid in full', 'payment status', 'paid status', 'paid'])
+    const amountOwedColumn =
+      findColumnById(columnValues, columnMap.amountOwedColumnId) ||
+      findColumnByKeywords(
+        columnValues,
+        ['amount owed', 'amount due', 'balance due', 'remaining balance', 'unpaid balance'],
+      )
     const orderDateColumn =
       findColumnById(columnValues, columnMap.orderDateColumnId) ||
       findColumnByKeywords(columnValues, ['order date', 'ordered'])
@@ -175,6 +212,9 @@ export function createMondayDashboardService({
       stageLabel,
     })
     const shopDrawing = parseShopDrawing(shopDrawingColumn)
+    const invoiceNumber = parseInvoiceNumber(invoiceNumberColumn)
+    const amountOwed = parseCurrencyAmountFromColumn(amountOwedColumn)
+    const paidInFull = parsePaidInFullStatus(paidInFullColumn, amountOwed)
     const isLate = !isDone && typeof daysUntilDue === 'number' ? daysUntilDue < 0 : false
     const daysLate = isLate && typeof daysUntilDue === 'number' ? Math.abs(daysUntilDue) : 0
 
@@ -200,6 +240,9 @@ export function createMondayDashboardService({
       itemUrl: buildMondayItemUrl(item?.id),
       shopDrawingUrl: shopDrawing.url,
       shopDrawingFileName: shopDrawing.fileName,
+      invoiceNumber,
+      paidInFull,
+      amountOwed,
     }
   }
 
@@ -511,6 +554,177 @@ export function createMondayDashboardService({
     }
 
     return null
+  }
+
+  function parseInvoiceNumber(columnValue) {
+    const value = String(readTextFromColumn(columnValue) ?? '').trim()
+
+    if (!value || value === '-' || /^n\/a$/i.test(value) || /^none$/i.test(value)) {
+      return null
+    }
+
+    if (/^no invoice$/i.test(value)) {
+      return null
+    }
+
+    return value
+  }
+
+  function parsePaidInFullStatus(columnValue, amountOwed) {
+    if (Number.isFinite(amountOwed)) {
+      if (Number(amountOwed) > 0) {
+        return false
+      }
+
+      if (Number(amountOwed) === 0) {
+        return true
+      }
+    }
+
+    const normalizedValue = normalizeLookupValue(readTextFromColumn(columnValue))
+
+    if (!normalizedValue) {
+      return null
+    }
+
+    const indicatesNotPaid = [
+      'not paid',
+      'unpaid',
+      'partial',
+      'partially',
+      'balance',
+      'owed',
+      'remaining',
+      'open',
+      'due',
+    ].some((keyword) => normalizedValue.includes(keyword))
+
+    if (indicatesNotPaid) {
+      return false
+    }
+
+    const indicatesPaid = [
+      'paid in full',
+      'paid',
+      'settled',
+      'complete',
+      'completed',
+      'closed',
+      'yes',
+    ].some((keyword) => normalizedValue.includes(keyword))
+
+    if (indicatesPaid) {
+      return true
+    }
+
+    return null
+  }
+
+  function parseCurrencyAmountFromColumn(columnValue) {
+    if (!columnValue) {
+      return null
+    }
+
+    const textAmount = parseNumberishValue(columnValue.text)
+
+    if (textAmount !== null) {
+      return textAmount
+    }
+
+    const parsedValue = parseJsonValue(columnValue.value)
+
+    if (!parsedValue || typeof parsedValue !== 'object') {
+      return null
+    }
+
+    return parseAmountFromUnknown(parsedValue)
+  }
+
+  function parseAmountFromUnknown(value, depth = 0, hasAmountHint = false) {
+    if (depth > 8 || value == null) {
+      return null
+    }
+
+    if (typeof value === 'number') {
+      return Number.isFinite(value) ? value : null
+    }
+
+    if (typeof value === 'string') {
+      return hasAmountHint ? parseNumberishValue(value) : null
+    }
+
+    if (Array.isArray(value)) {
+      for (const entry of value) {
+        const parsed = parseAmountFromUnknown(entry, depth + 1, hasAmountHint)
+
+        if (parsed !== null) {
+          return parsed
+        }
+      }
+
+      return null
+    }
+
+    if (typeof value !== 'object') {
+      return null
+    }
+
+    for (const [key, nestedValue] of Object.entries(value)) {
+      const normalizedKey = normalizeLookupValue(key)
+      const nestedHasAmountHint = hasAmountHint
+        || [
+          'number',
+          'value',
+          'amount',
+          'balance',
+          'total',
+          'price',
+          'owed',
+          'remaining',
+          'due',
+        ].some((keyword) => normalizedKey.includes(keyword))
+
+      const parsed = parseAmountFromUnknown(nestedValue, depth + 1, nestedHasAmountHint)
+
+      if (parsed !== null) {
+        return parsed
+      }
+    }
+
+    return null
+  }
+
+  function parseNumberishValue(value) {
+    if (typeof value === 'number') {
+      return Number.isFinite(value) ? value : null
+    }
+
+    if (typeof value !== 'string') {
+      return null
+    }
+
+    const trimmed = value.trim()
+
+    if (!trimmed) {
+      return null
+    }
+
+    const normalized = trimmed
+      .replace(/[$,]/g, '')
+      .replace(/\s+/g, ' ')
+    const wrappedNegative = /^\((.+)\)$/.test(normalized)
+    const candidate = wrappedNegative
+      ? `-${normalized.replace(/^\((.+)\)$/, '$1')}`
+      : normalized
+    const numberMatch = candidate.match(/-?\d+(\.\d+)?/)
+
+    if (!numberMatch) {
+      return null
+    }
+
+    const parsed = Number(numberMatch[0])
+
+    return Number.isFinite(parsed) ? parsed : null
   }
 
   function parseDateFromColumn(columnValue) {

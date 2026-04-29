@@ -9,6 +9,7 @@ import PendingActionsRoundedIcon from '@mui/icons-material/PendingActionsRounded
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import ScheduleRoundedIcon from '@mui/icons-material/ScheduleRounded'
 import TaskAltRoundedIcon from '@mui/icons-material/TaskAltRounded'
+import VisibilityRoundedIcon from '@mui/icons-material/VisibilityRounded'
 import WorkspacesRoundedIcon from '@mui/icons-material/WorkspacesRounded'
 import {
   Alert,
@@ -29,8 +30,9 @@ import {
   TableRow,
   Typography,
 } from '@mui/material'
-import { type ReactNode, useCallback, useMemo, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useAuth } from '../auth/useAuth'
 import {
   fetchCrmQuotes,
   type CrmOpportunityStage,
@@ -97,6 +99,15 @@ function formatDisplayDate(value: string | null) {
     day: 'numeric',
     year: 'numeric',
   }).format(parsed)
+}
+
+function formatUsd(value: number) {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value)
 }
 
 function dueLabel(order: DashboardOrder) {
@@ -170,8 +181,14 @@ function resolveQuoteAgeDays(quote: CrmQuote) {
 }
 
 export default function DashboardPage() {
+  const { getIdToken } = useAuth()
   const queryClient = useQueryClient()
   const [activeDrilldown, setActiveDrilldown] = useState<DrilldownKey | null>(null)
+  const [shopDrawingPreviewOrder, setShopDrawingPreviewOrder] = useState<DashboardOrder | null>(null)
+  const [shopDrawingPreviewSrc, setShopDrawingPreviewSrc] = useState('')
+  const [isShopDrawingPreviewLoading, setIsShopDrawingPreviewLoading] = useState(false)
+  const [shopDrawingErrorMessage, setShopDrawingErrorMessage] = useState<string | null>(null)
+  const shopDrawingPreviewObjectUrlRef = useRef<string | null>(null)
 
   const bootstrapQuery = useQuery({
     queryKey: QUERY_KEYS.dashboardBootstrap,
@@ -248,6 +265,84 @@ export default function DashboardPage() {
       staleTime: 0,
     })
   }, [queryClient])
+
+  const clearShopDrawingPreviewObjectUrl = useCallback(() => {
+    if (shopDrawingPreviewObjectUrlRef.current) {
+      URL.revokeObjectURL(shopDrawingPreviewObjectUrlRef.current)
+      shopDrawingPreviewObjectUrlRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      clearShopDrawingPreviewObjectUrl()
+    }
+  }, [clearShopDrawingPreviewObjectUrl])
+
+  const handleCloseShopDrawingPreview = useCallback(() => {
+    clearShopDrawingPreviewObjectUrl()
+    setIsShopDrawingPreviewLoading(false)
+    setShopDrawingPreviewSrc('')
+    setShopDrawingPreviewOrder(null)
+  }, [clearShopDrawingPreviewObjectUrl])
+
+  const handleOpenShopDrawingPreview = useCallback(async (order: DashboardOrder) => {
+    const orderId = String(order?.id ?? '').trim()
+    const cachedPreviewUrl = String(order?.shopDrawingCachedUrl ?? '').trim()
+    const sourcePreviewUrl = String(order?.shopDrawingUrl ?? '').trim()
+
+    if (!orderId || (!cachedPreviewUrl && !sourcePreviewUrl)) {
+      setShopDrawingErrorMessage('No shop drawing is available for this order yet.')
+      return
+    }
+
+    setShopDrawingErrorMessage(null)
+    clearShopDrawingPreviewObjectUrl()
+    setShopDrawingPreviewSrc('')
+    setIsShopDrawingPreviewLoading(true)
+    setShopDrawingPreviewOrder(order)
+
+    if (cachedPreviewUrl) {
+      setShopDrawingPreviewSrc(cachedPreviewUrl)
+      return
+    }
+
+    try {
+      const idToken = await getIdToken()
+      const query = new URLSearchParams({ orderId })
+      const response = await fetch(
+        `/api/dashboard/monday/shop-drawing/download?${query.toString()}`,
+        {
+          headers: {
+            Authorization: `Bearer ${idToken}`,
+            'x-client-platform': 'web',
+          },
+        },
+      )
+
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}))
+        const message = typeof payload?.error === 'string'
+          ? payload.error
+          : 'Could not load shop drawing preview.'
+        throw new Error(message)
+      }
+
+      const blob = await response.blob()
+      const objectUrl = URL.createObjectURL(blob)
+      shopDrawingPreviewObjectUrlRef.current = objectUrl
+      setShopDrawingPreviewSrc(objectUrl)
+    } catch (requestError) {
+      setIsShopDrawingPreviewLoading(false)
+      setShopDrawingPreviewOrder(null)
+      setShopDrawingPreviewSrc('')
+      setShopDrawingErrorMessage(
+        requestError instanceof Error
+          ? requestError.message
+          : 'Could not load shop drawing preview.',
+      )
+    }
+  }, [clearShopDrawingPreviewObjectUrl, getIdToken])
 
   const dueInTwoWeeksOrders = useMemo(
     () => (snapshot?.orders ?? []).filter(
@@ -404,6 +499,17 @@ export default function DashboardPage() {
 
       {errorMessage ? (
         <Alert severity="error">{errorMessage}</Alert>
+      ) : null}
+
+      {shopDrawingErrorMessage ? (
+        <Alert
+          severity="warning"
+          onClose={() => {
+            setShopDrawingErrorMessage(null)
+          }}
+        >
+          {shopDrawingErrorMessage}
+        </Alert>
       ) : null}
 
       <Paper variant="outlined" sx={{ p: 2.25 }}>
@@ -596,12 +702,33 @@ export default function DashboardPage() {
                         <TableCell>Workflow</TableCell>
                         <TableCell>Lead-Time Due</TableCell>
                         <TableCell>Progress</TableCell>
-                        <TableCell>Ship Date</TableCell>
+                        <TableCell>Paid</TableCell>
+                        <TableCell align="right">Shop Drawing</TableCell>
                         <TableCell align="right">Link</TableCell>
                       </TableRow>
                     </TableHead>
                     <TableBody>
-                      {drilldownOrders.map((order) => (
+                      {drilldownOrders.map((order) => {
+                        const hasShopDrawing = Boolean(
+                          String(order.shopDrawingCachedUrl ?? '').trim()
+                          || String(order.shopDrawingUrl ?? '').trim(),
+                        )
+                        const isCurrentPreviewLoading = Boolean(
+                          isShopDrawingPreviewLoading
+                          && shopDrawingPreviewOrder?.id === order.id,
+                        )
+                        const invoiceNumber = String(order.invoiceNumber ?? '').trim()
+                        const hasInvoice = Boolean(invoiceNumber)
+                        const paidInFull = order.paidInFull === true
+                        const notPaidInFull = order.paidInFull === false
+                        const amountOwed = Number.isFinite(order.amountOwed)
+                          ? Number(order.amountOwed)
+                          : null
+                        const hasPositiveBalance = amountOwed !== null && amountOwed > 0
+                        const shouldShowNotPaidInFull = hasInvoice && (notPaidInFull || hasPositiveBalance)
+                        const shouldShowPaid = hasInvoice && !shouldShowNotPaidInFull && paidInFull
+
+                        return (
                         <TableRow key={order.id} hover>
                           <TableCell>
                             <Typography fontWeight={600}>{order.name}</Typography>
@@ -626,7 +753,71 @@ export default function DashboardPage() {
                           <TableCell>
                             {typeof order.progressPercent === 'number' ? `${order.progressPercent}%` : '—'}
                           </TableCell>
-                          <TableCell>{formatDisplayDate(order.shippedAt)}</TableCell>
+                          <TableCell>
+                            {!hasInvoice ? (
+                              <Typography variant="body2" color="text.secondary">
+                                No invoice
+                              </Typography>
+                            ) : shouldShowNotPaidInFull ? (
+                              <Stack spacing={0.2}>
+                                <Typography variant="body2" color="warning.dark" fontWeight={700}>
+                                  Not paid in full
+                                </Typography>
+                                <Typography variant="caption" color="text.secondary">
+                                  Owed: {hasPositiveBalance ? formatUsd(amountOwed as number) : 'Unknown'}
+                                </Typography>
+                                <Typography variant="caption" color="text.secondary">
+                                  Invoice: {invoiceNumber}
+                                </Typography>
+                              </Stack>
+                            ) : shouldShowPaid ? (
+                              <Stack spacing={0.2}>
+                                <Typography variant="body2" color="success.main" fontWeight={700}>
+                                  Paid
+                                </Typography>
+                                <Typography variant="caption" color="text.secondary">
+                                  Invoice: {invoiceNumber}
+                                </Typography>
+                              </Stack>
+                            ) : (
+                              <Stack spacing={0.2}>
+                                <Typography variant="body2" color="text.secondary" fontWeight={600}>
+                                  Invoice status unknown
+                                </Typography>
+                                <Typography variant="caption" color="text.secondary">
+                                  Invoice: {invoiceNumber}
+                                </Typography>
+                                {amountOwed !== null ? (
+                                  <Typography variant="caption" color="text.secondary">
+                                    Owed: {formatUsd(amountOwed)}
+                                  </Typography>
+                                ) : null}
+                              </Stack>
+                            )}
+                          </TableCell>
+                          <TableCell align="right">
+                            {hasShopDrawing ? (
+                              <Button
+                                size="small"
+                                variant="outlined"
+                                startIcon={
+                                  isCurrentPreviewLoading
+                                    ? <CircularProgress size={12} color="inherit" />
+                                    : <VisibilityRoundedIcon sx={{ fontSize: 16 }} />
+                                }
+                                onClick={() => {
+                                  void handleOpenShopDrawingPreview(order)
+                                }}
+                                disabled={isCurrentPreviewLoading}
+                              >
+                                {isCurrentPreviewLoading ? 'Loading...' : 'Preview'}
+                              </Button>
+                            ) : (
+                              <Typography variant="caption" color="text.secondary">
+                                Not available
+                              </Typography>
+                            )}
+                          </TableCell>
                           <TableCell align="right">
                             {order.itemUrl ? (
                               <Button
@@ -645,10 +836,80 @@ export default function DashboardPage() {
                             )}
                           </TableCell>
                         </TableRow>
-                      ))}
+                        )
+                      })}
                     </TableBody>
                   </Table>
                 </TableContainer>
+              )}
+            </DialogContent>
+          </Dialog>
+
+          <Dialog
+            open={Boolean(shopDrawingPreviewOrder)}
+            onClose={handleCloseShopDrawingPreview}
+            fullWidth
+            maxWidth="lg"
+          >
+            <DialogTitle>
+              {shopDrawingPreviewOrder
+                ? `Shop Drawing Preview - ${shopDrawingPreviewOrder.name}`
+                : 'Shop Drawing Preview'}
+            </DialogTitle>
+            <DialogContent dividers sx={{ p: 0 }}>
+              {isShopDrawingPreviewLoading && !shopDrawingPreviewSrc ? (
+                <Stack
+                  spacing={1}
+                  alignItems="center"
+                  justifyContent="center"
+                  sx={{
+                    height: { xs: '56vh', md: '64vh' },
+                    p: 2,
+                  }}
+                >
+                  <CircularProgress size={28} />
+                  <Typography variant="body2" color="text.secondary">
+                    Loading preview...
+                  </Typography>
+                </Stack>
+              ) : shopDrawingPreviewSrc ? (
+                <Box sx={{ height: { xs: '72vh', md: '80vh' }, position: 'relative' }}>
+                  {isShopDrawingPreviewLoading ? (
+                    <Stack
+                      spacing={1}
+                      alignItems="center"
+                      justifyContent="center"
+                      sx={{
+                        position: 'absolute',
+                        inset: 0,
+                        bgcolor: 'rgba(255, 255, 255, 0.85)',
+                        zIndex: 1,
+                      }}
+                    >
+                      <CircularProgress size={28} />
+                      <Typography variant="body2" color="text.secondary">
+                        Loading preview...
+                      </Typography>
+                    </Stack>
+                  ) : null}
+                  <iframe
+                    key={shopDrawingPreviewSrc}
+                    src={shopDrawingPreviewSrc}
+                    title="Shop Drawing Preview"
+                    onLoad={() => {
+                      setIsShopDrawingPreviewLoading(false)
+                    }}
+                    onError={() => {
+                      setIsShopDrawingPreviewLoading(false)
+                      setShopDrawingErrorMessage('Could not load shop drawing preview.')
+                    }}
+                    style={{ width: '100%', height: '100%', border: 0 }}
+                  />
+                </Box>
+              ) : (
+                <Stack sx={{ p: 2 }}>
+                  <Typography color="text.secondary">No preview is available.</Typography>
+                </Stack>
               )}
             </DialogContent>
           </Dialog>

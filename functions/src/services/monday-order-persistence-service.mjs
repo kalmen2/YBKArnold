@@ -2,6 +2,8 @@ export function createMondayOrderPersistenceService({
   fetchMondayAssetDownloadInfo,
   getCollections,
   getOrderPhotosBucket,
+  mondayBoardId,
+  mondayShippedBoardId,
   randomUUID,
 }) {
   function normalizeMondayItemId(rawValue) {
@@ -15,6 +17,15 @@ export function createMondayOrderPersistenceService({
 
     return normalized || null
   }
+
+  function normalizeBoardId(rawValue) {
+    const normalized = String(rawValue ?? '').trim()
+
+    return normalized || null
+  }
+
+  const normalizedOrderTrackBoardId = normalizeBoardId(mondayBoardId)
+  const normalizedShippedBoardId = normalizeBoardId(mondayShippedBoardId)
 
   function sanitizeStorageSegment(rawValue, fallback = 'unknown') {
     const normalized = String(rawValue ?? '').trim().replace(/[^a-zA-Z0-9_-]+/g, '_')
@@ -127,8 +138,38 @@ export function createMondayOrderPersistenceService({
       shopDrawingSourceAssetId: sourceInfo.sourceAssetId,
       shopDrawingSourceUrl: sourceInfo.sourceUrl,
       shopDrawingResolvedUrl: sourceInfo.sourceUrl,
+      invoiceNumber: String(order?.invoiceNumber ?? '').trim() || null,
+      paidInFull: typeof order?.paidInFull === 'boolean' ? Boolean(order.paidInFull) : null,
+      amountOwed: Number.isFinite(order?.amountOwed) ? Number(order.amountOwed) : null,
       updatedAt: now,
       lastSeenAt: now,
+    }
+  }
+
+  function buildBoardTransitionFields({ existingOrder, currentBoardId, now }) {
+    const existingMovedToShippedAt = String(existingOrder?.movedToShippedAt ?? '').trim() || null
+    const previousBoardId = normalizeBoardId(existingOrder?.mondayBoardId)
+
+    if (existingMovedToShippedAt) {
+      return {
+        movedToShippedAt: existingMovedToShippedAt,
+      }
+    }
+
+    if (
+      !normalizedOrderTrackBoardId
+      || !normalizedShippedBoardId
+      || !currentBoardId
+      || currentBoardId !== normalizedShippedBoardId
+      || previousBoardId !== normalizedOrderTrackBoardId
+    ) {
+      return {
+        movedToShippedAt: null,
+      }
+    }
+
+    return {
+      movedToShippedAt: now,
     }
   }
 
@@ -292,6 +333,7 @@ export function createMondayOrderPersistenceService({
         checkedCount: 0,
         newCount: 0,
         insertedCount: 0,
+        movedToShippedCount: 0,
         shopDrawingsCached: 0,
         shopDrawingsReused: 0,
         shopDrawingsFailed: 0,
@@ -317,6 +359,7 @@ export function createMondayOrderPersistenceService({
         checkedCount: 0,
         newCount: 0,
         insertedCount: 0,
+        movedToShippedCount: 0,
         shopDrawingsCached: 0,
         shopDrawingsReused: 0,
         shopDrawingsFailed: 0,
@@ -326,6 +369,7 @@ export function createMondayOrderPersistenceService({
     const { mondayOrdersCollection } = await getCollections()
     const now = new Date().toISOString()
     const board = snapshot?.board ?? null
+    const currentBoardId = normalizeBoardId(board?.id)
     const existingOrders = await mondayOrdersCollection
       .find(
         {
@@ -337,6 +381,8 @@ export function createMondayOrderPersistenceService({
           projection: {
             _id: 0,
             mondayItemId: 1,
+            mondayBoardId: 1,
+            movedToShippedAt: 1,
             shopDrawingContentType: 1,
             shopDrawingCachedAt: 1,
             shopDrawingDownloadUrl: 1,
@@ -354,6 +400,7 @@ export function createMondayOrderPersistenceService({
     let shopDrawingsCached = 0
     let shopDrawingsReused = 0
     let shopDrawingsFailed = 0
+    let movedToShippedCount = 0
     const operations = []
 
     for (const mondayItemId of mondayItemIds) {
@@ -366,6 +413,17 @@ export function createMondayOrderPersistenceService({
         now,
         sourceInfo,
       })
+      const boardTransitionFields = buildBoardTransitionFields({
+        existingOrder,
+        currentBoardId,
+        now,
+      })
+      const existingMovedToShippedAt = String(existingOrder?.movedToShippedAt ?? '').trim() || null
+
+      if (!existingMovedToShippedAt && boardTransitionFields.movedToShippedAt) {
+        movedToShippedCount += 1
+      }
+
       let cacheFields = {
         shopDrawingStoragePath: null,
         shopDrawingDownloadUrl: null,
@@ -402,6 +460,7 @@ export function createMondayOrderPersistenceService({
           update: {
             $set: {
               ...setFields,
+              ...boardTransitionFields,
               ...cacheFields,
             },
             $setOnInsert: {
@@ -423,6 +482,7 @@ export function createMondayOrderPersistenceService({
       checkedCount: mondayItemIds.length,
       newCount: insertedCount,
       insertedCount,
+      movedToShippedCount,
       shopDrawingsCached,
       shopDrawingsReused,
       shopDrawingsFailed,

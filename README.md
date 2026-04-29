@@ -13,10 +13,15 @@ MONGODB_DB=arnold_system
 MONDAY_API_TOKEN=<your monday api token>
 MONDAY_BOARD_ID=1062951447
 MONDAY_BOARD_URL=https://arnoldcontract.monday.com/boards/1062951447
+MONDAY_SHIPPED_BOARD_ID=1072680042
+MONDAY_SHIPPED_BOARD_URL=https://arnoldcontract.monday.com/boards/1072680042
 MONDAY_API_URL=https://api.monday.com/v2
 ZENDESK_API_TOKEN=<your zendesk api token>
 ZENDESK_EMAIL=<optional: your zendesk email for api-token mode>
 ZENDESK_URL=https://your-subdomain.zendesk.com/agent
+DASHBOARD_DAILY_REFRESH_CRON=0 17 * * *
+DASHBOARD_DAILY_REFRESH_TIMEZONE=America/New_York
+MONDAY_SHIP_TRANSITION_WINDOW_HOURS=72
 FIREBASE_PROJECT_ID=<project-id>
 VITE_FIREBASE_API_KEY=<firebase web api key>
 VITE_FIREBASE_AUTH_DOMAIN=<project-id>.firebaseapp.com
@@ -73,11 +78,24 @@ MONGODB_DB=arnold_system
 MONDAY_API_TOKEN=<your monday api token>
 MONDAY_BOARD_ID=1062951447
 MONDAY_BOARD_URL=https://arnoldcontract.monday.com/boards/1062951447
+MONDAY_SHIPPED_BOARD_ID=1072680042
+MONDAY_SHIPPED_BOARD_URL=https://arnoldcontract.monday.com/boards/1072680042
 MONDAY_API_URL=https://api.monday.com/v2
 ZENDESK_API_TOKEN=<your zendesk api token>
 ZENDESK_EMAIL=<optional: your zendesk email for api-token mode>
 ZENDESK_URL=https://your-subdomain.zendesk.com/agent
+DASHBOARD_DAILY_REFRESH_CRON=0 17 * * *
+DASHBOARD_DAILY_REFRESH_TIMEZONE=America/New_York
+MONDAY_SHIP_TRANSITION_WINDOW_HOURS=72
 ```
+
+### Daily automatic refresh and moved-to-shipped tracking
+
+- Function `dailyDashboardRefresh` runs on Cloud Scheduler once per day (default `0 17 * * *`, `America/New_York`).
+- The job refreshes Monday caches (`monday` and shipped-board cache) and Zendesk caches (`zendesk`, `support_alerts`, `support_tickets_50`, `support_alert_tickets_100`).
+- During the same run, it checks orders that were in Order Track and detects when they appear only in the Shipped board.
+- Transition stamping only considers orders recently seen on Order Track (default last 72 hours) to avoid bulk-stamping old historical moves.
+- When detected, it stamps `movedToShippedAt` in Mongo collection `monday_orders`.
 
 Zendesk auth modes:
 

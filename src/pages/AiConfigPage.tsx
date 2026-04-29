@@ -8,6 +8,7 @@ import {
   Button,
   CircularProgress,
   IconButton,
+  MenuItem,
   Paper,
   Stack,
   Tab,
@@ -16,12 +17,14 @@ import {
   Typography,
 } from '@mui/material'
 import { useEffect, useRef, useState } from 'react'
+import { useLocation } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   chatForAiRules,
   fetchAiRules,
   saveAiRules,
   type AiChatMessage,
+  type AiModelQuality,
   type AiRuleCategory,
 } from '../features/ai/api'
 
@@ -32,39 +35,57 @@ type ChatEntry = {
 
 const CATEGORIES: { key: AiRuleCategory; label: string; description: string }[] = [
   {
-    key: 'support',
-    label: 'Support',
-    description: 'Rules for handling customer support tickets and replies',
-  },
-  {
-    key: 'orders',
-    label: 'Orders',
-    description: 'Rules for processing and responding to order-related questions',
-  },
-  {
-    key: 'crm',
-    label: 'CRM',
-    description: 'Rules for managing dealers, contacts, and sales interactions',
-  },
-  {
     key: 'general',
     label: 'General',
-    description: 'General company-wide operational rules',
+    description: 'Company-wide business context that support AI must understand first',
+  },
+  {
+    key: 'support',
+    label: 'Support',
+    description: 'Rules for support replies after applying General business rules',
+  },
+  {
+    key: 'summaries',
+    label: 'Summaries',
+    description: 'Rules for AI summaries after applying General business rules',
   },
 ]
 
+const MODEL_OPTIONS: { value: AiModelQuality; label: string }[] = [
+  { value: 'fast', label: 'Fast' },
+  { value: 'better', label: 'Better' },
+  { value: 'deep', label: 'Deep' },
+]
+
+function isAiRuleCategory(value: string | undefined): value is AiRuleCategory {
+  return CATEGORIES.some((category) => category.key === value)
+}
+
 export default function AiConfigPage() {
   const queryClient = useQueryClient()
+  const location = useLocation()
 
   const [selectedCategory, setSelectedCategory] = useState<AiRuleCategory>('support')
   const [chatHistories, setChatHistories] = useState<Record<string, ChatEntry[]>>({})
   const [editedRules, setEditedRules] = useState<Record<string, string>>({})
   const [rulesInitialized, setRulesInitialized] = useState<Record<string, boolean>>({})
+  const [pendingProposedRules, setPendingProposedRules] = useState<Record<string, string | null>>({})
+  const [modelQuality, setModelQuality] = useState<AiModelQuality>('better')
+  const [isConfirming, setIsConfirming] = useState(false)
   const [chatInput, setChatInput] = useState('')
   const [chatError, setChatError] = useState<string | null>(null)
   const [saveSuccess, setSaveSuccess] = useState<string | null>(null)
   const [saveError, setSaveError] = useState<string | null>(null)
   const chatEndRef = useRef<HTMLDivElement | null>(null)
+  const categoryMountedRef = useRef(false)
+
+  // Pre-fill from navigation state when arriving from "Teach AI" button on Support page
+  useEffect(() => {
+    const state = location.state as { category?: string; prefillMessage?: string } | null
+    if (!state?.prefillMessage) return
+    if (isAiRuleCategory(state.category)) setSelectedCategory(state.category)
+    setChatInput(state.prefillMessage)
+  }, [])
 
   const currentChat = chatHistories[selectedCategory] ?? []
   const currentEditedRules = editedRules[selectedCategory] ?? ''
@@ -91,16 +112,21 @@ export default function AiConfigPage() {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [currentChat.length])
 
-  // Clear chat input and errors when switching categories
+  // Clear chat input and errors when switching categories (skip initial mount)
   useEffect(() => {
+    if (!categoryMountedRef.current) {
+      categoryMountedRef.current = true
+      return
+    }
     setChatInput('')
     setChatError(null)
     setSaveSuccess(null)
     setSaveError(null)
+    setPendingProposedRules((prev) => ({ ...prev, [selectedCategory]: null }))
   }, [selectedCategory])
 
   const chatMutation = useMutation({
-    mutationFn: (messages: AiChatMessage[]) => chatForAiRules(selectedCategory, messages),
+    mutationFn: (messages: AiChatMessage[]) => chatForAiRules(selectedCategory, messages, modelQuality),
     onSuccess: (data) => {
       setChatHistories((prev) => ({
         ...prev,
@@ -110,13 +136,8 @@ export default function AiConfigPage() {
         ],
       }))
 
-      if (data.rulesUpdated) {
-        setEditedRules((prev) => ({ ...prev, [selectedCategory]: data.rules }))
-        setRulesInitialized((prev) => ({ ...prev, [selectedCategory]: true }))
-        queryClient.setQueryData(['ai', 'rules', selectedCategory], {
-          category: selectedCategory,
-          content: data.rules,
-        })
+      if (data.proposedRules) {
+        setPendingProposedRules((prev) => ({ ...prev, [selectedCategory]: data.proposedRules }))
       }
 
       setChatError(null)
@@ -133,6 +154,7 @@ export default function AiConfigPage() {
         category: selectedCategory,
         content: currentEditedRules,
       })
+      setPendingProposedRules((prev) => ({ ...prev, [selectedCategory]: null }))
       setSaveSuccess('Rules saved.')
       setSaveError(null)
       setTimeout(() => setSaveSuccess(null), 3000)
@@ -162,8 +184,48 @@ export default function AiConfigPage() {
 
   const selectedCategoryMeta = CATEGORIES.find((c) => c.key === selectedCategory)
   const savedRulesContent = rulesQuery.data?.content ?? ''
+  const currentPendingRules = pendingProposedRules[selectedCategory] ?? null
+  const isGeneralCategory = selectedCategory === 'general'
+  const contentLimit = isGeneralCategory ? 20000 : 2000
+  const chatPanelHint = isGeneralCategory
+    ? 'Talk through your business in depth. Ask for a full company write-up, then confirm to save it.'
+    : 'Describe the rule you need. AI only proposes rules for review.'
+  const pendingContentLabel = isGeneralCategory
+    ? 'Proposed business document — review before saving:'
+    : 'Proposed rules — review before saving:'
+  const rulesPanelLabel = isGeneralCategory
+    ? `${selectedCategoryMeta?.label ?? ''} Business Document`
+    : `${selectedCategoryMeta?.label ?? ''} Rules`
+  const rulesPanelHint = isGeneralCategory
+    ? 'AI-assisted and editable · Capture full company context used by Support AI'
+    : 'AI-generated and editable · Keep rules short and specific'
+  const editorPlaceholder = isGeneralCategory
+    ? 'No General business document yet.\n\nChat with AI on the left to draft a full company document, or write it directly here.'
+    : `No ${selectedCategoryMeta?.label.toLowerCase()} rules yet.\n\nChat with AI on the left to generate them, or type rules directly here.`
   const hasUnsavedChanges =
     rulesInitialized[selectedCategory] && currentEditedRules !== savedRulesContent
+
+  async function handleConfirmRules() {
+    if (!currentPendingRules || isConfirming) return
+    setIsConfirming(true)
+    setSaveError(null)
+    try {
+      await saveAiRules(selectedCategory, currentPendingRules)
+      setEditedRules((prev) => ({ ...prev, [selectedCategory]: currentPendingRules }))
+      setRulesInitialized((prev) => ({ ...prev, [selectedCategory]: true }))
+      queryClient.setQueryData(['ai', 'rules', selectedCategory], {
+        category: selectedCategory,
+        content: currentPendingRules,
+      })
+      setPendingProposedRules((prev) => ({ ...prev, [selectedCategory]: null }))
+      setSaveSuccess('Rules saved.')
+      setTimeout(() => setSaveSuccess(null), 3000)
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : 'Could not save rules.')
+    } finally {
+      setIsConfirming(false)
+    }
+  }
 
   return (
     <Stack spacing={2.5}>
@@ -249,8 +311,22 @@ export default function AiConfigPage() {
               Chat with AI
             </Typography>
             <Typography variant="caption" color="text.secondary">
-              Describe what rules you need. AI will write them and save automatically.
+              {chatPanelHint}
             </Typography>
+            <TextField
+              select
+              size="small"
+              label="Model"
+              value={modelQuality}
+              onChange={(event) => setModelQuality(event.target.value as AiModelQuality)}
+              sx={{ mt: 1, minWidth: 150 }}
+            >
+              {MODEL_OPTIONS.map((option) => (
+                <MenuItem key={option.value} value={option.value}>
+                  {option.label}
+                </MenuItem>
+              ))}
+            </TextField>
           </Box>
 
           {/* Messages area */}
@@ -284,10 +360,19 @@ export default function AiConfigPage() {
                   textAlign="center"
                   sx={{ maxWidth: 340, lineHeight: 1.6 }}
                 >
-                  Start a conversation to define{' '}
-                  <strong>{selectedCategoryMeta?.label.toLowerCase()}</strong> rules.
-                  <br />
-                  Tell the AI how you want to handle situations, and it will write the rules for you.
+                  {isGeneralCategory ? (
+                    <>
+                      Start a conversation to build a full <strong>business document</strong> for your company.
+                      <br />
+                      Ask for a 2-page company explanation, then refine it in chat until it is accurate.
+                    </>
+                  ) : (
+                    <>
+                      Start a conversation to define <strong>{selectedCategoryMeta?.label.toLowerCase()}</strong> rules.
+                      <br />
+                      Tell the AI how you want to handle situations, and it will write the rules for you.
+                    </>
+                  )}
                 </Typography>
               </Box>
             ) : null}
@@ -360,6 +445,68 @@ export default function AiConfigPage() {
             <div ref={chatEndRef} />
           </Stack>
 
+          {/* Confirm proposed rules — shows rules here for review before saving */}
+          {currentPendingRules ? (
+            <Box
+              sx={{
+                px: 1.75,
+                py: 1.25,
+                borderTop: '2px solid',
+                borderColor: 'rgba(124,58,237,0.35)',
+                bgcolor: 'rgba(124,58,237,0.04)',
+                flexShrink: 0,
+              }}
+            >
+              <Stack spacing={1}>
+                <Stack direction="row" alignItems="center" justifyContent="space-between">
+                  <Typography variant="caption" fontWeight={700} color="#7c3aed">
+                    {pendingContentLabel}
+                  </Typography>
+                  {saveError ? (
+                    <Typography variant="caption" color="error">{saveError}</Typography>
+                  ) : null}
+                </Stack>
+                <Typography
+                  variant="body2"
+                  sx={{
+                    whiteSpace: 'pre-wrap',
+                    fontFamily: 'monospace',
+                    fontSize: '0.8rem',
+                    lineHeight: 1.6,
+                    bgcolor: 'white',
+                    border: '1px solid rgba(124,58,237,0.2)',
+                    borderRadius: 1,
+                    px: 1.25,
+                    py: 1,
+                  }}
+                >
+                  {currentPendingRules}
+                </Typography>
+                <Stack direction="row" spacing={1} justifyContent="flex-end">
+                  <Button
+                    size="small"
+                    variant="text"
+                    onClick={() => setPendingProposedRules((prev) => ({ ...prev, [selectedCategory]: null }))}
+                    disabled={isConfirming}
+                    sx={{ color: 'text.secondary' }}
+                  >
+                    Dismiss
+                  </Button>
+                  <Button
+                    size="small"
+                    variant="contained"
+                    onClick={() => { void handleConfirmRules() }}
+                    disabled={isConfirming}
+                    startIcon={isConfirming ? <CircularProgress size={12} color="inherit" /> : null}
+                    sx={{ bgcolor: '#7c3aed', '&:hover': { bgcolor: '#6d28d9' } }}
+                  >
+                    {isConfirming ? 'Saving…' : 'Confirm & Save'}
+                  </Button>
+                </Stack>
+              </Stack>
+            </Box>
+          ) : null}
+
           {/* Chat input */}
           <Box
             sx={{
@@ -374,7 +521,7 @@ export default function AiConfigPage() {
               <TextField
                 fullWidth
                 size="small"
-                placeholder={`Describe ${selectedCategoryMeta?.label.toLowerCase()} rules…`}
+                placeholder={isGeneralCategory ? 'Ask for a full business write-up or refine one section…' : `Describe ${selectedCategoryMeta?.label.toLowerCase()} rules…`}
                 value={chatInput}
                 onChange={(e) => setChatInput(e.target.value)}
                 onKeyDown={(e) => {
@@ -421,7 +568,7 @@ export default function AiConfigPage() {
           >
             <Stack direction="row" alignItems="center" justifyContent="space-between">
               <Typography variant="subtitle2" fontWeight={700}>
-                {selectedCategoryMeta?.label ?? ''} Rules
+                {rulesPanelLabel}
               </Typography>
               {hasUnsavedChanges ? (
                 <Typography variant="caption" color="warning.main" fontWeight={600}>
@@ -430,7 +577,7 @@ export default function AiConfigPage() {
               ) : null}
             </Stack>
             <Typography variant="caption" color="text.secondary">
-              AI-generated and editable · Keep rules short and specific
+              {rulesPanelHint}
             </Typography>
           </Box>
 
@@ -467,10 +614,7 @@ export default function AiConfigPage() {
                   minRows={10}
                   maxRows={22}
                   fullWidth
-                  placeholder={
-                    `No ${selectedCategoryMeta?.label.toLowerCase()} rules yet.\n\n` +
-                    `Chat with AI on the left to generate them, or type rules directly here.`
-                  }
+                  placeholder={editorPlaceholder}
                   value={currentEditedRules}
                   onChange={(e) =>
                     setEditedRules((prev) => ({
@@ -479,8 +623,8 @@ export default function AiConfigPage() {
                     }))
                   }
                   disabled={saveMutation.isPending}
-                  inputProps={{ maxLength: 2000 }}
-                  helperText={`${currentEditedRules.length} / 2000 characters`}
+                  inputProps={{ maxLength: contentLimit }}
+                  helperText={`${currentEditedRules.length} / ${contentLimit.toLocaleString()} characters`}
                   sx={{ '& .MuiInputBase-root': { fontFamily: 'monospace', fontSize: '0.85rem' } }}
                 />
 

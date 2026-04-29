@@ -6,6 +6,8 @@ export type DashboardBucket = {
 export type DashboardOrder = {
   id: string
   name: string
+  mondaySourceBoardType?: 'orders_track' | 'shipped_orders'
+  movedToShippedAt?: string | null
   groupTitle: string
   statusLabel: string
   stageLabel: string
@@ -26,6 +28,9 @@ export type DashboardOrder = {
   shopDrawingUrl: string | null
   shopDrawingFileName: string | null
   shopDrawingCachedUrl?: string | null
+  invoiceNumber?: string | null
+  paidInFull?: boolean | null
+  amountOwed?: number | null
 }
 
 export type MondayDashboardSnapshot = {
@@ -34,6 +39,11 @@ export type MondayDashboardSnapshot = {
     name: string
     url: string | null
   }
+  shippedBoard?: {
+    id: string
+    name: string
+    url: string | null
+  } | null
   generatedAt: string
   metrics: {
     totalOrders: number
@@ -63,6 +73,9 @@ export type MondayDashboardSnapshot = {
     leadTimeColumnId: string | null
     dueDateColumnId: string | null
     orderDateColumnId: string | null
+    invoiceNumberColumnId?: string | null
+    paidInFullColumnId?: string | null
+    amountOwedColumnId?: string | null
     progressStatusColumns: Array<{
       key: string
       weight: number

@@ -1142,6 +1142,7 @@ export default function CrmDealersPage() {
                     const isSelected = selectedDealerId === dealer.sourceId
                     const accountName = dealer.name || dealer.sourceId
                     const accountInitial = accountName.charAt(0).toUpperCase()
+                    const accountPictureUrl = String(dealer.pictureUrl ?? '').trim() || undefined
                     const accountLocation = [dealer.city, dealer.state].filter(Boolean).join(', ') || 'No location'
 
                     return (
@@ -1168,10 +1169,12 @@ export default function CrmDealersPage() {
                         }}
                       >
                         <Avatar
+                          src={accountPictureUrl}
                           alt={accountName}
                           sx={{ width: 32, height: 32, fontSize: 12, fontWeight: 700 }}
+                          imgProps={{ loading: 'lazy', referrerPolicy: 'no-referrer' }}
                         >
-                          {accountInitial}
+                          {accountInitial || '?'}
                         </Avatar>
 
                         <ListItemText
@@ -1754,15 +1757,18 @@ export default function CrmDealersPage() {
                       <TableBody>
                         {(dealerDetail?.contacts ?? []).map((contact) => {
                           const contactName = displayContactName(contact)
+                          const contactPhotoUrl = String(contact.photoUrl ?? '').trim() || undefined
 
                           return (
                             <TableRow key={contact.sourceId}>
                               <TableCell>
                                 <Avatar
+                                  src={contactPhotoUrl}
                                   alt={contactName}
                                   sx={{ width: 34, height: 34, mx: 'auto', fontSize: 13 }}
+                                  imgProps={{ loading: 'lazy', referrerPolicy: 'no-referrer' }}
                                 >
-                                  {contactName.charAt(0).toUpperCase()}
+                                  {contactName.charAt(0).toUpperCase() || '?'}
                                 </Avatar>
                               </TableCell>
 

@@ -191,15 +191,18 @@ export default function CrmContactsPage() {
                 <TableBody>
                   {contacts.map((contact) => {
                     const contactName = displayContactName(contact)
+                    const contactPhotoUrl = String(contact.photoUrl ?? '').trim() || undefined
 
                     return (
                     <TableRow key={contact.sourceId}>
                       <TableCell>
                         <Avatar
+                          src={contactPhotoUrl}
                           alt={contactName}
                           sx={{ width: 34, height: 34, mx: 'auto', fontSize: 13 }}
+                          imgProps={{ loading: 'lazy', referrerPolicy: 'no-referrer' }}
                         >
-                          {contactName.charAt(0).toUpperCase()}
+                          {contactName.charAt(0).toUpperCase() || '?'}
                         </Avatar>
                       </TableCell>
 

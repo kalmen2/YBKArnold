@@ -18,6 +18,7 @@ import {
   IconButton,
   MenuItem,
   Paper,
+  Skeleton,
   Stack,
   TextField,
   ToggleButton,
@@ -26,9 +27,10 @@ import {
   Typography,
 } from '@mui/material'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '../auth/useAuth'
-import { generateAiSupportReply } from '../features/ai/api'
+import { generateAiSupportReply, fetchCommentSummaries } from '../features/ai/api'
 import {
   fetchSupportAlertTickets,
   fetchSupportAlerts,
@@ -433,6 +435,7 @@ function formatReplyStatusLabel(status: SupportReplyStatus): string {
 export default function SupportPage() {
   const { appUser } = useAuth()
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
 
   const [selectedTicketId, setSelectedTicketId] = useState<number | null>(null)
   const [pendingSidebarTicketScrollId, setPendingSidebarTicketScrollId] = useState<number | null>(
@@ -449,6 +452,10 @@ export default function SupportPage() {
   const [replySuccessMessage, setReplySuccessMessage] = useState<string | null>(null)
   const [replyErrorMessage, setReplyErrorMessage] = useState<string | null>(null)
   const [isGeneratingReply, setIsGeneratingReply] = useState(false)
+  const [isAiGeneratedReply, setIsAiGeneratedReply] = useState(false)
+  const lastDraftHintRef = useRef<string | null>(null)
+  const conversationThreadScrollRef = useRef<HTMLDivElement | null>(null)
+  const lastAutoScrolledConversationTicketIdRef = useRef<number | null>(null)
 
   const alertsQuery = useQuery({
     queryKey: ['support', 'alerts'],
@@ -475,6 +482,18 @@ export default function SupportPage() {
     staleTime: 10 * 60 * 1000,
     gcTime: 15 * 60 * 1000,
   })
+
+  // Fetches AI one-sentence summaries for each comment in the expanded ticket.
+  // Results are cached in MongoDB so OpenAI is only called once per comment ever.
+  const commentSummariesQuery = useQuery({
+    queryKey: ['ai', 'comment-summaries', expandedTicketPreviewId || null],
+    queryFn: () => fetchCommentSummaries(expandedTicketPreviewId as number),
+    enabled: expandedTicketPreviewId !== false,
+    staleTime: 4 * 60 * 60 * 1000,
+    gcTime: 8 * 60 * 60 * 1000,
+  })
+
+  const commentSummaries: Record<number, string> = commentSummariesQuery.data?.summaries ?? {}
 
   const alertsSnapshot = alertsQuery.data ?? null
   const alertTicketsSnapshot = alertTicketsQuery.data ?? null
@@ -668,6 +687,31 @@ export default function SupportPage() {
     return () => cancelAnimationFrame(frameId)
   }, [expandedTicketPreviewId, pendingSidebarTicketScrollId, ticketsSnapshot])
 
+  useEffect(() => {
+    const ticketId = conversationSnapshot?.ticket?.id ?? null
+
+    if (!ticketId || pendingConversationJump) {
+      return
+    }
+
+    if (lastAutoScrolledConversationTicketIdRef.current === ticketId) {
+      return
+    }
+
+    const frameId = requestAnimationFrame(() => {
+      const container = conversationThreadScrollRef.current
+
+      if (!container) {
+        return
+      }
+
+      container.scrollTop = container.scrollHeight
+      lastAutoScrolledConversationTicketIdRef.current = ticketId
+    })
+
+    return () => cancelAnimationFrame(frameId)
+  }, [conversationSnapshot, pendingConversationJump])
+
   const alertCards = useMemo(() => {
     const alerts = alertsSnapshot?.alerts
 
@@ -793,8 +837,11 @@ export default function SupportPage() {
     setReplySuccessMessage(null)
 
     try {
-      const { reply } = await generateAiSupportReply(selectedTicketId)
+      const draftHint = replyBody.trim() || undefined
+      lastDraftHintRef.current = draftHint ?? null
+      const { reply } = await generateAiSupportReply(selectedTicketId, draftHint)
       setReplyBody(reply)
+      setIsAiGeneratedReply(true)
     } catch (error) {
       setReplyErrorMessage(
         error instanceof Error ? error.message : 'AI could not generate a reply.',
@@ -804,9 +851,25 @@ export default function SupportPage() {
     }
   }
 
+  function handleTeachAi() {
+    if (!conversationSnapshot || !replyBody.trim()) return
+    const ticket = conversationSnapshot.ticket
+    const userDraftLine = lastDraftHintRef.current
+      ? `User wrote: "${lastDraftHintRef.current}"\n\n`
+      : ''
+    const prefillMessage =
+      `Zendesk ticket #${ticket.id}: "${ticket.subject}" (from ${ticket.requesterName}).\n\n` +
+      userDraftLine +
+      `AI generated this reply:\n"${replyBody.trim()}"\n\n` +
+      `This is not good because: `
+    navigate('/admin/ai-config', { state: { category: 'support', prefillMessage } })
+  }
+
   function selectTicket(ticketId: number) {
     setSelectedTicketId(ticketId)
     setReplyBody('')
+    setIsAiGeneratedReply(false)
+    lastDraftHintRef.current = null
     setReplyMode('public')
     setReplyStatus('no_change')
     setReplySuccessMessage(null)
@@ -946,7 +1009,7 @@ export default function SupportPage() {
         <Paper
           variant="outlined"
           sx={{
-            height: { xs: 620, md: 760, lg: 860 },
+            height: { xs: 596, md: 736, lg: 836 },
             display: 'flex',
             flexDirection: 'column',
             minHeight: 0,
@@ -1124,8 +1187,8 @@ export default function SupportPage() {
                         {[...previewSnapshot.comments]
                           .sort(
                             (left, right) =>
-                              new Date(left.createdAt).getTime() -
-                              new Date(right.createdAt).getTime(),
+                              new Date(right.createdAt).getTime() -
+                              new Date(left.createdAt).getTime(),
                           )
                           .map((comment) => {
                             const isCustomer =
@@ -1173,19 +1236,26 @@ export default function SupportPage() {
                                     {formatDateTime(comment.createdAt)}
                                   </Typography>
                                 </Stack>
-                                <Typography
-                                  variant="body2"
-                                  color="text.primary"
-                                  sx={{
-                                    display: '-webkit-box',
-                                    WebkitLineClamp: 3,
-                                    WebkitBoxOrient: 'vertical',
-                                    overflow: 'hidden',
-                                    lineHeight: 1.45,
-                                  }}
-                                >
-                                  {buildPreviewParagraph(previewText, 120)}
-                                </Typography>
+                                {commentSummariesQuery.isFetching && !commentSummaries[comment.id] ? (
+                                  <Box sx={{ pt: 0.25 }}>
+                                    <Skeleton animation="wave" height={14} sx={{ mb: 0.5 }} />
+                                    <Skeleton animation="wave" height={14} width="72%" />
+                                  </Box>
+                                ) : (
+                                  <Typography
+                                    variant="body2"
+                                    color="text.primary"
+                                    sx={{
+                                      display: '-webkit-box',
+                                      WebkitLineClamp: 3,
+                                      WebkitBoxOrient: 'vertical',
+                                      overflow: 'hidden',
+                                      lineHeight: 1.45,
+                                    }}
+                                  >
+                                    {commentSummaries[comment.id] ?? buildPreviewParagraph(previewText, 120)}
+                                  </Typography>
+                                )}
                               </Paper>
                             )
                           })}
@@ -1219,7 +1289,7 @@ export default function SupportPage() {
           <Paper
           variant="outlined"
           sx={{
-            height: { xs: 620, md: 760, lg: 860 },
+            height: { xs: 596, md: 736, lg: 836 },
             display: 'flex',
             flexDirection: 'column',
             minHeight: 0,
@@ -1338,6 +1408,7 @@ export default function SupportPage() {
               {/* Email thread */}
               <Stack
                 spacing={1.5}
+                ref={conversationThreadScrollRef}
                 sx={{
                   flex: 1,
                   overflowY: 'auto',
@@ -1619,6 +1690,7 @@ export default function SupportPage() {
                     value={replyBody}
                     onChange={(event) => {
                       setReplyBody(event.target.value)
+                      if (isAiGeneratedReply) setIsAiGeneratedReply(false)
                     }}
                     disabled={replyMutation.isPending || !canReplyAsLinkedZendeskUser}
                   />
@@ -1634,6 +1706,8 @@ export default function SupportPage() {
                         title={
                           !conversationSnapshot
                             ? 'Select a ticket first'
+                            : trimmedReplyBody
+                            ? 'Improve my draft with AI'
                             : 'Generate AI reply draft'
                         }
                       >
@@ -1654,6 +1728,18 @@ export default function SupportPage() {
                           </IconButton>
                         </span>
                       </Tooltip>
+                      {isAiGeneratedReply && trimmedReplyBody ? (
+                        <Tooltip title="Tell AI what was wrong so it learns for next time">
+                          <Button
+                            size="small"
+                            variant="text"
+                            onClick={handleTeachAi}
+                            sx={{ fontSize: '0.7rem', color: 'text.secondary', px: 0.75, py: 0, minWidth: 0 }}
+                          >
+                            Teach AI
+                          </Button>
+                        </Tooltip>
+                      ) : null}
                       <Typography variant="caption" color="text.secondary">
                         {trimmedReplyBody.length.toLocaleString()} / {replyCharacterLimit.toLocaleString()}
                       </Typography>
