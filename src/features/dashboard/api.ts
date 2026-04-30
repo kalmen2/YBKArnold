@@ -31,6 +31,7 @@ export type DashboardOrder = {
   invoiceNumber?: string | null
   paidInFull?: boolean | null
   amountOwed?: number | null
+  poAmount?: number | null
 }
 
 export type MondayDashboardSnapshot = {
@@ -76,6 +77,7 @@ export type MondayDashboardSnapshot = {
     invoiceNumberColumnId?: string | null
     paidInFullColumnId?: string | null
     amountOwedColumnId?: string | null
+    poAmountColumnId?: string | null
     progressStatusColumns: Array<{
       key: string
       weight: number

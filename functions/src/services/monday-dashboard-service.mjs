@@ -76,6 +76,16 @@ export function createMondayDashboardService({
       ],
       ['numbers', 'numeric', 'text', 'long-text', 'formula'],
     )
+    const poAmountColumnId = pickColumnId(
+      columns,
+      [
+        'po amount',
+        'purchase order amount',
+        'po total',
+        'purchase order total',
+      ],
+      ['numbers', 'numeric', 'text', 'long-text', 'formula'],
+    )
     let orderDateColumnId = pickColumnId(
       columns,
       ['order date', 'ordered', 'po date', 'received', 'start'],
@@ -104,6 +114,7 @@ export function createMondayDashboardService({
       invoiceNumberColumnId,
       paidInFullColumnId,
       amountOwedColumnId,
+      poAmountColumnId,
       orderDateColumnId,
       progressStatusColumns,
     }
@@ -178,6 +189,12 @@ export function createMondayDashboardService({
         columnValues,
         ['amount owed', 'amount due', 'balance due', 'remaining balance', 'unpaid balance'],
       )
+    const poAmountColumn =
+      findColumnById(columnValues, columnMap.poAmountColumnId) ||
+      findColumnByKeywords(
+        columnValues,
+        ['po amount', 'purchase order amount', 'po total', 'purchase order total'],
+      )
     const orderDateColumn =
       findColumnById(columnValues, columnMap.orderDateColumnId) ||
       findColumnByKeywords(columnValues, ['order date', 'ordered'])
@@ -214,6 +231,7 @@ export function createMondayDashboardService({
     const shopDrawing = parseShopDrawing(shopDrawingColumn)
     const invoiceNumber = parseInvoiceNumber(invoiceNumberColumn)
     const amountOwed = parseCurrencyAmountFromColumn(amountOwedColumn)
+    const poAmount = parseCurrencyAmountFromColumn(poAmountColumn)
     const paidInFull = parsePaidInFullStatus(paidInFullColumn, amountOwed)
     const isLate = !isDone && typeof daysUntilDue === 'number' ? daysUntilDue < 0 : false
     const daysLate = isLate && typeof daysUntilDue === 'number' ? Math.abs(daysUntilDue) : 0
@@ -243,6 +261,7 @@ export function createMondayDashboardService({
       invoiceNumber,
       paidInFull,
       amountOwed,
+      poAmount,
     }
   }
 

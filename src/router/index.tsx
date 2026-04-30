@@ -12,6 +12,7 @@ import {
   AppLayout,
   CrmPage,
   DashboardPage,
+  OrdersPage,
   PicturesPage,
   QuickBooksPage,
   SalesPage,
@@ -40,6 +41,14 @@ export const router = createBrowserRouter([
         element: withRouteSuspense(
           <RequireManagerOrAdminRoute>
             <TimesheetPage initialView="reports" />
+          </RequireManagerOrAdminRoute>,
+        ),
+      },
+      {
+        path: 'orders',
+        element: withRouteSuspense(
+          <RequireManagerOrAdminRoute>
+            <OrdersPage />
           </RequireManagerOrAdminRoute>,
         ),
       },

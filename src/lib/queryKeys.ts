@@ -36,6 +36,9 @@ export const QUERY_KEYS = {
   quickbooksStatus: ['quickbooks', 'status'] as const,
   quickbooksOverview: ['quickbooks', 'overview'] as const,
 
+  // Orders — Monday Orders/Shipped combined DB view
+  ordersOverview: (includeShipped: boolean) => ['orders', 'overview', includeShipped] as const,
+
   // Admin
   authBootstrap: ['auth', 'bootstrap'] as const,
   adminBootstrap: ['admin', 'bootstrap'] as const,

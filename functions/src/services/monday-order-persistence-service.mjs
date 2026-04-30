@@ -141,6 +141,7 @@ export function createMondayOrderPersistenceService({
       invoiceNumber: String(order?.invoiceNumber ?? '').trim() || null,
       paidInFull: typeof order?.paidInFull === 'boolean' ? Boolean(order.paidInFull) : null,
       amountOwed: Number.isFinite(order?.amountOwed) ? Number(order.amountOwed) : null,
+      poAmount: Number.isFinite(order?.poAmount) ? Number(order.poAmount) : null,
       updatedAt: now,
       lastSeenAt: now,
     }

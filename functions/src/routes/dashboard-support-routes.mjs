@@ -206,6 +206,182 @@ export function registerDashboardSupportRoutes(app, deps) {
     )
   }
 
+  async function refreshMondayOrdersAndCache() {
+    const snapshot = await fetchMondayDashboardSnapshot()
+
+    await persistNewMondayOrders(snapshot)
+    await setDashboardSnapshotCache('monday', snapshot)
+
+    const shippedBoardId = String(mondayShippedBoardId ?? '').trim()
+
+    if (shippedBoardId) {
+      try {
+        const shippedSnapshot = await fetchMondayDashboardSnapshot({
+          boardId: shippedBoardId,
+          boardUrl: String(mondayShippedBoardUrl ?? '').trim() || null,
+          boardName: 'Shipped Orders',
+        })
+
+        await persistNewMondayOrders(shippedSnapshot)
+        await setDashboardSnapshotCache(`monday_shipped_${shippedBoardId}`, shippedSnapshot)
+      } catch (error) {
+        console.error('Unable to refresh shipped Monday board snapshot.', error)
+      }
+    }
+
+    return snapshot
+  }
+
+  function isShippedOrderDocument(orderDocument) {
+    const shippedBoardId = String(mondayShippedBoardId ?? '').trim()
+    const boardId = String(orderDocument?.mondayBoardId ?? '').trim()
+    const movedToShippedAt = String(orderDocument?.movedToShippedAt ?? '').trim()
+    const shippedAt = String(orderDocument?.shippedAt ?? '').trim()
+    const statusLabel = String(orderDocument?.statusLabel ?? '').trim().toLowerCase()
+
+    if (shippedBoardId && boardId === shippedBoardId) {
+      return true
+    }
+
+    if (movedToShippedAt || shippedAt) {
+      return true
+    }
+
+    if (Boolean(orderDocument?.isDone)) {
+      return true
+    }
+
+    return statusLabel.includes('shipped')
+  }
+
+  function extractJobNumber(orderDocument) {
+    const explicitJobNumber = String(orderDocument?.jobNumber ?? '').trim()
+
+    if (explicitJobNumber) {
+      return explicitJobNumber
+    }
+
+    const orderName = String(orderDocument?.orderName ?? '').trim()
+    const matchedDigits = orderName.match(/\b\d{4,}\b/)
+
+    if (matchedDigits?.[0]) {
+      return matchedDigits[0]
+    }
+
+    return String(orderDocument?.mondayItemId ?? '').trim()
+  }
+
+  function buildOrdersOverviewRow(orderDocument) {
+    const mondayItemId = String(orderDocument?.mondayItemId ?? '').trim()
+    const orderName = String(orderDocument?.orderName ?? '').trim() || null
+    const isShipped = isShippedOrderDocument(orderDocument)
+    const rawStatusLabel = String(orderDocument?.statusLabel ?? '').trim() || null
+    const estimatedReadyAt =
+      String(
+        orderDocument?.estimatedReadyAt
+        ?? orderDocument?.estimatedReadyDate
+        ?? orderDocument?.estimatedReady
+        ?? '',
+      ).trim() || null
+
+    return {
+      id: mondayItemId,
+      mondayItemId,
+      jobNumber: extractJobNumber(orderDocument),
+      orderName,
+      poAmount: Number.isFinite(orderDocument?.poAmount) ? Number(orderDocument.poAmount) : null,
+      progressPercent: Number.isFinite(orderDocument?.progressPercent)
+        ? Number(orderDocument.progressPercent)
+        : null,
+      estimatedReadyAt,
+      statusLabel: isShipped ? 'Shipped' : rawStatusLabel,
+      isShipped,
+      shippedAt: String(orderDocument?.shippedAt ?? '').trim() || null,
+      movedToShippedAt: String(orderDocument?.movedToShippedAt ?? '').trim() || null,
+      mondayBoardId: String(orderDocument?.mondayBoardId ?? '').trim() || null,
+      mondayBoardName: String(orderDocument?.mondayBoardName ?? '').trim() || null,
+      mondayUpdatedAt: String(orderDocument?.mondayUpdatedAt ?? '').trim() || null,
+      mondayItemUrl: String(orderDocument?.mondayItemUrl ?? '').trim() || null,
+      dueDate: String(orderDocument?.effectiveDueDate ?? '').trim()
+        || String(orderDocument?.dueDate ?? '').trim()
+        || String(orderDocument?.computedDueDate ?? '').trim()
+        || null,
+      shopDrawingCachedUrl: String(orderDocument?.shopDrawingDownloadUrl ?? '').trim() || null,
+      shopDrawingUrl: String(orderDocument?.shopDrawingUrl ?? '').trim() || null,
+      shopDrawingFileName: String(orderDocument?.shopDrawingFileName ?? '').trim() || null,
+    }
+  }
+
+
+app.get('/api/orders/overview', requireFirebaseAuth, async (req, res, next) => {
+  try {
+    const includeShipped = String(req.query?.includeShipped ?? '').trim() === '1'
+    const refreshRequested = isDashboardRefreshRequested(req)
+    const { mondayOrdersCollection } = await getCollections()
+    const existingCount = await mondayOrdersCollection.estimatedDocumentCount()
+    let refreshed = false
+
+    if (refreshRequested || existingCount === 0) {
+      await refreshMondayOrdersAndCache()
+      refreshed = true
+    }
+
+    const orderDocuments = await mondayOrdersCollection
+      .find(
+        {},
+        {
+          projection: {
+            _id: 0,
+            mondayItemId: 1,
+            jobNumber: 1,
+            orderName: 1,
+            poAmount: 1,
+            progressPercent: 1,
+            estimatedReadyAt: 1,
+            estimatedReadyDate: 1,
+            estimatedReady: 1,
+            statusLabel: 1,
+            isDone: 1,
+            shippedAt: 1,
+            movedToShippedAt: 1,
+            mondayBoardId: 1,
+            mondayBoardName: 1,
+            mondayUpdatedAt: 1,
+            mondayItemUrl: 1,
+            effectiveDueDate: 1,
+            dueDate: 1,
+            computedDueDate: 1,
+            shopDrawingDownloadUrl: 1,
+            shopDrawingUrl: 1,
+            shopDrawingFileName: 1,
+            updatedAt: 1,
+            createdAt: 1,
+          },
+        },
+      )
+      .sort({ updatedAt: -1, createdAt: -1, mondayItemId: 1 })
+      .toArray()
+
+    const rows = orderDocuments.map((orderDocument) => buildOrdersOverviewRow(orderDocument))
+    const shippedCount = rows.filter((row) => row.isShipped).length
+    const visibleRows = includeShipped ? rows : rows.filter((row) => !row.isShipped)
+
+    return res.json({
+      generatedAt: new Date().toISOString(),
+      includeShipped,
+      refreshed,
+      counts: {
+        total: rows.length,
+        shipped: shippedCount,
+        visible: visibleRows.length,
+      },
+      orders: visibleRows,
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
 
 app.get('/api/dashboard/monday', requireFirebaseAuth, async (req, res, next) => {
   try {
@@ -273,30 +449,6 @@ app.get('/api/dashboard/monday/shop-drawing/download', requireFirebaseAuth, asyn
       )
     }
 
-    async function refreshMondayOrders() {
-      const snapshot = await fetchMondayDashboardSnapshot()
-      await persistNewMondayOrders(snapshot)
-
-      const shippedBoardId = String(mondayShippedBoardId ?? '').trim()
-
-      if (shippedBoardId) {
-        try {
-          const shippedSnapshot = await fetchMondayDashboardSnapshot({
-            boardId: shippedBoardId,
-            boardUrl: String(mondayShippedBoardUrl ?? '').trim() || null,
-            boardName: 'Shipped Orders',
-          })
-
-          await persistNewMondayOrders(shippedSnapshot)
-          await setDashboardSnapshotCache(`monday_shipped_${shippedBoardId}`, shippedSnapshot)
-        } catch (error) {
-          console.error('Unable to refresh shipped Monday board for shop drawing lookup.', error)
-        }
-      }
-
-      await setDashboardSnapshotCache('monday', snapshot)
-    }
-
     const refreshRequested = isDashboardRefreshRequested(req)
     let orderDocument = await loadOrderDrawingDocument()
 
@@ -305,7 +457,7 @@ app.get('/api/dashboard/monday/shop-drawing/download', requireFirebaseAuth, asyn
       || !orderDocument
       || !String(orderDocument.shopDrawingDownloadUrl ?? '').trim()
     ) {
-      await refreshMondayOrders()
+      await refreshMondayOrdersAndCache()
       orderDocument = await loadOrderDrawingDocument()
     }
 
@@ -326,7 +478,7 @@ app.get('/api/dashboard/monday/shop-drawing/download', requireFirebaseAuth, asyn
     let upstreamResponse = await fetch(cachedDrawingUrl)
 
     if (!upstreamResponse.ok && !refreshRequested) {
-      await refreshMondayOrders()
+      await refreshMondayOrdersAndCache()
       orderDocument = await loadOrderDrawingDocument()
 
       const refreshedDrawingUrl = String(orderDocument?.shopDrawingDownloadUrl ?? '').trim()

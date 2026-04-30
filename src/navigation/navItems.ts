@@ -2,6 +2,7 @@ import AdminPanelSettingsRoundedIcon from '@mui/icons-material/AdminPanelSetting
 import AccountBalanceRoundedIcon from '@mui/icons-material/AccountBalanceRounded'
 import BusinessRoundedIcon from '@mui/icons-material/BusinessRounded'
 import DashboardRoundedIcon from '@mui/icons-material/DashboardRounded'
+import Inventory2RoundedIcon from '@mui/icons-material/Inventory2Rounded'
 import ManageHistoryRoundedIcon from '@mui/icons-material/ManageHistoryRounded'
 import NotificationsActiveRoundedIcon from '@mui/icons-material/NotificationsActiveRounded'
 import PhotoLibraryRoundedIcon from '@mui/icons-material/PhotoLibraryRounded'
@@ -44,6 +45,12 @@ export const navItems: NavItem[] = [
     label: 'Reports',
     path: '/reports',
     icon: TrendingUpRoundedIcon,
+  },
+  {
+    label: 'Orders',
+    path: '/orders',
+    icon: Inventory2RoundedIcon,
+    managerOrAdminOnly: true,
   },
   {
     label: 'Support',
