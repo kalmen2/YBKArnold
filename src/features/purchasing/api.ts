@@ -20,7 +20,51 @@ export type PurchasingItemsResponse = {
   totalPages: number
   totalCount: number
   count: number
+  refreshSummary?: PurchasingRefreshSummary | null
+  sync?: PurchasingSyncMetadata | null
   items: PurchasingItemSummary[]
+}
+
+export type PurchasingRefreshSummary = {
+  source: string | null
+  lastAttemptedRefreshAt: string | null
+  lastSuccessfulRefreshAt: string | null
+  lastQuickBooksBillUpdatedAt: string | null
+  billCountFetched: number
+  lineCountFetched: number
+  newTransactionCount: number
+  updatedTransactionCount: number
+  touchedItemCount: number
+  rebuiltItemCount: number
+  truncated: boolean
+  lastErrorMessage: string | null
+  lastErrorAt: string | null
+}
+
+export type PurchasingSyncMetadata = {
+  source: string | null
+  lastAttemptedRefreshAt: string | null
+  lastSuccessfulRefreshAt: string | null
+  lastQuickBooksBillUpdatedAt: string | null
+  lastErrorMessage: string | null
+  lastErrorAt: string | null
+  truncated: boolean
+}
+
+export type PurchasingRefreshResponse = {
+  generatedAt: string
+  summary: PurchasingRefreshSummary
+}
+
+export type PurchasingItemPhoto = {
+  path: string
+  url: string
+  createdAt: string
+}
+
+export type PurchasingItemPhotosResponse = {
+  itemKey: string
+  photos: PurchasingItemPhoto[]
 }
 
 export type PurchasingTransaction = {
@@ -104,5 +148,58 @@ export function fetchPurchasingItemDetail(itemKey: string) {
   // which breaks Express :itemKey route matching and yields a 404).
   return apiRequest<PurchasingItemDetailResponse>(
     `/api/purchasing/items/detail?key=${encodeURIComponent(itemKey)}`,
+  )
+}
+
+export function refreshPurchasingFromQuickBooks(options: { force?: boolean } = {}) {
+  const params = new URLSearchParams()
+  if (options.force) {
+    params.set('force', '1')
+  }
+  const query = params.toString()
+
+  return apiRequest<PurchasingRefreshResponse>(
+    query ? `/api/purchasing/refresh?${query}` : '/api/purchasing/refresh',
+    { method: 'POST' },
+    { timeoutMs: 180000 },
+  )
+}
+
+export function fetchPurchasingItemPhotos(itemKey: string) {
+  return apiRequest<PurchasingItemPhotosResponse>(
+    `/api/purchasing/items/photos?key=${encodeURIComponent(itemKey)}`,
+  )
+}
+
+export function uploadPurchasingItemPhoto(
+  itemKey: string,
+  payload: { imageBase64: string; mimeType?: string },
+) {
+  return apiRequest<{ itemKey: string; photo: PurchasingItemPhoto }>(
+    '/api/purchasing/items/photos',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        key: itemKey,
+        imageBase64: payload.imageBase64,
+        mimeType: payload.mimeType,
+      }),
+    },
+    { timeoutMs: 120000 },
+  )
+}
+
+export function deletePurchasingItemPhoto(itemKey: string, path: string) {
+  const query = new URLSearchParams({
+    key: itemKey,
+    path,
+  }).toString()
+
+  return apiRequest<{ ok: boolean; itemKey: string; path: string }>(
+    `/api/purchasing/items/photos?${query}`,
+    {
+      method: 'DELETE',
+      body: JSON.stringify({ key: itemKey, path }),
+    },
   )
 }

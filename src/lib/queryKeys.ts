@@ -56,4 +56,5 @@ export const QUERY_KEYS = {
   purchasingItems: (search: string, page: number, pageSize: number) =>
     ['purchasing', 'items', search, page, pageSize] as const,
   purchasingItemDetail: (itemKey: string) => ['purchasing', 'item', itemKey] as const,
+  purchasingItemPhotos: (itemKey: string) => ['purchasing', 'item-photos', itemKey] as const,
 } as const
