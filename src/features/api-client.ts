@@ -52,19 +52,60 @@ export function clearCachedToken() {
   cachedTokenExpiresAt = 0
 }
 
-export async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
+type ApiRequestOptions = {
+  timeoutMs?: number
+}
+
+export async function apiRequest<T>(
+  path: string,
+  options: RequestInit = {},
+  requestOptions: ApiRequestOptions = {},
+): Promise<T> {
   async function send(forceRefresh = false) {
     const authHeaders = await getAuthHeaders(forceRefresh)
+    const timeoutMs = Number(requestOptions.timeoutMs)
+    const hasTimeout = Number.isFinite(timeoutMs) && timeoutMs > 0
+    const abortController = hasTimeout ? new AbortController() : null
+    let timeoutId: number | null = null
 
-    return fetch(path, {
-      ...options,
-      headers: {
-        'Content-Type': 'application/json',
-        'x-client-platform': 'web',
-        ...authHeaders,
-        ...(options.headers ?? {}),
-      },
-    })
+    if (hasTimeout && abortController) {
+      timeoutId = window.setTimeout(() => {
+        abortController.abort()
+      }, timeoutMs)
+
+      if (options.signal) {
+        options.signal.addEventListener(
+          'abort',
+          () => {
+            abortController.abort()
+          },
+          { once: true },
+        )
+      }
+    }
+
+    try {
+      return await fetch(path, {
+        ...options,
+        signal: abortController?.signal ?? options.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          'x-client-platform': 'web',
+          ...authHeaders,
+          ...(options.headers ?? {}),
+        },
+      })
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError' && hasTimeout) {
+        throw new Error('Request timed out. Please try again.')
+      }
+
+      throw error
+    } finally {
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId)
+      }
+    }
   }
 
   let response = await send()

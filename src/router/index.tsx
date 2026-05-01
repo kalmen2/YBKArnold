@@ -12,8 +12,10 @@ import {
   AppLayout,
   CrmPage,
   DashboardPage,
+  OrdersLegacyPage,
   OrdersPage,
   PicturesPage,
+  PurchasingPage,
   QuickBooksPage,
   SalesPage,
   SupportPage,
@@ -53,6 +55,14 @@ export const router = createBrowserRouter([
         ),
       },
       {
+        path: 'orders-legacy',
+        element: withRouteSuspense(
+          <RequireManagerOrAdminRoute>
+            <OrdersLegacyPage />
+          </RequireManagerOrAdminRoute>,
+        ),
+      },
+      {
         path: 'workers',
         element: <Navigate to="/timesheet" replace />,
       },
@@ -79,6 +89,10 @@ export const router = createBrowserRouter([
       {
         path: 'sales',
         element: withRouteSuspense(<SalesPage />),
+      },
+      {
+        path: 'purchasing',
+        element: withRouteSuspense(<PurchasingPage />),
       },
       // Redirect old individual routes to the unified Sales page
       {

@@ -1,3 +1,4 @@
+import AccountBalanceRoundedIcon from '@mui/icons-material/AccountBalanceRounded'
 import AccountTreeRoundedIcon from '@mui/icons-material/AccountTreeRounded'
 import AssignmentRoundedIcon from '@mui/icons-material/AssignmentRounded'
 import LinkOffRoundedIcon from '@mui/icons-material/LinkOffRounded'
@@ -16,7 +17,6 @@ import {
   Dialog,
   DialogContent,
   DialogTitle,
-  Divider,
   Paper,
   Stack,
   Table,
@@ -33,6 +33,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { formatCurrency, formatDateTime } from '../lib/formatters'
 import {
   createQuickBooksAuthorizeUrl,
+  type QuickBooksLoanDetailRow,
+  type QuickBooksLoanSummary,
   fetchQuickBooksOverview,
   fetchQuickBooksStatus,
   type QuickBooksDetailRow,
@@ -42,6 +44,7 @@ import {
 
 type QuickBooksDrilldownKey =
   | 'projects'
+  | 'loanSummary'
   | 'purchaseOrders'
   | 'purchaseOrderLines'
   | 'unlinkedPurchaseOrderLines'
@@ -54,12 +57,14 @@ type QuickBooksDrilldownKey =
 type ProjectMetricType = 'purchaseOrders' | 'bills' | 'invoices' | 'payments'
 
 type QuickBooksSummaryCard = {
+  id: string
   key: QuickBooksDrilldownKey
   title: string
   value: string
   helper: string
   color: string
   icon: ReactNode
+  loanBucketId?: string
 }
 
 type OAuthNotice = {
@@ -106,6 +111,7 @@ type ProjectMetricDrilldown = {
 
 const quickBooksDrilldownTitles: Record<QuickBooksDrilldownKey, string> = {
   projects: 'Projects',
+  loanSummary: 'Loan Summary',
   purchaseOrders: 'Purchase Orders',
   purchaseOrderLines: 'Purchase-Order Lines',
   unlinkedPurchaseOrderLines: 'PO Lines Missing Project',
@@ -229,6 +235,34 @@ function quickBooksTxnTypeLabel(value: QuickBooksUnlinkedTransaction['type']) {
   }
 
   return 'Payment'
+}
+
+function quickBooksLoanTxnTypeLabel(value: QuickBooksLoanDetailRow['type']) {
+  if (value === 'journalEntry') {
+    return 'Journal Entry'
+  }
+
+  if (value === 'transfer') {
+    return 'Transfer'
+  }
+
+  if (value === 'deposit') {
+    return 'Deposit'
+  }
+
+  return 'Check'
+}
+
+function quickBooksLoanDirectionLabel(value: QuickBooksLoanDetailRow['direction']) {
+  if (value === 'in') {
+    return 'Invested In'
+  }
+
+  if (value === 'out') {
+    return 'Taken Out'
+  }
+
+  return 'Unclassified'
 }
 
 function purchaseOrderKeyFromDetailRow(row: QuickBooksDetailRow) {
@@ -897,6 +931,107 @@ function UnlinkedTransactionsTable({ rows }: { rows: QuickBooksUnlinkedTransacti
   )
 }
 
+function LoanSummaryDetailsTable({ bucket }: { bucket: QuickBooksLoanSummary }) {
+  if (bucket.details.length === 0) {
+    return (
+      <Stack spacing={1.25}>
+        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+          <Chip label={`Loan Balance ${formatCurrency(bucket.totalLoanAmount)}`} variant="outlined" />
+          <Chip label={`Invested In ${formatCurrency(bucket.totalInvestedAmount)}`} variant="outlined" />
+          <Chip label={`Taken Out ${formatCurrency(bucket.totalTakenOutAmount)}`} variant="outlined" />
+        </Stack>
+        <Typography color="text.secondary" sx={{ py: 1 }}>
+          No loan movements found for this account yet.
+        </Typography>
+      </Stack>
+    )
+  }
+
+  return (
+    <Stack spacing={1.25}>
+      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+        <Chip label={`Loan Balance ${formatCurrency(bucket.totalLoanAmount)}`} color="primary" variant="outlined" />
+        <Chip label={`Invested In ${formatCurrency(bucket.totalInvestedAmount)}`} variant="outlined" />
+        <Chip label={`Taken Out ${formatCurrency(bucket.totalTakenOutAmount)}`} variant="outlined" />
+        <Chip label={`Movements ${formatInteger(bucket.movementCount)}`} variant="outlined" />
+      </Stack>
+
+      <TableContainer sx={{ maxHeight: 600 }}>
+        <Table size="small" stickyHeader>
+          <TableHead>
+            <TableRow>
+              <TableCell>Date</TableCell>
+              <TableCell>Type</TableCell>
+              <TableCell>Document</TableCell>
+              <TableCell>Loan Account</TableCell>
+              <TableCell>Direction</TableCell>
+              <TableCell align="right">Invested In</TableCell>
+              <TableCell align="right">Taken Out</TableCell>
+              <TableCell align="right">Amount</TableCell>
+              <TableCell>Details</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {bucket.details.map((row, index) => (
+              <TableRow
+                key={`${row.type}:${row.id ?? 'none'}:${row.docNumber ?? 'none'}:${row.txnDate ?? 'none'}:${index}`}
+                hover
+              >
+                <TableCell>{formatDate(row.txnDate)}</TableCell>
+                <TableCell>{quickBooksLoanTxnTypeLabel(row.type)}</TableCell>
+                <TableCell>
+                  <Stack spacing={0.25}>
+                    <Typography variant="body2" fontWeight={600}>
+                      {row.docNumber || '-'}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {row.id || '-'}
+                    </Typography>
+                  </Stack>
+                </TableCell>
+                <TableCell>
+                  <Stack spacing={0.25}>
+                    <Typography variant="body2">{row.accountName || '-'}</Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {row.accountNumber || row.accountId || '-'}
+                    </Typography>
+                  </Stack>
+                </TableCell>
+                <TableCell>
+                  <Chip
+                    size="small"
+                    label={quickBooksLoanDirectionLabel(row.direction)}
+                    color={row.direction === 'in' ? 'success' : row.direction === 'out' ? 'warning' : 'default'}
+                    variant="outlined"
+                  />
+                </TableCell>
+                <TableCell align="right">{row.investedAmount > 0 ? formatCurrency(row.investedAmount) : '-'}</TableCell>
+                <TableCell align="right">{row.takenOutAmount > 0 ? formatCurrency(row.takenOutAmount) : '-'}</TableCell>
+                <TableCell align="right">{formatCurrency(row.amount)}</TableCell>
+                <TableCell sx={{ maxWidth: 320, wordBreak: 'break-word' }}>
+                  <Stack spacing={0.2}>
+                    {row.className ? (
+                      <Typography variant="caption" color="text.secondary">
+                        Class: {row.className}
+                      </Typography>
+                    ) : null}
+                    {row.counterpartyAccountName ? (
+                      <Typography variant="caption" color="text.secondary">
+                        Counterparty: {row.counterpartyAccountName}
+                      </Typography>
+                    ) : null}
+                    <Typography variant="body2">{row.description || '-'}</Typography>
+                  </Stack>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </TableContainer>
+    </Stack>
+  )
+}
+
 export default function QuickBooksPage() {
   const queryClient = useQueryClient()
 
@@ -905,6 +1040,7 @@ export default function QuickBooksPage() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [oauthNotice, setOauthNotice] = useState<OAuthNotice | null>(null)
   const [activeDrilldown, setActiveDrilldown] = useState<QuickBooksDrilldownKey | null>(null)
+  const [activeLoanBucketId, setActiveLoanBucketId] = useState<string | null>(null)
   const [projectMetricDrilldown, setProjectMetricDrilldown] = useState<ProjectMetricDrilldown | null>(null)
 
   // ---------------------------------------------------------------------------
@@ -971,11 +1107,30 @@ export default function QuickBooksPage() {
     [overview?.projects, projectRollupsById],
   )
 
+  const activeLoanSummary = useMemo(() => {
+    if (!overview || !activeLoanBucketId) {
+      return null
+    }
+
+    return overview.loanSummaries.find((loanSummary) => loanSummary.bucketId === activeLoanBucketId) ?? null
+  }, [activeLoanBucketId, overview])
+
   const summaryCards = useMemo<QuickBooksSummaryCard[]>(() => {
     const totals = overview?.totals
+    const loanCards = (overview?.loanSummaries ?? []).map((loanSummary) => ({
+      id: `loan-summary:${loanSummary.bucketId}`,
+      key: 'loanSummary' as const,
+      loanBucketId: loanSummary.bucketId,
+      title: loanSummary.label,
+      value: formatCurrency(loanSummary.totalLoanAmount),
+      helper: `In ${formatCurrency(loanSummary.totalInvestedAmount)} • Out ${formatCurrency(loanSummary.totalTakenOutAmount)}`,
+      color: '#00695c',
+      icon: <AccountBalanceRoundedIcon />,
+    }))
 
-    return [
+    const standardCards: QuickBooksSummaryCard[] = [
       {
+        id: 'projects',
         key: 'projects',
         title: 'Projects',
         value: formatInteger(totals?.projectCount ?? 0),
@@ -984,6 +1139,7 @@ export default function QuickBooksPage() {
         icon: <AccountTreeRoundedIcon />,
       },
       {
+        id: 'purchaseOrders',
         key: 'purchaseOrders',
         title: 'Purchase Orders',
         value: formatInteger(totals?.purchaseOrderCount ?? 0),
@@ -992,6 +1148,7 @@ export default function QuickBooksPage() {
         icon: <AssignmentRoundedIcon />,
       },
       {
+        id: 'purchaseOrderLines',
         key: 'purchaseOrderLines',
         title: 'PO Lines',
         value: formatInteger(totals?.purchaseOrderLineCount ?? 0),
@@ -1000,6 +1157,7 @@ export default function QuickBooksPage() {
         icon: <AssignmentRoundedIcon />,
       },
       {
+        id: 'unlinkedPurchaseOrderLines',
         key: 'unlinkedPurchaseOrderLines',
         title: 'PO Lines Missing Project',
         value: formatInteger(totals?.purchaseOrderLineWithoutProjectCount ?? 0),
@@ -1008,6 +1166,7 @@ export default function QuickBooksPage() {
         icon: <LinkOffRoundedIcon />,
       },
       {
+        id: 'bills',
         key: 'bills',
         title: 'Bills',
         value: formatInteger(totals?.billCount ?? 0),
@@ -1016,6 +1175,7 @@ export default function QuickBooksPage() {
         icon: <ReceiptLongRoundedIcon />,
       },
       {
+        id: 'invoices',
         key: 'invoices',
         title: 'Invoices',
         value: formatInteger(totals?.invoiceCount ?? 0),
@@ -1024,6 +1184,7 @@ export default function QuickBooksPage() {
         icon: <RequestQuoteRoundedIcon />,
       },
       {
+        id: 'payments',
         key: 'payments',
         title: 'Payments',
         value: formatInteger(totals?.paymentCount ?? 0),
@@ -1032,6 +1193,7 @@ export default function QuickBooksPage() {
         icon: <PaymentsRoundedIcon />,
       },
       {
+        id: 'unlinkedTransactions',
         key: 'unlinkedTransactions',
         title: 'Other Unlinked Txns',
         value: formatInteger(totals?.unlinkedTransactionCount ?? 0),
@@ -1040,6 +1202,7 @@ export default function QuickBooksPage() {
         icon: <WarningAmberRoundedIcon />,
       },
       {
+        id: 'outstandingProjects',
         key: 'outstandingProjects',
         title: 'Outstanding Balance',
         value: formatCurrency(totals?.outstandingAmount ?? 0),
@@ -1047,6 +1210,11 @@ export default function QuickBooksPage() {
         color: '#ad1457',
         icon: <LinkRoundedIcon />,
       },
+    ]
+
+    return [
+      ...loanCards,
+      ...standardCards,
     ]
   }, [overview, outstandingProjects.length])
 
@@ -1140,6 +1308,14 @@ export default function QuickBooksPage() {
   const renderDialogBody = () => {
     if (!overview || !activeDrilldown) {
       return <Typography color="text.secondary">No details to show.</Typography>
+    }
+
+    if (activeDrilldown === 'loanSummary') {
+      if (!activeLoanSummary) {
+        return <Typography color="text.secondary">No loan details to show.</Typography>
+      }
+
+      return <LoanSummaryDetailsTable bucket={activeLoanSummary} />
     }
 
     if (activeDrilldown === 'projects') {
@@ -1341,9 +1517,12 @@ export default function QuickBooksPage() {
               >
                 {summaryCards.map((card) => (
                   <Paper
-                    key={card.key}
+                    key={card.id}
                     variant="outlined"
-                    onClick={() => setActiveDrilldown(card.key)}
+                    onClick={() => {
+                      setActiveDrilldown(card.key)
+                      setActiveLoanBucketId(card.key === 'loanSummary' ? card.loanBucketId ?? null : null)
+                    }}
                     sx={{
                       p: 2,
                       borderLeft: `4px solid ${card.color}`,
@@ -1375,29 +1554,6 @@ export default function QuickBooksPage() {
 
               <Typography variant="body2" color="text.secondary">
                 Click any summary box to open full details.
-              </Typography>
-            </Stack>
-          </Paper>
-
-          <Paper variant="outlined" sx={{ p: 2.25 }}>
-            <Stack spacing={1.25}>
-              <Typography variant="h6" fontWeight={700}>
-                How Numbers Are Built
-              </Typography>
-              <Divider />
-              <Typography variant="body2" color="text.secondary">
-                Outstanding Balance is calculated as Invoices minus Payments.
-              </Typography>
-              <Typography variant="body2" color="text.secondary">
-                Project count is derived from QuickBooks Customer records where Job=true (Projects).
-              </Typography>
-              <Typography variant="body2" color="text.secondary">
-                Project PO counts are grouped by unique purchase-order document, while project PO amounts use
-                line-level attribution from QuickBooks.
-              </Typography>
-              <Typography variant="body2" color="text.secondary">
-                In Projects or Outstanding views, click PO, Bills, Invoices, or Payments counts to open the exact
-                source transactions behind that number.
               </Typography>
             </Stack>
           </Paper>

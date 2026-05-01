@@ -8,6 +8,7 @@ import NotificationsActiveRoundedIcon from '@mui/icons-material/NotificationsAct
 import PhotoLibraryRoundedIcon from '@mui/icons-material/PhotoLibraryRounded'
 import SmartToyRoundedIcon from '@mui/icons-material/SmartToyRounded'
 import StoreRoundedIcon from '@mui/icons-material/StoreRounded'
+import ShoppingCartRoundedIcon from '@mui/icons-material/ShoppingCartRounded'
 import SupportAgentRoundedIcon from '@mui/icons-material/SupportAgentRounded'
 import TableChartRoundedIcon from '@mui/icons-material/TableChartRounded'
 import TrendingUpRoundedIcon from '@mui/icons-material/TrendingUpRounded'
@@ -96,5 +97,10 @@ export const navItems: NavItem[] = [
     label: 'Sales',
     path: '/sales',
     icon: StoreRoundedIcon,
+  },
+  {
+    label: 'Purchasing',
+    path: '/purchasing',
+    icon: ShoppingCartRoundedIcon,
   },
 ]

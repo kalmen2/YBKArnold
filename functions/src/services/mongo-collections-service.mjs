@@ -100,6 +100,7 @@ export function createMongoCollectionsService({
         const missingWorkerReviewsCollection = database.collection('timesheet_missing_worker_reviews')
         const dashboardSnapshotsCollection = database.collection('dashboard_snapshots')
         const mondayOrdersCollection = database.collection('monday_orders')
+        const ordersLedgerCollection = database.collection('orders_ledger')
         const authUsersCollection = database.collection('auth_users')
         const mobilePushTokensCollection = database.collection('mobile_push_tokens')
         const mobileAlertsCollection = database.collection('mobile_alerts')
@@ -113,6 +114,8 @@ export function createMongoCollectionsService({
         const crmOrdersCollection = database.collection('crm_orders')
         const aiRulesCollection = database.collection('ai_rules')
         const aiCommentSummariesCollection = database.collection('ai_comment_summaries')
+        const purchasingItemsCollection = database.collection('purchasing_items')
+        const purchasingTransactionsCollection = database.collection('purchasing_transactions')
 
         if (!indexesPromise) {
           indexesPromise = Promise.all([
@@ -135,6 +138,15 @@ export function createMongoCollectionsService({
             mondayOrdersCollection.createIndex({ mondayItemId: 1 }, { unique: true }),
             mondayOrdersCollection.createIndex({ createdAt: -1 }),
             mondayOrdersCollection.createIndex({ orderName: 1 }),
+            ordersLedgerCollection.createIndex({ orderKey: 1 }, { unique: true }),
+            ordersLedgerCollection.createIndex({ status: 1, lastSeenAt: -1 }),
+            ordersLedgerCollection.createIndex({ orderNumber: 1 }),
+            ordersLedgerCollection.createIndex({ lastSeenAt: -1 }),
+            ordersLedgerCollection.createIndex({ mondayItemIds: 1 }),
+            ordersLedgerCollection.createIndex(
+              { orderName: 'text', orderNames: 'text' },
+              { name: 'orders_ledger_text', weights: { orderName: 10, orderNames: 4 } },
+            ),
             authUsersCollection.createIndex({ uid: 1 }, { unique: true }),
             authUsersCollection.createIndex({ emailLower: 1 }, { unique: true }),
             authUsersCollection.createIndex({ linkedWorkerId: 1 }, { unique: true, sparse: true }),
@@ -189,6 +201,17 @@ export function createMongoCollectionsService({
             crmOrdersCollection.createIndex({ createdAt: -1 }),
             aiRulesCollection.createIndex({ category: 1 }, { unique: true }),
             aiCommentSummariesCollection.createIndex({ commentId: 1 }, { unique: true }),
+            purchasingItemsCollection.createIndex({ itemKey: 1 }, { unique: true }),
+            purchasingItemsCollection.createIndex({ totalSpent: -1 }),
+            purchasingItemsCollection.createIndex({ lastPurchaseDate: -1 }),
+            purchasingItemsCollection.createIndex(
+              { itemRaw: 'text', descriptions: 'text', vendorRaws: 'text' },
+              { name: 'purchasing_items_text', weights: { itemRaw: 10, descriptions: 5, vendorRaws: 3 } },
+            ),
+            purchasingTransactionsCollection.createIndex({ id: 1 }, { unique: true }),
+            purchasingTransactionsCollection.createIndex({ itemKey: 1, date: -1 }),
+            purchasingTransactionsCollection.createIndex({ vendorKey: 1, date: -1 }),
+            purchasingTransactionsCollection.createIndex({ poNumber: 1 }, { sparse: true }),
             // Text search indexes for CRM
             crmAccountsCollection.createIndex(
               { name: 'text', email: 'text' },
@@ -224,6 +247,7 @@ export function createMongoCollectionsService({
           missingWorkerReviewsCollection,
           dashboardSnapshotsCollection,
           mondayOrdersCollection,
+          ordersLedgerCollection,
           authUsersCollection,
           mobilePushTokensCollection,
           mobileAlertsCollection,
@@ -237,6 +261,8 @@ export function createMongoCollectionsService({
           crmOrdersCollection,
           aiRulesCollection,
           aiCommentSummariesCollection,
+          purchasingItemsCollection,
+          purchasingTransactionsCollection,
         }
       } catch (error) {
         lastError = error

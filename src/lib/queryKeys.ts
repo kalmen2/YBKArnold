@@ -38,6 +38,8 @@ export const QUERY_KEYS = {
 
   // Orders — Monday Orders/Shipped combined DB view
   ordersOverview: (includeShipped: boolean) => ['orders', 'overview', includeShipped] as const,
+  ordersLedgerOverview: (search: string, status: 'all' | 'shipped' | 'not_shipped') =>
+    ['orders-ledger', 'overview', search, status] as const,
 
   // Admin
   authBootstrap: ['auth', 'bootstrap'] as const,
@@ -49,4 +51,8 @@ export const QUERY_KEYS = {
 
   // Pictures
   photosIndex: ['pictures', 'photos-index'] as const,
+
+  // Purchasing
+  purchasingItems: (search: string) => ['purchasing', 'items', search] as const,
+  purchasingItemDetail: (itemKey: string) => ['purchasing', 'item', itemKey] as const,
 } as const

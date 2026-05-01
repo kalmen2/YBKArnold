@@ -13,6 +13,29 @@ const quickBooksQueryPageSize = 500
 const quickBooksMaxQueryPages = 8
 const quickBooksMaxUnlinkedTransactions = 500
 const quickBooksMaxDetailRowsPerType = 1200
+const quickBooksMaxLoanBuckets = 40
+const quickBooksMaxLoanDetailRowsPerBucket = 1200
+
+const quickBooksKnownLoanOwners = [
+  {
+    key: 'ben_tyberg',
+    label: 'Loan from Ben Tyberg',
+    matchers: ['ben tyberg', 'b tyberg', 'ben t'],
+    accountNumberAliases: [],
+  },
+  {
+    key: 'israel_kamionka',
+    label: 'Loan from Israel Kamionka',
+    matchers: ['israel kamionka', 'israel.kamionka', 'kamionka', 'israel 0050'],
+    accountNumberAliases: ['0050'],
+  },
+  {
+    key: 'yb_coit',
+    label: 'Loan from YB Coit',
+    matchers: ['yb coit', 'coit', 'ybcoit'],
+    accountNumberAliases: [],
+  },
+]
 
 // The overview fires 5–40 live QB API calls (5 entity types × up to 8 pages
 // each). Caching for 5 minutes means repeat navigations hit memory instead
@@ -55,6 +78,20 @@ let quickBooksIndexesPromise
 
 function normalizeText(value, maxLength = 400) {
   return String(value ?? '').trim().slice(0, maxLength)
+}
+
+function normalizeLookupToken(value) {
+  return String(value ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+}
+
+function normalizeAccountNumberToken(value) {
+  return String(value ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '')
+    .trim()
 }
 
 function normalizeMoney(value) {
@@ -226,6 +263,134 @@ function extractQuickBooksRefValue(refValue) {
   )
 }
 
+function extractQuickBooksRefName(refValue) {
+  if (!refValue || typeof refValue !== 'object') {
+    return null
+  }
+
+  return normalizeText(refValue.name, 260) || null
+}
+
+function includesAnyMatcher(normalizedValue, matchers) {
+  if (!normalizedValue || !Array.isArray(matchers) || matchers.length === 0) {
+    return false
+  }
+
+  return matchers.some((matcher) => normalizedValue.includes(normalizeLookupToken(matcher)))
+}
+
+function resolveQuickBooksLoanOwnerKey(value) {
+  const normalizedValue = normalizeLookupToken(value)
+
+  if (!normalizedValue) {
+    return null
+  }
+
+  const matchedOwner = quickBooksKnownLoanOwners.find((owner) =>
+    includesAnyMatcher(normalizedValue, owner.matchers),
+  )
+
+  return matchedOwner?.key ?? null
+}
+
+function resolveQuickBooksLoanOwnerKeyFromAccountNumber(value) {
+  const normalizedAccountNumber = normalizeAccountNumberToken(value)
+
+  if (!normalizedAccountNumber) {
+    return null
+  }
+
+  const matchedOwner = quickBooksKnownLoanOwners.find((owner) =>
+    Array.isArray(owner.accountNumberAliases)
+    && owner.accountNumberAliases.some(
+      (alias) => normalizeAccountNumberToken(alias) === normalizedAccountNumber,
+    ),
+  )
+
+  return matchedOwner?.key ?? null
+}
+
+function getQuickBooksAccountDisplayName(accountRow) {
+  return (
+    normalizeText(accountRow?.FullyQualifiedName, 260)
+    || normalizeText(accountRow?.Name, 260)
+    || normalizeText(accountRow?.Id, 160)
+    || 'Unknown account'
+  )
+}
+
+function getQuickBooksAccountNumber(accountRow) {
+  return normalizeText(accountRow?.AcctNum, 120) || null
+}
+
+function isQuickBooksLoanAccount(accountRow) {
+  const displayName = getQuickBooksAccountDisplayName(accountRow)
+  const accountNumber = getQuickBooksAccountNumber(accountRow)
+  const normalizedDisplayName = normalizeLookupToken(displayName)
+  const accountType = normalizeLookupToken(accountRow?.AccountType)
+  const accountSubType = normalizeLookupToken(accountRow?.AccountSubType)
+
+  if (normalizedDisplayName.includes('loan')) {
+    return true
+  }
+
+  if (includesAnyMatcher(normalizedDisplayName, quickBooksKnownLoanOwners.flatMap((owner) => owner.matchers))) {
+    return true
+  }
+
+  if (resolveQuickBooksLoanOwnerKeyFromAccountNumber(accountNumber)) {
+    return true
+  }
+
+  return accountType.includes('liability') && accountSubType.includes('loan')
+}
+
+function resolveLoanMovementDirectionFromPostingType({ postingType, accountType }) {
+  const normalizedPostingType = normalizeLookupToken(postingType)
+  const normalizedAccountType = normalizeLookupToken(accountType)
+  const isLiabilityAccount = normalizedAccountType.includes('liability')
+
+  if (normalizedPostingType === 'credit') {
+    return isLiabilityAccount ? 'in' : 'out'
+  }
+
+  if (normalizedPostingType === 'debit') {
+    return isLiabilityAccount ? 'out' : 'in'
+  }
+
+  return null
+}
+
+function normalizeLoanOutstandingAmount(accountRow) {
+  const currentBalance = normalizeMoney(accountRow?.CurrentBalance)
+
+  if (!Number.isFinite(currentBalance)) {
+    return 0
+  }
+
+  return Math.abs(currentBalance)
+}
+
+function createLoanBucket({
+  bucketId,
+  ownerKey = null,
+  label,
+}) {
+  return {
+    bucketId,
+    ownerKey,
+    label,
+    accountIds: [],
+    accountNumbers: [],
+    totalLoanAmount: 0,
+    totalInvestedAmount: 0,
+    totalTakenOutAmount: 0,
+    movementOutstandingAmount: 0,
+    movementCount: 0,
+    details: [],
+  }
+}
+
 function collectCustomerRefsDeep(input, refsSet, depth = 0) {
   if (depth > 6 || !input) {
     return
@@ -256,6 +421,64 @@ function collectCustomerRefsDeep(input, refsSet, depth = 0) {
       collectCustomerRefsDeep(value, refsSet, depth + 1)
     }
   })
+}
+
+function resolveQuickBooksLineDetailObject(line) {
+  if (!line || typeof line !== 'object') {
+    return null
+  }
+
+  const detailKeys = [
+    'JournalEntryLineDetail',
+    'DepositLineDetail',
+    'AccountBasedExpenseLineDetail',
+    'ItemBasedExpenseLineDetail',
+    'AccountBasedExpenseLineDetail',
+    'ItemBasedExpenseLineDetail',
+    'SalesItemLineDetail',
+    'ItemLineDetail',
+    'AccountBasedExpenseLineDetail',
+  ]
+
+  for (const key of detailKeys) {
+    const detailValue = line[key]
+
+    if (detailValue && typeof detailValue === 'object') {
+      return detailValue
+    }
+  }
+
+  return null
+}
+
+function extractQuickBooksLineAccountRef(line) {
+  const detail = resolveQuickBooksLineDetailObject(line)
+
+  return (
+    extractQuickBooksRefValue(detail?.AccountRef)
+    || extractQuickBooksRefValue(line?.AccountRef)
+    || ''
+  )
+}
+
+function extractQuickBooksLineClassName(line) {
+  const detail = resolveQuickBooksLineDetailObject(line)
+
+  return (
+    extractQuickBooksRefName(detail?.ClassRef)
+    || extractQuickBooksRefName(line?.ClassRef)
+    || null
+  )
+}
+
+function extractQuickBooksLinePostingType(line) {
+  const detail = resolveQuickBooksLineDetailObject(line)
+
+  return (
+    normalizeText(detail?.PostingType, 40)
+    || normalizeText(line?.PostingType, 40)
+    || null
+  )
 }
 
 function extractProjectRefsFromQuickBooksTxn(transaction) {
@@ -291,6 +514,7 @@ function toQuickBooksDetailRow({
   docNumber,
   txnDate,
   totalAmount,
+  balanceAmount = null,
   projectId = null,
   projectName = null,
   lineNumber = null,
@@ -304,6 +528,7 @@ function toQuickBooksDetailRow({
     docNumber: normalizeText(docNumber, 160) || null,
     txnDate: normalizeText(txnDate, 40) || null,
     totalAmount: normalizeMoney(totalAmount),
+    balanceAmount: Number.isFinite(Number(balanceAmount)) ? normalizeMoney(balanceAmount) : null,
     projectId: normalizeText(projectId, 160) || null,
     projectName: normalizeText(projectName, 260) || null,
     lineNumber: Number.isFinite(Number(lineNumber)) ? Number(lineNumber) : null,
@@ -901,12 +1126,24 @@ export function registerQuickBooksRoutes(app, deps) {
         billsResult,
         invoicesResult,
         paymentsResult,
+        accountsResult,
+        journalEntriesResult,
+        transfersResult,
+        depositsResult,
+        checksResult,
       ] = await Promise.all([
         queryAllQuickBooksRows(queryFn, 'Customer'),
         queryAllQuickBooksRows(queryFn, 'PurchaseOrder'),
         queryAllQuickBooksRows(queryFn, 'Bill'),
         queryAllQuickBooksRows(queryFn, 'Invoice'),
         queryAllQuickBooksRows(queryFn, 'Payment'),
+        queryAllQuickBooksRows(queryFn, 'Account'),
+        queryAllQuickBooksRows(queryFn, 'JournalEntry'),
+        queryAllQuickBooksRows(queryFn, 'Transfer'),
+        queryAllQuickBooksRows(queryFn, 'Deposit'),
+        // Some QuickBooks contexts reject SELECT * FROM Check; Purchase is the
+        // supported transaction entity for check-like outflows.
+        queryAllQuickBooksRows(queryFn, 'Purchase'),
       ])
 
       const projectsById = new Map()
@@ -948,6 +1185,10 @@ export function registerQuickBooksRoutes(app, deps) {
         unlinkedTransactionCount: 0,
         unlinkedAmount: 0,
         outstandingAmount: 0,
+        loanSummaryCount: 0,
+        loanTotalAmount: 0,
+        loanInvestedAmount: 0,
+        loanTakenOutAmount: 0,
       }
       const unlinkedTransactions = []
       const purchaseOrderLineDetails = []
@@ -1065,6 +1306,7 @@ export function registerQuickBooksRoutes(app, deps) {
             docNumber: normalizeQuickBooksDocNumber(txn),
             txnDate: normalizeText(txn?.TxnDate, 40) || null,
             totalAmount: amount,
+            balanceAmount: txnTypeKey === 'invoice' ? normalizeMoney(txn?.Balance) : null,
             candidateProjectRefs: refs,
           }
 
@@ -1125,6 +1367,412 @@ export function registerQuickBooksRoutes(app, deps) {
       processTransactionRows('invoice', invoicesResult.rows, invoiceDetails)
       processTransactionRows('payment', paymentsResult.rows, paymentDetails)
 
+      const accountsById = new Map()
+
+      accountsResult.rows.forEach((accountRow) => {
+        const accountId = normalizeText(accountRow?.Id, 160)
+
+        if (!accountId) {
+          return
+        }
+
+        accountsById.set(accountId, accountRow)
+      })
+
+      const loanAccountsById = new Map(
+        [...accountsById.entries()].filter(([, accountRow]) => isQuickBooksLoanAccount(accountRow)),
+      )
+      const loanBucketsById = new Map(
+        quickBooksKnownLoanOwners.map((owner) => [
+          owner.key,
+          createLoanBucket({
+            bucketId: owner.key,
+            ownerKey: owner.key,
+            label: owner.label,
+          }),
+        ]),
+      )
+      const loanBucketByAccountId = new Map()
+
+      const resolveLoanLabelFromOwnerKey = (ownerKey) => {
+        const matchedOwner = quickBooksKnownLoanOwners.find((owner) => owner.key === ownerKey)
+
+        return matchedOwner?.label || 'Loan'
+      }
+
+      const ensureLoanBucketById = ({ bucketId, ownerKey = null, label }) => {
+        if (!bucketId) {
+          return null
+        }
+
+        if (!loanBucketsById.has(bucketId)) {
+          loanBucketsById.set(
+            bucketId,
+            createLoanBucket({
+              bucketId,
+              ownerKey,
+              label,
+            }),
+          )
+        }
+
+        return loanBucketsById.get(bucketId) ?? null
+      }
+
+      const attachLoanAccountToBucket = ({ bucket, accountId }) => {
+        if (!bucket) {
+          return
+        }
+
+        const normalizedAccountId = normalizeText(accountId, 160)
+
+        if (!normalizedAccountId) {
+          return
+        }
+
+        if (!bucket.accountIds.includes(normalizedAccountId)) {
+          bucket.accountIds.push(normalizedAccountId)
+        }
+
+        const accountRow = loanAccountsById.get(normalizedAccountId)
+        const accountNumber = getQuickBooksAccountNumber(accountRow)
+
+        if (accountNumber && !bucket.accountNumbers.includes(accountNumber)) {
+          bucket.accountNumbers.push(accountNumber)
+        }
+      }
+
+      const ensureLoanBucketForAccount = (accountId) => {
+        const normalizedAccountId = normalizeText(accountId, 160)
+
+        if (!normalizedAccountId) {
+          return null
+        }
+
+        if (loanBucketByAccountId.has(normalizedAccountId)) {
+          return loanBucketByAccountId.get(normalizedAccountId)
+        }
+
+        const accountRow = loanAccountsById.get(normalizedAccountId)
+
+        if (!accountRow) {
+          return null
+        }
+
+        const accountDisplayName = getQuickBooksAccountDisplayName(accountRow)
+        const accountNumber = getQuickBooksAccountNumber(accountRow)
+        const ownerKey =
+          resolveQuickBooksLoanOwnerKey(accountDisplayName)
+          || resolveQuickBooksLoanOwnerKeyFromAccountNumber(accountNumber)
+          || resolveQuickBooksLoanOwnerKey(accountNumber)
+          || null
+        const fallbackBucketId = accountNumber
+          ? `loan_account:${accountNumber}`
+          : `loan_account:${normalizedAccountId}`
+        const bucketId = ownerKey || fallbackBucketId
+
+        const bucket = ensureLoanBucketById({
+          bucketId,
+          ownerKey,
+          label: ownerKey
+            ? resolveLoanLabelFromOwnerKey(ownerKey)
+            : accountNumber
+              ? `Loan (${accountNumber})`
+              : `Loan (${accountDisplayName})`,
+        })
+
+        if (!bucket) {
+          return null
+        }
+
+        if (!bucket.accountIds.includes(normalizedAccountId)) {
+          bucket.totalLoanAmount = normalizeMoney(
+            bucket.totalLoanAmount + normalizeLoanOutstandingAmount(accountRow),
+          )
+        }
+
+        attachLoanAccountToBucket({
+          bucket,
+          accountId: normalizedAccountId,
+        })
+
+        loanBucketByAccountId.set(normalizedAccountId, bucket)
+
+        return bucket
+      }
+
+      const resolveLoanBucketForMovement = ({ accountId, className = null }) => {
+        const normalizedAccountId = normalizeText(accountId, 160)
+
+        if (!normalizedAccountId) {
+          return null
+        }
+
+        const classOwnerKey = resolveQuickBooksLoanOwnerKey(className)
+
+        if (classOwnerKey) {
+          const bucket = ensureLoanBucketById({
+            bucketId: classOwnerKey,
+            ownerKey: classOwnerKey,
+            label: resolveLoanLabelFromOwnerKey(classOwnerKey),
+          })
+
+          attachLoanAccountToBucket({
+            bucket,
+            accountId: normalizedAccountId,
+          })
+
+          return bucket
+        }
+
+        return ensureLoanBucketForAccount(normalizedAccountId)
+      }
+
+      const appendLoanMovementDetail = ({
+        accountId,
+        txnType,
+        txnId,
+        txnDocNumber,
+        txnDate,
+        amount,
+        direction,
+        description = null,
+        className = null,
+        counterpartyAccountName = null,
+      }) => {
+        const bucket = resolveLoanBucketForMovement({
+          accountId,
+          className,
+        })
+
+        if (!bucket) {
+          return
+        }
+
+        const normalizedAmount = normalizeMoney(amount)
+
+        if (normalizedAmount <= 0) {
+          return
+        }
+
+        const investedAmount = direction === 'in' ? normalizedAmount : 0
+        const takenOutAmount = direction === 'out' ? normalizedAmount : 0
+        const accountRow = loanAccountsById.get(normalizeText(accountId, 160))
+
+        bucket.totalInvestedAmount = normalizeMoney(bucket.totalInvestedAmount + investedAmount)
+        bucket.totalTakenOutAmount = normalizeMoney(bucket.totalTakenOutAmount + takenOutAmount)
+        bucket.movementOutstandingAmount = normalizeMoney(
+          bucket.movementOutstandingAmount + investedAmount - takenOutAmount,
+        )
+        bucket.movementCount += 1
+        bucket.details.push({
+          type: txnType,
+          id: normalizeText(txnId, 160) || null,
+          docNumber: normalizeText(txnDocNumber, 160) || null,
+          txnDate: normalizeText(txnDate, 40) || null,
+          amount: normalizedAmount,
+          direction,
+          investedAmount,
+          takenOutAmount,
+          accountId: normalizeText(accountId, 160) || null,
+          accountName: getQuickBooksAccountDisplayName(accountRow),
+          accountNumber: getQuickBooksAccountNumber(accountRow),
+          className: normalizeText(className, 200) || null,
+          description: normalizeText(description, 280) || null,
+          counterpartyAccountName: normalizeText(counterpartyAccountName, 260) || null,
+        })
+      }
+
+      loanAccountsById.forEach((_, accountId) => {
+        ensureLoanBucketForAccount(accountId)
+      })
+
+      journalEntriesResult.rows.forEach((journalEntry) => {
+        const txnId = normalizeText(journalEntry?.Id, 160) || null
+        const txnDocNumber = normalizeQuickBooksDocNumber(journalEntry)
+        const txnDate = normalizeText(journalEntry?.TxnDate, 40) || null
+        const lines = Array.isArray(journalEntry?.Line) ? journalEntry.Line : []
+
+        lines.forEach((line) => {
+          const accountId = extractQuickBooksLineAccountRef(line)
+
+          if (!loanAccountsById.has(accountId)) {
+            return
+          }
+
+          const accountRow = loanAccountsById.get(accountId)
+          const direction = resolveLoanMovementDirectionFromPostingType({
+            postingType: extractQuickBooksLinePostingType(line),
+            accountType: accountRow?.AccountType,
+          }) || 'unknown'
+
+          appendLoanMovementDetail({
+            accountId,
+            txnType: 'journalEntry',
+            txnId,
+            txnDocNumber,
+            txnDate,
+            amount: line?.Amount,
+            direction,
+            description: line?.Description,
+            className: extractQuickBooksLineClassName(line),
+          })
+        })
+      })
+
+      transfersResult.rows.forEach((transfer) => {
+        const txnId = normalizeText(transfer?.Id, 160) || null
+        const txnDocNumber = normalizeQuickBooksDocNumber(transfer)
+        const txnDate = normalizeText(transfer?.TxnDate, 40) || null
+        const amount = normalizeMoney(transfer?.Amount)
+        const fromAccountId = extractQuickBooksRefValue(transfer?.FromAccountRef)
+        const toAccountId = extractQuickBooksRefValue(transfer?.ToAccountRef)
+        const fromAccountName = extractQuickBooksRefName(transfer?.FromAccountRef)
+        const toAccountName = extractQuickBooksRefName(transfer?.ToAccountRef)
+
+        if (loanAccountsById.has(fromAccountId)) {
+          appendLoanMovementDetail({
+            accountId: fromAccountId,
+            txnType: 'transfer',
+            txnId,
+            txnDocNumber,
+            txnDate,
+            amount,
+            direction: 'out',
+            description: transfer?.PrivateNote || transfer?.Memo || null,
+            counterpartyAccountName: toAccountName,
+          })
+        }
+
+        if (loanAccountsById.has(toAccountId)) {
+          appendLoanMovementDetail({
+            accountId: toAccountId,
+            txnType: 'transfer',
+            txnId,
+            txnDocNumber,
+            txnDate,
+            amount,
+            direction: 'in',
+            description: transfer?.PrivateNote || transfer?.Memo || null,
+            counterpartyAccountName: fromAccountName,
+          })
+        }
+      })
+
+      depositsResult.rows.forEach((deposit) => {
+        const txnId = normalizeText(deposit?.Id, 160) || null
+        const txnDocNumber = normalizeQuickBooksDocNumber(deposit)
+        const txnDate = normalizeText(deposit?.TxnDate, 40) || null
+        const lines = Array.isArray(deposit?.Line) ? deposit.Line : []
+
+        lines.forEach((line) => {
+          const accountId = extractQuickBooksLineAccountRef(line)
+
+          if (!loanAccountsById.has(accountId)) {
+            return
+          }
+
+          appendLoanMovementDetail({
+            accountId,
+            txnType: 'deposit',
+            txnId,
+            txnDocNumber,
+            txnDate,
+            amount: line?.Amount,
+            direction: 'in',
+            description: line?.Description || deposit?.PrivateNote || deposit?.Memo || null,
+            className: extractQuickBooksLineClassName(line),
+          })
+        })
+      })
+
+      checksResult.rows.forEach((check) => {
+        const txnId = normalizeText(check?.Id, 160) || null
+        const txnDocNumber = normalizeQuickBooksDocNumber(check)
+        const txnDate = normalizeText(check?.TxnDate, 40) || null
+        const lines = Array.isArray(check?.Line) ? check.Line : []
+
+        lines.forEach((line) => {
+          const accountId = extractQuickBooksLineAccountRef(line)
+
+          if (!loanAccountsById.has(accountId)) {
+            return
+          }
+
+          appendLoanMovementDetail({
+            accountId,
+            txnType: 'check',
+            txnId,
+            txnDocNumber,
+            txnDate,
+            amount: line?.Amount,
+            direction: 'out',
+            description: line?.Description || check?.PrivateNote || check?.Memo || null,
+            className: extractQuickBooksLineClassName(line),
+          })
+        })
+      })
+
+      const knownLoanOwnerOrder = new Map(
+        quickBooksKnownLoanOwners.map((owner, index) => [owner.key, index]),
+      )
+      const sortedLoanSummaries = [...loanBucketsById.values()]
+        .filter((bucket) => bucket.ownerKey || bucket.accountIds.length > 0)
+        .map((bucket) => {
+          const effectiveLoanAmount = Math.abs(bucket.totalLoanAmount) > 0.004
+            ? normalizeMoney(bucket.totalLoanAmount)
+            : normalizeMoney(bucket.movementOutstandingAmount)
+          const sortedDetails = [...bucket.details].sort((left, right) => {
+            const leftDate = Date.parse(left.txnDate || '')
+            const rightDate = Date.parse(right.txnDate || '')
+
+            if (Number.isFinite(leftDate) && Number.isFinite(rightDate) && leftDate !== rightDate) {
+              return rightDate - leftDate
+            }
+
+            return String(left.docNumber || left.id || '').localeCompare(String(right.docNumber || right.id || ''))
+          })
+
+          return {
+            ...bucket,
+            totalLoanAmount: effectiveLoanAmount,
+            totalInvestedAmount: normalizeMoney(bucket.totalInvestedAmount),
+            totalTakenOutAmount: normalizeMoney(bucket.totalTakenOutAmount),
+            details: sortedDetails,
+          }
+        })
+        .sort((left, right) => {
+          const leftKnownOrder = left.ownerKey ? knownLoanOwnerOrder.get(left.ownerKey) : undefined
+          const rightKnownOrder = right.ownerKey ? knownLoanOwnerOrder.get(right.ownerKey) : undefined
+
+          if (Number.isFinite(leftKnownOrder) && Number.isFinite(rightKnownOrder) && leftKnownOrder !== rightKnownOrder) {
+            return Number(leftKnownOrder) - Number(rightKnownOrder)
+          }
+
+          if (Number.isFinite(leftKnownOrder) && !Number.isFinite(rightKnownOrder)) {
+            return -1
+          }
+
+          if (!Number.isFinite(leftKnownOrder) && Number.isFinite(rightKnownOrder)) {
+            return 1
+          }
+
+          if (right.totalLoanAmount !== left.totalLoanAmount) {
+            return right.totalLoanAmount - left.totalLoanAmount
+          }
+
+          return left.label.localeCompare(right.label)
+        })
+
+      const loanSummaries = sortedLoanSummaries.slice(0, quickBooksMaxLoanBuckets)
+
+      loanSummaries.forEach((bucket) => {
+        totals.loanTotalAmount = normalizeMoney(totals.loanTotalAmount + bucket.totalLoanAmount)
+        totals.loanInvestedAmount = normalizeMoney(totals.loanInvestedAmount + bucket.totalInvestedAmount)
+        totals.loanTakenOutAmount = normalizeMoney(totals.loanTakenOutAmount + bucket.totalTakenOutAmount)
+      })
+      totals.loanSummaryCount = loanSummaries.length
+
       const projects = [...projectsById.values()]
         .map((project) => {
           const outstandingAmount = normalizeMoney(project.invoiceAmount - project.paymentAmount)
@@ -1152,6 +1800,22 @@ export function registerQuickBooksRoutes(app, deps) {
 
       if (purchaseOrdersResult.truncated || billsResult.truncated || invoicesResult.truncated || paymentsResult.truncated) {
         warnings.push('One or more QuickBooks transaction queries were truncated. Results may be partial.')
+      }
+
+      if (
+        accountsResult.truncated
+        || journalEntriesResult.truncated
+        || transfersResult.truncated
+        || depositsResult.truncated
+        || checksResult.truncated
+      ) {
+        warnings.push('One or more QuickBooks loan queries were truncated. Loan totals may be partial.')
+      }
+
+      if (sortedLoanSummaries.length > loanSummaries.length) {
+        warnings.push(
+          `Loan summary list capped at ${quickBooksMaxLoanBuckets} buckets to keep the response fast.`,
+        )
       }
 
       const visibleUnlinkedTransactions = unlinkedTransactions.slice(0, quickBooksMaxUnlinkedTransactions)
@@ -1182,6 +1846,20 @@ export function registerQuickBooksRoutes(app, deps) {
         unlinkedPurchaseOrderLines,
         'Unlinked purchase-order line',
       )
+      const visibleLoanSummaries = loanSummaries.map((bucket) => {
+        const visibleDetails = bucket.details.slice(0, quickBooksMaxLoanDetailRowsPerBucket)
+
+        if (bucket.details.length > visibleDetails.length) {
+          warnings.push(
+            `${bucket.label} detail list capped at ${quickBooksMaxLoanDetailRowsPerBucket} rows to keep the response fast.`,
+          )
+        }
+
+        return {
+          ...bucket,
+          details: visibleDetails,
+        }
+      })
 
       await quickBooksTokensCollection.updateOne(
         { id: quickBooksTokenDocId },
@@ -1198,6 +1876,7 @@ export function registerQuickBooksRoutes(app, deps) {
         companyInfo,
         totals,
         projects,
+        loanSummaries: visibleLoanSummaries,
         unlinkedTransactions: visibleUnlinkedTransactions,
         details: {
           purchaseOrderLines: visiblePurchaseOrderLineDetails,

@@ -11,7 +11,9 @@ import { registerAlertsRoutes } from './src/routes/alerts-routes.mjs'
 import { registerAuthRoutes } from './src/routes/auth-routes.mjs'
 import { registerCrmRoutes } from './src/routes/crm-routes.mjs'
 import { registerDashboardSupportRoutes } from './src/routes/dashboard-support-routes.mjs'
+import { registerOrdersLedgerRoutes } from './src/routes/orders-ledger-routes.mjs'
 import { registerOrderPhotoRoutes } from './src/routes/order-photos-routes.mjs'
+import { registerPurchasingRoutes } from './src/routes/purchasing-routes.mjs'
 import { registerQuickBooksRoutes } from './src/routes/quickbooks-routes.mjs'
 import { registerTimesheetRoutes } from './src/routes/timesheet-routes.mjs'
 import { createAuthUtils } from './src/services/auth-utils.mjs'
@@ -878,7 +880,9 @@ registerAuthRoutes(app, routeDeps)
 registerAlertsRoutes(app, routeDeps)
 registerCrmRoutes(app, routeDeps)
 registerDashboardSupportRoutes(app, routeDeps)
+registerOrdersLedgerRoutes(app, routeDeps)
 registerOrderPhotoRoutes(app, routeDeps)
+registerPurchasingRoutes(app, routeDeps)
 registerQuickBooksRoutes(app, routeDeps)
 registerTimesheetRoutes(app, routeDeps)
 app.use((error, _req, res, _next) => {

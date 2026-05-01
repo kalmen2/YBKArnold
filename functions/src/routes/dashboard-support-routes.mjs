@@ -20,6 +20,7 @@ export function registerDashboardSupportRoutes(app, deps) {
     persistNewMondayOrders,
     requireAdminRole,
     requireFirebaseAuth,
+    requireManagerOrAdminRole,
     setDashboardSnapshotCache,
     toPublicAuthUser,
     toBoundedInteger,
@@ -81,6 +82,154 @@ export function registerDashboardSupportRoutes(app, deps) {
     }
 
     return `${safeFileName}.pdf`
+  }
+
+  function normalizeJobLookupValue(value) {
+    return String(value ?? '')
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+  }
+
+  function extractJobDigits(value) {
+    const digits = String(value ?? '').replace(/\D+/g, '').trim()
+
+    return digits || null
+  }
+
+  function buildJobLookupValues(values) {
+    const normalizedValues = new Set()
+    const digitValues = new Set()
+
+    ;(Array.isArray(values) ? values : []).forEach((value) => {
+      const normalizedValue = normalizeJobLookupValue(value)
+
+      if (normalizedValue) {
+        normalizedValues.add(normalizedValue)
+      }
+
+      const digitValue = extractJobDigits(value)
+
+      if (digitValue) {
+        digitValues.add(digitValue)
+      }
+    })
+
+    return {
+      normalizedValues,
+      digitValues,
+    }
+  }
+
+  function doesJobNameMatchLookup(jobName, lookup) {
+    const normalizedJobName = normalizeJobLookupValue(jobName)
+
+    if (normalizedJobName && lookup.normalizedValues.has(normalizedJobName)) {
+      return true
+    }
+
+    const jobDigits = extractJobDigits(jobName)
+
+    if (jobDigits && lookup.digitValues.has(jobDigits)) {
+      return true
+    }
+
+    return false
+  }
+
+  function buildLatestOrderProgressLookups(orderProgressDocuments) {
+    const latestByNormalized = new Map()
+    const latestByDigits = new Map()
+
+    ;(Array.isArray(orderProgressDocuments) ? orderProgressDocuments : []).forEach((progress) => {
+      const normalizedJobName = normalizeJobLookupValue(progress?.jobName)
+
+      if (normalizedJobName && !latestByNormalized.has(normalizedJobName)) {
+        latestByNormalized.set(normalizedJobName, progress)
+      }
+
+      const jobDigits = extractJobDigits(progress?.jobName)
+
+      if (jobDigits && !latestByDigits.has(jobDigits)) {
+        latestByDigits.set(jobDigits, progress)
+      }
+    })
+
+    return {
+      latestByNormalized,
+      latestByDigits,
+    }
+  }
+
+  function resolveLatestOrderProgressForOrder(orderDocument, progressLookups) {
+    const orderJobNumber = extractJobNumber(orderDocument)
+    const orderName = String(orderDocument?.orderName ?? '').trim()
+    const mondayItemId = String(orderDocument?.mondayItemId ?? '').trim()
+    const lookup = buildJobLookupValues([orderJobNumber, orderName, mondayItemId])
+
+    for (const normalizedValue of lookup.normalizedValues) {
+      const progress = progressLookups.latestByNormalized.get(normalizedValue)
+
+      if (progress) {
+        return progress
+      }
+    }
+
+    for (const digitValue of lookup.digitValues) {
+      const progress = progressLookups.latestByDigits.get(digitValue)
+
+      if (progress) {
+        return progress
+      }
+    }
+
+    return null
+  }
+
+  function getEntryRegularHours(entry) {
+    const regularHours = Number(entry?.hours)
+
+    if (!Number.isFinite(regularHours) || regularHours < 0) {
+      return 0
+    }
+
+    return regularHours
+  }
+
+  function getEntryOvertimeHours(entry) {
+    const overtimeHours = Number(entry?.overtimeHours)
+
+    if (!Number.isFinite(overtimeHours) || overtimeHours < 0) {
+      return 0
+    }
+
+    return overtimeHours
+  }
+
+  function getEntryRate(entry, workerDocument) {
+    const snapshotRate = Number(entry?.payRate)
+
+    if (Number.isFinite(snapshotRate) && snapshotRate > 0) {
+      return snapshotRate
+    }
+
+    const workerRate = Number(workerDocument?.hourlyRate)
+
+    if (Number.isFinite(workerRate) && workerRate > 0) {
+      return workerRate
+    }
+
+    return 0
+  }
+
+  function toMoney(value) {
+    const parsed = Number(value)
+
+    if (!Number.isFinite(parsed)) {
+      return 0
+    }
+
+    return Number(parsed.toFixed(2))
   }
 
   async function loadShopDrawingCacheByOrderId(orderIds) {
@@ -236,22 +385,21 @@ export function registerDashboardSupportRoutes(app, deps) {
     const shippedBoardId = String(mondayShippedBoardId ?? '').trim()
     const boardId = String(orderDocument?.mondayBoardId ?? '').trim()
     const movedToShippedAt = String(orderDocument?.movedToShippedAt ?? '').trim()
-    const shippedAt = String(orderDocument?.shippedAt ?? '').trim()
     const statusLabel = String(orderDocument?.statusLabel ?? '').trim().toLowerCase()
 
     if (shippedBoardId && boardId === shippedBoardId) {
       return true
     }
 
-    if (movedToShippedAt || shippedAt) {
+    if (movedToShippedAt) {
       return true
     }
 
-    if (Boolean(orderDocument?.isDone)) {
-      return true
+    if (/\bnot\s+shipped\b/.test(statusLabel)) {
+      return false
     }
 
-    return statusLabel.includes('shipped')
+    return /\bshipped\b/.test(statusLabel)
   }
 
   function extractJobNumber(orderDocument) {
@@ -271,11 +419,12 @@ export function registerDashboardSupportRoutes(app, deps) {
     return String(orderDocument?.mondayItemId ?? '').trim()
   }
 
-  function buildOrdersOverviewRow(orderDocument) {
+  function buildOrdersOverviewRow(orderDocument, progressLookups) {
     const mondayItemId = String(orderDocument?.mondayItemId ?? '').trim()
     const orderName = String(orderDocument?.orderName ?? '').trim() || null
     const isShipped = isShippedOrderDocument(orderDocument)
     const rawStatusLabel = String(orderDocument?.statusLabel ?? '').trim() || null
+    const latestManagerProgress = resolveLatestOrderProgressForOrder(orderDocument, progressLookups)
     const estimatedReadyAt =
       String(
         orderDocument?.estimatedReadyAt
@@ -290,9 +439,16 @@ export function registerDashboardSupportRoutes(app, deps) {
       jobNumber: extractJobNumber(orderDocument),
       orderName,
       poAmount: Number.isFinite(orderDocument?.poAmount) ? Number(orderDocument.poAmount) : null,
+      invoiceNumber: String(orderDocument?.invoiceNumber ?? '').trim() || null,
       progressPercent: Number.isFinite(orderDocument?.progressPercent)
         ? Number(orderDocument.progressPercent)
         : null,
+      mondayStatusLabel: isShipped ? 'Shipped' : rawStatusLabel,
+      managerReadyPercent: Number.isFinite(Number(latestManagerProgress?.readyPercent))
+        ? Number(latestManagerProgress.readyPercent)
+        : null,
+      managerReadyDate: String(latestManagerProgress?.date ?? '').trim() || null,
+      managerReadyUpdatedAt: String(latestManagerProgress?.updatedAt ?? '').trim() || null,
       estimatedReadyAt,
       statusLabel: isShipped ? 'Shipped' : rawStatusLabel,
       isShipped,
@@ -313,11 +469,11 @@ export function registerDashboardSupportRoutes(app, deps) {
   }
 
 
-app.get('/api/orders/overview', requireFirebaseAuth, async (req, res, next) => {
+app.get('/api/orders/overview', requireFirebaseAuth, requireManagerOrAdminRole, async (req, res, next) => {
   try {
     const includeShipped = String(req.query?.includeShipped ?? '').trim() === '1'
     const refreshRequested = isDashboardRefreshRequested(req)
-    const { mondayOrdersCollection } = await getCollections()
+    const { mondayOrdersCollection, orderProgressCollection } = await getCollections()
     const existingCount = await mondayOrdersCollection.estimatedDocumentCount()
     let refreshed = false
 
@@ -336,6 +492,7 @@ app.get('/api/orders/overview', requireFirebaseAuth, async (req, res, next) => {
             jobNumber: 1,
             orderName: 1,
             poAmount: 1,
+            invoiceNumber: 1,
             progressPercent: 1,
             estimatedReadyAt: 1,
             estimatedReadyDate: 1,
@@ -362,7 +519,26 @@ app.get('/api/orders/overview', requireFirebaseAuth, async (req, res, next) => {
       .sort({ updatedAt: -1, createdAt: -1, mondayItemId: 1 })
       .toArray()
 
-    const rows = orderDocuments.map((orderDocument) => buildOrdersOverviewRow(orderDocument))
+    const orderProgressDocuments = await orderProgressCollection
+      .find(
+        {},
+        {
+          projection: {
+            _id: 0,
+            date: 1,
+            jobName: 1,
+            readyPercent: 1,
+            updatedAt: 1,
+          },
+        },
+      )
+      .sort({ date: -1, updatedAt: -1 })
+      .toArray()
+    const progressLookups = buildLatestOrderProgressLookups(orderProgressDocuments)
+
+    const rows = orderDocuments.map((orderDocument) =>
+      buildOrdersOverviewRow(orderDocument, progressLookups)
+    )
     const shippedCount = rows.filter((row) => row.isShipped).length
     const visibleRows = includeShipped ? rows : rows.filter((row) => !row.isShipped)
 
@@ -376,6 +552,241 @@ app.get('/api/orders/overview', requireFirebaseAuth, async (req, res, next) => {
         visible: visibleRows.length,
       },
       orders: visibleRows,
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+
+app.get('/api/orders/job-details', requireFirebaseAuth, requireManagerOrAdminRole, async (req, res, next) => {
+  try {
+    const mondayItemId = String(req.query?.mondayItemId ?? '').trim()
+    const jobNumber = String(req.query?.jobNumber ?? '').trim()
+    const orderName = String(req.query?.orderName ?? '').trim()
+
+    if (!mondayItemId && !jobNumber && !orderName) {
+      return res.status(400).json({
+        error: 'At least one of mondayItemId, jobNumber, or orderName is required.',
+      })
+    }
+
+    const {
+      mondayOrdersCollection,
+      entriesCollection,
+      workersCollection,
+      stagesCollection,
+      orderProgressCollection,
+    } = await getCollections()
+
+    const orderDocument = mondayItemId
+      ? await mondayOrdersCollection.findOne(
+        { mondayItemId },
+        {
+          projection: {
+            _id: 0,
+            mondayItemId: 1,
+            orderName: 1,
+            jobNumber: 1,
+            statusLabel: 1,
+            movedToShippedAt: 1,
+            shippedAt: 1,
+            mondayItemUrl: 1,
+            mondayBoardName: 1,
+            mondayBoardId: 1,
+            mondayUpdatedAt: 1,
+          },
+        },
+      )
+      : null
+
+    const resolvedJobNumber =
+      jobNumber
+      || extractJobNumber(orderDocument)
+      || String(mondayItemId ?? '').trim()
+
+    const lookup = buildJobLookupValues([
+      resolvedJobNumber,
+      orderName,
+      mondayItemId,
+      String(orderDocument?.jobNumber ?? '').trim(),
+      String(orderDocument?.orderName ?? '').trim(),
+    ])
+
+    if (lookup.normalizedValues.size === 0 && lookup.digitValues.size === 0) {
+      return res.status(400).json({
+        error: 'Could not build a valid job lookup from the provided values.',
+      })
+    }
+
+    const [entries, workers, stages, orderProgressDocuments] = await Promise.all([
+      entriesCollection
+        .find(
+          {},
+          {
+            projection: {
+              _id: 0,
+              id: 1,
+              workerId: 1,
+              stageId: 1,
+              date: 1,
+              jobName: 1,
+              hours: 1,
+              overtimeHours: 1,
+              payRate: 1,
+              notes: 1,
+              createdAt: 1,
+            },
+          },
+        )
+        .sort({ date: -1, createdAt: -1 })
+        .toArray(),
+      workersCollection
+        .find(
+          {},
+          {
+            projection: {
+              _id: 0,
+              id: 1,
+              fullName: 1,
+              hourlyRate: 1,
+            },
+          },
+        )
+        .toArray(),
+      stagesCollection
+        .find(
+          {},
+          {
+            projection: {
+              _id: 0,
+              id: 1,
+              name: 1,
+            },
+          },
+        )
+        .toArray(),
+      orderProgressCollection
+        .find(
+          {},
+          {
+            projection: {
+              _id: 0,
+              id: 1,
+              date: 1,
+              jobName: 1,
+              readyPercent: 1,
+              updatedAt: 1,
+            },
+          },
+        )
+        .sort({ date: -1, updatedAt: -1 })
+        .toArray(),
+    ])
+
+    const workersById = new Map(
+      workers.map((worker) => [String(worker.id ?? '').trim(), worker]),
+    )
+    const stagesById = new Map(
+      stages.map((stage) => [String(stage.id ?? '').trim(), stage]),
+    )
+
+    const matchedEntries = entries
+      .filter((entry) => doesJobNameMatchLookup(entry?.jobName, lookup))
+      .map((entry) => {
+        const workerId = String(entry?.workerId ?? '').trim()
+        const workerDocument = workersById.get(workerId) ?? null
+        const stageId = String(entry?.stageId ?? '').trim()
+        const stageDocument = stagesById.get(stageId) ?? null
+        const regularHours = getEntryRegularHours(entry)
+        const overtimeHours = getEntryOvertimeHours(entry)
+        const totalHours = regularHours + overtimeHours
+        const rate = getEntryRate(entry, workerDocument)
+        const laborCost = toMoney((regularHours * rate) + (overtimeHours * rate * 1.5))
+
+        return {
+          ...entry,
+          workerName: String(workerDocument?.fullName ?? '').trim() || 'Unknown worker',
+          stageName: String(stageDocument?.name ?? '').trim() || null,
+          regularHours,
+          overtimeHours,
+          totalHours,
+          rate,
+          laborCost,
+        }
+      })
+
+    const workerTotalsById = new Map()
+    let totalRegularHours = 0
+    let totalOvertimeHours = 0
+    let totalHours = 0
+    let totalLaborCost = 0
+
+    matchedEntries.forEach((entry) => {
+      const workerId = String(entry.workerId ?? '').trim()
+      const existing = workerTotalsById.get(workerId) ?? {
+        workerId,
+        workerName: entry.workerName,
+        totalRegularHours: 0,
+        totalOvertimeHours: 0,
+        totalHours: 0,
+        totalLaborCost: 0,
+      }
+
+      existing.totalRegularHours += entry.regularHours
+      existing.totalOvertimeHours += entry.overtimeHours
+      existing.totalHours += entry.totalHours
+      existing.totalLaborCost = toMoney(existing.totalLaborCost + entry.laborCost)
+      workerTotalsById.set(workerId, existing)
+
+      totalRegularHours += entry.regularHours
+      totalOvertimeHours += entry.overtimeHours
+      totalHours += entry.totalHours
+      totalLaborCost = toMoney(totalLaborCost + entry.laborCost)
+    })
+
+    const managerHistory = orderProgressDocuments
+      .filter((progress) => doesJobNameMatchLookup(progress?.jobName, lookup))
+      .map((progress) => ({
+        id: String(progress?.id ?? '').trim() || null,
+        date: String(progress?.date ?? '').trim() || null,
+        jobName: String(progress?.jobName ?? '').trim() || null,
+        readyPercent: Number.isFinite(Number(progress?.readyPercent))
+          ? Number(progress.readyPercent)
+          : null,
+        updatedAt: String(progress?.updatedAt ?? '').trim() || null,
+      }))
+
+    const latestManagerStatus = managerHistory[0] ?? null
+
+    return res.json({
+      generatedAt: new Date().toISOString(),
+      job: {
+        mondayItemId: String(orderDocument?.mondayItemId ?? mondayItemId).trim() || null,
+        jobNumber: resolvedJobNumber || null,
+        orderName: String(orderDocument?.orderName ?? orderName).trim() || null,
+        mondayStatusLabel: String(orderDocument?.statusLabel ?? '').trim() || null,
+        mondayItemUrl: String(orderDocument?.mondayItemUrl ?? '').trim() || null,
+        mondayBoardId: String(orderDocument?.mondayBoardId ?? '').trim() || null,
+        mondayBoardName: String(orderDocument?.mondayBoardName ?? '').trim() || null,
+        mondayUpdatedAt: String(orderDocument?.mondayUpdatedAt ?? '').trim() || null,
+        latestManagerReadyPercent: latestManagerStatus?.readyPercent ?? null,
+        latestManagerReadyDate: latestManagerStatus?.date ?? null,
+        latestManagerReadyUpdatedAt: latestManagerStatus?.updatedAt ?? null,
+      },
+      summary: {
+        entryCount: matchedEntries.length,
+        workerCount: workerTotalsById.size,
+        totalRegularHours,
+        totalOvertimeHours,
+        totalHours,
+        totalLaborCost,
+      },
+      workers: [...workerTotalsById.values()].sort(
+        (left, right) => right.totalHours - left.totalHours || left.workerName.localeCompare(right.workerName),
+      ),
+      entries: matchedEntries,
+      managerHistory,
     })
   } catch (error) {
     next(error)

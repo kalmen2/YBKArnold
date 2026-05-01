@@ -34,6 +34,42 @@ export type QuickBooksTotals = {
   unlinkedTransactionCount: number
   unlinkedAmount: number
   outstandingAmount: number
+  loanSummaryCount: number
+  loanTotalAmount: number
+  loanInvestedAmount: number
+  loanTakenOutAmount: number
+}
+
+export type QuickBooksLoanDirection = 'in' | 'out' | 'unknown'
+
+export type QuickBooksLoanDetailRow = {
+  type: 'journalEntry' | 'transfer' | 'deposit' | 'check'
+  id: string | null
+  docNumber: string | null
+  txnDate: string | null
+  amount: number
+  direction: QuickBooksLoanDirection
+  investedAmount: number
+  takenOutAmount: number
+  accountId: string | null
+  accountName: string | null
+  accountNumber: string | null
+  className: string | null
+  description: string | null
+  counterpartyAccountName: string | null
+}
+
+export type QuickBooksLoanSummary = {
+  bucketId: string
+  ownerKey: string | null
+  label: string
+  accountIds: string[]
+  accountNumbers: string[]
+  totalLoanAmount: number
+  totalInvestedAmount: number
+  totalTakenOutAmount: number
+  movementCount: number
+  details: QuickBooksLoanDetailRow[]
 }
 
 export type QuickBooksProjectSummary = {
@@ -68,6 +104,7 @@ export type QuickBooksDetailRow = {
   docNumber: string | null
   txnDate: string | null
   totalAmount: number
+  balanceAmount: number | null
   projectId: string | null
   projectName: string | null
   lineNumber: number | null
@@ -90,6 +127,7 @@ export type QuickBooksOverviewResponse = {
   companyInfo: QuickBooksCompanyInfo | null
   totals: QuickBooksTotals
   projects: QuickBooksProjectSummary[]
+  loanSummaries: QuickBooksLoanSummary[]
   unlinkedTransactions: QuickBooksUnlinkedTransaction[]
   details: QuickBooksOverviewDetails
   warnings: string[]
