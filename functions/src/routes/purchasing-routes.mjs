@@ -18,7 +18,8 @@ export function registerPurchasingRoutes(app, deps) {
   app.get('/api/purchasing/items', requireFirebaseAuth, async (req, res, next) => {
     try {
       const search = String(req.query?.search ?? '').trim()
-      const limit = Math.min(Math.max(Number(req.query?.limit) || 200, 1), 1000)
+      const pageSize = Math.min(Math.max(Number(req.query?.pageSize) || 100, 1), 500)
+      const page = Math.max(Number(req.query?.page) || 1, 1)
       const { purchasingItemsCollection } = await getCollections()
 
       const filter = {}
@@ -32,6 +33,10 @@ export function registerPurchasingRoutes(app, deps) {
           { vendorRaws: rx },
         ]
       }
+
+      const totalCount = await purchasingItemsCollection.countDocuments(filter)
+      const totalPages = Math.max(1, Math.ceil(totalCount / pageSize))
+      const safePage = Math.min(page, totalPages)
 
       const items = await purchasingItemsCollection
         .find(filter, {
@@ -50,11 +55,16 @@ export function registerPurchasingRoutes(app, deps) {
           },
         })
         .sort({ totalSpent: -1, lastPurchaseDate: -1 })
-        .limit(limit)
+        .skip((safePage - 1) * pageSize)
+        .limit(pageSize)
         .toArray()
 
       return res.json({
         generatedAt: new Date().toISOString(),
+        page: safePage,
+        pageSize,
+        totalPages,
+        totalCount,
         count: items.length,
         items,
       })
@@ -63,9 +73,13 @@ export function registerPurchasingRoutes(app, deps) {
     }
   })
 
-  app.get('/api/purchasing/items/:itemKey', requireFirebaseAuth, async (req, res, next) => {
+  // Detail lookup uses a query param so itemKeys containing '/', '(', '"', etc.
+  // are not split or rejected by URL path normalization (Firebase Hosting decodes
+  // %2F back to '/', which breaks `:itemKey` segment matching).
+  async function purchasingItemDetailHandler(req, res, next) {
     try {
-      const itemKey = String(req.params?.itemKey ?? '').trim().toLowerCase()
+      const rawKey = req.query?.key ?? req.params?.itemKey ?? ''
+      const itemKey = String(rawKey).trim().toLowerCase()
       if (!itemKey) {
         return res.status(400).json({ error: 'itemKey is required.' })
       }
@@ -85,10 +99,11 @@ export function registerPurchasingRoutes(app, deps) {
         .sort({ date: -1 })
         .toArray()
 
-      // Build per-vendor breakdown with shipping stats
+      // Build per-vendor breakdown with shipping + price stats
       const byVendor = new Map()
       let grandSpent = 0
       let grandQty = 0
+      const grandPriceList = []
 
       transactions.forEach((tx) => {
         const vendorKey = tx.vendorKey || 'unknown'
@@ -101,12 +116,14 @@ export function registerPurchasingRoutes(app, deps) {
           firstPurchaseDate: null,
           lastPurchaseDate: null,
           shipDaysList: [],
+          unitPriceList: [],
           poCount: 0,
           receiptCount: 0,
         }
 
         const amount = toNumber(tx.amount)
         const qty = toNumber(tx.qty)
+        const unit = toNumber(tx.unitCost)
         existing.totalSpent = toMoney(existing.totalSpent + amount)
         existing.totalQty = toNumber(existing.totalQty + qty)
         existing.transactionCount += 1
@@ -126,11 +143,32 @@ export function registerPurchasingRoutes(app, deps) {
           existing.shipDaysList.push(Number(tx.shipDays))
         }
 
+        // Only count actual purchase lines for price stats: must have a real
+        // qty and unit cost. Skips PO header rows, freight/tax write-ins with
+        // qty 0, and zero-cost lines.
+        if (qty > 0 && unit > 0) {
+          existing.unitPriceList.push(unit)
+          grandPriceList.push(unit)
+        }
+
         grandSpent = toMoney(grandSpent + amount)
         grandQty = toNumber(grandQty + qty)
 
         byVendor.set(vendorKey, existing)
       })
+
+      function priceStats(list) {
+        if (!list.length) return { highest: null, lowest: null, average: null, sampleCount: 0 }
+        const highest = Math.max(...list)
+        const lowest = Math.min(...list)
+        const average = list.reduce((a, b) => a + b, 0) / list.length
+        return {
+          highest: Number(highest.toFixed(4)),
+          lowest: Number(lowest.toFixed(4)),
+          average: Number(average.toFixed(4)),
+          sampleCount: list.length,
+        }
+      }
 
       const vendors = [...byVendor.values()].map((v) => {
         const list = v.shipDaysList
@@ -139,6 +177,7 @@ export function registerPurchasingRoutes(app, deps) {
         const average = list.length
           ? Number((list.reduce((a, b) => a + b, 0) / list.length).toFixed(1))
           : null
+        const ps = priceStats(v.unitPriceList)
         return {
           vendorKey: v.vendorKey,
           vendorRaw: v.vendorRaw,
@@ -153,6 +192,10 @@ export function registerPurchasingRoutes(app, deps) {
           slowestShipDays: slowest,
           averageShipDays: average,
           shipSampleCount: list.length,
+          highestPrice: ps.highest,
+          lowestPrice: ps.lowest,
+          averagePrice: ps.average,
+          priceSampleCount: ps.sampleCount,
         }
       }).sort((a, b) => b.totalSpent - a.totalSpent)
 
@@ -166,6 +209,8 @@ export function registerPurchasingRoutes(app, deps) {
         ? Number((allShip.reduce((a, b) => a + b, 0) / allShip.length).toFixed(1))
         : null
 
+      const overallPrice = priceStats(grandPriceList)
+
       return res.json({
         generatedAt: new Date().toISOString(),
         item,
@@ -178,6 +223,10 @@ export function registerPurchasingRoutes(app, deps) {
           slowestShipDays: overallSlowest,
           averageShipDays: overallAvg,
           shipSampleCount: allShip.length,
+          highestPrice: overallPrice.highest,
+          lowestPrice: overallPrice.lowest,
+          averagePrice: overallPrice.average,
+          priceSampleCount: overallPrice.sampleCount,
         },
         vendors,
         transactions,
@@ -185,5 +234,8 @@ export function registerPurchasingRoutes(app, deps) {
     } catch (error) {
       next(error)
     }
-  })
+  }
+
+  app.get('/api/purchasing/items/detail', requireFirebaseAuth, purchasingItemDetailHandler)
+  app.get('/api/purchasing/items/:itemKey', requireFirebaseAuth, purchasingItemDetailHandler)
 }

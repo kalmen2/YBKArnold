@@ -15,6 +15,10 @@ export type PurchasingItemSummary = {
 
 export type PurchasingItemsResponse = {
   generatedAt: string
+  page: number
+  pageSize: number
+  totalPages: number
+  totalCount: number
   count: number
   items: PurchasingItemSummary[]
 }
@@ -54,6 +58,10 @@ export type PurchasingVendorBreakdown = {
   slowestShipDays: number | null
   averageShipDays: number | null
   shipSampleCount: number
+  highestPrice: number | null
+  lowestPrice: number | null
+  averagePrice: number | null
+  priceSampleCount: number
 }
 
 export type PurchasingItemDetailResponse = {
@@ -68,15 +76,22 @@ export type PurchasingItemDetailResponse = {
     slowestShipDays: number | null
     averageShipDays: number | null
     shipSampleCount: number
+    highestPrice: number | null
+    lowestPrice: number | null
+    averagePrice: number | null
+    priceSampleCount: number
   }
   vendors: PurchasingVendorBreakdown[]
   transactions: PurchasingTransaction[]
 }
 
-export function fetchPurchasingItems(options: { search?: string; limit?: number } = {}) {
+export function fetchPurchasingItems(
+  options: { search?: string; page?: number; pageSize?: number } = {},
+) {
   const params = new URLSearchParams()
   if (options.search) params.set('search', options.search)
-  if (options.limit) params.set('limit', String(options.limit))
+  if (options.page) params.set('page', String(options.page))
+  if (options.pageSize) params.set('pageSize', String(options.pageSize))
   const query = params.toString()
   return apiRequest<PurchasingItemsResponse>(
     query ? `/api/purchasing/items?${query}` : '/api/purchasing/items',
@@ -84,7 +99,10 @@ export function fetchPurchasingItems(options: { search?: string; limit?: number 
 }
 
 export function fetchPurchasingItemDetail(itemKey: string) {
+  // Use query string so itemKeys with '/', '(', '"', etc. survive URL
+  // normalization (Firebase Hosting decodes %2F back to '/' in path segments,
+  // which breaks Express :itemKey route matching and yields a 404).
   return apiRequest<PurchasingItemDetailResponse>(
-    `/api/purchasing/items/${encodeURIComponent(itemKey)}`,
+    `/api/purchasing/items/detail?key=${encodeURIComponent(itemKey)}`,
   )
 }

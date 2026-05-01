@@ -163,7 +163,12 @@ function parseItemReceiptsByVendor(rows) {
     out.push({
       type: type || 'Item Receipt',
       date,
-      poNumber: transNum,
+      // The receipt's own Trans # is NOT the source PO number. Treating it as a
+      // PO# caused spurious matches against Book3 (e.g. Trans 75 ↔ PO 75) and
+      // produced fake 0-day ship-time calculations. Set poNumber to null until
+      // a re-export adds a real "P. O. #" column on the Item Receipt report.
+      poNumber: null,
+      transNumber: transNum,
       vendorRaw,
       memo,
       itemRaw,
@@ -287,6 +292,7 @@ async function main() {
         date: t.date,
         poDate,
         poNumber: t.poNumber,
+        transNumber: t.transNumber || null,
         itemKey,
         itemRaw: t.itemRaw,
         itemDescription: t.itemDescription,
