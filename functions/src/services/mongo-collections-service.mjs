@@ -300,7 +300,7 @@ export function createMongoCollectionsService({
 
   async function seedDefaultAiRules(aiRulesCollection) {
     const now = new Date().toISOString()
-    const categories = ['support', 'summaries', 'general']
+    const categories = ['support', 'summaries', 'general', 'purchasing']
 
     for (const category of categories) {
       await aiRulesCollection.updateOne(

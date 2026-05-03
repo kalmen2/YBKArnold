@@ -22,7 +22,18 @@ export type PurchasingItemsResponse = {
   count: number
   refreshSummary?: PurchasingRefreshSummary | null
   sync?: PurchasingSyncMetadata | null
+  aiAssist?: PurchasingItemsAiAssistMeta | null
   items: PurchasingItemSummary[]
+}
+
+export type PurchasingItemsAiAssistMeta = {
+  enabled: boolean
+  used: boolean
+  mode: 'none' | 'rerank' | 'fallback'
+  matchedCount: number
+  topConfidence: number | null
+  usedFallback: boolean
+  message: string | null
 }
 
 export type PurchasingRefreshSummary = {
@@ -65,6 +76,34 @@ export type PurchasingItemPhoto = {
 export type PurchasingItemPhotosResponse = {
   itemKey: string
   photos: PurchasingItemPhoto[]
+}
+
+export type PurchasingAiPriceStatus = 'green' | 'yellow' | 'red'
+
+export type PurchasingAiOption = {
+  vendorName: string
+  productTitle: string
+  url: string
+  unitPrice: number | null
+  currency: string
+  shippingEvidence: string
+  exactMatchEvidence: string
+  notes: string
+  priceStatus: PurchasingAiPriceStatus
+  deltaPercent: number | null
+  thresholdPercent: number | null
+}
+
+export type PurchasingAiSearchResponse = {
+  generatedAt: string
+  itemKey: string | null
+  itemName: string
+  deliveryLocation: string
+  referencePrice: number | null
+  candidatesScanned: number
+  matchedOptionCount: number
+  excludedCandidateCount: number
+  options: PurchasingAiOption[]
 }
 
 export type PurchasingTransaction = {
@@ -130,12 +169,13 @@ export type PurchasingItemDetailResponse = {
 }
 
 export function fetchPurchasingItems(
-  options: { search?: string; page?: number; pageSize?: number } = {},
+  options: { search?: string; page?: number; pageSize?: number; aiAssist?: boolean } = {},
 ) {
   const params = new URLSearchParams()
   if (options.search) params.set('search', options.search)
   if (options.page) params.set('page', String(options.page))
   if (options.pageSize) params.set('pageSize', String(options.pageSize))
+  if (options.aiAssist) params.set('aiAssist', '1')
   const query = params.toString()
   return apiRequest<PurchasingItemsResponse>(
     query ? `/api/purchasing/items?${query}` : '/api/purchasing/items',
@@ -201,5 +241,24 @@ export function deletePurchasingItemPhoto(itemKey: string, path: string) {
       method: 'DELETE',
       body: JSON.stringify({ key: itemKey, path }),
     },
+  )
+}
+
+export function runPurchasingAiSearch(payload: {
+  key?: string
+  itemName?: string
+  referencePrice?: number | null
+}) {
+  return apiRequest<PurchasingAiSearchResponse>(
+    '/api/purchasing/items/ai-search',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        key: payload.key,
+        itemName: payload.itemName,
+        referencePrice: payload.referencePrice,
+      }),
+    },
+    { timeoutMs: 120000 },
   )
 }

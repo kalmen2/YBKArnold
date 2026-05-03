@@ -49,6 +49,11 @@ const CATEGORIES: { key: AiRuleCategory; label: string; description: string }[] 
     label: 'Summaries',
     description: 'Rules for AI summaries after applying General business rules',
   },
+  {
+    key: 'purchasing',
+    label: 'Purchasing',
+    description: 'Rules for exact-item supplier search used on the Purchasing page',
+  },
 ]
 
 const MODEL_OPTIONS: { value: AiModelQuality; label: string }[] = [
@@ -186,7 +191,12 @@ export default function AiConfigPage() {
   const savedRulesContent = rulesQuery.data?.content ?? ''
   const currentPendingRules = pendingProposedRules[selectedCategory] ?? null
   const isGeneralCategory = selectedCategory === 'general'
-  const contentLimit = isGeneralCategory ? 20000 : 2000
+  const contentLimit =
+    selectedCategory === 'general'
+      ? 20000
+      : selectedCategory === 'purchasing'
+        ? 6000
+        : 2000
   const chatPanelHint = isGeneralCategory
     ? 'Talk through your business in depth. Ask for a full company write-up, then confirm to save it.'
     : 'Describe the rule you need. AI only proposes rules for review.'
@@ -250,7 +260,7 @@ export default function AiConfigPage() {
             AI Configuration
           </Typography>
           <Typography variant="caption" color="text.secondary">
-            Define rules that guide AI replies and auto-generation on the Support page
+            Define rules that guide Support, Summaries, and Purchasing AI behavior
           </Typography>
         </Box>
       </Stack>

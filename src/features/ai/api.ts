@@ -1,6 +1,6 @@
 import { apiRequest } from '../api-client'
 
-export type AiRuleCategory = 'support' | 'summaries' | 'general'
+export type AiRuleCategory = 'support' | 'summaries' | 'general' | 'purchasing'
 export type AiModelQuality = 'fast' | 'better' | 'deep'
 
 export type AiChatMessage = {

@@ -7,6 +7,9 @@ const quickBooksMaxBillPages = 30
 const purchasingSyncSnapshotKey = 'purchasing_qbo_sync'
 const purchasingPhotosPrefix = 'purchasing-item-photos'
 const maxPurchasingPhotoBytes = 8 * 1024 * 1024
+const purchasingAiDeliveryLocation = 'United States (USA)'
+const purchasingAiSearchUrl = 'https://html.duckduckgo.com/html/'
+const purchasingAiMaxSearchCandidates = 12
 
 let quickBooksIndexesPromise
 
@@ -40,6 +43,247 @@ function escapeRegExp(value) {
 
 function escapeQuickBooksString(value) {
   return String(value ?? '').replace(/'/g, "\\'")
+}
+
+function normalizeHttpUrl(rawValue) {
+  const raw = String(rawValue ?? '').trim()
+
+  if (!raw) {
+    return null
+  }
+
+  try {
+    const parsed = new URL(raw)
+
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+      return null
+    }
+
+    return parsed.toString()
+  } catch {
+    return null
+  }
+}
+
+function decodeHtmlEntities(value) {
+  return String(value ?? '')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&#x2F;/gi, '/')
+    .replace(/&#x3A;/gi, ':')
+}
+
+function stripHtmlToText(value, maxLength = 3000) {
+  const withoutTags = String(value ?? '')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+  const normalized = decodeHtmlEntities(withoutTags)
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  return normalized.slice(0, maxLength)
+}
+
+function resolveDuckDuckGoResultUrl(rawHref) {
+  const href = decodeHtmlEntities(rawHref).trim()
+
+  if (!href) {
+    return null
+  }
+
+  const normalizedHref = href.startsWith('//')
+    ? `https:${href}`
+    : /^duckduckgo\.com\//i.test(href)
+      ? `https://${href}`
+      : href
+
+  if (/^\/l\/\?/i.test(normalizedHref) || /^https?:\/\/duckduckgo\.com\/l\/\?/i.test(normalizedHref)) {
+    const redirectUrl = normalizedHref.startsWith('http')
+      ? normalizedHref
+      : `https://duckduckgo.com${normalizedHref.startsWith('/') ? normalizedHref : `/${normalizedHref}`}`
+
+    try {
+      const parsedRedirectUrl = new URL(redirectUrl)
+      const targetUrl = parsedRedirectUrl.searchParams.get('uddg')
+
+      return normalizeHttpUrl(targetUrl)
+    } catch {
+      return null
+    }
+  }
+
+  return normalizeHttpUrl(normalizedHref)
+}
+
+function extractDuckDuckGoSearchCandidates(searchHtml, maxResults = purchasingAiMaxSearchCandidates) {
+  const html = String(searchHtml ?? '')
+  const linkPattern = /<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi
+  const snippetPattern = /<(?:a|div)[^>]*class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/(?:a|div)>/gi
+  const candidates = []
+  const seenUrls = new Set()
+  const snippets = []
+  let snippetMatch = snippetPattern.exec(html)
+
+  while (snippetMatch) {
+    snippets.push(stripHtmlToText(snippetMatch[1], 420))
+    snippetMatch = snippetPattern.exec(html)
+  }
+
+  let linkIndex = 0
+  let match = linkPattern.exec(html)
+
+  while (match && candidates.length < maxResults) {
+    const url = resolveDuckDuckGoResultUrl(match[1])
+    const title = stripHtmlToText(match[2], 260)
+    const snippet = normalizeText(snippets[linkIndex], 420)
+
+    if (url && !seenUrls.has(url)) {
+      seenUrls.add(url)
+      candidates.push({
+        url,
+        title,
+        snippet,
+      })
+    }
+
+    linkIndex += 1
+    match = linkPattern.exec(html)
+  }
+
+  return candidates
+}
+
+function resolvePurchasingAiPriceBand(optionPrice, referencePrice) {
+  const optionAmount = Number(optionPrice)
+  const referenceAmount = Number(referencePrice)
+
+  if (!Number.isFinite(optionAmount) || optionAmount <= 0 || !Number.isFinite(referenceAmount) || referenceAmount <= 0) {
+    return {
+      status: 'yellow',
+      deltaPercent: null,
+      thresholdPercent: null,
+    }
+  }
+
+  const deltaPercent = Number((((optionAmount - referenceAmount) / referenceAmount) * 100).toFixed(2))
+
+  if (optionAmount <= referenceAmount) {
+    return {
+      status: 'green',
+      deltaPercent,
+      thresholdPercent: 0,
+    }
+  }
+
+  const thresholdPercent = referenceAmount < 100 ? 3 : 1
+  const yellowCeiling = referenceAmount * (1 + thresholdPercent / 100)
+
+  if (optionAmount <= yellowCeiling) {
+    return {
+      status: 'yellow',
+      deltaPercent,
+      thresholdPercent,
+    }
+  }
+
+  return {
+    status: 'red',
+    deltaPercent,
+    thresholdPercent,
+  }
+}
+
+function uniqueTextList(values, maxItems = 12) {
+  const seen = new Set()
+  const result = []
+
+  for (const value of values) {
+    const normalized = normalizeText(value, 320)
+
+    if (!normalized) {
+      continue
+    }
+
+    const key = normalized.toLowerCase()
+
+    if (seen.has(key)) {
+      continue
+    }
+
+    seen.add(key)
+    result.push(normalized)
+
+    if (result.length >= maxItems) {
+      break
+    }
+  }
+
+  return result
+}
+
+function normalizePurchasingItemSearchToken(value) {
+  return String(value ?? '')
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/[()]/g, ' ')
+    .replace(/[_,]+/g, ' ')
+    .replace(/\b(\d+)P(\d+)\b/gi, '$1.$2')
+    .replace(/([0-9])X([0-9])/gi, '$1 x $2')
+    .replace(/"/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function buildPurchasingAiSearchProfile(itemName) {
+  const raw = normalizeText(itemName, 320)
+  const parentheticalMatches = [...raw.matchAll(/\(([^()]{2,})\)/g)]
+  const parentheticalDescriptor = normalizePurchasingItemSearchToken(
+    parentheticalMatches.at(-1)?.[1] ?? '',
+  )
+  const withoutParentheses = normalizePurchasingItemSearchToken(raw.replace(/\([^)]*\)/g, ' '))
+  const normalizedRaw = normalizePurchasingItemSearchToken(raw)
+  const preferredDescriptor = parentheticalDescriptor || withoutParentheses || normalizedRaw
+  const tokenSource = `${preferredDescriptor} ${withoutParentheses}`.toLowerCase()
+  const allTokens = tokenSource
+    .split(/[^a-z0-9./]+/gi)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 2)
+  const dimensionTokens = allTokens.filter((token) => /^(\d+(?:\.\d+)?|\d+\/\d+|x)$/.test(token))
+  const materialTokens = allTokens.filter((token) =>
+    /^[a-z]{2,}$/.test(token)
+    && !['the', 'and', 'for', 'with', 'panel', 'sheet'].includes(token))
+  const keyTerms = uniqueTextList([
+    ...materialTokens,
+    ...dimensionTokens,
+  ], 14)
+  const compactDescriptor = uniqueTextList([
+    preferredDescriptor,
+    withoutParentheses,
+    normalizedRaw,
+    keyTerms.join(' '),
+  ], 4)
+    .join(' ')
+    .slice(0, 220)
+
+  const queryCandidates = uniqueTextList([
+    `${preferredDescriptor} buy price`,
+    `${preferredDescriptor} supplier`,
+    `${preferredDescriptor} supplier usa`,
+    `${compactDescriptor} buy price`,
+    `${compactDescriptor} ships in united states`,
+    `${uniqueTextList(materialTokens, 6).join(' ')} ${uniqueTextList(dimensionTokens, 6).join(' ')} panel price`,
+  ], 6)
+
+  return {
+    original: raw,
+    preferredDescriptor,
+    keyTerms,
+    queries: queryCandidates,
+  }
 }
 
 function normalizeQuickBooksApiBaseUrl(value) {
@@ -226,12 +470,28 @@ async function exchangeQuickBooksToken({
 export function registerPurchasingRoutes(app, deps) {
   const {
     decodeBase64Image,
+    findExactItemPurchaseOptions,
     getCollections,
     getOrderPhotosBucket,
     isSupportedPhotoMimeType,
     randomUUID,
+    resolvePurchasingItemSearchMatches,
     requireFirebaseAuth,
   } = deps
+
+  const purchasingItemSummaryProjection = {
+    _id: 0,
+    itemKey: 1,
+    itemRaw: 1,
+    descriptions: 1,
+    totalSpent: 1,
+    totalQty: 1,
+    transactionCount: 1,
+    vendorCount: 1,
+    vendorRaws: 1,
+    firstPurchaseDate: 1,
+    lastPurchaseDate: 1,
+  }
 
   async function getQuickBooksCollections() {
     const { database } = await getCollections()
@@ -1062,10 +1322,363 @@ export function registerPurchasingRoutes(app, deps) {
     return true
   }
 
+  async function fetchPurchasingAiSearchCandidates(itemName) {
+    const profile = buildPurchasingAiSearchProfile(itemName)
+    const seenUrls = new Set()
+    const mergedCandidates = []
+    let hadSearchAttempt = false
+
+    for (const searchQuery of profile.queries) {
+      if (mergedCandidates.length >= purchasingAiMaxSearchCandidates) {
+        break
+      }
+
+      const searchEndpoint = `${purchasingAiSearchUrl}?q=${encodeURIComponent(searchQuery)}`
+
+      try {
+        const response = await fetch(searchEndpoint, {
+          method: 'GET',
+          headers: {
+            Accept: 'text/html',
+            'User-Agent': 'ArnoldApi/1.0 (+purchasing-ai-search)',
+          },
+          signal: AbortSignal.timeout(14000),
+        })
+
+        hadSearchAttempt = true
+
+        if (!response.ok) {
+          continue
+        }
+
+        const searchHtml = await response.text()
+        const queryCandidates = extractDuckDuckGoSearchCandidates(searchHtml, purchasingAiMaxSearchCandidates)
+
+        for (const candidate of queryCandidates) {
+          const candidateUrl = normalizeText(candidate?.url, 1200)
+
+          if (!candidateUrl || seenUrls.has(candidateUrl)) {
+            continue
+          }
+
+          seenUrls.add(candidateUrl)
+          mergedCandidates.push({
+            ...candidate,
+            sourceQuery: searchQuery,
+          })
+
+          if (mergedCandidates.length >= purchasingAiMaxSearchCandidates) {
+            break
+          }
+        }
+      } catch {
+        // Continue to next query variation; one failed search should not block sourcing.
+      }
+    }
+
+    if (!hadSearchAttempt) {
+      throw createHttpError('Could not run supplier web search at this time.', 502)
+    }
+
+    return {
+      profile,
+      candidates: mergedCandidates,
+    }
+  }
+
+  async function fetchPurchasingAiCandidatePreview(candidate) {
+    const fallbackCandidate = {
+      url: String(candidate?.url ?? '').trim(),
+      title: normalizeText(candidate?.title, 260),
+      snippet: normalizeText(candidate?.snippet, 500),
+      pageExcerpt: '',
+    }
+
+    if (!fallbackCandidate.url) {
+      return null
+    }
+
+    try {
+      const response = await fetch(fallbackCandidate.url, {
+        method: 'GET',
+        headers: {
+          Accept: 'text/html,application/xhtml+xml',
+          'User-Agent': 'ArnoldApi/1.0 (+purchasing-ai-search)',
+        },
+        signal: AbortSignal.timeout(12000),
+      })
+
+      if (!response.ok) {
+        return fallbackCandidate
+      }
+
+      const pageHtml = (await response.text()).slice(0, 260000)
+      const titleMatch = pageHtml.match(/<title[^>]*>([\s\S]*?)<\/title>/i)
+      const metaDescriptionMatch = pageHtml.match(/<meta[^>]*name=["']description["'][^>]*content=["']([\s\S]*?)["'][^>]*>/i)
+      const pageText = stripHtmlToText(pageHtml, 3200)
+
+      return {
+        url: fallbackCandidate.url,
+        title: normalizeText(titleMatch?.[1], 260) || fallbackCandidate.title,
+        snippet: normalizeText(metaDescriptionMatch?.[1], 500) || fallbackCandidate.snippet,
+        pageExcerpt: pageText,
+      }
+    } catch {
+      return fallbackCandidate
+    }
+  }
+
+  async function resolvePurchasingAiSearchInput(req) {
+    const itemKey = resolvePurchasingItemKey(req)
+    const requestedItemName = normalizeText(req.body?.itemName, 260)
+    const requestedReferencePrice = Number(req.body?.referencePrice)
+    let itemName = requestedItemName
+    let referencePrice = Number.isFinite(requestedReferencePrice) && requestedReferencePrice > 0
+      ? Number(requestedReferencePrice.toFixed(2))
+      : null
+
+    if (!itemKey) {
+      return {
+        itemKey: null,
+        itemName,
+        referencePrice,
+      }
+    }
+
+    const { purchasingItemsCollection } = await getCollections()
+    const item = await purchasingItemsCollection.findOne(
+      { itemKey },
+      {
+        projection: {
+          _id: 0,
+          itemRaw: 1,
+          totalSpent: 1,
+          totalQty: 1,
+        },
+      },
+    )
+
+    if (!item && !itemName) {
+      throw createHttpError('Item not found.', 404)
+    }
+
+    if (!itemName) {
+      itemName = normalizeText(item?.itemRaw, 260)
+    }
+
+    if (!referencePrice) {
+      const totalSpent = Number(item?.totalSpent)
+      const totalQty = Number(item?.totalQty)
+
+      if (Number.isFinite(totalSpent) && Number.isFinite(totalQty) && totalQty > 0) {
+        referencePrice = Number((totalSpent / totalQty).toFixed(2))
+      }
+    }
+
+    return {
+      itemKey,
+      itemName,
+      referencePrice,
+    }
+  }
+
+  async function fetchPurchasingSearchAiCandidates({
+    search,
+    purchasingItemsCollection,
+    maxCandidates = 180,
+  }) {
+    const normalizedSearch = normalizePurchasingItemSearchToken(search).toLowerCase()
+    const searchTokens = normalizedSearch
+      .split(/[^a-z0-9./]+/gi)
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 2)
+      .slice(0, 4)
+    const resolvedLimit = Math.min(Math.max(Number(maxCandidates) || 180, 30), 260)
+    const candidateByItemKey = new Map()
+
+    async function mergeCandidateQuery(cursor) {
+      const rows = await cursor.toArray()
+
+      for (const row of rows) {
+        const itemKey = normalizeText(row?.itemKey, 260)
+        const itemRaw = normalizeText(row?.itemRaw, 320)
+
+        if (!itemKey || !itemRaw || candidateByItemKey.has(itemKey)) {
+          continue
+        }
+
+        candidateByItemKey.set(itemKey, {
+          itemKey,
+          itemRaw,
+          descriptions: Array.isArray(row?.descriptions) ? row.descriptions : [],
+          vendorRaws: Array.isArray(row?.vendorRaws) ? row.vendorRaws : [],
+        })
+
+        if (candidateByItemKey.size >= resolvedLimit) {
+          break
+        }
+      }
+    }
+
+    if (normalizedSearch) {
+      const fullSearchRegex = new RegExp(escapeRegExp(normalizedSearch), 'i')
+
+      await mergeCandidateQuery(
+        purchasingItemsCollection
+          .find(
+            {
+              $or: [
+                { itemRaw: fullSearchRegex },
+                { descriptions: fullSearchRegex },
+                { vendorRaws: fullSearchRegex },
+              ],
+            },
+            { projection: purchasingItemSummaryProjection },
+          )
+          .sort({ totalSpent: -1, lastPurchaseDate: -1 })
+          .limit(Math.min(resolvedLimit, 140)),
+      )
+    }
+
+    for (const token of searchTokens) {
+      if (candidateByItemKey.size >= resolvedLimit) {
+        break
+      }
+
+      const tokenRegex = new RegExp(escapeRegExp(token), 'i')
+
+      await mergeCandidateQuery(
+        purchasingItemsCollection
+          .find(
+            {
+              $or: [
+                { itemRaw: tokenRegex },
+                { descriptions: tokenRegex },
+                { vendorRaws: tokenRegex },
+              ],
+            },
+            { projection: purchasingItemSummaryProjection },
+          )
+          .sort({ totalSpent: -1, lastPurchaseDate: -1 })
+          .limit(Math.min(90, resolvedLimit)),
+      )
+    }
+
+    if (candidateByItemKey.size < resolvedLimit) {
+      await mergeCandidateQuery(
+        purchasingItemsCollection
+          .find({}, { projection: purchasingItemSummaryProjection })
+          .sort({ lastPurchaseDate: -1, totalSpent: -1 })
+          .limit(resolvedLimit),
+      )
+    }
+
+    return [...candidateByItemKey.values()].slice(0, resolvedLimit)
+  }
+
+  function mergePurchasingItemsByPriority(primaryItems, secondaryItems, maxItems) {
+    const resolvedLimit = Math.max(Number(maxItems) || 0, 1)
+    const merged = []
+    const seenItemKeys = new Set()
+
+    for (const item of [...(Array.isArray(primaryItems) ? primaryItems : []), ...(Array.isArray(secondaryItems) ? secondaryItems : [])]) {
+      const itemKey = normalizeText(item?.itemKey, 260)
+
+      if (!item || !itemKey || seenItemKeys.has(itemKey)) {
+        continue
+      }
+
+      seenItemKeys.add(itemKey)
+      merged.push(item)
+
+      if (merged.length >= resolvedLimit) {
+        break
+      }
+    }
+
+    return merged
+  }
+
+  app.post('/api/purchasing/items/ai-search', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      if (typeof findExactItemPurchaseOptions !== 'function') {
+        throw createHttpError('AI sourcing is not available right now.', 503)
+      }
+
+      const resolvedInput = await resolvePurchasingAiSearchInput(req)
+
+      const {
+        itemKey,
+        itemName,
+        referencePrice,
+      } = resolvedInput
+
+      if (!itemName) {
+        return res.status(400).json({ error: 'itemName or key is required.' })
+      }
+
+      const { profile: itemSearchProfile, candidates: searchCandidates } = await fetchPurchasingAiSearchCandidates(itemName)
+      const candidatePreviews = await Promise.all(
+        searchCandidates.map((candidate) => fetchPurchasingAiCandidatePreview(candidate)),
+      )
+      const candidateEvidence = candidatePreviews.filter(Boolean)
+      const aiResult = await findExactItemPurchaseOptions({
+        itemName,
+        itemSearchProfile,
+        deliveryLocation: purchasingAiDeliveryLocation,
+        referencePrice,
+        candidates: candidateEvidence,
+      })
+      const options = (Array.isArray(aiResult?.options) ? aiResult.options : [])
+        .map((option) => {
+          const parsedUnitPrice = Number(option?.unitPrice)
+          const unitPrice = Number.isFinite(parsedUnitPrice) && parsedUnitPrice > 0
+            ? Number(parsedUnitPrice.toFixed(2))
+            : null
+          const priceBand = resolvePurchasingAiPriceBand(unitPrice, referencePrice)
+
+          return {
+            vendorName: normalizeText(option?.vendorName, 180) || 'Unknown vendor',
+            productTitle: normalizeText(option?.productTitle, 280) || itemName,
+            url: normalizeText(option?.url, 1000),
+            unitPrice,
+            currency: normalizeText(option?.currency, 12) || 'USD',
+            shippingEvidence: normalizeText(option?.shippingEvidence, 500),
+            exactMatchEvidence: normalizeText(option?.exactMatchEvidence, 500),
+            notes: normalizeText(option?.notes, 500),
+            priceStatus: priceBand.status,
+            deltaPercent: priceBand.deltaPercent,
+            thresholdPercent: priceBand.thresholdPercent,
+          }
+        })
+        .filter((option) => option.url)
+        .sort((left, right) => {
+          const leftPrice = left.unitPrice == null ? Number.POSITIVE_INFINITY : left.unitPrice
+          const rightPrice = right.unitPrice == null ? Number.POSITIVE_INFINITY : right.unitPrice
+          return leftPrice - rightPrice
+        })
+
+      return res.json({
+        generatedAt: new Date().toISOString(),
+        itemKey,
+        itemName,
+        deliveryLocation: purchasingAiDeliveryLocation,
+        referencePrice: Number.isFinite(referencePrice) && referencePrice > 0 ? referencePrice : null,
+        candidatesScanned: candidateEvidence.length,
+        matchedOptionCount: options.length,
+        excludedCandidateCount: Number(aiResult?.excludedCount ?? Math.max(candidateEvidence.length - options.length, 0)),
+        options,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
   app.get('/api/purchasing/items', requireFirebaseAuth, async (req, res, next) => {
     try {
       const refreshRequested = String(req.query?.refresh ?? '').trim() === '1'
       const search = String(req.query?.search ?? '').trim()
+      const aiAssistRequested = String(req.query?.aiAssist ?? '').trim() === '1'
       const pageSize = Math.min(Math.max(Number(req.query?.pageSize) || 100, 1), 500)
       const page = Math.max(Number(req.query?.page) || 1, 1)
       const {
@@ -1090,30 +1703,119 @@ export function registerPurchasingRoutes(app, deps) {
         ]
       }
 
-      const totalCount = await purchasingItemsCollection.countDocuments(filter)
-      const totalPages = Math.max(1, Math.ceil(totalCount / pageSize))
-      const safePage = Math.min(page, totalPages)
+      let totalCount = await purchasingItemsCollection.countDocuments(filter)
+      let totalPages = Math.max(1, Math.ceil(totalCount / pageSize))
+      let safePage = Math.min(page, totalPages)
 
-      const items = await purchasingItemsCollection
+      let items = await purchasingItemsCollection
         .find(filter, {
-          projection: {
-            _id: 0,
-            itemKey: 1,
-            itemRaw: 1,
-            descriptions: 1,
-            totalSpent: 1,
-            totalQty: 1,
-            transactionCount: 1,
-            vendorCount: 1,
-            vendorRaws: 1,
-            firstPurchaseDate: 1,
-            lastPurchaseDate: 1,
-          },
+          projection: purchasingItemSummaryProjection,
         })
         .sort({ totalSpent: -1, lastPurchaseDate: -1 })
         .skip((safePage - 1) * pageSize)
         .limit(pageSize)
         .toArray()
+
+      let aiAssist = {
+        enabled: Boolean(search && aiAssistRequested),
+        used: false,
+        mode: 'none',
+        matchedCount: 0,
+        topConfidence: null,
+        usedFallback: false,
+        message: null,
+      }
+
+      const shouldRunAiAssist =
+        Boolean(search)
+        && aiAssistRequested
+        && typeof resolvePurchasingItemSearchMatches === 'function'
+
+      if (shouldRunAiAssist) {
+        const shouldRunFallbackMode = totalCount === 0
+        const shouldRunRerankMode = !shouldRunFallbackMode && safePage === 1 && totalCount <= 120
+
+        if (shouldRunFallbackMode || shouldRunRerankMode) {
+          const aiCandidates = await fetchPurchasingSearchAiCandidates({
+            search,
+            purchasingItemsCollection,
+            maxCandidates: 180,
+          })
+
+          if (aiCandidates.length > 0) {
+            const aiMatchResult = await resolvePurchasingItemSearchMatches({
+              query: search,
+              candidates: aiCandidates,
+              maxMatches: Math.min(Math.max(pageSize, 10), 24),
+            })
+            const candidateByIndex = new Map(
+              aiCandidates.map((candidate, index) => [index, candidate]),
+            )
+            const rankedItemKeys = []
+            const seenRankedItemKeys = new Set()
+
+            for (const match of Array.isArray(aiMatchResult?.matches) ? aiMatchResult.matches : []) {
+              const candidate = candidateByIndex.get(Number(match?.sourceCandidateIndex))
+              const itemKey = normalizeText(candidate?.itemKey, 260)
+
+              if (!itemKey || seenRankedItemKeys.has(itemKey)) {
+                continue
+              }
+
+              seenRankedItemKeys.add(itemKey)
+              rankedItemKeys.push(itemKey)
+            }
+
+            if (rankedItemKeys.length > 0) {
+              const matchedItems = await purchasingItemsCollection
+                .find(
+                  { itemKey: { $in: rankedItemKeys } },
+                  { projection: purchasingItemSummaryProjection },
+                )
+                .toArray()
+              const matchedItemByKey = new Map(
+                matchedItems.map((item) => [normalizeText(item?.itemKey, 260), item]),
+              )
+              const matchedItemsOrdered = rankedItemKeys
+                .map((itemKey) => matchedItemByKey.get(itemKey))
+                .filter(Boolean)
+              const topConfidenceRaw = Number(aiMatchResult?.matches?.[0]?.confidence)
+              const topConfidence = Number.isFinite(topConfidenceRaw)
+                ? Number(topConfidenceRaw.toFixed(2))
+                : null
+
+              if (shouldRunFallbackMode) {
+                totalCount = matchedItemsOrdered.length
+                totalPages = Math.max(1, Math.ceil(totalCount / pageSize))
+                safePage = Math.min(page, totalPages)
+                items = matchedItemsOrdered.slice((safePage - 1) * pageSize, safePage * pageSize)
+                aiAssist = {
+                  enabled: true,
+                  used: true,
+                  mode: 'fallback',
+                  matchedCount: matchedItemsOrdered.length,
+                  topConfidence,
+                  usedFallback: Boolean(aiMatchResult?.usedFallback),
+                  message: matchedItemsOrdered.length > 0
+                    ? 'AI matched similar item names for your search.'
+                    : 'AI could not find a similar item name.',
+                }
+              } else if (shouldRunRerankMode) {
+                items = mergePurchasingItemsByPriority(matchedItemsOrdered, items, pageSize)
+                aiAssist = {
+                  enabled: true,
+                  used: true,
+                  mode: 'rerank',
+                  matchedCount: matchedItemsOrdered.length,
+                  topConfidence,
+                  usedFallback: Boolean(aiMatchResult?.usedFallback),
+                  message: 'AI prioritized likely exact item matches at the top.',
+                }
+              }
+            }
+          }
+        }
+      }
 
       const syncSnapshot = await getPurchasingSyncSnapshot(dashboardSnapshotsCollection)
 
@@ -1135,6 +1837,7 @@ export function registerPurchasingRoutes(app, deps) {
           lastErrorAt: normalizeText(syncSnapshot?.lastErrorAt, 80) || null,
           truncated: Boolean(syncSnapshot?.truncated),
         },
+        aiAssist,
         items,
       })
     } catch (error) {

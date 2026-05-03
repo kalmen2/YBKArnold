@@ -53,8 +53,8 @@ export const QUERY_KEYS = {
   photosIndex: ['pictures', 'photos-index'] as const,
 
   // Purchasing
-  purchasingItems: (search: string, page: number, pageSize: number) =>
-    ['purchasing', 'items', search, page, pageSize] as const,
+  purchasingItems: (search: string, page: number, pageSize: number, aiAssistKey = 0) =>
+    ['purchasing', 'items', search, page, pageSize, aiAssistKey] as const,
   purchasingItemDetail: (itemKey: string) => ['purchasing', 'item', itemKey] as const,
   purchasingItemPhotos: (itemKey: string) => ['purchasing', 'item-photos', itemKey] as const,
 } as const

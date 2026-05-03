@@ -336,7 +336,13 @@ const {
   zendeskTicketFieldErrorCacheTtlMs,
 })
 
-const { generateSupportReply, batchSummarizeComments, chatForRules } = createOpenAiService({ openAiApiKey })
+const {
+  generateSupportReply,
+  batchSummarizeComments,
+  chatForRules,
+  findExactItemPurchaseOptions,
+  resolvePurchasingItemSearchMatches,
+} = createOpenAiService({ openAiApiKey })
 
 const {
   clearSupportSnapshotCache,
@@ -447,6 +453,8 @@ const {
 const routeDeps = {
   batchSummarizeComments,
   chatForRules,
+  findExactItemPurchaseOptions,
+  resolvePurchasingItemSearchMatches,
   generateSupportReply,
   allocateWorkerNumbers,
   authAccessTimeZoneNewJersey,

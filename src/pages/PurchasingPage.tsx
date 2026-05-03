@@ -5,13 +5,22 @@ import AddAPhotoRoundedIcon from '@mui/icons-material/AddAPhotoRounded'
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
 import ImageOutlinedIcon from '@mui/icons-material/ImageOutlined'
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded'
+import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded'
+import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded'
+import TravelExploreRoundedIcon from '@mui/icons-material/TravelExploreRounded'
 import {
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
   Alert,
   Box,
+  Button,
   Chip,
   CircularProgress,
   Dialog,
   DialogContent,
+  DialogTitle,
+  Divider,
   IconButton,
   InputAdornment,
   Pagination,
@@ -29,6 +38,8 @@ import {
 } from '@mui/material'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState, type ChangeEvent } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { useAuth } from '../auth/useAuth'
 import { useDebounceValue } from '../hooks/useDebounceValue'
 import { formatCurrency, formatDate, formatDateTime } from '../lib/formatters'
 import { QUERY_KEYS } from '../lib/queryKeys'
@@ -38,7 +49,11 @@ import {
   fetchPurchasingItemPhotos,
   fetchPurchasingItems,
   refreshPurchasingFromQuickBooks,
+  runPurchasingAiSearch,
   uploadPurchasingItemPhoto,
+  type PurchasingAiOption,
+  type PurchasingAiPriceStatus,
+  type PurchasingAiSearchResponse,
   type PurchasingItemSummary,
 } from '../features/purchasing/api'
 
@@ -86,9 +101,38 @@ function fileToBase64Payload(file: File): Promise<string> {
   })
 }
 
+function getAiPriceStatusMeta(status: PurchasingAiPriceStatus) {
+  if (status === 'green') {
+    return {
+      label: 'Cheaper',
+      chipColor: 'success' as const,
+      borderColor: 'success.light',
+      backgroundColor: 'rgba(46, 125, 50, 0.08)',
+    }
+  }
+
+  if (status === 'red') {
+    return {
+      label: 'Higher',
+      chipColor: 'error' as const,
+      borderColor: 'error.light',
+      backgroundColor: 'rgba(211, 47, 47, 0.08)',
+    }
+  }
+
+  return {
+    label: 'Near Market',
+    chipColor: 'warning' as const,
+    borderColor: 'warning.light',
+    backgroundColor: 'rgba(237, 108, 2, 0.08)',
+  }
+}
+
 export default function PurchasingPage() {
   const [searchInput, setSearchInput] = useState('')
   const debouncedSearch = useDebounceValue(searchInput, 300)
+  const [isManualAiAssistEnabled, setIsManualAiAssistEnabled] = useState(false)
+  const [manualAiAssistNonce, setManualAiAssistNonce] = useState(0)
   const [page, setPage] = useState(1)
   const [selectedItemKey, setSelectedItemKey] = useState<string | null>(null)
   const [expandedVendorKey, setExpandedVendorKey] = useState<string | null>(null)
@@ -100,12 +144,19 @@ export default function PurchasingPage() {
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false)
   const [deletingPhotoPath, setDeletingPhotoPath] = useState<string | null>(null)
   const [isPhotoPreviewOpen, setIsPhotoPreviewOpen] = useState(false)
+  const [isAiSearchDialogOpen, setIsAiSearchDialogOpen] = useState(false)
+  const [isAiSearchRunning, setIsAiSearchRunning] = useState(false)
+  const [aiSearchError, setAiSearchError] = useState<string | null>(null)
+  const [aiSearchResult, setAiSearchResult] = useState<PurchasingAiSearchResponse | null>(null)
   const photoUploadInputRef = useRef<HTMLInputElement | null>(null)
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
+  const { appUser } = useAuth()
 
   // Reset to page 1 whenever the search changes
   useEffect(() => {
     setPage(1)
+    setIsManualAiAssistEnabled(false)
   }, [debouncedSearch])
 
   // Collapse vendor expansion when switching items
@@ -118,6 +169,10 @@ export default function PurchasingPage() {
     setPhotoErrorMessage(null)
     setDeletingPhotoPath(null)
     setIsPhotoPreviewOpen(false)
+    setIsAiSearchDialogOpen(false)
+    setAiSearchError(null)
+    setAiSearchResult(null)
+    setIsAiSearchRunning(false)
   }, [selectedItemKey])
 
   // Auto-dismiss QuickBooks refresh success/empty notices after 3 seconds.
@@ -149,9 +204,22 @@ export default function PurchasingPage() {
     }
   }, [photoActionMessage])
 
+  const isSearchSettled = debouncedSearch.trim() === searchInput.trim()
+  const shouldUseAiAssist = Boolean(debouncedSearch.trim()) && isManualAiAssistEnabled && isSearchSettled
+
   const itemsQuery = useQuery({
-    queryKey: QUERY_KEYS.purchasingItems(debouncedSearch, page, PAGE_SIZE),
-    queryFn: () => fetchPurchasingItems({ search: debouncedSearch, page, pageSize: PAGE_SIZE }),
+    queryKey: QUERY_KEYS.purchasingItems(
+      debouncedSearch,
+      page,
+      PAGE_SIZE,
+      shouldUseAiAssist ? manualAiAssistNonce : 0,
+    ),
+    queryFn: () => fetchPurchasingItems({
+      search: debouncedSearch,
+      page,
+      pageSize: PAGE_SIZE,
+      aiAssist: shouldUseAiAssist,
+    }),
     staleTime: 60_000,
   })
 
@@ -176,6 +244,7 @@ export default function PurchasingPage() {
   const items = itemsQuery.data?.items ?? []
   const totalCount = itemsQuery.data?.totalCount ?? 0
   const totalPages = itemsQuery.data?.totalPages ?? 1
+  const aiAssistMeta = itemsQuery.data?.aiAssist ?? null
   const itemPhotos = itemPhotosQuery.data?.photos ?? []
   const primaryItemPhoto = itemPhotos[0] ?? null
   const syncMeta = itemsQuery.data?.sync ?? null
@@ -183,6 +252,8 @@ export default function PurchasingPage() {
     ? formatDateTime(syncMeta.lastSuccessfulRefreshAt)
     : 'Never'
   const refreshInProgress = isManualRefreshRunning
+  const aiReferencePrice = detailQuery.data?.summary?.averagePrice ?? null
+  const aiOptions = aiSearchResult?.options ?? []
 
   async function handleRefresh() {
     setRefreshMessage(null)
@@ -222,6 +293,19 @@ export default function PurchasingPage() {
     setExpandedVendorKey((curr) => (curr === vendorKey ? null : vendorKey))
   }
 
+  function runManualAiAssistSearch() {
+    if (!searchInput.trim()) {
+      return
+    }
+
+    if (page !== 1) {
+      setPage(1)
+    }
+
+    setIsManualAiAssistEnabled(true)
+    setManualAiAssistNonce((current) => current + 1)
+  }
+
   function openPhotoPreview() {
     if (!primaryItemPhoto) {
       return
@@ -232,6 +316,56 @@ export default function PurchasingPage() {
 
   function closePhotoPreview() {
     setIsPhotoPreviewOpen(false)
+  }
+
+  function closeAiSearchDialog() {
+    setIsAiSearchDialogOpen(false)
+  }
+
+  async function runAiSearchForCurrentItem() {
+    if (!selectedItemKey || isAiSearchRunning) {
+      return
+    }
+
+    setAiSearchError(null)
+    setIsAiSearchRunning(true)
+
+    try {
+      const response = await runPurchasingAiSearch({
+        key: selectedItemKey,
+        itemName: detailQuery.data?.item?.itemRaw ?? selectedItemKey,
+        referencePrice: Number.isFinite(Number(aiReferencePrice))
+          ? Number(aiReferencePrice)
+          : null,
+      })
+      setAiSearchResult(response)
+    } catch (error) {
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : 'Could not run AI search right now.'
+      setAiSearchError(message)
+      setAiSearchResult(null)
+    } finally {
+      setIsAiSearchRunning(false)
+    }
+  }
+
+  function openAiSearchDialog() {
+    if (!selectedItemKey) {
+      return
+    }
+
+    setIsAiSearchDialogOpen(true)
+    void runAiSearchForCurrentItem()
+  }
+
+  function openPurchasingAiConfig() {
+    navigate('/admin/ai-config', {
+      state: {
+        category: 'purchasing',
+      },
+    })
   }
 
   async function handleItemPhotoFileChange(event: ChangeEvent<HTMLInputElement>) {
@@ -352,6 +486,32 @@ export default function PurchasingPage() {
                       <SearchRoundedIcon fontSize="small" />
                     </InputAdornment>
                   ),
+                  endAdornment: (
+                    <InputAdornment position="end">
+                      <Tooltip
+                        title={
+                          !searchInput.trim()
+                            ? 'Type to enable AI match'
+                            : shouldUseAiAssist
+                              ? 'Run AI match again'
+                              : 'Run AI typo/similar match'
+                        }
+                      >
+                        <span>
+                          <IconButton
+                            size="small"
+                            onClick={runManualAiAssistSearch}
+                            disabled={!searchInput.trim()}
+                          >
+                            <TravelExploreRoundedIcon
+                              fontSize="small"
+                              color={shouldUseAiAssist ? 'primary' : 'inherit'}
+                            />
+                          </IconButton>
+                        </span>
+                      </Tooltip>
+                    </InputAdornment>
+                  ),
                 }}
               />
               <Stack direction="row" justifyContent="space-between" alignItems="baseline" sx={{ mt: 1 }}>
@@ -364,6 +524,15 @@ export default function PurchasingPage() {
                   Page {page} / {totalPages}
                 </Typography>
               </Stack>
+              {debouncedSearch.trim() && aiAssistMeta?.used && (
+                <Typography
+                  variant="caption"
+                  color="primary.main"
+                  sx={{ mt: 0.5, display: 'block' }}
+                >
+                  {aiAssistMeta.message || 'AI assisted this search.'}
+                </Typography>
+              )}
             </Box>
 
             <Box sx={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
@@ -565,137 +734,184 @@ export default function PurchasingPage() {
                       <Stat label="Avg $" value={fmtPrice(detailQuery.data.summary.averagePrice)} />
                       <Stat label="Highest $" value={fmtPrice(detailQuery.data.summary.highestPrice)} />
                       <Stat label="Fast Ship" value={fmtShipDays(detailQuery.data.summary.fastestShipDays)} />
+                      <Paper
+                        variant="outlined"
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => {
+                          if (selectedItemKey) {
+                            openAiSearchDialog()
+                          }
+                        }}
+                        onKeyDown={(event) => {
+                          if ((event.key === 'Enter' || event.key === ' ') && selectedItemKey) {
+                            event.preventDefault()
+                            openAiSearchDialog()
+                          }
+                        }}
+                        sx={{
+                          px: 1.5,
+                          py: 1,
+                          minWidth: 0,
+                          width: '100%',
+                          borderStyle: 'dashed',
+                          cursor: selectedItemKey ? 'pointer' : 'not-allowed',
+                          opacity: selectedItemKey ? 1 : 0.55,
+                          bgcolor: selectedItemKey ? 'action.hover' : 'background.paper',
+                          transition: 'background-color 140ms ease',
+                          '&:hover': selectedItemKey ? { bgcolor: 'action.selected' } : undefined,
+                        }}
+                      >
+                        <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
+                          <Box>
+                            <Typography variant="caption" color="text.secondary">AI Supplier Search</Typography>
+                            <Typography variant="subtitle2" fontWeight={700}>Open</Typography>
+                          </Box>
+                          {isAiSearchRunning
+                            ? <CircularProgress size={18} />
+                            : <TravelExploreRoundedIcon color="primary" fontSize="small" />}
+                        </Stack>
+                      </Paper>
                     </Box>
-                    <Paper
-                      variant="outlined"
-                      sx={{
-                        minHeight: { xs: 140, md: 'auto' },
-                        p: 1,
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: 1,
-                      }}
-                    >
-                      <Stack direction="row" justifyContent="space-between" alignItems="center">
-                        <Typography variant="subtitle2" fontWeight={700}>
-                          Item Picture
-                        </Typography>
-                        <input
-                          ref={photoUploadInputRef}
-                          type="file"
-                          accept="image/*"
-                          hidden
-                          onChange={handleItemPhotoFileChange}
-                        />
-                        <Tooltip title={selectedItemKey ? 'Add picture' : 'Select an item first'}>
-                          <span>
-                            <IconButton
-                              size="small"
-                              disabled={!selectedItemKey || isUploadingPhoto}
-                              onClick={() => photoUploadInputRef.current?.click()}
-                            >
-                              {isUploadingPhoto ? <CircularProgress size={16} /> : <AddAPhotoRoundedIcon fontSize="small" />}
-                            </IconButton>
-                          </span>
-                        </Tooltip>
-                      </Stack>
-
-                      {!selectedItemKey ? (
-                        <Stack alignItems="center" justifyContent="center" sx={{ flex: 1, minHeight: 90 }} spacing={0.5}>
-                          <ImageOutlinedIcon color="disabled" />
-                          <Typography variant="caption" color="text.secondary">
-                            Select an item to add a picture
+                    <Stack spacing={1.5} sx={{ height: { md: '100%' } }}>
+                      <Paper
+                        variant="outlined"
+                        sx={{
+                          minHeight: { xs: 200, md: '100%' },
+                          height: { md: '100%' },
+                          p: 1,
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: 1,
+                          overflow: 'hidden',
+                        }}
+                      >
+                        <Stack direction="row" justifyContent="space-between" alignItems="center">
+                          <Typography variant="subtitle2" fontWeight={700}>
+                            Item Picture
                           </Typography>
-                        </Stack>
-                      ) : itemPhotosQuery.isLoading ? (
-                        <Stack direction="row" spacing={1} alignItems="center" sx={{ py: 1 }}>
-                          <CircularProgress size={16} />
-                          <Typography variant="caption" color="text.secondary">Loading picture...</Typography>
-                        </Stack>
-                      ) : itemPhotosQuery.isError ? (
-                        <Typography variant="caption" color="error">Failed to load picture.</Typography>
-                      ) : primaryItemPhoto ? (
-                        <Box
-                          role="button"
-                          tabIndex={0}
-                          onClick={openPhotoPreview}
-                          onKeyDown={(event) => {
-                            if (event.key === 'Enter' || event.key === ' ') {
-                              event.preventDefault()
-                              openPhotoPreview()
-                            }
-                          }}
-                          sx={{
-                            border: '1px solid',
-                            borderColor: 'divider',
-                            borderRadius: 1,
-                            overflow: 'hidden',
-                            position: 'relative',
-                            flex: 1,
-                            minHeight: 120,
-                            height: { xs: 140, md: 180 },
-                            maxHeight: 220,
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            bgcolor: 'grey.100',
-                            cursor: 'zoom-in',
-                          }}
-                        >
-                          <Box
-                            component="img"
-                            src={primaryItemPhoto.url}
-                            alt="Purchased item"
-                            sx={{
-                              maxWidth: '100%',
-                              maxHeight: '100%',
-                              width: '100%',
-                              height: '100%',
-                              objectFit: 'contain',
-                              display: 'block',
-                            }}
+                          <input
+                            ref={photoUploadInputRef}
+                            type="file"
+                            accept="image/*"
+                            hidden
+                            onChange={handleItemPhotoFileChange}
                           />
-                          <IconButton
-                            size="small"
-                            onClick={(event) => {
-                              event.stopPropagation()
-                              void handleDeleteItemPhoto(primaryItemPhoto.path)
-                            }}
-                            disabled={deletingPhotoPath === primaryItemPhoto.path}
-                            sx={{
-                              position: 'absolute',
-                              right: 6,
-                              top: 6,
-                              bgcolor: 'rgba(0,0,0,0.55)',
-                              color: 'common.white',
-                              '&:hover': { bgcolor: 'rgba(0,0,0,0.72)' },
-                            }}
-                          >
-                            {deletingPhotoPath === primaryItemPhoto.path
-                              ? <CircularProgress size={14} sx={{ color: 'common.white' }} />
-                              : <DeleteOutlineRoundedIcon fontSize="small" />}
-                          </IconButton>
-                        </Box>
-                      ) : (
-                        <Stack alignItems="center" justifyContent="center" sx={{ flex: 1, minHeight: 90 }} spacing={0.5}>
-                          <ImageOutlinedIcon color="disabled" />
-                          <Typography variant="caption" color="text.secondary">
-                            No picture saved yet
-                          </Typography>
+                          <Tooltip title={selectedItemKey ? 'Add picture' : 'Select an item first'}>
+                            <span>
+                              <IconButton
+                                size="small"
+                                disabled={!selectedItemKey || isUploadingPhoto}
+                                onClick={() => photoUploadInputRef.current?.click()}
+                              >
+                                {isUploadingPhoto ? <CircularProgress size={16} /> : <AddAPhotoRoundedIcon fontSize="small" />}
+                              </IconButton>
+                            </span>
+                          </Tooltip>
                         </Stack>
-                      )}
 
-                      {photoActionMessage && (
-                        <Typography variant="caption" color="success.main">
-                          {photoActionMessage}
-                        </Typography>
-                      )}
-                      {photoErrorMessage && (
-                        <Typography variant="caption" color="error">
-                          {photoErrorMessage}
-                        </Typography>
-                      )}
-                    </Paper>
+                        <Box sx={{ flex: 1, minHeight: 0, display: 'flex' }}>
+                          {!selectedItemKey ? (
+                            <Stack alignItems="center" justifyContent="center" sx={{ flex: 1, minHeight: 0 }} spacing={0.5}>
+                              <ImageOutlinedIcon color="disabled" />
+                              <Typography variant="caption" color="text.secondary">
+                                Select an item to add a picture
+                              </Typography>
+                            </Stack>
+                          ) : itemPhotosQuery.isLoading ? (
+                            <Stack direction="row" spacing={1} alignItems="center" justifyContent="center" sx={{ py: 1, flex: 1, minHeight: 0 }}>
+                              <CircularProgress size={16} />
+                              <Typography variant="caption" color="text.secondary">Loading picture...</Typography>
+                            </Stack>
+                          ) : itemPhotosQuery.isError ? (
+                            <Stack alignItems="center" justifyContent="center" sx={{ flex: 1, minHeight: 0 }}>
+                              <Typography variant="caption" color="error">Failed to load picture.</Typography>
+                            </Stack>
+                          ) : primaryItemPhoto ? (
+                            <Box
+                              role="button"
+                              tabIndex={0}
+                              onClick={openPhotoPreview}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter' || event.key === ' ') {
+                                  event.preventDefault()
+                                  openPhotoPreview()
+                                }
+                              }}
+                              sx={{
+                                border: '1px solid',
+                                borderColor: 'divider',
+                                borderRadius: 1,
+                                overflow: 'hidden',
+                                position: 'relative',
+                                flex: 1,
+                                minHeight: 0,
+                                height: '100%',
+                                maxHeight: '100%',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                bgcolor: 'grey.100',
+                                cursor: 'zoom-in',
+                              }}
+                            >
+                              <Box
+                                component="img"
+                                src={primaryItemPhoto.url}
+                                alt="Purchased item"
+                                sx={{
+                                  maxWidth: '100%',
+                                  maxHeight: '100%',
+                                  width: '100%',
+                                  height: '100%',
+                                  objectFit: 'contain',
+                                  display: 'block',
+                                }}
+                              />
+                              <IconButton
+                                size="small"
+                                onClick={(event) => {
+                                  event.stopPropagation()
+                                  void handleDeleteItemPhoto(primaryItemPhoto.path)
+                                }}
+                                disabled={deletingPhotoPath === primaryItemPhoto.path}
+                                sx={{
+                                  position: 'absolute',
+                                  right: 6,
+                                  top: 6,
+                                  bgcolor: 'rgba(0,0,0,0.55)',
+                                  color: 'common.white',
+                                  '&:hover': { bgcolor: 'rgba(0,0,0,0.72)' },
+                                }}
+                              >
+                                {deletingPhotoPath === primaryItemPhoto.path
+                                  ? <CircularProgress size={14} sx={{ color: 'common.white' }} />
+                                  : <DeleteOutlineRoundedIcon fontSize="small" />}
+                              </IconButton>
+                            </Box>
+                          ) : (
+                            <Stack alignItems="center" justifyContent="center" sx={{ flex: 1, minHeight: 0 }} spacing={0.5}>
+                              <ImageOutlinedIcon color="disabled" />
+                              <Typography variant="caption" color="text.secondary">
+                                No picture saved yet
+                              </Typography>
+                            </Stack>
+                          )}
+                        </Box>
+
+                        {photoActionMessage && (
+                          <Typography variant="caption" color="success.main">
+                            {photoActionMessage}
+                          </Typography>
+                        )}
+                        {photoErrorMessage && (
+                          <Typography variant="caption" color="error">
+                            {photoErrorMessage}
+                          </Typography>
+                        )}
+                      </Paper>
+
+                    </Stack>
                   </Box>
 
                   <Box>
@@ -742,6 +958,195 @@ export default function PurchasingPage() {
           </Paper>
         </Box>
       </Box>
+
+      <Dialog
+        open={isAiSearchDialogOpen}
+        onClose={closeAiSearchDialog}
+        fullWidth
+        maxWidth="md"
+      >
+        <DialogTitle sx={{ pr: 6 }}>
+          AI Exact Match Supplier Search
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+            Exact item only. U.S. supplier market.
+          </Typography>
+          <IconButton
+            onClick={closeAiSearchDialog}
+            aria-label="Close AI search"
+            sx={{
+              position: 'absolute',
+              top: 8,
+              right: 8,
+            }}
+          >
+            <CloseRoundedIcon fontSize="small" />
+          </IconButton>
+        </DialogTitle>
+        <DialogContent sx={{ pt: 1.5 }}>
+          <Stack spacing={1.25}>
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'center' }} justifyContent="space-between">
+              <Box>
+                <Typography variant="subtitle2" fontWeight={700} sx={{ wordBreak: 'break-word' }}>
+                  {aiSearchResult?.itemName ?? detailQuery.data?.item.itemRaw ?? selectedItemKey ?? 'Selected item'}
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  Delivery target: {aiSearchResult?.deliveryLocation ?? 'United States (USA)'}
+                </Typography>
+              </Box>
+              <Stack direction="row" spacing={1}>
+                {appUser?.isAdmin && (
+                  <Button
+                    size="small"
+                    variant="text"
+                    onClick={openPurchasingAiConfig}
+                  >
+                    Edit AI Rules
+                  </Button>
+                )}
+                <Button
+                  size="small"
+                  variant="outlined"
+                  onClick={() => {
+                    void runAiSearchForCurrentItem()
+                  }}
+                  disabled={!selectedItemKey || isAiSearchRunning}
+                  startIcon={isAiSearchRunning ? <CircularProgress size={14} /> : <TravelExploreRoundedIcon fontSize="small" />}
+                >
+                  {isAiSearchRunning ? 'Searching...' : 'Run Search Again'}
+                </Button>
+              </Stack>
+            </Stack>
+
+            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+              <Chip size="small" color="success" label="Green: cheaper than our price" />
+              <Chip size="small" color="warning" label="Yellow: within allowed range" />
+              <Chip size="small" color="error" label="Red: too high" />
+            </Stack>
+
+            <Typography variant="caption" color="text.secondary">
+              Pricing rule: yellow allows up to 1% above our price, or up to 3% when our price is under $100.
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              If a listing price cannot be read from preview text, the link still shows as "Price unavailable."
+            </Typography>
+
+            {aiSearchResult && (
+              <Typography variant="caption" color="text.secondary">
+                Scanned {aiSearchResult.candidatesScanned} listing candidates. Matched {aiSearchResult.matchedOptionCount} exact options.
+                {Number.isFinite(Number(aiSearchResult.referencePrice)) && aiSearchResult.referencePrice
+                  ? ` Internal reference price: ${formatCurrency(aiSearchResult.referencePrice)}`
+                  : ''}
+              </Typography>
+            )}
+
+            <Divider />
+
+            {aiSearchError && (
+              <Alert severity="error">
+                {aiSearchError}
+              </Alert>
+            )}
+
+            {!aiSearchError && isAiSearchRunning && (
+              <Stack direction="row" spacing={1} alignItems="center" sx={{ py: 1 }}>
+                <CircularProgress size={18} />
+                <Typography variant="body2" color="text.secondary">
+                  AI is searching suppliers for exact-item matches...
+                </Typography>
+              </Stack>
+            )}
+
+            {!aiSearchError && !isAiSearchRunning && aiOptions.length === 0 && (
+              <Alert severity="info">
+                No exact-item suppliers were found for this item.
+              </Alert>
+            )}
+
+            {!aiSearchError && !isAiSearchRunning && aiOptions.length > 0 && (
+              <Stack spacing={1}>
+                {aiOptions.map((option: PurchasingAiOption, index) => {
+                  const statusMeta = getAiPriceStatusMeta(option.priceStatus)
+                  const hasUnitPrice = typeof option.unitPrice === 'number'
+                    && Number.isFinite(option.unitPrice)
+                    && option.unitPrice > 0
+                  const deltaPercentLabel = option.deltaPercent == null
+                    ? null
+                    : `${option.deltaPercent > 0 ? '+' : ''}${option.deltaPercent.toFixed(2)}%`
+                  const priceChipLabel = hasUnitPrice && option.unitPrice != null
+                    ? `${formatCurrency(option.unitPrice)}${deltaPercentLabel ? ` (${deltaPercentLabel})` : ''}`
+                    : 'Price unavailable'
+
+                  return (
+                    <Accordion
+                      key={`${option.url}-${index}`}
+                      disableGutters
+                      sx={{
+                        border: '1px solid',
+                        borderColor: statusMeta.borderColor,
+                        bgcolor: statusMeta.backgroundColor,
+                      }}
+                    >
+                      <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
+                        <Stack sx={{ width: '100%', minWidth: 0 }} spacing={0.5}>
+                          <Stack
+                            direction={{ xs: 'column', sm: 'row' }}
+                            spacing={0.75}
+                            justifyContent="space-between"
+                            alignItems={{ sm: 'center' }}
+                          >
+                            <Typography variant="subtitle2" fontWeight={700} sx={{ minWidth: 0, wordBreak: 'break-word' }}>
+                              {option.vendorName}
+                            </Typography>
+                            <Stack direction="row" spacing={0.75}>
+                              {hasUnitPrice && <Chip size="small" color={statusMeta.chipColor} label={statusMeta.label} />}
+                              <Chip
+                                size="small"
+                                variant="outlined"
+                                label={priceChipLabel}
+                              />
+                            </Stack>
+                          </Stack>
+                          <Typography variant="caption" color="text.secondary" sx={{ wordBreak: 'break-word' }}>
+                            {option.productTitle}
+                          </Typography>
+                        </Stack>
+                      </AccordionSummary>
+                      <AccordionDetails>
+                        <Stack spacing={0.75}>
+                          <Typography variant="caption" color="text.secondary" sx={{ wordBreak: 'break-word' }}>
+                            Exact-match evidence: {option.exactMatchEvidence || 'Not provided'}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary" sx={{ wordBreak: 'break-word' }}>
+                            U.S. shipping evidence: {option.shippingEvidence || 'Not provided'}
+                          </Typography>
+                          {option.notes && (
+                            <Typography variant="caption" color="text.secondary" sx={{ wordBreak: 'break-word' }}>
+                              Notes: {option.notes}
+                            </Typography>
+                          )}
+                          <Stack direction="row" justifyContent="flex-end">
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              component="a"
+                              href={option.url}
+                              target="_blank"
+                              rel="noreferrer"
+                              endIcon={<OpenInNewRoundedIcon fontSize="small" />}
+                            >
+                              Open Listing
+                            </Button>
+                          </Stack>
+                        </Stack>
+                      </AccordionDetails>
+                    </Accordion>
+                  )
+                })}
+              </Stack>
+            )}
+          </Stack>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={Boolean(primaryItemPhoto) && isPhotoPreviewOpen}

@@ -1,4 +1,4 @@
-const VALID_CATEGORIES = new Set(['support', 'general', 'summaries'])
+const VALID_CATEGORIES = new Set(['support', 'general', 'summaries', 'purchasing'])
 const VALID_MODEL_QUALITIES = new Set(['fast', 'better', 'deep'])
 
 export function registerAiRoutes(app, deps) {
@@ -724,7 +724,12 @@ export function registerAiRoutes(app, deps) {
       }
 
       const content = String(req.body?.content ?? '').trim()
-      const contentLimit = category === 'general' ? 20000 : 2000
+      const contentLimit =
+        category === 'general'
+          ? 20000
+          : category === 'purchasing'
+            ? 6000
+            : 2000
 
       if (content.length > contentLimit) {
         return res.status(400).json({ error: `Rules content exceeds ${contentLimit} character limit.` })
