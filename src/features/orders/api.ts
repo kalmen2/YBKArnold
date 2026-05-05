@@ -1,22 +1,40 @@
 import { apiRequest } from '../api-client'
 
+export type OrdersStatusHistoryRow = {
+  id: string | null
+  date: string | null
+  jobName: string | null
+  readyPercent: number | null
+  updatedAt: string | null
+}
+
 export type OrdersOverviewOrder = {
   id: string
   mondayItemId: string
+  orderNumber: string
   jobNumber: string
   orderName: string | null
   poAmount: number | null
+  billedAmount: number | null
+  invoiceAmount: number | null
   invoiceNumber: string | null
-  progressPercent: number | null
-  mondayStatusLabel: string | null
+  paidInFull: boolean | null
+  amountOwed: number | null
+  billBalanceAmount: number | null
+  totalAmountOwed: number | null
+  totalHours: number | null
+  totalLaborCost: number | null
+  orderDate: string | null
+  mondayStatus: string | null
+  rowStatus: string
   managerReadyPercent: number | null
   managerReadyDate: string | null
   managerReadyUpdatedAt: string | null
-  estimatedReadyAt: string | null
-  statusLabel: string | null
+  progressPercent: number | null
+  leadTimeDays: number | null
+  statusHistory: OrdersStatusHistoryRow[]
   isShipped: boolean
   shippedAt: string | null
-  movedToShippedAt: string | null
   mondayBoardId: string | null
   mondayBoardName: string | null
   mondayUpdatedAt: string | null
@@ -24,19 +42,53 @@ export type OrdersOverviewOrder = {
   dueDate: string | null
   shopDrawingCachedUrl: string | null
   shopDrawingUrl: string | null
-  shopDrawingFileName: string | null
+  source: 'monday' | 'quickbooks' | 'merged'
+  hasMondayRecord: boolean
+  hasQuickBooksRecord: boolean
+  inDesign: boolean
+  quickBooksProjectId: string | null
+  quickBooksProjectName: string | null
+  quickBooksProjectIds: string[]
+  quickBooksProjectNames: string[]
+  hazardReason: string | null
 }
 
 export type OrdersOverviewResponse = {
   generatedAt: string
-  includeShipped: boolean
-  refreshed: boolean
+  lastRefreshedAt: string | null
+  lastRefreshWarnings: string[]
+  quickBooksSyncedAt: string | null
   counts: {
     total: number
     shipped: number
-    visible: number
+    nonShipped: number
+    hazard: number
+    mondayOnly: number
+    quickBooksOnly: number
   }
   orders: OrdersOverviewOrder[]
+}
+
+export type OrdersRefreshSummary = {
+  refreshedAt: string
+  mergedOrderCount: number
+  mondayOrderCount: number
+  shippedBoardOrderCount: number
+  preproductionCandidateCount: number
+  preproductionMatchedCount: number
+  preproductionBoardOrderCount: number
+  preproductionBoardRefreshed: boolean
+  quickBooksProjectCount: number
+  carryoverCheckedCount: number
+  carryoverMarkedShippedCount: number
+  carryoverHazardCount: number
+  quickBooksSyncedAt: string | null
+  warnings: string[]
+}
+
+export type OrdersRefreshResponse = {
+  ok: boolean
+  summary: OrdersRefreshSummary
 }
 
 export type OrdersJobDetailEntry = {
@@ -67,13 +119,7 @@ export type OrdersJobDetailWorker = {
   totalLaborCost: number
 }
 
-export type OrdersManagerHistoryRow = {
-  id: string | null
-  date: string | null
-  jobName: string | null
-  readyPercent: number | null
-  updatedAt: string | null
-}
+export type OrdersManagerHistoryRow = OrdersStatusHistoryRow
 
 export type OrdersJobDetailsResponse = {
   generatedAt: string
@@ -103,39 +149,15 @@ export type OrdersJobDetailsResponse = {
   managerHistory: OrdersManagerHistoryRow[]
 }
 
-type FetchOrdersOverviewOptions = {
-  includeShipped?: boolean
-  refresh?: boolean
+export function fetchOrdersOverview() {
+  return apiRequest<OrdersOverviewResponse>('/api/orders/overview')
 }
 
-function buildOrdersOverviewPath(options: FetchOrdersOverviewOptions) {
-  const params = new URLSearchParams()
-
-  if (options.refresh) {
-    params.set('refresh', '1')
-  }
-
-  if (options.includeShipped) {
-    params.set('includeShipped', '1')
-  }
-
-  const query = params.toString()
-
-  if (!query) {
-    return '/api/orders/overview'
-  }
-
-  return `/api/orders/overview?${query}`
-}
-
-export function fetchOrdersOverview(options: FetchOrdersOverviewOptions = {}) {
-  return apiRequest<OrdersOverviewResponse>(
-    buildOrdersOverviewPath(options),
-    {},
-    {
-      // Forced refresh hits Monday + persistence and can occasionally stall.
-      timeoutMs: options.refresh ? 60_000 : undefined,
-    },
+export function postOrdersRefresh() {
+  return apiRequest<OrdersRefreshResponse>(
+    '/api/orders/refresh',
+    { method: 'POST' },
+    { timeoutMs: 90_000 },
   )
 }
 
@@ -173,4 +195,14 @@ function buildOrdersJobDetailsPath(options: FetchOrdersJobDetailsOptions) {
 
 export function fetchOrdersJobDetails(options: FetchOrdersJobDetailsOptions) {
   return apiRequest<OrdersJobDetailsResponse>(buildOrdersJobDetailsPath(options))
+}
+
+export function ordersJobDetailsQueryKey(options: FetchOrdersJobDetailsOptions) {
+  return [
+    'orders',
+    'job-details',
+    String(options.mondayItemId ?? '').trim(),
+    String(options.jobNumber ?? '').trim(),
+    String(options.orderName ?? '').trim(),
+  ] as const
 }

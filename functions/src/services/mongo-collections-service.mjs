@@ -100,7 +100,7 @@ export function createMongoCollectionsService({
         const missingWorkerReviewsCollection = database.collection('timesheet_missing_worker_reviews')
         const dashboardSnapshotsCollection = database.collection('dashboard_snapshots')
         const mondayOrdersCollection = database.collection('monday_orders')
-        const ordersLedgerCollection = database.collection('orders_ledger')
+        const ordersUnifiedCollection = database.collection('orders_unified')
         const authUsersCollection = database.collection('auth_users')
         const mobilePushTokensCollection = database.collection('mobile_push_tokens')
         const mobileAlertsCollection = database.collection('mobile_alerts')
@@ -138,14 +138,15 @@ export function createMongoCollectionsService({
             mondayOrdersCollection.createIndex({ mondayItemId: 1 }, { unique: true }),
             mondayOrdersCollection.createIndex({ createdAt: -1 }),
             mondayOrdersCollection.createIndex({ orderName: 1 }),
-            ordersLedgerCollection.createIndex({ orderKey: 1 }, { unique: true }),
-            ordersLedgerCollection.createIndex({ status: 1, lastSeenAt: -1 }),
-            ordersLedgerCollection.createIndex({ orderNumber: 1 }),
-            ordersLedgerCollection.createIndex({ lastSeenAt: -1 }),
-            ordersLedgerCollection.createIndex({ mondayItemIds: 1 }),
-            ordersLedgerCollection.createIndex(
-              { orderName: 'text', orderNames: 'text' },
-              { name: 'orders_ledger_text', weights: { orderName: 10, orderNames: 4 } },
+            ordersUnifiedCollection.createIndex({ orderKey: 1 }, { unique: true }),
+            ordersUnifiedCollection.createIndex({ order_number: 1 }),
+            ordersUnifiedCollection.createIndex({ is_shipped: 1, Due_date: 1 }),
+            ordersUnifiedCollection.createIndex({ has_monday_record: 1, has_quickbooks_record: 1 }),
+            ordersUnifiedCollection.createIndex({ hazard_reason: 1 }),
+            ordersUnifiedCollection.createIndex({ updatedAt: -1 }),
+            ordersUnifiedCollection.createIndex(
+              { order_name: 'text', order_number: 'text' },
+              { name: 'orders_unified_text', weights: { order_number: 10, order_name: 6 } },
             ),
             authUsersCollection.createIndex({ uid: 1 }, { unique: true }),
             authUsersCollection.createIndex({ emailLower: 1 }, { unique: true }),
@@ -224,6 +225,7 @@ export function createMongoCollectionsService({
           ]).then(async () => {
             await removeLegacyTimesheetEntryIndexes(entriesCollection)
             await dropLegacyAuthActivityLogsCollection(database)
+            await dropLegacyOrdersLedgerCollection(database)
             await ensureDefaultStages()
             await ensureStageSortOrder(stagesCollection)
             await seedDefaultAiRules(aiRulesCollection)
@@ -247,7 +249,7 @@ export function createMongoCollectionsService({
           missingWorkerReviewsCollection,
           dashboardSnapshotsCollection,
           mondayOrdersCollection,
-          ordersLedgerCollection,
+          ordersUnifiedCollection,
           authUsersCollection,
           mobilePushTokensCollection,
           mobileAlertsCollection,
@@ -322,6 +324,18 @@ export function createMongoCollectionsService({
   async function dropLegacyAuthActivityLogsCollection(database) {
     try {
       await database.collection('auth_activity_logs').drop()
+    } catch (error) {
+      if (String(error?.codeName ?? '') === 'NamespaceNotFound') {
+        return
+      }
+
+      throw error
+    }
+  }
+
+  async function dropLegacyOrdersLedgerCollection(database) {
+    try {
+      await database.collection('orders_ledger').drop()
     } catch (error) {
       if (String(error?.codeName ?? '') === 'NamespaceNotFound') {
         return

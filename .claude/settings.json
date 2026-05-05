@@ -1,7 +1,14 @@
 {
   "permissions": {
     "allow": [
-      "Bash(node scripts/inspect-qb-xlsx.cjs)"
+      "Bash(node scripts/inspect-qb-xlsx.cjs)",
+      "Bash(echo \"EXIT: $?\")",
+      "Bash(npx eslint *)",
+      "Bash(echo \"TSC EXIT: $?\")",
+      "Bash(echo \"LINT EXIT: $?\")",
+      "Bash(npx vite *)",
+      "Bash(echo \"BUILD EXIT: $?\")",
+      "Bash(awk 'NR==389' /Users/kalmankamionka/Desktop/Arnold-api/functions/src/routes/dashboard-support-routes.mjs)"
     ]
   }
 }

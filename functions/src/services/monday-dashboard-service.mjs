@@ -1,8 +1,19 @@
 export function createMondayDashboardService({
+  columnOverrides = {},
   mondayBoardUrl,
-  mondayProgressStatusConfig = [],
   normalizeLookupValue,
 }) {
+  const progressStatusConfig = [
+    { key: 'design', titleKeywords: ['design'], weight: 13 },
+    { key: 'baseForm', titleKeywords: ['base/form', 'base form'], weight: 13 },
+    { key: 'build', titleKeywords: ['build'], weight: 13 },
+    { key: 'sandOrLam', titleKeywords: ['sand or lam', 'sand', 'lam'], weight: 13 },
+    { key: 'sealer', titleKeywords: ['sealer'], weight: 12 },
+    { key: 'lacquer', titleKeywords: ['lacquer'], weight: 12 },
+    { key: 'ready', titleKeywords: ['ready'], weight: 12 },
+    { key: 'invoiced', titleKeywords: ['invoiced'], weight: 12 },
+  ]
+
   function detectMondayColumns(items) {
     const sampleItems = items.slice(0, 50)
     const columns = []
@@ -32,95 +43,104 @@ export function createMondayDashboardService({
       ['design', 'stage', 'state'],
       ['status', 'color'],
     )
-    const readyColumnId = pickColumnId(columns, ['ready'], ['status', 'color'])
-    const shipDateColumnId = pickColumnId(
+    const shipDateColumnId =
+      normalizeColumnOverrideId(columnOverrides.shipDateColumnId) ||
+      pickColumnId(
       columns,
       ['ship date', 'date shipped', 'shipped'],
       ['date', 'timeline'],
-    )
-    const leadTimeColumnId = pickColumnId(
+      )
+    const leadTimeColumnId =
+      normalizeColumnOverrideId(columnOverrides.leadTimeColumnId) ||
+      pickColumnId(
       columns,
       ['lead time', 'leadtime', 'lead', 'production time'],
-      ['numbers', 'numeric', 'text', 'long-text'],
-      ['date', 'timeline'],
-    )
-    const dueDateColumnId = pickColumnId(
-      columns,
-      ['ready by', 'need by', 'due', 'ship', 'delivery', 'target', 'eta', 'lead time'],
-      ['date', 'timeline'],
-    )
+      ['numbers', 'numeric', 'text', 'long-text', 'date', 'timeline'],
+      )
+    const orderDateKeywords = [
+      'order date',
+      'ordered',
+      'po date',
+      'purchase order date',
+      'received',
+      'start',
+    ]
+    // Business rules for this board:
+    // - PO Date is the order start date.
+    // - Lead Time is the ready/due date when available.
+    const orderDateColumnId =
+      normalizeColumnOverrideId(columnOverrides.orderDateColumnId) ||
+      pickColumnIdByExactTitle(columns, 'po date') ||
+      pickColumnIdByExactTitle(columns, 'purchase order date') ||
+      pickColumnId(columns, orderDateKeywords, ['date', 'timeline'])
+    let dueDateColumnId =
+      normalizeColumnOverrideId(columnOverrides.dueDateColumnId) ||
+      pickColumnIdByExactTitle(columns, 'lead time') ||
+      pickColumnIdByExactTitle(columns, 'ready by') ||
+      pickColumnIdByExactTitle(columns, 'need by') ||
+      pickColumnId(
+        columns,
+        ['lead time', 'leadtime', 'ready by', 'need by', 'due', 'delivery', 'target', 'eta'],
+        ['date', 'timeline'],
+      )
     const shopDrawingColumnId = pickColumnId(
       columns,
       ['shop drawing', 'shop drawings', 'drawing', 'drawings'],
       ['file', 'link', 'text', 'long-text'],
     )
-    const invoiceNumberColumnId = pickColumnId(
-      columns,
-      ['invoice #', 'invoice number', 'invoice no', 'invoice'],
-      ['numbers', 'numeric', 'text', 'long-text'],
-    )
-    const paidInFullColumnId = pickColumnId(
-      columns,
-      ['paid in full', 'payment status', 'paid status', 'paid'],
-      ['status', 'color', 'text', 'long-text', 'numbers', 'numeric'],
-    )
-    const amountOwedColumnId = pickColumnId(
-      columns,
-      [
-        'amount owed',
-        'amount due',
-        'balance due',
-        'remaining balance',
-        'unpaid balance',
-        'open balance',
-      ],
-      ['numbers', 'numeric', 'text', 'long-text', 'formula'],
-    )
-    const poAmountColumnId = pickColumnId(
-      columns,
-      [
-        'po amount',
-        'purchase order amount',
-        'po total',
-        'purchase order total',
-      ],
-      ['numbers', 'numeric', 'text', 'long-text', 'formula'],
-    )
-    let orderDateColumnId = pickColumnId(
-      columns,
-      ['order date', 'ordered', 'po date', 'received', 'start'],
-      ['date', 'timeline'],
-    )
 
     if (orderDateColumnId && orderDateColumnId === dueDateColumnId) {
-      orderDateColumnId = null
+      dueDateColumnId = leadTimeColumnId && leadTimeColumnId !== orderDateColumnId
+        ? leadTimeColumnId
+        : null
     }
 
-    const progressStatusColumns = mondayProgressStatusConfig
+    const progressColumnId = pickColumnId(
+      columns,
+      ['progress', 'percent complete', 'completion'],
+      ['numbers', 'numeric', 'progress', 'formula'],
+      ['date', 'timeline'],
+    )
+    const progressStatusColumns = progressStatusConfig
       .map((config) => ({
         key: config.key,
         weight: config.weight,
         columnId: pickColumnId(columns, config.titleKeywords, ['status', 'color']),
       }))
-      .filter((entry) => Boolean(entry.columnId) && entry.weight >= 0)
+      .filter((entry) => Boolean(entry.columnId) && entry.weight > 0)
+    const ackColumnId = pickColumnIdByExactTitle(columns, 'ack')
 
     return {
       statusColumnId,
-      readyColumnId,
       shipDateColumnId,
       leadTimeColumnId,
       dueDateColumnId,
       shopDrawingColumnId,
-      invoiceNumberColumnId,
-      paidInFullColumnId,
-      amountOwedColumnId,
-      poAmountColumnId,
       orderDateColumnId,
+      progressColumnId,
       progressStatusColumns,
+      ackColumnId,
     }
   }
 
+  function pickColumnIdByExactTitle(columns, title) {
+    const normalizedTitle = normalizeLookupValue(title)
+    const match = columns.find(
+      (column) => normalizeLookupValue(column?.title) === normalizedTitle,
+    )
+
+    return match ? String(match.id ?? '').trim() || null : null
+  }
+
+  function normalizeColumnOverrideId(value) {
+    const normalized = String(value ?? '').trim()
+    return normalized || null
+  }
+
   function pickColumnId(columns, keywords, preferredTypes = [], disallowedTypes = []) {
+    const normalizedKeywords = (Array.isArray(keywords) ? keywords : [])
+      .map((keyword) => normalizeLookupValue(keyword))
+      .filter(Boolean)
     let bestId = null
     let bestScore = 0
 
@@ -130,11 +150,10 @@ export function createMondayDashboardService({
       }
 
       const haystack = normalizeLookupValue(`${column.title} ${column.id}`)
+
       let score = 0
 
-      keywords.forEach((keyword) => {
-        const normalizedKeyword = normalizeLookupValue(keyword)
-
+      normalizedKeywords.forEach((normalizedKeyword) => {
         if (haystack.includes(normalizedKeyword)) {
           score += normalizedKeyword.length + 3
         }
@@ -157,14 +176,11 @@ export function createMondayDashboardService({
     return bestId
   }
 
-  function normalizeMondayOrder(item, columnMap) {
+  function normalizeMondayOrder(item, columnMap, options = {}) {
     const columnValues = Array.isArray(item?.column_values) ? item.column_values : []
     const statusColumn =
       findColumnById(columnValues, columnMap.statusColumnId) ||
       findColumnByKeywords(columnValues, ['design', 'stage'])
-    const readyColumn =
-      findColumnById(columnValues, columnMap.readyColumnId) ||
-      findColumnByKeywords(columnValues, ['ready'])
     const shipDateColumn =
       findColumnById(columnValues, columnMap.shipDateColumnId) ||
       findColumnByKeywords(columnValues, ['ship date', 'shipped'])
@@ -173,76 +189,54 @@ export function createMondayDashboardService({
       findColumnByKeywords(columnValues, ['lead'])
     const dueDateColumn =
       findColumnById(columnValues, columnMap.dueDateColumnId) ||
-      findColumnByKeywords(columnValues, ['due', 'ready', 'ship'])
+      findColumnByKeywords(columnValues, ['lead time', 'due', 'ready by', 'need by', 'eta'])
     const shopDrawingColumn =
       findColumnById(columnValues, columnMap.shopDrawingColumnId) ||
       findColumnByKeywords(columnValues, ['shop drawing', 'drawing'])
-    const invoiceNumberColumn =
-      findColumnById(columnValues, columnMap.invoiceNumberColumnId) ||
-      findColumnByKeywords(columnValues, ['invoice #', 'invoice number', 'invoice no', 'invoice'])
-    const paidInFullColumn =
-      findColumnById(columnValues, columnMap.paidInFullColumnId) ||
-      findColumnByKeywords(columnValues, ['paid in full', 'payment status', 'paid status', 'paid'])
-    const amountOwedColumn =
-      findColumnById(columnValues, columnMap.amountOwedColumnId) ||
-      findColumnByKeywords(
-        columnValues,
-        ['amount owed', 'amount due', 'balance due', 'remaining balance', 'unpaid balance'],
-      )
-    const poAmountColumn =
-      findColumnById(columnValues, columnMap.poAmountColumnId) ||
-      findColumnByKeywords(
-        columnValues,
-        ['po amount', 'purchase order amount', 'po total', 'purchase order total'],
-      )
     const orderDateColumn =
       findColumnById(columnValues, columnMap.orderDateColumnId) ||
-      findColumnByKeywords(columnValues, ['order date', 'ordered'])
+      findColumnByKeywords(columnValues, ['order date', 'ordered', 'po date', 'purchase order date'])
+    const progressColumn =
+      findColumnById(columnValues, columnMap.progressColumnId) ||
+      findColumnByKeywords(columnValues, ['progress'])
+    const acknowledgmentColumn = findColumnById(columnValues, columnMap.ackColumnId)
 
     const stageLabel = readTextFromColumn(statusColumn) || 'Unspecified'
-    const readyLabel = readTextFromColumn(readyColumn)
     const leadTimeDays = parseLeadTimeDays(
       readTextFromColumn(leadTimeColumn),
       leadTimeColumn?.value,
     )
     const shippedAt = parseDateFromColumn(shipDateColumn)
-    const directDueDate = parseDateFromColumn(dueDateColumn)
+    const leadTimeDate = parseDateFromColumn(leadTimeColumn)
+    const directDueDate = parseDateFromColumn(dueDateColumn) || leadTimeDate
     const orderDate = parseDateFromColumn(orderDateColumn) || parseDateValue(item?.created_at)
     const computedDueDate =
-      orderDate && Number.isFinite(leadTimeDays)
+      !directDueDate && orderDate && Number.isFinite(leadTimeDays)
         ? addDaysToIsoDate(orderDate, Number(leadTimeDays))
         : null
     const effectiveDueDate = directDueDate || computedDueDate
     const daysUntilDue = effectiveDueDate
       ? differenceInDaysFromToday(effectiveDueDate)
       : null
-    const progressPercent = calculateProgressPercent(
-      columnValues,
-      columnMap.progressStatusColumns,
-    )
-    const isReady = isCompletedStatus(readyLabel)
+    const progressPercentFromColumn = parseProgressPercent(progressColumn)
+    const progressPercent =
+      progressPercentFromColumn !== null
+        ? progressPercentFromColumn
+        : calculateProgressPercent(columnValues, columnMap.progressStatusColumns)
     const isDone = Boolean(shippedAt)
-    const statusLabel = buildWorkflowStatusLabel({
-      isDone,
-      isReady,
-      progressPercent,
-      stageLabel,
-    })
+    const statusLabel = buildWorkflowStatusLabel({ isDone, progressPercent, stageLabel })
     const shopDrawing = parseShopDrawing(shopDrawingColumn)
-    const invoiceNumber = parseInvoiceNumber(invoiceNumberColumn)
-    const amountOwed = parseCurrencyAmountFromColumn(amountOwedColumn)
-    const poAmount = parseCurrencyAmountFromColumn(poAmountColumn)
-    const paidInFull = parsePaidInFullStatus(paidInFullColumn, amountOwed)
+    const jobNumber = String(acknowledgmentColumn?.text ?? '').trim() || null
     const isLate = !isDone && typeof daysUntilDue === 'number' ? daysUntilDue < 0 : false
     const daysLate = isLate && typeof daysUntilDue === 'number' ? Math.abs(daysUntilDue) : 0
 
     return {
       id: String(item?.id ?? ''),
       name: String(item?.name ?? 'Untitled order'),
+      jobNumber,
       groupTitle: String(item?.group?.title ?? 'Ungrouped'),
       statusLabel,
       stageLabel,
-      readyLabel,
       leadTimeDays,
       progressPercent,
       orderDate,
@@ -255,13 +249,9 @@ export function createMondayDashboardService({
       isLate,
       daysLate,
       updatedAt: parseDateValue(item?.updated_at),
-      itemUrl: buildMondayItemUrl(item?.id),
+      itemUrl: buildMondayItemUrl(item?.id, options?.boardUrl),
       shopDrawingUrl: shopDrawing.url,
       shopDrawingFileName: shopDrawing.fileName,
-      invoiceNumber,
-      paidInFull,
-      amountOwed,
-      poAmount,
     }
   }
 
@@ -468,6 +458,209 @@ export function createMondayDashboardService({
     return safeValue || null
   }
 
+  function parseProgressPercent(columnValue) {
+    if (!columnValue) {
+      return null
+    }
+
+    const text = readTextFromColumn(columnValue)
+    const direct = parseProgressFromString(text)
+
+    if (direct !== null) {
+      return direct
+    }
+
+    const parsed = parseJsonValue(columnValue.value)
+
+    if (!parsed || typeof parsed !== 'object') {
+      return null
+    }
+
+    const fromKnownKeys = extractProgressFromKnownShape(parsed)
+
+    if (fromKnownKeys !== null) {
+      return fromKnownKeys
+    }
+
+    const fromNested = extractProgressFromNestedUnknown(parsed)
+
+    if (fromNested !== null) {
+      return fromNested
+    }
+
+    return null
+  }
+
+  function extractProgressFromKnownShape(parsed) {
+    for (const candidate of [
+      parsed.percentage,
+      parsed.percent,
+      parsed.progress,
+      parsed.completion,
+      parsed.progress_value,
+      parsed.done_percentage,
+      parsed.number,
+      parsed.value,
+    ]) {
+      const fromCandidate = parseProgressFromNumberishCandidate(candidate)
+
+      if (fromCandidate !== null) {
+        return fromCandidate
+      }
+    }
+
+    const batteryValue = parsed?.battery_value
+
+    if (batteryValue && typeof batteryValue === 'object') {
+      for (const candidate of [
+        batteryValue.percentage,
+        batteryValue.percent,
+        batteryValue.progress,
+        batteryValue.value,
+        batteryValue.number,
+      ]) {
+        const fromBattery = parseProgressFromNumberishCandidate(candidate)
+
+        if (fromBattery !== null) {
+          return fromBattery
+        }
+      }
+    }
+
+    const groupedStatus = parsed?.grouped_statuses
+
+    if (groupedStatus && typeof groupedStatus === 'object') {
+      for (const candidate of Object.values(groupedStatus)) {
+        const fromGrouped = parseProgressFromNumberishCandidate(candidate)
+
+        if (fromGrouped !== null) {
+          return fromGrouped
+        }
+      }
+    }
+
+    return null
+  }
+
+  function extractProgressFromNestedUnknown(value, depth = 0, keyHint = '') {
+    if (depth > 8 || value == null) {
+      return null
+    }
+
+    if (typeof value === 'number') {
+      if (!isProgressHintKey(keyHint)) {
+        return null
+      }
+
+      return normalizeProgressNumber(value)
+    }
+
+    if (typeof value === 'string') {
+      if (!isProgressHintKey(keyHint)) {
+        return null
+      }
+
+      return parseProgressFromString(value)
+    }
+
+    if (Array.isArray(value)) {
+      for (const entry of value) {
+        const parsed = extractProgressFromNestedUnknown(entry, depth + 1, keyHint)
+
+        if (parsed !== null) {
+          return parsed
+        }
+      }
+
+      return null
+    }
+
+    if (typeof value !== 'object') {
+      return null
+    }
+
+    for (const [nestedKey, nestedValue] of Object.entries(value)) {
+      const parsed = extractProgressFromNestedUnknown(nestedValue, depth + 1, nestedKey)
+
+      if (parsed !== null) {
+        return parsed
+      }
+    }
+
+    return null
+  }
+
+  function isProgressHintKey(key) {
+    const normalized = normalizeLookupValue(key)
+
+    if (!normalized) {
+      return false
+    }
+
+    return /(percent|percentage|progress|completion|battery|done)/.test(normalized)
+  }
+
+  function parseProgressFromNumberishCandidate(candidate) {
+    if (typeof candidate === 'number') {
+      return normalizeProgressNumber(candidate)
+    }
+
+    return parseProgressFromString(candidate)
+  }
+
+  function normalizeProgressNumber(value) {
+    if (!Number.isFinite(value)) {
+      return null
+    }
+
+    if (value < 0 || value > 100) {
+      return null
+    }
+
+    return Math.round(value)
+  }
+
+  function parseProgressFromString(value) {
+    if (typeof value !== 'string') {
+      return null
+    }
+
+    const normalized = value.trim()
+
+    if (!normalized) {
+      return null
+    }
+
+    const fractionMatch = normalized.match(/(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)/)
+
+    if (fractionMatch?.[1] && fractionMatch?.[2]) {
+      const numerator = Number(fractionMatch[1])
+      const denominator = Number(fractionMatch[2])
+
+      if (Number.isFinite(numerator) && Number.isFinite(denominator) && denominator > 0) {
+        const ratio = (numerator / denominator) * 100
+
+        if (ratio >= 0 && ratio <= 100) {
+          return Math.round(ratio)
+        }
+      }
+    }
+
+    const match = normalized.match(/-?\d+(\.\d+)?/)
+
+    if (!match) {
+      return null
+    }
+
+    const parsed = Number(match[0])
+
+    if (!Number.isFinite(parsed)) {
+      return null
+    }
+
+    return normalizeProgressNumber(parsed)
+  }
+
   function calculateProgressPercent(columnValues, progressStatusColumns) {
     const usableColumns = Array.isArray(progressStatusColumns)
       ? progressStatusColumns.filter((column) => Number(column.weight) > 0 && column.columnId)
@@ -500,13 +693,32 @@ export function createMondayDashboardService({
     return Math.round((earnedWeight / totalWeight) * 100)
   }
 
-  function buildWorkflowStatusLabel({ isDone, isReady, progressPercent, stageLabel }) {
-    if (isDone) {
-      return 'Shipped'
+  function isCompletedStatus(statusLabel) {
+    const normalized = normalizeLookupValue(statusLabel)
+
+    if (!normalized) {
+      return false
     }
 
-    if (isReady) {
-      return 'Ready / Not Shipped'
+    if (normalized.includes('not ready')) {
+      return false
+    }
+
+    return [
+      'completed',
+      'complete',
+      'closed',
+      'delivered',
+      'shipped',
+      'done',
+      'ready',
+      'paid in full',
+    ].some((keyword) => normalized.includes(keyword))
+  }
+
+  function buildWorkflowStatusLabel({ isDone, progressPercent, stageLabel }) {
+    if (isDone) {
+      return 'Shipped'
     }
 
     if (typeof progressPercent === 'number') {
@@ -573,177 +785,6 @@ export function createMondayDashboardService({
     }
 
     return null
-  }
-
-  function parseInvoiceNumber(columnValue) {
-    const value = String(readTextFromColumn(columnValue) ?? '').trim()
-
-    if (!value || value === '-' || /^n\/a$/i.test(value) || /^none$/i.test(value)) {
-      return null
-    }
-
-    if (/^no invoice$/i.test(value)) {
-      return null
-    }
-
-    return value
-  }
-
-  function parsePaidInFullStatus(columnValue, amountOwed) {
-    if (Number.isFinite(amountOwed)) {
-      if (Number(amountOwed) > 0) {
-        return false
-      }
-
-      if (Number(amountOwed) === 0) {
-        return true
-      }
-    }
-
-    const normalizedValue = normalizeLookupValue(readTextFromColumn(columnValue))
-
-    if (!normalizedValue) {
-      return null
-    }
-
-    const indicatesNotPaid = [
-      'not paid',
-      'unpaid',
-      'partial',
-      'partially',
-      'balance',
-      'owed',
-      'remaining',
-      'open',
-      'due',
-    ].some((keyword) => normalizedValue.includes(keyword))
-
-    if (indicatesNotPaid) {
-      return false
-    }
-
-    const indicatesPaid = [
-      'paid in full',
-      'paid',
-      'settled',
-      'complete',
-      'completed',
-      'closed',
-      'yes',
-    ].some((keyword) => normalizedValue.includes(keyword))
-
-    if (indicatesPaid) {
-      return true
-    }
-
-    return null
-  }
-
-  function parseCurrencyAmountFromColumn(columnValue) {
-    if (!columnValue) {
-      return null
-    }
-
-    const textAmount = parseNumberishValue(columnValue.text)
-
-    if (textAmount !== null) {
-      return textAmount
-    }
-
-    const parsedValue = parseJsonValue(columnValue.value)
-
-    if (!parsedValue || typeof parsedValue !== 'object') {
-      return null
-    }
-
-    return parseAmountFromUnknown(parsedValue)
-  }
-
-  function parseAmountFromUnknown(value, depth = 0, hasAmountHint = false) {
-    if (depth > 8 || value == null) {
-      return null
-    }
-
-    if (typeof value === 'number') {
-      return Number.isFinite(value) ? value : null
-    }
-
-    if (typeof value === 'string') {
-      return hasAmountHint ? parseNumberishValue(value) : null
-    }
-
-    if (Array.isArray(value)) {
-      for (const entry of value) {
-        const parsed = parseAmountFromUnknown(entry, depth + 1, hasAmountHint)
-
-        if (parsed !== null) {
-          return parsed
-        }
-      }
-
-      return null
-    }
-
-    if (typeof value !== 'object') {
-      return null
-    }
-
-    for (const [key, nestedValue] of Object.entries(value)) {
-      const normalizedKey = normalizeLookupValue(key)
-      const nestedHasAmountHint = hasAmountHint
-        || [
-          'number',
-          'value',
-          'amount',
-          'balance',
-          'total',
-          'price',
-          'owed',
-          'remaining',
-          'due',
-        ].some((keyword) => normalizedKey.includes(keyword))
-
-      const parsed = parseAmountFromUnknown(nestedValue, depth + 1, nestedHasAmountHint)
-
-      if (parsed !== null) {
-        return parsed
-      }
-    }
-
-    return null
-  }
-
-  function parseNumberishValue(value) {
-    if (typeof value === 'number') {
-      return Number.isFinite(value) ? value : null
-    }
-
-    if (typeof value !== 'string') {
-      return null
-    }
-
-    const trimmed = value.trim()
-
-    if (!trimmed) {
-      return null
-    }
-
-    const normalized = trimmed
-      .replace(/[$,]/g, '')
-      .replace(/\s+/g, ' ')
-    const wrappedNegative = /^\((.+)\)$/.test(normalized)
-    const candidate = wrappedNegative
-      ? `-${normalized.replace(/^\((.+)\)$/, '$1')}`
-      : normalized
-    const numberMatch = candidate.match(/-?\d+(\.\d+)?/)
-
-    if (!numberMatch) {
-      return null
-    }
-
-    const parsed = Number(numberMatch[0])
-
-    return Number.isFinite(parsed) ? parsed : null
   }
 
   function parseDateFromColumn(columnValue) {
@@ -821,34 +862,14 @@ export function createMondayDashboardService({
     return Math.round((compareDate.getTime() - today.getTime()) / 86400000)
   }
 
-  function isCompletedStatus(statusLabel) {
-    const normalized = normalizeLookupValue(statusLabel)
+  function buildMondayItemUrl(itemId, boardUrlOverride = null) {
+    const baseBoardUrl = String(boardUrlOverride ?? mondayBoardUrl ?? '').trim()
 
-    if (!normalized) {
-      return false
-    }
-
-    if (normalized.includes('not ready')) {
-      return false
-    }
-
-    return [
-      'completed',
-      'complete',
-      'closed',
-      'delivered',
-      'shipped',
-      'done',
-      'paid in full',
-    ].some((keyword) => normalized.includes(keyword))
-  }
-
-  function buildMondayItemUrl(itemId) {
-    if (!mondayBoardUrl || !itemId) {
+    if (!baseBoardUrl || !itemId) {
       return null
     }
 
-    return `${mondayBoardUrl.replace(/\/+$/, '')}/pulses/${String(itemId)}`
+    return `${baseBoardUrl.replace(/\/+$/, '')}/pulses/${String(itemId)}`
   }
 
   function buildBucketCounts(orders, key) {

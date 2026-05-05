@@ -11,8 +11,8 @@ import { registerAlertsRoutes } from './src/routes/alerts-routes.mjs'
 import { registerAuthRoutes } from './src/routes/auth-routes.mjs'
 import { registerCrmRoutes } from './src/routes/crm-routes.mjs'
 import { registerDashboardSupportRoutes } from './src/routes/dashboard-support-routes.mjs'
-import { registerOrdersLedgerRoutes } from './src/routes/orders-ledger-routes.mjs'
 import { registerOrderPhotoRoutes } from './src/routes/order-photos-routes.mjs'
+import { registerOrdersRoutes } from './src/routes/orders-routes.mjs'
 import { registerPurchasingRoutes } from './src/routes/purchasing-routes.mjs'
 import { registerQuickBooksRoutes } from './src/routes/quickbooks-routes.mjs'
 import { registerTimesheetRoutes } from './src/routes/timesheet-routes.mjs'
@@ -24,6 +24,7 @@ import { createMondayDashboardService } from './src/services/monday-dashboard-se
 import { createMondayOrderPersistenceService } from './src/services/monday-order-persistence-service.mjs'
 import { createMondaySnapshotService } from './src/services/monday-snapshot-service.mjs'
 import { createMongoCollectionsService } from './src/services/mongo-collections-service.mjs'
+import { createOrdersUnifiedService } from './src/services/orders-unified-service.mjs'
 import { createOrderPhotoService } from './src/services/order-photo-service.mjs'
 import { createPlatformConfigService } from './src/services/platform-config-service.mjs'
 import { createPushAlertService } from './src/services/push-alert-service.mjs'
@@ -96,6 +97,17 @@ const heavyOperationsLimit = rateLimit({
 app.use('/api/crm/imports', heavyOperationsLimit)
 app.use('/api/orders/:orderId/photos', heavyOperationsLimit)
 
+// /api/orders/refresh hits Monday + QuickBooks live. Capped at 1 per 2 minutes
+// per IP — refreshing more often risks hitting Monday's rate limits.
+const ordersRefreshLimit = rateLimit({
+  windowMs: 2 * 60 * 1000,
+  max: 1,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Refresh is rate-limited to once every 2 minutes.' },
+})
+app.use('/api/orders/refresh', ordersRefreshLimit)
+
 app.use((req, res, next) => {
   if (req.path.startsWith('/api/')) {
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
@@ -113,8 +125,20 @@ const mondayApiUrl = process.env.MONDAY_API_URL ?? 'https://api.monday.com/v2'
 const mondayApiToken = String(process.env.MONDAY_API_TOKEN ?? '').trim()
 const mondayBoardId = String(process.env.MONDAY_BOARD_ID ?? '').trim()
 const mondayBoardUrl = String(process.env.MONDAY_BOARD_URL ?? '').trim()
+const mondayOrderDateColumnId = String(process.env.MONDAY_ORDER_DATE_COLUMN_ID ?? '').trim()
+const mondayDueDateColumnId = String(process.env.MONDAY_DUE_DATE_COLUMN_ID ?? '').trim()
+const mondayLeadTimeColumnId = String(process.env.MONDAY_LEAD_TIME_COLUMN_ID ?? '').trim()
+const mondayShipDateColumnId = String(process.env.MONDAY_SHIP_DATE_COLUMN_ID ?? '').trim()
 const mondayShippedBoardId = String(process.env.MONDAY_SHIPPED_BOARD_ID ?? '').trim()
 const mondayShippedBoardUrl = String(process.env.MONDAY_SHIPPED_BOARD_URL ?? '').trim()
+const mondayPreproductionBoardId = String(
+  process.env.MONDAY_PREPRODUCTION_BOARD_ID
+  ?? '1064270065',
+).trim()
+const mondayPreproductionBoardUrl = String(
+  process.env.MONDAY_PREPRODUCTION_BOARD_URL
+  ?? 'https://arnoldcontract.monday.com/boards/1064270065',
+).trim()
 const zendeskApiToken = String(process.env.ZENDESK_API_TOKEN ?? '').trim()
 const zendeskEmail = String(process.env.ZENDESK_EMAIL ?? '').trim()
 const zendeskUrl = String(process.env.ZENDESK_URL ?? '').trim()
@@ -276,26 +300,19 @@ const {
   zendeskUrl,
 })
 
-const mondayProgressStatusConfig = [
-  { key: 'priority', titleKeywords: ['priority'], weight: 0 },
-  { key: 'design', titleKeywords: ['design'], weight: 13 },
-  { key: 'baseForm', titleKeywords: ['base/form', 'base form'], weight: 13 },
-  { key: 'build', titleKeywords: ['build'], weight: 13 },
-  { key: 'sandOrLam', titleKeywords: ['sand or lam', 'sand', 'lam'], weight: 13 },
-  { key: 'sealer', titleKeywords: ['sealer'], weight: 12 },
-  { key: 'lacquer', titleKeywords: ['lacquer'], weight: 12 },
-  { key: 'ready', titleKeywords: ['ready'], weight: 12 },
-  { key: 'invoiced', titleKeywords: ['invoiced'], weight: 12 },
-]
-
 const {
   buildBucketCounts,
   compareOrdersByUrgency,
   detectMondayColumns,
   normalizeMondayOrder,
 } = createMondayDashboardService({
+  columnOverrides: {
+    dueDateColumnId: mondayDueDateColumnId || null,
+    leadTimeColumnId: mondayLeadTimeColumnId || null,
+    orderDateColumnId: mondayOrderDateColumnId || null,
+    shipDateColumnId: mondayShipDateColumnId || null,
+  },
   mondayBoardUrl,
-  mondayProgressStatusConfig,
   normalizeLookupValue,
 })
 
@@ -390,13 +407,65 @@ query GetBoardItems($boardId: ID!, $limit: Int!, $cursor: String) {
 }
 `
 
-const { fetchMondayAssetDownloadInfo, fetchMondayDashboardSnapshot } = createMondaySnapshotService({
+function buildMondayItemsPageQuery(columnIds) {
+  const ids = Array.isArray(columnIds)
+    ? columnIds
+      .map((value) => String(value ?? '').trim())
+      .filter((value) => value.length > 0)
+    : []
+
+  if (ids.length === 0) {
+    return mondayItemsPageQuery
+  }
+
+  const idsLiteral = `[${ids.map((id) => JSON.stringify(id)).join(', ')}]`
+
+  return `
+query GetBoardItems($boardId: ID!, $limit: Int!, $cursor: String) {
+  boards(ids: [$boardId]) {
+    id
+    name
+    items_page(limit: $limit, cursor: $cursor) {
+      cursor
+      items {
+        id
+        name
+        created_at
+        updated_at
+        group {
+          id
+          title
+        }
+        column_values(ids: ${idsLiteral}) {
+          id
+          type
+          text
+          value
+          column {
+            title
+          }
+        }
+      }
+    }
+  }
+}
+`
+}
+
+const {
+  fetchMondayAssetDownloadInfo,
+  fetchMondayBoardItemNames,
+  fetchMondayBoardItemsByIds,
+  fetchMondayDashboardSnapshot,
+  invalidateMondayBoardNamesCache,
+} = createMondaySnapshotService({
   ensureMondayConfiguration,
   mondayApiUrl,
   mondayApiToken,
   mondayBoardId,
   mondayBoardUrl,
   mondayItemsPageQuery,
+  buildMondayItemsPageQuery,
   buildBucketCounts,
   compareOrdersByUrgency,
   detectMondayColumns,
@@ -419,6 +488,22 @@ const { persistNewMondayOrders } = createMondayOrderPersistenceService({
   mondayBoardId,
   mondayShippedBoardId,
   randomUUID,
+})
+
+const { refreshOrdersUnifiedCollection } = createOrdersUnifiedService({
+  fetchMondayBoardItemNames,
+  fetchMondayBoardItemsByIds,
+  fetchMondayDashboardSnapshot,
+  getCollections,
+  invalidateMondayBoardNamesCache,
+  mondayBoardId,
+  mondayBoardUrl,
+  mondayPreproductionBoardId,
+  mondayPreproductionBoardUrl,
+  mondayShippedBoardId,
+  mondayShippedBoardUrl,
+  persistNewMondayOrders,
+  setDashboardSnapshotCache,
 })
 
 const {
@@ -480,7 +565,6 @@ const routeDeps = {
   extractRequestIpAddress,
   extractRequestLocalIpAddress,
   extractRequestUserAgent,
-  fetchMondayDashboardSnapshot,
   fetchMondayAssetDownloadInfo,
   fetchZendeskSupportAgentById,
   fetchZendeskSupportAgents,
@@ -501,8 +585,6 @@ const routeDeps = {
   mobileAlertTargetModeSelected,
   mobilePushTokenProviderExpo,
   mobilePushTokenProviderFcm,
-  mondayShippedBoardId,
-  mondayShippedBoardUrl,
   normalizeAnyPushToken,
   normalizeAuthAccessTimeZone,
   normalizeAuthClientAccessMode,
@@ -520,7 +602,7 @@ const routeDeps = {
   ownerEmail,
   parseOptionalAuthAccessTimeZone,
   parseOptionalAuthHour,
-  persistNewMondayOrders,
+  refreshOrdersUnifiedCollection,
   randomUUID,
   redactPushTokenForLog,
   invalidateAuthUserCache,
@@ -541,17 +623,9 @@ const routeDeps = {
   validateWorkerInput,
 }
 
-function normalizeOrderTransitionKey(rawValue) {
-  const normalized = normalizeLookupValue(rawValue).replace(/\s+/g, ' ').trim()
-
-  return normalized || null
-}
-
 function hasDashboardRefreshErrors(summary) {
   const sections = [
-    summary?.monday,
-    summary?.shippedMonday,
-    summary?.shippedTransitions,
+    summary?.ordersUnified,
     summary?.zendesk,
     summary?.supportAlerts,
     summary?.supportTickets,
@@ -616,197 +690,41 @@ async function appendSystemRunLog({
   )
 }
 
-function buildNormalizedOrderTransitionSet(orders) {
-  const normalizedSet = new Set()
-
-  if (!Array.isArray(orders)) {
-    return normalizedSet
-  }
-
-  orders.forEach((order) => {
-    const normalizedKey = normalizeOrderTransitionKey(order?.name)
-
-    if (normalizedKey) {
-      normalizedSet.add(normalizedKey)
-    }
-  })
-
-  return normalizedSet
-}
-
-async function stampOrdersMovedToShippedFromSnapshots({ now, primarySnapshot, shippedSnapshot }) {
-  const orderTrackBoardId = String(mondayBoardId ?? '').trim()
-  const shippedBoardId = String(mondayShippedBoardId ?? '').trim()
-
-  if (!orderTrackBoardId || !shippedBoardId) {
-    return {
-      checkedOrderTrackOrders: 0,
-      movedOrderCount: 0,
-      reason: 'Missing Monday board IDs for transition tracking.',
-    }
-  }
-
-  const orderTrackNameSet = buildNormalizedOrderTransitionSet(primarySnapshot?.orders)
-  const shippedNameSet = buildNormalizedOrderTransitionSet(shippedSnapshot?.orders)
-
-  if (shippedNameSet.size === 0) {
-    return {
-      checkedOrderTrackOrders: 0,
-      movedOrderCount: 0,
-      reason: 'No shipped orders found in shipped board snapshot.',
-    }
-  }
-
-  const transitionedNames = new Set(
-    [...shippedNameSet].filter((name) => !orderTrackNameSet.has(name)),
-  )
-
-  if (transitionedNames.size === 0) {
-    return {
-      checkedOrderTrackOrders: 0,
-      movedOrderCount: 0,
-      reason: 'No transitions detected from Order Track to Shipped.',
-    }
-  }
-
-  const { mondayOrdersCollection } = await getCollections()
-  const transitionWindowHours = Number.isFinite(shipTransitionRecentWindowHours)
-    && shipTransitionRecentWindowHours > 0
-    ? shipTransitionRecentWindowHours
-    : 72
-  const recentOrderTrackCutoffIso = new Date(
-    Date.now() - transitionWindowHours * 60 * 60 * 1000,
-  ).toISOString()
-  const candidateOrderTrackDocuments = await mondayOrdersCollection
-    .find(
-      {
-        mondayBoardId: orderTrackBoardId,
-        lastSeenAt: {
-          $gte: recentOrderTrackCutoffIso,
-        },
-        $or: [
-          { movedToShippedAt: { $exists: false } },
-          { movedToShippedAt: null },
-        ],
-      },
-      {
-        projection: {
-          _id: 1,
-          orderName: 1,
-        },
-      },
-    )
-    .toArray()
-
-  const orderIdsToStamp = candidateOrderTrackDocuments
-    .filter((document) => {
-      const normalizedName = normalizeOrderTransitionKey(document?.orderName)
-
-      return normalizedName && transitionedNames.has(normalizedName)
-    })
-    .map((document) => document._id)
-
-  if (orderIdsToStamp.length === 0) {
-    return {
-      checkedOrderTrackOrders: candidateOrderTrackDocuments.length,
-      movedOrderCount: 0,
-      reason: 'No unstamped Order Track records matched transitioned shipped orders.',
-    }
-  }
-
-  const writeResult = await mondayOrdersCollection.updateMany(
-    {
-      _id: {
-        $in: orderIdsToStamp,
-      },
-    },
-    {
-      $set: {
-        movedToShippedAt: now,
-        updatedAt: now,
-      },
-    },
-  )
-
-  return {
-    checkedOrderTrackOrders: candidateOrderTrackDocuments.length,
-    movedOrderCount: Number(writeResult?.modifiedCount ?? 0),
-  }
-}
-
 async function refreshDashboardSnapshotsAndTrackShippingMoves() {
   const refreshStartedAt = new Date().toISOString()
   const summary = {
     startedAt: refreshStartedAt,
-    monday: { refreshed: false },
-    shippedMonday: { refreshed: false },
-    shippedTransitions: { checkedOrderTrackOrders: 0, movedOrderCount: 0 },
+    ordersUnified: { refreshed: false },
     zendesk: { refreshed: false },
     supportAlerts: { refreshed: false },
     supportTickets: { refreshed: false },
     supportAlertTickets: { refreshed: false },
   }
 
-  let primarySnapshot = null
-  let shippedSnapshot = null
-
+  // Orders unified is the single source of truth for Monday + QuickBooks pulls.
+  // It owns the targeted shipped + design lookups and the carryover-to-shipped
+  // transition logic, so the cron does not pull boards directly anymore.
   try {
-    primarySnapshot = await fetchMondayDashboardSnapshot()
-    const persistSummary = await persistNewMondayOrders(primarySnapshot)
-    await setDashboardSnapshotCache('monday', primarySnapshot)
-    summary.monday = {
+    const ordersUnifiedRefreshSummary = await refreshOrdersUnifiedCollection()
+
+    summary.ordersUnified = {
       refreshed: true,
-      orders: Number(primarySnapshot?.metrics?.totalOrders ?? 0),
-      persisted: persistSummary,
+      mergedOrderCount: Number(ordersUnifiedRefreshSummary?.mergedOrderCount ?? 0),
+      orderTrackOrderCount: Number(ordersUnifiedRefreshSummary?.orderTrackOrderCount ?? 0),
+      quickBooksProjectCount: Number(ordersUnifiedRefreshSummary?.quickBooksProjectCount ?? 0),
+      designBoardMatchedCount: Number(ordersUnifiedRefreshSummary?.designBoardMatchedCount ?? 0),
+      carryoverMarkedShippedCount: Number(ordersUnifiedRefreshSummary?.carryoverMarkedShippedCount ?? 0),
+      carryoverHazardCount: Number(ordersUnifiedRefreshSummary?.carryoverHazardCount ?? 0),
+      warnings: Array.isArray(ordersUnifiedRefreshSummary?.warnings)
+        ? ordersUnifiedRefreshSummary.warnings
+        : [],
     }
   } catch (error) {
-    summary.monday = {
+    summary.ordersUnified = {
       refreshed: false,
-      error: error instanceof Error ? error.message : 'Monday refresh failed.',
+      error: error instanceof Error ? error.message : 'Orders unified refresh failed.',
     }
-    console.error('dailyDashboardRefresh Monday refresh failed.', error)
-  }
-
-  const shippedBoardId = String(mondayShippedBoardId ?? '').trim()
-
-  if (shippedBoardId) {
-    try {
-      shippedSnapshot = await fetchMondayDashboardSnapshot({
-        boardId: shippedBoardId,
-        boardUrl: String(mondayShippedBoardUrl ?? '').trim() || null,
-        boardName: 'Shipped Orders',
-      })
-      const shippedPersistSummary = await persistNewMondayOrders(shippedSnapshot)
-      await setDashboardSnapshotCache(`monday_shipped_${shippedBoardId}`, shippedSnapshot)
-      summary.shippedMonday = {
-        refreshed: true,
-        orders: Number(shippedSnapshot?.metrics?.totalOrders ?? 0),
-        persisted: shippedPersistSummary,
-      }
-    } catch (error) {
-      summary.shippedMonday = {
-        refreshed: false,
-        error: error instanceof Error ? error.message : 'Shipped Monday refresh failed.',
-      }
-      console.error('dailyDashboardRefresh shipped Monday refresh failed.', error)
-    }
-  }
-
-  if (primarySnapshot && shippedSnapshot) {
-    try {
-      summary.shippedTransitions = await stampOrdersMovedToShippedFromSnapshots({
-        now: new Date().toISOString(),
-        primarySnapshot,
-        shippedSnapshot,
-      })
-    } catch (error) {
-      summary.shippedTransitions = {
-        checkedOrderTrackOrders: 0,
-        movedOrderCount: 0,
-        error: error instanceof Error ? error.message : 'Transition tracking failed.',
-      }
-      console.error('dailyDashboardRefresh moved-to-shipped tracking failed.', error)
-    }
+    console.error('dailyDashboardRefresh orders unified refresh failed.', error)
   }
 
   try {
@@ -887,8 +805,8 @@ registerAiRoutes(app, routeDeps)
 registerAuthRoutes(app, routeDeps)
 registerAlertsRoutes(app, routeDeps)
 registerCrmRoutes(app, routeDeps)
+registerOrdersRoutes(app, routeDeps)
 registerDashboardSupportRoutes(app, routeDeps)
-registerOrdersLedgerRoutes(app, routeDeps)
 registerOrderPhotoRoutes(app, routeDeps)
 registerPurchasingRoutes(app, routeDeps)
 registerQuickBooksRoutes(app, routeDeps)

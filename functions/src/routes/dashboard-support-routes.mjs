@@ -5,7 +5,7 @@ export function registerDashboardSupportRoutes(app, deps) {
     clearSupportSnapshotCache,
     createZendeskTicketReply,
     createZendeskSupportTicket,
-    fetchMondayDashboardSnapshot,
+    fetchMondayAssetDownloadInfo,
     fetchZendeskSupportAgents,
     fetchZendeskSupportAlertTicketsSnapshot,
     fetchZendeskSupportAlerts,
@@ -14,10 +14,9 @@ export function registerDashboardSupportRoutes(app, deps) {
     fetchZendeskTicketSummary,
     getCollections,
     getDashboardSnapshotFromCache,
+    getOrderPhotosBucket,
     isDashboardRefreshRequested,
-    mondayShippedBoardId,
-    mondayShippedBoardUrl,
-    persistNewMondayOrders,
+    randomUUID,
     requireAdminRole,
     requireFirebaseAuth,
     requireManagerOrAdminRole,
@@ -84,152 +83,411 @@ export function registerDashboardSupportRoutes(app, deps) {
     return `${safeFileName}.pdf`
   }
 
-  function normalizeJobLookupValue(value) {
-    return String(value ?? '')
-      .trim()
-      .toLowerCase()
-      .replace(/\s+/g, ' ')
+  function normalizeUrl(value) {
+    const normalized = String(value ?? '').trim()
+    return normalized || null
   }
 
-  function extractJobDigits(value) {
-    const digits = String(value ?? '').replace(/\D+/g, '').trim()
+  function deriveFileNameFromUrl(value) {
+    const normalizedUrl = normalizeUrl(value)
 
-    return digits || null
-  }
+    if (!normalizedUrl) {
+      return null
+    }
 
-  function buildJobLookupValues(values) {
-    const normalizedValues = new Set()
-    const digitValues = new Set()
-
-    ;(Array.isArray(values) ? values : []).forEach((value) => {
-      const normalizedValue = normalizeJobLookupValue(value)
-
-      if (normalizedValue) {
-        normalizedValues.add(normalizedValue)
-      }
-
-      const digitValue = extractJobDigits(value)
-
-      if (digitValue) {
-        digitValues.add(digitValue)
-      }
-    })
-
-    return {
-      normalizedValues,
-      digitValues,
+    try {
+      const parsedUrl = new URL(normalizedUrl)
+      const segment = parsedUrl.pathname.split('/').pop() ?? ''
+      const decoded = decodeURIComponent(segment).trim()
+      return decoded || null
+    } catch {
+      return null
     }
   }
 
-  function doesJobNameMatchLookup(jobName, lookup) {
-    const normalizedJobName = normalizeJobLookupValue(jobName)
+  function extractMondayAssetIdFromUrl(value) {
+    const normalizedUrl = normalizeUrl(value)
 
-    if (normalizedJobName && lookup.normalizedValues.has(normalizedJobName)) {
-      return true
+    if (!normalizedUrl) {
+      return null
     }
 
-    const jobDigits = extractJobDigits(jobName)
-
-    if (jobDigits && lookup.digitValues.has(jobDigits)) {
-      return true
-    }
-
-    return false
-  }
-
-  function buildLatestOrderProgressLookups(orderProgressDocuments) {
-    const latestByNormalized = new Map()
-    const latestByDigits = new Map()
-
-    ;(Array.isArray(orderProgressDocuments) ? orderProgressDocuments : []).forEach((progress) => {
-      const normalizedJobName = normalizeJobLookupValue(progress?.jobName)
-
-      if (normalizedJobName && !latestByNormalized.has(normalizedJobName)) {
-        latestByNormalized.set(normalizedJobName, progress)
-      }
-
-      const jobDigits = extractJobDigits(progress?.jobName)
-
-      if (jobDigits && !latestByDigits.has(jobDigits)) {
-        latestByDigits.set(jobDigits, progress)
-      }
-    })
-
-    return {
-      latestByNormalized,
-      latestByDigits,
+    try {
+      const parsedUrl = new URL(normalizedUrl)
+      const match = parsedUrl.pathname.match(/\/resources\/([0-9]+)(?:\/|$)/i)
+      return match?.[1] ?? null
+    } catch {
+      return null
     }
   }
 
-  function resolveLatestOrderProgressForOrder(orderDocument, progressLookups) {
-    const orderJobNumber = extractJobNumber(orderDocument)
-    const orderName = String(orderDocument?.orderName ?? '').trim()
-    const mondayItemId = String(orderDocument?.mondayItemId ?? '').trim()
-    const lookup = buildJobLookupValues([orderJobNumber, orderName, mondayItemId])
+  function sanitizeStorageSegment(value, fallback = 'unknown') {
+    const normalized = String(value ?? '').trim().replace(/[^a-zA-Z0-9_-]+/g, '_')
 
-    for (const normalizedValue of lookup.normalizedValues) {
-      const progress = progressLookups.latestByNormalized.get(normalizedValue)
-
-      if (progress) {
-        return progress
-      }
+    if (!normalized) {
+      return fallback
     }
 
-    for (const digitValue of lookup.digitValues) {
-      const progress = progressLookups.latestByDigits.get(digitValue)
-
-      if (progress) {
-        return progress
-      }
-    }
-
-    return null
+    return normalized.slice(0, 120)
   }
 
-  function getEntryRegularHours(entry) {
-    const regularHours = Number(entry?.hours)
-
-    if (!Number.isFinite(regularHours) || regularHours < 0) {
-      return 0
+  function createDownloadToken() {
+    if (typeof randomUUID === 'function') {
+      return randomUUID()
     }
 
-    return regularHours
+    return `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`
   }
 
-  function getEntryOvertimeHours(entry) {
-    const overtimeHours = Number(entry?.overtimeHours)
+  function buildFirebaseStorageDownloadUrl(bucketName, objectPath, downloadToken) {
+    const encodedObjectPath = encodeURIComponent(String(objectPath ?? '').trim())
+    const encodedToken = encodeURIComponent(String(downloadToken ?? '').trim())
 
-    if (!Number.isFinite(overtimeHours) || overtimeHours < 0) {
-      return 0
-    }
-
-    return overtimeHours
+    return `https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(bucketName)}/o/${encodedObjectPath}?alt=media&token=${encodedToken}`
   }
 
-  function getEntryRate(entry, workerDocument) {
-    const snapshotRate = Number(entry?.payRate)
+  function normalizeIsoDate(value) {
+    const raw = String(value ?? '').trim()
 
-    if (Number.isFinite(snapshotRate) && snapshotRate > 0) {
-      return snapshotRate
+    if (!raw) {
+      return null
     }
 
-    const workerRate = Number(workerDocument?.hourlyRate)
-
-    if (Number.isFinite(workerRate) && workerRate > 0) {
-      return workerRate
+    const directMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})/)
+    if (directMatch) {
+      return `${directMatch[1]}-${directMatch[2]}-${directMatch[3]}`
     }
 
-    return 0
+    const parsed = new Date(raw)
+    if (Number.isNaN(parsed.getTime())) {
+      return null
+    }
+
+    const year = parsed.getFullYear()
+    const month = String(parsed.getMonth() + 1).padStart(2, '0')
+    const day = String(parsed.getDate()).padStart(2, '0')
+    return `${year}-${month}-${day}`
   }
 
-  function toMoney(value) {
+  function addDaysToIsoDate(isoDate, daysToAdd) {
+    const [year, month, day] = String(isoDate ?? '').split('-').map(Number)
+    const days = Number(daysToAdd)
+
+    if (!year || !month || !day || !Number.isFinite(days)) {
+      return null
+    }
+
+    const target = new Date(year, month - 1, day)
+    target.setDate(target.getDate() + days)
+
+    const nextYear = target.getFullYear()
+    const nextMonth = String(target.getMonth() + 1).padStart(2, '0')
+    const nextDay = String(target.getDate()).padStart(2, '0')
+    return `${nextYear}-${nextMonth}-${nextDay}`
+  }
+
+  function differenceInDaysFromToday(isoDate) {
+    const [year, month, day] = String(isoDate ?? '').split('-').map(Number)
+
+    if (!year || !month || !day) {
+      return null
+    }
+
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+
+    const target = new Date(year, month - 1, day)
+    target.setHours(0, 0, 0, 0)
+
+    return Math.round((target.getTime() - today.getTime()) / 86400000)
+  }
+
+  function toFiniteNumber(value) {
     const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : null
+  }
 
-    if (!Number.isFinite(parsed)) {
-      return 0
+  function buildBucketCounts(orders, fieldName) {
+    const countsByLabel = new Map()
+
+    ;(Array.isArray(orders) ? orders : []).forEach((order) => {
+      const label = String(order?.[fieldName] ?? '').trim() || 'Unspecified'
+      countsByLabel.set(label, (countsByLabel.get(label) ?? 0) + 1)
+    })
+
+    return [...countsByLabel.entries()]
+      .map(([label, count]) => ({ label, count }))
+      .sort((left, right) => {
+        if (right.count !== left.count) {
+          return right.count - left.count
+        }
+        return left.label.localeCompare(right.label)
+      })
+  }
+
+  function compareOrdersByUrgency(left, right) {
+    const leftRank = left.isLate
+      ? 0
+      : left.isDone
+        ? 3
+        : typeof left.daysUntilDue === 'number'
+          ? 1
+          : 2
+    const rightRank = right.isLate
+      ? 0
+      : right.isDone
+        ? 3
+        : typeof right.daysUntilDue === 'number'
+          ? 1
+          : 2
+
+    if (leftRank !== rightRank) {
+      return leftRank - rightRank
     }
 
-    return Number(parsed.toFixed(2))
+    if (left.isLate && right.isLate) {
+      return Number(right.daysLate ?? 0) - Number(left.daysLate ?? 0)
+    }
+
+    if (typeof left.daysUntilDue === 'number' && typeof right.daysUntilDue === 'number') {
+      return left.daysUntilDue - right.daysUntilDue
+    }
+
+    return String(left.name ?? '').localeCompare(String(right.name ?? ''))
+  }
+
+  function buildDefaultColumnDetection(cachedSnapshot) {
+    if (cachedSnapshot?.columnDetection && typeof cachedSnapshot.columnDetection === 'object') {
+      return cachedSnapshot.columnDetection
+    }
+
+    return {
+      statusColumnId: null,
+      readyColumnId: null,
+      shipDateColumnId: null,
+      leadTimeColumnId: null,
+      dueDateColumnId: null,
+      orderDateColumnId: null,
+      invoiceNumberColumnId: null,
+      paidInFullColumnId: null,
+      amountOwedColumnId: null,
+      poAmountColumnId: null,
+      progressStatusColumns: [],
+    }
+  }
+
+  function resolveBoardMetadata(cachedSnapshot, unifiedOrderDocuments) {
+    const cachedBoard = cachedSnapshot?.board ?? null
+    const cachedBoardId = String(cachedBoard?.id ?? '').trim()
+    const cachedBoardName = String(cachedBoard?.name ?? '').trim()
+    const cachedBoardUrl = normalizeUrl(cachedBoard?.url)
+
+    if (cachedBoardId || cachedBoardName) {
+      return {
+        board: {
+          id: cachedBoardId || 'orders_unified',
+          name: cachedBoardName || 'Orders Unified',
+          url: cachedBoardUrl,
+        },
+        shippedBoard: cachedSnapshot?.shippedBoard ?? null,
+      }
+    }
+
+    const primaryOrderDocument = (Array.isArray(unifiedOrderDocuments) ? unifiedOrderDocuments : []).find((doc) => {
+      const boardName = String(doc?.monday_board_name ?? '').trim().toLowerCase()
+      return !Boolean(doc?.is_shipped) && !boardName.includes('shipped')
+    }) ?? (Array.isArray(unifiedOrderDocuments) ? unifiedOrderDocuments : [])[0]
+
+    const primaryBoardId = String(primaryOrderDocument?.monday_board_id ?? '').trim()
+    const primaryBoardName = String(primaryOrderDocument?.monday_board_name ?? '').trim()
+
+    const shippedOrderDocument = (Array.isArray(unifiedOrderDocuments) ? unifiedOrderDocuments : []).find((doc) => {
+      const boardName = String(doc?.monday_board_name ?? '').trim().toLowerCase()
+      return Boolean(doc?.is_shipped) || boardName.includes('shipped')
+    })
+
+    const shippedBoardId = String(shippedOrderDocument?.monday_board_id ?? '').trim()
+    const shippedBoardName = String(shippedOrderDocument?.monday_board_name ?? '').trim()
+
+    return {
+      board: {
+        id: primaryBoardId || 'orders_unified',
+        name: primaryBoardName || 'Orders Unified',
+        url: null,
+      },
+      shippedBoard:
+        shippedBoardId || shippedBoardName
+          ? {
+            id: shippedBoardId || 'shipped_orders',
+            name: shippedBoardName || 'Shipped Orders',
+            url: null,
+          }
+          : null,
+    }
+  }
+
+  function mapUnifiedOrderToDashboardOrder(orderDocument) {
+    const orderNumber = String(orderDocument?.order_number ?? '').trim()
+    const mondayItemId = String(orderDocument?.monday_item_id ?? '').trim()
+    const quickBooksProjectId = String(orderDocument?.qb_project_id ?? '').trim()
+    const fallbackId = String(orderDocument?.orderKey ?? '').trim()
+    const id = mondayItemId || orderNumber || quickBooksProjectId || fallbackId
+
+    const directDueDate = normalizeIsoDate(orderDocument?.Due_date)
+    const orderDate = normalizeIsoDate(orderDocument?.order_date)
+    const leadTimeDays = toFiniteNumber(orderDocument?.Lead_time_days)
+    const computedDueDate =
+      !directDueDate && orderDate && Number.isFinite(leadTimeDays)
+        ? addDaysToIsoDate(orderDate, Number(leadTimeDays))
+        : null
+    const effectiveDueDate = directDueDate || computedDueDate
+    const daysUntilDue = effectiveDueDate ? differenceInDaysFromToday(effectiveDueDate) : null
+
+    const statusLabel = String(orderDocument?.Monday_status ?? '').trim() || 'Open'
+    const normalizedStatusLabel = statusLabel.toLowerCase()
+    const isDone = Boolean(orderDocument?.is_shipped)
+      || normalizedStatusLabel.includes('shipped')
+      || normalizedStatusLabel.includes('delivered')
+      || normalizedStatusLabel.includes('complete')
+      || normalizedStatusLabel === 'done'
+    const isLate = !isDone && typeof daysUntilDue === 'number' ? daysUntilDue < 0 : false
+    const daysLate = isLate && typeof daysUntilDue === 'number' ? Math.abs(daysUntilDue) : 0
+
+    const progressPercentValue = toFiniteNumber(orderDocument?.progress_percent)
+    const progressPercent = Number.isFinite(progressPercentValue)
+      ? Math.max(0, Math.min(100, Math.round(Number(progressPercentValue))))
+      : null
+
+    const paidInFull =
+      typeof orderDocument?.paidInFull === 'boolean'
+        ? Boolean(orderDocument.paidInFull)
+        : null
+
+    return {
+      id,
+      name: String(orderDocument?.order_name ?? '').trim() || orderNumber || id || 'Untitled order',
+      mondaySourceBoardType: isDone ? 'shipped_orders' : 'orders_track',
+      movedToShippedAt: normalizeIsoDate(orderDocument?.shipped_at),
+      groupTitle: String(orderDocument?.monday_board_name ?? '').trim() || 'Orders',
+      statusLabel,
+      stageLabel: statusLabel,
+      readyLabel: progressPercent !== null ? `${progressPercent}%` : 'Unspecified',
+      leadTimeDays: Number.isFinite(leadTimeDays) ? Number(leadTimeDays) : null,
+      progressPercent,
+      orderDate,
+      shippedAt: normalizeIsoDate(orderDocument?.shipped_at),
+      dueDate: directDueDate,
+      computedDueDate,
+      effectiveDueDate,
+      daysUntilDue,
+      isDone,
+      isLate,
+      daysLate,
+      updatedAt:
+        normalizeIsoDate(orderDocument?.monday_updated_at)
+        || normalizeIsoDate(orderDocument?.updatedAt),
+      itemUrl: normalizeUrl(orderDocument?.Monday_url),
+      shopDrawingUrl: normalizeUrl(orderDocument?.Shop_drawing_source)
+        || normalizeUrl(orderDocument?.Shop_drawing),
+      shopDrawingCachedUrl: normalizeUrl(orderDocument?.Shop_drawing_cached),
+      shopDrawingFileName: null,
+      invoiceNumber: String(orderDocument?.invoiceNumber ?? '').trim() || null,
+      paidInFull,
+      amountOwed: toFiniteNumber(orderDocument?.amountOwed),
+      poAmount: toFiniteNumber(orderDocument?.poAmount),
+    }
+  }
+
+  async function buildMondaySnapshotFromUnifiedOrders(cachedSnapshot) {
+    const { ordersUnifiedCollection } = await getCollections()
+    const unifiedOrderDocuments = await ordersUnifiedCollection
+      .find(
+        {},
+        {
+          projection: {
+            _id: 0,
+            orderKey: 1,
+            order_number: 1,
+            order_name: 1,
+            monday_item_id: 1,
+            qb_project_id: 1,
+            is_shipped: 1,
+            Monday_status: 1,
+            Due_date: 1,
+            Lead_time_days: 1,
+            progress_percent: 1,
+            order_date: 1,
+            shipped_at: 1,
+            monday_board_id: 1,
+            monday_board_name: 1,
+            monday_updated_at: 1,
+            updatedAt: 1,
+            Monday_url: 1,
+            Shop_drawing: 1,
+            Shop_drawing_cached: 1,
+            Shop_drawing_source: 1,
+            invoiceNumber: 1,
+            paidInFull: 1,
+            amountOwed: 1,
+            poAmount: 1,
+          },
+        },
+      )
+      .sort({ is_shipped: 1, Due_date: 1, order_number: 1, updatedAt: -1 })
+      .toArray()
+
+    const { board, shippedBoard } = resolveBoardMetadata(cachedSnapshot, unifiedOrderDocuments)
+
+    const orders = unifiedOrderDocuments
+      .map(mapUnifiedOrderToDashboardOrder)
+      .filter((order) => String(order?.id ?? '').trim())
+      .sort(compareOrdersByUrgency)
+
+    const activeOrders = orders.filter((order) => !order.isDone)
+    const completedOrders = orders.filter((order) => order.isDone)
+    const lateOrders = activeOrders.filter((order) => order.isLate)
+    const dueSoonOrders = activeOrders.filter((order) =>
+      typeof order.daysUntilDue === 'number' && order.daysUntilDue >= 0 && order.daysUntilDue <= 7,
+    )
+    const missingDueDateOrders = activeOrders.filter((order) => !order.effectiveDueDate)
+
+    const ordersWithLeadTime = orders.filter((order) => Number.isFinite(Number(order.leadTimeDays)))
+    const leadTimeTotal = ordersWithLeadTime.reduce(
+      (total, order) => total + Number(order.leadTimeDays ?? 0),
+      0,
+    )
+    const averageLeadTimeDays =
+      ordersWithLeadTime.length > 0
+        ? Number((leadTimeTotal / ordersWithLeadTime.length).toFixed(1))
+        : null
+
+    return {
+      board,
+      shippedBoard,
+      generatedAt: new Date().toISOString(),
+      metrics: {
+        totalOrders: orders.length,
+        activeOrders: activeOrders.length,
+        completedOrders: completedOrders.length,
+        lateOrders: lateOrders.length,
+        dueSoonOrders: dueSoonOrders.length,
+        missingDueDateOrders: missingDueDateOrders.length,
+        averageLeadTimeDays,
+      },
+      buckets: {
+        byStatus: buildBucketCounts(orders, 'statusLabel'),
+        byGroup: buildBucketCounts(orders, 'groupTitle'),
+      },
+      details: {
+        lateOrders,
+        dueSoonOrders,
+        activeOrders,
+        completedOrders,
+        missingDueDateOrders,
+      },
+      orders,
+      columnDetection: buildDefaultColumnDetection(cachedSnapshot),
+    }
   }
 
   async function loadShopDrawingCacheByOrderId(orderIds) {
@@ -335,497 +593,158 @@ export function registerDashboardSupportRoutes(app, deps) {
     }
   }
 
-  function snapshotHasInvoicePaymentFields(snapshot) {
-    const orders = Array.isArray(snapshot?.orders) ? snapshot.orders : []
+  async function resolveOnDemandShopDrawingSource(orderDocument) {
+    const existingSourceUrl =
+      normalizeUrl(orderDocument?.shopDrawingSourceUrl)
+      || normalizeUrl(orderDocument?.shopDrawingResolvedUrl)
+      || normalizeUrl(orderDocument?.shopDrawingUrl)
 
-    if (orders.length === 0) {
-      return true
-    }
-
-    const sampleOrder = orders.find((order) => order && typeof order === 'object')
-
-    if (!sampleOrder) {
-      return true
-    }
-
-    return (
-      Object.prototype.hasOwnProperty.call(sampleOrder, 'invoiceNumber')
-      && Object.prototype.hasOwnProperty.call(sampleOrder, 'paidInFull')
-      && Object.prototype.hasOwnProperty.call(sampleOrder, 'amountOwed')
-    )
-  }
-
-  async function refreshMondayOrdersAndCache() {
-    const snapshot = await fetchMondayDashboardSnapshot()
-
-    await persistNewMondayOrders(snapshot)
-    await setDashboardSnapshotCache('monday', snapshot)
-
-    const shippedBoardId = String(mondayShippedBoardId ?? '').trim()
-
-    if (shippedBoardId) {
-      try {
-        const shippedSnapshot = await fetchMondayDashboardSnapshot({
-          boardId: shippedBoardId,
-          boardUrl: String(mondayShippedBoardUrl ?? '').trim() || null,
-          boardName: 'Shipped Orders',
-        })
-
-        await persistNewMondayOrders(shippedSnapshot)
-        await setDashboardSnapshotCache(`monday_shipped_${shippedBoardId}`, shippedSnapshot)
-      } catch (error) {
-        console.error('Unable to refresh shipped Monday board snapshot.', error)
+    if (!existingSourceUrl) {
+      return {
+        sourceUrl: null,
+        sourceAssetId: null,
+        fileName: null,
       }
     }
 
-    return snapshot
+    const sourceAssetId =
+      String(orderDocument?.shopDrawingSourceAssetId ?? '').trim()
+      || extractMondayAssetIdFromUrl(existingSourceUrl)
+      || null
+    const fallbackFileName =
+      String(orderDocument?.shopDrawingFileName ?? '').trim()
+      || deriveFileNameFromUrl(existingSourceUrl)
+      || `order-${String(orderDocument?.mondayItemId ?? '').trim() || 'shop'}-shop-drawing.pdf`
+    const resolvedFileName = ensurePdfFileName(fallbackFileName)
+    const isProtectedMondayAssetUrl = /\/protected_static\//i.test(existingSourceUrl)
+
+    if (!isProtectedMondayAssetUrl || !sourceAssetId || typeof fetchMondayAssetDownloadInfo !== 'function') {
+      return {
+        sourceUrl: existingSourceUrl,
+        sourceAssetId,
+        fileName: resolvedFileName,
+      }
+    }
+
+    try {
+      const assetInfo = await fetchMondayAssetDownloadInfo(sourceAssetId)
+      const publicUrl = normalizeUrl(assetInfo?.publicUrl)
+      const fileName = ensurePdfFileName(
+        String(assetInfo?.name ?? '').trim() || resolvedFileName,
+        resolvedFileName,
+      )
+
+      return {
+        sourceUrl: publicUrl || existingSourceUrl,
+        sourceAssetId,
+        fileName,
+      }
+    } catch {
+      return {
+        sourceUrl: existingSourceUrl,
+        sourceAssetId,
+        fileName: resolvedFileName,
+      }
+    }
   }
 
-  function isShippedOrderDocument(orderDocument) {
-    const shippedBoardId = String(mondayShippedBoardId ?? '').trim()
-    const boardId = String(orderDocument?.mondayBoardId ?? '').trim()
-    const movedToShippedAt = String(orderDocument?.movedToShippedAt ?? '').trim()
-    const statusLabel = String(orderDocument?.statusLabel ?? '').trim().toLowerCase()
-
-    if (shippedBoardId && boardId === shippedBoardId) {
-      return true
-    }
-
-    if (movedToShippedAt) {
-      return true
-    }
-
-    if (/\bnot\s+shipped\b/.test(statusLabel)) {
-      return false
-    }
-
-    return /\bshipped\b/.test(statusLabel)
-  }
-
-  function extractJobNumber(orderDocument) {
-    const explicitJobNumber = String(orderDocument?.jobNumber ?? '').trim()
-
-    if (explicitJobNumber) {
-      return explicitJobNumber
-    }
-
-    const orderName = String(orderDocument?.orderName ?? '').trim()
-    const matchedDigits = orderName.match(/\b\d{4,}\b/)
-
-    if (matchedDigits?.[0]) {
-      return matchedDigits[0]
-    }
-
-    return String(orderDocument?.mondayItemId ?? '').trim()
-  }
-
-  function buildOrdersOverviewRow(orderDocument, progressLookups) {
+  async function cacheShopDrawingOnDemand(orderDocument) {
     const mondayItemId = String(orderDocument?.mondayItemId ?? '').trim()
-    const orderName = String(orderDocument?.orderName ?? '').trim() || null
-    const isShipped = isShippedOrderDocument(orderDocument)
-    const rawStatusLabel = String(orderDocument?.statusLabel ?? '').trim() || null
-    const latestManagerProgress = resolveLatestOrderProgressForOrder(orderDocument, progressLookups)
-    const estimatedReadyAt =
-      String(
-        orderDocument?.estimatedReadyAt
-        ?? orderDocument?.estimatedReadyDate
-        ?? orderDocument?.estimatedReady
-        ?? '',
-      ).trim() || null
+
+    if (!mondayItemId) {
+      throw new Error('Missing Monday item id for this shop drawing.')
+    }
+
+    const bucket = typeof getOrderPhotosBucket === 'function' ? getOrderPhotosBucket() : null
+
+    if (!bucket) {
+      throw new Error('Order photo storage bucket is unavailable.')
+    }
+
+    const sourceInfo = await resolveOnDemandShopDrawingSource(orderDocument)
+
+    if (!sourceInfo.sourceUrl) {
+      return null
+    }
+
+    const sourceResponse = await fetch(sourceInfo.sourceUrl)
+
+    if (!sourceResponse.ok) {
+      throw new Error(`Shop drawing source responded with status ${sourceResponse.status}.`)
+    }
+
+    const contentType = String(sourceResponse.headers.get('content-type') ?? '').trim() || 'application/pdf'
+    const sourceBuffer = Buffer.from(await sourceResponse.arrayBuffer())
+    const storageOrderId = sanitizeStorageSegment(mondayItemId)
+    const storageFileName = sanitizeDownloadFileName(
+      sourceInfo.fileName,
+      `${storageOrderId}-shop-drawing.pdf`,
+    )
+    const storagePath = `monday-shop-drawings/${storageOrderId}/${storageFileName}`
+    const downloadToken = createDownloadToken()
+    const now = new Date().toISOString()
+    const targetFile = bucket.file(storagePath)
+
+    await targetFile.save(sourceBuffer, {
+      resumable: false,
+      metadata: {
+        contentType,
+        metadata: {
+          firebaseStorageDownloadTokens: downloadToken,
+          mondayItemId,
+          sourceAssetId: String(sourceInfo.sourceAssetId ?? '').trim() || null,
+          sourceUrl: sourceInfo.sourceUrl,
+          syncedAt: now,
+        },
+      },
+    })
+
+    const cachedDownloadUrl = buildFirebaseStorageDownloadUrl(bucket.name, storagePath, downloadToken)
+    const { mondayOrdersCollection } = await getCollections()
+
+    await mondayOrdersCollection.updateOne(
+      {
+        mondayItemId,
+      },
+      {
+        $set: {
+          shopDrawingStoragePath: storagePath,
+          shopDrawingDownloadUrl: cachedDownloadUrl,
+          shopDrawingContentType: contentType,
+          shopDrawingCachedAt: now,
+          shopDrawingCacheStatus: 'ready',
+          shopDrawingCacheError: null,
+          shopDrawingFileName: ensurePdfFileName(sourceInfo.fileName, `${storageOrderId}-shop-drawing.pdf`),
+          shopDrawingSourceAssetId: String(sourceInfo.sourceAssetId ?? '').trim() || null,
+          shopDrawingSourceUrl: null,
+          shopDrawingResolvedUrl: null,
+          shopDrawingUrl: null,
+          updatedAt: now,
+        },
+      },
+    )
 
     return {
-      id: mondayItemId,
-      mondayItemId,
-      jobNumber: extractJobNumber(orderDocument),
-      orderName,
-      poAmount: Number.isFinite(orderDocument?.poAmount) ? Number(orderDocument.poAmount) : null,
-      invoiceNumber: String(orderDocument?.invoiceNumber ?? '').trim() || null,
-      progressPercent: Number.isFinite(orderDocument?.progressPercent)
-        ? Number(orderDocument.progressPercent)
-        : null,
-      mondayStatusLabel: isShipped ? 'Shipped' : rawStatusLabel,
-      managerReadyPercent: Number.isFinite(Number(latestManagerProgress?.readyPercent))
-        ? Number(latestManagerProgress.readyPercent)
-        : null,
-      managerReadyDate: String(latestManagerProgress?.date ?? '').trim() || null,
-      managerReadyUpdatedAt: String(latestManagerProgress?.updatedAt ?? '').trim() || null,
-      estimatedReadyAt,
-      statusLabel: isShipped ? 'Shipped' : rawStatusLabel,
-      isShipped,
-      shippedAt: String(orderDocument?.shippedAt ?? '').trim() || null,
-      movedToShippedAt: String(orderDocument?.movedToShippedAt ?? '').trim() || null,
-      mondayBoardId: String(orderDocument?.mondayBoardId ?? '').trim() || null,
-      mondayBoardName: String(orderDocument?.mondayBoardName ?? '').trim() || null,
-      mondayUpdatedAt: String(orderDocument?.mondayUpdatedAt ?? '').trim() || null,
-      mondayItemUrl: String(orderDocument?.mondayItemUrl ?? '').trim() || null,
-      dueDate: String(orderDocument?.effectiveDueDate ?? '').trim()
-        || String(orderDocument?.dueDate ?? '').trim()
-        || String(orderDocument?.computedDueDate ?? '').trim()
-        || null,
-      shopDrawingCachedUrl: String(orderDocument?.shopDrawingDownloadUrl ?? '').trim() || null,
-      shopDrawingUrl: String(orderDocument?.shopDrawingUrl ?? '').trim() || null,
-      shopDrawingFileName: String(orderDocument?.shopDrawingFileName ?? '').trim() || null,
+      downloadUrl: cachedDownloadUrl,
+      fileName: ensurePdfFileName(sourceInfo.fileName, `${storageOrderId}-shop-drawing.pdf`),
     }
   }
 
 
-app.get('/api/orders/overview', requireFirebaseAuth, requireManagerOrAdminRole, async (req, res, next) => {
+
+// Monday dashboard view is DB-backed from orders_unified so lateness/due
+// windows reflect the latest persisted merge state.
+app.get('/api/dashboard/monday', requireFirebaseAuth, async (_req, res, next) => {
   try {
-    const includeShipped = String(req.query?.includeShipped ?? '').trim() === '1'
-    const refreshRequested = isDashboardRefreshRequested(req)
-    const { mondayOrdersCollection, orderProgressCollection } = await getCollections()
-    const existingCount = await mondayOrdersCollection.estimatedDocumentCount()
-    let refreshed = false
-
-    if (refreshRequested || existingCount === 0) {
-      await refreshMondayOrdersAndCache()
-      refreshed = true
-    }
-
-    const orderDocuments = await mondayOrdersCollection
-      .find(
-        {},
-        {
-          projection: {
-            _id: 0,
-            mondayItemId: 1,
-            jobNumber: 1,
-            orderName: 1,
-            poAmount: 1,
-            invoiceNumber: 1,
-            progressPercent: 1,
-            estimatedReadyAt: 1,
-            estimatedReadyDate: 1,
-            estimatedReady: 1,
-            statusLabel: 1,
-            isDone: 1,
-            shippedAt: 1,
-            movedToShippedAt: 1,
-            mondayBoardId: 1,
-            mondayBoardName: 1,
-            mondayUpdatedAt: 1,
-            mondayItemUrl: 1,
-            effectiveDueDate: 1,
-            dueDate: 1,
-            computedDueDate: 1,
-            shopDrawingDownloadUrl: 1,
-            shopDrawingUrl: 1,
-            shopDrawingFileName: 1,
-            updatedAt: 1,
-            createdAt: 1,
-          },
-        },
-      )
-      .sort({ updatedAt: -1, createdAt: -1, mondayItemId: 1 })
-      .toArray()
-
-    const orderProgressDocuments = await orderProgressCollection
-      .find(
-        {},
-        {
-          projection: {
-            _id: 0,
-            date: 1,
-            jobName: 1,
-            readyPercent: 1,
-            updatedAt: 1,
-          },
-        },
-      )
-      .sort({ date: -1, updatedAt: -1 })
-      .toArray()
-    const progressLookups = buildLatestOrderProgressLookups(orderProgressDocuments)
-
-    const rows = orderDocuments.map((orderDocument) =>
-      buildOrdersOverviewRow(orderDocument, progressLookups)
-    )
-    const shippedCount = rows.filter((row) => row.isShipped).length
-    const visibleRows = includeShipped ? rows : rows.filter((row) => !row.isShipped)
-
-    return res.json({
-      generatedAt: new Date().toISOString(),
-      includeShipped,
-      refreshed,
-      counts: {
-        total: rows.length,
-        shipped: shippedCount,
-        visible: visibleRows.length,
-      },
-      orders: visibleRows,
-    })
-  } catch (error) {
-    next(error)
-  }
-})
-
-
-app.get('/api/orders/job-details', requireFirebaseAuth, requireManagerOrAdminRole, async (req, res, next) => {
-  try {
-    const mondayItemId = String(req.query?.mondayItemId ?? '').trim()
-    const jobNumber = String(req.query?.jobNumber ?? '').trim()
-    const orderName = String(req.query?.orderName ?? '').trim()
-
-    if (!mondayItemId && !jobNumber && !orderName) {
-      return res.status(400).json({
-        error: 'At least one of mondayItemId, jobNumber, or orderName is required.',
-      })
-    }
-
-    const {
-      mondayOrdersCollection,
-      entriesCollection,
-      workersCollection,
-      stagesCollection,
-      orderProgressCollection,
-    } = await getCollections()
-
-    const orderDocument = mondayItemId
-      ? await mondayOrdersCollection.findOne(
-        { mondayItemId },
-        {
-          projection: {
-            _id: 0,
-            mondayItemId: 1,
-            orderName: 1,
-            jobNumber: 1,
-            statusLabel: 1,
-            movedToShippedAt: 1,
-            shippedAt: 1,
-            mondayItemUrl: 1,
-            mondayBoardName: 1,
-            mondayBoardId: 1,
-            mondayUpdatedAt: 1,
-          },
-        },
-      )
-      : null
-
-    const resolvedJobNumber =
-      jobNumber
-      || extractJobNumber(orderDocument)
-      || String(mondayItemId ?? '').trim()
-
-    const lookup = buildJobLookupValues([
-      resolvedJobNumber,
-      orderName,
-      mondayItemId,
-      String(orderDocument?.jobNumber ?? '').trim(),
-      String(orderDocument?.orderName ?? '').trim(),
-    ])
-
-    if (lookup.normalizedValues.size === 0 && lookup.digitValues.size === 0) {
-      return res.status(400).json({
-        error: 'Could not build a valid job lookup from the provided values.',
-      })
-    }
-
-    const [entries, workers, stages, orderProgressDocuments] = await Promise.all([
-      entriesCollection
-        .find(
-          {},
-          {
-            projection: {
-              _id: 0,
-              id: 1,
-              workerId: 1,
-              stageId: 1,
-              date: 1,
-              jobName: 1,
-              hours: 1,
-              overtimeHours: 1,
-              payRate: 1,
-              notes: 1,
-              createdAt: 1,
-            },
-          },
-        )
-        .sort({ date: -1, createdAt: -1 })
-        .toArray(),
-      workersCollection
-        .find(
-          {},
-          {
-            projection: {
-              _id: 0,
-              id: 1,
-              fullName: 1,
-              hourlyRate: 1,
-            },
-          },
-        )
-        .toArray(),
-      stagesCollection
-        .find(
-          {},
-          {
-            projection: {
-              _id: 0,
-              id: 1,
-              name: 1,
-            },
-          },
-        )
-        .toArray(),
-      orderProgressCollection
-        .find(
-          {},
-          {
-            projection: {
-              _id: 0,
-              id: 1,
-              date: 1,
-              jobName: 1,
-              readyPercent: 1,
-              updatedAt: 1,
-            },
-          },
-        )
-        .sort({ date: -1, updatedAt: -1 })
-        .toArray(),
-    ])
-
-    const workersById = new Map(
-      workers.map((worker) => [String(worker.id ?? '').trim(), worker]),
-    )
-    const stagesById = new Map(
-      stages.map((stage) => [String(stage.id ?? '').trim(), stage]),
-    )
-
-    const matchedEntries = entries
-      .filter((entry) => doesJobNameMatchLookup(entry?.jobName, lookup))
-      .map((entry) => {
-        const workerId = String(entry?.workerId ?? '').trim()
-        const workerDocument = workersById.get(workerId) ?? null
-        const stageId = String(entry?.stageId ?? '').trim()
-        const stageDocument = stagesById.get(stageId) ?? null
-        const regularHours = getEntryRegularHours(entry)
-        const overtimeHours = getEntryOvertimeHours(entry)
-        const totalHours = regularHours + overtimeHours
-        const rate = getEntryRate(entry, workerDocument)
-        const laborCost = toMoney((regularHours * rate) + (overtimeHours * rate * 1.5))
-
-        return {
-          ...entry,
-          workerName: String(workerDocument?.fullName ?? '').trim() || 'Unknown worker',
-          stageName: String(stageDocument?.name ?? '').trim() || null,
-          regularHours,
-          overtimeHours,
-          totalHours,
-          rate,
-          laborCost,
-        }
-      })
-
-    const workerTotalsById = new Map()
-    let totalRegularHours = 0
-    let totalOvertimeHours = 0
-    let totalHours = 0
-    let totalLaborCost = 0
-
-    matchedEntries.forEach((entry) => {
-      const workerId = String(entry.workerId ?? '').trim()
-      const existing = workerTotalsById.get(workerId) ?? {
-        workerId,
-        workerName: entry.workerName,
-        totalRegularHours: 0,
-        totalOvertimeHours: 0,
-        totalHours: 0,
-        totalLaborCost: 0,
-      }
-
-      existing.totalRegularHours += entry.regularHours
-      existing.totalOvertimeHours += entry.overtimeHours
-      existing.totalHours += entry.totalHours
-      existing.totalLaborCost = toMoney(existing.totalLaborCost + entry.laborCost)
-      workerTotalsById.set(workerId, existing)
-
-      totalRegularHours += entry.regularHours
-      totalOvertimeHours += entry.overtimeHours
-      totalHours += entry.totalHours
-      totalLaborCost = toMoney(totalLaborCost + entry.laborCost)
-    })
-
-    const managerHistory = orderProgressDocuments
-      .filter((progress) => doesJobNameMatchLookup(progress?.jobName, lookup))
-      .map((progress) => ({
-        id: String(progress?.id ?? '').trim() || null,
-        date: String(progress?.date ?? '').trim() || null,
-        jobName: String(progress?.jobName ?? '').trim() || null,
-        readyPercent: Number.isFinite(Number(progress?.readyPercent))
-          ? Number(progress.readyPercent)
-          : null,
-        updatedAt: String(progress?.updatedAt ?? '').trim() || null,
-      }))
-
-    const latestManagerStatus = managerHistory[0] ?? null
-
-    return res.json({
-      generatedAt: new Date().toISOString(),
-      job: {
-        mondayItemId: String(orderDocument?.mondayItemId ?? mondayItemId).trim() || null,
-        jobNumber: resolvedJobNumber || null,
-        orderName: String(orderDocument?.orderName ?? orderName).trim() || null,
-        mondayStatusLabel: String(orderDocument?.statusLabel ?? '').trim() || null,
-        mondayItemUrl: String(orderDocument?.mondayItemUrl ?? '').trim() || null,
-        mondayBoardId: String(orderDocument?.mondayBoardId ?? '').trim() || null,
-        mondayBoardName: String(orderDocument?.mondayBoardName ?? '').trim() || null,
-        mondayUpdatedAt: String(orderDocument?.mondayUpdatedAt ?? '').trim() || null,
-        latestManagerReadyPercent: latestManagerStatus?.readyPercent ?? null,
-        latestManagerReadyDate: latestManagerStatus?.date ?? null,
-        latestManagerReadyUpdatedAt: latestManagerStatus?.updatedAt ?? null,
-      },
-      summary: {
-        entryCount: matchedEntries.length,
-        workerCount: workerTotalsById.size,
-        totalRegularHours,
-        totalOvertimeHours,
-        totalHours,
-        totalLaborCost,
-      },
-      workers: [...workerTotalsById.values()].sort(
-        (left, right) => right.totalHours - left.totalHours || left.workerName.localeCompare(right.workerName),
-      ),
-      entries: matchedEntries,
-      managerHistory,
-    })
-  } catch (error) {
-    next(error)
-  }
-})
-
-
-app.get('/api/dashboard/monday', requireFirebaseAuth, async (req, res, next) => {
-  try {
-    const refreshRequested = isDashboardRefreshRequested(req)
-    let snapshot = null
-
-    if (!refreshRequested) {
-      const cachedSnapshot = await getDashboardSnapshotFromCache('monday')
-
-      if (cachedSnapshot) {
-        snapshot = cachedSnapshot
-      }
-    }
-
-    if (snapshot && !snapshotHasInvoicePaymentFields(snapshot)) {
-      snapshot = null
-    }
-
-    if (!snapshot) {
-      snapshot = await fetchMondayDashboardSnapshot()
-    }
+    const cachedSnapshot = await getDashboardSnapshotFromCache('monday')
+    const snapshot = await buildMondaySnapshotFromUnifiedOrders(cachedSnapshot)
 
     const shopDrawingCacheByOrderId = await loadShopDrawingCacheByOrderId(
       Array.isArray(snapshot?.orders)
         ? snapshot.orders.map((order) => order?.id)
         : [],
     )
-    const enrichedSnapshot = enrichMondaySnapshotWithShopDrawingCache(
-      snapshot,
-      shopDrawingCacheByOrderId,
-    )
-
-    await setDashboardSnapshotCache('monday', enrichedSnapshot)
+    const enrichedSnapshot = enrichMondaySnapshotWithShopDrawingCache(snapshot, shopDrawingCacheByOrderId)
 
     res.json(enrichedSnapshot)
   } catch (error) {
@@ -855,31 +774,53 @@ app.get('/api/dashboard/monday/shop-drawing/download', requireFirebaseAuth, asyn
             mondayItemId: 1,
             shopDrawingDownloadUrl: 1,
             shopDrawingFileName: 1,
+            shopDrawingSourceAssetId: 1,
+            shopDrawingSourceUrl: 1,
+            shopDrawingResolvedUrl: 1,
+            shopDrawingUrl: 1,
           },
         },
       )
     }
 
-    const refreshRequested = isDashboardRefreshRequested(req)
     let orderDocument = await loadOrderDrawingDocument()
-
-    if (
-      refreshRequested
-      || !orderDocument
-      || !String(orderDocument.shopDrawingDownloadUrl ?? '').trim()
-    ) {
-      await refreshMondayOrdersAndCache()
-      orderDocument = await loadOrderDrawingDocument()
-    }
 
     if (!orderDocument) {
       return res.status(404).json({ error: 'Order not found in Monday data.' })
     }
 
-    const cachedDrawingUrl = String(orderDocument.shopDrawingDownloadUrl ?? '').trim()
+    let cachedDrawingUrl = String(orderDocument.shopDrawingDownloadUrl ?? '').trim()
+
+    // If we have a Monday source URL but no Firebase cache yet, mirror it once
+    // and null out the source URL going forward (per the "first-time-only"
+    // pull rule). After this, every reader gets the cached Firebase URL.
+    if (!cachedDrawingUrl) {
+      const hasStoredSource = Boolean(
+        String(orderDocument.shopDrawingSourceUrl ?? '').trim()
+        || String(orderDocument.shopDrawingResolvedUrl ?? '').trim()
+        || String(orderDocument.shopDrawingUrl ?? '').trim(),
+      )
+
+      if (!hasStoredSource) {
+        return res.status(404).json({ error: 'No shop drawing source found for this order.' })
+      }
+
+      try {
+        const cacheResult = await cacheShopDrawingOnDemand(orderDocument)
+        cachedDrawingUrl = String(cacheResult?.downloadUrl ?? '').trim()
+        if (cacheResult?.fileName) {
+          orderDocument.shopDrawingFileName = cacheResult.fileName
+        }
+      } catch (cacheError) {
+        const message = cacheError instanceof Error
+          ? cacheError.message
+          : 'Could not cache this shop drawing right now.'
+        return res.status(502).json({ error: message })
+      }
+    }
 
     if (!cachedDrawingUrl) {
-      return res.status(404).json({ error: 'No cached shop drawing found for this order.' })
+      return res.status(404).json({ error: 'No shop drawing source found for this order.' })
     }
 
     if (renderInline) {
@@ -887,17 +828,6 @@ app.get('/api/dashboard/monday/shop-drawing/download', requireFirebaseAuth, asyn
     }
 
     let upstreamResponse = await fetch(cachedDrawingUrl)
-
-    if (!upstreamResponse.ok && !refreshRequested) {
-      await refreshMondayOrdersAndCache()
-      orderDocument = await loadOrderDrawingDocument()
-
-      const refreshedDrawingUrl = String(orderDocument?.shopDrawingDownloadUrl ?? '').trim()
-
-      if (refreshedDrawingUrl) {
-        upstreamResponse = await fetch(refreshedDrawingUrl)
-      }
-    }
 
     if (!upstreamResponse.ok) {
       return res.status(502).json({
@@ -959,26 +889,12 @@ app.get('/api/dashboard/bootstrap', requireFirebaseAuth, async (req, res, next) 
     const refreshRequested = isDashboardRefreshRequested(req)
 
     async function loadMonday() {
-      let snapshot = null
-
-      if (!refreshRequested) {
-        snapshot = await getDashboardSnapshotFromCache('monday')
-      }
-
-      if (snapshot && !snapshotHasInvoicePaymentFields(snapshot)) {
-        snapshot = null
-      }
-
-      if (!snapshot) {
-        snapshot = await fetchMondayDashboardSnapshot()
-      }
-
+      const cachedSnapshot = await getDashboardSnapshotFromCache('monday')
+      const snapshot = await buildMondaySnapshotFromUnifiedOrders(cachedSnapshot)
       const shopDrawingCacheByOrderId = await loadShopDrawingCacheByOrderId(
         Array.isArray(snapshot?.orders) ? snapshot.orders.map((order) => order?.id) : [],
       )
-      const enrichedSnapshot = enrichMondaySnapshotWithShopDrawingCache(snapshot, shopDrawingCacheByOrderId)
-      await setDashboardSnapshotCache('monday', enrichedSnapshot)
-      return enrichedSnapshot
+      return enrichMondaySnapshotWithShopDrawingCache(snapshot, shopDrawingCacheByOrderId)
     }
 
     async function loadZendesk() {

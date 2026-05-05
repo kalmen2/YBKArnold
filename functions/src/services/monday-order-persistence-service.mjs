@@ -114,6 +114,7 @@ export function createMondayOrderPersistenceService({
       mondayBoardName: String(board?.name ?? '').trim() || null,
       mondayBoardUrl: String(board?.url ?? '').trim() || null,
       orderName: String(order?.name ?? '').trim() || null,
+      jobNumber: String(order?.jobNumber ?? '').trim() || null,
       groupTitle: String(order?.groupTitle ?? '').trim() || null,
       statusLabel: String(order?.statusLabel ?? '').trim() || null,
       stageLabel: String(order?.stageLabel ?? '').trim() || null,
@@ -174,7 +175,7 @@ export function createMondayOrderPersistenceService({
     }
   }
 
-  async function resolveShopDrawingSource(order, assetInfoById) {
+  async function resolveShopDrawingSource(order) {
     const originalUrl = normalizeUrl(order?.shopDrawingUrl)
     const explicitFileName = String(order?.shopDrawingFileName ?? '').trim() || null
     const fallbackFileName = deriveFileNameFromUrl(originalUrl)
@@ -192,137 +193,10 @@ export function createMondayOrderPersistenceService({
     }
 
     const sourceAssetId = extractMondayAssetIdFromUrl(originalUrl)
-    const isProtectedMondayAssetUrl = /\/protected_static\//i.test(originalUrl)
-
-    if (!isProtectedMondayAssetUrl || !sourceAssetId || typeof fetchMondayAssetDownloadInfo !== 'function') {
-      return {
-        sourceAssetId,
-        sourceUrl: originalUrl,
-        fileName: originalFileName,
-      }
-    }
-
-    if (assetInfoById.has(sourceAssetId)) {
-      const cachedAssetInfo = assetInfoById.get(sourceAssetId)
-
-      return {
-        sourceAssetId,
-        sourceUrl: cachedAssetInfo.publicUrl || originalUrl,
-        fileName: ensurePdfFileName(cachedAssetInfo.name || originalFileName, originalFileName),
-      }
-    }
-
-    try {
-      const assetInfo = await fetchMondayAssetDownloadInfo(sourceAssetId)
-      const normalizedAssetInfo = {
-        name: String(assetInfo?.name ?? '').trim() || null,
-        publicUrl: normalizeUrl(assetInfo?.publicUrl),
-      }
-      assetInfoById.set(sourceAssetId, normalizedAssetInfo)
-
-      return {
-        sourceAssetId,
-        sourceUrl: normalizedAssetInfo.publicUrl || originalUrl,
-        fileName: ensurePdfFileName(
-          normalizedAssetInfo.name || originalFileName,
-          originalFileName,
-        ),
-      }
-    } catch {
-      return {
-        sourceAssetId,
-        sourceUrl: originalUrl,
-        fileName: originalFileName,
-      }
-    }
-  }
-
-  async function cacheShopDrawingForOrder({
-    bucket,
-    existingOrder,
-    fileName,
-    mondayItemId,
-    now,
-    sourceAssetId,
-    sourceUrl,
-  }) {
-    const existingStoragePath = String(existingOrder?.shopDrawingStoragePath ?? '').trim() || null
-    const existingDownloadUrl = String(existingOrder?.shopDrawingDownloadUrl ?? '').trim() || null
-
-    if (
-      existingOrder?.shopDrawingSourceUrl === sourceUrl
-      && existingStoragePath
-      && existingDownloadUrl
-    ) {
-      return {
-        cacheFields: {
-          shopDrawingStoragePath: existingStoragePath,
-          shopDrawingDownloadUrl: existingDownloadUrl,
-          shopDrawingContentType: String(existingOrder?.shopDrawingContentType ?? '').trim() || null,
-          shopDrawingCachedAt: String(existingOrder?.shopDrawingCachedAt ?? '').trim() || null,
-          shopDrawingCacheStatus: 'ready',
-          shopDrawingCacheError: null,
-        },
-        status: 'reused',
-      }
-    }
-
-    try {
-      const storageOrderId = sanitizeStorageSegment(mondayItemId)
-      const storageFileName = sanitizeDownloadFileName(fileName, `${storageOrderId}-shop-drawing.pdf`)
-      const storagePath = `monday-shop-drawings/${storageOrderId}/${storageFileName}`
-      const sourceResponse = await fetch(sourceUrl)
-
-      if (!sourceResponse.ok) {
-        throw new Error(`Source responded with status ${sourceResponse.status}.`)
-      }
-
-      const contentType = String(sourceResponse.headers.get('content-type') ?? '').trim() || 'application/pdf'
-      const sourceBuffer = Buffer.from(await sourceResponse.arrayBuffer())
-      const downloadToken = createDownloadToken()
-      const targetFile = bucket.file(storagePath)
-
-      await targetFile.save(sourceBuffer, {
-        resumable: false,
-        metadata: {
-          contentType,
-          metadata: {
-            firebaseStorageDownloadTokens: downloadToken,
-            mondayItemId,
-            sourceAssetId: String(sourceAssetId ?? '').trim() || null,
-            sourceUrl,
-            syncedAt: now,
-          },
-        },
-      })
-
-      const downloadUrl = buildFirebaseStorageDownloadUrl(bucket.name, storagePath, downloadToken)
-
-      return {
-        cacheFields: {
-          shopDrawingStoragePath: storagePath,
-          shopDrawingDownloadUrl: downloadUrl,
-          shopDrawingContentType: contentType,
-          shopDrawingCachedAt: now,
-          shopDrawingCacheStatus: 'ready',
-          shopDrawingCacheError: null,
-        },
-        status: 'cached',
-      }
-    } catch (error) {
-      const cachedErrorMessage = error instanceof Error ? error.message : 'Shop drawing sync failed.'
-
-      return {
-        cacheFields: {
-          shopDrawingStoragePath: existingStoragePath,
-          shopDrawingDownloadUrl: existingDownloadUrl,
-          shopDrawingContentType: String(existingOrder?.shopDrawingContentType ?? '').trim() || null,
-          shopDrawingCachedAt: String(existingOrder?.shopDrawingCachedAt ?? '').trim() || null,
-          shopDrawingCacheStatus: existingStoragePath && existingDownloadUrl ? 'ready' : 'error',
-          shopDrawingCacheError: existingStoragePath && existingDownloadUrl ? null : cachedErrorMessage,
-        },
-        status: existingStoragePath && existingDownloadUrl ? 'reused' : 'failed',
-      }
+    return {
+      sourceAssetId,
+      sourceUrl: originalUrl,
+      fileName: originalFileName,
     }
   }
 
@@ -384,11 +258,7 @@ export function createMondayOrderPersistenceService({
             mondayItemId: 1,
             mondayBoardId: 1,
             movedToShippedAt: 1,
-            shopDrawingContentType: 1,
-            shopDrawingCachedAt: 1,
             shopDrawingDownloadUrl: 1,
-            shopDrawingStoragePath: 1,
-            shopDrawingSourceUrl: 1,
           },
         },
       )
@@ -396,8 +266,6 @@ export function createMondayOrderPersistenceService({
     const existingOrderByItemId = new Map(
       existingOrders.map((orderDocument) => [orderDocument.mondayItemId, orderDocument]),
     )
-    const bucket = typeof getOrderPhotosBucket === 'function' ? getOrderPhotosBucket() : null
-    const assetInfoById = new Map()
     let shopDrawingsCached = 0
     let shopDrawingsReused = 0
     let shopDrawingsFailed = 0
@@ -407,13 +275,20 @@ export function createMondayOrderPersistenceService({
     for (const mondayItemId of mondayItemIds) {
       const order = orderByItemId.get(mondayItemId)
       const existingOrder = existingOrderByItemId.get(mondayItemId) ?? null
-      const sourceInfo = await resolveShopDrawingSource(order, assetInfoById)
+      const sourceInfo = await resolveShopDrawingSource(order)
       const setFields = createOrderSetFields({
         order,
         board,
         now,
         sourceInfo,
       })
+      const existingCachedDrawingUrl = String(existingOrder?.shopDrawingDownloadUrl ?? '').trim()
+
+      if (existingCachedDrawingUrl) {
+        setFields.shopDrawingSourceUrl = null
+        setFields.shopDrawingResolvedUrl = null
+        setFields.shopDrawingUrl = null
+      }
       const boardTransitionFields = buildBoardTransitionFields({
         existingOrder,
         currentBoardId,
@@ -425,36 +300,6 @@ export function createMondayOrderPersistenceService({
         movedToShippedCount += 1
       }
 
-      let cacheFields = {
-        shopDrawingStoragePath: null,
-        shopDrawingDownloadUrl: null,
-        shopDrawingContentType: null,
-        shopDrawingCachedAt: null,
-        shopDrawingCacheStatus: sourceInfo.sourceUrl ? 'missing' : null,
-        shopDrawingCacheError: null,
-      }
-
-      if (sourceInfo.sourceUrl && bucket) {
-        const cacheResult = await cacheShopDrawingForOrder({
-          bucket,
-          existingOrder,
-          fileName: sourceInfo.fileName,
-          mondayItemId,
-          now,
-          sourceAssetId: sourceInfo.sourceAssetId,
-          sourceUrl: sourceInfo.sourceUrl,
-        })
-        cacheFields = cacheResult.cacheFields
-
-        if (cacheResult.status === 'cached') {
-          shopDrawingsCached += 1
-        } else if (cacheResult.status === 'reused') {
-          shopDrawingsReused += 1
-        } else {
-          shopDrawingsFailed += 1
-        }
-      }
-
       operations.push({
         updateOne: {
           filter: { mondayItemId },
@@ -462,7 +307,6 @@ export function createMondayOrderPersistenceService({
             $set: {
               ...setFields,
               ...boardTransitionFields,
-              ...cacheFields,
             },
             $setOnInsert: {
               createdAt: now,

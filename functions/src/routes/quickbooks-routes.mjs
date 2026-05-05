@@ -1306,7 +1306,10 @@ export function registerQuickBooksRoutes(app, deps) {
             docNumber: normalizeQuickBooksDocNumber(txn),
             txnDate: normalizeText(txn?.TxnDate, 40) || null,
             totalAmount: amount,
-            balanceAmount: txnTypeKey === 'invoice' ? normalizeMoney(txn?.Balance) : null,
+            balanceAmount:
+              txnTypeKey === 'invoice' || txnTypeKey === 'bill'
+                ? normalizeMoney(txn?.Balance)
+                : null,
             candidateProjectRefs: refs,
           }
 

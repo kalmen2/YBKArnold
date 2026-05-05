@@ -36,10 +36,10 @@ export const QUERY_KEYS = {
   quickbooksStatus: ['quickbooks', 'status'] as const,
   quickbooksOverview: ['quickbooks', 'overview'] as const,
 
-  // Orders — Monday Orders/Shipped combined DB view
-  ordersOverview: (includeShipped: boolean) => ['orders', 'overview', includeShipped] as const,
-  ordersLedgerOverview: (search: string, status: 'all' | 'shipped' | 'not_shipped') =>
-    ['orders-ledger', 'overview', search, status] as const,
+  // Orders — Monday Orders/Shipped combined DB view (single cache; client filters shipped)
+  ordersOverview: ['orders', 'overview'] as const,
+  ordersJobDetails: (mondayItemId: string, jobNumber: string, orderName: string) =>
+    ['orders', 'job-details', mondayItemId, jobNumber, orderName] as const,
 
   // Admin
   authBootstrap: ['auth', 'bootstrap'] as const,

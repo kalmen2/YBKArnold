@@ -12,7 +12,6 @@ import {
   AppLayout,
   CrmPage,
   DashboardPage,
-  OrdersLegacyPage,
   OrdersPage,
   PicturesPage,
   PurchasingPage,
@@ -51,14 +50,6 @@ export const router = createBrowserRouter([
         element: withRouteSuspense(
           <RequireManagerOrAdminRoute>
             <OrdersPage />
-          </RequireManagerOrAdminRoute>,
-        ),
-      },
-      {
-        path: 'orders-legacy',
-        element: withRouteSuspense(
-          <RequireManagerOrAdminRoute>
-            <OrdersLegacyPage />
           </RequireManagerOrAdminRoute>,
         ),
       },
