@@ -269,6 +269,183 @@ export function PicturesSection({
   )
 }
 
+export function OrdersSection({
+  t,
+  locale,
+  allOrders,
+  filteredOrders,
+  orderSearchQuery,
+  onOrderSearchQueryChange,
+  ordersCardHeight,
+  hasManagerInsights,
+  managerInsightsByOrderId,
+  ordersPage,
+  ordersTotalPages,
+  onPreviousOrdersPage,
+  onNextOrdersPage,
+  onOpenOrderDetails,
+}: {
+  t: TranslateFn
+  locale: string
+  allOrders: DashboardOrder[]
+  filteredOrders: DashboardOrder[]
+  orderSearchQuery: string
+  onOrderSearchQueryChange: (value: string) => void
+  ordersCardHeight: number
+  hasManagerInsights: boolean
+  managerInsightsByOrderId: Record<string, {
+    readyPercent: number | null
+    workerCount: number
+    totalHours: number
+    updatedAt: string | null
+  }>
+  ordersPage: number
+  ordersTotalPages: number
+  onPreviousOrdersPage: () => void
+  onNextOrdersPage: () => void
+  onOpenOrderDetails: (order: DashboardOrder) => void
+}) {
+  return (
+    <>
+      <Text style={styles.sectionTitle}>{t('Orders', 'Ordenes')}</Text>
+      <Text style={styles.sectionSubtitle}>
+        {t(
+          'Quick order list for mobile. Tap any order to view key details and shop drawing.',
+          'Lista rapida de ordenes para movil. Toca una orden para ver detalles y shop drawing.',
+        )}
+      </Text>
+
+      {allOrders.length === 0 ? (
+        <View style={styles.emptyPicturesBox}>
+          <Text style={styles.emptyDetailText}>
+            {t('No orders loaded yet. Refresh to pull current orders.', 'Aun no hay ordenes cargadas. Actualiza para traer las ordenes actuales.')}
+          </Text>
+        </View>
+      ) : (
+        <View style={[styles.ordersListCard, { height: ordersCardHeight }]}>
+          <TextInput
+            value={orderSearchQuery}
+            onChangeText={onOrderSearchQueryChange}
+            placeholder={t('Search by order # or name', 'Buscar por orden # o nombre')}
+            placeholderTextColor="#6a7ea8"
+            style={styles.orderSearchInput}
+          />
+
+          {filteredOrders.length === 0 ? (
+            <Text style={styles.emptyDetailText}>{t('No orders match your search.', 'No hay ordenes que coincidan con tu busqueda.')}</Text>
+          ) : (
+            <ScrollView
+              style={styles.ordersListScroll}
+              contentContainerStyle={styles.ordersListContent}
+            >
+              {filteredOrders.map((order) => (
+                <Pressable
+                  key={order.id}
+                  style={({ pressed }) => [styles.orderListItem, pressed ? styles.orderListItemPressed : null]}
+                  onPress={() => onOpenOrderDetails(order)}
+                >
+                  {(() => {
+                    const managerInsight = managerInsightsByOrderId[String(order.id)]
+                    const managerReadyPercent = managerInsight?.readyPercent
+                    const hasReadyPercent = typeof managerReadyPercent === 'number'
+                      && Number.isFinite(managerReadyPercent)
+                    const displayReadyPercent = hasReadyPercent
+                      ? Math.min(100, Math.max(0, managerReadyPercent))
+                      : null
+                    const workerCount = managerInsight?.workerCount ?? 0
+                    const totalHours = managerInsight?.totalHours ?? 0
+
+                    return (
+                      <>
+                        <View style={styles.orderListTopRow}>
+                          <View style={styles.orderListIdBadge}>
+                            <Text style={styles.orderListIdText}>#{order.id}</Text>
+                          </View>
+                          <Text style={styles.orderListStatusPill} numberOfLines={1}>
+                            {order.statusLabel || t('No status', 'Sin estado')}
+                          </Text>
+                        </View>
+
+                        <Text style={styles.orderListName} numberOfLines={1}>
+                          {order.name || `${t('Order', 'Orden')} ${order.id}`}
+                        </Text>
+
+                        <Text style={styles.orderListMeta} numberOfLines={1}>
+                          {t('Due', 'Vence')}: {formatDisplayDate(order.effectiveDueDate, locale)}
+                        </Text>
+
+                        {hasManagerInsights ? (
+                          <>
+                            <View style={styles.orderProgressRow}>
+                              <Text style={styles.orderProgressLabel} numberOfLines={1}>
+                                {displayReadyPercent === null
+                                  ? t('Manager: no update yet', 'Gerente: sin actualizacion')
+                                  : t(
+                                    `Manager: ${Math.round(displayReadyPercent)}% ready`,
+                                    `Gerente: ${Math.round(displayReadyPercent)}% listo`,
+                                  )}
+                              </Text>
+                              <Text style={styles.orderProgressWorkersMeta} numberOfLines={1}>
+                                {t(
+                                  `${workerCount} workers • ${totalHours.toFixed(1)}h`,
+                                  `${workerCount} trabajadores • ${totalHours.toFixed(1)}h`,
+                                )}
+                              </Text>
+                            </View>
+
+                            <View style={styles.orderProgressTrack}>
+                              <View
+                                style={[
+                                  styles.orderProgressFill,
+                                  { width: `${displayReadyPercent ?? 0}%` },
+                                ]}
+                              />
+                            </View>
+
+                            {managerInsight?.updatedAt ? (
+                              <Text style={styles.orderProgressMeta} numberOfLines={1}>
+                                {t('Updated', 'Actualizado')}: {formatSyncTimestamp(managerInsight.updatedAt, locale)}
+                              </Text>
+                            ) : null}
+                          </>
+                        ) : null}
+                      </>
+                    )
+                  })()}
+                </Pressable>
+              ))}
+            </ScrollView>
+          )}
+
+          {ordersTotalPages > 1 ? (
+            <View style={styles.ordersPaginationRow}>
+              <Pressable
+                style={[styles.ordersPaginationButton, ordersPage <= 1 ? styles.buttonDisabled : null]}
+                disabled={ordersPage <= 1}
+                onPress={onPreviousOrdersPage}
+              >
+                <Text style={styles.ordersPaginationButtonText}>{t('Previous', 'Anterior')}</Text>
+              </Pressable>
+
+              <Text style={styles.ordersPaginationMeta}>
+                {t(`Page ${ordersPage} of ${ordersTotalPages}`, `Pagina ${ordersPage} de ${ordersTotalPages}`)}
+              </Text>
+
+              <Pressable
+                style={[styles.ordersPaginationButton, ordersPage >= ordersTotalPages ? styles.buttonDisabled : null]}
+                disabled={ordersPage >= ordersTotalPages}
+                onPress={onNextOrdersPage}
+              >
+                <Text style={styles.ordersPaginationButtonText}>{t('Next', 'Siguiente')}</Text>
+              </Pressable>
+            </View>
+          ) : null}
+        </View>
+      )}
+    </>
+  )
+}
+
 export function TimesheetSection({
   t,
   locale,

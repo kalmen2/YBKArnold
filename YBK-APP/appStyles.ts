@@ -1,8 +1,8 @@
 import { StyleSheet } from 'react-native'
 
-const SURFACE_CARD_STYLE = { borderWidth: 1, borderColor: '#c6d2f8', borderRadius: 12, backgroundColor: '#f9fbff' }
-const MODAL_PANEL_STYLE = { borderWidth: 1, borderColor: '#c6d2f8', borderRadius: 14, backgroundColor: '#f9fbff' }
-const OUTLINED_BUTTON_STYLE = { borderWidth: 1, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 9 }
+const SURFACE_CARD_STYLE = { borderWidth: 1, borderColor: '#d5dfef', borderRadius: 14, backgroundColor: '#ffffff' }
+const MODAL_PANEL_STYLE = { borderWidth: 1, borderColor: '#d5dfef', borderRadius: 16, backgroundColor: '#ffffff' }
+const OUTLINED_BUTTON_STYLE = { borderWidth: 1, borderRadius: 11, paddingHorizontal: 12, paddingVertical: 9 }
 
 export const styles = StyleSheet.create({
   authShell: {
@@ -92,7 +92,7 @@ export const styles = StyleSheet.create({
   },
   contentPane: {
     flex: 1,
-    backgroundColor: '#eef2ff',
+    backgroundColor: '#f4f7fc',
   },
   scrollContent: {
     paddingHorizontal: 14,
@@ -107,15 +107,20 @@ export const styles = StyleSheet.create({
     flex: 1,
   },
   topBarCard: {
-    backgroundColor: '#111f4b',
-    borderRadius: 14,
-    borderColor: '#3559db',
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    borderColor: '#d3deee',
     borderWidth: 1,
     padding: 12,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     gap: 10,
+    shadowColor: '#1c2d4f',
+    shadowOpacity: 0.07,
+    shadowOffset: { width: 0, height: 2 },
+    shadowRadius: 8,
+    elevation: 2,
   },
   topBarLeftGroup: {
     flexDirection: 'row',
@@ -128,8 +133,8 @@ export const styles = StyleSheet.create({
     height: 34,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#3b57b5',
-    backgroundColor: '#1a2b68',
+    borderColor: '#cfdaeb',
+    backgroundColor: '#f7faff',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -140,15 +145,15 @@ export const styles = StyleSheet.create({
     width: 14,
     height: 2,
     borderRadius: 2,
-    backgroundColor: '#d5e0ff',
+    backgroundColor: '#4d638f',
   },
   topBarSyncText: {
-    color: '#b7c8ff',
-    fontWeight: '600',
+    color: '#334a74',
+    fontWeight: '700',
     flexShrink: 1,
   },
   refreshButton: {
-    backgroundColor: '#3d65ef',
+    backgroundColor: '#1f4fd5',
     borderRadius: 10,
     paddingHorizontal: 14,
     paddingVertical: 8,
@@ -197,14 +202,14 @@ export const styles = StyleSheet.create({
   },
   sectionTitle: {
     marginTop: 10,
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#1a2550',
+    fontSize: 21,
+    fontWeight: '800',
+    color: '#112447',
     marginBottom: 6,
   },
   sectionSubtitle: {
-    color: '#425485',
-    marginBottom: 4,
+    color: '#4b618d',
+    marginBottom: 6,
   },
   unreadSummaryBox: {
     marginTop: 8,
@@ -749,6 +754,28 @@ export const styles = StyleSheet.create({
     color: '#536895',
     fontSize: 12,
   },
+  orderDetailActionButton: {
+    borderWidth: 1,
+    borderColor: '#2f5ad4',
+    backgroundColor: '#1f4fd5',
+    borderRadius: 11,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    alignSelf: 'flex-start',
+  },
+  orderDetailActionButtonDisabled: {
+    opacity: 0.55,
+  },
+  orderDetailActionButtonText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  orderDetailMessage: {
+    color: '#2e4f9e',
+    fontSize: 12,
+    fontWeight: '600',
+  },
   emptyDetailText: {
     color: '#5a6f99',
     fontSize: 13,
@@ -781,12 +808,41 @@ export const styles = StyleSheet.create({
   },
   orderListItem: {
     borderWidth: 1,
-    borderColor: '#c8d6ff',
+    borderColor: '#d3deee',
     borderRadius: 10,
     paddingHorizontal: 10,
     paddingVertical: 10,
-    backgroundColor: '#ffffff',
-    gap: 2,
+    backgroundColor: '#fdfefe',
+    gap: 6,
+  },
+  orderListItemPressed: {
+    borderColor: '#9fb4d8',
+    backgroundColor: '#f3f7ff',
+  },
+  orderListTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 8,
+  },
+  orderListIdBadge: {
+    borderWidth: 1,
+    borderColor: '#bfd0ea',
+    backgroundColor: '#edf3ff',
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  orderListIdText: {
+    color: '#23406f',
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  orderListStatusPill: {
+    color: '#3f547f',
+    fontSize: 11,
+    fontWeight: '700',
+    maxWidth: '70%',
   },
   orderListName: {
     color: '#22366f',
@@ -797,6 +853,72 @@ export const styles = StyleSheet.create({
     color: '#4e6294',
     fontSize: 12,
     fontWeight: '600',
+  },
+  orderProgressRow: {
+    marginTop: 2,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  orderProgressLabel: {
+    color: '#2a477f',
+    fontSize: 11,
+    fontWeight: '700',
+    flex: 1,
+  },
+  orderProgressWorkersMeta: {
+    color: '#4e6294',
+    fontSize: 11,
+    fontWeight: '600',
+    maxWidth: '52%',
+    textAlign: 'right',
+  },
+  orderProgressTrack: {
+    marginTop: 2,
+    borderRadius: 999,
+    height: 6,
+    backgroundColor: '#e3ebfc',
+    overflow: 'hidden',
+  },
+  orderProgressFill: {
+    height: '100%',
+    borderRadius: 999,
+    backgroundColor: '#2c62df',
+  },
+  orderProgressMeta: {
+    color: '#657aa6',
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  ordersPaginationRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    marginTop: 10,
+  },
+  ordersPaginationButton: {
+    minWidth: 88,
+    borderWidth: 1,
+    borderColor: '#bad0fb',
+    borderRadius: 10,
+    backgroundColor: '#edf3ff',
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+  },
+  ordersPaginationButtonText: {
+    color: '#244a8e',
+    fontSize: 12,
+    fontWeight: '800',
+    textAlign: 'center',
+  },
+  ordersPaginationMeta: {
+    flex: 1,
+    textAlign: 'center',
+    color: '#3d5386',
+    fontSize: 12,
+    fontWeight: '700',
   },
   pictureOrderTextBlock: {
     flex: 1,

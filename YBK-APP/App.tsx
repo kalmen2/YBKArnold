@@ -38,6 +38,7 @@ import { ORDER_TONES, SIDEBAR_ITEMS, TICKET_TONES } from './appConstants'
 import type {
   AppLanguage,
   AppScreen,
+  DashboardOrder,
   DetailSelection,
   MondayDashboardSnapshot,
   MobileAlert,
@@ -67,6 +68,7 @@ import {
   DashboardSection,
   InlineLoading,
   ManagerSheetSection,
+  OrdersSection,
   PicturesSection,
   SettingsOverviewSection,
   TimesheetSection,
@@ -93,6 +95,7 @@ const GOOGLE_ANDROID_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_I
 const GOOGLE_EXPO_IOS_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_EXPO_IOS_CLIENT_ID ?? ''
 const GOOGLE_EXPO_ANDROID_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_EXPO_ANDROID_CLIENT_ID ?? ''
 const GOOGLE_ANDROID_REDIRECT_URI = `${MOBILE_ANDROID_PACKAGE}:/oauthredirect`
+const ORDERS_PAGE_SIZE = 10
 
 type AppUpdateStatusResponse = {
   url?: string | null
@@ -163,6 +166,12 @@ function normalizeIsoDate(value: string) {
   return formatDateInput(parsed)
 }
 
+function toTimestampMs(value: string | null | undefined) {
+  const timestamp = Date.parse(String(value ?? '').trim())
+
+  return Number.isFinite(timestamp) ? timestamp : null
+}
+
 export default function App() {
   const { height: windowHeight } = useWindowDimensions()
   const isExpoGo = Constants.appOwnership === 'expo'
@@ -215,6 +224,10 @@ export default function App() {
   const [selectedPictureOrderId, setSelectedPictureOrderId] = useState<string | null>(null)
   const [isPicturesModalOpen, setIsPicturesModalOpen] = useState(false)
   const [orderSearchQuery, setOrderSearchQuery] = useState('')
+  const [ordersSearchQuery, setOrdersSearchQuery] = useState('')
+  const [ordersPage, setOrdersPage] = useState(1)
+  const [selectedOrderForDetails, setSelectedOrderForDetails] = useState<DashboardOrder | null>(null)
+  const [ordersDetailMessage, setOrdersDetailMessage] = useState<string | null>(null)
   const [orderPhotosByOrderId, setOrderPhotosByOrderId] = useState<Record<string, OrderPhoto[]>>({})
   const [isLoadingOrderPhotos, setIsLoadingOrderPhotos] = useState(false)
   const [isUploadingPicture, setIsUploadingPicture] = useState(false)
@@ -277,6 +290,7 @@ export default function App() {
   const localizedScreenLabels = useMemo<Record<AppScreen, string>>(
     () => ({
       dashboard: t('Dashboard', 'Panel'),
+      orders: t('Orders', 'Ordenes'),
       pictures: t('Pictures', 'Fotos'),
       timesheet: t('Timesheet', 'Horas'),
       manager: t('Manager Sheet', 'Hoja gerente'),
@@ -1398,6 +1412,18 @@ export default function App() {
     void loadManagerSheet()
   }, [activeScreen, hasApprovedSessionAccess, hasManagerSheetAccess, loadManagerSheet])
 
+  useEffect(() => {
+    if (activeScreen !== 'orders') {
+      return
+    }
+
+    if (!hasApprovedSessionAccess || !hasManagerSheetAccess) {
+      return
+    }
+
+    void loadManagerSheet()
+  }, [activeScreen, hasApprovedSessionAccess, hasManagerSheetAccess, loadManagerSheet])
+
   const loadAlerts = useCallback(async (refreshRequested = false) => {
     setIsAlertsLoading(true)
 
@@ -2074,6 +2100,40 @@ export default function App() {
     )
   }, [allOrdersForPictures, orderSearchQuery])
 
+  const filteredOrdersForList = useMemo(() => {
+    const normalizedQuery = ordersSearchQuery.trim().toLowerCase()
+
+    if (!normalizedQuery) {
+      return allOrdersForPictures
+    }
+
+    return allOrdersForPictures.filter((order) => {
+      const orderId = String(order.id ?? '').toLowerCase()
+      const orderName = String(order.name ?? '').toLowerCase()
+      return orderId.includes(normalizedQuery) || orderName.includes(normalizedQuery)
+    })
+  }, [allOrdersForPictures, ordersSearchQuery])
+
+  const ordersTotalPages = useMemo(
+    () => Math.max(1, Math.ceil(filteredOrdersForList.length / ORDERS_PAGE_SIZE)),
+    [filteredOrdersForList.length],
+  )
+
+  const paginatedOrdersForList = useMemo(() => {
+    const safePage = Math.min(Math.max(ordersPage, 1), ordersTotalPages)
+    const start = (safePage - 1) * ORDERS_PAGE_SIZE
+
+    return filteredOrdersForList.slice(start, start + ORDERS_PAGE_SIZE)
+  }, [filteredOrdersForList, ordersPage, ordersTotalPages])
+
+  useEffect(() => {
+    setOrdersPage(1)
+  }, [ordersSearchQuery])
+
+  useEffect(() => {
+    setOrdersPage((current) => Math.min(current, ordersTotalPages))
+  }, [ordersTotalPages])
+
   const selectedPictureOrder = useMemo(
     () => allOrdersForPictures.find((order) => order.id === selectedPictureOrderId) ?? null,
     [allOrdersForPictures, selectedPictureOrderId],
@@ -2081,6 +2141,11 @@ export default function App() {
 
   const picturesCardHeight = useMemo(
     () => Math.max(320, windowHeight - 330),
+    [windowHeight],
+  )
+
+  const ordersCardHeight = useMemo(
+    () => Math.max(360, windowHeight - 330),
     [windowHeight],
   )
 
@@ -2287,6 +2352,111 @@ export default function App() {
     mondayOrderLookup.byNormalizedKey,
   ])
 
+  const latestManagerProgressByOrderId = useMemo(() => {
+    const map = new Map<string, { readyPercent: number; updatedAt: string | null; timestamp: number }>()
+
+    managerOrderProgress.forEach((progress) => {
+      const jobName = String(progress.jobName ?? '').trim()
+
+      if (!jobName) {
+        return
+      }
+
+      const normalizedJobName = normalizeJobName(jobName)
+      const jobDigits = extractDigits(jobName)
+      const matchedOrder =
+        mondayOrderLookup.byNormalizedKey.get(normalizedJobName)
+        || (jobDigits ? mondayOrderLookup.byDigits.get(jobDigits) : null)
+        || null
+      const orderId = String(matchedOrder?.id ?? '').trim()
+
+      if (!orderId) {
+        return
+      }
+
+      const readyPercent = Number(progress.readyPercent)
+
+      if (!Number.isFinite(readyPercent)) {
+        return
+      }
+
+      const updatedAt = String(progress.updatedAt ?? progress.date ?? '').trim() || null
+      const timestamp = toTimestampMs(updatedAt) ?? 0
+      const existing = map.get(orderId)
+
+      if (!existing || timestamp >= existing.timestamp) {
+        map.set(orderId, {
+          readyPercent: Math.min(100, Math.max(0, readyPercent)),
+          updatedAt,
+          timestamp,
+        })
+      }
+    })
+
+    return map
+  }, [managerOrderProgress, mondayOrderLookup.byDigits, mondayOrderLookup.byNormalizedKey])
+
+  const managerRowByOrderId = useMemo(() => {
+    const map = new Map<string, {
+      savedReadyPercent: number
+      workerCount: number
+      totalHours: number
+      updatedAt: string | null
+    }>()
+
+    managerRows.forEach((row) => {
+      const orderId = String(row.mondayOrderId ?? '').trim()
+
+      if (!orderId) {
+        return
+      }
+
+      const key = `${managerDate.trim()}:${normalizeJobName(row.jobName)}`
+      const progress = managerProgressByDateJobKey.get(key)
+      const updatedAt = String(progress?.updatedAt ?? progress?.date ?? '').trim() || null
+
+      map.set(orderId, {
+        savedReadyPercent: Number.isFinite(row.savedReadyPercent)
+          ? Math.min(100, Math.max(0, row.savedReadyPercent))
+          : 0,
+        workerCount: row.workerCount,
+        totalHours: row.totalHours,
+        updatedAt,
+      })
+    })
+
+    return map
+  }, [managerDate, managerProgressByDateJobKey, managerRows])
+
+  const orderManagerInsightsByOrderId = useMemo(() => {
+    const insightsByOrderId: Record<string, {
+      readyPercent: number | null
+      workerCount: number
+      totalHours: number
+      updatedAt: string | null
+    }> = {}
+
+    allOrdersForPictures.forEach((order) => {
+      const orderId = String(order.id ?? '').trim()
+
+      if (!orderId) {
+        return
+      }
+
+      const sameDayRow = managerRowByOrderId.get(orderId)
+      const latestProgress = latestManagerProgressByOrderId.get(orderId)
+
+      insightsByOrderId[orderId] = {
+        readyPercent: sameDayRow?.savedReadyPercent ?? latestProgress?.readyPercent ?? null,
+        workerCount: sameDayRow?.workerCount ?? 0,
+        totalHours: sameDayRow?.totalHours ?? 0,
+        updatedAt: sameDayRow?.updatedAt ?? latestProgress?.updatedAt ?? null,
+      }
+    })
+
+    return insightsByOrderId
+  }, [allOrdersForPictures, latestManagerProgressByOrderId, managerRowByOrderId])
+
   const selectedTimesheetDate = useMemo(() => {
     const parsed = new Date(`${timesheetDate.trim()}T12:00:00`)
 
@@ -2390,6 +2560,46 @@ export default function App() {
       )
     } catch (error) {
       setManagerMessage(
+        getErrorMessage(
+          error,
+          'Could not open shop drawing preview.',
+          'No se pudo abrir la vista previa del shop drawing.',
+        ),
+      )
+    }
+  }, [getErrorMessage, t])
+
+  const handleOpenOrderShopDrawing = useCallback(async (order: DashboardOrder) => {
+    const cachedPreviewUrl = String(order.shopDrawingCachedUrl ?? '').trim()
+    const orderId = String(order.id ?? '').trim()
+
+    if (!cachedPreviewUrl && !orderId) {
+      setOrdersDetailMessage(
+        t(
+          'This order is not linked to Monday yet.',
+          'Esta orden aun no esta vinculada con Monday.',
+        ),
+      )
+      return
+    }
+
+    setOrdersDetailMessage(null)
+
+    try {
+      if (cachedPreviewUrl) {
+        await WebBrowser.openBrowserAsync(cachedPreviewUrl)
+        return
+      }
+
+      const query = new URLSearchParams({
+        orderId,
+        inline: '1',
+      })
+      await WebBrowser.openBrowserAsync(
+        `${API_BASE_URL}/api/dashboard/monday/shop-drawing/download?${query.toString()}`,
+      )
+    } catch (error) {
+      setOrdersDetailMessage(
         getErrorMessage(
           error,
           'Could not open shop drawing preview.',
@@ -2680,6 +2890,13 @@ export default function App() {
     }
   }, [activeScreen])
 
+  useEffect(() => {
+    if (activeScreen !== 'orders') {
+      setSelectedOrderForDetails(null)
+      setOrdersDetailMessage(null)
+    }
+  }, [activeScreen])
+
   const handleSelectSidebarItem = useCallback((nextScreen: AppScreen) => {
     setActiveScreen(nextScreen)
 
@@ -2689,6 +2906,11 @@ export default function App() {
 
     if (nextScreen !== 'pictures') {
       closePicturesModal()
+    }
+
+    if (nextScreen !== 'orders') {
+      setSelectedOrderForDetails(null)
+      setOrdersDetailMessage(null)
     }
 
     if (nextScreen !== 'settings') {
@@ -2933,7 +3155,7 @@ export default function App() {
     )
   }
 
-  const isPicturesScreen = activeScreen === 'pictures'
+  const usesNestedListScroll = activeScreen === 'pictures' || activeScreen === 'orders'
   const isRefreshBusy =
     isRefreshing
     || (activeScreen === 'timesheet' && isTimesheetLoading)
@@ -2947,12 +3169,12 @@ export default function App() {
       <View style={styles.shell}>
         <View style={styles.contentPane}>
           <ScrollView
-            style={isPicturesScreen ? styles.picturesScreenScroll : undefined}
+            style={usesNestedListScroll ? styles.picturesScreenScroll : undefined}
             contentContainerStyle={[
               styles.scrollContent,
-              isPicturesScreen ? styles.scrollContentPictures : null,
+              usesNestedListScroll ? styles.scrollContentPictures : null,
             ]}
-            scrollEnabled={!isPicturesScreen}
+            scrollEnabled={!usesNestedListScroll}
           >
             <View style={styles.topBarCard}>
               <View style={styles.topBarLeftGroup}>
@@ -3027,6 +3249,32 @@ export default function App() {
                 onOrderSearchQueryChange={setOrderSearchQuery}
                 picturesCardHeight={picturesCardHeight}
                 onOpenPicturesModalForOrder={openPicturesModalForOrder}
+              />
+            ) : null}
+
+            {activeScreen === 'orders' ? (
+              <OrdersSection
+                t={t}
+                locale={locale}
+                allOrders={allOrdersForPictures}
+                filteredOrders={paginatedOrdersForList}
+                orderSearchQuery={ordersSearchQuery}
+                onOrderSearchQueryChange={setOrdersSearchQuery}
+                ordersCardHeight={ordersCardHeight}
+                hasManagerInsights={hasManagerSheetAccess}
+                managerInsightsByOrderId={orderManagerInsightsByOrderId}
+                ordersPage={ordersPage}
+                ordersTotalPages={ordersTotalPages}
+                onPreviousOrdersPage={() => {
+                  setOrdersPage((current) => Math.max(1, current - 1))
+                }}
+                onNextOrdersPage={() => {
+                  setOrdersPage((current) => Math.min(ordersTotalPages, current + 1))
+                }}
+                onOpenOrderDetails={(order) => {
+                  setSelectedOrderForDetails(order)
+                  setOrdersDetailMessage(null)
+                }}
               />
             ) : null}
 
@@ -3165,6 +3413,70 @@ export default function App() {
                     <Text style={styles.emptyDetailText}>{t('No tickets in this section.', 'No hay tickets en esta seccion.')}</Text>
                 )}
               </ScrollView>
+            </View>
+          </View>
+        </Modal>
+
+        <Modal
+          visible={Boolean(selectedOrderForDetails)}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setSelectedOrderForDetails(null)}
+        >
+          <View style={styles.modalBackdrop}>
+            <View style={styles.modalCard}>
+              <View style={styles.detailHeader}>
+                <Text style={styles.detailTitle}>
+                  {selectedOrderForDetails
+                    ? `${t('Order', 'Orden')} #${selectedOrderForDetails.id}`
+                    : t('Order details', 'Detalles de la orden')}
+                </Text>
+                <Pressable
+                  style={styles.detailCloseButton}
+                  onPress={() => setSelectedOrderForDetails(null)}
+                >
+                  <Text style={styles.detailCloseButtonText}>{t('Close', 'Cerrar')}</Text>
+                </Pressable>
+              </View>
+
+              {selectedOrderForDetails ? (
+                <ScrollView contentContainerStyle={styles.modalBodyContent}>
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailPrimary}>
+                      {selectedOrderForDetails.name || `${t('Order', 'Orden')} ${selectedOrderForDetails.id}`}
+                    </Text>
+                    <Text style={styles.detailSecondary}>
+                      {t('Status', 'Estado')}: {selectedOrderForDetails.statusLabel || t('No status', 'Sin estado')}
+                    </Text>
+                    <Text style={styles.detailSecondary}>
+                      {t('Group', 'Grupo')}: {selectedOrderForDetails.groupTitle || t('No group', 'Sin grupo')}
+                    </Text>
+                    <Text style={styles.detailSecondary}>
+                      {t('Due', 'Vence')}: {formatDisplayDate(selectedOrderForDetails.effectiveDueDate, locale)}
+                    </Text>
+                  </View>
+
+                  <Pressable
+                    style={[
+                      styles.orderDetailActionButton,
+                      (!selectedOrderForDetails.shopDrawingCachedUrl && !selectedOrderForDetails.id)
+                        ? styles.orderDetailActionButtonDisabled
+                        : null,
+                    ]}
+                    onPress={() => {
+                      void handleOpenOrderShopDrawing(selectedOrderForDetails)
+                    }}
+                  >
+                    <Text style={styles.orderDetailActionButtonText}>
+                      {t('Open Shop Drawing', 'Abrir Shop Drawing')}
+                    </Text>
+                  </Pressable>
+
+                  {ordersDetailMessage ? (
+                    <Text style={styles.orderDetailMessage}>{ordersDetailMessage}</Text>
+                  ) : null}
+                </ScrollView>
+              ) : null}
             </View>
           </View>
         </Modal>
