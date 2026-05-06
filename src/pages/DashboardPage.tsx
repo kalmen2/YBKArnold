@@ -38,11 +38,12 @@ import {
   type CrmOpportunityStage,
   type CrmQuote,
 } from '../features/crm/api'
+import { resolveQuoteAgeDays } from '../features/crm/utils'
 import {
   fetchDashboardBootstrap,
   type DashboardOrder,
 } from '../features/dashboard/api'
-import { formatDateTime } from '../lib/formatters'
+import { formatDateTime, formatDisplayDate } from '../lib/formatters'
 import { QUERY_KEYS } from '../lib/queryKeys'
 
 type DrilldownKey =
@@ -81,24 +82,6 @@ const drilldownTitles: Record<DrilldownKey, string> = {
   dueInTwoWeeksOrders: 'Due In Next 14 Days',
   activeOrders: 'Active Orders',
   missingDueDateOrders: 'Missing Due Date',
-}
-
-function formatDisplayDate(value: string | null) {
-  if (!value) {
-    return '—'
-  }
-
-  const parsed = new Date(`${value}T00:00:00`)
-
-  if (Number.isNaN(parsed.getTime())) {
-    return value
-  }
-
-  return new Intl.DateTimeFormat('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  }).format(parsed)
 }
 
 function formatUsd(value: number) {
@@ -162,22 +145,6 @@ function resolveOpportunityStage(quote: CrmQuote): CrmOpportunityStage {
   }
 
   return 'concept'
-}
-
-function resolveQuoteAgeDays(quote: CrmQuote) {
-  const timestamp = new Date(quote.createdAt || quote.updatedAt)
-
-  if (Number.isNaN(timestamp.getTime())) {
-    return 0
-  }
-
-  const diffMs = Date.now() - timestamp.getTime()
-
-  if (diffMs <= 0) {
-    return 0
-  }
-
-  return Math.floor(diffMs / (24 * 60 * 60 * 1000))
 }
 
 export default function DashboardPage() {

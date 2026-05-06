@@ -37,6 +37,7 @@ import {
   fetchDashboardBootstrap,
 } from '../features/dashboard/api'
 import { useAuth } from '../auth/useAuth'
+import { formatDateTime, formatDisplayDate } from '../lib/formatters'
 import { QUERY_KEYS } from '../lib/queryKeys'
 
 const DEPLOYED_API_BASE_URL = 'https://us-central1-ybkarnold-b7ec0.cloudfunctions.net/apiV1'
@@ -134,44 +135,6 @@ function readErrorMessage(error: unknown, fallbackMessage: string) {
   }
 
   return fallbackMessage
-}
-
-function formatSyncTimestamp(value: string | null) {
-  if (!value) {
-    return 'Unknown'
-  }
-
-  const parsed = new Date(value)
-
-  if (Number.isNaN(parsed.getTime())) {
-    return value
-  }
-
-  return new Intl.DateTimeFormat('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  }).format(parsed)
-}
-
-function formatDisplayDate(value: string | null) {
-  if (!value) {
-    return 'Unknown date'
-  }
-
-  const parsed = new Date(value)
-
-  if (Number.isNaN(parsed.getTime())) {
-    return value
-  }
-
-  return new Intl.DateTimeFormat('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  }).format(parsed)
 }
 
 function sanitizeFileName(value: string) {
@@ -511,7 +474,7 @@ export default function PicturesPage() {
             Pictures
           </Typography>
           <Typography color="text.secondary">
-            Order photo gallery • Last sync {formatSyncTimestamp(generatedAt)}
+            Order photo gallery • Last sync {formatDateTime(generatedAt)}
           </Typography>
         </Box>
 
@@ -725,7 +688,10 @@ export default function PicturesPage() {
 
                             <Box sx={{ p: 1 }}>
                               <Typography variant="caption" color="text.secondary">
-                                {formatDisplayDate(photo.createdAt)}
+                                {formatDisplayDate(photo.createdAt, {
+                                  emptyLabel: 'Unknown date',
+                                  dateOnly: false,
+                                })}
                               </Typography>
                             </Box>
                           </Paper>

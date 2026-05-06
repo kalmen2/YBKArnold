@@ -9,7 +9,7 @@ Timesheet frontend (React + Vite) with Express + MongoDB backend.
 ```
 PORT=8787
 MONGODB_URI=<your atlas uri>
-MONGODB_DB=arnold_system
+MONGODB_DB=arnold_orders
 MONDAY_API_TOKEN=<your monday api token>
 MONDAY_BOARD_ID=1062951447
 MONDAY_BOARD_URL=https://arnoldcontract.monday.com/boards/1062951447
@@ -74,7 +74,7 @@ npm --prefix functions install
 
 ```
 MONGODB_URI=<your atlas uri>
-MONGODB_DB=arnold_system
+MONGODB_DB=arnold_orders
 MONDAY_API_TOKEN=<your monday api token>
 MONDAY_BOARD_ID=1062951447
 MONDAY_BOARD_URL=https://arnoldcontract.monday.com/boards/1062951447
@@ -87,6 +87,25 @@ ZENDESK_URL=https://your-subdomain.zendesk.com/agent
 DASHBOARD_DAILY_REFRESH_CRON=0 17 * * *
 DASHBOARD_DAILY_REFRESH_TIMEZONE=America/New_York
 MONDAY_SHIP_TRANSITION_WINDOW_HOURS=72
+
+# Optional per-domain Mongo routing (new clusters)
+MONGODB_URI_PLATFORM=
+MONGODB_URI_ORDERS=
+MONGODB_URI_CRM=
+MONGODB_URI_TIMESHEET=
+MONGODB_URI_AUTH=
+MONGODB_URI_AI=
+MONGODB_URI_PURCHASING=
+MONGODB_URI_INTEGRATIONS=
+
+MONGODB_DB_PLATFORM=
+MONGODB_DB_ORDERS=
+MONGODB_DB_CRM=
+MONGODB_DB_TIMESHEET=
+MONGODB_DB_AUTH=
+MONGODB_DB_AI=
+MONGODB_DB_PURCHASING=
+MONGODB_DB_INTEGRATIONS=
 ```
 
 ### Daily automatic refresh and moved-to-shipped tracking

@@ -15,6 +15,18 @@ export function formatDateTime(value: string | null | undefined): string {
   }).format(parsed)
 }
 
+export function formatDateTimeShort(value: string | null | undefined): string {
+  if (!value) return 'Unknown'
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return 'Unknown'
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(parsed)
+}
+
 export function formatDateTimeWithSeconds(value: string | null | undefined): string {
   if (!value) return 'Unknown'
   const parsed = new Date(value)
@@ -40,11 +52,43 @@ export function formatDate(value: string | null | undefined): string {
   }).format(parsed)
 }
 
+export function formatDisplayDate(
+  value: string | null | undefined,
+  options: {
+    emptyLabel?: string
+    dateOnly?: boolean
+  } = {},
+): string {
+  const { emptyLabel = '—', dateOnly = true } = options
+
+  if (!value) {
+    return emptyLabel
+  }
+
+  const parsed = new Date(dateOnly ? `${value}T00:00:00` : value)
+
+  if (Number.isNaN(parsed.getTime())) {
+    return value
+  }
+
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  }).format(parsed)
+}
+
 export function formatCurrency(value: number, fractionDigits = 0): string {
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
     currency: 'USD',
     maximumFractionDigits: fractionDigits,
+  }).format(value)
+}
+
+export function formatInteger(value: number): string {
+  return new Intl.NumberFormat('en-US', {
+    maximumFractionDigits: 0,
   }).format(value)
 }
 

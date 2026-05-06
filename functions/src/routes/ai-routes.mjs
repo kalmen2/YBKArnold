@@ -579,6 +579,15 @@ export function registerAiRoutes(app, deps) {
       }
 
       const publicUser = toPublicAuthUser(req.authUser)
+      const linkedZendeskUserId = String(publicUser?.linkedZendeskUserId ?? '').trim()
+      const hasElevatedAccess = Boolean(publicUser?.isAdmin || publicUser?.isManager)
+
+      if (!publicUser?.isApproved || (!linkedZendeskUserId && !hasElevatedAccess)) {
+        return res.status(403).json({
+          error: 'A linked Zendesk user (or manager/admin access) is required.',
+        })
+      }
+
       const authorName =
         String(publicUser?.linkedZendeskUserName ?? '').trim() ||
         String(publicUser?.displayName ?? '').trim() ||

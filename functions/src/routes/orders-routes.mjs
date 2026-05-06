@@ -9,6 +9,9 @@ export function registerOrdersRoutes(app, deps) {
     requireFirebaseAuth,
     requireManagerOrAdminRole,
   } = deps
+  const laborLookupsCacheTtlMs = 30 * 1000
+  let cachedLaborLookups = null
+  let cachedLaborLookupsExpiresAt = 0
 
   // ---- Helpers ----------------------------------------------------------
 
@@ -176,6 +179,20 @@ export function registerOrdersRoutes(app, deps) {
     }
 
     return { byDigits, byNormalizedJob }
+  }
+
+  async function getLaborTotalsLookups(entriesCollection, workersCollection) {
+    const now = Date.now()
+
+    if (cachedLaborLookups && now < cachedLaborLookupsExpiresAt) {
+      return cachedLaborLookups
+    }
+
+    const freshLookups = await buildLaborTotalsLookups(entriesCollection, workersCollection)
+    cachedLaborLookups = freshLookups
+    cachedLaborLookupsExpiresAt = now + laborLookupsCacheTtlMs
+
+    return freshLookups
   }
 
   function mapUnifiedOrderDocumentToOverviewRow(orderDocument, laborLookups) {
@@ -404,7 +421,7 @@ export function registerOrdersRoutes(app, deps) {
       const quickBooksSyncedAtFromRows = unifiedOrderDocuments.find((doc) =>
         String(doc?.quickbooks_synced_at ?? '').trim()
       )?.quickbooks_synced_at
-      const laborLookups = await buildLaborTotalsLookups(entriesCollection, workersCollection)
+      const laborLookups = await getLaborTotalsLookups(entriesCollection, workersCollection)
 
       const rows = unifiedOrderDocuments.map((doc) => mapUnifiedOrderDocumentToOverviewRow(doc, laborLookups))
       const shippedCount = rows.filter((row) => row.isShipped).length

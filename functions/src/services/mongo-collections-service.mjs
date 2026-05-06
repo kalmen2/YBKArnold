@@ -1,12 +1,21 @@
 import { MongoClient } from 'mongodb'
+import {
+  findMissingMongoDomainUris,
+  resolveMongoDomainConfiguration,
+} from './mongo-domain-config.mjs'
 
 export function createMongoCollectionsService({
   mongoDbName,
   mongoUri,
 }) {
   const maxMongoConnectAttempts = 4
-  let mongoClient = null
-  let databasePromise
+  const mongoDomainConfig = resolveMongoDomainConfiguration({
+    mongoDbName,
+    mongoUri,
+  })
+  const mongoClientsByUri = new Map()
+  const mongoClientConnectPromisesByUri = new Map()
+  const databasePromisesByDomain = new Map()
   let indexesPromise
 
   function isTransientMongoError(error) {
@@ -33,21 +42,22 @@ export function createMongoCollectionsService({
   }
 
   async function resetMongoState() {
-    const activeClient = mongoClient
+    const activeClients = [...mongoClientsByUri.values()]
 
-    mongoClient = null
-    databasePromise = undefined
+    mongoClientsByUri.clear()
+    mongoClientConnectPromisesByUri.clear()
+    databasePromisesByDomain.clear()
     indexesPromise = undefined
 
-    if (!activeClient) {
-      return
-    }
-
-    try {
-      await activeClient.close()
-    } catch {
-      // Ignore close failures; next request will create a new client.
-    }
+    await Promise.all(
+      activeClients.map(async (client) => {
+        try {
+          await client.close()
+        } catch {
+          // Ignore close failures; next request will create a new client.
+        }
+      }),
+    )
   }
 
   async function waitBeforeRetry(attempt) {
@@ -58,9 +68,15 @@ export function createMongoCollectionsService({
     })
   }
 
-  async function ensureDatabaseConnection() {
-    if (!databasePromise) {
-      mongoClient = new MongoClient(mongoUri, {
+  function getOrCreateMongoClient(uri) {
+    const normalizedUri = String(uri ?? '').trim()
+
+    if (!normalizedUri) {
+      return null
+    }
+
+    if (!mongoClientsByUri.has(normalizedUri)) {
+      const client = new MongoClient(normalizedUri, {
         connectTimeoutMS: 10000,
         maxPoolSize: 20,
         minPoolSize: 0,
@@ -69,22 +85,103 @@ export function createMongoCollectionsService({
         serverSelectionTimeoutMS: 10000,
         socketTimeoutMS: 45000,
       })
-      databasePromise = mongoClient.connect().then(() => mongoClient.db(mongoDbName))
+      mongoClientsByUri.set(normalizedUri, client)
     }
+
+    return mongoClientsByUri.get(normalizedUri)
+  }
+
+  async function ensureMongoClientConnected(uri) {
+    const normalizedUri = String(uri ?? '').trim()
+    const mongoClient = getOrCreateMongoClient(normalizedUri)
+
+    if (!mongoClient) {
+      return null
+    }
+
+    if (!mongoClientConnectPromisesByUri.has(normalizedUri)) {
+      mongoClientConnectPromisesByUri.set(normalizedUri, mongoClient.connect())
+    }
+
+    try {
+      await mongoClientConnectPromisesByUri.get(normalizedUri)
+    } catch (error) {
+      mongoClientConnectPromisesByUri.delete(normalizedUri)
+      mongoClientsByUri.delete(normalizedUri)
+
+      try {
+        await mongoClient.close()
+      } catch {
+        // Ignore close failures during reset.
+      }
+
+      throw error
+    }
+
+    return mongoClient
+  }
+
+  async function ensureDomainDatabase(domainKey) {
+    const domainConfig = mongoDomainConfig.domains?.[domainKey]
+
+    if (!domainConfig) {
+      throw new Error(`Unsupported Mongo domain "${domainKey}".`)
+    }
+
+    if (!databasePromisesByDomain.has(domainKey)) {
+      const initializationPromise = (async () => {
+        const mongoClient = await ensureMongoClientConnected(domainConfig.uri)
+
+        if (!mongoClient) {
+          throw {
+            status: 500,
+            message: 'Missing MONGODB_URI in Firebase Functions environment.',
+          }
+        }
+
+        return {
+          database: mongoClient.db(domainConfig.dbName),
+          mongoClient,
+        }
+      })()
+
+      databasePromisesByDomain.set(domainKey, initializationPromise)
+    }
+
+    const databasePromise = databasePromisesByDomain.get(domainKey)
 
     try {
       return await databasePromise
     } catch (error) {
-      await resetMongoState()
+      databasePromisesByDomain.delete(domainKey)
+      indexesPromise = undefined
       throw error
     }
   }
 
+  async function ensureAllDomainDatabases() {
+    const domainEntries = await Promise.all(
+      mongoDomainConfig.domainKeys.map(async (domainKey) => {
+        const connection = await ensureDomainDatabase(domainKey)
+
+        return [domainKey, connection]
+      }),
+    )
+
+    return Object.fromEntries(domainEntries)
+  }
+
   async function getCollections() {
-    if (!mongoUri) {
+    const missingDomainUris = findMissingMongoDomainUris(mongoDomainConfig)
+
+    if (missingDomainUris.length > 0) {
+      const missingUrisSummary = missingDomainUris
+        .map((entry) => `${entry.domainKey} (${entry.uriEnvVar})`)
+        .join(', ')
+
       throw {
         status: 500,
-        message: 'Missing MONGODB_URI in Firebase Functions environment.',
+        message: `Missing Mongo URI configuration for domain(s): ${missingUrisSummary}.`,
       }
     }
 
@@ -92,30 +189,45 @@ export function createMongoCollectionsService({
 
     for (let attempt = 0; attempt < maxMongoConnectAttempts; attempt += 1) {
       try {
-        const database = await ensureDatabaseConnection()
-        const workersCollection = database.collection('workers')
-        const entriesCollection = database.collection('timesheet_entries')
-        const stagesCollection = database.collection('timesheet_stages')
-        const orderProgressCollection = database.collection('timesheet_order_progress')
-        const missingWorkerReviewsCollection = database.collection('timesheet_missing_worker_reviews')
-        const dashboardSnapshotsCollection = database.collection('dashboard_snapshots')
-        const mondayOrdersCollection = database.collection('monday_orders')
-        const ordersUnifiedCollection = database.collection('orders_unified')
-        const authUsersCollection = database.collection('auth_users')
-        const mobilePushTokensCollection = database.collection('mobile_push_tokens')
-        const mobileAlertsCollection = database.collection('mobile_alerts')
-        const mobileAlertReadsCollection = database.collection('mobile_alert_reads')
-        const crmImportRunsCollection = database.collection('crm_import_runs')
-        const crmAccountsCollection = database.collection('crm_accounts')
-        const crmContactsCollection = database.collection('crm_contacts')
-        const crmSalesRepsCollection = database.collection('crm_sales_reps')
-        const crmDuplicateQueueCollection = database.collection('crm_duplicate_queue')
-        const crmQuotesCollection = database.collection('crm_quotes')
-        const crmOrdersCollection = database.collection('crm_orders')
-        const aiRulesCollection = database.collection('ai_rules')
-        const aiCommentSummariesCollection = database.collection('ai_comment_summaries')
-        const purchasingItemsCollection = database.collection('purchasing_items')
-        const purchasingTransactionsCollection = database.collection('purchasing_transactions')
+        const databasesByDomain = await ensureAllDomainDatabases()
+        const platformDatabase = databasesByDomain.platform.database
+        const ordersDatabase = databasesByDomain.orders.database
+        const crmDatabase = databasesByDomain.crm.database
+        const timesheetDatabase = databasesByDomain.timesheet.database
+        const authDatabase = databasesByDomain.auth.database
+        const aiDatabase = databasesByDomain.ai.database
+        const purchasingDatabase = databasesByDomain.purchasing.database
+        const integrationsDatabase = databasesByDomain.integrations.database
+
+        const workersCollection = timesheetDatabase.collection('workers')
+        const entriesCollection = timesheetDatabase.collection('timesheet_entries')
+        const stagesCollection = timesheetDatabase.collection('timesheet_stages')
+        const orderProgressCollection = timesheetDatabase.collection('timesheet_order_progress')
+        const missingWorkerReviewsCollection = timesheetDatabase.collection('timesheet_missing_worker_reviews')
+        const dashboardSnapshotsCollection = platformDatabase.collection('dashboard_snapshots')
+        const mondayOrdersCollection = ordersDatabase.collection('monday_orders')
+        const ordersUnifiedCollection = ordersDatabase.collection('orders_unified')
+        const authUsersCollection = authDatabase.collection('auth_users')
+        const mobilePushTokensCollection = authDatabase.collection('mobile_push_tokens')
+        const mobileAlertsCollection = authDatabase.collection('mobile_alerts')
+        const mobileAlertReadsCollection = authDatabase.collection('mobile_alert_reads')
+        const crmImportRunsCollection = crmDatabase.collection('crm_import_runs')
+        const crmAccountsCollection = crmDatabase.collection('crm_accounts')
+        const crmContactsCollection = crmDatabase.collection('crm_contacts')
+        const crmSalesRepsCollection = crmDatabase.collection('crm_sales_reps')
+        const crmDuplicateQueueCollection = crmDatabase.collection('crm_duplicate_queue')
+        const crmQuotesCollection = crmDatabase.collection('crm_quotes')
+        const crmOrdersCollection = crmDatabase.collection('crm_orders')
+        const aiRulesCollection = aiDatabase.collection('ai_rules')
+        const aiCommentSummariesCollection = aiDatabase.collection('ai_comment_summaries')
+        const purchasingItemsCollection = purchasingDatabase.collection('purchasing_items')
+        const purchasingTransactionsCollection = purchasingDatabase.collection('purchasing_transactions')
+        const quickBooksTokensCollection = integrationsDatabase.collection('quickbooks_oauth_tokens')
+        const quickBooksStatesCollection = integrationsDatabase.collection('quickbooks_oauth_states')
+
+        const legacyDatabase = mongoDomainConfig.isSplitDeployment
+          ? null
+          : databasesByDomain.platform.database
 
         if (!indexesPromise) {
           indexesPromise = Promise.all([
@@ -222,10 +334,16 @@ export function createMongoCollectionsService({
               { fullName: 'text', primaryEmail: 'text', phone: 'text' },
               { name: 'crm_contacts_text', weights: { fullName: 10, primaryEmail: 5, phone: 3 } },
             ),
+            quickBooksTokensCollection.createIndex({ id: 1 }, { unique: true }),
+            quickBooksTokensCollection.createIndex({ updatedAt: -1 }),
+            quickBooksStatesCollection.createIndex({ id: 1 }, { unique: true }),
+            quickBooksStatesCollection.createIndex({ createdAt: 1 }),
           ]).then(async () => {
             await removeLegacyTimesheetEntryIndexes(entriesCollection)
-            await dropLegacyAuthActivityLogsCollection(database)
-            await dropLegacyOrdersLedgerCollection(database)
+            if (legacyDatabase) {
+              await dropLegacyAuthActivityLogsCollection(legacyDatabase)
+              await dropLegacyOrdersLedgerCollection(legacyDatabase)
+            }
             await ensureDefaultStages()
             await ensureStageSortOrder(stagesCollection)
             await seedDefaultAiRules(aiRulesCollection)
@@ -240,8 +358,29 @@ export function createMongoCollectionsService({
         }
 
         return {
-          database,
-          mongoClient,
+          database: platformDatabase,
+          mongoClient: databasesByDomain.platform.mongoClient,
+          databasesByDomain: {
+            platform: platformDatabase,
+            orders: ordersDatabase,
+            crm: crmDatabase,
+            timesheet: timesheetDatabase,
+            auth: authDatabase,
+            ai: aiDatabase,
+            purchasing: purchasingDatabase,
+            integrations: integrationsDatabase,
+          },
+          mongoClientsByDomain: {
+            platform: databasesByDomain.platform.mongoClient,
+            orders: databasesByDomain.orders.mongoClient,
+            crm: databasesByDomain.crm.mongoClient,
+            timesheet: databasesByDomain.timesheet.mongoClient,
+            auth: databasesByDomain.auth.mongoClient,
+            ai: databasesByDomain.ai.mongoClient,
+            purchasing: databasesByDomain.purchasing.mongoClient,
+            integrations: databasesByDomain.integrations.mongoClient,
+          },
+          mongoDomainConfig,
           workersCollection,
           entriesCollection,
           stagesCollection,
@@ -265,6 +404,8 @@ export function createMongoCollectionsService({
           aiCommentSummariesCollection,
           purchasingItemsCollection,
           purchasingTransactionsCollection,
+          quickBooksTokensCollection,
+          quickBooksStatesCollection,
         }
       } catch (error) {
         lastError = error
@@ -290,13 +431,17 @@ export function createMongoCollectionsService({
   }
 
   async function closeMongoConnections() {
-    if (!mongoClient) {
+    if (mongoClientsByUri.size === 0) {
       return
     }
 
-    await mongoClient.close()
-    mongoClient = null
-    databasePromise = undefined
+    await Promise.all(
+      [...mongoClientsByUri.values()].map((client) => client.close()),
+    )
+
+    mongoClientsByUri.clear()
+    mongoClientConnectPromisesByUri.clear()
+    databasePromisesByDomain.clear()
     indexesPromise = undefined
   }
 

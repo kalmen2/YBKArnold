@@ -25,6 +25,7 @@ import {
   type OrdersOverviewOrder,
 } from '../../features/orders/api'
 import { formatCurrency, formatDate, formatDateTime } from '../../lib/formatters'
+import { formatProgress } from './utils'
 
 export type JobDetailsMode = 'details' | 'history'
 
@@ -33,13 +34,6 @@ type JobDetailsDialogProps = {
   mode: JobDetailsMode | null
   order: OrdersOverviewOrder | null
   onClose: () => void
-}
-
-function formatProgress(value: number | null) {
-  if (!Number.isFinite(value)) {
-    return '—'
-  }
-  return `${Math.max(0, Math.min(100, Math.round(Number(value))))}%`
 }
 
 export function JobDetailsDialog({ open, mode, order, onClose }: JobDetailsDialogProps) {

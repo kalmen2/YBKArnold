@@ -139,16 +139,6 @@ function resolveOrderNumberFromProject(project) {
   ).projectNumber
   const normalizedBase = normalizeText(baseProjectNumber, 120)
 
-  // Prefer longest numeric token (>=4 digits) to avoid picking incidental
-  // short numbers from labels (for example "... 69 ... 251101").
-  const digitMatches = normalizedBase.match(/\d{4,}/g)
-  if (Array.isArray(digitMatches) && digitMatches.length > 0) {
-    const best = digitMatches.sort((left, right) => right.length - left.length)[0]
-    if (best) {
-      return normalizeText(best, 120)
-    }
-  }
-
   if (normalizedBase) {
     return normalizedBase
   }
@@ -270,8 +260,7 @@ export function createQuickBooksProjectsService({ getCollections }) {
       throw new Error('QuickBooks is not configured. Set QUICKBOOKS_CLIENT_ID and QUICKBOOKS_CLIENT_SECRET.')
     }
 
-    const { database } = await getCollections()
-    const tokensCollection = database.collection('quickbooks_oauth_tokens')
+    const { quickBooksTokensCollection: tokensCollection } = await getCollections()
     let tokenDoc = await tokensCollection.findOne({ id: quickBooksTokenDocId })
 
     if (!tokenDoc) {

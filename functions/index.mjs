@@ -24,6 +24,10 @@ import { createMondayDashboardService } from './src/services/monday-dashboard-se
 import { createMondayOrderPersistenceService } from './src/services/monday-order-persistence-service.mjs'
 import { createMondaySnapshotService } from './src/services/monday-snapshot-service.mjs'
 import { createMongoCollectionsService } from './src/services/mongo-collections-service.mjs'
+import {
+  findMissingMongoDomainUris,
+  resolveMongoDomainConfiguration,
+} from './src/services/mongo-domain-config.mjs'
 import { createOrdersUnifiedService } from './src/services/orders-unified-service.mjs'
 import { createOrderPhotoService } from './src/services/order-photo-service.mjs'
 import { createPlatformConfigService } from './src/services/platform-config-service.mjs'
@@ -97,6 +101,26 @@ const heavyOperationsLimit = rateLimit({
 app.use('/api/crm/imports', heavyOperationsLimit)
 app.use('/api/orders/:orderId/photos', heavyOperationsLimit)
 
+// Purchasing refresh can trigger expensive QuickBooks sync work.
+const purchasingRefreshLimit = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 2,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Purchasing refresh is rate-limited. Please wait a few minutes.' },
+})
+app.use('/api/purchasing/refresh', purchasingRefreshLimit)
+
+// AI support reply generation is compute-heavy and should be burst-limited.
+const aiSupportReplyGenerationLimit = rateLimit({
+  windowMs: 60 * 1000,
+  max: 12,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'AI reply generation is rate-limited. Please slow down.' },
+})
+app.use('/api/ai/support/generate-reply', aiSupportReplyGenerationLimit)
+
 // /api/orders/refresh hits Monday + QuickBooks live. Capped at 1 per 2 minutes
 // per IP — refreshing more often risks hitting Monday's rate limits.
 const ordersRefreshLimit = rateLimit({
@@ -120,7 +144,12 @@ app.use((req, res, next) => {
 })
 
 const mongoUri = process.env.MONGODB_URI
-const mongoDbName = process.env.MONGODB_DB ?? 'arnold_system'
+const mongoDbName = process.env.MONGODB_DB ?? 'arnold_orders'
+const mongoDomainConfig = resolveMongoDomainConfiguration({
+  mongoDbName,
+  mongoUri,
+})
+const missingMongoDomainUris = findMissingMongoDomainUris(mongoDomainConfig)
 const mondayApiUrl = process.env.MONDAY_API_URL ?? 'https://api.monday.com/v2'
 const mondayApiToken = String(process.env.MONDAY_API_TOKEN ?? '').trim()
 const mondayBoardId = String(process.env.MONDAY_BOARD_ID ?? '').trim()
@@ -187,7 +216,13 @@ const maxSystemRunLogs = 300
 
 // Validate required environment variables at startup
 const missingEnvVars = [
-  !mongoUri && 'MONGODB_URI',
+  ...(missingMongoDomainUris.length > 0
+    ? [
+      `Mongo domain URI(s): ${missingMongoDomainUris
+        .map((entry) => entry.uriEnvVar)
+        .join(', ')}`,
+    ]
+    : []),
   !ownerEmail && 'OWNER_EMAIL',
   !firebaseStorageBucketName && 'APP_STORAGE_BUCKET',
 ].filter(Boolean)

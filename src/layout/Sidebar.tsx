@@ -15,7 +15,7 @@ import AdminPanelSettingsRoundedIcon from '@mui/icons-material/AdminPanelSetting
 import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded'
 import KeyboardArrowRightRoundedIcon from '@mui/icons-material/KeyboardArrowRightRounded'
 import SupportAgentRoundedIcon from '@mui/icons-material/SupportAgentRounded'
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
 import { navItems, type NavItem } from '../navigation/navItems'
@@ -78,16 +78,8 @@ function SidebarContent({ showText, onNavigate }: SidebarContentProps) {
 
   const [supportExpanded, setSupportExpanded] = useState(isSupportRouteActive)
   const [adminExpanded, setAdminExpanded] = useState(isAdminRouteActive)
-
-  useEffect(() => {
-    if (isSupportRouteActive) {
-      setSupportExpanded(true)
-    }
-
-    if (isAdminRouteActive) {
-      setAdminExpanded(true)
-    }
-  }, [isAdminRouteActive, isSupportRouteActive])
+  const supportGroupExpanded = supportExpanded || isSupportRouteActive
+  const adminGroupExpanded = adminExpanded || isAdminRouteActive
 
   const renderItem = (path: string, label: string, Icon: (typeof navItems)[number]['icon'], nested = false) => {
     const isSelected = isPathActive(path)
@@ -226,7 +218,7 @@ function SidebarContent({ showText, onNavigate }: SidebarContentProps) {
             'Support',
             SupportAgentRoundedIcon,
             supportNavItems,
-            supportExpanded,
+            supportGroupExpanded,
             () => {
               setSupportExpanded((current) => !current)
             },
@@ -239,7 +231,7 @@ function SidebarContent({ showText, onNavigate }: SidebarContentProps) {
             'Admin',
             AdminPanelSettingsRoundedIcon,
             adminNavItems,
-            adminExpanded,
+            adminGroupExpanded,
             () => {
               setAdminExpanded((current) => !current)
             },

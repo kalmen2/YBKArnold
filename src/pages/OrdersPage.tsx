@@ -234,6 +234,7 @@ export default function OrdersPage() {
       />
 
       <QuickBooksProjectDialog
+        key={`${quickBooksDialogOrder?.id ?? 'none'}:${quickBooksDialogMetric ?? 'none'}`}
         open={Boolean(quickBooksDialogOrder)}
         order={quickBooksDialogOrder}
         metric={quickBooksDialogMetric}

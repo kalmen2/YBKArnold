@@ -70,6 +70,8 @@ import {
   type CrmOrder,
   type CrmQuote,
 } from '../features/crm/api'
+import { displayContactName } from '../features/crm/utils'
+import { resolveImageFileExtension, sanitizeStoragePathSegment } from '../lib/fileUtils'
 
 function resolveSocialVisual(platform: string, href: string) {
   const source = `${platform} ${href}`.toLowerCase()
@@ -81,18 +83,6 @@ function resolveSocialVisual(platform: string, href: string) {
   if (source.includes('pinterest')) return { icon: <PinterestIcon sx={{ fontSize: 16 }} />, foreground: '#bd081c', background: '#ffebed' }
 
   return { icon: <LanguageRoundedIcon sx={{ fontSize: 16 }} />, foreground: '#0f4c81', background: '#eaf2fb' }
-}
-
-function displayContactName(contact: CrmDealerDetailResponse['contacts'][number]) {
-  if (contact.name) {
-    return contact.name
-  }
-
-  const nameFromParts = [contact.firstName, contact.lastName]
-    .filter((entry) => Boolean(entry && entry.trim()))
-    .join(' ')
-
-  return nameFromParts || 'Unnamed contact'
 }
 
 type DealerSocialLinkDraft = {
@@ -174,34 +164,6 @@ function createSocialLinkRow(platform = 'website', url = '', index = 0): DealerS
     platform: resolveSocialPlatformChoice(platform),
     url,
   }
-}
-
-function sanitizeStoragePathSegment(value: string, fallback = 'item') {
-  const normalized = String(value)
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-
-  return normalized || fallback
-}
-
-function resolveImageFileExtension(file: File) {
-  const normalizedName = String(file.name || '').toLowerCase()
-  const extensionMatch = normalizedName.match(/\.(png|jpe?g|gif|webp|bmp|svg)$/)
-
-  if (extensionMatch) {
-    return extensionMatch[0]
-  }
-
-  if (file.type === 'image/png') return '.png'
-  if (file.type === 'image/jpeg') return '.jpg'
-  if (file.type === 'image/gif') return '.gif'
-  if (file.type === 'image/webp') return '.webp'
-  if (file.type === 'image/bmp') return '.bmp'
-  if (file.type === 'image/svg+xml') return '.svg'
-
-  return '.jpg'
 }
 
 type DealerFormState = {

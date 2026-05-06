@@ -18,7 +18,7 @@ const FILES = {
 }
 
 const MONGO_URI = process.env.MONGODB_URI
-const MONGO_DB = process.env.MONGODB_DB || 'arnold_system'
+const MONGO_DB = process.env.MONGODB_DB || 'arnold_orders'
 if (!MONGO_URI) {
   console.error('Missing MONGODB_URI in functions/.env')
   process.exit(1)

@@ -45,7 +45,6 @@ export function useDataLoader<T>({
         setIsRefreshing(false)
       }
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [fetcher, onSuccess, onError, fallbackErrorMessage],
   )
 

@@ -3,7 +3,7 @@
     "name": "Arnold Contract",
     "slug": "YBK-APP",
     "scheme": "com.ybk.arnold",
-    "version": "1.6",
+    "version": "1.8",
     "runtimeVersion": {
       "policy": "sdkVersion"
     },
@@ -42,7 +42,7 @@
         "backgroundColor": "#ffffff"
       },
       "predictiveBackGestureEnabled": false,
-      "versionCode": 14
+      "versionCode": 18
     },
     "web": {
       "favicon": "./assets/favicon.png"

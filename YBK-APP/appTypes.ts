@@ -119,7 +119,7 @@ export type MetricTone = {
   valueColor: string
 }
 
-export type AppScreen = 'dashboard' | 'pictures' | 'timesheet' | 'manager' | 'alerts' | 'settings'
+export type AppScreen = 'dashboard' | 'orders' | 'pictures' | 'timesheet' | 'manager' | 'alerts' | 'settings'
 export type AppLanguage = 'en' | 'es'
 
 export type OrderMetricKey =

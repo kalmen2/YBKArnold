@@ -29,19 +29,8 @@ import {
   fetchCrmContacts,
   type CrmContact,
 } from '../features/crm/api'
+import { displayContactName } from '../features/crm/utils'
 import { QUERY_KEYS } from '../lib/queryKeys'
-
-function displayContactName(contact: CrmContact) {
-  if (contact.name) {
-    return contact.name
-  }
-
-  const combined = [contact.firstName, contact.lastName]
-    .filter((entry) => Boolean(entry && entry.trim()))
-    .join(' ')
-
-  return combined || 'Unnamed contact'
-}
 
 export default function CrmContactsPage() {
   const [searchParams, setSearchParams] = useSearchParams()

@@ -58,6 +58,8 @@ import {
   type CrmQuote,
   type CrmSalesRep,
 } from '../features/crm/api'
+import { parseNonNegativeAmount, resolveQuoteAgeDays } from '../features/crm/utils'
+import { resolveFileExtension, sanitizeStoragePathSegment } from '../lib/fileUtils'
 import { formatCurrency } from '../lib/formatters'
 import { QUERY_KEYS } from '../lib/queryKeys'
 
@@ -248,37 +250,6 @@ function createOpportunityDetailsFormState(quote: CrmQuote): OpportunityDetailsF
   }
 }
 
-function sanitizeStoragePathSegment(value: string, fallback = 'item') {
-  const normalized = String(value)
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-
-  return normalized || fallback
-}
-
-function resolveFileExtension(file: File) {
-  const normalizedName = String(file.name || '').toLowerCase()
-  const extensionMatch = normalizedName.match(/\.[a-z0-9]{2,8}$/)
-
-  if (extensionMatch) {
-    return extensionMatch[0]
-  }
-
-  return '.bin'
-}
-
-function parseNonNegativeAmount(value: string) {
-  const parsed = Number(value)
-
-  if (!Number.isFinite(parsed) || parsed < 0) {
-    return null
-  }
-
-  return Number(parsed.toFixed(2))
-}
-
 function normalizeMatchValue(value: string | null | undefined) {
   return String(value ?? '').trim().toLowerCase()
 }
@@ -293,22 +264,6 @@ function resolveContactName(contact: CrmContact) {
   const fullName = `${firstName} ${lastName}`.trim()
 
   return fullName || ''
-}
-
-function resolveQuoteAgeDays(quote: CrmQuote) {
-  const timestamp = new Date(quote.createdAt || quote.updatedAt)
-
-  if (Number.isNaN(timestamp.getTime())) {
-    return 0
-  }
-
-  const diffMs = Date.now() - timestamp.getTime()
-
-  if (diffMs <= 0) {
-    return 0
-  }
-
-  return Math.floor(diffMs / (24 * 60 * 60 * 1000))
 }
 
 function resolveQuoteDocuments(quote: CrmQuote | null | undefined): CrmQuoteDocument[] {

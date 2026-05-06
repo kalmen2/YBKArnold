@@ -30,7 +30,7 @@ import {
 } from '@mui/material'
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { formatCurrency, formatDateTime } from '../lib/formatters'
+import { formatCurrency, formatDateTime, formatInteger } from '../lib/formatters'
 import {
   createQuickBooksAuthorizeUrl,
   type QuickBooksLoanDetailRow,
@@ -41,6 +41,7 @@ import {
   type QuickBooksProjectSummary,
   type QuickBooksUnlinkedTransaction,
 } from '../features/quickbooks/api'
+import { splitQuickBooksProjectLabel } from '../features/quickbooks/utils'
 
 type QuickBooksDrilldownKey =
   | 'projects'
@@ -129,12 +130,6 @@ const projectMetricTitleByType: Record<ProjectMetricType, string> = {
   payments: 'Payments',
 }
 
-function formatInteger(value: number) {
-  return new Intl.NumberFormat('en-US', {
-    maximumFractionDigits: 0,
-  }).format(value)
-}
-
 function formatDate(value: string | null) {
   if (!value) {
     return '-'
@@ -160,37 +155,6 @@ function formatCandidateRefs(refs: string[]) {
   }
 
   return refs.join(', ')
-}
-
-function splitQuickBooksProjectLabel(projectName: string, fallbackProjectId: string) {
-  const normalizedName = String(projectName || '').trim()
-
-  if (!normalizedName) {
-    return {
-      customerName: '-',
-      projectNumber: fallbackProjectId || '-',
-    }
-  }
-
-  const hasColonSeparator = normalizedName.includes(':')
-  const hasHyphenSeparator = normalizedName.includes(' - ')
-  const segments = hasColonSeparator
-    ? normalizedName.split(':').map((segment) => segment.trim()).filter(Boolean)
-    : hasHyphenSeparator
-      ? normalizedName.split(' - ').map((segment) => segment.trim()).filter(Boolean)
-      : [normalizedName]
-
-  if (segments.length <= 1) {
-    return {
-      customerName: '-',
-      projectNumber: segments[0] || fallbackProjectId || '-',
-    }
-  }
-
-  return {
-    customerName: segments.slice(0, -1).join(' : '),
-    projectNumber: segments[segments.length - 1] || fallbackProjectId || '-',
-  }
 }
 
 function toErrorMessage(error: unknown, fallbackMessage: string) {

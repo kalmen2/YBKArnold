@@ -90,7 +90,7 @@ export default function AiConfigPage() {
     if (!state?.prefillMessage) return
     if (isAiRuleCategory(state.category)) setSelectedCategory(state.category)
     setChatInput(state.prefillMessage)
-  }, [])
+  }, [location.state])
 
   const currentChat = chatHistories[selectedCategory] ?? []
   const currentEditedRules = editedRules[selectedCategory] ?? ''

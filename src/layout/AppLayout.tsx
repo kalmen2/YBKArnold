@@ -36,12 +36,18 @@ export default function AppLayout() {
 
   const isSupportRoute =
     location.pathname === '/support' || location.pathname.startsWith('/support/')
+  const forceCollapsed = !isMobile && isSupportRoute
+  const effectiveCollapsed = forceCollapsed || collapsed
 
-  const drawerWidth = collapsed ? COLLAPSED_DRAWER_WIDTH : EXPANDED_DRAWER_WIDTH
+  const drawerWidth = effectiveCollapsed ? COLLAPSED_DRAWER_WIDTH : EXPANDED_DRAWER_WIDTH
 
   const handleSidebarToggle = () => {
     if (isMobile) {
       setMobileOpen((prev) => !prev)
+      return
+    }
+
+    if (forceCollapsed) {
       return
     }
 
@@ -59,14 +65,6 @@ export default function AppLayout() {
       path: location.pathname,
     })
   }, [location.pathname, logActivity])
-
-  useEffect(() => {
-    if (isMobile || !isSupportRoute) {
-      return
-    }
-
-    setCollapsed(true)
-  }, [isMobile, isSupportRoute])
 
   const appUserRole = appUser?.role ?? 'standard'
   const headerTitle = useMemo(() => {
@@ -119,7 +117,7 @@ export default function AppLayout() {
           >
             {isMobile ? (
               <MenuRoundedIcon fontSize="small" />
-            ) : collapsed ? (
+            ) : effectiveCollapsed ? (
               <KeyboardDoubleArrowRightRoundedIcon fontSize="small" />
             ) : (
               <KeyboardDoubleArrowLeftRoundedIcon fontSize="small" />
@@ -177,7 +175,7 @@ export default function AppLayout() {
       </AppBar>
 
       <Sidebar
-        collapsed={collapsed}
+        collapsed={effectiveCollapsed}
         mobileOpen={mobileOpen}
         isMobile={isMobile}
         onMobileClose={closeMobileSidebar}

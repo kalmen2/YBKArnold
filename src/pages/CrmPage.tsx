@@ -46,6 +46,7 @@ import {
   type CrmQuoteStatus,
 } from '../features/crm/api'
 import { invalidateCrmDealersCache, useCrmDealers } from '../features/crm/CrmDealersContext'
+import { parseNonNegativeAmount } from '../features/crm/utils'
 import { LoadingPanel } from '../components/LoadingPanel'
 import { StatusAlerts } from '../components/StatusAlerts'
 import { formatCurrency, formatDateTime, formatStatusLabel } from '../lib/formatters'
@@ -75,16 +76,6 @@ type ConflictSectionProps = {
   title: string
   groups: CrmConflictGroup[]
   emptyText: string
-}
-
-function parseNonNegativeAmount(input: string) {
-  const parsed = Number(input)
-
-  if (!Number.isFinite(parsed) || parsed < 0) {
-    return null
-  }
-
-  return Number(parsed.toFixed(2))
 }
 
 function parsePercentInRange(input: string) {

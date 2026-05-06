@@ -31,6 +31,7 @@ import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '../auth/useAuth'
 import { generateAiSupportReply, fetchCommentSummaries } from '../features/ai/api'
+import { formatDateTime, formatDateTimeShort } from '../lib/formatters'
 import {
   fetchSupportAlertTickets,
   fetchSupportAlerts,
@@ -48,37 +49,6 @@ type AlertBucketKey =
   | 'pendingOver48Hours'
 
 type SupportReplyStatusOption = SupportReplyStatus | 'no_change'
-
-function formatDateTime(value: string) {
-  const parsed = new Date(value)
-
-  if (Number.isNaN(parsed.getTime())) {
-    return 'Unknown'
-  }
-
-  return new Intl.DateTimeFormat('en-US', {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  }).format(parsed)
-}
-
-function formatSyncTimestamp(value: string) {
-  const parsed = new Date(value)
-
-  if (Number.isNaN(parsed.getTime())) {
-    return value
-  }
-
-  return new Intl.DateTimeFormat('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  }).format(parsed)
-}
 
 function statusChipColor(status: string): 'default' | 'warning' | 'info' | 'success' {
   const normalized = String(status).trim().toLowerCase()
@@ -907,7 +877,7 @@ export default function SupportPage() {
             <Typography variant="caption" color="text.secondary">
               Zendesk &middot;{' '}
               {lastSyncTimestamp
-                ? `Last synced ${formatSyncTimestamp(lastSyncTimestamp)}`
+                ? `Last synced ${formatDateTime(lastSyncTimestamp)}`
                 : 'Sync pending'}
             </Typography>
           </Box>
@@ -1125,7 +1095,7 @@ export default function SupportPage() {
                           color="text.secondary"
                           sx={{ whiteSpace: 'nowrap', ml: 1, flexShrink: 0 }}
                         >
-                          {formatDateTime(ticket.updatedAt)}
+                          {formatDateTimeShort(ticket.updatedAt)}
                         </Typography>
                       </Stack>
 
@@ -1233,7 +1203,7 @@ export default function SupportPage() {
                                     ) : null}
                                   </Stack>
                                   <Typography variant="caption" color="text.secondary" sx={{ ml: 1, flexShrink: 0 }}>
-                                    {formatDateTime(comment.createdAt)}
+                                    {formatDateTimeShort(comment.createdAt)}
                                   </Typography>
                                 </Stack>
                                 {commentSummariesQuery.isFetching && !commentSummaries[comment.id] ? (
@@ -1505,7 +1475,7 @@ export default function SupportPage() {
                           </Typography>
                         </Box>
                         <Typography variant="caption" color="text.secondary" sx={{ flexShrink: 0 }}>
-                          {formatDateTime(comment.createdAt)}
+                          {formatDateTimeShort(comment.createdAt)}
                         </Typography>
                       </Box>
 

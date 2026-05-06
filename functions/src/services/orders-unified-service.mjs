@@ -13,8 +13,7 @@
 //      hydrate shipped date / drawings / dates without a full shipped-board
 //      detail pull.
 //      Misses on carryover rows → real hazard.
-//   6. Bulk upsert. Stale-row cleanup is gated by a sanity floor so a partial
-//      Monday pull cannot wipe real orders.
+//   6. Bulk upsert + stale QB-key cleanup for obsolete carryover rows.
 //
 // Targeted name-only lookups replace the old "pull the entire shipped board"
 // and "pull the entire pre-production board" patterns.
@@ -37,8 +36,6 @@ import {
   toTimestampMs,
 } from './orders-merge-helpers.mjs'
 
-const SANITY_FLOOR = 10
-
 function shouldReplaceMondayDetails(existing, incoming) {
   if (!existing?.has_monday_record) {
     return true
@@ -55,6 +52,13 @@ function shouldReplaceMondayDetails(existing, incoming) {
     return true
   }
   return false
+}
+
+function normalizeOrderMatchKey(value) {
+  return normalizeText(value, 120)
+    .toLowerCase()
+    .split(' ')
+    .join('')
 }
 
 export function createOrdersUnifiedService(deps) {
@@ -195,6 +199,21 @@ export function createOrdersUnifiedService(deps) {
 
   function applyQuickBooksToMerged(quickBooksProjects, mergedByKey) {
     const activeQuickBooksProjectIds = new Set()
+    const mondayOrderKeyByMatchKey = new Map()
+
+    mergedByKey.forEach((row, orderKey) => {
+      if (!row?.has_monday_record) {
+        return
+      }
+
+      const matchKey = normalizeOrderMatchKey(row?.order_number)
+
+      if (!matchKey || mondayOrderKeyByMatchKey.has(matchKey)) {
+        return
+      }
+
+      mondayOrderKeyByMatchKey.set(matchKey, orderKey)
+    })
 
     const toMoney = (value) => {
       const parsed = Number(value)
@@ -231,12 +250,16 @@ export function createOrdersUnifiedService(deps) {
       const orderNumber = normalizeText(project?.orderNumber, 120) || null
       const projectId = normalizeText(project?.projectId, 120) || null
       const projectName = normalizeText(project?.projectName, 260) || null
+      const matchKey = normalizeOrderMatchKey(orderNumber)
+      const matchedMondayOrderKey = matchKey
+        ? mondayOrderKeyByMatchKey.get(matchKey)
+        : null
 
       if (projectId) {
         activeQuickBooksProjectIds.add(projectId)
       }
 
-      const orderKey = buildOrderKey({
+      const orderKey = matchedMondayOrderKey || buildOrderKey({
         orderNumber: shouldUseQuickBooksOrderNumberForKey(orderNumber) ? orderNumber : null,
         quickBooksProjectId: projectId,
       })
@@ -537,6 +560,7 @@ export function createOrdersUnifiedService(deps) {
       Array.isArray(quickBooksData?.projects) ? quickBooksData.projects : [],
       mergedByKey,
     )
+    const staleQuickBooksOrderKeysToDelete = new Set()
 
     // Targeted design-board lookup for QB-only non-shipped rows.
     const designStats = await flagDesignBoardMatches(mergedByKey, warnings)
@@ -560,6 +584,9 @@ export function createOrdersUnifiedService(deps) {
       ]
       const hasActiveProject = projectIds.some((projectId) => activeQuickBooksProjectIds.has(projectId))
       if (hasActiveProject) {
+        if (quickBooksSucceeded && row.has_quickbooks_record) {
+          staleQuickBooksOrderKeysToDelete.add(row.orderKey)
+        }
         return
       }
       carryoverCandidates.push(row)
@@ -605,8 +632,15 @@ export function createOrdersUnifiedService(deps) {
           quickBooksOnlyMarkedShippedCount += 1
         }
       } else if (carryoverOrderKeys.has(row.orderKey)) {
-        row.hazard_reason = 'Missing from Order Track and not found on the Shipped board.'
-        carryoverHazardCount += 1
+        if (quickBooksSucceeded && row.has_quickbooks_record) {
+          staleQuickBooksOrderKeysToDelete.add(row.orderKey)
+          mergedByKey.delete(row.orderKey)
+        } else {
+          row.hazard_reason = 'Missing from Order Track and not found on the Shipped board.'
+          carryoverHazardCount += 1
+          mergedByKey.set(row.orderKey, row)
+        }
+        return
       }
 
       mergedByKey.set(row.orderKey, row)
@@ -683,22 +717,16 @@ export function createOrdersUnifiedService(deps) {
         })),
         { ordered: false },
       )
+    }
 
-      // Stale-row cleanup: only when this run produced a substantial dataset,
-      // so a partial Monday outage cannot wipe real orders.
-      const safeToCleanUp =
-        orderTrackDocuments.length >= SANITY_FLOOR && mergedRows.length >= SANITY_FLOOR
+    const staleQuickBooksOrderKeys = [...staleQuickBooksOrderKeysToDelete]
+    let staleQuickBooksDeletedCount = 0
 
-      if (safeToCleanUp) {
-        await ordersUnifiedCollection.deleteMany({
-          lastSyncedAt: { $ne: refreshedAt },
-          is_shipped: { $ne: true },
-        })
-      } else {
-        warnings.push(
-          `Skipped stale-row cleanup: ${orderTrackDocuments.length} Order Track / ${mergedRows.length} merged rows (floor ${SANITY_FLOOR}).`,
-        )
-      }
+    if (staleQuickBooksOrderKeys.length > 0) {
+      const deleteResult = await ordersUnifiedCollection.deleteMany({
+        orderKey: { $in: staleQuickBooksOrderKeys },
+      })
+      staleQuickBooksDeletedCount = Number(deleteResult?.deletedCount ?? 0)
     }
 
     return {
@@ -717,6 +745,7 @@ export function createOrdersUnifiedService(deps) {
       quickBooksProjectCount: Array.isArray(quickBooksData?.projects)
         ? quickBooksData.projects.length
         : 0,
+      staleQuickBooksDeletedCount,
       quickBooksSyncedAt: quickBooksData?.generatedAt || null,
       warnings,
     }

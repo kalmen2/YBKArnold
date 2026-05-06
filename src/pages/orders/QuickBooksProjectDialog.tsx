@@ -19,7 +19,7 @@ import {
   Button,
 } from '@mui/material'
 import { useQuery } from '@tanstack/react-query'
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import type { OrdersOverviewOrder } from '../../features/orders/api'
 import {
   fetchQuickBooksOverview,
@@ -28,6 +28,7 @@ import {
 } from '../../features/quickbooks/api'
 import { formatCurrency, formatDate } from '../../lib/formatters'
 import type { OrdersQuickBooksDrilldownMetric } from './OrdersGrid'
+import { resolveOrderProjectIds } from './utils'
 
 type QuickBooksProjectDialogTab = 'purchaseOrders' | 'bills' | 'invoices' | 'payments'
 
@@ -46,18 +47,6 @@ function tabFromMetric(metric: OrdersQuickBooksDrilldownMetric | null): QuickBoo
     return 'bills'
   }
   return 'invoices'
-}
-
-function resolveOrderProjectIds(order: OrdersOverviewOrder | null) {
-  if (!order) {
-    return []
-  }
-
-  const ids = Array.isArray(order.quickBooksProjectIds)
-    ? order.quickBooksProjectIds.map((value) => String(value ?? '').trim()).filter(Boolean)
-    : []
-  const fallbackId = String(order.quickBooksProjectId ?? '').trim()
-  return [...new Set(fallbackId ? [fallbackId, ...ids] : ids)]
 }
 
 function resolveOrderProjectNames(order: OrdersOverviewOrder | null) {
@@ -178,15 +167,7 @@ export function QuickBooksProjectDialog({
 }: QuickBooksProjectDialogProps) {
   const projectIds = useMemo(() => resolveOrderProjectIds(order), [order])
   const projectNames = useMemo(() => resolveOrderProjectNames(order), [order])
-  const projectIdKey = projectIds.join('|')
   const [activeTab, setActiveTab] = useState<QuickBooksProjectDialogTab>(tabFromMetric(metric))
-
-  useEffect(() => {
-    if (!open) {
-      return
-    }
-    setActiveTab(tabFromMetric(metric))
-  }, [metric, open, projectIdKey])
 
   const overviewQuery = useQuery<QuickBooksOverviewResponse>({
     queryKey: ['quickbooks', 'overview'],
@@ -211,7 +192,7 @@ export function QuickBooksProjectDialog({
       invoices: rowsForProject(overviewQuery.data.details.invoices, projectIds),
       payments: rowsForProject(overviewQuery.data.details.payments, projectIds),
     }
-  }, [overviewQuery.data, projectIdKey])
+  }, [overviewQuery.data, projectIds])
 
   const billSummary = useMemo(() => sumAmounts(projectRows.bills), [projectRows.bills])
   const invoiceSummary = useMemo(() => sumAmounts(projectRows.invoices), [projectRows.invoices])

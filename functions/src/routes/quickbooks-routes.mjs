@@ -74,8 +74,6 @@ const txnTypeConfigByKey = {
   },
 }
 
-let quickBooksIndexesPromise
-
 function normalizeText(value, maxLength = 400) {
   return String(value ?? '').trim().slice(0, maxLength)
 }
@@ -730,25 +728,10 @@ export function registerQuickBooksRoutes(app, deps) {
   } = deps
 
   async function getQuickBooksCollections() {
-    const { database } = await getCollections()
-    const quickBooksTokensCollection = database.collection('quickbooks_oauth_tokens')
-    const quickBooksStatesCollection = database.collection('quickbooks_oauth_states')
-
-    if (!quickBooksIndexesPromise) {
-      quickBooksIndexesPromise = Promise
-        .all([
-          quickBooksTokensCollection.createIndex({ id: 1 }, { unique: true }),
-          quickBooksTokensCollection.createIndex({ updatedAt: -1 }),
-          quickBooksStatesCollection.createIndex({ id: 1 }, { unique: true }),
-          quickBooksStatesCollection.createIndex({ createdAt: 1 }),
-        ])
-        .catch((error) => {
-          quickBooksIndexesPromise = undefined
-          throw error
-        })
-    }
-
-    await quickBooksIndexesPromise
+    const {
+      quickBooksStatesCollection,
+      quickBooksTokensCollection,
+    } = await getCollections()
 
     return {
       quickBooksTokensCollection,

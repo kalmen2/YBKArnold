@@ -41,6 +41,7 @@ import {
   fetchQuickBooksOverview,
   type QuickBooksProjectSummary,
 } from '../features/quickbooks/api'
+import { splitQuickBooksProjectLabel } from '../features/quickbooks/utils'
 import { useAuth } from '../auth/useAuth'
 import {
   createStage,
@@ -299,34 +300,6 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     setDateReportReadyRow(null)
   }, [])
 
-  const splitQuickBooksProjectLabel = useCallback((projectName: string, fallbackProjectId: string) => {
-    const normalizedName = String(projectName || '').trim()
-
-    if (!normalizedName) {
-      return {
-        projectNumber: fallbackProjectId || '',
-      }
-    }
-
-    const hasColonSeparator = normalizedName.includes(':')
-    const hasHyphenSeparator = normalizedName.includes(' - ')
-    const segments = hasColonSeparator
-      ? normalizedName.split(':').map((segment) => segment.trim()).filter(Boolean)
-      : hasHyphenSeparator
-        ? normalizedName.split(' - ').map((segment) => segment.trim()).filter(Boolean)
-        : [normalizedName]
-
-    if (segments.length <= 1) {
-      return {
-        projectNumber: segments[0] || fallbackProjectId || '',
-      }
-    }
-
-    return {
-      projectNumber: segments[segments.length - 1] || fallbackProjectId || '',
-    }
-  }, [])
-
   useEffect(() => {
     if (!canAccessManagerSheet && worksheetTab === 1) {
       setWorksheetTab(0)
@@ -456,7 +429,9 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     const map = new Map<string, QuickBooksJobMetrics>()
 
     quickBooksProjects.forEach((project) => {
-      const splitLabel = splitQuickBooksProjectLabel(project.projectName, project.projectId)
+      const splitLabel = splitQuickBooksProjectLabel(project.projectName, project.projectId, {
+        fallbackProjectNumber: project.projectId || '',
+      })
       const jobKey = normalizeJobName(splitLabel.projectNumber)
 
       if (!jobKey) {
@@ -500,7 +475,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     })
 
     return map
-  }, [quickBooksProjects, splitQuickBooksProjectLabel])
+  }, [quickBooksProjects])
 
   const byStageView = useMemo(() => {
     const dates = [...new Set(entries.map((entry) => entry.date))].sort()

@@ -11,8 +11,6 @@ const purchasingAiDeliveryLocation = 'United States (USA)'
 const purchasingAiSearchUrl = 'https://html.duckduckgo.com/html/'
 const purchasingAiMaxSearchCandidates = 12
 
-let quickBooksIndexesPromise
-
 function createHttpError(message, status = 500) {
   const error = new Error(message)
   error.status = status
@@ -477,6 +475,7 @@ export function registerPurchasingRoutes(app, deps) {
     randomUUID,
     resolvePurchasingItemSearchMatches,
     requireFirebaseAuth,
+    requireManagerOrAdminRole,
   } = deps
 
   const purchasingItemSummaryProjection = {
@@ -494,19 +493,7 @@ export function registerPurchasingRoutes(app, deps) {
   }
 
   async function getQuickBooksCollections() {
-    const { database } = await getCollections()
-    const quickBooksTokensCollection = database.collection('quickbooks_oauth_tokens')
-
-    if (!quickBooksIndexesPromise) {
-      quickBooksIndexesPromise = quickBooksTokensCollection
-        .createIndex({ id: 1 }, { unique: true })
-        .catch((error) => {
-          quickBooksIndexesPromise = undefined
-          throw error
-        })
-    }
-
-    await quickBooksIndexesPromise
+    const { quickBooksTokensCollection } = await getCollections()
 
     return { quickBooksTokensCollection }
   }
@@ -1845,7 +1832,7 @@ export function registerPurchasingRoutes(app, deps) {
     }
   })
 
-  app.post('/api/purchasing/refresh', requireFirebaseAuth, async (req, res, next) => {
+  app.post('/api/purchasing/refresh', requireFirebaseAuth, requireManagerOrAdminRole, async (req, res, next) => {
     try {
       const forceRefresh = String(req.query?.force ?? '').trim() === '1'
       const summary = await syncPurchasingFromQuickBooks({ force: forceRefresh })

@@ -68,6 +68,7 @@ export const TICKET_TONES: MetricTone[] = [
 
 export const SIDEBAR_ITEMS: Array<{ id: AppScreen; shortLabel: string }> = [
   { id: 'dashboard', shortLabel: 'DB' },
+  { id: 'orders', shortLabel: 'OR' },
   { id: 'pictures', shortLabel: 'PH' },
   { id: 'timesheet', shortLabel: 'TS' },
   { id: 'manager', shortLabel: 'MG' },

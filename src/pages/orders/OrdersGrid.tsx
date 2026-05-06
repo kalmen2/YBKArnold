@@ -24,27 +24,13 @@ import { formatCurrency, formatDate } from '../../lib/formatters'
 import type { JobDetailsMode } from './JobDetailsDialog'
 import { type ShopDrawingPreviewHandle } from './ShopDrawingPreview'
 import { resolveShopDrawingUrl } from './shopDrawingUrl'
+import { formatProgress, resolveOrderProjectIds } from './utils'
 
 export type OrdersQuickBooksDrilldownMetric = 'purchaseOrders' | 'bills' | 'invoices'
 
-function formatProgress(value: number | null) {
-  if (!Number.isFinite(value)) {
-    return '—'
-  }
-  return `${Math.max(0, Math.min(100, Math.round(Number(value))))}%`
-}
-
-function resolveQuickBooksProjectIds(order: OrdersOverviewOrder) {
-  const ids = Array.isArray(order.quickBooksProjectIds)
-    ? order.quickBooksProjectIds.map((value) => String(value ?? '').trim()).filter(Boolean)
-    : []
-  const fallback = String(order.quickBooksProjectId ?? '').trim()
-  return [...new Set(fallback ? [fallback, ...ids] : ids)]
-}
-
 function resolveSourceLabel(order: OrdersOverviewOrder) {
   if (order.source === 'quickbooks') {
-    const ids = resolveQuickBooksProjectIds(order)
+    const ids = resolveOrderProjectIds(order)
     if (ids.length > 1) {
       return `QuickBooks projects only (${ids.length} linked IDs)`
     }
@@ -179,7 +165,7 @@ export function OrdersGrid({
       return <Typography variant="body2" color="text.secondary">—</Typography>
     }
 
-    const projectIds = resolveQuickBooksProjectIds(row)
+    const projectIds = resolveOrderProjectIds(row)
 
     if (projectIds.length === 0 || !row.hasQuickBooksRecord) {
       return <Typography variant="body2">{normalizedLabel}</Typography>

@@ -3535,7 +3535,7 @@ export function registerCrmRoutes(app, deps) {
         crmContactsCollection,
         crmDuplicateQueueCollection,
         crmImportRunsCollection,
-        mongoClient,
+        mongoClientsByDomain,
       } = await getCollections()
 
       const importedAt = nowIso()
@@ -3669,7 +3669,7 @@ export function registerCrmRoutes(app, deps) {
       // (e.g. network drop after accounts are written but before contacts) can
       // never leave the database in an inconsistent half-imported state.
       let importRunDocument
-      const session = mongoClient.startSession()
+      const session = mongoClientsByDomain.crm.startSession()
 
       try {
         await session.withTransaction(async () => {
