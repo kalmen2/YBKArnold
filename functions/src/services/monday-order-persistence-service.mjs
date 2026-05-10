@@ -107,7 +107,7 @@ export function createMondayOrderPersistenceService({
     return `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`
   }
 
-  function createOrderSetFields({ order, board, now, sourceInfo, cutListSourceInfo }) {
+  function createOrderSetFields({ order, board, now, sourceInfo, cutListSourceInfo, bolSourceInfo }) {
     const progressStatusDetails = Array.isArray(order?.progressStatusDetails)
       ? order.progressStatusDetails
         .map((entry) => ({
@@ -149,6 +149,11 @@ export function createMondayOrderPersistenceService({
       shipTo: String(order?.shipTo ?? '').trim() || null,
       shipNotes: String(order?.shipNotes ?? '').trim() || null,
       bol: String(order?.bol ?? '').trim() || null,
+      bolUrl: normalizeUrl(order?.bolUrl),
+      bolFileName: bolSourceInfo.fileName,
+      bolSourceAssetId: bolSourceInfo.sourceAssetId,
+      bolSourceUrl: bolSourceInfo.sourceUrl,
+      bolResolvedUrl: bolSourceInfo.sourceUrl,
       poNumber: String(order?.poNumber ?? '').trim() || null,
       notes: String(order?.notes ?? '').trim() || null,
       description: String(order?.description ?? '').trim() || null,
@@ -248,6 +253,31 @@ export function createMondayOrderPersistenceService({
     }
   }
 
+  async function resolveBolSource(order) {
+    const originalUrl = normalizeUrl(order?.bolUrl)
+    const explicitFileName = String(order?.bolFileName ?? '').trim() || null
+    const fallbackFileName = deriveFileNameFromUrl(originalUrl)
+    const originalFileName = ensurePdfFileName(
+      explicitFileName || fallbackFileName || 'bol.pdf',
+      'bol.pdf',
+    )
+
+    if (!originalUrl) {
+      return {
+        sourceAssetId: null,
+        sourceUrl: null,
+        fileName: null,
+      }
+    }
+
+    const sourceAssetId = extractMondayAssetIdFromUrl(originalUrl)
+    return {
+      sourceAssetId,
+      sourceUrl: originalUrl,
+      fileName: originalFileName,
+    }
+  }
+
   async function persistNewMondayOrders(snapshot) {
     const snapshotOrders = Array.isArray(snapshot?.orders) ? snapshot.orders : []
 
@@ -263,6 +293,9 @@ export function createMondayOrderPersistenceService({
         cutListsCached: 0,
         cutListsReused: 0,
         cutListsFailed: 0,
+        bolFilesCached: 0,
+        bolFilesReused: 0,
+        bolFilesFailed: 0,
       }
     }
 
@@ -292,6 +325,9 @@ export function createMondayOrderPersistenceService({
         cutListsCached: 0,
         cutListsReused: 0,
         cutListsFailed: 0,
+        bolFilesCached: 0,
+        bolFilesReused: 0,
+        bolFilesFailed: 0,
       }
     }
 
@@ -314,6 +350,7 @@ export function createMondayOrderPersistenceService({
             movedToShippedAt: 1,
             shopDrawingDownloadUrl: 1,
             cutListDownloadUrl: 1,
+            bolDownloadUrl: 1,
           },
         },
       )
@@ -327,6 +364,9 @@ export function createMondayOrderPersistenceService({
     let cutListsCached = 0
     let cutListsReused = 0
     let cutListsFailed = 0
+    let bolFilesCached = 0
+    let bolFilesReused = 0
+    let bolFilesFailed = 0
     let movedToShippedCount = 0
     const operations = []
 
@@ -335,15 +375,18 @@ export function createMondayOrderPersistenceService({
       const existingOrder = existingOrderByItemId.get(mondayItemId) ?? null
       const sourceInfo = await resolveShopDrawingSource(order)
       const cutListSourceInfo = await resolveCutListSource(order)
+      const bolSourceInfo = await resolveBolSource(order)
       const setFields = createOrderSetFields({
         order,
         board,
         now,
         sourceInfo,
         cutListSourceInfo,
+        bolSourceInfo,
       })
       const existingCachedDrawingUrl = String(existingOrder?.shopDrawingDownloadUrl ?? '').trim()
       const existingCachedCutListUrl = String(existingOrder?.cutListDownloadUrl ?? '').trim()
+      const existingCachedBolUrl = String(existingOrder?.bolDownloadUrl ?? '').trim()
 
       if (existingCachedDrawingUrl) {
         setFields.shopDrawingSourceUrl = null
@@ -355,6 +398,12 @@ export function createMondayOrderPersistenceService({
         setFields.cutListSourceUrl = null
         setFields.cutListResolvedUrl = null
         setFields.cutListUrl = null
+      }
+
+      if (existingCachedBolUrl) {
+        setFields.bolSourceUrl = null
+        setFields.bolResolvedUrl = null
+        setFields.bolUrl = null
       }
       const boardTransitionFields = buildBoardTransitionFields({
         existingOrder,
@@ -401,6 +450,9 @@ export function createMondayOrderPersistenceService({
       cutListsCached,
       cutListsReused,
       cutListsFailed,
+      bolFilesCached,
+      bolFilesReused,
+      bolFilesFailed,
     }
   }
 

@@ -189,6 +189,8 @@ export function createOrdersUnifiedService(deps) {
         ship_to: normalizeText(order?.shipTo, 500) || null,
         ship_notes: normalizeText(order?.shipNotes, 2000) || null,
         bol: normalizeText(order?.bol, 200) || null,
+        BOL_cached: normalizeText(order?.bolCachedUrl, 800) || null,
+        BOL_source: normalizeText(order?.bolUrl, 800) || null,
         po_number: normalizeText(order?.poNumber, 120) || null,
         monday_notes: normalizeText(order?.notes, 2000) || null,
         monday_description: normalizeText(order?.description, 2000) || null,
@@ -223,6 +225,7 @@ export function createOrdersUnifiedService(deps) {
       }
       incoming.Shop_drawing = incoming.Shop_drawing_cached || incoming.Shop_drawing_source || null
       incoming.Cut_list = incoming.Cut_list_cached || incoming.Cut_list_source || null
+      incoming.BOL = incoming.BOL_cached || incoming.BOL_source || null
 
       if (!row.order_number && incoming.order_number) {
         row.order_number = incoming.order_number
@@ -237,6 +240,9 @@ export function createOrdersUnifiedService(deps) {
           ship_to: incoming.ship_to || row.ship_to,
           ship_notes: incoming.ship_notes || row.ship_notes,
           bol: incoming.bol || row.bol,
+          BOL_cached: incoming.BOL_cached || null,
+          BOL_source: incoming.BOL_source || null,
+          BOL: incoming.BOL || row.BOL,
           po_number: incoming.po_number || row.po_number,
           monday_notes: incoming.monday_notes || row.monday_notes,
           monday_description: incoming.monday_description || row.monday_description,
@@ -542,6 +548,12 @@ export function createOrdersUnifiedService(deps) {
           row.Cut_list = row.Cut_list_cached || row.Cut_list_source || row.Cut_list
         }
 
+        const sourceBolUrl = normalizeText(detail?.bolUrl, 800) || null
+        if (sourceBolUrl) {
+          row.BOL_source = sourceBolUrl
+          row.BOL = row.BOL_cached || row.BOL_source || row.BOL
+        }
+
         row.hazard_reason = null
         enrichedCount += 1
       })
@@ -599,6 +611,8 @@ export function createOrdersUnifiedService(deps) {
             shipTo: 1,
             shipNotes: 1,
             bol: 1,
+            bolDownloadUrl: 1,
+            bolUrl: 1,
             poNumber: 1,
             notes: 1,
             description: 1,
@@ -640,6 +654,8 @@ export function createOrdersUnifiedService(deps) {
       shipTo: doc.shipTo,
       shipNotes: doc.shipNotes,
       bol: doc.bol,
+      bolCachedUrl: doc.bolDownloadUrl,
+      bolUrl: doc.bolUrl,
       poNumber: doc.poNumber,
       notes: doc.notes,
       description: doc.description,
@@ -779,6 +795,12 @@ export function createOrdersUnifiedService(deps) {
       row.ship_to = normalizeText(row.ship_to, 500) || null
       row.ship_notes = normalizeText(row.ship_notes, 2000) || null
       row.bol = normalizeText(row.bol, 200) || null
+      row.BOL_cached = normalizeText(row.BOL_cached, 800) || null
+      row.BOL_source = normalizeText(row.BOL_source, 800) || null
+      if (!row.BOL_cached && !row.BOL_source) {
+        row.BOL_source = normalizeText(row.BOL, 800) || null
+      }
+      row.BOL = row.BOL_cached || row.BOL_source || null
       row.Shop_drawing_cached = normalizeText(row.Shop_drawing_cached, 800) || null
       row.Shop_drawing_source = normalizeText(row.Shop_drawing_source, 800) || null
       if (!row.Shop_drawing_cached && !row.Shop_drawing_source) {

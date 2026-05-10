@@ -867,6 +867,144 @@ export function registerDashboardSupportRoutes(app, deps) {
     }
   }
 
+  async function resolveOnDemandBolSource(orderDocument) {
+    const existingSourceUrl =
+      normalizeUrl(orderDocument?.bolSourceUrl)
+      || normalizeUrl(orderDocument?.bolResolvedUrl)
+      || normalizeUrl(orderDocument?.bolUrl)
+      || normalizeUrl(orderDocument?.bol)
+
+    if (!existingSourceUrl) {
+      return {
+        sourceUrl: null,
+        sourceAssetId: null,
+        fileName: null,
+      }
+    }
+
+    const sourceAssetId =
+      String(orderDocument?.bolSourceAssetId ?? '').trim()
+      || extractMondayAssetIdFromUrl(existingSourceUrl)
+      || null
+    const fallbackFileName =
+      String(orderDocument?.bolFileName ?? '').trim()
+      || deriveFileNameFromUrl(existingSourceUrl)
+      || `order-${String(orderDocument?.mondayItemId ?? '').trim() || 'bol'}-bol.pdf`
+    const resolvedFileName = ensurePdfFileName(fallbackFileName)
+    const isProtectedMondayAssetUrl = /\/protected_static\//i.test(existingSourceUrl)
+
+    if (!isProtectedMondayAssetUrl || !sourceAssetId || typeof fetchMondayAssetDownloadInfo !== 'function') {
+      return {
+        sourceUrl: existingSourceUrl,
+        sourceAssetId,
+        fileName: resolvedFileName,
+      }
+    }
+
+    try {
+      const assetInfo = await fetchMondayAssetDownloadInfo(sourceAssetId)
+      const publicUrl = normalizeUrl(assetInfo?.publicUrl)
+      const fileName = ensurePdfFileName(
+        String(assetInfo?.name ?? '').trim() || resolvedFileName,
+        resolvedFileName,
+      )
+
+      return {
+        sourceUrl: publicUrl || existingSourceUrl,
+        sourceAssetId,
+        fileName,
+      }
+    } catch {
+      return {
+        sourceUrl: existingSourceUrl,
+        sourceAssetId,
+        fileName: resolvedFileName,
+      }
+    }
+  }
+
+  async function cacheBolOnDemand(orderDocument) {
+    const mondayItemId = String(orderDocument?.mondayItemId ?? '').trim()
+
+    if (!mondayItemId) {
+      throw new Error('Missing Monday item id for this BOL.')
+    }
+
+    const bucket = typeof getOrderPhotosBucket === 'function' ? getOrderPhotosBucket() : null
+
+    if (!bucket) {
+      throw new Error('Order photo storage bucket is unavailable.')
+    }
+
+    const sourceInfo = await resolveOnDemandBolSource(orderDocument)
+
+    if (!sourceInfo.sourceUrl) {
+      return null
+    }
+
+    const sourceResponse = await fetch(sourceInfo.sourceUrl)
+
+    if (!sourceResponse.ok) {
+      throw new Error(`BOL source responded with status ${sourceResponse.status}.`)
+    }
+
+    const contentType = String(sourceResponse.headers.get('content-type') ?? '').trim() || 'application/pdf'
+    const sourceBuffer = Buffer.from(await sourceResponse.arrayBuffer())
+    const storageOrderId = sanitizeStorageSegment(mondayItemId)
+    const storageFileName = sanitizeDownloadFileName(
+      sourceInfo.fileName,
+      `${storageOrderId}-bol.pdf`,
+    )
+    const storagePath = `monday-bol/${storageOrderId}/${storageFileName}`
+    const downloadToken = createDownloadToken()
+    const now = new Date().toISOString()
+    const targetFile = bucket.file(storagePath)
+
+    await targetFile.save(sourceBuffer, {
+      resumable: false,
+      metadata: {
+        contentType,
+        metadata: {
+          firebaseStorageDownloadTokens: downloadToken,
+          mondayItemId,
+          sourceAssetId: String(sourceInfo.sourceAssetId ?? '').trim() || null,
+          sourceUrl: sourceInfo.sourceUrl,
+          syncedAt: now,
+        },
+      },
+    })
+
+    const cachedDownloadUrl = buildFirebaseStorageDownloadUrl(bucket.name, storagePath, downloadToken)
+    const { mondayOrdersCollection } = await getCollections()
+
+    await mondayOrdersCollection.updateOne(
+      {
+        mondayItemId,
+      },
+      {
+        $set: {
+          bolStoragePath: storagePath,
+          bolDownloadUrl: cachedDownloadUrl,
+          bolContentType: contentType,
+          bolCachedAt: now,
+          bolCacheStatus: 'ready',
+          bolCacheError: null,
+          bolFileName: ensurePdfFileName(sourceInfo.fileName, `${storageOrderId}-bol.pdf`),
+          bolSourceAssetId: String(sourceInfo.sourceAssetId ?? '').trim() || null,
+          bolSourceUrl: null,
+          bolResolvedUrl: null,
+          bolUrl: null,
+          updatedAt: now,
+        },
+      },
+    )
+
+    return {
+      downloadUrl: cachedDownloadUrl,
+      fileName: ensurePdfFileName(sourceInfo.fileName, `${storageOrderId}-bol.pdf`),
+    }
+  }
+
 
 
 // Monday dashboard view is DB-backed from orders_unified so lateness/due
@@ -1085,6 +1223,115 @@ app.get('/api/dashboard/monday/cut-list/download', requireFirebaseAuth, async (r
     const downloadFileName = ensurePdfFileName(
       orderDocument.cutListFileName,
       `order-${orderId}-cut-list.pdf`,
+    )
+    const contentType =
+      String(upstreamResponse.headers.get('content-type') ?? '').trim() ||
+      'application/pdf'
+    const contentLength = String(upstreamResponse.headers.get('content-length') ?? '').trim()
+
+    res.setHeader('Content-Type', contentType)
+    const contentDispositionType = renderInline ? 'inline' : 'attachment'
+    res.setHeader(
+      'Content-Disposition',
+      `${contentDispositionType}; filename="${downloadFileName.replace(/"/g, '')}"`,
+    )
+    res.setHeader('Cache-Control', 'private, max-age=120')
+    if (contentLength) {
+      res.setHeader('Content-Length', contentLength)
+    }
+
+    const buffer = Buffer.from(await upstreamResponse.arrayBuffer())
+
+    return res.status(200).send(buffer)
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.get('/api/dashboard/monday/bol/download', requireFirebaseAuth, async (req, res, next) => {
+  try {
+    const orderId = String(req.query?.orderId ?? '').trim()
+    const renderInline = String(req.query?.inline ?? '').trim() === '1'
+
+    if (!orderId) {
+      return res.status(400).json({ error: 'orderId is required.' })
+    }
+
+    async function loadOrderBolDocument() {
+      const { mondayOrdersCollection } = await getCollections()
+
+      return mondayOrdersCollection.findOne(
+        {
+          mondayItemId: orderId,
+        },
+        {
+          projection: {
+            _id: 0,
+            mondayItemId: 1,
+            bolDownloadUrl: 1,
+            bolFileName: 1,
+            bolSourceAssetId: 1,
+            bolSourceUrl: 1,
+            bolResolvedUrl: 1,
+            bolUrl: 1,
+            bol: 1,
+          },
+        },
+      )
+    }
+
+    let orderDocument = await loadOrderBolDocument()
+
+    if (!orderDocument) {
+      return res.status(404).json({ error: 'Order not found in Monday data.' })
+    }
+
+    let cachedBolUrl = String(orderDocument.bolDownloadUrl ?? '').trim()
+
+    if (!cachedBolUrl) {
+      const hasStoredSource = Boolean(
+        String(orderDocument.bolSourceUrl ?? '').trim()
+        || String(orderDocument.bolResolvedUrl ?? '').trim()
+        || String(orderDocument.bolUrl ?? '').trim(),
+      )
+
+      if (!hasStoredSource) {
+        return res.status(404).json({ error: 'No BOL source found for this order.' })
+      }
+
+      try {
+        const cacheResult = await cacheBolOnDemand(orderDocument)
+        cachedBolUrl = String(cacheResult?.downloadUrl ?? '').trim()
+        if (cacheResult?.fileName) {
+          orderDocument.bolFileName = cacheResult.fileName
+        }
+      } catch (cacheError) {
+        const message = cacheError instanceof Error
+          ? cacheError.message
+          : 'Could not cache this BOL right now.'
+        return res.status(502).json({ error: message })
+      }
+    }
+
+    if (!cachedBolUrl) {
+      return res.status(404).json({ error: 'No BOL source found for this order.' })
+    }
+
+    if (renderInline) {
+      return res.redirect(302, cachedBolUrl)
+    }
+
+    const upstreamResponse = await fetch(cachedBolUrl)
+
+    if (!upstreamResponse.ok) {
+      return res.status(502).json({
+        error: 'Could not download this BOL from cache right now.',
+      })
+    }
+
+    const downloadFileName = ensurePdfFileName(
+      orderDocument.bolFileName,
+      `order-${orderId}-bol.pdf`,
     )
     const contentType =
       String(upstreamResponse.headers.get('content-type') ?? '').trim() ||

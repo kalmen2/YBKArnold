@@ -8,7 +8,10 @@
       "Bash(echo \"LINT EXIT: $?\")",
       "Bash(npx vite *)",
       "Bash(echo \"BUILD EXIT: $?\")",
-      "Bash(awk 'NR==389' /Users/kalmankamionka/Desktop/Arnold-api/functions/src/routes/dashboard-support-routes.mjs)"
+      "Bash(awk 'NR==389' /Users/kalmankamionka/Desktop/Arnold-api/functions/src/routes/dashboard-support-routes.mjs)",
+      "Bash(node --check /Users/kalmankamionka/Desktop/Arnold-api/functions/src/routes/orders-routes.mjs)",
+      "Bash(awk '$1 > 1')",
+      "Bash(awk '{print $2}')"
     ]
   }
 }

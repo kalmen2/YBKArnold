@@ -1,6 +1,8 @@
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded'
 import HistoryRoundedIcon from '@mui/icons-material/HistoryRounded'
 import PictureAsPdfRoundedIcon from '@mui/icons-material/PictureAsPdfRounded'
+import FormatListBulletedRoundedIcon from '@mui/icons-material/FormatListBulletedRounded'
+import LocalShippingRoundedIcon from '@mui/icons-material/LocalShippingRounded'
 import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded'
 import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded'
 import {
@@ -37,9 +39,10 @@ import {
 import { formatCurrency, formatDate } from '../../lib/formatters'
 import { QUERY_KEYS } from '../../lib/queryKeys'
 import type { JobDetailsMode } from './JobDetailsDialog'
-import { type CutListPreviewHandle } from './CutListPreview'
+import { type CutListPreviewHandle } from './CutListPreview.tsx'
 import { type ShopDrawingPreviewHandle } from './ShopDrawingPreview'
-import { resolveCutListUrl } from './cutListUrl'
+import { resolveBolUrl } from './bolUrl'
+import { resolveCutListUrl } from './cutListUrl.ts'
 import { resolveShopDrawingUrl } from './shopDrawingUrl'
 import { formatProgress, resolveOrderProjectIds } from './utils'
 
@@ -345,6 +348,7 @@ type OrdersGridProps = {
   isLoading: boolean
   shopDrawingHandle: React.MutableRefObject<ShopDrawingPreviewHandle | null>
   cutListHandle: React.MutableRefObject<CutListPreviewHandle | null>
+  onOpenBolDocument: (order: OrdersOverviewOrder) => void
   onOpenJobDialog: (order: OrdersOverviewOrder, mode: JobDetailsMode) => void
   onOpenQuickBooksDialog: (
     order: OrdersOverviewOrder,
@@ -362,6 +366,7 @@ export function OrdersGrid({
   isLoading,
   shopDrawingHandle,
   cutListHandle,
+  onOpenBolDocument,
   onOpenJobDialog,
   onOpenQuickBooksDialog,
   onCopyOrderNumber,
@@ -783,15 +788,42 @@ export function OrdersGrid({
       minWidth: 130,
       width: 150,
       sortable: false,
-      renderCell: ({ row }) => (
-        <Typography
-          variant="body2"
-          sx={{ fontSize: '0.78rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
-          title={row.bol ?? ''}
-        >
-          {row.bol || '—'}
-        </Typography>
-      ),
+      renderCell: ({ row }) => {
+        const url = resolveBolUrl(row)
+        const hasBolText = Boolean(String(row?.bol ?? '').trim())
+        const hasOrderId = Boolean(String(row.mondayItemId ?? '').trim())
+        const canOpenBol = hasOrderId && (Boolean(url) || hasBolText)
+
+        if (!canOpenBol) {
+          return (
+            <Typography
+              variant="body2"
+              sx={{ fontSize: '0.78rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+              title={row.bol ?? ''}
+            >
+              {row.bol || '—'}
+            </Typography>
+          )
+        }
+
+        return (
+          <IconButton
+            size="small"
+            aria-label="Open BOL"
+            title="Open BOL document"
+            onClick={(event) => {
+              if (event.detail === 0) {
+                return
+              }
+              event.preventDefault()
+              event.stopPropagation()
+              onOpenBolDocument(row)
+            }}
+          >
+            <LocalShippingRoundedIcon fontSize="inherit" />
+          </IconButton>
+        )
+      },
     },
     {
       field: 'shopDrawingUrl',
@@ -891,7 +923,7 @@ export function OrdersGrid({
               void cutListHandle.current?.openDialog(row)
             }}
           >
-            <PictureAsPdfRoundedIcon fontSize="inherit" />
+            <FormatListBulletedRoundedIcon fontSize="inherit" />
           </IconButton>
         )
       },
@@ -1128,8 +1160,8 @@ export function OrdersGrid({
       minWidth: 130,
       renderCell: ({ row }) => renderQuickBooksButton(
         row,
-        Number.isFinite(Number(row.totalAmountOwed))
-          ? formatCurrency(Number(row.totalAmountOwed), 2)
+        Number.isFinite(Number(row.amountOwed))
+          ? formatCurrency(Number(row.amountOwed), 2)
           : '—',
         'invoices',
       ),
@@ -1197,6 +1229,7 @@ export function OrdersGrid({
     lastRefreshedAt,
     shopDrawingHandle,
     cutListHandle,
+    onOpenBolDocument,
     onOpenJobDialog,
     onOpenQuickBooksDialog,
     onCopyOrderNumber,
@@ -1211,15 +1244,15 @@ export function OrdersGrid({
       { field: 'poNumber', label: 'PO Number' },
       { field: 'description', label: 'Description' },
       { field: 'notes', label: 'Notes' },
+      { field: 'shopDrawingUrl', label: 'Drawings' },
+      { field: 'rowStatus', label: 'Monday Status' },
+      { field: 'managerReadyPercent', label: 'Status History' },
+      { field: 'leadTimeDays', label: 'Lead Time' },
+      { field: 'orderDate', label: 'Order Date' },
       { field: 'shipTo', label: 'Ship To' },
       { field: 'shipNotes', label: 'Ship Notes' },
       { field: 'bol', label: 'BOL' },
-      { field: 'shopDrawingUrl', label: 'Drawings' },
       { field: 'cutListUrl', label: 'Cut List' },
-      { field: 'orderDate', label: 'Order Date' },
-      { field: 'leadTimeDays', label: 'Lead Time' },
-      { field: 'managerReadyPercent', label: 'Status History' },
-      { field: 'rowStatus', label: 'Monday Status' },
     ] as const
 
     const adminColumnsByField = new Map(
@@ -1255,15 +1288,15 @@ export function OrdersGrid({
           { field: 'poNumber' },
           { field: 'description' },
           { field: 'notes' },
-          { field: 'shipTo' },
-          { field: 'shipNotes' },
-          { field: 'bol' },
           { field: 'shopDrawingUrl' },
-          { field: 'cutListUrl' },
           { field: 'rowStatus' },
           { field: 'managerReadyPercent' },
           { field: 'leadTimeDays' },
           { field: 'orderDate' },
+          { field: 'shipTo' },
+          { field: 'shipNotes' },
+          { field: 'bol' },
+          { field: 'cutListUrl' },
         ],
       },
       {

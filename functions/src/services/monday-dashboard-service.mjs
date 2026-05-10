@@ -311,6 +311,7 @@ export function createMondayDashboardService({
     const cutList = parseShopDrawing(cutListColumn)
     const shipTo = readTextFromColumn(shipToColumn) || null
     const shipNotes = readTextFromColumn(shipNotesColumn) || null
+    const bolDocument = parseShopDrawing(bolColumn)
     const bol = readTextFromColumn(bolColumn) || null
     const poNumber = readTextFromColumn(poNumberColumn) || null
     const notes = readTextFromColumn(notesColumn) || null
@@ -344,6 +345,8 @@ export function createMondayDashboardService({
       shipTo,
       shipNotes,
       bol,
+      bolUrl: bolDocument.url,
+      bolFileName: bolDocument.fileName,
       poNumber,
       notes,
       description,

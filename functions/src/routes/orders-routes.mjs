@@ -596,18 +596,9 @@ export function registerOrdersRoutes(app, deps) {
         readyPercent: Number.isFinite(Number(entry?.readyPercent)) ? Number(entry.readyPercent) : null,
         updatedAt: String(entry?.updatedAt ?? '').trim() || null,
       }))
-    const progressStatusDetails = (Array.isArray(orderDocument?.progress_status_details)
-      ? orderDocument.progress_status_details
-      : [])
-      .map((entry) => ({
-        key: String(entry?.key ?? '').trim() || null,
-        label: String(entry?.label ?? '').trim() || null,
-        weight: Number.isFinite(Number(entry?.weight)) ? Number(entry.weight) : 0,
-        columnId: String(entry?.columnId ?? '').trim() || null,
-        status: String(entry?.status ?? '').trim() || null,
-        options: normalizeProgressDetailOptions(entry?.options),
-        optionStyles: normalizeProgressDetailOptionStyles(entry?.optionStyles),
-      }))
+    const progressStatusDetails = normalizeProgressStatusDetails(
+      orderDocument?.progress_status_details,
+    )
 
     const sourceValue = String(orderDocument?.source ?? '').trim().toLowerCase()
     const source =
@@ -641,13 +632,7 @@ export function registerOrdersRoutes(app, deps) {
         : Number.isFinite(amountOwed)
           ? amountOwed <= 0.004
           : null
-    const rowStatus = !hasMondayRecord && !inDesign
-      ? 'Not in Monday'
-      : isShipped
-        ? 'Shipped'
-        : inDesign
-          ? 'In Design'
-          : mondayStatus || 'Open'
+    const rowStatus = resolveRowStatusLabel({ hasMondayRecord, inDesign, isShipped, mondayStatus })
     const laborCandidates = buildJobLookupValues([
       resolvedOrderNumber,
       String(orderDocument?.order_name ?? '').trim(),
@@ -672,6 +657,11 @@ export function registerOrdersRoutes(app, deps) {
       shipTo: String(orderDocument?.ship_to ?? '').trim() || null,
       shipNotes: String(orderDocument?.ship_notes ?? '').trim() || null,
       bol: String(orderDocument?.bol ?? '').trim() || null,
+      bolCachedUrl: String(orderDocument?.BOL_cached ?? '').trim() || null,
+      bolUrl:
+        String(orderDocument?.BOL_source ?? '').trim()
+        || String(orderDocument?.BOL ?? '').trim()
+        || null,
       poNumber: String(orderDocument?.po_number ?? '').trim() || null,
       notes: String(orderDocument?.monday_notes ?? '').trim() || null,
       description: String(orderDocument?.monday_description ?? '').trim() || null,
@@ -686,7 +676,6 @@ export function registerOrdersRoutes(app, deps) {
       paidInFull,
       amountOwed,
       billBalanceAmount,
-      totalAmountOwed: amountOwed,
       totalHours: laborTotals ? Number(Number(laborTotals.totalHours).toFixed(2)) : null,
       totalLaborCost: laborTotals ? toMoney(laborTotals.totalLaborCost) : null,
       orderDate: String(orderDocument?.order_date ?? '').trim() || null,
@@ -761,6 +750,9 @@ export function registerOrdersRoutes(app, deps) {
               ship_to: 1,
               ship_notes: 1,
               bol: 1,
+              BOL: 1,
+              BOL_cached: 1,
+              BOL_source: 1,
               po_number: 1,
               monday_notes: 1,
               monday_description: 1,
@@ -783,7 +775,6 @@ export function registerOrdersRoutes(app, deps) {
               billedAmount: 1,
               invoiceNumber: 1,
               invoiceAmount: 1,
-              paymentAmount: 1,
               paidInFull: 1,
               poAmount: 1,
               shipped_at: 1,

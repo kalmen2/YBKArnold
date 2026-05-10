@@ -50,6 +50,8 @@ export type OrdersOverviewOrder = {
   shipTo: string | null
   shipNotes: string | null
   bol: string | null
+  bolCachedUrl: string | null
+  bolUrl: string | null
   poNumber: string | null
   notes: string | null
   description: string | null
@@ -60,7 +62,6 @@ export type OrdersOverviewOrder = {
   paidInFull: boolean | null
   amountOwed: number | null
   billBalanceAmount: number | null
-  totalAmountOwed: number | null
   totalHours: number | null
   totalLaborCost: number | null
   orderDate: string | null

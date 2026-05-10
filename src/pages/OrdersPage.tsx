@@ -25,7 +25,7 @@ const FEEDBACK_TOAST_MS = 2000
 const WARNING_TOAST_MS = 3000
 
 export default function OrdersPage() {
-  const { appUser } = useAuth()
+  const { appUser, getIdToken } = useAuth()
   const overview = useOrdersOverview()
   const canUseAdminView = appUser?.isAdmin === true
   const canEditMondayStages = appUser?.isAdmin === true || appUser?.isManager === true
@@ -48,6 +48,53 @@ export default function OrdersPage() {
   const bindCutList = useCallback((handle: CutListPreviewHandle) => {
     cutListHandle.current = handle
   }, [])
+
+  const handleOpenBolDocument = useCallback(async (order: OrdersOverviewOrder) => {
+    const orderId = String(order?.mondayItemId ?? '').trim()
+
+    if (!orderId) {
+      setErrorMessage('No BOL is available for this order yet.')
+      return
+    }
+
+    try {
+      const idToken = await getIdToken()
+      const query = new URLSearchParams({ orderId })
+      const response = await fetch(
+        `/api/dashboard/monday/bol/download?${query.toString()}`,
+        {
+          headers: {
+            Authorization: `Bearer ${idToken}`,
+            'x-client-platform': 'web',
+          },
+        },
+      )
+
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}))
+        const message = typeof payload?.error === 'string'
+          ? payload.error
+          : 'Could not open BOL document.'
+        throw new Error(message)
+      }
+
+      const blob = await response.blob()
+
+      if (!blob || blob.size <= 0) {
+        throw new Error('Could not open BOL document.')
+      }
+
+      const objectUrl = URL.createObjectURL(blob)
+      window.open(objectUrl, '_blank', 'noopener,noreferrer')
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000)
+    } catch (requestError) {
+      setErrorMessage(
+        requestError instanceof Error
+          ? requestError.message
+          : 'Could not open BOL document.',
+      )
+    }
+  }, [getIdToken])
 
   // Auto-dismiss success toasts so they don't stick forever.
   useEffect(() => {
@@ -188,6 +235,7 @@ export default function OrdersPage() {
         'Ship To': order.shipTo ?? '',
         'Ship Notes': order.shipNotes ?? '',
         'BOL': order.bol ?? '',
+        'BOL URL': order.bolCachedUrl ?? order.bolUrl ?? '',
         'Monday Status': order.rowStatus ?? '',
         'Invoice #': order.invoiceNumber ?? '',
         'PO Amount': Number.isFinite(Number(order.poAmount)) ? Number(order.poAmount) : '',
@@ -251,6 +299,7 @@ export default function OrdersPage() {
         isLoading={overview.isLoading || overview.isFetching || overview.isRefreshing}
         shopDrawingHandle={shopDrawingHandle}
         cutListHandle={cutListHandle}
+        onOpenBolDocument={handleOpenBolDocument}
         onOpenJobDialog={handleOpenJobDialog}
         onOpenQuickBooksDialog={handleOpenQuickBooksDialog}
         onCopyOrderNumber={handleCopyOrderNumber}

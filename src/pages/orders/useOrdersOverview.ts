@@ -75,7 +75,6 @@ function buildOrderSearchTokens(order: OrdersOverviewOrder) {
     ...toSearchMoneyTokens(order.billBalanceAmount),
     ...toSearchMoneyTokens(order.invoiceAmount),
     ...toSearchMoneyTokens(order.amountOwed),
-    ...toSearchMoneyTokens(order.totalAmountOwed),
     ...toSearchMoneyTokens(order.totalHours),
     ...toSearchMoneyTokens(order.totalLaborCost),
     ...toSearchMoneyTokens(order.leadTimeDays),
