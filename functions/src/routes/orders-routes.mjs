@@ -4,10 +4,13 @@
 
 export function registerOrdersRoutes(app, deps) {
   const {
+    fetchMondayBoardItemsByIds,
+    fetchMondayStatusColumnOptions,
     getCollections,
     refreshOrdersUnifiedCollection,
     requireFirebaseAuth,
     requireManagerOrAdminRole,
+    updateMondayItemStatusColumn,
   } = deps
   const laborLookupsCacheTtlMs = 30 * 1000
   let cachedLaborLookups = null
@@ -195,6 +198,366 @@ export function registerOrdersRoutes(app, deps) {
     return freshLookups
   }
 
+  function normalizeProgressDetailOptions(options) {
+    return [...new Set(
+      (Array.isArray(options) ? options : [])
+        .map((option) => {
+          if (typeof option === 'string') {
+            return String(option).trim()
+          }
+
+          if (option && typeof option === 'object') {
+            return String(option?.label ?? '').trim()
+          }
+
+          return ''
+        })
+        .filter(Boolean),
+    )]
+  }
+
+  function normalizeProgressDetailOptionStyles(optionStyles) {
+    const stylesByLabel = new Map()
+
+    ;(Array.isArray(optionStyles) ? optionStyles : []).forEach((entry) => {
+      const label = String(
+        (entry && typeof entry === 'object')
+          ? entry?.label
+          : entry,
+      ).trim()
+
+      if (!label || stylesByLabel.has(label)) {
+        return
+      }
+
+      const normalizedEntry = entry && typeof entry === 'object'
+        ? entry
+        : {}
+      const color = String(normalizedEntry?.color ?? '').trim() || null
+      const border = String(normalizedEntry?.border ?? '').trim() || null
+      const varName = String(
+        normalizedEntry?.varName
+        ?? normalizedEntry?.var_name
+        ?? '',
+      ).trim() || null
+
+      stylesByLabel.set(label, {
+        label,
+        color,
+        border,
+        varName,
+      })
+    })
+
+    return [...stylesByLabel.values()]
+  }
+
+  function normalizeProgressStatusDetails(details, optionsByColumnId = {}) {
+    return (Array.isArray(details) ? details : []).map((entry) => {
+      const columnId = String(entry?.columnId ?? '').trim() || null
+      const metadataOptions = columnId
+        ? optionsByColumnId?.[columnId]
+        : []
+      const optionStyles = normalizeProgressDetailOptionStyles([
+        ...normalizeProgressDetailOptionStyles(metadataOptions),
+        ...normalizeProgressDetailOptionStyles(entry?.optionStyles),
+      ])
+      const options = normalizeProgressDetailOptions([
+        ...normalizeProgressDetailOptions(metadataOptions),
+        ...normalizeProgressDetailOptions(entry?.options),
+        ...optionStyles.map((style) => style.label),
+      ])
+
+      return {
+        key: String(entry?.key ?? '').trim() || null,
+        label: String(entry?.label ?? '').trim() || null,
+        weight: Number.isFinite(Number(entry?.weight)) ? Number(entry.weight) : 0,
+        columnId,
+        status: String(entry?.status ?? '').trim() || null,
+        options,
+        optionStyles,
+      }
+    })
+  }
+
+  function resolveRowStatusLabel({ hasMondayRecord, inDesign, isShipped, mondayStatus }) {
+    if (!hasMondayRecord && !inDesign) {
+      return 'Not in Monday'
+    }
+
+    if (isShipped) {
+      return 'Shipped'
+    }
+
+    if (inDesign) {
+      return 'In Design'
+    }
+
+    return String(mondayStatus ?? '').trim() || 'Open'
+  }
+
+  function extractProgressStatusColumnIds(candidateDetails) {
+    return [...new Set(
+      (Array.isArray(candidateDetails) ? candidateDetails : [])
+        .map((entry) => String(entry?.columnId ?? '').trim())
+        .filter(Boolean),
+    )]
+  }
+
+  async function resolveMondayOrderContext({
+    mondayItemId,
+    mondayOrdersCollection,
+    ordersUnifiedCollection,
+  }) {
+    const normalizedMondayItemId = String(mondayItemId ?? '').trim()
+
+    if (!normalizedMondayItemId) {
+      return null
+    }
+
+    const [unifiedDocument, mondayOrderDocument] = await Promise.all([
+      ordersUnifiedCollection.findOne(
+        { monday_item_id: normalizedMondayItemId },
+        {
+          projection: {
+            _id: 0,
+            monday_item_id: 1,
+            monday_board_id: 1,
+            monday_board_name: 1,
+            Monday_url: 1,
+            has_monday_record: 1,
+            in_design: 1,
+            is_shipped: 1,
+            Monday_status: 1,
+            progress_status_details: 1,
+          },
+        },
+      ),
+      mondayOrdersCollection.findOne(
+        { mondayItemId: normalizedMondayItemId },
+        {
+          projection: {
+            _id: 0,
+            mondayItemId: 1,
+            mondayBoardId: 1,
+            mondayBoardName: 1,
+            mondayBoardUrl: 1,
+            statusLabel: 1,
+            progressStatusDetails: 1,
+          },
+        },
+      ),
+    ])
+
+    const boardId = String(
+      unifiedDocument?.monday_board_id
+      ?? mondayOrderDocument?.mondayBoardId
+      ?? '',
+    ).trim() || null
+    const boardName = String(
+      mondayOrderDocument?.mondayBoardName
+      ?? unifiedDocument?.monday_board_name
+      ?? '',
+    ).trim() || null
+    const boardUrl = String(mondayOrderDocument?.mondayBoardUrl ?? '').trim() || null
+    const hasMondayRecord = Boolean(
+      unifiedDocument?.has_monday_record
+      ?? mondayOrderDocument,
+    )
+    const inDesign = Boolean(unifiedDocument?.in_design)
+    const isShipped = Boolean(unifiedDocument?.is_shipped)
+    const mondayStatus = String(
+      unifiedDocument?.Monday_status
+      ?? mondayOrderDocument?.statusLabel
+      ?? '',
+    ).trim() || null
+    const rawProgressStatusDetails =
+      (Array.isArray(unifiedDocument?.progress_status_details)
+        ? unifiedDocument.progress_status_details
+        : null)
+      || (Array.isArray(mondayOrderDocument?.progressStatusDetails)
+        ? mondayOrderDocument.progressStatusDetails
+        : [])
+
+    return {
+      mondayItemId: normalizedMondayItemId,
+      boardId,
+      boardName,
+      boardUrl,
+      hasMondayRecord,
+      inDesign,
+      isShipped,
+      mondayStatus,
+      rawProgressStatusDetails,
+    }
+  }
+
+  async function pullLiveMondayProgressDetails({
+    boardId,
+    boardName,
+    boardUrl,
+    mondayItemId,
+  }) {
+    const snapshot = await fetchMondayBoardItemsByIds({
+      boardId,
+      boardName,
+      boardUrl,
+      itemIds: [mondayItemId],
+    })
+
+    const liveOrder = Array.isArray(snapshot?.orders) ? snapshot.orders[0] : null
+
+    if (!liveOrder) {
+      throw {
+        status: 404,
+        message: 'Monday item was not found on the configured board.',
+      }
+    }
+
+    const progressStatusColumnIds = extractProgressStatusColumnIds(liveOrder?.progressStatusDetails)
+    const optionsByColumnId = progressStatusColumnIds.length > 0
+      ? await fetchMondayStatusColumnOptions({
+        boardId,
+        columnIds: progressStatusColumnIds,
+      })
+      : {}
+
+    return {
+      liveOrder,
+      resolvedBoardName: String(snapshot?.board?.name ?? boardName ?? '').trim() || null,
+      resolvedBoardUrl: String(snapshot?.board?.url ?? boardUrl ?? '').trim() || null,
+      progressStatusDetails: normalizeProgressStatusDetails(
+        liveOrder?.progressStatusDetails,
+        optionsByColumnId,
+      ),
+    }
+  }
+
+  async function syncMondayProgressDetailsToCollections({
+    mondayItemId,
+    boardId,
+    boardName,
+    boardUrl,
+    liveOrder,
+    progressStatusDetails,
+    mondayOrdersCollection,
+    ordersUnifiedCollection,
+  }) {
+    const now = new Date().toISOString()
+    const mondayStatus = String(liveOrder?.statusLabel ?? '').trim() || null
+    const mondayUpdatedAt = String(liveOrder?.updatedAt ?? '').trim() || now
+    const isShipped = Boolean(liveOrder?.isDone || liveOrder?.shippedAt)
+
+    await Promise.all([
+      mondayOrdersCollection.updateOne(
+        { mondayItemId },
+        {
+          $set: {
+            mondayItemId,
+            mondayBoardId: boardId,
+            mondayBoardName: boardName,
+            mondayBoardUrl: boardUrl,
+            statusLabel: mondayStatus,
+            stageLabel: String(liveOrder?.stageLabel ?? '').trim() || null,
+            readyLabel: String(liveOrder?.readyLabel ?? '').trim() || null,
+            progressStatusDetails,
+            progressPercent: Number.isFinite(Number(liveOrder?.progressPercent))
+              ? Number(liveOrder.progressPercent)
+              : null,
+            orderDate: String(liveOrder?.orderDate ?? '').trim() || null,
+            dueDate: String(liveOrder?.dueDate ?? '').trim() || null,
+            computedDueDate: String(liveOrder?.computedDueDate ?? '').trim() || null,
+            effectiveDueDate: String(liveOrder?.effectiveDueDate ?? '').trim() || null,
+            leadTimeDays: Number.isFinite(Number(liveOrder?.leadTimeDays))
+              ? Number(liveOrder.leadTimeDays)
+              : null,
+            shippedAt: String(liveOrder?.shippedAt ?? '').trim() || null,
+            isDone: isShipped,
+            isLate: Boolean(liveOrder?.isLate),
+            daysLate: Number.isFinite(Number(liveOrder?.daysLate))
+              ? Number(liveOrder.daysLate)
+              : 0,
+            mondayItemUrl: String(liveOrder?.itemUrl ?? '').trim() || null,
+            mondayUpdatedAt,
+            updatedAt: now,
+            lastSeenAt: now,
+          },
+          $setOnInsert: {
+            createdAt: now,
+          },
+        },
+        { upsert: true },
+      ),
+      ordersUnifiedCollection.updateOne(
+        { monday_item_id: mondayItemId },
+        {
+          $set: {
+            has_monday_record: true,
+            monday_item_id: mondayItemId,
+            monday_board_id: boardId,
+            monday_board_name: boardName,
+            Monday_url: String(liveOrder?.itemUrl ?? '').trim() || null,
+            Monday_status: isShipped ? 'Shipped' : mondayStatus,
+            is_shipped: isShipped,
+            shipped_at: String(liveOrder?.shippedAt ?? '').trim() || null,
+            Due_date:
+              String(liveOrder?.effectiveDueDate ?? '').trim()
+              || String(liveOrder?.dueDate ?? '').trim()
+              || String(liveOrder?.computedDueDate ?? '').trim()
+              || null,
+            Lead_time_days: Number.isFinite(Number(liveOrder?.leadTimeDays))
+              ? Number(liveOrder.leadTimeDays)
+              : null,
+            progress_percent: Number.isFinite(Number(liveOrder?.progressPercent))
+              ? Number(liveOrder.progressPercent)
+              : null,
+            progress_status_details: progressStatusDetails,
+            order_date: String(liveOrder?.orderDate ?? '').trim() || null,
+            monday_updated_at: mondayUpdatedAt,
+            updatedAt: now,
+            lastSyncedAt: now,
+          },
+        },
+      ),
+    ])
+
+    return {
+      mondayStatus,
+      mondayUpdatedAt,
+      isShipped,
+    }
+  }
+
+  function buildMondayProgressDetailsResponse({
+    hasMondayRecord,
+    inDesign,
+    isShipped,
+    liveOrder,
+    mondayItemId,
+    mondayStatus,
+    mondayUpdatedAt,
+    progressStatusDetails,
+  }) {
+    return {
+      generatedAt: new Date().toISOString(),
+      order: {
+        mondayItemId,
+        mondayStatus,
+        rowStatus: resolveRowStatusLabel({
+          hasMondayRecord,
+          inDesign,
+          isShipped,
+          mondayStatus,
+        }),
+        progressPercent: Number.isFinite(Number(liveOrder?.progressPercent))
+          ? Number(liveOrder.progressPercent)
+          : null,
+        progressStatusDetails,
+        mondayUpdatedAt,
+      },
+    }
+  }
+
   function mapUnifiedOrderDocumentToOverviewRow(orderDocument, laborLookups) {
     const hasMondayRecord = Boolean(orderDocument?.has_monday_record)
     const hasQuickBooksRecord = Boolean(orderDocument?.has_quickbooks_record)
@@ -232,6 +595,18 @@ export function registerOrdersRoutes(app, deps) {
         jobName: String(entry?.jobName ?? '').trim() || null,
         readyPercent: Number.isFinite(Number(entry?.readyPercent)) ? Number(entry.readyPercent) : null,
         updatedAt: String(entry?.updatedAt ?? '').trim() || null,
+      }))
+    const progressStatusDetails = (Array.isArray(orderDocument?.progress_status_details)
+      ? orderDocument.progress_status_details
+      : [])
+      .map((entry) => ({
+        key: String(entry?.key ?? '').trim() || null,
+        label: String(entry?.label ?? '').trim() || null,
+        weight: Number.isFinite(Number(entry?.weight)) ? Number(entry.weight) : 0,
+        columnId: String(entry?.columnId ?? '').trim() || null,
+        status: String(entry?.status ?? '').trim() || null,
+        options: normalizeProgressDetailOptions(entry?.options),
+        optionStyles: normalizeProgressDetailOptionStyles(entry?.optionStyles),
       }))
 
     const sourceValue = String(orderDocument?.source ?? '').trim().toLowerCase()
@@ -294,6 +669,12 @@ export function registerOrdersRoutes(app, deps) {
       orderNumber: resolvedOrderNumber,
       jobNumber: resolvedOrderNumber,
       orderName: String(orderDocument?.order_name ?? '').trim() || null,
+      shipTo: String(orderDocument?.ship_to ?? '').trim() || null,
+      shipNotes: String(orderDocument?.ship_notes ?? '').trim() || null,
+      bol: String(orderDocument?.bol ?? '').trim() || null,
+      poNumber: String(orderDocument?.po_number ?? '').trim() || null,
+      notes: String(orderDocument?.monday_notes ?? '').trim() || null,
+      description: String(orderDocument?.monday_description ?? '').trim() || null,
       poAmount: Number.isFinite(Number(orderDocument?.poAmount)) ? Number(orderDocument.poAmount) : null,
       billedAmount: Number.isFinite(Number(orderDocument?.billedAmount))
         ? Number(orderDocument.billedAmount)
@@ -319,6 +700,7 @@ export function registerOrdersRoutes(app, deps) {
       progressPercent: Number.isFinite(Number(orderDocument?.progress_percent))
         ? Number(orderDocument.progress_percent)
         : null,
+      progressStatusDetails,
       leadTimeDays: Number.isFinite(Number(orderDocument?.Lead_time_days))
         ? Number(orderDocument.Lead_time_days)
         : null,
@@ -335,6 +717,11 @@ export function registerOrdersRoutes(app, deps) {
         String(orderDocument?.Shop_drawing_source ?? '').trim()
         || String(orderDocument?.Shop_drawing ?? '').trim()
         || null,
+      cutListCachedUrl: String(orderDocument?.Cut_list_cached ?? '').trim() || null,
+      cutListUrl:
+        String(orderDocument?.Cut_list_source ?? '').trim()
+        || String(orderDocument?.Cut_list ?? '').trim()
+        || null,
       source,
       hasMondayRecord,
       hasQuickBooksRecord,
@@ -350,7 +737,7 @@ export function registerOrdersRoutes(app, deps) {
   // ---- Routes -----------------------------------------------------------
 
   // GET /api/orders/overview — pure DB read. Never triggers Monday/QB.
-  app.get('/api/orders/overview', requireFirebaseAuth, requireManagerOrAdminRole, async (_req, res, next) => {
+  app.get('/api/orders/overview', requireFirebaseAuth, async (_req, res, next) => {
     try {
       const {
         dashboardSnapshotsCollection,
@@ -371,15 +758,25 @@ export function registerOrdersRoutes(app, deps) {
               Monday_url: 1,
               Monday_status: 1,
               order_name: 1,
+              ship_to: 1,
+              ship_notes: 1,
+              bol: 1,
+              po_number: 1,
+              monday_notes: 1,
+              monday_description: 1,
               is_shipped: 1,
               status: 1,
               Due_date: 1,
               Lead_time_days: 1,
               progress_percent: 1,
+              progress_status_details: 1,
               order_date: 1,
               Shop_drawing: 1,
               Shop_drawing_cached: 1,
               Shop_drawing_source: 1,
+              Cut_list: 1,
+              Cut_list_cached: 1,
+              Cut_list_source: 1,
               amountOwed: 1,
               billBalanceAmount: 1,
               billAmount: 1,
@@ -481,12 +878,192 @@ export function registerOrdersRoutes(app, deps) {
     },
   )
 
+  // GET /api/orders/monday/progress-details — pull live Monday status details
+  // for one item, including each status column's dropdown options.
+  app.get(
+    '/api/orders/monday/progress-details',
+    requireFirebaseAuth,
+    async (req, res, next) => {
+      try {
+        const mondayItemId = String(req.query?.mondayItemId ?? '').trim()
+
+        if (!mondayItemId) {
+          return res.status(400).json({
+            error: 'mondayItemId is required.',
+          })
+        }
+
+        const {
+          mondayOrdersCollection,
+          ordersUnifiedCollection,
+        } = await getCollections()
+
+        const context = await resolveMondayOrderContext({
+          mondayItemId,
+          mondayOrdersCollection,
+          ordersUnifiedCollection,
+        })
+
+        if (!context?.boardId) {
+          return res.status(404).json({
+            error: 'Could not resolve Monday board for this order.',
+          })
+        }
+
+        const {
+          liveOrder,
+          resolvedBoardName,
+          resolvedBoardUrl,
+          progressStatusDetails,
+        } = await pullLiveMondayProgressDetails({
+          boardId: context.boardId,
+          boardName: context.boardName,
+          boardUrl: context.boardUrl,
+          mondayItemId,
+        })
+
+        const syncResult = await syncMondayProgressDetailsToCollections({
+          mondayItemId,
+          boardId: context.boardId,
+          boardName: resolvedBoardName,
+          boardUrl: resolvedBoardUrl,
+          liveOrder,
+          progressStatusDetails,
+          mondayOrdersCollection,
+          ordersUnifiedCollection,
+        })
+
+        return res.json(buildMondayProgressDetailsResponse({
+          hasMondayRecord: true,
+          inDesign: Boolean(context?.inDesign),
+          isShipped: syncResult.isShipped,
+          liveOrder,
+          mondayItemId,
+          mondayStatus: syncResult.mondayStatus,
+          mondayUpdatedAt: syncResult.mondayUpdatedAt,
+          progressStatusDetails,
+        }))
+      } catch (error) {
+        next(error)
+      }
+    },
+  )
+
+  // POST /api/orders/monday/progress-status — update a single Monday status
+  // column from the Orders popup dropdowns.
+  app.post(
+    '/api/orders/monday/progress-status',
+    requireFirebaseAuth,
+    requireManagerOrAdminRole,
+    async (req, res, next) => {
+      try {
+        const mondayItemId = String(req.body?.mondayItemId ?? '').trim()
+        const columnId = String(req.body?.columnId ?? '').trim()
+        const status = String(req.body?.status ?? '').trim()
+
+        if (!mondayItemId) {
+          return res.status(400).json({ error: 'mondayItemId is required.' })
+        }
+
+        if (!columnId) {
+          return res.status(400).json({ error: 'columnId is required.' })
+        }
+
+        if (!status) {
+          return res.status(400).json({ error: 'status is required.' })
+        }
+
+        const {
+          mondayOrdersCollection,
+          ordersUnifiedCollection,
+        } = await getCollections()
+
+        const context = await resolveMondayOrderContext({
+          mondayItemId,
+          mondayOrdersCollection,
+          ordersUnifiedCollection,
+        })
+
+        if (!context?.boardId) {
+          return res.status(404).json({
+            error: 'Could not resolve Monday board for this order.',
+          })
+        }
+
+        const knownColumnIds = extractProgressStatusColumnIds(context.rawProgressStatusDetails)
+
+        if (knownColumnIds.length > 0 && !knownColumnIds.includes(columnId)) {
+          return res.status(400).json({
+            error: 'Column is not part of this order\'s tracked Monday status columns.',
+          })
+        }
+
+        const optionsByColumnId = await fetchMondayStatusColumnOptions({
+          boardId: context.boardId,
+          columnIds: [columnId],
+        })
+        const allowedOptions = normalizeProgressDetailOptions(optionsByColumnId?.[columnId])
+
+        if (allowedOptions.length > 0 && !allowedOptions.includes(status)) {
+          return res.status(400).json({
+            error: 'Selected status is not valid for this Monday column.',
+          })
+        }
+
+        await updateMondayItemStatusColumn({
+          boardId: context.boardId,
+          itemId: mondayItemId,
+          columnId,
+          statusLabel: status,
+        })
+
+        const {
+          liveOrder,
+          resolvedBoardName,
+          resolvedBoardUrl,
+          progressStatusDetails,
+        } = await pullLiveMondayProgressDetails({
+          boardId: context.boardId,
+          boardName: context.boardName,
+          boardUrl: context.boardUrl,
+          mondayItemId,
+        })
+
+        const syncResult = await syncMondayProgressDetailsToCollections({
+          mondayItemId,
+          boardId: context.boardId,
+          boardName: resolvedBoardName,
+          boardUrl: resolvedBoardUrl,
+          liveOrder,
+          progressStatusDetails,
+          mondayOrdersCollection,
+          ordersUnifiedCollection,
+        })
+
+        return res.json({
+          ...buildMondayProgressDetailsResponse({
+            hasMondayRecord: true,
+            inDesign: Boolean(context?.inDesign),
+            isShipped: syncResult.isShipped,
+            liveOrder,
+            mondayItemId,
+            mondayStatus: syncResult.mondayStatus,
+            mondayUpdatedAt: syncResult.mondayUpdatedAt,
+            progressStatusDetails,
+          }),
+          ok: true,
+        })
+      } catch (error) {
+        next(error)
+      }
+    },
+  )
+
   // GET /api/orders/job-details — DB only. Mongo-side prefilter on jobName
   // (digit-token + normalized regex) keeps this off the full-collection scan.
   app.get(
     '/api/orders/job-details',
     requireFirebaseAuth,
-    requireManagerOrAdminRole,
     async (req, res, next) => {
       try {
         const mondayItemId = String(req.query?.mondayItemId ?? '').trim()

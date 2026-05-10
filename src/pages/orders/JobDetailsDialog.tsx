@@ -1,4 +1,8 @@
+import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded'
 import {
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
   Alert,
   Button,
   Chip,
@@ -59,6 +63,67 @@ export function JobDetailsDialog({ open, mode, order, onClose }: JobDetailsDialo
   const managerHistory = Array.isArray(detailsQuery.data?.managerHistory)
     ? detailsQuery.data.managerHistory
     : []
+  const detailsEntries = Array.isArray(detailsQuery.data?.entries)
+    ? detailsQuery.data.entries
+    : []
+
+  const historyByDate = new Map<string, typeof managerHistory>()
+  managerHistory.forEach((row) => {
+    const normalizedDate = String(row.date ?? '').trim().slice(0, 10) || 'unknown'
+    const rowsForDate = historyByDate.get(normalizedDate)
+    if (rowsForDate) {
+      rowsForDate.push(row)
+      return
+    }
+    historyByDate.set(normalizedDate, [row])
+  })
+
+  const hoursByDate = new Map<string, { dayTotalHours: number; workerHours: Map<string, number> }>()
+  detailsEntries.forEach((entry) => {
+    const normalizedDate = String(entry.date ?? '').trim().slice(0, 10) || 'unknown'
+    const parsedHours = Number(entry.totalHours)
+    const totalHours = Number.isFinite(parsedHours) ? parsedHours : 0
+    const workerLabel = String(entry.workerName ?? '').trim() || 'Unknown worker'
+
+    let bucket = hoursByDate.get(normalizedDate)
+    if (!bucket) {
+      bucket = {
+        dayTotalHours: 0,
+        workerHours: new Map<string, number>(),
+      }
+      hoursByDate.set(normalizedDate, bucket)
+    }
+
+    bucket.dayTotalHours += totalHours
+    const currentWorkerHours = bucket.workerHours.get(workerLabel) ?? 0
+    bucket.workerHours.set(workerLabel, currentWorkerHours + totalHours)
+  })
+
+  const dateKeys = Array.from(new Set([
+    ...historyByDate.keys(),
+    ...hoursByDate.keys(),
+  ]))
+
+  const sortedDateKeys = [...dateKeys].sort((a, b) => {
+    if (a === 'unknown') {
+      return 1
+    }
+    if (b === 'unknown') {
+      return -1
+    }
+    if (a === b) {
+      return 0
+    }
+    return a > b ? -1 : 1
+  })
+
+  const chronologicalDates = [...dateKeys].filter((key) => key !== 'unknown').sort()
+  const cumulativeHoursByDate = new Map<string, number>()
+  let runningTotalHours = 0
+  chronologicalDates.forEach((dateKey) => {
+    runningTotalHours += hoursByDate.get(dateKey)?.dayTotalHours ?? 0
+    cumulativeHoursByDate.set(dateKey, runningTotalHours)
+  })
 
   return (
     <Dialog
@@ -83,31 +148,101 @@ export function JobDetailsDialog({ open, mode, order, onClose }: JobDetailsDialo
         ) : !detailsQuery.data ? (
           <Alert severity="info">No details available.</Alert>
         ) : mode === 'history' ? (
-          managerHistory.length === 0 ? (
+          sortedDateKeys.length === 0 ? (
             <Alert severity="info">No manager status history found for this job yet.</Alert>
           ) : (
-            <TableContainer component={Paper} variant="outlined" sx={{ mt: 0.5, maxHeight: '60vh' }}>
-              <Table size="small" stickyHeader>
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Date</TableCell>
-                    <TableCell>Ready %</TableCell>
-                    <TableCell>Updated</TableCell>
-                    <TableCell>Job Name</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {managerHistory.map((row) => (
-                    <TableRow key={`${row.id || 'history'}-${row.date || 'na'}-${row.updatedAt || 'na'}`} hover>
-                      <TableCell>{row.date ? formatDate(row.date) : '—'}</TableCell>
-                      <TableCell>{formatProgress(row.readyPercent)}</TableCell>
-                      <TableCell>{formatDateTime(row.updatedAt)}</TableCell>
-                      <TableCell>{row.jobName || '—'}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </TableContainer>
+            <Stack spacing={1.25} sx={{ mt: 0.5 }}>
+              <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                <Chip
+                  label={`Days tracked: ${sortedDateKeys.length}`}
+                  variant="outlined"
+                />
+                <Chip
+                  label={`Total hours overall: ${detailsQuery.data.summary.totalHours.toFixed(2)}`}
+                  color="primary"
+                  variant="outlined"
+                />
+              </Stack>
+
+              {sortedDateKeys.map((dateKey, index) => {
+                const historyRows = historyByDate.get(dateKey) ?? []
+                const dayHoursBucket = hoursByDate.get(dateKey)
+                const dayHours = dayHoursBucket?.dayTotalHours ?? 0
+                const cumulativeHours = dateKey === 'unknown'
+                  ? detailsQuery.data.summary.totalHours
+                  : (cumulativeHoursByDate.get(dateKey) ?? detailsQuery.data.summary.totalHours)
+                const workerBreakdown = dayHoursBucket
+                  ? Array.from(dayHoursBucket.workerHours.entries()).sort((a, b) => b[1] - a[1])
+                  : []
+                const dateLabel = dateKey === 'unknown' ? 'Unknown date' : formatDate(dateKey)
+
+                return (
+                  <Accordion key={dateKey} defaultExpanded={index === 0} disableGutters>
+                    <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
+                      <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" alignItems="center">
+                        <Typography variant="subtitle2" fontWeight={800}>{dateLabel}</Typography>
+                        <Chip size="small" label={`Updates: ${historyRows.length}`} variant="outlined" />
+                        <Chip size="small" label={`Day hours: ${dayHours.toFixed(2)}`} color="primary" variant="outlined" />
+                        <Chip size="small" label={`Total through day: ${cumulativeHours.toFixed(2)}`} variant="outlined" />
+                      </Stack>
+                    </AccordionSummary>
+                    <AccordionDetails sx={{ pt: 0.5 }}>
+                      {historyRows.length === 0 ? (
+                        <Alert severity="info" sx={{ mb: workerBreakdown.length > 0 ? 1 : 0 }}>
+                          No manager status updates saved for this day.
+                        </Alert>
+                      ) : (
+                        <TableContainer component={Paper} variant="outlined" sx={{ mb: 1 }}>
+                          <Table size="small">
+                            <TableHead>
+                              <TableRow>
+                                <TableCell>Ready %</TableCell>
+                                <TableCell>Updated</TableCell>
+                                <TableCell>Job Name</TableCell>
+                              </TableRow>
+                            </TableHead>
+                            <TableBody>
+                              {historyRows.map((row) => (
+                                <TableRow key={`${row.id || 'history'}-${row.updatedAt || 'na'}`} hover>
+                                  <TableCell>{formatProgress(row.readyPercent)}</TableCell>
+                                  <TableCell>{formatDateTime(row.updatedAt)}</TableCell>
+                                  <TableCell>{row.jobName || '—'}</TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        </TableContainer>
+                      )}
+
+                      {workerBreakdown.length === 0 ? (
+                        <Typography variant="body2" color="text.secondary">
+                          No worker hour entries found for this day.
+                        </Typography>
+                      ) : (
+                        <TableContainer component={Paper} variant="outlined">
+                          <Table size="small">
+                            <TableHead>
+                              <TableRow>
+                                <TableCell>Worker</TableCell>
+                                <TableCell>Hours Worked</TableCell>
+                              </TableRow>
+                            </TableHead>
+                            <TableBody>
+                              {workerBreakdown.map(([workerName, hours]) => (
+                                <TableRow key={`${dateKey}-${workerName}`} hover>
+                                  <TableCell>{workerName}</TableCell>
+                                  <TableCell>{hours.toFixed(2)}</TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        </TableContainer>
+                      )}
+                    </AccordionDetails>
+                  </Accordion>
+                )
+              })}
+            </Stack>
           )
         ) : (
           <Stack spacing={2} sx={{ pt: 0.5 }}>

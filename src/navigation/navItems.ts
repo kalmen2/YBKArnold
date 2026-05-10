@@ -51,7 +51,6 @@ export const navItems: NavItem[] = [
     label: 'Orders',
     path: '/orders',
     icon: Inventory2RoundedIcon,
-    managerOrAdminOnly: true,
   },
   {
     label: 'Support',

@@ -61,6 +61,54 @@ function normalizeOrderMatchKey(value) {
     .join('')
 }
 
+function normalizeProgressStatusDetails(details) {
+  const normalizeOptions = (options) => [...new Set(
+    (Array.isArray(options) ? options : [])
+      .map((option) => {
+        if (typeof option === 'string') {
+          return normalizeText(option, 120)
+        }
+
+        return normalizeText(option?.label, 120)
+      })
+      .filter(Boolean),
+  )]
+
+  const normalizeOptionStyles = (optionStyles) => {
+    const stylesByLabel = new Map()
+
+    ;(Array.isArray(optionStyles) ? optionStyles : []).forEach((entry) => {
+      const label = normalizeText(
+        (entry && typeof entry === 'object') ? entry?.label : entry,
+        120,
+      )
+
+      if (!label || stylesByLabel.has(label)) {
+        return
+      }
+
+      stylesByLabel.set(label, {
+        label,
+        color: normalizeText(entry?.color, 40) || null,
+        border: normalizeText(entry?.border, 40) || null,
+        varName: normalizeText(entry?.varName ?? entry?.var_name, 80) || null,
+      })
+    })
+
+    return [...stylesByLabel.values()]
+  }
+
+  return (Array.isArray(details) ? details : []).map((entry) => ({
+    key: normalizeText(entry?.key, 80) || null,
+    label: normalizeText(entry?.label, 120) || null,
+    weight: Number.isFinite(Number(entry?.weight)) ? Number(entry.weight) : 0,
+    columnId: normalizeText(entry?.columnId, 120) || null,
+    status: normalizeText(entry?.status, 200) || null,
+    options: normalizeOptions(entry?.options),
+    optionStyles: normalizeOptionStyles(entry?.optionStyles),
+  }))
+}
+
 export function createOrdersUnifiedService(deps) {
   const {
     fetchMondayBoardItemNames,
@@ -131,12 +179,19 @@ export function createOrdersUnifiedService(deps) {
       }
 
       const row = mergedByKey.get(orderKey) ?? createEmptyUnifiedOrder(orderKey)
+      const progressStatusDetails = normalizeProgressStatusDetails(order?.progressStatusDetails)
       const incoming = {
         order_number: orderNumber,
         monday_item_id: mondayItemId,
         Monday_url: normalizeText(order?.itemUrl, 500) || null,
         Monday_status: normalizeText(order?.statusLabel, 260) || null,
         order_name: normalizeText(order?.name, 260) || null,
+        ship_to: normalizeText(order?.shipTo, 500) || null,
+        ship_notes: normalizeText(order?.shipNotes, 2000) || null,
+        bol: normalizeText(order?.bol, 200) || null,
+        po_number: normalizeText(order?.poNumber, 120) || null,
+        monday_notes: normalizeText(order?.notes, 2000) || null,
+        monday_description: normalizeText(order?.description, 2000) || null,
         is_shipped: isShippedOrderDocument(
           {
             mondayBoardId: order?.boardId,
@@ -155,15 +210,19 @@ export function createOrdersUnifiedService(deps) {
         progress_percent: Number.isFinite(Number(order?.progressPercent))
           ? Number(order.progressPercent)
           : null,
+        progress_status_details: progressStatusDetails,
         order_date: toIsoOrNull(order?.orderDate),
         Shop_drawing_cached: normalizeText(order?.shopDrawingCachedUrl, 800) || null,
         Shop_drawing_source: normalizeText(order?.shopDrawingUrl, 800) || null,
+        Cut_list_cached: normalizeText(order?.cutListCachedUrl, 800) || null,
+        Cut_list_source: normalizeText(order?.cutListUrl, 800) || null,
         shipped_at: toIsoOrNull(order?.shippedAt),
         monday_board_id: normalizeText(order?.boardId, 120) || null,
         monday_board_name: normalizeText(order?.boardName, 260) || null,
         monday_updated_at: toIsoOrNull(order?.updatedAt),
       }
       incoming.Shop_drawing = incoming.Shop_drawing_cached || incoming.Shop_drawing_source || null
+      incoming.Cut_list = incoming.Cut_list_cached || incoming.Cut_list_source || null
 
       if (!row.order_number && incoming.order_number) {
         row.order_number = incoming.order_number
@@ -175,13 +234,26 @@ export function createOrdersUnifiedService(deps) {
           Monday_url: incoming.Monday_url,
           Monday_status: incoming.is_shipped ? 'Shipped' : incoming.Monday_status,
           order_name: incoming.order_name || row.order_name,
+          ship_to: incoming.ship_to || row.ship_to,
+          ship_notes: incoming.ship_notes || row.ship_notes,
+          bol: incoming.bol || row.bol,
+          po_number: incoming.po_number || row.po_number,
+          monday_notes: incoming.monday_notes || row.monday_notes,
+          monday_description: incoming.monday_description || row.monday_description,
           Due_date: incoming.Due_date || row.Due_date,
           Lead_time_days: incoming.Lead_time_days ?? row.Lead_time_days,
           progress_percent: incoming.progress_percent ?? row.progress_percent,
+          progress_status_details:
+            incoming.progress_status_details.length > 0
+              ? incoming.progress_status_details
+              : row.progress_status_details,
           order_date: incoming.order_date || row.order_date,
           Shop_drawing_cached: incoming.Shop_drawing_cached || null,
           Shop_drawing_source: incoming.Shop_drawing_source || null,
           Shop_drawing: incoming.Shop_drawing || row.Shop_drawing,
+          Cut_list_cached: incoming.Cut_list_cached || null,
+          Cut_list_source: incoming.Cut_list_source || null,
+          Cut_list: incoming.Cut_list || row.Cut_list,
           shipped_at: incoming.shipped_at || row.shipped_at,
           monday_board_id: incoming.monday_board_id,
           monday_board_name: incoming.monday_board_name,
@@ -431,6 +503,12 @@ export function createOrdersUnifiedService(deps) {
           || row.monday_board_name
           || 'Shipped Orders'
         row.order_name = normalizeText(detail?.name, 260) || row.order_name
+        row.ship_to = normalizeText(detail?.shipTo, 500) || row.ship_to
+        row.ship_notes = normalizeText(detail?.shipNotes, 2000) || row.ship_notes
+        row.bol = normalizeText(detail?.bol, 200) || row.bol
+        row.po_number = normalizeText(detail?.poNumber, 120) || row.po_number
+        row.monday_notes = normalizeText(detail?.notes, 2000) || row.monday_notes
+        row.monday_description = normalizeText(detail?.description, 2000) || row.monday_description
         row.Monday_url = normalizeText(detail?.itemUrl, 500) || row.Monday_url
         row.shipped_at = toIsoOrNull(detail?.shippedAt) || row.shipped_at || refreshedAt
         row.Due_date = toIsoOrNull(detail?.effectiveDueDate) || row.Due_date
@@ -447,10 +525,21 @@ export function createOrdersUnifiedService(deps) {
           row.progress_percent = progressPercent
         }
 
+        const progressStatusDetails = normalizeProgressStatusDetails(detail?.progressStatusDetails)
+        if (progressStatusDetails.length > 0) {
+          row.progress_status_details = progressStatusDetails
+        }
+
         const sourceDrawingUrl = normalizeText(detail?.shopDrawingUrl, 800) || null
         if (sourceDrawingUrl) {
           row.Shop_drawing_source = sourceDrawingUrl
           row.Shop_drawing = row.Shop_drawing_cached || row.Shop_drawing_source || row.Shop_drawing
+        }
+
+        const sourceCutListUrl = normalizeText(detail?.cutListUrl, 800) || null
+        if (sourceCutListUrl) {
+          row.Cut_list_source = sourceCutListUrl
+          row.Cut_list = row.Cut_list_cached || row.Cut_list_source || row.Cut_list
         }
 
         row.hazard_reason = null
@@ -507,16 +596,25 @@ export function createOrdersUnifiedService(deps) {
             mondayBoardId: 1,
             mondayBoardName: 1,
             mondayUpdatedAt: 1,
+            shipTo: 1,
+            shipNotes: 1,
+            bol: 1,
+            poNumber: 1,
+            notes: 1,
+            description: 1,
             orderDate: 1,
             dueDate: 1,
             effectiveDueDate: 1,
             computedDueDate: 1,
             leadTimeDays: 1,
             progressPercent: 1,
+            progressStatusDetails: 1,
             shippedAt: 1,
             movedToShippedAt: 1,
             shopDrawingDownloadUrl: 1,
             shopDrawingUrl: 1,
+            cutListDownloadUrl: 1,
+            cutListUrl: 1,
           },
         })
         .toArray(),
@@ -539,16 +637,25 @@ export function createOrdersUnifiedService(deps) {
       boardId: doc.mondayBoardId,
       boardName: doc.mondayBoardName,
       updatedAt: doc.mondayUpdatedAt,
+      shipTo: doc.shipTo,
+      shipNotes: doc.shipNotes,
+      bol: doc.bol,
+      poNumber: doc.poNumber,
+      notes: doc.notes,
+      description: doc.description,
       orderDate: doc.orderDate,
       dueDate: doc.dueDate,
       effectiveDueDate: doc.effectiveDueDate,
       computedDueDate: doc.computedDueDate,
       leadTimeDays: doc.leadTimeDays,
       progressPercent: doc.progressPercent,
+      progressStatusDetails: doc.progressStatusDetails,
       shippedAt: doc.shippedAt,
       movedToShippedAt: doc.movedToShippedAt,
       shopDrawingCachedUrl: doc.shopDrawingDownloadUrl,
       shopDrawingUrl: doc.shopDrawingUrl,
+      cutListCachedUrl: doc.cutListDownloadUrl,
+      cutListUrl: doc.cutListUrl,
     }))
 
     const activeMondayItemIds = applyMondayOrdersToMerged(
@@ -669,12 +776,21 @@ export function createOrdersUnifiedService(deps) {
       row.manager_ready_updated_at = normalizeText(latest?.updatedAt, 80) || null
       row.order_number = row.order_number || row.monday_item_id || row.qb_project_id || null
       row.order_name = row.order_name || row.qb_project_name || null
+      row.ship_to = normalizeText(row.ship_to, 500) || null
+      row.ship_notes = normalizeText(row.ship_notes, 2000) || null
+      row.bol = normalizeText(row.bol, 200) || null
       row.Shop_drawing_cached = normalizeText(row.Shop_drawing_cached, 800) || null
       row.Shop_drawing_source = normalizeText(row.Shop_drawing_source, 800) || null
       if (!row.Shop_drawing_cached && !row.Shop_drawing_source) {
         row.Shop_drawing_source = normalizeText(row.Shop_drawing, 800) || null
       }
       row.Shop_drawing = row.Shop_drawing_cached || row.Shop_drawing_source || null
+      row.Cut_list_cached = normalizeText(row.Cut_list_cached, 800) || null
+      row.Cut_list_source = normalizeText(row.Cut_list_source, 800) || null
+      if (!row.Cut_list_cached && !row.Cut_list_source) {
+        row.Cut_list_source = normalizeText(row.Cut_list, 800) || null
+      }
+      row.Cut_list = row.Cut_list_cached || row.Cut_list_source || null
 
       // Hazard rules:
       //   - Order Track has it but QB doesn't  → real hazard (must be fixed)

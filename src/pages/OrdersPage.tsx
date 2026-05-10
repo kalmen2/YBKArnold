@@ -1,14 +1,20 @@
 import * as XLSX from 'xlsx'
 import { Alert, Stack } from '@mui/material'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useAuth } from '../auth/useAuth'
 import type { OrdersOverviewOrder } from '../features/orders/api'
 import { JobDetailsDialog, type JobDetailsMode } from './orders/JobDetailsDialog'
 import {
   OrdersGrid,
   type OrdersQuickBooksDrilldownMetric,
+  type OrdersViewMode,
 } from './orders/OrdersGrid'
 import { OrdersToolbar } from './orders/OrdersToolbar'
 import { QuickBooksProjectDialog } from './orders/QuickBooksProjectDialog'
+import {
+  CutListPreview,
+  type CutListPreviewHandle,
+} from './orders/CutListPreview'
 import {
   ShopDrawingPreview,
   type ShopDrawingPreviewHandle,
@@ -19,11 +25,15 @@ const FEEDBACK_TOAST_MS = 2000
 const WARNING_TOAST_MS = 3000
 
 export default function OrdersPage() {
+  const { appUser } = useAuth()
   const overview = useOrdersOverview()
+  const canUseAdminView = appUser?.isAdmin === true
+  const canEditMondayStages = appUser?.isAdmin === true || appUser?.isManager === true
 
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
   const [warningMessage, setWarningMessage] = useState<string | null>(null)
+  const [viewMode, setViewMode] = useState<OrdersViewMode>('standard')
   const [jobDialogMode, setJobDialogMode] = useState<JobDetailsMode | null>(null)
   const [selectedOrder, setSelectedOrder] = useState<OrdersOverviewOrder | null>(null)
   const [quickBooksDialogOrder, setQuickBooksDialogOrder] = useState<OrdersOverviewOrder | null>(null)
@@ -31,8 +41,12 @@ export default function OrdersPage() {
     useState<OrdersQuickBooksDrilldownMetric | null>(null)
 
   const shopDrawingHandle = useRef<ShopDrawingPreviewHandle | null>(null)
+  const cutListHandle = useRef<CutListPreviewHandle | null>(null)
   const bindShopDrawing = useCallback((handle: ShopDrawingPreviewHandle) => {
     shopDrawingHandle.current = handle
+  }, [])
+  const bindCutList = useCallback((handle: CutListPreviewHandle) => {
+    cutListHandle.current = handle
   }, [])
 
   // Auto-dismiss success toasts so they don't stick forever.
@@ -68,6 +82,13 @@ export default function OrdersPage() {
     const timer = window.setTimeout(() => setWarningMessage(null), WARNING_TOAST_MS)
     return () => window.clearTimeout(timer)
   }, [warningMessage])
+
+  useEffect(() => {
+    if (canUseAdminView || viewMode === 'standard') {
+      return
+    }
+    setViewMode('standard')
+  }, [canUseAdminView, viewMode])
 
   const handleRefresh = useCallback(async () => {
     setErrorMessage(null)
@@ -161,6 +182,12 @@ export default function OrdersPage() {
       return {
         'Order #': order.orderNumber ?? '',
         'Order Name': order.orderName ?? '',
+        'PO Number': order.poNumber ?? '',
+        'Description': order.description ?? '',
+        'Notes': order.notes ?? '',
+        'Ship To': order.shipTo ?? '',
+        'Ship Notes': order.shipNotes ?? '',
+        'BOL': order.bol ?? '',
         'Monday Status': order.rowStatus ?? '',
         'Invoice #': order.invoiceNumber ?? '',
         'PO Amount': Number.isFinite(Number(order.poAmount)) ? Number(order.poAmount) : '',
@@ -180,10 +207,10 @@ export default function OrdersPage() {
         'Total Cost': Number.isFinite(labor) ? labor : '',
         'Total Profit': profit,
         'Paid In Full': order.paidInFull === true ? 'Yes' : order.paidInFull === false ? 'No' : '',
-        'Due Date': order.dueDate ?? '',
         'Order Date': order.orderDate ?? '',
         'Shipped': order.isShipped ? 'Yes' : 'No',
         'Shipped At': order.shippedAt ?? '',
+        'Cut List URL': order.cutListCachedUrl ?? order.cutListUrl ?? '',
         'Source': order.source ?? '',
       }
     })
@@ -199,6 +226,9 @@ export default function OrdersPage() {
       <OrdersToolbar
         totalRows={overview.counts.visible}
         lastRefreshedAt={overview.lastRefreshedAt}
+        viewMode={viewMode}
+        onViewModeChange={setViewMode}
+        canUseAdminView={canUseAdminView}
         includeShipped={overview.includeShipped}
         onIncludeShippedChange={overview.setIncludeShipped}
         searchText={overview.searchText}
@@ -215,9 +245,12 @@ export default function OrdersPage() {
 
       <OrdersGrid
         orders={overview.visibleOrders}
+        viewMode={viewMode}
+        canEditMondayStages={canEditMondayStages}
         lastRefreshedAt={overview.lastRefreshedAt}
         isLoading={overview.isLoading || overview.isFetching || overview.isRefreshing}
         shopDrawingHandle={shopDrawingHandle}
+        cutListHandle={cutListHandle}
         onOpenJobDialog={handleOpenJobDialog}
         onOpenQuickBooksDialog={handleOpenQuickBooksDialog}
         onCopyOrderNumber={handleCopyOrderNumber}
@@ -225,6 +258,7 @@ export default function OrdersPage() {
       />
 
       <ShopDrawingPreview onError={setErrorMessage} bind={bindShopDrawing} />
+      <CutListPreview onError={setErrorMessage} bind={bindCutList} />
 
       <JobDetailsDialog
         open={Boolean(jobDialogMode && selectedOrder)}

@@ -8,12 +8,51 @@ export type OrdersStatusHistoryRow = {
   updatedAt: string | null
 }
 
+export type OrdersProgressStatusDetail = {
+  key: string | null
+  label: string | null
+  weight: number
+  columnId: string | null
+  status: string | null
+  options: string[]
+  optionStyles: Array<{
+    label: string
+    color: string | null
+    border: string | null
+    varName: string | null
+  }>
+}
+
+export type OrdersMondayProgressDetailsOrder = {
+  mondayItemId: string
+  mondayStatus: string | null
+  rowStatus: string
+  progressPercent: number | null
+  progressStatusDetails: OrdersProgressStatusDetail[]
+  mondayUpdatedAt: string | null
+}
+
+export type OrdersMondayProgressDetailsResponse = {
+  generatedAt: string
+  order: OrdersMondayProgressDetailsOrder
+}
+
+export type OrdersMondayProgressStatusUpdateResponse = OrdersMondayProgressDetailsResponse & {
+  ok: boolean
+}
+
 export type OrdersOverviewOrder = {
   id: string
   mondayItemId: string
   orderNumber: string
   jobNumber: string
   orderName: string | null
+  shipTo: string | null
+  shipNotes: string | null
+  bol: string | null
+  poNumber: string | null
+  notes: string | null
+  description: string | null
   poAmount: number | null
   billedAmount: number | null
   invoiceAmount: number | null
@@ -31,6 +70,7 @@ export type OrdersOverviewOrder = {
   managerReadyDate: string | null
   managerReadyUpdatedAt: string | null
   progressPercent: number | null
+  progressStatusDetails: OrdersProgressStatusDetail[]
   leadTimeDays: number | null
   statusHistory: OrdersStatusHistoryRow[]
   isShipped: boolean
@@ -42,6 +82,8 @@ export type OrdersOverviewOrder = {
   dueDate: string | null
   shopDrawingCachedUrl: string | null
   shopDrawingUrl: string | null
+  cutListCachedUrl: string | null
+  cutListUrl: string | null
   source: 'monday' | 'quickbooks' | 'merged'
   hasMondayRecord: boolean
   hasQuickBooksRecord: boolean
@@ -205,4 +247,50 @@ export function ordersJobDetailsQueryKey(options: FetchOrdersJobDetailsOptions) 
     String(options.jobNumber ?? '').trim(),
     String(options.orderName ?? '').trim(),
   ] as const
+}
+
+export function fetchOrdersMondayProgressDetails(mondayItemId: string) {
+  const normalizedMondayItemId = String(mondayItemId ?? '').trim()
+
+  if (!normalizedMondayItemId) {
+    throw new Error('mondayItemId is required.')
+  }
+
+  const params = new URLSearchParams({ mondayItemId: normalizedMondayItemId })
+
+  return apiRequest<OrdersMondayProgressDetailsResponse>(
+    `/api/orders/monday/progress-details?${params.toString()}`,
+  )
+}
+
+type UpdateOrdersMondayProgressStatusInput = {
+  mondayItemId: string
+  columnId: string
+  status: string
+}
+
+export function postOrdersMondayProgressStatusUpdate(input: UpdateOrdersMondayProgressStatusInput) {
+  const mondayItemId = String(input?.mondayItemId ?? '').trim()
+  const columnId = String(input?.columnId ?? '').trim()
+  const status = String(input?.status ?? '').trim()
+
+  if (!mondayItemId) {
+    throw new Error('mondayItemId is required.')
+  }
+
+  if (!columnId) {
+    throw new Error('columnId is required.')
+  }
+
+  if (!status) {
+    throw new Error('status is required.')
+  }
+
+  return apiRequest<OrdersMondayProgressStatusUpdateResponse>(
+    '/api/orders/monday/progress-status',
+    {
+      method: 'POST',
+      body: JSON.stringify({ mondayItemId, columnId, status }),
+    },
+  )
 }

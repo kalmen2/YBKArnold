@@ -201,6 +201,13 @@ export function createMondaySnapshotService({
       'leadTimeColumnId',
       'dueDateColumnId',
       'shopDrawingColumnId',
+      'cutListColumnId',
+      'shipToColumnId',
+      'shipNotesColumnId',
+      'bolColumnId',
+      'poNumberColumnId',
+      'notesColumnId',
+      'descriptionColumnId',
       'orderDateColumnId',
     ]
 
@@ -471,6 +478,204 @@ export function createMondaySnapshotService({
     })
   }
 
+  function normalizeStatusOptionLabel(value) {
+    return String(value ?? '').trim() || null
+  }
+
+  function normalizeStatusOptionColor(value) {
+    const normalizedValue = String(value ?? '').trim()
+
+    if (!normalizedValue) {
+      return null
+    }
+
+    if (/^#[0-9a-fA-F]{3,8}$/.test(normalizedValue)) {
+      return normalizedValue
+    }
+
+    return null
+  }
+
+  function parseStatusColumnOptionsFromSettings(rawSettings) {
+    if (typeof rawSettings !== 'string' || !rawSettings.trim()) {
+      return []
+    }
+
+    try {
+      const parsed = JSON.parse(rawSettings)
+      const labels = parsed?.labels && typeof parsed.labels === 'object'
+        ? parsed.labels
+        : {}
+      const labelsColors = parsed?.labels_colors && typeof parsed.labels_colors === 'object'
+        ? parsed.labels_colors
+        : {}
+      const entries = Object.entries(labels)
+        .filter(([, label]) => normalizeStatusOptionLabel(label))
+        .sort(([leftKey], [rightKey]) => {
+          const leftNumber = Number(leftKey)
+          const rightNumber = Number(rightKey)
+
+          if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) {
+            return leftNumber - rightNumber
+          }
+
+          return String(leftKey).localeCompare(String(rightKey))
+        })
+
+      const options = []
+      const labelsSeen = new Set()
+
+      entries.forEach(([index, label]) => {
+        const normalizedLabel = normalizeStatusOptionLabel(label)
+
+        if (!normalizedLabel || labelsSeen.has(normalizedLabel)) {
+          return
+        }
+
+        labelsSeen.add(normalizedLabel)
+
+        const colorEntry = labelsColors?.[index]
+        const normalizedColorEntry = colorEntry && typeof colorEntry === 'object'
+          ? colorEntry
+          : {}
+
+        options.push({
+          label: normalizedLabel,
+          index: String(index ?? '').trim() || null,
+          color: normalizeStatusOptionColor(normalizedColorEntry?.color),
+          border: normalizeStatusOptionColor(normalizedColorEntry?.border),
+          varName: String(normalizedColorEntry?.var_name ?? '').trim() || null,
+        })
+      })
+
+      return options
+    } catch {
+      return []
+    }
+  }
+
+  async function fetchMondayStatusColumnOptions({ boardId, columnIds = [] }) {
+    ensureMondayConfiguration()
+
+    const normalizedBoardId = String(boardId ?? '').trim()
+    const normalizedColumnIds = [...new Set(
+      (Array.isArray(columnIds) ? columnIds : [])
+        .map((columnId) => String(columnId ?? '').trim())
+        .filter(Boolean),
+    )]
+
+    if (!normalizedBoardId) {
+      throw {
+        status: 500,
+        message: 'Missing Monday board id for status options lookup.',
+      }
+    }
+
+    if (normalizedColumnIds.length === 0) {
+      return {}
+    }
+
+    const data = await callMondayGraphql(
+      `
+query GetBoardStatusColumnOptions($boardId: ID!, $columnIds: [String!]) {
+  boards(ids: [$boardId]) {
+    id
+    columns(ids: $columnIds) {
+      id
+      type
+      settings_str
+    }
+  }
+}
+`,
+      {
+        boardId: normalizedBoardId,
+        columnIds: normalizedColumnIds,
+      },
+    )
+
+    const board = Array.isArray(data?.boards) ? data.boards[0] : null
+    const columns = Array.isArray(board?.columns) ? board.columns : []
+    const optionsByColumnId = {}
+
+    columns.forEach((column) => {
+      const columnId = String(column?.id ?? '').trim()
+
+      if (!columnId) {
+        return
+      }
+
+      optionsByColumnId[columnId] = parseStatusColumnOptionsFromSettings(column?.settings_str)
+    })
+
+    return optionsByColumnId
+  }
+
+  async function updateMondayItemStatusColumn({ boardId, itemId, columnId, statusLabel }) {
+    ensureMondayConfiguration()
+
+    const normalizedBoardId = String(boardId ?? '').trim()
+    const normalizedItemId = String(itemId ?? '').trim()
+    const normalizedColumnId = String(columnId ?? '').trim()
+    const normalizedStatusLabel = String(statusLabel ?? '').trim()
+
+    if (!normalizedBoardId) {
+      throw {
+        status: 500,
+        message: 'Missing Monday board id for status update.',
+      }
+    }
+
+    if (!normalizedItemId) {
+      throw {
+        status: 400,
+        message: 'Missing Monday item id for status update.',
+      }
+    }
+
+    if (!normalizedColumnId) {
+      throw {
+        status: 400,
+        message: 'Missing Monday column id for status update.',
+      }
+    }
+
+    if (!normalizedStatusLabel) {
+      throw {
+        status: 400,
+        message: 'Missing Monday status label for status update.',
+      }
+    }
+
+    await callMondayGraphql(
+      `
+mutation UpdateMondayItemStatusColumn($boardId: ID!, $itemId: ID!, $columnId: String!, $value: JSON!) {
+  change_column_value(
+    board_id: $boardId,
+    item_id: $itemId,
+    column_id: $columnId,
+    value: $value
+  ) {
+    id
+  }
+}
+`,
+      {
+        boardId: normalizedBoardId,
+        itemId: normalizedItemId,
+        columnId: normalizedColumnId,
+        value: JSON.stringify({ label: normalizedStatusLabel }),
+      },
+    )
+
+    return {
+      boardId: normalizedBoardId,
+      itemId: normalizedItemId,
+      columnId: normalizedColumnId,
+      statusLabel: normalizedStatusLabel,
+    }
+  }
+
   // Targeted name-only fetch: pull every item on a board with just id+name
   // (no column_values block). Used for "is this order on the Shipped board?" /
   // "is this order on the Design board?" without paying for the full column
@@ -712,6 +917,8 @@ query GetItemsByIds($itemIds: [ID!]!) {
     fetchMondayBoardItemNames,
     fetchMondayBoardItemsByIds,
     fetchMondayDashboardSnapshot,
+    fetchMondayStatusColumnOptions,
     invalidateMondayBoardNamesCache,
+    updateMondayItemStatusColumn,
   }
 }

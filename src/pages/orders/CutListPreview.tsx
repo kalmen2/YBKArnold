@@ -13,12 +13,12 @@ import {
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAuth } from '../../auth/useAuth'
 import type { OrdersOverviewOrder } from '../../features/orders/api'
-import { resolveShopDrawingUrl } from './shopDrawingUrl'
+import { resolveCutListUrl } from './cutListUrl'
 
 const HOVER_OPEN_DELAY_MS = 220
 const HOVER_CLOSE_DELAY_MS = 650
 
-type ShopDrawingPreviewHandle = {
+type CutListPreviewHandle = {
   openHover: (event: React.MouseEvent<HTMLElement>, order: OrdersOverviewOrder) => void
   closeHover: () => void
   leaveHoverTrigger: () => void
@@ -26,12 +26,12 @@ type ShopDrawingPreviewHandle = {
   openDialog: (order: OrdersOverviewOrder) => Promise<void>
 }
 
-type ShopDrawingPreviewProps = {
+type CutListPreviewProps = {
   onError: (message: string) => void
-  bind: (handle: ShopDrawingPreviewHandle) => void
+  bind: (handle: CutListPreviewHandle) => void
 }
 
-export function ShopDrawingPreview({ onError, bind }: ShopDrawingPreviewProps) {
+export function CutListPreview({ onError, bind }: CutListPreviewProps) {
   const { getIdToken } = useAuth()
 
   const [hoverOpen, setHoverOpen] = useState(false)
@@ -105,7 +105,7 @@ export function ShopDrawingPreview({ onError, bind }: ShopDrawingPreviewProps) {
       const idToken = await getIdToken()
       const query = new URLSearchParams({ orderId })
       const response = await fetch(
-        `/api/dashboard/monday/shop-drawing/download?${query.toString()}`,
+        `/api/dashboard/monday/cut-list/download?${query.toString()}`,
         {
           headers: {
             Authorization: `Bearer ${idToken}`,
@@ -160,7 +160,6 @@ export function ShopDrawingPreview({ onError, bind }: ShopDrawingPreviewProps) {
     }, HOVER_CLOSE_DELAY_MS)
   }, [clearCloseTimer])
 
-  // Debounced open: a quick mouse pass (<220ms) doesn't fire a preview fetch.
   const openHover = useCallback(
     (event: React.MouseEvent<HTMLElement>, order: OrdersOverviewOrder) => {
       const orderId = String(order?.mondayItemId ?? '').trim()
@@ -225,11 +224,11 @@ export function ShopDrawingPreview({ onError, bind }: ShopDrawingPreviewProps) {
   const openDialog = useCallback(
     async (order: OrdersOverviewOrder) => {
       const orderId = String(order?.mondayItemId ?? '').trim()
-      const cachedUrl = String(order?.shopDrawingCachedUrl ?? '').trim()
-      const sourceUrl = resolveShopDrawingUrl(order)
+      const cachedUrl = String(order?.cutListCachedUrl ?? '').trim()
+      const sourceUrl = resolveCutListUrl(order)
 
       if (!orderId || (!cachedUrl && !sourceUrl)) {
-        onError('No shop drawing is available for this order yet.')
+        onError('No cut list is available for this order yet.')
         return
       }
 
@@ -248,7 +247,7 @@ export function ShopDrawingPreview({ onError, bind }: ShopDrawingPreviewProps) {
         const idToken = await getIdToken()
         const query = new URLSearchParams({ orderId })
         const response = await fetch(
-          `/api/dashboard/monday/shop-drawing/download?${query.toString()}`,
+          `/api/dashboard/monday/cut-list/download?${query.toString()}`,
           {
             headers: {
               Authorization: `Bearer ${idToken}`,
@@ -261,7 +260,7 @@ export function ShopDrawingPreview({ onError, bind }: ShopDrawingPreviewProps) {
           const payload = await response.json().catch(() => ({}))
           const message = typeof payload?.error === 'string'
             ? payload.error
-            : 'Could not load shop drawing preview.'
+            : 'Could not load cut list preview.'
           throw new Error(message)
         }
 
@@ -277,7 +276,7 @@ export function ShopDrawingPreview({ onError, bind }: ShopDrawingPreviewProps) {
         onError(
           requestError instanceof Error
             ? requestError.message
-            : 'Could not load shop drawing preview.',
+            : 'Could not load cut list preview.',
         )
       }
     },
@@ -291,7 +290,6 @@ export function ShopDrawingPreview({ onError, bind }: ShopDrawingPreviewProps) {
     setDialogOrder(null)
   }, [clearObjectUrl])
 
-  // Bind imperative API to parent.
   useEffect(() => {
     bind({
       openHover,
@@ -353,7 +351,7 @@ export function ShopDrawingPreview({ onError, bind }: ShopDrawingPreviewProps) {
             ) : hoverUrl ? (
               <Box
                 component="iframe"
-                title={`Drawing preview ${hoverOrder?.orderNumber ?? ''}`}
+                title={`Cut list preview ${hoverOrder?.orderNumber ?? ''}`}
                 src={hoverUrl}
                 sx={{
                   width: '100%',
@@ -381,7 +379,7 @@ export function ShopDrawingPreview({ onError, bind }: ShopDrawingPreviewProps) {
               </Stack>
             )}
             <Typography variant="caption" sx={{ fontWeight: 700, px: 0.25 }}>
-              {hoverOrder?.orderName || hoverOrder?.orderNumber || 'Shop Drawing'}
+              {hoverOrder?.orderName || hoverOrder?.orderNumber || 'Cut List'}
             </Typography>
             <Typography variant="caption" color="text.secondary" sx={{ px: 0.25 }}>
               Click the symbol to open full popup.
@@ -393,8 +391,8 @@ export function ShopDrawingPreview({ onError, bind }: ShopDrawingPreviewProps) {
       <Dialog open={Boolean(dialogOrder)} onClose={closeDialog} fullWidth maxWidth="lg">
         <DialogTitle>
           {dialogOrder
-            ? `Shop Drawing - ${dialogOrder.jobNumber || dialogOrder.mondayItemId}`
-            : 'Shop Drawing'}
+            ? `Cut List - ${dialogOrder.jobNumber || dialogOrder.mondayItemId}`
+            : 'Cut List'}
         </DialogTitle>
         <DialogContent sx={{ p: 0, minHeight: 560 }}>
           {dialogLoading ? (
@@ -405,13 +403,13 @@ export function ShopDrawingPreview({ onError, bind }: ShopDrawingPreviewProps) {
           ) : dialogSrc ? (
             <Box
               component="iframe"
-              title="Shop drawing preview"
+              title="Cut list preview"
               src={dialogSrc}
               sx={{ border: 0, width: '100%', height: '74vh', display: 'block' }}
             />
           ) : (
             <Alert severity="info" sx={{ m: 2 }}>
-              No preview is available for this drawing.
+              No preview is available for this cut list.
             </Alert>
           )}
         </DialogContent>
@@ -420,4 +418,4 @@ export function ShopDrawingPreview({ onError, bind }: ShopDrawingPreviewProps) {
   )
 }
 
-export type { ShopDrawingPreviewHandle }
+export type { CutListPreviewHandle }

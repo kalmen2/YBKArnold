@@ -730,6 +730,143 @@ export function registerDashboardSupportRoutes(app, deps) {
     }
   }
 
+  async function resolveOnDemandCutListSource(orderDocument) {
+    const existingSourceUrl =
+      normalizeUrl(orderDocument?.cutListSourceUrl)
+      || normalizeUrl(orderDocument?.cutListResolvedUrl)
+      || normalizeUrl(orderDocument?.cutListUrl)
+
+    if (!existingSourceUrl) {
+      return {
+        sourceUrl: null,
+        sourceAssetId: null,
+        fileName: null,
+      }
+    }
+
+    const sourceAssetId =
+      String(orderDocument?.cutListSourceAssetId ?? '').trim()
+      || extractMondayAssetIdFromUrl(existingSourceUrl)
+      || null
+    const fallbackFileName =
+      String(orderDocument?.cutListFileName ?? '').trim()
+      || deriveFileNameFromUrl(existingSourceUrl)
+      || `order-${String(orderDocument?.mondayItemId ?? '').trim() || 'cut-list'}-cut-list.pdf`
+    const resolvedFileName = ensurePdfFileName(fallbackFileName)
+    const isProtectedMondayAssetUrl = /\/protected_static\//i.test(existingSourceUrl)
+
+    if (!isProtectedMondayAssetUrl || !sourceAssetId || typeof fetchMondayAssetDownloadInfo !== 'function') {
+      return {
+        sourceUrl: existingSourceUrl,
+        sourceAssetId,
+        fileName: resolvedFileName,
+      }
+    }
+
+    try {
+      const assetInfo = await fetchMondayAssetDownloadInfo(sourceAssetId)
+      const publicUrl = normalizeUrl(assetInfo?.publicUrl)
+      const fileName = ensurePdfFileName(
+        String(assetInfo?.name ?? '').trim() || resolvedFileName,
+        resolvedFileName,
+      )
+
+      return {
+        sourceUrl: publicUrl || existingSourceUrl,
+        sourceAssetId,
+        fileName,
+      }
+    } catch {
+      return {
+        sourceUrl: existingSourceUrl,
+        sourceAssetId,
+        fileName: resolvedFileName,
+      }
+    }
+  }
+
+  async function cacheCutListOnDemand(orderDocument) {
+    const mondayItemId = String(orderDocument?.mondayItemId ?? '').trim()
+
+    if (!mondayItemId) {
+      throw new Error('Missing Monday item id for this cut list.')
+    }
+
+    const bucket = typeof getOrderPhotosBucket === 'function' ? getOrderPhotosBucket() : null
+
+    if (!bucket) {
+      throw new Error('Order photo storage bucket is unavailable.')
+    }
+
+    const sourceInfo = await resolveOnDemandCutListSource(orderDocument)
+
+    if (!sourceInfo.sourceUrl) {
+      return null
+    }
+
+    const sourceResponse = await fetch(sourceInfo.sourceUrl)
+
+    if (!sourceResponse.ok) {
+      throw new Error(`Cut list source responded with status ${sourceResponse.status}.`)
+    }
+
+    const contentType = String(sourceResponse.headers.get('content-type') ?? '').trim() || 'application/pdf'
+    const sourceBuffer = Buffer.from(await sourceResponse.arrayBuffer())
+    const storageOrderId = sanitizeStorageSegment(mondayItemId)
+    const storageFileName = sanitizeDownloadFileName(
+      sourceInfo.fileName,
+      `${storageOrderId}-cut-list.pdf`,
+    )
+    const storagePath = `monday-cut-lists/${storageOrderId}/${storageFileName}`
+    const downloadToken = createDownloadToken()
+    const now = new Date().toISOString()
+    const targetFile = bucket.file(storagePath)
+
+    await targetFile.save(sourceBuffer, {
+      resumable: false,
+      metadata: {
+        contentType,
+        metadata: {
+          firebaseStorageDownloadTokens: downloadToken,
+          mondayItemId,
+          sourceAssetId: String(sourceInfo.sourceAssetId ?? '').trim() || null,
+          sourceUrl: sourceInfo.sourceUrl,
+          syncedAt: now,
+        },
+      },
+    })
+
+    const cachedDownloadUrl = buildFirebaseStorageDownloadUrl(bucket.name, storagePath, downloadToken)
+    const { mondayOrdersCollection } = await getCollections()
+
+    await mondayOrdersCollection.updateOne(
+      {
+        mondayItemId,
+      },
+      {
+        $set: {
+          cutListStoragePath: storagePath,
+          cutListDownloadUrl: cachedDownloadUrl,
+          cutListContentType: contentType,
+          cutListCachedAt: now,
+          cutListCacheStatus: 'ready',
+          cutListCacheError: null,
+          cutListFileName: ensurePdfFileName(sourceInfo.fileName, `${storageOrderId}-cut-list.pdf`),
+          cutListSourceAssetId: String(sourceInfo.sourceAssetId ?? '').trim() || null,
+          cutListSourceUrl: null,
+          cutListResolvedUrl: null,
+          cutListUrl: null,
+          updatedAt: now,
+        },
+      },
+    )
+
+    return {
+      downloadUrl: cachedDownloadUrl,
+      fileName: ensurePdfFileName(sourceInfo.fileName, `${storageOrderId}-cut-list.pdf`),
+    }
+  }
+
 
 
 // Monday dashboard view is DB-backed from orders_unified so lateness/due
@@ -838,6 +975,116 @@ app.get('/api/dashboard/monday/shop-drawing/download', requireFirebaseAuth, asyn
     const downloadFileName = ensurePdfFileName(
       orderDocument.shopDrawingFileName,
       `order-${orderId}-shop-drawing.pdf`,
+    )
+    const contentType =
+      String(upstreamResponse.headers.get('content-type') ?? '').trim() ||
+      'application/pdf'
+    const contentLength = String(upstreamResponse.headers.get('content-length') ?? '').trim()
+
+    res.setHeader('Content-Type', contentType)
+    const contentDispositionType = renderInline ? 'inline' : 'attachment'
+    res.setHeader(
+      'Content-Disposition',
+      `${contentDispositionType}; filename="${downloadFileName.replace(/"/g, '')}"`,
+    )
+    res.setHeader('Cache-Control', 'private, max-age=120')
+    if (contentLength) {
+      res.setHeader('Content-Length', contentLength)
+    }
+
+    const buffer = Buffer.from(await upstreamResponse.arrayBuffer())
+
+    return res.status(200).send(buffer)
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.get('/api/dashboard/monday/cut-list/download', requireFirebaseAuth, async (req, res, next) => {
+  try {
+    const orderId = String(req.query?.orderId ?? '').trim()
+    const renderInline = String(req.query?.inline ?? '').trim() === '1'
+
+    if (!orderId) {
+      return res.status(400).json({ error: 'orderId is required.' })
+    }
+
+    async function loadOrderCutListDocument() {
+      const { mondayOrdersCollection } = await getCollections()
+
+      return mondayOrdersCollection.findOne(
+        {
+          mondayItemId: orderId,
+        },
+        {
+          projection: {
+            _id: 0,
+            mondayItemId: 1,
+            cutListDownloadUrl: 1,
+            cutListFileName: 1,
+            cutListSourceAssetId: 1,
+            cutListSourceUrl: 1,
+            cutListResolvedUrl: 1,
+            cutListUrl: 1,
+          },
+        },
+      )
+    }
+
+    let orderDocument = await loadOrderCutListDocument()
+
+    if (!orderDocument) {
+      return res.status(404).json({ error: 'Order not found in Monday data.' })
+    }
+
+    let cachedCutListUrl = String(orderDocument.cutListDownloadUrl ?? '').trim()
+
+    // Apply the same one-time pull rule as shop drawings:
+    // fetch from Monday only once, cache in Firebase, and then serve cache only.
+    if (!cachedCutListUrl) {
+      const hasStoredSource = Boolean(
+        String(orderDocument.cutListSourceUrl ?? '').trim()
+        || String(orderDocument.cutListResolvedUrl ?? '').trim()
+        || String(orderDocument.cutListUrl ?? '').trim(),
+      )
+
+      if (!hasStoredSource) {
+        return res.status(404).json({ error: 'No cut list source found for this order.' })
+      }
+
+      try {
+        const cacheResult = await cacheCutListOnDemand(orderDocument)
+        cachedCutListUrl = String(cacheResult?.downloadUrl ?? '').trim()
+        if (cacheResult?.fileName) {
+          orderDocument.cutListFileName = cacheResult.fileName
+        }
+      } catch (cacheError) {
+        const message = cacheError instanceof Error
+          ? cacheError.message
+          : 'Could not cache this cut list right now.'
+        return res.status(502).json({ error: message })
+      }
+    }
+
+    if (!cachedCutListUrl) {
+      return res.status(404).json({ error: 'No cut list source found for this order.' })
+    }
+
+    if (renderInline) {
+      return res.redirect(302, cachedCutListUrl)
+    }
+
+    const upstreamResponse = await fetch(cachedCutListUrl)
+
+    if (!upstreamResponse.ok) {
+      return res.status(502).json({
+        error: 'Could not download this cut list from cache right now.',
+      })
+    }
+
+    const downloadFileName = ensurePdfFileName(
+      orderDocument.cutListFileName,
+      `order-${orderId}-cut-list.pdf`,
     )
     const contentType =
       String(upstreamResponse.headers.get('content-type') ?? '').trim() ||

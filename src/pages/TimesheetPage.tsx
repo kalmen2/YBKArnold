@@ -139,6 +139,19 @@ type ManagerProgressRow = {
   shopDrawingCachedUrl: string | null
 }
 
+type MissingManagerInfoRow = {
+  date: string
+  jobName: string
+  totalHours: number
+  workerCount: number
+  isShippedFallback: boolean
+  mondayOrderId: string | null
+  mondayItemName: string | null
+  shopDrawingUrl: string | null
+  shopDrawingFileName: string | null
+  shopDrawingCachedUrl: string | null
+}
+
 type TimesheetPageProps = {
   initialView?: 'timesheet' | 'reports'
 }
@@ -254,6 +267,9 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
   const [shopDrawingPreviewSrc, setShopDrawingPreviewSrc] = useState('')
   const shopDrawingPreviewObjectUrlRef = useRef<string | null>(null)
   const [missingWorkersDate, setMissingWorkersDate] = useState('')
+  const [missingManagerDialogOpen, setMissingManagerDialogOpen] = useState(false)
+  const [missingManagerSelectedDate, setMissingManagerSelectedDate] = useState('')
+  const [missingManagerProgressByKey, setMissingManagerProgressByKey] = useState<Record<string, string>>({})
   const [missingReviewByKey, setMissingReviewByKey] =
     useState<Record<string, MissingWorkerReview>>({})
   const [workerRangePreset, setWorkerRangePreset] =
@@ -1431,6 +1447,117 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     [missingWorkersSubmittedIds, workers],
   )
 
+  const missingManagerInfoByDate = useMemo(() => {
+    const entriesByDateJobKey = new Map<string, {
+      date: string
+      jobName: string
+      totalHours: number
+      workerIds: Set<string>
+    }>()
+
+    entries.forEach((entry) => {
+      const date = String(entry.date ?? '').trim()
+      const jobName = String(entry.jobName ?? '').trim()
+      const normalizedJobName = normalizeJobName(jobName)
+
+      if (!date || !jobName || !normalizedJobName || /^0+$/.test(jobName)) {
+        return
+      }
+
+      const key = `${date}:${normalizedJobName}`
+      const current = entriesByDateJobKey.get(key) ?? {
+        date,
+        jobName,
+        totalHours: 0,
+        workerIds: new Set<string>(),
+      }
+
+      current.totalHours += getEntryTotalHours(entry)
+      current.workerIds.add(entry.workerId)
+      entriesByDateJobKey.set(key, current)
+    })
+
+    const missingByDate = new Map<string, MissingManagerInfoRow[]>()
+
+    entriesByDateJobKey.forEach((entryGroup, key) => {
+      if (orderProgressByDateJobKey.has(key)) {
+        return
+      }
+
+      const jobKey = normalizeJobName(entryGroup.jobName)
+      const jobDigits = extractDigits(entryGroup.jobName)
+      const primaryMatchedMondayOrder =
+        mondayOrderLookup.primaryByNormalizedKey.get(jobKey)
+        || (jobDigits ? mondayOrderLookup.primaryByDigits.get(jobDigits) : null)
+        || null
+      const shippedMatchedMondayOrder =
+        mondayOrderLookup.shippedByNormalizedKey.get(jobKey)
+        || (jobDigits ? mondayOrderLookup.shippedByDigits.get(jobDigits) : null)
+        || null
+      const primaryMatchedDrawingUrl = String(
+        primaryMatchedMondayOrder?.shopDrawingCachedUrl
+        || primaryMatchedMondayOrder?.shopDrawingUrl
+        || '',
+      ).trim()
+      const matchedMondayOrder = primaryMatchedDrawingUrl
+        ? primaryMatchedMondayOrder
+        : shippedMatchedMondayOrder || primaryMatchedMondayOrder
+      const isShippedFallback = Boolean(
+        matchedMondayOrder
+        && matchedMondayOrder.mondaySourceBoardType === 'shipped_orders',
+      )
+
+      const currentDateRows = missingByDate.get(entryGroup.date) ?? []
+      currentDateRows.push({
+        date: entryGroup.date,
+        jobName: entryGroup.jobName,
+        totalHours: entryGroup.totalHours,
+        workerCount: entryGroup.workerIds.size,
+        isShippedFallback,
+        mondayOrderId: matchedMondayOrder?.id ?? null,
+        mondayItemName: matchedMondayOrder?.name ?? null,
+        shopDrawingUrl: matchedMondayOrder?.shopDrawingUrl ?? null,
+        shopDrawingFileName: matchedMondayOrder?.shopDrawingFileName ?? null,
+        shopDrawingCachedUrl: matchedMondayOrder?.shopDrawingCachedUrl ?? null,
+      })
+      missingByDate.set(entryGroup.date, currentDateRows)
+    })
+
+    missingByDate.forEach((rows) => {
+      rows.sort(
+        (left, right) => right.totalHours - left.totalHours || left.jobName.localeCompare(right.jobName),
+      )
+    })
+
+    return missingByDate
+  }, [
+    entries,
+    mondayOrderLookup.primaryByDigits,
+    mondayOrderLookup.primaryByNormalizedKey,
+    mondayOrderLookup.shippedByDigits,
+    mondayOrderLookup.shippedByNormalizedKey,
+    orderProgressByDateJobKey,
+  ])
+
+  const missingManagerInfoDates = useMemo(
+    () => [...missingManagerInfoByDate.keys()].sort(compareDateDesc),
+    [missingManagerInfoByDate],
+  )
+
+  const missingManagerRows = useMemo<MissingManagerInfoRow[]>(
+    () =>
+      missingManagerInfoDates.flatMap((date) => {
+        const rows = missingManagerInfoByDate.get(date) ?? []
+        return rows
+      }),
+    [missingManagerInfoByDate, missingManagerInfoDates],
+  )
+
+  const missingManagerRowsForSelectedDate = useMemo(
+    () => missingManagerInfoByDate.get(missingManagerSelectedDate) ?? [],
+    [missingManagerInfoByDate, missingManagerSelectedDate],
+  )
+
   useEffect(() => {
     if (missingInfoDates.length === 0) {
       if (missingWorkersDate) {
@@ -1444,6 +1571,19 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
       setMissingWorkersDate(missingInfoDates[0])
     }
   }, [missingInfoDates, missingWorkersDate])
+
+  useEffect(() => {
+    if (missingManagerInfoDates.length === 0) {
+      if (missingManagerSelectedDate) {
+        setMissingManagerSelectedDate('')
+      }
+      return
+    }
+
+    if (!missingManagerInfoDates.includes(missingManagerSelectedDate)) {
+      setMissingManagerSelectedDate(missingManagerInfoDates[0])
+    }
+  }, [missingManagerInfoDates, missingManagerSelectedDate])
 
   useEffect(() => {
     if (managerAvailableDates.length === 0) {
@@ -1947,6 +2087,79 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     }
   }
 
+  const buildMissingManagerProgressKey = (date: string, jobName: string) => {
+    return `${date}:${normalizeJobName(jobName)}`
+  }
+
+  const handleMissingManagerProgressChange = (
+    date: string,
+    jobName: string,
+    value: string,
+  ) => {
+    const progressKey = buildMissingManagerProgressKey(date, jobName)
+
+    setMissingManagerProgressByKey((current) => ({
+      ...current,
+      [progressKey]: value,
+    }))
+  }
+
+  const handleAddMissingManagerInfo = async (row: MissingManagerInfoRow) => {
+    const targetDate = String(missingManagerSelectedDate ?? '').trim() || row.date
+
+    if (!targetDate) {
+      setError('Date is required before adding manager info.')
+      return
+    }
+
+    const progressKey = buildMissingManagerProgressKey(targetDate, row.jobName)
+    const rawValue = String(missingManagerProgressByKey[progressKey] ?? '0').trim()
+    const readyPercent = Number(rawValue)
+
+    if (!rawValue || !Number.isFinite(readyPercent) || readyPercent < 0 || readyPercent > 100) {
+      setError(`Enter ready % from 0 to 100 for ${row.jobName}.`)
+      return
+    }
+
+    setError('')
+    setSuccess('')
+
+    try {
+      await upsertOrderProgress({
+        date: targetDate,
+        jobName: row.jobName,
+        readyPercent,
+      })
+
+      await queryClient.refetchQueries({ queryKey: QUERY_KEYS.timesheetBootstrap })
+      setSuccess(`Added manager info for ${row.jobName} on ${targetDate}.`)
+    } catch (requestError) {
+      const message =
+        requestError instanceof Error
+          ? requestError.message
+          : 'Failed to add manager info.'
+      setError(message)
+    }
+  }
+
+  const handleOpenMissingManagerShopDrawingPreview = (row: MissingManagerInfoRow) => {
+    void handleOpenShopDrawingPreview({
+      jobName: row.jobName,
+      totalHours: row.totalHours,
+      workerCount: row.workerCount,
+      isShippedFallback: row.isShippedFallback,
+      readyPercentLocked: false,
+      workerHoursByWorker: [],
+      savedReadyPercent: 0,
+      editReadyPercent: 0,
+      mondayOrderId: row.mondayOrderId,
+      mondayItemName: row.mondayItemName,
+      shopDrawingUrl: row.shopDrawingUrl,
+      shopDrawingFileName: row.shopDrawingFileName,
+      shopDrawingCachedUrl: row.shopDrawingCachedUrl,
+    })
+  }
+
   const getMissingReviewKey = (workerId: string) => {
     return `${missingWorkersDate}:${workerId}`
   }
@@ -2263,7 +2476,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
               {canAccessManagerSheet ? (
                 <Tab label="Manager Progress" value={1} onClick={() => setWorksheetTab(1)} />
               ) : null}
-              <Tab label="Missing Worker Info" value={2} onClick={() => setWorksheetTab(2)} />
+              <Tab label="Missing Info" value={2} onClick={() => setWorksheetTab(2)} />
               <Tab label="Workers" value={3} onClick={() => setWorksheetTab(3)} />
             </>
           )}
@@ -2544,7 +2757,18 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                         </Paper>
                       </Stack>
 
-                      <Stack direction="row" spacing={1} justifyContent="flex-end">
+                      <Stack
+                        direction={{ xs: 'column', sm: 'row' }}
+                        spacing={1}
+                        justifyContent="flex-end"
+                      >
+                        <Button
+                          variant="outlined"
+                          onClick={() => setMissingManagerDialogOpen(true)}
+                          disabled={missingManagerRows.length === 0}
+                        >
+                          {`Missing Manager Info (${missingManagerRows.length})`}
+                        </Button>
                         <Button
                           variant="contained"
                           onClick={() => void handleSaveManagerProgress()}
@@ -3516,7 +3740,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                 gap={1.2}
               >
                 <Typography variant="subtitle1" fontWeight={700}>
-                  Missing Worker Info
+                  Missing Info
                 </Typography>
 
                 <TextField
@@ -3770,6 +3994,158 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
         </DialogContent>
         <DialogActions>
           <Button onClick={handleCloseManagerWorkersPopup}>Close</Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={missingManagerDialogOpen}
+        onClose={() => setMissingManagerDialogOpen(false)}
+        fullWidth
+        maxWidth="md"
+      >
+        <DialogTitle>Missing Manager Info</DialogTitle>
+        <DialogContent dividers>
+          {missingManagerRows.length === 0 ? (
+            <Typography color="text.secondary">
+              No missing manager updates right now.
+            </Typography>
+          ) : (
+            <Stack spacing={1.5}>
+              <Stack
+                direction={{ xs: 'column', sm: 'row' }}
+                spacing={1}
+                justifyContent="space-between"
+                alignItems={{ xs: 'flex-start', sm: 'center' }}
+              >
+                <TextField
+                  select
+                  label="Missing dates"
+                  size="small"
+                  value={missingManagerSelectedDate}
+                  onChange={(event) => setMissingManagerSelectedDate(event.target.value)}
+                  sx={{ minWidth: 260 }}
+                >
+                  {missingManagerInfoDates.map((date) => (
+                    <MenuItem key={date} value={date}>
+                      {formatMissingInfoDateLabel(date)}
+                    </MenuItem>
+                  ))}
+                </TextField>
+
+                <Button
+                  variant="outlined"
+                  disabled={!missingManagerSelectedDate}
+                  onClick={() => {
+                    if (missingManagerSelectedDate) {
+                      handleSelectManagerDate(missingManagerSelectedDate)
+                    }
+                    setMissingManagerDialogOpen(false)
+                  }}
+                >
+                  Open Selected Day in Manager Progress
+                </Button>
+              </Stack>
+
+              <Typography variant="body2" color="text.secondary">
+                Date: {missingManagerSelectedDate ? formatMissingInfoDateLabel(missingManagerSelectedDate) : 'None selected'}
+              </Typography>
+
+              <TableContainer sx={WORKSHEET_TABLE_CONTAINER_SX}>
+                <Table size="small" stickyHeader>
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Order Number</TableCell>
+                      <TableCell>Item</TableCell>
+                      <TableCell>Shop Drawing</TableCell>
+                      <TableCell align="right">Total Hours</TableCell>
+                      <TableCell align="right">Workers</TableCell>
+                      <TableCell align="right">Set Ready %</TableCell>
+                      <TableCell align="right">Add</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {missingManagerRowsForSelectedDate.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={7}>
+                          <Typography color="text.secondary">No missing orders for the selected date.</Typography>
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      missingManagerRowsForSelectedDate.map((row) => {
+                        const progressKey = buildMissingManagerProgressKey(row.date, row.jobName)
+                        const draftReadyPercent = String(missingManagerProgressByKey[progressKey] ?? '0')
+
+                        return (
+                          <TableRow key={`${row.date}:${row.jobName}`} hover>
+                            <TableCell>{row.mondayOrderId || row.jobName}</TableCell>
+                            <TableCell>
+                              {row.mondayItemName ? (
+                                <Stack spacing={0.3}>
+                                  <Typography variant="body2">{row.mondayItemName}</Typography>
+                                  {row.isShippedFallback ? (
+                                    <Typography variant="caption" color="warning.dark" fontWeight={700}>
+                                      From shipped board
+                                    </Typography>
+                                  ) : null}
+                                </Stack>
+                              ) : (
+                                <Typography variant="body2" color="text.secondary">Not available</Typography>
+                              )}
+                            </TableCell>
+                            <TableCell>
+                              {row.shopDrawingCachedUrl || (row.shopDrawingUrl && row.mondayOrderId) ? (
+                                <Button
+                                  size="small"
+                                  variant="outlined"
+                                  startIcon={<VisibilityRoundedIcon fontSize="small" />}
+                                  onClick={() => {
+                                    handleOpenMissingManagerShopDrawingPreview(row)
+                                  }}
+                                >
+                                  Preview
+                                </Button>
+                              ) : (
+                                <Typography variant="body2" color="text.secondary">
+                                  Not available
+                                </Typography>
+                              )}
+                            </TableCell>
+                            <TableCell align="right">{formatHours(row.totalHours)} h</TableCell>
+                            <TableCell align="right">{row.workerCount}</TableCell>
+                            <TableCell align="right" sx={{ width: 150 }}>
+                              <TextField
+                                size="small"
+                                type="number"
+                                value={draftReadyPercent}
+                                onChange={(event) => {
+                                  handleMissingManagerProgressChange(row.date, row.jobName, event.target.value)
+                                }}
+                                inputProps={{ min: 0, max: 100, step: 1 }}
+                              />
+                            </TableCell>
+                            <TableCell align="right">
+                              <Button
+                                size="small"
+                                variant="contained"
+                                onClick={() => {
+                                  void handleAddMissingManagerInfo(row)
+                                }}
+                              >
+                                Add
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        )
+                      })
+                    )}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            </Stack>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setMissingManagerDialogOpen(false)}>Close</Button>
         </DialogActions>
       </Dialog>
 

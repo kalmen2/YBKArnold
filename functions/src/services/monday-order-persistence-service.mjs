@@ -107,7 +107,18 @@ export function createMondayOrderPersistenceService({
     return `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`
   }
 
-  function createOrderSetFields({ order, board, now, sourceInfo }) {
+  function createOrderSetFields({ order, board, now, sourceInfo, cutListSourceInfo }) {
+    const progressStatusDetails = Array.isArray(order?.progressStatusDetails)
+      ? order.progressStatusDetails
+        .map((entry) => ({
+          key: String(entry?.key ?? '').trim() || null,
+          label: String(entry?.label ?? '').trim() || null,
+          weight: Number.isFinite(Number(entry?.weight)) ? Number(entry.weight) : 0,
+          columnId: String(entry?.columnId ?? '').trim() || null,
+          status: String(entry?.status ?? '').trim() || null,
+        }))
+      : []
+
     return {
       mondayItemId: normalizeMondayItemId(order?.id),
       mondayBoardId: String(board?.id ?? '').trim() || null,
@@ -119,6 +130,7 @@ export function createMondayOrderPersistenceService({
       statusLabel: String(order?.statusLabel ?? '').trim() || null,
       stageLabel: String(order?.stageLabel ?? '').trim() || null,
       readyLabel: String(order?.readyLabel ?? '').trim() || null,
+      progressStatusDetails,
       leadTimeDays: Number.isFinite(order?.leadTimeDays) ? Number(order.leadTimeDays) : null,
       progressPercent: Number.isFinite(order?.progressPercent)
         ? Number(order.progressPercent)
@@ -134,11 +146,22 @@ export function createMondayOrderPersistenceService({
       daysLate: Number.isFinite(order?.daysLate) ? Number(order.daysLate) : 0,
       mondayItemUrl: String(order?.itemUrl ?? '').trim() || null,
       mondayUpdatedAt: String(order?.updatedAt ?? '').trim() || null,
+      shipTo: String(order?.shipTo ?? '').trim() || null,
+      shipNotes: String(order?.shipNotes ?? '').trim() || null,
+      bol: String(order?.bol ?? '').trim() || null,
+      poNumber: String(order?.poNumber ?? '').trim() || null,
+      notes: String(order?.notes ?? '').trim() || null,
+      description: String(order?.description ?? '').trim() || null,
       shopDrawingUrl: normalizeUrl(order?.shopDrawingUrl),
       shopDrawingFileName: sourceInfo.fileName,
       shopDrawingSourceAssetId: sourceInfo.sourceAssetId,
       shopDrawingSourceUrl: sourceInfo.sourceUrl,
       shopDrawingResolvedUrl: sourceInfo.sourceUrl,
+      cutListUrl: normalizeUrl(order?.cutListUrl),
+      cutListFileName: cutListSourceInfo.fileName,
+      cutListSourceAssetId: cutListSourceInfo.sourceAssetId,
+      cutListSourceUrl: cutListSourceInfo.sourceUrl,
+      cutListResolvedUrl: cutListSourceInfo.sourceUrl,
       invoiceNumber: String(order?.invoiceNumber ?? '').trim() || null,
       paidInFull: typeof order?.paidInFull === 'boolean' ? Boolean(order.paidInFull) : null,
       amountOwed: Number.isFinite(order?.amountOwed) ? Number(order.amountOwed) : null,
@@ -200,6 +223,31 @@ export function createMondayOrderPersistenceService({
     }
   }
 
+  async function resolveCutListSource(order) {
+    const originalUrl = normalizeUrl(order?.cutListUrl)
+    const explicitFileName = String(order?.cutListFileName ?? '').trim() || null
+    const fallbackFileName = deriveFileNameFromUrl(originalUrl)
+    const originalFileName = ensurePdfFileName(
+      explicitFileName || fallbackFileName || 'cut-list.pdf',
+      'cut-list.pdf',
+    )
+
+    if (!originalUrl) {
+      return {
+        sourceAssetId: null,
+        sourceUrl: null,
+        fileName: null,
+      }
+    }
+
+    const sourceAssetId = extractMondayAssetIdFromUrl(originalUrl)
+    return {
+      sourceAssetId,
+      sourceUrl: originalUrl,
+      fileName: originalFileName,
+    }
+  }
+
   async function persistNewMondayOrders(snapshot) {
     const snapshotOrders = Array.isArray(snapshot?.orders) ? snapshot.orders : []
 
@@ -212,6 +260,9 @@ export function createMondayOrderPersistenceService({
         shopDrawingsCached: 0,
         shopDrawingsReused: 0,
         shopDrawingsFailed: 0,
+        cutListsCached: 0,
+        cutListsReused: 0,
+        cutListsFailed: 0,
       }
     }
 
@@ -238,6 +289,9 @@ export function createMondayOrderPersistenceService({
         shopDrawingsCached: 0,
         shopDrawingsReused: 0,
         shopDrawingsFailed: 0,
+        cutListsCached: 0,
+        cutListsReused: 0,
+        cutListsFailed: 0,
       }
     }
 
@@ -259,6 +313,7 @@ export function createMondayOrderPersistenceService({
             mondayBoardId: 1,
             movedToShippedAt: 1,
             shopDrawingDownloadUrl: 1,
+            cutListDownloadUrl: 1,
           },
         },
       )
@@ -269,6 +324,9 @@ export function createMondayOrderPersistenceService({
     let shopDrawingsCached = 0
     let shopDrawingsReused = 0
     let shopDrawingsFailed = 0
+    let cutListsCached = 0
+    let cutListsReused = 0
+    let cutListsFailed = 0
     let movedToShippedCount = 0
     const operations = []
 
@@ -276,18 +334,27 @@ export function createMondayOrderPersistenceService({
       const order = orderByItemId.get(mondayItemId)
       const existingOrder = existingOrderByItemId.get(mondayItemId) ?? null
       const sourceInfo = await resolveShopDrawingSource(order)
+      const cutListSourceInfo = await resolveCutListSource(order)
       const setFields = createOrderSetFields({
         order,
         board,
         now,
         sourceInfo,
+        cutListSourceInfo,
       })
       const existingCachedDrawingUrl = String(existingOrder?.shopDrawingDownloadUrl ?? '').trim()
+      const existingCachedCutListUrl = String(existingOrder?.cutListDownloadUrl ?? '').trim()
 
       if (existingCachedDrawingUrl) {
         setFields.shopDrawingSourceUrl = null
         setFields.shopDrawingResolvedUrl = null
         setFields.shopDrawingUrl = null
+      }
+
+      if (existingCachedCutListUrl) {
+        setFields.cutListSourceUrl = null
+        setFields.cutListResolvedUrl = null
+        setFields.cutListUrl = null
       }
       const boardTransitionFields = buildBoardTransitionFields({
         existingOrder,
@@ -331,6 +398,9 @@ export function createMondayOrderPersistenceService({
       shopDrawingsCached,
       shopDrawingsReused,
       shopDrawingsFailed,
+      cutListsCached,
+      cutListsReused,
+      cutListsFailed,
     }
   }
 

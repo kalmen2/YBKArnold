@@ -4,14 +4,14 @@ export function createMondayDashboardService({
   normalizeLookupValue,
 }) {
   const progressStatusConfig = [
-    { key: 'design', titleKeywords: ['design'], weight: 13 },
-    { key: 'baseForm', titleKeywords: ['base/form', 'base form'], weight: 13 },
-    { key: 'build', titleKeywords: ['build'], weight: 13 },
-    { key: 'sandOrLam', titleKeywords: ['sand or lam', 'sand', 'lam'], weight: 13 },
-    { key: 'sealer', titleKeywords: ['sealer'], weight: 12 },
-    { key: 'lacquer', titleKeywords: ['lacquer'], weight: 12 },
-    { key: 'ready', titleKeywords: ['ready'], weight: 12 },
-    { key: 'invoiced', titleKeywords: ['invoiced'], weight: 12 },
+    { key: 'design', label: 'Design', titleKeywords: ['design'], weight: 13 },
+    { key: 'baseForm', label: 'Base/Form', titleKeywords: ['base/form', 'base form'], weight: 13 },
+    { key: 'build', label: 'Build', titleKeywords: ['build'], weight: 13 },
+    { key: 'sandOrLam', label: 'Sand or lam', titleKeywords: ['sand or lam', 'sand', 'lam'], weight: 13 },
+    { key: 'sealer', label: 'Sealer', titleKeywords: ['sealer'], weight: 12 },
+    { key: 'lacquer', label: 'Lacquer', titleKeywords: ['lacquer'], weight: 12 },
+    { key: 'ready', label: 'Ready', titleKeywords: ['ready'], weight: 12 },
+    { key: 'invoiced', label: 'Invoiced', titleKeywords: ['invoiced'], weight: 12 },
   ]
 
   function detectMondayColumns(items) {
@@ -88,6 +88,44 @@ export function createMondayDashboardService({
       ['shop drawing', 'shop drawings', 'drawing', 'drawings'],
       ['file', 'link', 'text', 'long-text'],
     )
+    const cutListColumnId = pickColumnId(
+      columns,
+      ['cut list', 'cutlist'],
+      ['file', 'link', 'text', 'long-text'],
+    )
+    const shipToColumnId =
+      pickColumnIdByExactTitle(columns, 'ship to') ||
+      pickColumnId(columns, ['ship to', 'shipping to'], ['text', 'long-text'])
+    const shipNotesColumnId =
+      pickColumnIdByExactTitle(columns, 'ship notes') ||
+      pickColumnIdByExactTitle(columns, 'ship note') ||
+      pickColumnIdByExactTitle(columns, 'shipping notes') ||
+      pickColumnIdByExactTitle(columns, 'shipping note') ||
+      pickColumnId(
+        columns,
+        [
+          'ship notes',
+          'ship note',
+          'shipping notes',
+          'shipping note',
+          'shipping instructions',
+          'ship instructions',
+          'notes for shipping',
+        ],
+        ['text', 'long-text', 'mirror', 'formula'],
+      )
+    const bolColumnId =
+      pickColumnIdByExactTitle(columns, 'bol') ||
+      pickColumnId(columns, ['bol', 'bill of lading'], ['text', 'long-text', 'numbers', 'numeric'])
+    const poNumberColumnId =
+      pickColumnIdByExactTitle(columns, 'po number') ||
+      pickColumnId(columns, ['po number', 'purchase order number'], ['text', 'long-text', 'numbers', 'numeric'])
+    const notesColumnId =
+      pickColumnIdByExactTitle(columns, 'notes') ||
+      pickColumnId(columns, ['notes', 'order notes'], ['text', 'long-text'])
+    const descriptionColumnId =
+      pickColumnIdByExactTitle(columns, 'description') ||
+      pickColumnId(columns, ['description', 'order description'], ['text', 'long-text'])
 
     if (orderDateColumnId && orderDateColumnId === dueDateColumnId) {
       dueDateColumnId = leadTimeColumnId && leadTimeColumnId !== orderDateColumnId
@@ -104,10 +142,11 @@ export function createMondayDashboardService({
     const progressStatusColumns = progressStatusConfig
       .map((config) => ({
         key: config.key,
+        label: config.label,
         weight: config.weight,
         columnId: pickColumnId(columns, config.titleKeywords, ['status', 'color']),
       }))
-      .filter((entry) => Boolean(entry.columnId) && entry.weight > 0)
+      .filter((entry) => Boolean(entry.columnId))
     const ackColumnId = pickColumnIdByExactTitle(columns, 'ack')
 
     return {
@@ -116,6 +155,13 @@ export function createMondayDashboardService({
       leadTimeColumnId,
       dueDateColumnId,
       shopDrawingColumnId,
+      cutListColumnId,
+      shipToColumnId,
+      shipNotesColumnId,
+      bolColumnId,
+      poNumberColumnId,
+      notesColumnId,
+      descriptionColumnId,
       orderDateColumnId,
       progressColumnId,
       progressStatusColumns,
@@ -193,6 +239,35 @@ export function createMondayDashboardService({
     const shopDrawingColumn =
       findColumnById(columnValues, columnMap.shopDrawingColumnId) ||
       findColumnByKeywords(columnValues, ['shop drawing', 'drawing'])
+    const cutListColumn =
+      findColumnById(columnValues, columnMap.cutListColumnId) ||
+      findColumnByKeywords(columnValues, ['cut list', 'cutlist'])
+    const shipToColumn =
+      findColumnById(columnValues, columnMap.shipToColumnId) ||
+      findColumnByKeywords(columnValues, ['ship to', 'shipping to'])
+    const shipNotesColumn =
+      findColumnById(columnValues, columnMap.shipNotesColumnId) ||
+      findColumnByKeywords(columnValues, [
+        'ship notes',
+        'ship note',
+        'shipping notes',
+        'shipping note',
+        'shipping instructions',
+        'ship instructions',
+        'notes for shipping',
+      ])
+    const bolColumn =
+      findColumnById(columnValues, columnMap.bolColumnId) ||
+      findColumnByKeywords(columnValues, ['bol', 'bill of lading'])
+    const poNumberColumn =
+      findColumnById(columnValues, columnMap.poNumberColumnId) ||
+      findColumnByKeywords(columnValues, ['po number', 'purchase order number'])
+    const notesColumn =
+      findColumnById(columnValues, columnMap.notesColumnId) ||
+      findColumnByKeywords(columnValues, ['notes', 'order notes'])
+    const descriptionColumn =
+      findColumnById(columnValues, columnMap.descriptionColumnId) ||
+      findColumnByKeywords(columnValues, ['description', 'order description'])
     const orderDateColumn =
       findColumnById(columnValues, columnMap.orderDateColumnId) ||
       findColumnByKeywords(columnValues, ['order date', 'ordered', 'po date', 'purchase order date'])
@@ -223,9 +298,23 @@ export function createMondayDashboardService({
       progressPercentFromColumn !== null
         ? progressPercentFromColumn
         : calculateProgressPercent(columnValues, columnMap.progressStatusColumns)
+    const progressStatusDetails = buildProgressStatusDetails(
+      columnValues,
+      columnMap.progressStatusColumns,
+    )
+    const readyLabel = String(
+      progressStatusDetails.find((entry) => entry.key === 'ready')?.status ?? '',
+    ).trim() || null
     const isDone = Boolean(shippedAt)
     const statusLabel = buildWorkflowStatusLabel({ isDone, progressPercent, stageLabel })
     const shopDrawing = parseShopDrawing(shopDrawingColumn)
+    const cutList = parseShopDrawing(cutListColumn)
+    const shipTo = readTextFromColumn(shipToColumn) || null
+    const shipNotes = readTextFromColumn(shipNotesColumn) || null
+    const bol = readTextFromColumn(bolColumn) || null
+    const poNumber = readTextFromColumn(poNumberColumn) || null
+    const notes = readTextFromColumn(notesColumn) || null
+    const description = readTextFromColumn(descriptionColumn) || null
     const jobNumber = String(acknowledgmentColumn?.text ?? '').trim() || null
     const isLate = !isDone && typeof daysUntilDue === 'number' ? daysUntilDue < 0 : false
     const daysLate = isLate && typeof daysUntilDue === 'number' ? Math.abs(daysUntilDue) : 0
@@ -237,8 +326,10 @@ export function createMondayDashboardService({
       groupTitle: String(item?.group?.title ?? 'Ungrouped'),
       statusLabel,
       stageLabel,
+      readyLabel,
       leadTimeDays,
       progressPercent,
+      progressStatusDetails,
       orderDate,
       shippedAt,
       dueDate: directDueDate,
@@ -250,9 +341,36 @@ export function createMondayDashboardService({
       daysLate,
       updatedAt: parseDateValue(item?.updated_at),
       itemUrl: buildMondayItemUrl(item?.id, options?.boardUrl),
+      shipTo,
+      shipNotes,
+      bol,
+      poNumber,
+      notes,
+      description,
       shopDrawingUrl: shopDrawing.url,
       shopDrawingFileName: shopDrawing.fileName,
+      cutListUrl: cutList.url,
+      cutListFileName: cutList.fileName,
     }
+  }
+
+  function buildProgressStatusDetails(columnValues, progressStatusColumns) {
+    const configuredColumns = Array.isArray(progressStatusColumns)
+      ? progressStatusColumns
+      : []
+
+    return configuredColumns.map((entry) => {
+      const value = findColumnById(columnValues, entry?.columnId)
+      const status = readTextFromColumn(value)
+
+      return {
+        key: String(entry?.key ?? '').trim() || null,
+        label: String(entry?.label ?? '').trim() || null,
+        weight: Number.isFinite(Number(entry?.weight)) ? Number(entry.weight) : 0,
+        columnId: String(entry?.columnId ?? '').trim() || null,
+        status: status || null,
+      }
+    })
   }
 
   function findColumnById(columnValues, columnId) {
@@ -310,7 +428,55 @@ export function createMondayDashboardService({
       return parsed.text
     }
 
+    for (const candidate of [
+      parsed?.display_value,
+      parsed?.displayValue,
+      parsed?.name,
+      parsed?.title,
+      parsed?.value,
+    ]) {
+      if (typeof candidate === 'string' && candidate.trim()) {
+        return candidate.trim()
+      }
+    }
+
+    for (const key of ['selected_values', 'labels', 'texts', 'values']) {
+      const listText = readTextFromStructuredList(parsed?.[key])
+
+      if (listText) {
+        return listText
+      }
+    }
+
     return ''
+  }
+
+  function readTextFromStructuredList(value) {
+    if (!Array.isArray(value)) {
+      return ''
+    }
+
+    const parts = value
+      .map((entry) => {
+        if (typeof entry === 'string') {
+          return entry.trim()
+        }
+
+        if (!entry || typeof entry !== 'object') {
+          return ''
+        }
+
+        for (const candidate of [entry?.label, entry?.text, entry?.name, entry?.title, entry?.value]) {
+          if (typeof candidate === 'string' && candidate.trim()) {
+            return candidate.trim()
+          }
+        }
+
+        return ''
+      })
+      .filter(Boolean)
+
+    return parts.join(', ')
   }
 
   function parseShopDrawing(columnValue) {

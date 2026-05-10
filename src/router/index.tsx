@@ -47,11 +47,7 @@ export const router = createBrowserRouter([
       },
       {
         path: 'orders',
-        element: withRouteSuspense(
-          <RequireManagerOrAdminRoute>
-            <OrdersPage />
-          </RequireManagerOrAdminRoute>,
-        ),
+        element: withRouteSuspense(<OrdersPage />),
       },
       {
         path: 'workers',

@@ -4,29 +4,194 @@ import PictureAsPdfRoundedIcon from '@mui/icons-material/PictureAsPdfRounded'
 import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded'
 import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded'
 import {
+  Alert,
+  Box,
   Button,
   Chip,
+  CircularProgress,
+  FormControl,
   IconButton,
+  MenuItem,
   Paper,
+  Popover,
+  Select,
   Stack,
   Tooltip,
   Typography,
 } from '@mui/material'
-import { DataGrid, type GridColDef } from '@mui/x-data-grid'
+import {
+  DataGrid,
+  type GridColDef,
+  type GridColumnGroupingModel,
+} from '@mui/x-data-grid'
 import { useQueryClient } from '@tanstack/react-query'
-import { useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   fetchOrdersJobDetails,
+  fetchOrdersMondayProgressDetails,
   ordersJobDetailsQueryKey,
   type OrdersOverviewOrder,
+  type OrdersOverviewResponse,
+  postOrdersMondayProgressStatusUpdate,
 } from '../../features/orders/api'
 import { formatCurrency, formatDate } from '../../lib/formatters'
+import { QUERY_KEYS } from '../../lib/queryKeys'
 import type { JobDetailsMode } from './JobDetailsDialog'
+import { type CutListPreviewHandle } from './CutListPreview'
 import { type ShopDrawingPreviewHandle } from './ShopDrawingPreview'
+import { resolveCutListUrl } from './cutListUrl'
 import { resolveShopDrawingUrl } from './shopDrawingUrl'
 import { formatProgress, resolveOrderProjectIds } from './utils'
 
 export type OrdersQuickBooksDrilldownMetric = 'purchaseOrders' | 'bills' | 'invoices'
+export type OrdersViewMode = 'standard' | 'admin'
+
+const mondayProgressBreakdownConfig = [
+  { key: 'design', label: 'Design', weight: 13 },
+  { key: 'baseform', label: 'Base/Form', weight: 13 },
+  { key: 'build', label: 'Build', weight: 13 },
+  { key: 'sandorlam', label: 'Sand or lam', weight: 13 },
+  { key: 'sealer', label: 'Sealer', weight: 12 },
+  { key: 'lacquer', label: 'Lacquer', weight: 12 },
+  { key: 'ready', label: 'Ready', weight: 12 },
+  { key: 'invoiced', label: 'Invoiced', weight: 12 },
+] as const
+
+function normalizeProgressStatusKey(value: string | null | undefined) {
+  return String(value ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '')
+    .trim()
+}
+
+function normalizeProgressStatusOptions(options: unknown) {
+  return [...new Set(
+    (Array.isArray(options) ? options : [])
+      .map((option) => {
+        if (typeof option === 'string') {
+          return String(option).trim()
+        }
+
+        if (option && typeof option === 'object') {
+          return String(option?.label ?? '').trim()
+        }
+
+        return ''
+      })
+      .filter(Boolean),
+  )]
+}
+
+function normalizeProgressStatusOptionStyles(optionStyles: unknown) {
+  const stylesByLabel = new Map<string, {
+    label: string
+    color: string | null
+    border: string | null
+    varName: string | null
+  }>()
+
+  ;(Array.isArray(optionStyles) ? optionStyles : []).forEach((entry) => {
+    const label = String(
+      (entry && typeof entry === 'object')
+        ? entry?.label
+        : entry,
+    ).trim()
+
+    if (!label || stylesByLabel.has(label)) {
+      return
+    }
+
+    const normalizedEntry = entry && typeof entry === 'object'
+      ? entry
+      : {}
+
+    stylesByLabel.set(label, {
+      label,
+      color: String(normalizedEntry?.color ?? '').trim() || null,
+      border: String(normalizedEntry?.border ?? '').trim() || null,
+      varName: String(
+        normalizedEntry?.varName
+        ?? normalizedEntry?.var_name
+        ?? '',
+      ).trim() || null,
+    })
+  })
+
+  return [...stylesByLabel.values()]
+}
+
+function hexToRgba(hexColor: string | null | undefined, alpha: number) {
+  const normalizedHex = String(hexColor ?? '').trim().replace('#', '')
+
+  if (!normalizedHex) {
+    return null
+  }
+
+  const expandedHex = normalizedHex.length === 3
+    ? normalizedHex.split('').map((char) => `${char}${char}`).join('')
+    : normalizedHex
+  if (!/^[0-9a-fA-F]{6}$/.test(expandedHex)) {
+    return null
+  }
+
+  const red = Number.parseInt(expandedHex.slice(0, 2), 16)
+  const green = Number.parseInt(expandedHex.slice(2, 4), 16)
+  const blue = Number.parseInt(expandedHex.slice(4, 6), 16)
+  const boundedAlpha = Math.max(0, Math.min(1, Number(alpha)))
+
+  return `rgba(${red}, ${green}, ${blue}, ${boundedAlpha})`
+}
+
+function resolveReadableTextColor(hexColor: string | null | undefined) {
+  const normalizedHex = String(hexColor ?? '').trim().replace('#', '')
+  const expandedHex = normalizedHex.length === 3
+    ? normalizedHex.split('').map((char) => `${char}${char}`).join('')
+    : normalizedHex
+
+  if (!/^[0-9a-fA-F]{6}$/.test(expandedHex)) {
+    return 'rgba(15, 23, 42, 0.9)'
+  }
+
+  const red = Number.parseInt(expandedHex.slice(0, 2), 16)
+  const green = Number.parseInt(expandedHex.slice(2, 4), 16)
+  const blue = Number.parseInt(expandedHex.slice(4, 6), 16)
+  const luminance = (0.299 * red + 0.587 * green + 0.114 * blue) / 255
+
+  return luminance > 0.65 ? 'rgba(15, 23, 42, 0.92)' : '#ffffff'
+}
+
+function resolveProgressStatusVisual(
+  statusLabel: string | null | undefined,
+  optionStyles: unknown,
+) {
+  const normalizedStatusLabel = String(statusLabel ?? '').trim()
+  const normalizedStatusLookup = normalizedStatusLabel.toLowerCase()
+  const styles = normalizeProgressStatusOptionStyles(optionStyles)
+  const matchingStyle = styles.find(
+    (entry) => entry.label.toLowerCase() === normalizedStatusLookup,
+  )
+
+  const mondayColor = matchingStyle?.color || null
+  const mondayBorder = matchingStyle?.border || mondayColor
+
+  if (!mondayColor) {
+    return {
+      borderColor: 'rgba(15, 23, 42, 0.18)',
+      panelBg: 'rgba(15, 23, 42, 0.02)',
+      selectBg: 'rgba(248, 250, 252, 0.85)',
+      textColor: 'rgba(15, 23, 42, 0.9)',
+      accentColor: 'rgba(15, 23, 42, 0.35)',
+    }
+  }
+
+  return {
+    borderColor: mondayBorder || 'rgba(15, 23, 42, 0.25)',
+    panelBg: hexToRgba(mondayColor, 0.14) || 'rgba(15, 23, 42, 0.03)',
+    selectBg: hexToRgba(mondayColor, 0.22) || 'rgba(241, 245, 249, 0.9)',
+    textColor: resolveReadableTextColor(mondayColor),
+    accentColor: mondayBorder || mondayColor,
+  }
+}
 
 function resolveSourceLabel(order: OrdersOverviewOrder) {
   if (order.source === 'quickbooks') {
@@ -80,6 +245,24 @@ function daysUntil(isoDate: string | null) {
   return Math.round((target.getTime() - today.getTime()) / 86400000)
 }
 
+function resolveLeadTimeSortValue(order: OrdersOverviewOrder) {
+  if (order.isShipped) {
+    return null
+  }
+
+  const targetDate = resolveLeadTimeDueDate(order)
+  if (!targetDate) {
+    return null
+  }
+
+  const [y, m, d] = targetDate.split('-').map(Number)
+  if (!y || !m || !d) {
+    return null
+  }
+
+  return Date.UTC(y, m - 1, d)
+}
+
 function toIsoDay(value: string | null | undefined) {
   const parsed = new Date(String(value ?? '').trim())
 
@@ -107,11 +290,61 @@ function formatMonthDay(value: string | null | undefined) {
   }).format(parsed)
 }
 
+function normalizeOrderCode(value: string | null | undefined) {
+  return String(value ?? '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '')
+}
+
+function resolveDisplayOrderName(order: OrdersOverviewOrder) {
+  const rawName = String(order.orderName ?? '').trim()
+  if (!rawName) {
+    return '—'
+  }
+
+  const rawOrderNumber = String(order.orderNumber ?? '').trim()
+  if (!rawOrderNumber) {
+    return rawName
+  }
+  const normalizedOrderNumber = normalizeOrderCode(rawOrderNumber)
+  if (!normalizedOrderNumber) {
+    return rawName
+  }
+
+  if (!rawName.includes('/')) {
+    return rawName
+  }
+
+  // Remove slash-delimited repeated codes like "9636 / ... / 9636" or "... / 25-R / ..."
+  // when the segment matches this row's order number (letters + numbers).
+  const segments = rawName
+    .split('/')
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0)
+
+  if (segments.length === 0) {
+    return rawName
+  }
+
+  const filteredSegments = segments.filter(
+    (segment) => normalizeOrderCode(segment) !== normalizedOrderNumber,
+  )
+
+  if (filteredSegments.length === 0 || filteredSegments.length === segments.length) {
+    return rawName
+  }
+
+  return filteredSegments.join(' / ')
+}
+
 type OrdersGridProps = {
   orders: OrdersOverviewOrder[]
+  viewMode: OrdersViewMode
+  canEditMondayStages: boolean
   lastRefreshedAt: string | null
   isLoading: boolean
   shopDrawingHandle: React.MutableRefObject<ShopDrawingPreviewHandle | null>
+  cutListHandle: React.MutableRefObject<CutListPreviewHandle | null>
   onOpenJobDialog: (order: OrdersOverviewOrder, mode: JobDetailsMode) => void
   onOpenQuickBooksDialog: (
     order: OrdersOverviewOrder,
@@ -123,15 +356,212 @@ type OrdersGridProps = {
 
 export function OrdersGrid({
   orders,
+  viewMode,
+  canEditMondayStages,
   lastRefreshedAt,
   isLoading,
   shopDrawingHandle,
+  cutListHandle,
   onOpenJobDialog,
   onOpenQuickBooksDialog,
   onCopyOrderNumber,
   onMissingMondayLink,
 }: OrdersGridProps) {
   const queryClient = useQueryClient()
+  const [statusPopoverAnchorEl, setStatusPopoverAnchorEl] = useState<HTMLElement | null>(null)
+  const [statusPopoverOrder, setStatusPopoverOrder] = useState<OrdersOverviewOrder | null>(null)
+  const [statusPopoverError, setStatusPopoverError] = useState<string | null>(null)
+  const [isStatusPopoverLoading, setIsStatusPopoverLoading] = useState(false)
+  const [updatingStatusColumnKey, setUpdatingStatusColumnKey] = useState<string | null>(null)
+
+  const handleOpenStatusPopover = useCallback((event: React.MouseEvent<HTMLElement>, order: OrdersOverviewOrder) => {
+    event.preventDefault()
+    event.stopPropagation()
+    setStatusPopoverError(null)
+    setStatusPopoverAnchorEl(event.currentTarget)
+    setStatusPopoverOrder(order)
+  }, [])
+
+  const handleCloseStatusPopover = useCallback(() => {
+    setStatusPopoverAnchorEl(null)
+    setStatusPopoverOrder(null)
+    setStatusPopoverError(null)
+    setIsStatusPopoverLoading(false)
+    setUpdatingStatusColumnKey(null)
+  }, [])
+
+  const applyProgressDetailsToOrder = useCallback(
+    (order: OrdersOverviewOrder, nextOrder: {
+      mondayStatus: string | null
+      rowStatus: string
+      progressPercent: number | null
+      progressStatusDetails: OrdersOverviewOrder['progressStatusDetails']
+      mondayUpdatedAt: string | null
+    }): OrdersOverviewOrder => ({
+      ...order,
+      mondayStatus: nextOrder.mondayStatus,
+      rowStatus: nextOrder.rowStatus,
+      progressPercent: nextOrder.progressPercent,
+      progressStatusDetails: nextOrder.progressStatusDetails,
+      mondayUpdatedAt: nextOrder.mondayUpdatedAt,
+    }),
+    [],
+  )
+
+  const updateOrdersOverviewCache = useCallback((mondayItemId: string, nextOrder: {
+    mondayStatus: string | null
+    rowStatus: string
+    progressPercent: number | null
+    progressStatusDetails: OrdersOverviewOrder['progressStatusDetails']
+    mondayUpdatedAt: string | null
+  }) => {
+    queryClient.setQueryData<OrdersOverviewResponse>(
+      QUERY_KEYS.ordersOverview,
+      (current) => {
+        if (!current || !Array.isArray(current.orders)) {
+          return current
+        }
+
+        return {
+          ...current,
+          orders: current.orders.map((order) => {
+            if (String(order.mondayItemId ?? '').trim() !== mondayItemId) {
+              return order
+            }
+
+            return applyProgressDetailsToOrder(order, nextOrder)
+          }),
+        }
+      },
+    )
+  }, [applyProgressDetailsToOrder, queryClient])
+
+  useEffect(() => {
+    const mondayItemId = String(statusPopoverOrder?.mondayItemId ?? '').trim()
+    const popoverOpen = Boolean(statusPopoverAnchorEl && mondayItemId)
+
+    if (!popoverOpen || !mondayItemId) {
+      return
+    }
+
+    let isActive = true
+    setStatusPopoverError(null)
+    setIsStatusPopoverLoading(true)
+
+    void fetchOrdersMondayProgressDetails(mondayItemId)
+      .then((response) => {
+        if (!isActive) {
+          return
+        }
+
+        setStatusPopoverOrder((currentOrder) => {
+          if (!currentOrder || String(currentOrder.mondayItemId ?? '').trim() !== mondayItemId) {
+            return currentOrder
+          }
+
+          return applyProgressDetailsToOrder(currentOrder, response.order)
+        })
+
+        updateOrdersOverviewCache(mondayItemId, response.order)
+      })
+      .catch((error: unknown) => {
+        if (!isActive) {
+          return
+        }
+
+        setStatusPopoverError(
+          error instanceof Error
+            ? error.message
+            : 'Could not load live Monday stage details.',
+        )
+      })
+      .finally(() => {
+        if (!isActive) {
+          return
+        }
+
+        setIsStatusPopoverLoading(false)
+      })
+
+    return () => {
+      isActive = false
+    }
+  }, [
+    applyProgressDetailsToOrder,
+    statusPopoverAnchorEl,
+    statusPopoverOrder?.mondayItemId,
+    updateOrdersOverviewCache,
+  ])
+
+  const handleUpdateStageStatus = useCallback(
+    async (entry: {
+      key: string
+      columnId: string | null
+      status: string | null
+      options: string[]
+    }, nextStatus: string) => {
+      const mondayItemId = String(statusPopoverOrder?.mondayItemId ?? '').trim()
+      const normalizedColumnId = String(entry?.columnId ?? '').trim()
+      const normalizedNextStatus = String(nextStatus ?? '').trim()
+      const normalizedCurrentStatus = String(entry?.status ?? '').trim()
+
+      if (!canEditMondayStages) {
+        setStatusPopoverError('Only managers and admins can edit Monday stage statuses.')
+        return
+      }
+
+      if (!mondayItemId || !normalizedColumnId) {
+        setStatusPopoverError('Could not resolve the Monday column for this stage.')
+        return
+      }
+
+      if (!normalizedNextStatus) {
+        setStatusPopoverError('Please choose a valid status value.')
+        return
+      }
+
+      if (normalizedNextStatus === normalizedCurrentStatus) {
+        return
+      }
+
+      setStatusPopoverError(null)
+      setUpdatingStatusColumnKey(entry.key)
+
+      try {
+        const response = await postOrdersMondayProgressStatusUpdate({
+          mondayItemId,
+          columnId: normalizedColumnId,
+          status: normalizedNextStatus,
+        })
+
+        setStatusPopoverOrder((currentOrder) => {
+          if (!currentOrder || String(currentOrder.mondayItemId ?? '').trim() !== mondayItemId) {
+            return currentOrder
+          }
+
+          return applyProgressDetailsToOrder(currentOrder, response.order)
+        })
+
+        updateOrdersOverviewCache(mondayItemId, response.order)
+        void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.ordersOverview })
+      } catch (error) {
+        setStatusPopoverError(
+          error instanceof Error
+            ? error.message
+            : 'Could not update Monday stage status.',
+        )
+      } finally {
+        setUpdatingStatusColumnKey(null)
+      }
+    },
+    [
+      applyProgressDetailsToOrder,
+      canEditMondayStages,
+      queryClient,
+      statusPopoverOrder,
+      updateOrdersOverviewCache,
+    ],
+  )
 
   // Prefetch job details on row hover so clicking the Order # / Status History
   // button shows the dialog instantly out of the React Query cache.
@@ -189,7 +619,7 @@ export function OrdersGrid({
     )
   }
 
-  const columns = useMemo<GridColDef<OrdersOverviewOrder>[]>(() => [
+  const adminColumns = useMemo<GridColDef<OrdersOverviewOrder>[]>(() => [
     {
       field: 'orderNumber',
       headerName: 'Order #',
@@ -254,8 +684,8 @@ export function OrdersGrid({
     {
       field: 'orderName',
       headerName: 'Order Name',
-      minWidth: 260,
-      flex: 1,
+      minWidth: 190,
+      width: 220,
       sortable: false,
       renderCell: ({ row }) => (
         <Typography
@@ -263,7 +693,103 @@ export function OrdersGrid({
           sx={{ fontSize: '0.78rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
           title={resolveSourceLabel(row)}
         >
-          {row.orderName || '—'}
+          {resolveDisplayOrderName(row)}
+        </Typography>
+      ),
+    },
+    {
+      field: 'poNumber',
+      headerName: 'PO Number',
+      minWidth: 130,
+      width: 140,
+      sortable: false,
+      renderCell: ({ row }) => (
+        <Typography
+          variant="body2"
+          sx={{ fontSize: '0.78rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+          title={row.poNumber ?? ''}
+        >
+          {row.poNumber || '—'}
+        </Typography>
+      ),
+    },
+    {
+      field: 'description',
+      headerName: 'Description',
+      minWidth: 220,
+      width: 260,
+      sortable: false,
+      renderCell: ({ row }) => (
+        <Typography
+          variant="body2"
+          sx={{ fontSize: '0.78rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+          title={row.description ?? ''}
+        >
+          {row.description || '—'}
+        </Typography>
+      ),
+    },
+    {
+      field: 'notes',
+      headerName: 'Notes',
+      minWidth: 220,
+      width: 260,
+      sortable: false,
+      renderCell: ({ row }) => (
+        <Typography
+          variant="body2"
+          sx={{ fontSize: '0.78rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+          title={row.notes ?? ''}
+        >
+          {row.notes || '—'}
+        </Typography>
+      ),
+    },
+    {
+      field: 'shipTo',
+      headerName: 'Ship To',
+      minWidth: 180,
+      width: 220,
+      sortable: false,
+      renderCell: ({ row }) => (
+        <Typography
+          variant="body2"
+          sx={{ fontSize: '0.78rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+          title={row.shipTo ?? ''}
+        >
+          {row.shipTo || '—'}
+        </Typography>
+      ),
+    },
+    {
+      field: 'shipNotes',
+      headerName: 'Ship Notes',
+      minWidth: 220,
+      width: 260,
+      sortable: false,
+      renderCell: ({ row }) => (
+        <Typography
+          variant="body2"
+          sx={{ fontSize: '0.78rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+          title={row.shipNotes ?? ''}
+        >
+          {row.shipNotes || '—'}
+        </Typography>
+      ),
+    },
+    {
+      field: 'bol',
+      headerName: 'BOL',
+      minWidth: 130,
+      width: 150,
+      sortable: false,
+      renderCell: ({ row }) => (
+        <Typography
+          variant="body2"
+          sx={{ fontSize: '0.78rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+          title={row.bol ?? ''}
+        >
+          {row.bol || '—'}
         </Typography>
       ),
     },
@@ -276,6 +802,7 @@ export function OrdersGrid({
       sortable: false,
       renderCell: ({ row }) => {
         const url = resolveShopDrawingUrl(row)
+        const canHoverPreview = Boolean(url && String(row.mondayItemId ?? '').trim())
         if (!url) {
           return <Typography variant="body2" color="text.secondary">—</Typography>
         }
@@ -283,7 +810,19 @@ export function OrdersGrid({
           <IconButton
             size="small"
             aria-label="Drawing preview"
-            title="Click to open drawing preview."
+            title={canHoverPreview ? 'Hover for quick preview. Click to open full popup.' : 'Click to open drawing preview.'}
+            onMouseEnter={(event) => {
+              if (!canHoverPreview) {
+                return
+              }
+              shopDrawingHandle.current?.openHover(event, row)
+            }}
+            onMouseLeave={() => {
+              if (!canHoverPreview) {
+                return
+              }
+              shopDrawingHandle.current?.leaveHoverTrigger()
+            }}
             onKeyDown={(event) => {
               if (event.key === 'Enter' || event.key === ' ') {
                 event.preventDefault()
@@ -299,6 +838,57 @@ export function OrdersGrid({
               event.stopPropagation()
               shopDrawingHandle.current?.closeHover()
               void shopDrawingHandle.current?.openDialog(row)
+            }}
+          >
+            <PictureAsPdfRoundedIcon fontSize="inherit" />
+          </IconButton>
+        )
+      },
+    },
+    {
+      field: 'cutListUrl',
+      headerName: 'Cut List',
+      width: 84,
+      align: 'center',
+      headerAlign: 'center',
+      sortable: false,
+      renderCell: ({ row }) => {
+        const url = resolveCutListUrl(row)
+        const canHoverPreview = Boolean(url && String(row.mondayItemId ?? '').trim())
+        if (!url) {
+          return <Typography variant="body2" color="text.secondary">—</Typography>
+        }
+        return (
+          <IconButton
+            size="small"
+            aria-label="Cut list preview"
+            title={canHoverPreview ? 'Hover for quick preview. Click to open full popup.' : 'Click to open cut list preview.'}
+            onMouseEnter={(event) => {
+              if (!canHoverPreview) {
+                return
+              }
+              cutListHandle.current?.openHover(event, row)
+            }}
+            onMouseLeave={() => {
+              if (!canHoverPreview) {
+                return
+              }
+              cutListHandle.current?.leaveHoverTrigger()
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault()
+                event.stopPropagation()
+              }
+            }}
+            onClick={(event) => {
+              if (event.detail === 0) {
+                return
+              }
+              event.preventDefault()
+              event.stopPropagation()
+              cutListHandle.current?.closeHover()
+              void cutListHandle.current?.openDialog(row)
             }}
           >
             <PictureAsPdfRoundedIcon fontSize="inherit" />
@@ -334,23 +924,71 @@ export function OrdersGrid({
               label={statusLabel}
               color={row.isShipped ? 'success' : 'default'}
               variant={row.isShipped ? 'filled' : 'outlined'}
+              onClick={(event) => {
+                if (!row.hasMondayRecord) {
+                  return
+                }
+                handleOpenStatusPopover(event, row)
+              }}
+              clickable={row.hasMondayRecord}
             />
           </Tooltip>
         )
       },
     },
     {
-      field: 'dueDate',
-      headerName: 'Due Date',
-      minWidth: 120,
-      renderCell: ({ row }) => (row.dueDate ? formatDate(row.dueDate) : '—'),
+      field: 'managerReadyPercent',
+      headerName: 'Status History',
+      minWidth: 170,
+      type: 'number',
+      valueGetter: (_value, row) => {
+        const readyPercent = Number(row.managerReadyPercent)
+        return Number.isFinite(readyPercent) ? readyPercent : null
+      },
+      renderCell: ({ row }) => {
+        const hasManagerStatus = Number.isFinite(Number(row.managerReadyPercent))
+        const historyCount = Array.isArray(row.statusHistory) ? row.statusHistory.length : 0
+        const label = `${hasManagerStatus ? formatProgress(row.managerReadyPercent) : 'History'} (${historyCount})`
+
+        if (!row.hasMondayRecord || (!hasManagerStatus && historyCount === 0)) {
+          return <Typography variant="body2" color="text.secondary">—</Typography>
+        }
+
+        return (
+          <Button
+            size="small"
+            variant="text"
+            startIcon={<HistoryRoundedIcon fontSize="small" />}
+            sx={{ minWidth: 0, px: 0, textTransform: 'none' }}
+            title={row.managerReadyDate ? `Last update: ${formatDate(row.managerReadyDate)}` : undefined}
+            onMouseEnter={() => prefetchJobDetails(row)}
+            onClick={() => onOpenJobDialog(row, 'history')}
+          >
+            {label}
+          </Button>
+        )
+      },
     },
     {
       field: 'leadTimeDays',
       headerName: 'Lead Time',
       minWidth: 140,
-      sortable: false,
+      type: 'number',
+      valueGetter: (_value, row) => resolveLeadTimeSortValue(row),
       renderCell: ({ row }) => {
+        if (row.isShipped) {
+          const shippedDate = row.shippedAt ? formatDate(row.shippedAt) : null
+          const shippedLabel = shippedDate ? `Shipped (${shippedDate})` : 'Shipped'
+
+          return (
+            <Tooltip title={shippedDate ? `Shipped on ${shippedDate}` : 'Already shipped'}>
+              <Typography variant="body2" fontWeight={700} sx={{ color: 'success.main', cursor: 'help' }}>
+                {shippedLabel}
+              </Typography>
+            </Tooltip>
+          )
+        }
+
         const targetDate = resolveLeadTimeDueDate(row)
         if (!targetDate) {
           return <Typography variant="body2" color="text.secondary">—</Typography>
@@ -554,44 +1192,167 @@ export function OrdersGrid({
         )
       },
     },
-    {
-      field: 'managerReadyPercent',
-      headerName: 'Status History',
-      minWidth: 170,
-      sortable: false,
-      renderCell: ({ row }) => {
-        const hasManagerStatus = Number.isFinite(Number(row.managerReadyPercent))
-        const historyCount = Array.isArray(row.statusHistory) ? row.statusHistory.length : 0
-        const label = `${hasManagerStatus ? formatProgress(row.managerReadyPercent) : 'History'} (${historyCount})`
-
-        if (!row.hasMondayRecord || (!hasManagerStatus && historyCount === 0)) {
-          return <Typography variant="body2" color="text.secondary">—</Typography>
-        }
-
-        return (
-          <Button
-            size="small"
-            variant="text"
-            startIcon={<HistoryRoundedIcon fontSize="small" />}
-            sx={{ minWidth: 0, px: 0, textTransform: 'none' }}
-            title={row.managerReadyDate ? `Last update: ${formatDate(row.managerReadyDate)}` : undefined}
-            onMouseEnter={() => prefetchJobDetails(row)}
-            onClick={() => onOpenJobDialog(row, 'history')}
-          >
-            {label}
-          </Button>
-        )
-      },
-    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
   ], [
     lastRefreshedAt,
     shopDrawingHandle,
+    cutListHandle,
     onOpenJobDialog,
     onOpenQuickBooksDialog,
     onCopyOrderNumber,
     onMissingMondayLink,
+    handleOpenStatusPopover,
   ])
+
+  const standardColumns = useMemo<GridColDef<OrdersOverviewOrder>[]>(() => {
+    const standardColumnSpecs = [
+      { field: 'orderNumber', label: 'Order' },
+      { field: 'orderName', label: 'Order Name' },
+      { field: 'poNumber', label: 'PO Number' },
+      { field: 'description', label: 'Description' },
+      { field: 'notes', label: 'Notes' },
+      { field: 'shipTo', label: 'Ship To' },
+      { field: 'shipNotes', label: 'Ship Notes' },
+      { field: 'bol', label: 'BOL' },
+      { field: 'shopDrawingUrl', label: 'Drawings' },
+      { field: 'cutListUrl', label: 'Cut List' },
+      { field: 'orderDate', label: 'Order Date' },
+      { field: 'leadTimeDays', label: 'Lead Time' },
+      { field: 'managerReadyPercent', label: 'Status History' },
+      { field: 'rowStatus', label: 'Monday Status' },
+    ] as const
+
+    const adminColumnsByField = new Map(
+      adminColumns.map((column) => [String(column.field), column]),
+    )
+
+    const orderedColumns: GridColDef<OrdersOverviewOrder>[] = []
+
+    standardColumnSpecs.forEach((spec) => {
+      const baseColumn = adminColumnsByField.get(spec.field)
+
+      if (!baseColumn) {
+        return
+      }
+
+      orderedColumns.push({
+        ...baseColumn,
+        headerName: spec.label,
+      })
+    })
+
+    return orderedColumns
+  }, [adminColumns])
+
+  const adminColumnGroupingModel = useMemo<GridColumnGroupingModel>(
+    () => [
+      {
+        groupId: 'orderInfo',
+        headerName: 'Order Info',
+        children: [
+          { field: 'orderNumber' },
+          { field: 'orderName' },
+          { field: 'poNumber' },
+          { field: 'description' },
+          { field: 'notes' },
+          { field: 'shipTo' },
+          { field: 'shipNotes' },
+          { field: 'bol' },
+          { field: 'shopDrawingUrl' },
+          { field: 'cutListUrl' },
+          { field: 'rowStatus' },
+          { field: 'managerReadyPercent' },
+          { field: 'leadTimeDays' },
+          { field: 'orderDate' },
+        ],
+      },
+      {
+        groupId: 'accounting',
+        headerName: 'Accounting',
+        children: [
+          { field: 'invoiceNumber' },
+          { field: 'billedAmount' },
+          { field: 'billBalanceAmount' },
+          { field: 'remainingToBill' },
+          { field: 'poAmount' },
+          { field: 'invoiceAmount' },
+          { field: 'amountOwed' },
+          { field: 'paidInFull' },
+        ],
+      },
+      {
+        groupId: 'reports',
+        headerName: 'Reports',
+        children: [
+          { field: 'totalHours' },
+          { field: 'totalLaborCost' },
+          { field: 'totalProfit' },
+        ],
+      },
+    ],
+    [],
+  )
+
+  const columns = viewMode === 'admin' ? adminColumns : standardColumns
+  const columnGroupingModel = viewMode === 'admin' ? adminColumnGroupingModel : undefined
+  const isStandardView = viewMode === 'standard'
+  const statusPopoverOpen = Boolean(statusPopoverAnchorEl && statusPopoverOrder)
+
+  const statusPopoverBreakdown = useMemo(() => {
+    const details = Array.isArray(statusPopoverOrder?.progressStatusDetails)
+      ? statusPopoverOrder.progressStatusDetails
+      : []
+    const byKey = new Map<
+      string,
+      {
+        status: string | null
+        columnId: string | null
+        options: string[]
+        optionStyles: Array<{
+          label: string
+          color: string | null
+          border: string | null
+          varName: string | null
+        }>
+      }
+    >()
+
+    details.forEach((entry) => {
+      const status = String(entry?.status ?? '').trim() || null
+      const columnId = String(entry?.columnId ?? '').trim() || null
+      const options = normalizeProgressStatusOptions(entry?.options)
+      const optionStyles = normalizeProgressStatusOptionStyles(entry?.optionStyles)
+
+      if (status && !options.includes(status)) {
+        options.unshift(status)
+      }
+
+      const entryKeys = [
+        normalizeProgressStatusKey(entry?.key),
+        normalizeProgressStatusKey(entry?.label),
+      ]
+
+      entryKeys.forEach((entryKey) => {
+        if (!entryKey) {
+          return
+        }
+        byKey.set(entryKey, {
+          status,
+          columnId,
+          options,
+          optionStyles,
+        })
+      })
+    })
+
+    return mondayProgressBreakdownConfig.map((config) => ({
+      ...config,
+      status: byKey.get(config.key)?.status ?? null,
+      columnId: byKey.get(config.key)?.columnId ?? null,
+      options: byKey.get(config.key)?.options ?? [],
+      optionStyles: byKey.get(config.key)?.optionStyles ?? [],
+    }))
+  }, [statusPopoverOrder])
 
   const prioritizedRows = useMemo(() => {
     if (orders.length < 2) {
@@ -612,11 +1373,13 @@ export function OrdersGrid({
       <DataGrid
         rows={prioritizedRows}
         columns={columns}
+        columnGroupingModel={columnGroupingModel}
+        columnGroupHeaderHeight={viewMode === 'admin' ? 30 : undefined}
         loading={isLoading}
         disableRowSelectionOnClick
-        density="compact"
-        rowHeight={38}
-        columnHeaderHeight={54}
+        density={isStandardView ? 'standard' : 'compact'}
+        rowHeight={isStandardView ? 52 : 38}
+        columnHeaderHeight={isStandardView ? 52 : 54}
         pageSizeOptions={[25, 50, 100]}
         initialState={{
           pagination: {
@@ -635,34 +1398,233 @@ export function OrdersGrid({
         localeText={{ noRowsLabel: 'No orders to show.' }}
         sx={{
           border: 0,
-          fontSize: '0.74rem',
+          fontSize: isStandardView ? '0.79rem' : '0.74rem',
           '& .MuiDataGrid-columnHeaders': {
             borderBottom: '1px solid rgba(15, 23, 42, 0.14)',
             backgroundColor: 'rgba(15, 23, 42, 0.04)',
           },
-          '& .MuiDataGrid-cell': { alignItems: 'center', py: 0 },
-          '& .MuiDataGrid-columnHeader': { py: 0.25 },
+          '& .MuiDataGrid-cell': {
+            alignItems: 'center',
+            py: isStandardView ? 0.55 : 0,
+          },
+          '& .MuiDataGrid-columnHeader': { py: isStandardView ? 0.55 : 0.25 },
           '& .MuiDataGrid-columnSeparator': { color: 'rgba(15, 23, 42, 0.14)' },
           '& .MuiDataGrid-columnHeaderTitle': {
             fontWeight: 700,
-            fontSize: '0.74rem',
+            fontSize: isStandardView ? '0.8rem' : '0.74rem',
             letterSpacing: '0.01em',
             lineHeight: 1,
           },
+          '& .MuiDataGrid-columnHeader--filledGroup .MuiDataGrid-columnHeaderTitle': {
+            fontSize: isStandardView ? '0.7rem' : '0.66rem',
+            fontWeight: 800,
+            letterSpacing: '0.05em',
+            textTransform: 'uppercase',
+          },
           '& .MuiDataGrid-cell .MuiButton-root': {
-            minHeight: 20,
-            fontSize: '0.7rem',
-            px: 0.45,
-            py: 0,
+            minHeight: isStandardView ? 26 : 20,
+            fontSize: isStandardView ? '0.74rem' : '0.7rem',
+            px: isStandardView ? 0.7 : 0.45,
+            py: isStandardView ? 0.2 : 0,
             lineHeight: 1,
           },
-          '& .MuiDataGrid-cell .MuiChip-root': { height: 17, fontSize: '0.66rem' },
-          '& .MuiDataGrid-cell .MuiIconButton-root': { padding: 1 },
-          '& .MuiDataGrid-cell .MuiSvgIcon-root': { fontSize: '0.88rem' },
+          '& .MuiDataGrid-cell .MuiChip-root': {
+            height: isStandardView ? 21 : 17,
+            fontSize: isStandardView ? '0.7rem' : '0.66rem',
+          },
+          '& .MuiDataGrid-cell .MuiIconButton-root': {
+            padding: isStandardView ? 1.2 : 1,
+          },
+          '& .MuiDataGrid-cell .MuiSvgIcon-root': {
+            fontSize: isStandardView ? '0.95rem' : '0.88rem',
+          },
           '& .orders-row--hazard': { backgroundColor: 'rgba(237, 108, 2, 0.08)' },
           '& .orders-row--quickbooks-only': { backgroundColor: 'rgba(2, 136, 209, 0.06)' },
         }}
       />
+
+      <Popover
+        open={statusPopoverOpen}
+        anchorEl={statusPopoverAnchorEl}
+        onClose={handleCloseStatusPopover}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+        transformOrigin={{ vertical: 'top', horizontal: 'left' }}
+        PaperProps={{
+          sx: {
+            mt: 0.5,
+            p: 1.35,
+            width: { xs: '92vw', md: 760 },
+            maxWidth: '92vw',
+            borderRadius: 2,
+          },
+        }}
+      >
+        <Stack spacing={1.15}>
+          <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" alignItems="center">
+            <Typography variant="subtitle2" fontWeight={800}>
+              Monday Stage Breakdown
+            </Typography>
+            <Chip
+              size="small"
+              label={`Progress: ${typeof statusPopoverOrder?.progressPercent === 'number' ? `${statusPopoverOrder.progressPercent}%` : '—'}`}
+              color="primary"
+              variant="outlined"
+            />
+            <Chip
+              size="small"
+              label={`Status: ${statusPopoverOrder?.rowStatus || '—'}`}
+              variant="outlined"
+            />
+          </Stack>
+
+          {statusPopoverError ? <Alert severity="error">{statusPopoverError}</Alert> : null}
+
+          {!canEditMondayStages ? (
+            <Alert severity="info">Only managers and admins can update Monday stage statuses.</Alert>
+          ) : null}
+
+          {isStatusPopoverLoading ? (
+            <Stack direction="row" spacing={0.8} alignItems="center">
+              <CircularProgress size={16} />
+              <Typography variant="caption" color="text.secondary">
+                Loading live Monday stage values...
+              </Typography>
+            </Stack>
+          ) : null}
+
+          <Box
+            sx={{
+              display: 'grid',
+              gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', md: 'repeat(4, minmax(0, 1fr))' },
+              gap: 1,
+            }}
+          >
+            {statusPopoverBreakdown.map((entry) => {
+              const selectedStatus = String(entry.status ?? '').trim()
+              const options = normalizeProgressStatusOptions(entry.options)
+              const optionStyles = normalizeProgressStatusOptionStyles(entry.optionStyles)
+              const statusColumnId = String(entry.columnId ?? '').trim() || null
+              const visual = resolveProgressStatusVisual(selectedStatus, optionStyles)
+              const isUpdatingThisStage = updatingStatusColumnKey === entry.key
+              const dropdownDisabled =
+                !canEditMondayStages
+                || isStatusPopoverLoading
+                || !statusColumnId
+                || options.length === 0
+                || Boolean(updatingStatusColumnKey)
+
+              return (
+                <Paper
+                  key={entry.key}
+                  variant="outlined"
+                  sx={{
+                    px: 1,
+                    py: 0.8,
+                    borderRadius: 1.5,
+                    bgcolor: visual.panelBg,
+                    borderColor: visual.borderColor,
+                    boxShadow: `inset 3px 0 0 ${visual.accentColor}`,
+                  }}
+                >
+                  <Stack spacing={0.55}>
+                    <Stack direction="row" justifyContent="space-between" alignItems="center">
+                      <Typography variant="caption" fontWeight={800}>
+                        {entry.label}
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary" fontWeight={700}>
+                        {entry.weight}%
+                      </Typography>
+                    </Stack>
+                    <FormControl size="small" fullWidth>
+                      <Select
+                        value={selectedStatus}
+                        displayEmpty
+                        disabled={dropdownDisabled}
+                        onChange={(event) => {
+                          const nextStatus = String(event.target.value ?? '').trim()
+
+                          if (!nextStatus) {
+                            return
+                          }
+
+                          void handleUpdateStageStatus(
+                            {
+                              key: entry.key,
+                              columnId: statusColumnId,
+                              status: selectedStatus || null,
+                              options,
+                            },
+                            nextStatus,
+                          )
+                        }}
+                        renderValue={(value) => {
+                          const normalizedValue = String(value ?? '').trim()
+                          return normalizedValue || 'No value'
+                        }}
+                        sx={{
+                          minHeight: 33,
+                          color: visual.textColor,
+                          bgcolor: visual.selectBg,
+                          '& .MuiSelect-icon': {
+                            color: visual.textColor,
+                          },
+                          '& .MuiOutlinedInput-notchedOutline': {
+                            borderColor: visual.borderColor,
+                          },
+                          '&:hover .MuiOutlinedInput-notchedOutline': {
+                            borderColor: visual.accentColor,
+                          },
+                          '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                            borderColor: visual.accentColor,
+                          },
+                        }}
+                      >
+                        <MenuItem value="" disabled>
+                          {options.length > 0 ? 'Select status' : 'No options available'}
+                        </MenuItem>
+                        {selectedStatus && !options.includes(selectedStatus) ? (
+                          <MenuItem value={selectedStatus}>{selectedStatus}</MenuItem>
+                        ) : null}
+                        {options.map((option) => {
+                          const optionStyle = optionStyles.find(
+                            (style) => style.label.toLowerCase() === option.toLowerCase(),
+                          )
+                          const optionAccent = optionStyle?.border || optionStyle?.color
+
+                          return (
+                            <MenuItem
+                              key={`${entry.key}-${option}`}
+                              value={option}
+                              sx={
+                                optionAccent
+                                  ? {
+                                    borderLeft: `3px solid ${optionAccent}`,
+                                  }
+                                  : undefined
+                              }
+                            >
+                              {option}
+                            </MenuItem>
+                          )
+                        })}
+                      </Select>
+                    </FormControl>
+
+                    {isUpdatingThisStage ? (
+                      <Stack direction="row" spacing={0.6} alignItems="center">
+                        <CircularProgress size={12} />
+                        <Typography variant="caption" color="text.secondary">
+                          Updating Monday...
+                        </Typography>
+                      </Stack>
+                    ) : null}
+                  </Stack>
+                </Paper>
+              )
+            })}
+          </Box>
+        </Stack>
+      </Popover>
     </Paper>
   )
 }
