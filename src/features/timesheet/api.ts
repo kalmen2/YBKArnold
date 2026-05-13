@@ -116,6 +116,11 @@ type UpsertOrderProgressInput = {
   readyPercent: number
 }
 
+type ReportTimesheetOrderMismatchInput = {
+  date: string
+  orderNumbers: string[]
+}
+
 import type { MondayDashboardSnapshot } from '../dashboard/api'
 import { apiRequest } from '../api-client'
 
@@ -208,6 +213,13 @@ export function upsertMissingWorkerReview(input: UpsertMissingWorkerReviewInput)
 export function upsertOrderProgress(input: UpsertOrderProgressInput) {
   return apiRequest<{ progress: TimesheetOrderProgress }>('/api/timesheet/order-progress', {
     method: 'PUT',
+    body: JSON.stringify(input),
+  })
+}
+
+export function reportTimesheetOrderMismatch(input: ReportTimesheetOrderMismatchInput) {
+  return apiRequest<{ ok: boolean }>('/api/timesheet/order-mismatch-alert', {
+    method: 'POST',
     body: JSON.stringify(input),
   })
 }

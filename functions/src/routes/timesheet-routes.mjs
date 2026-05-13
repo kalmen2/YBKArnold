@@ -2,6 +2,7 @@ import { AppError } from '../utils/app-error.mjs'
 
 export function registerTimesheetRoutes(app, deps) {
   const {
+    authApprovalApproved,
     fetchMondayDashboardSnapshot,
     allocateWorkerNumbers,
     ensureEntriesHavePayRates,
@@ -11,14 +12,19 @@ export function registerTimesheetRoutes(app, deps) {
     isDashboardRefreshRequested,
     mondayShippedBoardId,
     mondayShippedBoardUrl,
+    mobileAlertTargetModeSelected,
     normalizeJobName,
+    normalizeOptionalShortText,
     normalizeStageName,
+    normalizeEmail,
     randomUUID,
     requireAdminRole,
     requireManagerOrAdminRole,
     requireApprovedLinkedWorker,
     requireFirebaseAuth,
     setDashboardSnapshotCache,
+    toPublicAuthUser,
+    toPublicMobileAlert,
     validateEntryFields,
     validateEntryInput,
     validateWorkerInput,
@@ -1188,6 +1194,103 @@ app.post('/api/timesheet/entries/sync', requireFirebaseAuth, async (req, res, ne
       return next(buildDuplicateKeyError())
     }
 
+    next(error)
+  }
+})
+
+app.post('/api/timesheet/order-mismatch-alert', requireFirebaseAuth, async (req, res, next) => {
+  try {
+    const { authUsersCollection, mobileAlertsCollection } = await getCollections()
+    const publicUser = toPublicAuthUser(req.authUser)
+
+    if (!publicUser?.isApproved) {
+      return res.status(403).json({
+        error: 'Approved access is required.',
+      })
+    }
+
+    const date = String(req.body?.date ?? '').trim()
+    const orderNumbers = Array.from(
+      new Set(
+        (Array.isArray(req.body?.orderNumbers) ? req.body.orderNumbers : [])
+          .map((value) => normalizeOptionalShortText(value, 120))
+          .filter(Boolean),
+      ),
+    )
+
+    if (!date) {
+      return res.status(400).json({ error: 'date is required.' })
+    }
+
+    if (!isoDatePattern.test(date)) {
+      return res.status(400).json({ error: 'date must be yyyy-mm-dd.' })
+    }
+
+    if (orderNumbers.length === 0) {
+      return res.status(400).json({ error: 'orderNumbers must include at least one value.' })
+    }
+
+    const adminUsers = await authUsersCollection
+      .find(
+        {
+          approvalStatus: authApprovalApproved,
+          role: 'admin',
+        },
+        {
+          projection: {
+            _id: 0,
+          },
+        },
+      )
+      .toArray()
+    const recipientUids = adminUsers
+      .map((document) => toPublicAuthUser(document))
+      .filter((user) => Boolean(user?.uid && user.isApproved && user.isAdmin))
+      .map((user) => String(user.uid))
+
+    if (recipientUids.length === 0) {
+      return res.status(404).json({ error: 'No approved admin recipients found.' })
+    }
+
+    const now = new Date().toISOString()
+    const orderListText = orderNumbers.join(', ')
+    const senderLabel = normalizeOptionalShortText(publicUser.displayName, 120)
+      || normalizeOptionalShortText(publicUser.email, 200)
+      || 'A worker'
+    const alertDocument = {
+      id: randomUUID(),
+      title: 'Timesheet Order Mismatch',
+      message: `${senderLabel} saved a daily sheet for ${date} with unmatched order numbers: ${orderListText}`,
+      isUpdate: false,
+      targetMode: mobileAlertTargetModeSelected,
+      targetUserUids: recipientUids,
+      createdByUid: String(publicUser.uid ?? '').trim() || null,
+      createdByEmail: normalizeEmail(publicUser.email) || null,
+      delivery: {
+        targetUserCount: recipientUids.length,
+        pushTokenCount: 0,
+        pushAcceptedCount: 0,
+        pushErrorCount: 0,
+        errorSamples: [],
+      },
+      metadata: {
+        type: 'timesheet_order_mismatch',
+        date,
+        orderNumbers,
+        sourceUid: String(publicUser.uid ?? '').trim() || null,
+        sourceEmail: normalizeEmail(publicUser.email) || null,
+      },
+      createdAt: now,
+      updatedAt: now,
+    }
+
+    await mobileAlertsCollection.insertOne(alertDocument)
+
+    return res.status(201).json({
+      ok: true,
+      alert: toPublicMobileAlert(alertDocument),
+    })
+  } catch (error) {
     next(error)
   }
 })

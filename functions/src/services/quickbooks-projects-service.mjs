@@ -9,6 +9,12 @@ const quickBooksTokenDocId = 'primary'
 const quickBooksAccessTokenRefreshSkewMs = 2 * 60 * 1000
 const quickBooksQueryPageSize = 500
 const quickBooksMaxQueryPages = 8
+const quickBooksExplicitNonOrderProjectTokens = [
+  'company purchase',
+  'general expense',
+  'payroll',
+  'repair',
+]
 
 function normalizeText(value, maxLength = 500) {
   return String(value ?? '').trim().slice(0, maxLength)
@@ -132,18 +138,56 @@ function splitQuickBooksProjectLabel(projectName, fallbackProjectId) {
   }
 }
 
+function normalizeProjectToken(value) {
+  return normalizeText(value, 260)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+}
+
+function isExplicitNonOrderQuickBooksProject(project) {
+  const normalizedCandidates = [
+    normalizeProjectToken(project?.projectName),
+    normalizeProjectToken(project?.displayName),
+    normalizeProjectToken(project?.projectId),
+  ].filter(Boolean)
+
+  if (normalizedCandidates.length === 0) {
+    return false
+  }
+
+  return normalizedCandidates.some((candidate) => (
+    quickBooksExplicitNonOrderProjectTokens.some((token) => candidate === token || candidate.includes(token))
+  ))
+}
+
+function normalizeOrderNumberCandidate(value) {
+  return normalizeText(value, 120)
+    .toUpperCase()
+    .replace(/\s+/g, '')
+}
+
+function isCanonicalOrderNumber(value) {
+  const normalized = normalizeOrderNumberCandidate(value)
+  return normalized ? /^[0-9]{4,}([A-Z]|-[A-Z])?$/.test(normalized) : false
+}
+
 function resolveOrderNumberFromProject(project) {
+  if (isExplicitNonOrderQuickBooksProject(project)) {
+    return null
+  }
+
   const baseProjectNumber = splitQuickBooksProjectLabel(
     project?.projectName,
     project?.projectId,
   ).projectNumber
-  const normalizedBase = normalizeText(baseProjectNumber, 120)
+  const normalizedBase = normalizeOrderNumberCandidate(baseProjectNumber)
 
-  if (normalizedBase) {
+  if (isCanonicalOrderNumber(normalizedBase)) {
     return normalizedBase
   }
 
-  return normalizeText(project?.projectId, 120) || null
+  return null
 }
 
 async function exchangeRefreshToken({ clientId, clientSecret, refreshToken }) {

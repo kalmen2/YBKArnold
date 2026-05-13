@@ -133,6 +133,8 @@ const projectMetricTitleByType: Record<ProjectMetricType, string> = {
 const nonOrderQuickBooksProjectMatchers = [
   'company purchase',
   'general expense',
+  'payroll',
+  'repair',
 ]
 
 function normalizeQuickBooksProjectMatcher(value: string | null | undefined) {
@@ -1598,7 +1600,7 @@ export default function QuickBooksPage() {
               </Typography>
 
               <Typography variant="body2" color="text.secondary">
-                Company Purchase and General Expense are tracked here and excluded from Orders.
+                Company Purchase, General Expense, Payroll, and Repair are tracked here and excluded from Orders.
               </Typography>
 
               <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>

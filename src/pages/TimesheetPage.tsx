@@ -48,10 +48,12 @@ import {
   deleteEntry,
   deleteStage,
   fetchTimesheetBootstrap,
+  reportTimesheetOrderMismatch,
   upsertMissingWorkerReview,
   upsertOrderProgress,
   reorderStages,
   syncDailyEntries,
+  type SyncDailyEntryRowInput,
   type TimesheetEntry,
   type TimesheetOrderProgress,
   type TimesheetStage,
@@ -1795,11 +1797,89 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
       return
     }
 
+    const findUnmatchedOrderNumbers = (rows: SyncDailyEntryRowInput[]) => {
+      const unmatchedOrderNumbers = new Set<string>()
+
+      rows.forEach((row) => {
+        const jobName = String(row.jobName ?? '').trim()
+        const jobKey = normalizeJobName(jobName)
+        const jobDigits = extractDigits(jobName)
+        const isGeneralJob = Boolean(jobDigits && /^0+$/.test(jobDigits))
+
+        if (!jobKey || isGeneralJob) {
+          return
+        }
+
+        const primaryMatch =
+          mondayOrderLookup.primaryByNormalizedKey.get(jobKey)
+          || (jobDigits ? mondayOrderLookup.primaryByDigits.get(jobDigits) : null)
+          || null
+        const shippedMatch =
+          mondayOrderLookup.shippedByNormalizedKey.get(jobKey)
+          || (jobDigits ? mondayOrderLookup.shippedByDigits.get(jobDigits) : null)
+          || null
+
+        if (!primaryMatch && !shippedMatch) {
+          unmatchedOrderNumbers.add(jobDigits || jobName)
+        }
+      })
+
+      return [...unmatchedOrderNumbers].sort((left, right) => left.localeCompare(right))
+    }
+
+    const unmatchedOrderNumbers = findUnmatchedOrderNumbers(syncRows)
+
+    if (unmatchedOrderNumbers.length > 0) {
+      const preview = unmatchedOrderNumbers.slice(0, 8)
+      const extraCount = unmatchedOrderNumbers.length - preview.length
+      const confirmMessage = [
+        'Some entered order numbers were not found in Orders Track or Shipped:',
+        preview.join(', '),
+        extraCount > 0 ? `+${extraCount} more` : '',
+        '',
+        'Do you want to save anyway? Admin will be notified.',
+      ]
+        .filter(Boolean)
+        .join('\n')
+
+      const confirmed = window.confirm(confirmMessage)
+
+      if (!confirmed) {
+        return
+      }
+    }
+
     try {
       const response = await syncDailyEntries(bulkDate, syncRows)
 
       await queryClient.refetchQueries({ queryKey: QUERY_KEYS.timesheetBootstrap })
-      setSuccess(formatDailySheetSaveMessage(response))
+
+      let mismatchAlertFailed = false
+
+      if (unmatchedOrderNumbers.length > 0) {
+        try {
+          await reportTimesheetOrderMismatch({
+            date: bulkDate,
+            orderNumbers: unmatchedOrderNumbers,
+          })
+        } catch (notificationError) {
+          mismatchAlertFailed = true
+          console.error('Could not create timesheet mismatch alert.', notificationError)
+        }
+      }
+
+      const baseMessage = formatDailySheetSaveMessage(response)
+
+      if (unmatchedOrderNumbers.length > 0) {
+        setSuccess(
+          mismatchAlertFailed
+            ? `${baseMessage} Unmatched orders were saved, but admin notification failed.`
+            : `${baseMessage} Unmatched orders were saved and admin was notified.`,
+        )
+        return
+      }
+
+      setSuccess(baseMessage)
     } catch (requestError) {
       const message =
         requestError instanceof Error

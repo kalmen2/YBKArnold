@@ -44,6 +44,7 @@ export const QUERY_KEYS = {
   // Admin
   authBootstrap: ['auth', 'bootstrap'] as const,
   adminBootstrap: ['admin', 'bootstrap'] as const,
+  alertsMy: (limit: number) => ['alerts', 'my', limit] as const,
   authSignInLogs: (limit: number, signInsLimit: number) =>
     ['auth', 'sign-in-logs', limit, signInsLimit] as const,
   authSystemRunLogs: (limit: number) =>

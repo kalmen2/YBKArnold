@@ -61,33 +61,6 @@ function normalizeOrderMatchKey(value) {
     .join('')
 }
 
-const nonOrderQuickBooksProjectTokens = [
-  'company purchase',
-  'general expense',
-]
-
-function normalizeQuickBooksProjectToken(value) {
-  return normalizeText(value, 260)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, ' ')
-    .trim()
-}
-
-function isNonOrderQuickBooksProject(project) {
-  const normalizedCandidates = [
-    normalizeQuickBooksProjectToken(project?.projectName),
-    normalizeQuickBooksProjectToken(project?.orderNumber),
-  ].filter(Boolean)
-
-  if (normalizedCandidates.length === 0) {
-    return false
-  }
-
-  return normalizedCandidates.some((candidate) => (
-    nonOrderQuickBooksProjectTokens.some((token) => candidate === token || candidate.includes(token))
-  ))
-}
-
 function normalizeProgressStatusDetails(details) {
   const normalizeOptions = (options) => [...new Set(
     (Array.isArray(options) ? options : [])
@@ -352,11 +325,11 @@ export function createOrdersUnifiedService(deps) {
     }
 
     quickBooksProjects.forEach((project) => {
-      if (isNonOrderQuickBooksProject(project)) {
+      const orderNumber = normalizeText(project?.orderNumber, 120) || null
+      if (!orderNumber) {
         return
       }
 
-      const orderNumber = normalizeText(project?.orderNumber, 120) || null
       const projectId = normalizeText(project?.projectId, 120) || null
       const projectName = normalizeText(project?.projectName, 260) || null
       const matchKey = normalizeOrderMatchKey(orderNumber)
@@ -370,7 +343,6 @@ export function createOrdersUnifiedService(deps) {
 
       const orderKey = matchedMondayOrderKey || buildOrderKey({
         orderNumber: shouldUseQuickBooksOrderNumberForKey(orderNumber) ? orderNumber : null,
-        quickBooksProjectId: projectId,
       })
       if (!orderKey) {
         return
