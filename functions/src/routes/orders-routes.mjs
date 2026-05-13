@@ -846,7 +846,6 @@ export function registerOrdersRoutes(app, deps) {
   app.post(
     '/api/orders/refresh',
     requireFirebaseAuth,
-    requireManagerOrAdminRole,
     async (_req, res, next) => {
       try {
         const summary = await refreshOrdersUnifiedCollection()

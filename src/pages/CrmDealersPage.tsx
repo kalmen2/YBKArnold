@@ -50,6 +50,7 @@ import { alpha } from '@mui/material/styles'
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
 import { Link as RouterLink, unstable_usePrompt, useBeforeUnload, useSearchParams } from 'react-router-dom'
 import { firebaseStorage } from '../auth/firebase'
+import { useAuth } from '../auth/useAuth'
 import { StatusAlerts } from '../components/StatusAlerts'
 import { DealerOrdersTab } from '../features/crm/DealerOrdersTab'
 import { DealerQuotesTab } from '../features/crm/DealerQuotesTab'
@@ -62,6 +63,7 @@ import {
   fetchCrmOrders,
   fetchCrmQuotes,
   removeCrmContact,
+  removeCrmDealer,
   updateCrmContact,
   updateCrmDealer,
   type CrmDealer,
@@ -354,6 +356,7 @@ function createContactFormState(contact: CrmDealerDetailResponse['contacts'][num
 }
 
 export default function CrmDealersPage() {
+  const { appUser } = useAuth()
   const [searchParams] = useSearchParams()
 
   const [dealers, setDealers] = useState<CrmDealer[]>([])
@@ -403,6 +406,8 @@ export default function CrmDealersPage() {
   const [contactForm, setContactForm] = useState<ContactFormState>(createEmptyContactFormState())
   const [isSavingContact, setIsSavingContact] = useState(false)
   const [removingContactSourceId, setRemovingContactSourceId] = useState('')
+  const [isRemovingDealer, setIsRemovingDealer] = useState(false)
+  const canRemoveDealer = appUser?.isAdmin === true || appUser?.isManager === true
 
   useEffect(() => {
     const requestedDealerId = searchParams.get('dealerSourceId')?.trim() ?? ''
@@ -454,7 +459,14 @@ export default function CrmDealersPage() {
       setDealers(nextDealers)
       setDealersTotal(effectiveTotal)
       setSelectedDealerId((current) => {
-        if (!current && nextDealers.length > 0) return nextDealers[0].sourceId
+        if (!current && nextDealers.length > 0) {
+          return nextDealers[0].sourceId
+        }
+
+        if (current && !nextDealers.some((dealer) => dealer.sourceId === current)) {
+          return nextDealers[0]?.sourceId ?? ''
+        }
+
         return current
       })
     }, [dealerPage, dealerRowsPerPage]),
@@ -897,6 +909,43 @@ export default function CrmDealersPage() {
     }
   }, [dealerForm, loadDealerDetail, loadDealers, selectedDealerId, setErrorMessage])
 
+  const handleRemoveDealer = useCallback(async () => {
+    if (!selectedDealerId || !selectedDealer) {
+      return
+    }
+
+    const dealerLabel = selectedDealer.name || selectedDealer.sourceId
+
+    if (!window.confirm(`Delete dealer ${dealerLabel}?`)) {
+      return
+    }
+
+    const archiveContacts = window.confirm(
+      'Also delete all contacts for this dealer? Press OK for yes, Cancel for dealer only.',
+    )
+
+    setIsRemovingDealer(true)
+    setErrorMessage(null)
+
+    try {
+      await removeCrmDealer(selectedDealerId, {
+        archiveContacts,
+      })
+
+      setDealerDetail(null)
+      setDealerForm(null)
+      setDealerFormSavedSnapshot('')
+      setSelectedDealerId('')
+      setIsAccountEditing(false)
+
+      await loadDealers(true)
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to delete dealer.')
+    } finally {
+      setIsRemovingDealer(false)
+    }
+  }, [loadDealers, selectedDealer, selectedDealerId, setErrorMessage])
+
   const handleSaveContact = useCallback(async () => {
     if (!contactEditorMode) {
       return
@@ -1301,18 +1350,35 @@ export default function CrmDealersPage() {
                         </Button>
                       </>
                     ) : (
-                      <Button
-                        size="small"
-                        variant="contained"
-                        startIcon={<EditRoundedIcon fontSize="small" />}
-                        disabled={isLoadingDetail || !dealerForm}
-                        onClick={() => {
-                          setDetailsTab('info')
-                          setIsAccountEditing(true)
-                        }}
-                      >
-                        Edit
-                      </Button>
+                      <Stack direction="row" spacing={0.75}>
+                        <Button
+                          size="small"
+                          variant="contained"
+                          startIcon={<EditRoundedIcon fontSize="small" />}
+                          disabled={isLoadingDetail || !dealerForm || isRemovingDealer}
+                          onClick={() => {
+                            setDetailsTab('info')
+                            setIsAccountEditing(true)
+                          }}
+                        >
+                          Edit
+                        </Button>
+
+                        {canRemoveDealer ? (
+                          <Button
+                            size="small"
+                            color="error"
+                            variant="outlined"
+                            startIcon={<DeleteOutlineRoundedIcon fontSize="small" />}
+                            disabled={isRemovingDealer}
+                            onClick={() => {
+                              void handleRemoveDealer()
+                            }}
+                          >
+                            {isRemovingDealer ? 'Deleting...' : 'Delete'}
+                          </Button>
+                        ) : null}
+                      </Stack>
                     )}
                   </Stack>
                 </Stack>
@@ -1357,42 +1423,43 @@ export default function CrmDealersPage() {
 
               {detailsTab === 'info' ? (
                 dealerForm ? (
-                  <Box sx={{ position: 'relative' }}>
-                    {!isAccountEditing ? (
-                      <Tooltip title="Click Edit to make account changes." arrow placement="top">
-                        <Box
-                          role="button"
-                          tabIndex={0}
-                          aria-label="Account fields are read-only. Click Edit to change values."
-                          onClick={(event) => {
-                            event.preventDefault()
-                          }}
-                          onKeyDown={(event) => {
-                            if (event.key === 'Enter' || event.key === ' ') {
+                  <Stack spacing={1}>
+                    <Box sx={{ position: 'relative' }}>
+                      {!isAccountEditing ? (
+                        <Tooltip title="Click Edit to make account changes." arrow placement="top">
+                          <Box
+                            role="button"
+                            tabIndex={0}
+                            aria-label="Account fields are read-only. Click Edit to change values."
+                            onClick={(event) => {
                               event.preventDefault()
-                            }
-                          }}
-                          sx={{
-                            position: 'absolute',
-                            inset: 0,
-                            zIndex: 2,
-                            cursor: 'not-allowed',
-                            borderRadius: 1,
-                          }}
-                        />
-                      </Tooltip>
-                    ) : null}
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter' || event.key === ' ') {
+                                event.preventDefault()
+                              }
+                            }}
+                            sx={{
+                              position: 'absolute',
+                              inset: 0,
+                              zIndex: 2,
+                              cursor: 'not-allowed',
+                              borderRadius: 1,
+                            }}
+                          />
+                        </Tooltip>
+                      ) : null}
 
-                    <fieldset
-                      disabled={!isAccountEditing || isSavingDealer}
-                      style={{
-                        border: 0,
-                        padding: 0,
-                        margin: 0,
-                        minInlineSize: 0,
-                      }}
-                    >
-                      <Stack spacing={1} sx={{ opacity: isAccountEditing ? 1 : 0.82 }}>
+                      <fieldset
+                        disabled={!isAccountEditing || isSavingDealer}
+                        style={{
+                          border: 0,
+                          padding: 0,
+                          margin: 0,
+                          minInlineSize: 0,
+                        }}
+                      >
+                        <Stack spacing={1} sx={{ opacity: isAccountEditing ? 1 : 0.82 }}>
                       <Box
                         sx={{
                           display: 'grid',
@@ -1632,9 +1699,10 @@ export default function CrmDealersPage() {
                           </Stack>
                         </Stack>
                       </Box>
-                    </Stack>
-                  </fieldset>
-                  </Box>
+                      </Stack>
+                    </fieldset>
+                    </Box>
+                  </Stack>
                 ) : (
                   <Typography color="text.secondary" sx={{ py: 1 }}>
                     Account form is loading...

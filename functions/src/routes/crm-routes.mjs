@@ -1034,6 +1034,7 @@ export function registerCrmRoutes(app, deps) {
     getCollections,
     randomUUID,
     requireAdminRole,
+    requireManagerOrAdminRole,
     requireFirebaseAuth,
   } = deps
 
@@ -2081,6 +2082,171 @@ export function registerCrmRoutes(app, deps) {
 
       return res.json({
         dealer,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.delete('/api/crm/dealers/:dealerSourceId', requireFirebaseAuth, requireManagerOrAdminRole, async (req, res, next) => {
+    try {
+      const dealerSourceId = toTrimmedText(req.params.dealerSourceId, 160)
+
+      if (!dealerSourceId) {
+        return res.status(400).json({
+          error: 'dealerSourceId is required.',
+        })
+      }
+
+      const archiveContacts = toBoolean(req.query?.archiveContacts)
+      const { crmAccountsCollection, crmContactsCollection } = await getCollections()
+      const existingDealer = await crmAccountsCollection.findOne(
+        {
+          sourceId: dealerSourceId,
+        },
+        {
+          projection: {
+            _id: 0,
+            sourceId: 1,
+            isArchived: 1,
+          },
+        },
+      )
+
+      if (!existingDealer) {
+        return res.status(404).json({
+          error: 'Dealer not found.',
+        })
+      }
+
+      const archivedAt = nowIso()
+      const archivedByEmail = toTrimmedText(req.authUser?.email, 200) || null
+      let dealer = null
+
+      if (toBoolean(existingDealer.isArchived)) {
+        dealer = await crmAccountsCollection.findOne(
+          {
+            sourceId: dealerSourceId,
+          },
+          {
+            projection: {
+              _id: 0,
+              sourceId: 1,
+              name: 1,
+              phone: 1,
+              phone2: 1,
+              email: 1,
+              email2: 1,
+              address: 1,
+              city: 1,
+              state: 1,
+              zip: 1,
+              country: 1,
+              industry: 1,
+              accountClass: 1,
+              accountType: 1,
+              salesRep: 1,
+              website: 1,
+              emails: 1,
+              accountText: 1,
+              owner: 1,
+              ownerEmail: 1,
+              pictureUrl: 1,
+              pictureUrlSource: 1,
+              socialMedia: 1,
+              socialMediaLinks: 1,
+              isArchived: 1,
+              isFavorite: 1,
+              contactCountSource: 1,
+              createdDateSource: 1,
+              modifiedDateSource: 1,
+              lastImportedAt: 1,
+            },
+          },
+        )
+      } else {
+        dealer = await crmAccountsCollection.findOneAndUpdate(
+          {
+            sourceId: dealerSourceId,
+          },
+          {
+            $set: {
+              isArchived: true,
+              deletedAt: archivedAt,
+              deletedByEmail: archivedByEmail,
+              modifiedDateSource: archivedAt,
+              updatedAt: archivedAt,
+            },
+          },
+          {
+            returnDocument: 'after',
+            projection: {
+              _id: 0,
+              sourceId: 1,
+              name: 1,
+              phone: 1,
+              phone2: 1,
+              email: 1,
+              email2: 1,
+              address: 1,
+              city: 1,
+              state: 1,
+              zip: 1,
+              country: 1,
+              industry: 1,
+              accountClass: 1,
+              accountType: 1,
+              salesRep: 1,
+              website: 1,
+              emails: 1,
+              accountText: 1,
+              owner: 1,
+              ownerEmail: 1,
+              pictureUrl: 1,
+              pictureUrlSource: 1,
+              socialMedia: 1,
+              socialMediaLinks: 1,
+              isArchived: 1,
+              isFavorite: 1,
+              contactCountSource: 1,
+              createdDateSource: 1,
+              modifiedDateSource: 1,
+              lastImportedAt: 1,
+            },
+          },
+        )
+      }
+
+      let archivedContactsCount = 0
+
+      if (archiveContacts) {
+        const contactsResult = await crmContactsCollection.updateMany(
+          {
+            accountSourceId: dealerSourceId,
+            isArchived: {
+              $ne: true,
+            },
+          },
+          {
+            $set: {
+              isArchived: true,
+              deletedAt: archivedAt,
+              deletedByEmail: archivedByEmail,
+              updatedAt: archivedAt,
+            },
+          },
+        )
+
+        archivedContactsCount = Number(contactsResult.modifiedCount ?? 0)
+      }
+
+      cacheDeleteByPrefix(DEALERS_CACHE_PREFIX)
+      cacheDelete(OVERVIEW_CACHE_KEY)
+
+      return res.json({
+        dealer,
+        archivedContactsCount,
+        archiveContactsApplied: archiveContacts,
       })
     } catch (error) {
       next(error)

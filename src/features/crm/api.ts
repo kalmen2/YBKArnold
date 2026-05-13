@@ -321,6 +321,12 @@ export type CrmDealerUpdateInput = Partial<{
   isFavorite: boolean
 }>
 
+export type CrmDealerDeleteResponse = {
+  dealer: CrmDealerDetail
+  archivedContactsCount: number
+  archiveContactsApplied: boolean
+}
+
 export type CrmContactMutationInput = Partial<{
   sourceId: string
   name: string | null
@@ -601,6 +607,17 @@ export function updateCrmDealer(dealerSourceId: string, input: CrmDealerUpdateIn
     method: 'PATCH',
     body: JSON.stringify(input),
   })
+}
+
+export function removeCrmDealer(dealerSourceId: string, options: { archiveContacts?: boolean } = {}) {
+  return apiRequest<CrmDealerDeleteResponse>(
+    withQuery(`/api/crm/dealers/${encodeURIComponent(dealerSourceId)}`, {
+      archiveContacts: options.archiveContacts ? 'true' : 'false',
+    }),
+    {
+      method: 'DELETE',
+    },
+  )
 }
 
 export function createCrmDealerContact(dealerSourceId: string, input: CrmContactMutationInput) {

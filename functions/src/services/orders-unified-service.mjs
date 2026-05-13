@@ -586,52 +586,9 @@ export function createOrdersUnifiedService(deps) {
     const quickBooksData = quickBooksResult.data
     const quickBooksSucceeded = quickBooksResult.succeeded
 
-    const { mondayOrdersCollection, orderProgressCollection, ordersUnifiedCollection } =
-      await getCollections()
+    const { orderProgressCollection, ordersUnifiedCollection } = await getCollections()
 
-    const orderTrackOrderQuery = orderTrackBoardId
-      ? { mondayBoardId: orderTrackBoardId }
-      : shippedBoardId
-        ? { mondayBoardId: { $ne: shippedBoardId } }
-        : {}
-
-    const [orderTrackDocuments, orderProgressDocuments, existingNonShippedRows] = await Promise.all([
-      mondayOrdersCollection
-        .find(orderTrackOrderQuery, {
-          projection: {
-            _id: 0,
-            mondayItemId: 1,
-            mondayItemUrl: 1,
-            statusLabel: 1,
-            orderName: 1,
-            jobNumber: 1,
-            mondayBoardId: 1,
-            mondayBoardName: 1,
-            mondayUpdatedAt: 1,
-            shipTo: 1,
-            shipNotes: 1,
-            bol: 1,
-            bolDownloadUrl: 1,
-            bolUrl: 1,
-            poNumber: 1,
-            notes: 1,
-            description: 1,
-            orderDate: 1,
-            dueDate: 1,
-            effectiveDueDate: 1,
-            computedDueDate: 1,
-            leadTimeDays: 1,
-            progressPercent: 1,
-            progressStatusDetails: 1,
-            shippedAt: 1,
-            movedToShippedAt: 1,
-            shopDrawingDownloadUrl: 1,
-            shopDrawingUrl: 1,
-            cutListDownloadUrl: 1,
-            cutListUrl: 1,
-          },
-        })
-        .toArray(),
+    const [orderProgressDocuments, existingNonShippedRows] = await Promise.all([
       orderProgressCollection
         .find({}, { projection: { _id: 0, id: 1, date: 1, jobName: 1, readyPercent: 1, updatedAt: 1 } })
         .sort({ date: -1, updatedAt: -1 })
@@ -642,36 +599,36 @@ export function createOrdersUnifiedService(deps) {
     const statusHistoryLookups = buildStatusHistoryLookups(orderProgressDocuments)
     const mergedByKey = new Map()
 
-    const orderTrackOrdersForMerge = orderTrackDocuments.map((doc) => ({
-      id: doc.mondayItemId,
-      name: doc.orderName,
-      jobNumber: doc.jobNumber,
-      itemUrl: doc.mondayItemUrl,
-      statusLabel: doc.statusLabel,
-      boardId: doc.mondayBoardId,
-      boardName: doc.mondayBoardName,
-      updatedAt: doc.mondayUpdatedAt,
-      shipTo: doc.shipTo,
-      shipNotes: doc.shipNotes,
-      bol: doc.bol,
-      bolCachedUrl: doc.bolDownloadUrl,
-      bolUrl: doc.bolUrl,
-      poNumber: doc.poNumber,
-      notes: doc.notes,
-      description: doc.description,
-      orderDate: doc.orderDate,
-      dueDate: doc.dueDate,
-      effectiveDueDate: doc.effectiveDueDate,
-      computedDueDate: doc.computedDueDate,
-      leadTimeDays: doc.leadTimeDays,
-      progressPercent: doc.progressPercent,
-      progressStatusDetails: doc.progressStatusDetails,
-      shippedAt: doc.shippedAt,
-      movedToShippedAt: doc.movedToShippedAt,
-      shopDrawingCachedUrl: doc.shopDrawingDownloadUrl,
-      shopDrawingUrl: doc.shopDrawingUrl,
-      cutListCachedUrl: doc.cutListDownloadUrl,
-      cutListUrl: doc.cutListUrl,
+    const orderTrackOrdersForMerge = orderTrackOrders(orderTrackSnapshot).map((order) => ({
+      id: order?.id,
+      name: order?.name,
+      jobNumber: order?.jobNumber,
+      itemUrl: order?.itemUrl,
+      statusLabel: order?.statusLabel,
+      boardId: order?.boardId,
+      boardName: order?.boardName,
+      updatedAt: order?.updatedAt,
+      shipTo: order?.shipTo,
+      shipNotes: order?.shipNotes,
+      bol: order?.bol,
+      bolCachedUrl: order?.bolCachedUrl,
+      bolUrl: order?.bolUrl,
+      poNumber: order?.poNumber,
+      notes: order?.notes,
+      description: order?.description,
+      orderDate: order?.orderDate,
+      dueDate: order?.dueDate,
+      effectiveDueDate: order?.effectiveDueDate,
+      computedDueDate: order?.computedDueDate,
+      leadTimeDays: order?.leadTimeDays,
+      progressPercent: order?.progressPercent,
+      progressStatusDetails: order?.progressStatusDetails,
+      shippedAt: order?.shippedAt,
+      movedToShippedAt: order?.movedToShippedAt,
+      shopDrawingCachedUrl: order?.shopDrawingCachedUrl,
+      shopDrawingUrl: order?.shopDrawingUrl,
+      cutListCachedUrl: order?.cutListCachedUrl,
+      cutListUrl: order?.cutListUrl,
     }))
 
     const activeMondayItemIds = applyMondayOrdersToMerged(

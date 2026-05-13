@@ -25,6 +25,8 @@ import {
   DataGrid,
   type GridColDef,
   type GridColumnGroupingModel,
+  type GridRowSelectionModel,
+  getGridDateOperators,
 } from '@mui/x-data-grid'
 import { useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useState } from 'react'
@@ -263,8 +265,23 @@ function resolveLeadTimeSortValue(order: OrdersOverviewOrder) {
     return null
   }
 
-  return Date.UTC(y, m - 1, d)
+  return new Date(y, m - 1, d)
 }
+
+const leadTimeFilterOperators = getGridDateOperators()
+  .filter((operator) => ['before', 'onOrBefore', 'is', 'after', 'onOrAfter'].includes(String(operator.value)))
+  .map((operator) => {
+    if (operator.value === 'is') {
+      return { ...operator, label: 'Equals date' }
+    }
+    if (operator.value === 'onOrBefore') {
+      return { ...operator, label: 'Before or equals' }
+    }
+    if (operator.value === 'onOrAfter') {
+      return { ...operator, label: 'After or equals' }
+    }
+    return operator
+  })
 
 function toIsoDay(value: string | null | undefined) {
   const parsed = new Date(String(value ?? '').trim())
@@ -373,6 +390,10 @@ export function OrdersGrid({
   onMissingMondayLink,
 }: OrdersGridProps) {
   const queryClient = useQueryClient()
+  const [rowSelectionModel, setRowSelectionModel] = useState<GridRowSelectionModel>({
+    type: 'include',
+    ids: new Set(),
+  })
   const [statusPopoverAnchorEl, setStatusPopoverAnchorEl] = useState<HTMLElement | null>(null)
   const [statusPopoverOrder, setStatusPopoverOrder] = useState<OrdersOverviewOrder | null>(null)
   const [statusPopoverError, setStatusPopoverError] = useState<string | null>(null)
@@ -1005,8 +1026,9 @@ export function OrdersGrid({
       field: 'leadTimeDays',
       headerName: 'Lead Time',
       minWidth: 140,
-      type: 'number',
+      type: 'date',
       valueGetter: (_value, row) => resolveLeadTimeSortValue(row),
+      filterOperators: leadTimeFilterOperators,
       renderCell: ({ row }) => {
         if (row.isShipped) {
           const shippedDate = row.shippedAt ? formatDate(row.shippedAt) : null
@@ -1401,80 +1423,132 @@ export function OrdersGrid({
     })
   }, [orders])
 
+  const selectedCount = useMemo(() => {
+    if (rowSelectionModel.ids.size === 0) {
+      return 0
+    }
+
+    return prioritizedRows.reduce((count, row) => {
+      const isSelected = rowSelectionModel.type === 'include'
+        ? rowSelectionModel.ids.has(row.id)
+        : !rowSelectionModel.ids.has(row.id)
+
+      return count + (isSelected ? 1 : 0)
+    }, 0)
+  }, [prioritizedRows, rowSelectionModel])
+
+  const selectedLabel = selectedCount === 1
+    ? 'one selected'
+    : selectedCount === 2
+      ? 'two selected'
+      : `${selectedCount} selected`
+
   return (
-    <Paper variant="outlined" sx={{ height: 'calc(72vh + 98px)', minHeight: 698 }}>
-      <DataGrid
-        rows={prioritizedRows}
-        columns={columns}
-        columnGroupingModel={columnGroupingModel}
-        columnGroupHeaderHeight={viewMode === 'admin' ? 30 : undefined}
-        loading={isLoading}
-        disableRowSelectionOnClick
-        density={isStandardView ? 'standard' : 'compact'}
-        rowHeight={isStandardView ? 52 : 38}
-        columnHeaderHeight={isStandardView ? 52 : 54}
-        pageSizeOptions={[25, 50, 100]}
-        initialState={{
-          pagination: {
-            paginationModel: { pageSize: 50, page: 0 },
-          },
-        }}
-        getRowClassName={({ row }) => {
-          if (row.hazardReason) {
-            return 'orders-row--hazard'
-          }
-          if (!row.hasMondayRecord) {
-            return 'orders-row--quickbooks-only'
-          }
-          return ''
-        }}
-        localeText={{ noRowsLabel: 'No orders to show.' }}
-        sx={{
-          border: 0,
-          fontSize: isStandardView ? '0.79rem' : '0.74rem',
-          '& .MuiDataGrid-columnHeaders': {
-            borderBottom: '1px solid rgba(15, 23, 42, 0.14)',
-            backgroundColor: 'rgba(15, 23, 42, 0.04)',
-          },
-          '& .MuiDataGrid-cell': {
-            alignItems: 'center',
-            py: isStandardView ? 0.55 : 0,
-          },
-          '& .MuiDataGrid-columnHeader': { py: isStandardView ? 0.55 : 0.25 },
-          '& .MuiDataGrid-columnSeparator': { color: 'rgba(15, 23, 42, 0.14)' },
-          '& .MuiDataGrid-columnHeaderTitle': {
-            fontWeight: 700,
-            fontSize: isStandardView ? '0.8rem' : '0.74rem',
-            letterSpacing: '0.01em',
-            lineHeight: 1,
-          },
-          '& .MuiDataGrid-columnHeader--filledGroup .MuiDataGrid-columnHeaderTitle': {
-            fontSize: isStandardView ? '0.7rem' : '0.66rem',
-            fontWeight: 800,
-            letterSpacing: '0.05em',
-            textTransform: 'uppercase',
-          },
-          '& .MuiDataGrid-cell .MuiButton-root': {
-            minHeight: isStandardView ? 26 : 20,
-            fontSize: isStandardView ? '0.74rem' : '0.7rem',
-            px: isStandardView ? 0.7 : 0.45,
-            py: isStandardView ? 0.2 : 0,
-            lineHeight: 1,
-          },
-          '& .MuiDataGrid-cell .MuiChip-root': {
-            height: isStandardView ? 21 : 17,
-            fontSize: isStandardView ? '0.7rem' : '0.66rem',
-          },
-          '& .MuiDataGrid-cell .MuiIconButton-root': {
-            padding: isStandardView ? 1.2 : 1,
-          },
-          '& .MuiDataGrid-cell .MuiSvgIcon-root': {
-            fontSize: isStandardView ? '0.95rem' : '0.88rem',
-          },
-          '& .orders-row--hazard': { backgroundColor: 'rgba(237, 108, 2, 0.08)' },
-          '& .orders-row--quickbooks-only': { backgroundColor: 'rgba(2, 136, 209, 0.06)' },
-        }}
-      />
+    <Paper
+      variant="outlined"
+      sx={{
+        height: 'calc(72vh + 98px)',
+        minHeight: 698,
+        display: 'flex',
+        flexDirection: 'column',
+      }}
+    >
+      {selectedCount > 0 ? (
+        <Stack
+          direction={{ xs: 'column', sm: 'row' }}
+          spacing={1}
+          alignItems={{ xs: 'flex-start', sm: 'center' }}
+          sx={{ px: 1.2, py: 0.9, borderBottom: '1px solid rgba(15, 23, 42, 0.08)' }}
+        >
+          <Chip
+            size="small"
+            label={selectedLabel}
+            variant="outlined"
+            color="primary"
+          />
+        </Stack>
+      ) : null}
+
+      <Box sx={{ flex: 1, minHeight: 0 }}>
+        <DataGrid
+          rows={prioritizedRows}
+          columns={columns}
+          columnGroupingModel={columnGroupingModel}
+          columnGroupHeaderHeight={viewMode === 'admin' ? 30 : undefined}
+          loading={isLoading}
+          checkboxSelection
+          disableRowSelectionOnClick
+          disableRowSelectionExcludeModel
+          rowSelectionModel={rowSelectionModel}
+          onRowSelectionModelChange={(nextModel) => {
+            setRowSelectionModel(nextModel)
+          }}
+          density={isStandardView ? 'standard' : 'compact'}
+          rowHeight={isStandardView ? 52 : 38}
+          columnHeaderHeight={isStandardView ? 52 : 54}
+          pageSizeOptions={[25, 50, 100]}
+          initialState={{
+            pagination: {
+              paginationModel: { pageSize: 50, page: 0 },
+            },
+          }}
+          getRowClassName={({ row }) => {
+            if (row.hazardReason) {
+              return 'orders-row--hazard'
+            }
+            if (!row.hasMondayRecord) {
+              return 'orders-row--quickbooks-only'
+            }
+            return ''
+          }}
+          localeText={{ noRowsLabel: 'No orders to show.' }}
+          sx={{
+            border: 0,
+            fontSize: isStandardView ? '0.79rem' : '0.74rem',
+            '& .MuiDataGrid-columnHeaders': {
+              borderBottom: '1px solid rgba(15, 23, 42, 0.14)',
+              backgroundColor: 'rgba(15, 23, 42, 0.04)',
+            },
+            '& .MuiDataGrid-cell': {
+              alignItems: 'center',
+              py: isStandardView ? 0.55 : 0,
+            },
+            '& .MuiDataGrid-columnHeader': { py: isStandardView ? 0.55 : 0.25 },
+            '& .MuiDataGrid-columnSeparator': { color: 'rgba(15, 23, 42, 0.14)' },
+            '& .MuiDataGrid-columnHeaderTitle': {
+              fontWeight: 700,
+              fontSize: isStandardView ? '0.8rem' : '0.74rem',
+              letterSpacing: '0.01em',
+              lineHeight: 1,
+            },
+            '& .MuiDataGrid-columnHeader--filledGroup .MuiDataGrid-columnHeaderTitle': {
+              fontSize: isStandardView ? '0.7rem' : '0.66rem',
+              fontWeight: 800,
+              letterSpacing: '0.05em',
+              textTransform: 'uppercase',
+            },
+            '& .MuiDataGrid-cell .MuiButton-root': {
+              minHeight: isStandardView ? 26 : 20,
+              fontSize: isStandardView ? '0.74rem' : '0.7rem',
+              px: isStandardView ? 0.7 : 0.45,
+              py: isStandardView ? 0.2 : 0,
+              lineHeight: 1,
+            },
+            '& .MuiDataGrid-cell .MuiChip-root': {
+              height: isStandardView ? 21 : 17,
+              fontSize: isStandardView ? '0.7rem' : '0.66rem',
+            },
+            '& .MuiDataGrid-cell .MuiIconButton-root': {
+              padding: isStandardView ? 1.2 : 1,
+            },
+            '& .MuiDataGrid-cell .MuiSvgIcon-root': {
+              fontSize: isStandardView ? '0.95rem' : '0.88rem',
+            },
+            '& .orders-row--hazard': { backgroundColor: 'rgba(237, 108, 2, 0.08)' },
+            '& .orders-row--quickbooks-only': { backgroundColor: 'rgba(2, 136, 209, 0.06)' },
+          }}
+        />
+      </Box>
 
       <Popover
         open={statusPopoverOpen}
