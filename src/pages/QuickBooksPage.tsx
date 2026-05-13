@@ -130,6 +130,30 @@ const projectMetricTitleByType: Record<ProjectMetricType, string> = {
   payments: 'Payments',
 }
 
+const nonOrderQuickBooksProjectMatchers = [
+  'company purchase',
+  'general expense',
+]
+
+function normalizeQuickBooksProjectMatcher(value: string | null | undefined) {
+  return String(value ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+}
+
+function isQuickBooksNonOrderProject(project: QuickBooksProjectSummary) {
+  const splitLabel = splitQuickBooksProjectLabel(project.projectName, project.projectId)
+  const normalizedCandidates = [
+    normalizeQuickBooksProjectMatcher(project.projectName),
+    normalizeQuickBooksProjectMatcher(splitLabel.projectNumber),
+  ].filter((candidate) => candidate.length > 0)
+
+  return normalizedCandidates.some((candidate) => (
+    nonOrderQuickBooksProjectMatchers.some((matcher) => candidate === matcher || candidate.includes(matcher))
+  ))
+}
+
 function formatDate(value: string | null) {
   if (!value) {
     return '-'
@@ -1071,6 +1095,51 @@ export default function QuickBooksPage() {
     [overview?.projects, projectRollupsById],
   )
 
+  const nonOrderProjects = useMemo(
+    () => (overview?.projects ?? [])
+      .filter((project) => isQuickBooksNonOrderProject(project))
+      .sort((left, right) => left.projectName.localeCompare(right.projectName)),
+    [overview?.projects],
+  )
+
+  const nonOrderProjectTotals = useMemo(
+    () => nonOrderProjects.reduce(
+      (totals, project) => {
+        const rollup = projectRollupsById.get(project.projectId)
+
+        totals.projectCount += 1
+        totals.transactionCount += rollup?.transactionCount ?? project.transactionCount
+        totals.purchaseOrderAmount = roundMoney(
+          totals.purchaseOrderAmount + (rollup?.purchaseOrderAmount ?? project.purchaseOrderAmount),
+        )
+        totals.billAmount = roundMoney(
+          totals.billAmount + (rollup?.billAmount ?? project.billAmount),
+        )
+        totals.invoiceAmount = roundMoney(
+          totals.invoiceAmount + (rollup?.invoiceAmount ?? project.invoiceAmount),
+        )
+        totals.paymentAmount = roundMoney(
+          totals.paymentAmount + (rollup?.paymentAmount ?? project.paymentAmount),
+        )
+        totals.outstandingAmount = roundMoney(
+          totals.outstandingAmount + (rollup?.outstandingAmount ?? project.outstandingAmount),
+        )
+
+        return totals
+      },
+      {
+        projectCount: 0,
+        transactionCount: 0,
+        purchaseOrderAmount: 0,
+        billAmount: 0,
+        invoiceAmount: 0,
+        paymentAmount: 0,
+        outstandingAmount: 0,
+      },
+    ),
+    [nonOrderProjects, projectRollupsById],
+  )
+
   const activeLoanSummary = useMemo(() => {
     if (!overview || !activeLoanBucketId) {
       return null
@@ -1519,6 +1588,131 @@ export default function QuickBooksPage() {
               <Typography variant="body2" color="text.secondary">
                 Click any summary box to open full details.
               </Typography>
+            </Stack>
+          </Paper>
+
+          <Paper variant="outlined" sx={{ p: 2.25 }}>
+            <Stack spacing={1.5}>
+              <Typography variant="h6" fontWeight={700}>
+                Non-Order Projects
+              </Typography>
+
+              <Typography variant="body2" color="text.secondary">
+                Company Purchase and General Expense are tracked here and excluded from Orders.
+              </Typography>
+
+              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                <Chip
+                  size="small"
+                  label={`Projects ${formatInteger(nonOrderProjectTotals.projectCount)}`}
+                  variant="outlined"
+                />
+                <Chip
+                  size="small"
+                  label={`Txns ${formatInteger(nonOrderProjectTotals.transactionCount)}`}
+                  variant="outlined"
+                />
+                <Chip
+                  size="small"
+                  label={`PO ${formatCurrency(nonOrderProjectTotals.purchaseOrderAmount)}`}
+                  variant="outlined"
+                />
+                <Chip
+                  size="small"
+                  label={`Bills ${formatCurrency(nonOrderProjectTotals.billAmount)}`}
+                  variant="outlined"
+                />
+                <Chip
+                  size="small"
+                  label={`Invoices ${formatCurrency(nonOrderProjectTotals.invoiceAmount)}`}
+                  variant="outlined"
+                />
+                <Chip
+                  size="small"
+                  label={`Payments ${formatCurrency(nonOrderProjectTotals.paymentAmount)}`}
+                  variant="outlined"
+                />
+                <Chip
+                  size="small"
+                  label={`Outstanding ${formatCurrency(nonOrderProjectTotals.outstandingAmount)}`}
+                  color={nonOrderProjectTotals.outstandingAmount > 0 ? 'warning' : 'default'}
+                  variant="outlined"
+                />
+              </Stack>
+
+              {nonOrderProjects.length === 0 ? (
+                <Typography color="text.secondary" sx={{ py: 1 }}>
+                  No non-order projects were found in this sync.
+                </Typography>
+              ) : (
+                <TableContainer sx={{ maxHeight: 380 }}>
+                  <Table size="small" stickyHeader>
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>Customer</TableCell>
+                        <TableCell>Project #</TableCell>
+                        <TableCell align="right">Txns</TableCell>
+                        <TableCell align="right">PO</TableCell>
+                        <TableCell align="right">Bills</TableCell>
+                        <TableCell align="right">Invoices</TableCell>
+                        <TableCell align="right">Payments</TableCell>
+                        <TableCell align="right">Outstanding</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {nonOrderProjects.map((project) => {
+                        const rollup = projectRollupsById.get(project.projectId)
+                        const splitLabel = splitQuickBooksProjectLabel(project.projectName, project.projectId)
+                        const outstandingAmount = rollup?.outstandingAmount ?? project.outstandingAmount
+
+                        return (
+                          <TableRow key={project.projectId} hover>
+                            <TableCell sx={{ maxWidth: 260, wordBreak: 'break-word' }}>
+                              <Typography variant="body2" fontWeight={600}>
+                                {splitLabel.customerName}
+                              </Typography>
+                            </TableCell>
+                            <TableCell>
+                              <Stack spacing={0.3}>
+                                <Typography variant="body2" fontWeight={600}>
+                                  {splitLabel.projectNumber}
+                                </Typography>
+                                <Typography variant="caption" color="text.secondary">
+                                  {project.projectId}
+                                </Typography>
+                              </Stack>
+                            </TableCell>
+                            <TableCell align="right">
+                              {formatInteger(rollup?.transactionCount ?? project.transactionCount)}
+                            </TableCell>
+                            <TableCell align="right">
+                              {formatCurrency(rollup?.purchaseOrderAmount ?? project.purchaseOrderAmount)}
+                            </TableCell>
+                            <TableCell align="right">
+                              {formatCurrency(rollup?.billAmount ?? project.billAmount)}
+                            </TableCell>
+                            <TableCell align="right">
+                              {formatCurrency(rollup?.invoiceAmount ?? project.invoiceAmount)}
+                            </TableCell>
+                            <TableCell align="right">
+                              {formatCurrency(rollup?.paymentAmount ?? project.paymentAmount)}
+                            </TableCell>
+                            <TableCell align="right">
+                              <Typography
+                                variant="body2"
+                                fontWeight={700}
+                                color={outstandingAmount > 0 ? 'warning.main' : 'text.primary'}
+                              >
+                                {formatCurrency(outstandingAmount)}
+                              </Typography>
+                            </TableCell>
+                          </TableRow>
+                        )
+                      })}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              )}
             </Stack>
           </Paper>
         </>

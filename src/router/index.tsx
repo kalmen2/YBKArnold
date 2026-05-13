@@ -56,9 +56,9 @@ export const router = createBrowserRouter([
       {
         path: 'quickbooks',
         element: withRouteSuspense(
-          <RequireAdminRoute>
+          <RequireManagerOrAdminRoute>
             <QuickBooksPage />
-          </RequireAdminRoute>,
+          </RequireManagerOrAdminRoute>,
         ),
       },
       {
