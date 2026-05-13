@@ -28,6 +28,9 @@ export const QUERY_KEYS = {
   crmContacts: (opts: { limit: number; offset: number; search: string; dealerSourceId: string }) =>
     ['crm', 'contacts', opts.limit, opts.offset, opts.search, opts.dealerSourceId] as const,
   crmSalesReps: ['crm', 'sales-reps'] as const,
+  crmDeletionQueue: (limit: number) => ['crm', 'deletion-queue', limit] as const,
+  crmEngagementReadiness: (status: string, search: string, limit: number) =>
+    ['crm', 'engagement-readiness', status, search, limit] as const,
 
   // Timesheet — shared by TimesheetPage and WorkersPage
   timesheetBootstrap: ['timesheet', 'bootstrap'] as const,

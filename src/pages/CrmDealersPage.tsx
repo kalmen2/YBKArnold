@@ -168,9 +168,45 @@ function createSocialLinkRow(platform = 'website', url = '', index = 0): DealerS
   }
 }
 
+type EngagementReadinessFormValue = '' | 'ready' | 'not_ready'
+
+function toFormReadinessStatus(value: 'ready' | 'not_ready' | null | undefined): EngagementReadinessFormValue {
+  if (value === 'not_ready') {
+    return 'not_ready'
+  }
+
+  if (value === 'ready') {
+    return 'ready'
+  }
+
+  return ''
+}
+
+function resolveReadinessChip(status: 'ready' | 'not_ready' | null | undefined) {
+  if (status === 'not_ready') {
+    return {
+      color: 'warning' as const,
+      label: 'Not ready',
+    }
+  }
+
+  if (status === 'ready') {
+    return {
+      color: 'success' as const,
+      label: 'Ready',
+    }
+  }
+
+  return {
+    color: 'default' as const,
+    label: 'None',
+  }
+}
+
 type DealerFormState = {
   sourceId: string
   name: string
+  accountType: string
   owner: string
   ownerEmail: string
   primaryEmail: string
@@ -185,6 +221,8 @@ type DealerFormState = {
   zip: string
   country: string
   accountText: string
+  engagementReadinessStatus: EngagementReadinessFormValue
+  engagementReadinessNote: string
   pictureUrl: string
   socialLinks: DealerSocialLinkDraft[]
   isArchived: boolean
@@ -211,6 +249,8 @@ type ContactFormState = {
   gender: string
   contactTypeId: string
   photoUrl: string
+  engagementReadinessStatus: EngagementReadinessFormValue
+  engagementReadinessNote: string
   isArchived: boolean
 }
 
@@ -242,6 +282,7 @@ function createDealerFormState(dealer: CrmDealerDetailResponse['dealer']): Deale
   return {
     sourceId: dealer.sourceId,
     name: dealer.name || '',
+    accountType: dealer.accountType || dealer.accountClass || 'dealer',
     owner: dealer.owner || '',
     ownerEmail: dealer.ownerEmail || '',
     primaryEmail,
@@ -256,6 +297,8 @@ function createDealerFormState(dealer: CrmDealerDetailResponse['dealer']): Deale
     zip: dealer.zip || '',
     country: dealer.country || '',
     accountText: dealer.accountText || '',
+    engagementReadinessStatus: toFormReadinessStatus(dealer.engagementReadinessStatus),
+    engagementReadinessNote: dealer.engagementReadinessNote || '',
     pictureUrl: dealer.pictureUrl || '',
     socialLinks: socialLinkRows,
     isArchived: Boolean(dealer.isArchived),
@@ -283,6 +326,7 @@ function serializeDealerFormState(form: DealerFormState | null) {
   return JSON.stringify({
     sourceId: form.sourceId,
     name: form.name.trim(),
+    accountType: form.accountType.trim(),
     owner: form.owner.trim(),
     ownerEmail: form.ownerEmail.trim(),
     primaryEmail: form.primaryEmail.trim(),
@@ -297,6 +341,8 @@ function serializeDealerFormState(form: DealerFormState | null) {
     zip: form.zip.trim(),
     country: form.country.trim(),
     accountText: form.accountText.trim(),
+    engagementReadinessStatus: form.engagementReadinessStatus,
+    engagementReadinessNote: form.engagementReadinessNote.trim(),
     pictureUrl: form.pictureUrl.trim(),
     emails: normalizedEmails,
     socialLinks: normalizedSocialLinks,
@@ -326,6 +372,8 @@ function createEmptyContactFormState(): ContactFormState {
     gender: '',
     contactTypeId: '',
     photoUrl: '',
+    engagementReadinessStatus: '',
+    engagementReadinessNote: '',
     isArchived: false,
   }
 }
@@ -351,6 +399,8 @@ function createContactFormState(contact: CrmDealerDetailResponse['contacts'][num
     gender: contact.gender || '',
     contactTypeId: contact.contactTypeId || '',
     photoUrl: contact.photoUrl || '',
+    engagementReadinessStatus: toFormReadinessStatus(contact.engagementReadinessStatus),
+    engagementReadinessNote: contact.engagementReadinessNote || '',
     isArchived: Boolean(contact.isArchived),
   }
 }
@@ -379,6 +429,7 @@ export default function CrmDealersPage() {
   const [dealerRowsPerPage, setDealerRowsPerPage] = useState(25)
   const [dealerSearchInput, setDealerSearchInput] = useState('')
   const dealerSearch = useDebounceValue(dealerSearchInput)
+  const [accountTypeFilter, setAccountTypeFilter] = useState<'all' | 'dealer' | 'designer'>('all')
 
   const [contactSearchInput, setContactSearchInput] = useState('')
   const contactSearch = useDebounceValue(contactSearchInput)
@@ -407,7 +458,7 @@ export default function CrmDealersPage() {
   const [isSavingContact, setIsSavingContact] = useState(false)
   const [removingContactSourceId, setRemovingContactSourceId] = useState('')
   const [isRemovingDealer, setIsRemovingDealer] = useState(false)
-  const canRemoveDealer = appUser?.isAdmin === true || appUser?.isManager === true
+  const canRemoveDealer = appUser?.isAdmin === true || appUser?.isManager === true || appUser?.isSalesRep === true
 
   useEffect(() => {
     const requestedDealerId = searchParams.get('dealerSourceId')?.trim() ?? ''
@@ -439,12 +490,17 @@ export default function CrmDealersPage() {
     setDealerPage(0)
   }, [dealerSearch])
 
+  useEffect(() => {
+    setDealerPage(0)
+  }, [accountTypeFilter])
+
   const { isLoading: isLoadingDealers, isRefreshing: isRefreshingDealers, errorMessage, setErrorMessage, load: loadDealers } = useDataLoader({
     fetcher: useCallback(() => fetchCrmDealers({
       limit: dealerRowsPerPage,
       offset: dealerPage * dealerRowsPerPage,
       search: dealerSearch || undefined,
-    }), [dealerPage, dealerRowsPerPage, dealerSearch]),
+      accountType: accountTypeFilter === 'all' ? undefined : accountTypeFilter,
+    }), [accountTypeFilter, dealerPage, dealerRowsPerPage, dealerSearch]),
     onSuccess: useCallback((response: CrmDealersResponse) => {
       const nextDealers = Array.isArray(response.dealers) ? response.dealers : []
       const normalizedTotal = typeof response.total === 'number' && Number.isFinite(response.total)
@@ -615,6 +671,7 @@ export default function CrmDealersPage() {
   }, [detailsTab, loadDealerQuotesData, loadDealerSalesData])
 
   const selectedDealer = dealerDetail?.dealer ?? null
+  const selectedDealerReadinessChip = resolveReadinessChip(selectedDealer?.engagementReadinessStatus)
   const contactsPageLink = selectedDealerId
     ? `/sales?tab=contacts&dealerSourceId=${encodeURIComponent(selectedDealerId)}`
     : '/sales?tab=contacts'
@@ -663,6 +720,7 @@ export default function CrmDealersPage() {
 
   type DealerStringField =
     | 'name'
+    | 'accountType'
     | 'owner'
     | 'ownerEmail'
     | 'primaryEmail'
@@ -849,6 +907,19 @@ export default function CrmDealersPage() {
       return
     }
 
+    const normalizedEngagementReadinessNote = dealerForm.engagementReadinessNote.trim()
+    const normalizedAccountType = dealerForm.accountType.trim().toLowerCase()
+
+    if (normalizedAccountType !== 'dealer' && normalizedAccountType !== 'designer') {
+      setErrorMessage('Account type must be Dealer or Designer.')
+      return
+    }
+
+    if (dealerForm.engagementReadinessStatus === 'not_ready' && !normalizedEngagementReadinessNote) {
+      setErrorMessage('Please provide a note when account readiness is Not ready.')
+      return
+    }
+
     const socialMediaLinks = dealerForm.socialLinks
       .reduce<Record<string, string>>((nextLinks, entry) => {
         const url = entry.url.trim()
@@ -876,6 +947,7 @@ export default function CrmDealersPage() {
     try {
       await updateCrmDealer(selectedDealerId, {
         name: dealerForm.name.trim(),
+        accountType: normalizedAccountType,
         owner: dealerForm.owner.trim(),
         ownerEmail: dealerForm.ownerEmail.trim(),
         salesRep: dealerForm.salesRep.trim(),
@@ -888,6 +960,8 @@ export default function CrmDealersPage() {
         zip: dealerForm.zip.trim(),
         country: dealerForm.country.trim(),
         accountText: dealerForm.accountText,
+        engagementReadinessStatus: dealerForm.engagementReadinessStatus || null,
+        engagementReadinessNote: normalizedEngagementReadinessNote || null,
         pictureUrl: dealerForm.pictureUrl.trim(),
         emails: normalizedEmails,
         socialMediaLinks: Object.keys(socialMediaLinks).length > 0 ? socialMediaLinks : null,
@@ -916,12 +990,12 @@ export default function CrmDealersPage() {
 
     const dealerLabel = selectedDealer.name || selectedDealer.sourceId
 
-    if (!window.confirm(`Delete dealer ${dealerLabel}?`)) {
+    if (!window.confirm(`Delete account ${dealerLabel}?`)) {
       return
     }
 
     const archiveContacts = window.confirm(
-      'Also delete all contacts for this dealer? Press OK for yes, Cancel for dealer only.',
+      'Also delete all contacts under this account? Press OK for yes, Cancel for account only.',
     )
 
     setIsRemovingDealer(true)
@@ -959,6 +1033,13 @@ export default function CrmDealersPage() {
       return
     }
 
+    const normalizedContactReadinessNote = contactForm.engagementReadinessNote.trim()
+
+    if (contactForm.engagementReadinessStatus === 'not_ready' && !normalizedContactReadinessNote) {
+      setErrorMessage('Please provide a note when contact readiness is Not ready.')
+      return
+    }
+
     setIsSavingContact(true)
     setErrorMessage(null)
 
@@ -983,6 +1064,8 @@ export default function CrmDealersPage() {
         gender: contactForm.gender,
         contactTypeId: contactForm.contactTypeId,
         photoUrl: contactForm.photoUrl,
+        engagementReadinessStatus: contactForm.engagementReadinessStatus || null,
+        engagementReadinessNote: normalizedContactReadinessNote || null,
         isArchived: contactForm.isArchived,
       }
 
@@ -1018,7 +1101,7 @@ export default function CrmDealersPage() {
   const handleRemoveContact = useCallback(async (contact: CrmDealerDetailResponse['contacts'][number]) => {
     const contactName = displayContactName(contact)
 
-    if (!window.confirm(`Remove contact ${contactName}?`)) {
+    if (!window.confirm(`Delete contact ${contactName}?`)) {
       return
     }
 
@@ -1043,28 +1126,56 @@ export default function CrmDealersPage() {
       <Paper
         variant="outlined"
         sx={{
-          p: { xs: 2, md: 2.5 },
+          p: { xs: 1.25, md: 1.5 },
           borderColor: (theme) => alpha(theme.palette.primary.main, 0.28),
           background: (theme) => `linear-gradient(125deg, ${alpha(theme.palette.primary.main, 0.15)} 0%, ${alpha(theme.palette.info.main, 0.08)} 42%, ${alpha(theme.palette.background.paper, 0.98)} 100%)`,
         }}
       >
         <Stack
-          direction={{ xs: 'column', md: 'row' }}
-          spacing={1.5}
+          direction={{ xs: 'column', lg: 'row' }}
+          spacing={1}
           justifyContent="space-between"
-          alignItems={{ xs: 'flex-start', md: 'center' }}
+          alignItems={{ xs: 'stretch', lg: 'center' }}
         >
-          <Stack spacing={1} sx={{ width: { xs: '100%', md: 'min(560px, 100%)' } }}>
-            <Typography variant="h5" sx={{ fontWeight: 700 }}>
+          <Stack
+            direction={{ xs: 'column', sm: 'row' }}
+            spacing={0.75}
+            alignItems={{ xs: 'flex-start', sm: 'center' }}
+            sx={{ flexShrink: 0 }}
+          >
+            <Typography variant="h6" sx={{ fontWeight: 700, lineHeight: 1.2 }}>
               Accounts
             </Typography>
-           
 
+            <Tabs
+              value={accountTypeFilter}
+              onChange={(_event, nextValue: 'all' | 'dealer' | 'designer') => {
+                setAccountTypeFilter(nextValue)
+              }}
+              variant="scrollable"
+              allowScrollButtonsMobile
+              sx={{ minHeight: 30 }}
+            >
+              <Tab value="all" label="All" sx={{ minHeight: 30, textTransform: 'none', py: 0.25 }} />
+              <Tab value="dealer" label="Dealers" sx={{ minHeight: 30, textTransform: 'none', py: 0.25 }} />
+              <Tab value="designer" label="Designers" sx={{ minHeight: 30, textTransform: 'none', py: 0.25 }} />
+            </Tabs>
+          </Stack>
+
+          <Box
+            sx={{
+              flex: 1,
+              display: 'flex',
+              justifyContent: { xs: 'stretch', lg: 'center' },
+              minWidth: 0,
+            }}
+          >
             <TextField
               size="small"
               label="Search accounts or emails"
               placeholder="Account name, account ID, owner or contact email"
               value={dealerSearchInput}
+              sx={{ width: { xs: '100%', lg: 'min(560px, 100%)' } }}
               onChange={(event) => {
                 setDealerSearchInput(event.target.value)
               }}
@@ -1076,9 +1187,17 @@ export default function CrmDealersPage() {
                 ),
               }}
             />
-          </Stack>
+          </Box>
 
-          <Stack direction="row" spacing={1}>
+          <Stack
+            direction="row"
+            spacing={0.75}
+            sx={{
+              width: { xs: '100%', lg: 'auto' },
+              justifyContent: { xs: 'flex-end', lg: 'flex-start' },
+              flexShrink: 0,
+            }}
+          >
             <Button component={RouterLink} to={contactsPageLink} variant="outlined" startIcon={<ContactsRoundedIcon />}>
               Contacts
             </Button>
@@ -1321,6 +1440,12 @@ export default function CrmDealersPage() {
                       {selectedDealer.isArchived ? (
                         <Chip size="small" label="Archived" color="warning" variant="outlined" />
                       ) : null}
+                      <Chip
+                        size="small"
+                        variant="outlined"
+                        color={selectedDealerReadinessChip.color}
+                        label={selectedDealerReadinessChip.label}
+                      />
                       <Chip size="small" label={`Contacts: ${dealerDetail?.contactsTotal ?? 0}`} variant="outlined" />
                       {isAccountEditing && hasUnsavedDealerChanges ? (
                         <Chip size="small" label="Unsaved" color="warning" variant="outlined" />
@@ -1412,7 +1537,7 @@ export default function CrmDealersPage() {
                     },
                   }}
                 >
-                  <Tab value="info" label="Dealer Info" />
+                  <Tab value="info" label="Account Info" />
                   <Tab value="contacts" label={`Contacts (${dealerDetail?.contactsTotal ?? 0})`} />
                   <Tab value="quotes" label={`Quotes (${dealerQuotes.length})`} />
                   <Tab value="orders" label={`Orders (${dealerOrders.length})`} />
@@ -1601,7 +1726,7 @@ export default function CrmDealersPage() {
                         <Box
                           sx={{
                             border: 1,
-                            borderColor: 'divider',
+                            borderColor: (theme) => alpha(theme.palette.warning.main, 0.55),
                             borderRadius: 1,
                             p: 0.8,
                           }}
@@ -1610,6 +1735,76 @@ export default function CrmDealersPage() {
                             <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
                               Account notes
                             </Typography>
+                            <Box
+                              sx={{
+                                display: 'grid',
+                                gridTemplateColumns: {
+                                  xs: '1fr',
+                                  md: 'repeat(2, minmax(0, 1fr))',
+                                },
+                                gap: 0.7,
+                              }}
+                            >
+                              <TextField
+                                select
+                                size="small"
+                                label="Engagement readiness"
+                                value={dealerForm.engagementReadinessStatus}
+                                onChange={(event) => {
+                                  const nextStatus = event.target.value === 'not_ready'
+                                    ? 'not_ready'
+                                    : event.target.value === 'ready'
+                                      ? 'ready'
+                                      : ''
+                                  setDealerForm((current) => current ? {
+                                    ...current,
+                                    engagementReadinessStatus: nextStatus,
+                                  } : current)
+                                }}
+                              >
+                                <MenuItem value="">None</MenuItem>
+                                <MenuItem value="ready">Ready</MenuItem>
+                                <MenuItem value="not_ready">Not ready</MenuItem>
+                              </TextField>
+
+                              <TextField
+                                select
+                                size="small"
+                                label="Account type"
+                                value={dealerForm.accountType}
+                                onChange={(event) => {
+                                  const nextType = event.target.value === 'designer' ? 'designer' : 'dealer'
+                                  setDealerTextField('accountType', nextType)
+                                }}
+                              >
+                                <MenuItem value="dealer">Dealer</MenuItem>
+                                <MenuItem value="designer">Designer</MenuItem>
+                              </TextField>
+                            </Box>
+                            <TextField
+                              size="small"
+                              multiline
+                              minRows={2}
+                              label="Readiness note"
+                              placeholder="Required when status is Not ready"
+                              value={dealerForm.engagementReadinessNote}
+                              required={dealerForm.engagementReadinessStatus === 'not_ready'}
+                              error={dealerForm.engagementReadinessStatus === 'not_ready' && dealerForm.engagementReadinessNote.trim() === ''}
+                              helperText={dealerForm.engagementReadinessStatus === 'not_ready' && dealerForm.engagementReadinessNote.trim() === ''
+                                ? 'A note is required when status is Not ready.'
+                                : 'Optional context for readiness reviews.'}
+                              onChange={(event) => {
+                                setDealerForm((current) => current ? {
+                                  ...current,
+                                  engagementReadinessNote: event.target.value,
+                                } : current)
+                              }}
+                              sx={{
+                                '& .MuiInputBase-root': {
+                                  fontSize: 13,
+                                },
+                              }}
+                            />
                             <TextField
                               size="small"
                               multiline
@@ -1781,6 +1976,7 @@ export default function CrmDealersPage() {
                           <TableCell sx={{ fontWeight: 700 }}>Email</TableCell>
                           <TableCell sx={{ fontWeight: 700 }}>Phone</TableCell>
                           <TableCell sx={{ fontWeight: 700 }}>Location</TableCell>
+                          <TableCell sx={{ fontWeight: 700 }}>Readiness</TableCell>
                           <TableCell sx={{ fontWeight: 700, width: 220 }} align="right">Actions</TableCell>
                         </TableRow>
                       </TableHead>
@@ -1788,6 +1984,7 @@ export default function CrmDealersPage() {
                         {(dealerDetail?.contacts ?? []).map((contact) => {
                           const contactName = displayContactName(contact)
                           const contactPhotoUrl = String(contact.photoUrl ?? '').trim() || undefined
+                          const readinessChip = resolveReadinessChip(contact.engagementReadinessStatus)
 
                           return (
                             <TableRow key={contact.sourceId}>
@@ -1821,6 +2018,22 @@ export default function CrmDealersPage() {
                               <TableCell>{contact.primaryEmail || contact.secondaryEmail || '-'}</TableCell>
                               <TableCell>{[contact.phone, contact.phone2, contact.phoneAlt].filter(Boolean).join(' / ') || '-'}</TableCell>
                               <TableCell>{[contact.city, contact.state, contact.country].filter(Boolean).join(', ') || '-'}</TableCell>
+                              <TableCell>
+                                <Stack spacing={0.35}>
+                                  <Chip
+                                    size="small"
+                                    variant="outlined"
+                                    color={readinessChip.color}
+                                    label={readinessChip.label}
+                                    sx={{ width: 'fit-content' }}
+                                  />
+                                  {contact.engagementReadinessNote ? (
+                                    <Typography variant="caption" color="text.secondary">
+                                      {contact.engagementReadinessNote}
+                                    </Typography>
+                                  ) : null}
+                                </Stack>
+                              </TableCell>
                               <TableCell align="right">
                                 <Stack direction="row" spacing={0.75} justifyContent="flex-end">
                                   <Button
@@ -1844,7 +2057,7 @@ export default function CrmDealersPage() {
                                       void handleRemoveContact(contact)
                                     }}
                                   >
-                                    {removingContactSourceId === contact.sourceId ? 'Removing...' : 'Remove'}
+                                    {removingContactSourceId === contact.sourceId ? 'Deleting...' : 'Delete'}
                                   </Button>
                                 </Stack>
                               </TableCell>
@@ -1930,6 +2143,40 @@ export default function CrmDealersPage() {
             <TextField size="small" label="Gender" value={contactForm.gender} onChange={(e) => setContactFormField('gender', e.target.value)} />
             <TextField size="small" label="Contact Type ID" value={contactForm.contactTypeId} onChange={(e) => setContactFormField('contactTypeId', e.target.value)} />
             <TextField size="small" label="Photo URL" value={contactForm.photoUrl} onChange={(e) => setContactFormField('photoUrl', e.target.value)} />
+            <FormControl size="small">
+              <InputLabel id="contact-readiness-label">Engagement Readiness</InputLabel>
+              <Select
+                labelId="contact-readiness-label"
+                label="Engagement Readiness"
+                value={contactForm.engagementReadinessStatus}
+                onChange={(e) => setContactFormField(
+                  'engagementReadinessStatus',
+                  e.target.value === 'not_ready'
+                    ? 'not_ready'
+                    : e.target.value === 'ready'
+                      ? 'ready'
+                      : '',
+                )}
+              >
+                <MenuItem value="">None</MenuItem>
+                <MenuItem value="ready">Ready</MenuItem>
+                <MenuItem value="not_ready">Not ready</MenuItem>
+              </Select>
+            </FormControl>
+            <TextField
+              size="small"
+              multiline
+              minRows={2}
+              label="Readiness note"
+              placeholder="Required when status is Not ready"
+              value={contactForm.engagementReadinessNote}
+              required={contactForm.engagementReadinessStatus === 'not_ready'}
+              error={contactForm.engagementReadinessStatus === 'not_ready' && contactForm.engagementReadinessNote.trim() === ''}
+              helperText={contactForm.engagementReadinessStatus === 'not_ready' && contactForm.engagementReadinessNote.trim() === ''
+                ? 'A note is required when status is Not ready.'
+                : ''}
+              onChange={(e) => setContactFormField('engagementReadinessNote', e.target.value)}
+            />
             <FormControl size="small">
               <InputLabel id="contact-archived-label">Archived</InputLabel>
               <Select labelId="contact-archived-label" label="Archived" value={contactForm.isArchived ? 'true' : 'false'} onChange={(e) => setContactFormField('isArchived', e.target.value === 'true')}>

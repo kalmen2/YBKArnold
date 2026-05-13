@@ -158,6 +158,9 @@ export type CrmDealer = {
   website?: string | null
   emails?: string[] | null
   contactCountSource?: number
+  engagementReadinessStatus?: 'ready' | 'not_ready' | null
+  engagementReadinessNote?: string | null
+  recordStatus?: 'active' | 'deleted' | null
   email: string | null
   ownerEmail: string | null
   isArchived: boolean
@@ -193,6 +196,7 @@ export type CrmDealersQueryOptions = {
   offset?: number
   includeArchived?: boolean
   search?: string
+  accountType?: 'dealer' | 'designer' | 'all' | string
   ownerEmail?: string
   hasEmail?: boolean | null
 }
@@ -250,6 +254,9 @@ export type CrmContact = {
   gender: string | null
   contactTypeId: string | null
   photoUrl: string | null
+  engagementReadinessStatus?: 'ready' | 'not_ready' | null
+  engagementReadinessNote?: string | null
+  recordStatus?: 'active' | 'deleted' | null
   isArchived: boolean
   contactOrigin: string
   createdDateSource: string | null
@@ -317,6 +324,8 @@ export type CrmDealerUpdateInput = Partial<{
   pictureUrlSource: string | null
   socialMedia: string | null
   socialMediaLinks: Record<string, string> | null
+  engagementReadinessStatus: 'ready' | 'not_ready' | null
+  engagementReadinessNote: string | null
   isArchived: boolean
   isFavorite: boolean
 }>
@@ -325,6 +334,7 @@ export type CrmDealerDeleteResponse = {
   dealer: CrmDealerDetail
   archivedContactsCount: number
   archiveContactsApplied: boolean
+  queuedForDeletion?: boolean
 }
 
 export type CrmContactMutationInput = Partial<{
@@ -348,11 +358,87 @@ export type CrmContactMutationInput = Partial<{
   gender: string | null
   contactTypeId: string | null
   photoUrl: string | null
+  engagementReadinessStatus: 'ready' | 'not_ready' | null
+  engagementReadinessNote: string | null
   isArchived: boolean
   dealerSourceId: string | null
   contactOrigin: 'linked' | 'unlinked' | 'manual'
   createdDateSource: string | null
 }>
+
+export type CrmDeletionQueueRecordDealer = {
+  sourceId: string
+  name: string | null
+  state: string | null
+  accountType: string | null
+  accountClass: string | null
+  salesRep: string | null
+  deleteRequestedAt: string | null
+  deleteRequestedByUid: string | null
+  deleteRequestedByEmail: string | null
+  deletedAt: string | null
+  deletedByEmail: string | null
+  updatedAt: string | null
+}
+
+export type CrmDeletionQueueRecordContact = {
+  sourceId: string
+  name: string | null
+  accountSourceId: string | null
+  accountName: string | null
+  state: string | null
+  deleteRequestedAt: string | null
+  deleteRequestedByUid: string | null
+  deleteRequestedByEmail: string | null
+  deletedAt: string | null
+  deletedByEmail: string | null
+  updatedAt: string | null
+}
+
+export type CrmDeletionQueueResponse = {
+  dealers: CrmDeletionQueueRecordDealer[]
+  contacts: CrmDeletionQueueRecordContact[]
+  total: number
+}
+
+export type CrmEngagementReadinessDealer = {
+  sourceId: string
+  name: string | null
+  state: string | null
+  accountType: string | null
+  accountClass: string | null
+  engagementReadinessStatus: 'ready' | 'not_ready' | null
+  engagementReadinessNote: string | null
+  updatedAt: string | null
+}
+
+export type CrmEngagementReadinessContact = {
+  sourceId: string
+  name: string | null
+  accountSourceId: string | null
+  accountName: string | null
+  state: string | null
+  engagementReadinessStatus: 'ready' | 'not_ready' | null
+  engagementReadinessNote: string | null
+  updatedAt: string | null
+}
+
+export type CrmEngagementReadinessResponse = {
+  dealers: CrmEngagementReadinessDealer[]
+  contacts: CrmEngagementReadinessContact[]
+  summary: {
+    dealers: {
+      total: number
+      ready: number
+      notReady: number
+    }
+    contacts: {
+      total: number
+      ready: number
+      notReady: number
+    }
+  }
+}
 
 export type CrmQuoteStatus = 'draft' | 'sent' | 'accepted' | 'rejected' | 'cancelled'
 
@@ -556,6 +642,7 @@ export function fetchCrmDealers(
       offset: options.offset ?? undefined,
       includeArchived: options.includeArchived ? 'true' : undefined,
       search: options.search ?? undefined,
+      accountType: options.accountType ?? undefined,
       ownerEmail: options.ownerEmail ?? undefined,
       hasEmail: options.hasEmail === null || options.hasEmail === undefined
         ? undefined
@@ -635,7 +722,7 @@ export function updateCrmContact(contactSourceId: string, input: CrmContactMutat
 }
 
 export function removeCrmContact(contactSourceId: string) {
-  return apiRequest<{ contact: CrmContact }>(`/api/crm/contacts/${encodeURIComponent(contactSourceId)}`, {
+  return apiRequest<{ contact: CrmContact; queuedForDeletion?: boolean }>(`/api/crm/contacts/${encodeURIComponent(contactSourceId)}`, {
     method: 'DELETE',
   })
 }
@@ -655,6 +742,55 @@ export function fetchCrmContacts(options: CrmContactsQueryOptions = {}) {
       hasEmail: options.hasEmail === null || options.hasEmail === undefined
         ? undefined
         : (options.hasEmail ? 'true' : 'false'),
+    }),
+  )
+}
+
+export function fetchCrmDeletionQueue(limit = 500) {
+  return apiRequest<CrmDeletionQueueResponse>(withQuery('/api/crm/deletion-queue', { limit }))
+}
+
+export function confirmCrmDeletion(
+  entityType: 'dealer' | 'contact',
+  sourceId: string,
+  options: { includeContacts?: boolean } = {},
+) {
+  return apiRequest<{
+    ok: boolean
+    entityType: 'dealer' | 'contact'
+    sourceId: string
+    deletedDealerCount?: number
+    deletedContactCount?: number
+  }>(`/api/crm/deletion-queue/${encodeURIComponent(entityType)}/${encodeURIComponent(sourceId)}/confirm`, {
+    method: 'POST',
+    body: JSON.stringify({
+      includeContacts: options.includeContacts,
+    }),
+  })
+}
+
+export function restoreCrmDeletion(entityType: 'dealer' | 'contact', sourceId: string) {
+  return apiRequest<{
+    ok: boolean
+    entityType: 'dealer' | 'contact'
+    sourceId: string
+    dealer?: CrmDealerDetail
+    contact?: CrmContact
+  }>(`/api/crm/deletion-queue/${encodeURIComponent(entityType)}/${encodeURIComponent(sourceId)}/restore`, {
+    method: 'POST',
+  })
+}
+
+export function fetchCrmEngagementReadiness(options: {
+  status?: 'ready' | 'not_ready' | 'all'
+  search?: string
+  limit?: number
+} = {}) {
+  return apiRequest<CrmEngagementReadinessResponse>(
+    withQuery('/api/crm/engagement-readiness', {
+      status: options.status ?? 'all',
+      search: options.search ?? undefined,
+      limit: options.limit ?? 1200,
     }),
   )
 }

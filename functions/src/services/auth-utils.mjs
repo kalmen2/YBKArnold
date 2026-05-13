@@ -10,6 +10,7 @@ export function createAuthUtils({
   authClientPlatformWeb,
   authRoleAdmin,
   authRoleManager,
+  authRoleSalesRep,
   authRoleStandard,
   normalizeWorkerNumber,
   ownerEmail,
@@ -41,11 +42,28 @@ export function createAuthUtils({
   function normalizeAuthRole(value) {
     const normalized = String(value ?? '').trim().toLowerCase()
 
-    if (normalized === authRoleAdmin || normalized === authRoleManager || normalized === authRoleStandard) {
+    if (
+      normalized === authRoleAdmin
+      || normalized === authRoleManager
+      || normalized === authRoleSalesRep
+      || normalized === authRoleStandard
+    ) {
       return normalized
     }
 
     return null
+  }
+
+  function normalizeSalesTerritoryStates(value) {
+    if (!Array.isArray(value)) {
+      return []
+    }
+
+    const normalizedStates = value
+      .map((entry) => String(entry ?? '').trim().toUpperCase())
+      .filter((entry) => /^[A-Z]{2}$/.test(entry))
+
+    return [...new Set(normalizedStates)].sort((left, right) => left.localeCompare(right))
   }
 
   function normalizeAuthHour(value) {
@@ -249,6 +267,7 @@ export function createAuthUtils({
     const normalizedRole = normalizeAuthRole(document.role) ?? authRoleStandard
     const isAdmin = normalizedRole === authRoleAdmin
     const isManager = normalizedRole === authRoleManager
+    const isSalesRep = normalizedRole === authRoleSalesRep
     const normalizedApprovalStatus =
       String(document.approvalStatus ?? '').trim().toLowerCase() === authApprovalApproved
         ? authApprovalApproved
@@ -266,6 +285,9 @@ export function createAuthUtils({
         : null
     const linkedZendeskUserEmail = String(document.linkedZendeskUserEmail ?? '').trim() || null
     const linkedZendeskUserName = String(document.linkedZendeskUserName ?? '').trim() || null
+    const linkedSalesRepId = String(document.linkedSalesRepId ?? '').trim() || null
+    const linkedSalesRepName = String(document.linkedSalesRepName ?? '').trim() || null
+    const salesTerritoryStates = normalizeSalesTerritoryStates(document.salesTerritoryStates)
     const rawClientPlatforms = Array.isArray(document.clientPlatforms)
       ? document.clientPlatforms
       : []
@@ -285,7 +307,9 @@ export function createAuthUtils({
       ?? clientPlatforms[clientPlatforms.length - 1]
     const clientAccessMode = isOwner
       ? authClientAccessModeWebAndApp
-      : resolveAuthClientAccessMode(document)
+      : normalizedRole === authRoleSalesRep
+        ? authClientAccessModeWebOnly
+        : resolveAuthClientAccessMode(document)
     const allowedClientPlatforms = getAllowedAuthClientPlatforms(clientAccessMode)
     const lastActivityAt = String(document.lastActivityAt ?? '').trim() || null
     const lastSignInIpAddress = String(document.lastLoginIpAddress ?? '').trim() || null
@@ -326,6 +350,7 @@ export function createAuthUtils({
       isOwner,
       isAdmin,
       isManager,
+      isSalesRep,
       isApproved: normalizedApprovalStatus === authApprovalApproved,
       approvedAt: String(document.approvedAt ?? '').trim() || null,
       createdAt: String(document.createdAt ?? '').trim() || null,
@@ -346,6 +371,9 @@ export function createAuthUtils({
       linkedZendeskUserId,
       linkedZendeskUserEmail,
       linkedZendeskUserName,
+      linkedSalesRepId,
+      linkedSalesRepName,
+      salesTerritoryStates,
       clientPlatforms,
       lastLoginClientPlatform,
       clientAccessMode,

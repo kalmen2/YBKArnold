@@ -1,4 +1,4 @@
-export type AppAuthRole = 'standard' | 'manager' | 'admin'
+export type AppAuthRole = 'standard' | 'manager' | 'sales_rep' | 'admin'
 
 export type AppAuthApprovalStatus = 'pending' | 'approved'
 
@@ -12,6 +12,7 @@ export type AppAuthUser = {
   isOwner: boolean
   isAdmin: boolean
   isManager: boolean
+  isSalesRep: boolean
   isApproved: boolean
   approvedAt: string | null
   createdAt: string | null
@@ -38,6 +39,9 @@ export type AppAuthUser = {
   linkedZendeskUserId: number | null
   linkedZendeskUserEmail: string | null
   linkedZendeskUserName: string | null
+  linkedSalesRepId: string | null
+  linkedSalesRepName: string | null
+  salesTerritoryStates: string[]
   clientPlatforms: Array<'web' | 'app'>
   lastLoginClientPlatform: 'web' | 'app' | null
   clientAccessMode: 'web_and_app' | 'web_only' | 'app_only'

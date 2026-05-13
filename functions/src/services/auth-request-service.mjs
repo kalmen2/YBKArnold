@@ -5,6 +5,7 @@ export function createAuthRequestService({
   authClientAccessModeWebAndApp,
   authClientPlatformWeb,
   authRoleAdmin,
+  authRoleSalesRep,
   authRoleStandard,
   formatAuthLoginHoursWindow,
   getAuth,
@@ -323,6 +324,23 @@ export function createAuthRequestService({
     next()
   }
 
+  function requireSalesManagerOrAdminRole(req, _res, next) {
+    const publicUser = toPublicAuthUser(req.authUser)
+    const hasAccess = Boolean(
+      publicUser?.isApproved
+      && (publicUser?.isAdmin || publicUser?.isManager || publicUser?.role === authRoleSalesRep),
+    )
+
+    if (!hasAccess) {
+      return next({
+        status: 403,
+        message: 'Sales, manager, or admin access is required.',
+      })
+    }
+
+    next()
+  }
+
   function requireApprovedLinkedWorker(req, _res, next) {
     const publicUser = toPublicAuthUser(req.authUser)
 
@@ -350,6 +368,7 @@ export function createAuthRequestService({
   return {
     requireAdminRole,
     requireManagerOrAdminRole,
+    requireSalesManagerOrAdminRole,
     requireApprovedLinkedWorker,
     requireFirebaseAuth,
     resolveCurrentAuthUserFromRequest,

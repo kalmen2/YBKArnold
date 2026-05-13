@@ -42,6 +42,10 @@ const usStateCodes = [
   'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY',
 ]
 const usStateCodeSet = new Set(usStateCodes)
+const crmRecordStatusActive = 'active'
+const crmRecordStatusDeleted = 'deleted'
+const engagementReadinessReady = 'ready'
+const engagementReadinessNotReady = 'not_ready'
 
 function toTrimmedText(value, maxLength = 4000) {
   if (value === null || value === undefined) {
@@ -387,6 +391,32 @@ function normalizeUsStateList(input) {
   return normalizedStates.sort((left, right) => left.localeCompare(right))
 }
 
+function buildExactStateRegexes(states) {
+  return states.map((stateCode) => new RegExp(`^${escapeRegex(stateCode)}$`, 'i'))
+}
+
+function normalizeCrmRecordStatus(value) {
+  const normalized = toLowerText(value, 32)
+
+  return normalized === crmRecordStatusDeleted
+    ? crmRecordStatusDeleted
+    : crmRecordStatusActive
+}
+
+function normalizeEngagementReadinessStatus(value) {
+  const normalized = toLowerText(value, 60)
+
+  if (normalized === engagementReadinessNotReady) {
+    return engagementReadinessNotReady
+  }
+
+  if (normalized === engagementReadinessReady) {
+    return engagementReadinessReady
+  }
+
+  return null
+}
+
 function normalizeQuoteDocuments(input) {
   if (!Array.isArray(input)) {
     return []
@@ -549,6 +579,14 @@ function normalizeAccount(rawAccount) {
     ownerEmail: toTrimmedText(account.owner_email, 200),
     socialMedia: socialMediaText,
     socialMediaLinks,
+    recordStatus: normalizeCrmRecordStatus(account.recordStatus ?? account.record_status),
+    engagementReadinessStatus: normalizeEngagementReadinessStatus(
+      account.engagementReadinessStatus ?? account.engagement_readiness_status,
+    ),
+    engagementReadinessNote: toTrimmedText(
+      account.engagementReadinessNote ?? account.engagement_readiness_note,
+      2000,
+    ),
     isArchived: toBoolean(account.is_archived),
     isFavorite: toBoolean(account.is_favorite),
     contacts: toOptionalArray(account.contacts),
@@ -588,6 +626,14 @@ function normalizeContact(rawContact, accountContext = null, contactOrigin = 'li
     gender: toTrimmedText(contact.gender, 50),
     contactTypeId: toTrimmedText(contact.contact_type_id, 160),
     photoUrl: toTrimmedText(contact.photo_url, 500),
+    recordStatus: normalizeCrmRecordStatus(contact.recordStatus ?? contact.record_status),
+    engagementReadinessStatus: normalizeEngagementReadinessStatus(
+      contact.engagementReadinessStatus ?? contact.engagement_readiness_status,
+    ),
+    engagementReadinessNote: toTrimmedText(
+      contact.engagementReadinessNote ?? contact.engagement_readiness_note,
+      2000,
+    ),
     isArchived: toBoolean(contact.is_archived),
     contactOrigin,
   }
@@ -1034,9 +1080,66 @@ export function registerCrmRoutes(app, deps) {
     getCollections,
     randomUUID,
     requireAdminRole,
-    requireManagerOrAdminRole,
+    requireSalesManagerOrAdminRole,
     requireFirebaseAuth,
+    toPublicAuthUser,
   } = deps
+
+  function resolveCrmAccessScope(req) {
+    const publicUser = toPublicAuthUser(req.authUser)
+    const isSalesRep = Boolean(publicUser?.isApproved && publicUser?.isSalesRep)
+    const territoryStates = isSalesRep
+      ? normalizeUsStateList(publicUser?.salesTerritoryStates)
+      : []
+
+    return {
+      publicUser,
+      isSalesRep,
+      territoryStates,
+    }
+  }
+
+  function isDealerInTerritory(dealerState, territoryStates) {
+    if (!Array.isArray(territoryStates) || territoryStates.length === 0) {
+      return false
+    }
+
+    const normalizedDealerState = toTrimmedText(dealerState, 80).toUpperCase()
+
+    return Boolean(normalizedDealerState && territoryStates.includes(normalizedDealerState))
+  }
+
+  async function resolveTerritoryDealerSourceIds(crmAccountsCollection, territoryStates) {
+    if (!Array.isArray(territoryStates) || territoryStates.length === 0) {
+      return []
+    }
+
+    const stateRegexes = buildExactStateRegexes(territoryStates)
+    const dealers = await crmAccountsCollection
+      .find(
+        {
+          state: {
+            $in: stateRegexes,
+          },
+          recordStatus: {
+            $ne: crmRecordStatusDeleted,
+          },
+        },
+        {
+          projection: {
+            _id: 0,
+            sourceId: 1,
+          },
+        },
+      )
+      .toArray()
+
+    return [...new Set(
+      dealers
+        .map((dealer) => toTrimmedText(dealer.sourceId, 160))
+        .filter(Boolean),
+    )]
+  }
 
   async function resolveDealerOrThrow(crmAccountsCollection, dealerSourceId) {
     const dealerId = toTrimmedText(dealerSourceId, 160)
@@ -1051,13 +1154,18 @@ export function registerCrmRoutes(app, deps) {
     const dealer = await crmAccountsCollection.findOne(
       {
         sourceId: dealerId,
+        recordStatus: {
+          $ne: crmRecordStatusDeleted,
+        },
       },
       {
         projection: {
           _id: 0,
           sourceId: 1,
           name: 1,
+          state: 1,
           isArchived: 1,
+          recordStatus: 1,
         },
       },
     )
@@ -1072,7 +1180,9 @@ export function registerCrmRoutes(app, deps) {
     return {
       sourceId: toTrimmedText(dealer.sourceId, 160),
       name: toTrimmedText(dealer.name, 240),
+      state: toTrimmedText(dealer.state, 80),
       isArchived: toBoolean(dealer.isArchived),
+      recordStatus: normalizeCrmRecordStatus(dealer.recordStatus),
     }
   }
 
@@ -1389,12 +1499,24 @@ export function registerCrmRoutes(app, deps) {
 
   app.get('/api/crm/dealers', requireFirebaseAuth, async (req, res, next) => {
     try {
+      const { isSalesRep, territoryStates } = resolveCrmAccessScope(req)
       const searchRegex = buildContainsRegex(req.query?.search, 200)
       const includeArchived = toBoolean(req.query?.includeArchived)
       const ownerEmail = toLowerText(req.query?.ownerEmail, 200)
+      const accountType = toLowerText(req.query?.accountType, 60)
       const hasEmail = toNullableBoolean(req.query?.hasEmail)
       const offset = toNonNegativeInteger(req.query?.offset, 0)
       const limit = Math.min(2500, Math.max(1, toNonNegativeInteger(req.query?.limit, 1200)))
+
+      if (isSalesRep && territoryStates.length === 0) {
+        return res.json({
+          dealers: [],
+          total: 0,
+          offset,
+          limit,
+          hasMore: false,
+        })
+      }
 
       // Build a stable cache key from the normalized query params. Requests
       // without filters (the bulk "load all dealers for dropdown" calls) will
@@ -1403,7 +1525,9 @@ export function registerCrmRoutes(app, deps) {
         search: req.query?.search ?? '',
         includeArchived,
         ownerEmail,
+        accountType,
         hasEmail,
+        territoryStates,
         offset,
         limit,
       })}`
@@ -1418,6 +1542,20 @@ export function registerCrmRoutes(app, deps) {
       const filterClauses = []
       let accountSourceIdsFromContactSearch = []
 
+      filterClauses.push({
+        recordStatus: {
+          $ne: crmRecordStatusDeleted,
+        },
+      })
+
+      if (isSalesRep) {
+        filterClauses.push({
+          state: {
+            $in: buildExactStateRegexes(territoryStates),
+          },
+        })
+      }
+
       if (!includeArchived) {
         filterClauses.push({
           isArchived: {
@@ -1429,6 +1567,19 @@ export function registerCrmRoutes(app, deps) {
       if (ownerEmail) {
         filterClauses.push({
           ownerEmailLower: ownerEmail,
+        })
+      }
+
+      if (accountType && accountType !== 'all') {
+        filterClauses.push({
+          $or: [
+            {
+              accountType: new RegExp(`^${escapeRegex(accountType)}$`, 'i'),
+            },
+            {
+              accountClass: new RegExp(`^${escapeRegex(accountType)}$`, 'i'),
+            },
+          ],
         })
       }
 
@@ -1482,6 +1633,9 @@ export function registerCrmRoutes(app, deps) {
           {
             accountSourceId: {
               $nin: [null, ''],
+            },
+            recordStatus: {
+              $ne: crmRecordStatusDeleted,
             },
             $or: [
               {
@@ -1588,6 +1742,8 @@ export function registerCrmRoutes(app, deps) {
                 emails: 1,
                 pictureUrl: 1,
                 contactCountSource: 1,
+                engagementReadinessStatus: 1,
+                engagementReadinessNote: 1,
                 isArchived: 1,
                 lastImportedAt: 1,
               },
@@ -1617,6 +1773,7 @@ export function registerCrmRoutes(app, deps) {
 
   app.get('/api/crm/dealers/:dealerSourceId', requireFirebaseAuth, async (req, res, next) => {
     try {
+      const { isSalesRep, territoryStates } = resolveCrmAccessScope(req)
       const dealerSourceId = toTrimmedText(req.params.dealerSourceId, 160)
 
       if (!dealerSourceId) {
@@ -1635,10 +1792,30 @@ export function registerCrmRoutes(app, deps) {
         crmContactsCollection,
       } = await getCollections()
 
+      if (isSalesRep && territoryStates.length === 0) {
+        return res.status(403).json({
+          error: 'No sales territories are assigned to this user.',
+        })
+      }
+
       const dealer = await crmAccountsCollection.findOne(
-        {
-          sourceId: dealerSourceId,
-        },
+        combineFilterClauses([
+          {
+            sourceId: dealerSourceId,
+          },
+          {
+            recordStatus: {
+              $ne: crmRecordStatusDeleted,
+            },
+          },
+          isSalesRep
+            ? {
+              state: {
+                $in: buildExactStateRegexes(territoryStates),
+              },
+            }
+            : null,
+        ]),
         {
           projection: {
             _id: 0,
@@ -1666,6 +1843,9 @@ export function registerCrmRoutes(app, deps) {
             pictureUrlSource: 1,
             socialMedia: 1,
             socialMediaLinks: 1,
+            engagementReadinessStatus: 1,
+            engagementReadinessNote: 1,
+            recordStatus: 1,
             isArchived: 1,
             isFavorite: 1,
             contactCountSource: 1,
@@ -1685,6 +1865,11 @@ export function registerCrmRoutes(app, deps) {
       const contactFilterClauses = [
         {
           accountSourceId: dealerSourceId,
+        },
+        {
+          recordStatus: {
+            $ne: crmRecordStatusDeleted,
+          },
         },
       ]
 
@@ -1778,6 +1963,9 @@ export function registerCrmRoutes(app, deps) {
                 gender: 1,
                 contactTypeId: 1,
                 isArchived: 1,
+                recordStatus: 1,
+                engagementReadinessStatus: 1,
+                engagementReadinessNote: 1,
                 contactOrigin: 1,
                 createdDateSource: 1,
                 lastImportedAt: 1,
@@ -1803,8 +1991,9 @@ export function registerCrmRoutes(app, deps) {
     }
   })
 
-  app.patch('/api/crm/dealers/:dealerSourceId', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+  app.patch('/api/crm/dealers/:dealerSourceId', requireFirebaseAuth, requireSalesManagerOrAdminRole, async (req, res, next) => {
     try {
+      const { isSalesRep, territoryStates } = resolveCrmAccessScope(req)
       const dealerSourceId = toTrimmedText(req.params.dealerSourceId, 160)
 
       if (!dealerSourceId) {
@@ -1816,6 +2005,12 @@ export function registerCrmRoutes(app, deps) {
       const body = toOptionalObject(req.body)
       const { crmAccountsCollection } = await getCollections()
 
+      if (isSalesRep && territoryStates.length === 0) {
+        return res.status(403).json({
+          error: 'No sales territories are assigned to this user.',
+        })
+      }
+
       const existingDealer = await crmAccountsCollection.findOne(
         {
           sourceId: dealerSourceId,
@@ -1824,6 +2019,10 @@ export function registerCrmRoutes(app, deps) {
           projection: {
             _id: 0,
             sourceId: 1,
+            state: 1,
+            recordStatus: 1,
+            engagementReadinessStatus: 1,
+            engagementReadinessNote: 1,
           },
         },
       )
@@ -1831,6 +2030,166 @@ export function registerCrmRoutes(app, deps) {
       if (!existingDealer) {
         return res.status(404).json({
           error: 'Dealer not found.',
+        })
+      }
+
+      if (normalizeCrmRecordStatus(existingDealer.recordStatus) === crmRecordStatusDeleted) {
+        return res.status(404).json({
+          error: 'Dealer not found.',
+        })
+      }
+
+      if (isSalesRep && !isDealerInTerritory(existingDealer.state, territoryStates)) {
+        return res.status(403).json({
+          error: 'You do not have territory access to this dealer.',
+        })
+      }
+
+      if (isSalesRep) {
+        const deletedAt = nowIso()
+        const deletedByEmail = toTrimmedText(req.authUser?.email, 200) || null
+        const deletedByUid = toTrimmedText(req.authUser?.uid, 160) || null
+        let dealer = null
+
+        if (normalizeCrmRecordStatus(existingDealer.recordStatus) === crmRecordStatusDeleted) {
+          dealer = await crmAccountsCollection.findOne(
+            {
+              sourceId: dealerSourceId,
+            },
+            {
+              projection: {
+                _id: 0,
+                sourceId: 1,
+                name: 1,
+                phone: 1,
+                phone2: 1,
+                email: 1,
+                email2: 1,
+                address: 1,
+                city: 1,
+                state: 1,
+                zip: 1,
+                country: 1,
+                industry: 1,
+                accountClass: 1,
+                accountType: 1,
+                salesRep: 1,
+                website: 1,
+                emails: 1,
+                accountText: 1,
+                owner: 1,
+                ownerEmail: 1,
+                pictureUrl: 1,
+                pictureUrlSource: 1,
+                socialMedia: 1,
+                socialMediaLinks: 1,
+                engagementReadinessStatus: 1,
+                engagementReadinessNote: 1,
+                recordStatus: 1,
+                isArchived: 1,
+                isFavorite: 1,
+                contactCountSource: 1,
+                createdDateSource: 1,
+                modifiedDateSource: 1,
+                lastImportedAt: 1,
+              },
+            },
+          )
+        } else {
+          dealer = await crmAccountsCollection.findOneAndUpdate(
+            {
+              sourceId: dealerSourceId,
+            },
+            {
+              $set: {
+                recordStatus: crmRecordStatusDeleted,
+                isArchived: true,
+                deletedAt,
+                deletedByEmail,
+                deleteRequestedAt: deletedAt,
+                deleteRequestedByUid: deletedByUid,
+                deleteRequestedByEmail: deletedByEmail,
+                modifiedDateSource: deletedAt,
+                updatedAt: deletedAt,
+              },
+            },
+            {
+              returnDocument: 'after',
+              projection: {
+                _id: 0,
+                sourceId: 1,
+                name: 1,
+                phone: 1,
+                phone2: 1,
+                email: 1,
+                email2: 1,
+                address: 1,
+                city: 1,
+                state: 1,
+                zip: 1,
+                country: 1,
+                industry: 1,
+                accountClass: 1,
+                accountType: 1,
+                salesRep: 1,
+                website: 1,
+                emails: 1,
+                accountText: 1,
+                owner: 1,
+                ownerEmail: 1,
+                pictureUrl: 1,
+                pictureUrlSource: 1,
+                socialMedia: 1,
+                socialMediaLinks: 1,
+                engagementReadinessStatus: 1,
+                engagementReadinessNote: 1,
+                recordStatus: 1,
+                isArchived: 1,
+                isFavorite: 1,
+                contactCountSource: 1,
+                createdDateSource: 1,
+                modifiedDateSource: 1,
+                lastImportedAt: 1,
+              },
+            },
+          )
+        }
+
+        let archivedContactsCount = 0
+
+        if (archiveContacts) {
+          const contactsResult = await crmContactsCollection.updateMany(
+            {
+              accountSourceId: dealerSourceId,
+              recordStatus: {
+                $ne: crmRecordStatusDeleted,
+              },
+            },
+            {
+              $set: {
+                recordStatus: crmRecordStatusDeleted,
+                isArchived: true,
+                deletedAt,
+                deletedByEmail,
+                deleteRequestedAt: deletedAt,
+                deleteRequestedByUid: deletedByUid,
+                deleteRequestedByEmail: deletedByEmail,
+                updatedAt: deletedAt,
+              },
+            },
+          )
+
+          archivedContactsCount = Number(contactsResult.modifiedCount ?? 0)
+        }
+
+        cacheDeleteByPrefix(DEALERS_CACHE_PREFIX)
+        cacheDelete(OVERVIEW_CACHE_KEY)
+
+        return res.json({
+          dealer,
+          archivedContactsCount,
+          archiveContactsApplied: archiveContacts,
+          queuedForDeletion: true,
         })
       }
 
@@ -1877,6 +2236,12 @@ export function registerCrmRoutes(app, deps) {
 
       if (Object.prototype.hasOwnProperty.call(body, 'state')) {
         updates.state = toTrimmedText(body.state, 80) || null
+
+        if (isSalesRep && !isDealerInTerritory(updates.state, territoryStates)) {
+          return res.status(403).json({
+            error: 'State must remain within your assigned sales territories.',
+          })
+        }
       }
 
       if (Object.prototype.hasOwnProperty.call(body, 'zip')) {
@@ -1896,7 +2261,36 @@ export function registerCrmRoutes(app, deps) {
       }
 
       if (Object.prototype.hasOwnProperty.call(body, 'accountType')) {
-        updates.accountType = toTrimmedText(body.accountType, 160) || null
+        const accountType = toLowerText(body.accountType, 40)
+
+        if (accountType !== 'dealer' && accountType !== 'designer') {
+          return res.status(400).json({
+            error: "accountType must be 'dealer' or 'designer'.",
+          })
+        }
+
+        updates.accountType = accountType
+        updates.accountClass = accountType
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'engagementReadinessStatus')) {
+        const readinessStatus = toLowerText(body.engagementReadinessStatus, 60)
+
+        if (
+          readinessStatus
+          && readinessStatus !== engagementReadinessReady
+          && readinessStatus !== engagementReadinessNotReady
+        ) {
+          return res.status(400).json({
+            error: `engagementReadinessStatus must be '${engagementReadinessReady}', '${engagementReadinessNotReady}', or empty.`,
+          })
+        }
+
+        updates.engagementReadinessStatus = readinessStatus || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'engagementReadinessNote')) {
+        updates.engagementReadinessNote = toTrimmedText(body.engagementReadinessNote, 2000) || null
       }
 
       if (Object.prototype.hasOwnProperty.call(body, 'salesRep')) {
@@ -1971,13 +2365,33 @@ export function registerCrmRoutes(app, deps) {
           updates.deletedByEmail = toTrimmedText(req.authUser?.email, 200) || null
         } else {
           // Un-archiving clears the audit trail
+          updates.recordStatus = crmRecordStatusActive
           updates.deletedAt = null
           updates.deletedByEmail = null
+          updates.deleteRequestedAt = null
+          updates.deleteRequestedByUid = null
+          updates.deleteRequestedByEmail = null
         }
       }
 
       if (Object.prototype.hasOwnProperty.call(body, 'isFavorite')) {
         updates.isFavorite = toBoolean(body.isFavorite)
+      }
+
+      const effectiveEngagementStatus = Object.prototype.hasOwnProperty.call(updates, 'engagementReadinessStatus')
+        ? normalizeEngagementReadinessStatus(updates.engagementReadinessStatus)
+        : normalizeEngagementReadinessStatus(existingDealer.engagementReadinessStatus)
+      const effectiveEngagementNote = toTrimmedText(
+        Object.prototype.hasOwnProperty.call(updates, 'engagementReadinessNote')
+          ? updates.engagementReadinessNote
+          : existingDealer.engagementReadinessNote,
+        2000,
+      )
+
+      if (effectiveEngagementStatus === engagementReadinessNotReady && !effectiveEngagementNote) {
+        return res.status(400).json({
+          error: 'A note is required when engagementReadinessStatus is not_ready.',
+        })
       }
 
       if (Object.keys(updates).length === 0) {
@@ -2012,6 +2426,9 @@ export function registerCrmRoutes(app, deps) {
               pictureUrlSource: 1,
               socialMedia: 1,
               socialMediaLinks: 1,
+              engagementReadinessStatus: 1,
+              engagementReadinessNote: 1,
+              recordStatus: 1,
               isArchived: 1,
               isFavorite: 1,
               contactCountSource: 1,
@@ -2067,6 +2484,9 @@ export function registerCrmRoutes(app, deps) {
             pictureUrlSource: 1,
             socialMedia: 1,
             socialMediaLinks: 1,
+            engagementReadinessStatus: 1,
+            engagementReadinessNote: 1,
+            recordStatus: 1,
             isArchived: 1,
             isFavorite: 1,
             contactCountSource: 1,
@@ -2088,8 +2508,9 @@ export function registerCrmRoutes(app, deps) {
     }
   })
 
-  app.delete('/api/crm/dealers/:dealerSourceId', requireFirebaseAuth, requireManagerOrAdminRole, async (req, res, next) => {
+  app.delete('/api/crm/dealers/:dealerSourceId', requireFirebaseAuth, requireSalesManagerOrAdminRole, async (req, res, next) => {
     try {
+      const { isSalesRep, territoryStates } = resolveCrmAccessScope(req)
       const dealerSourceId = toTrimmedText(req.params.dealerSourceId, 160)
 
       if (!dealerSourceId) {
@@ -2100,6 +2521,13 @@ export function registerCrmRoutes(app, deps) {
 
       const archiveContacts = toBoolean(req.query?.archiveContacts)
       const { crmAccountsCollection, crmContactsCollection } = await getCollections()
+
+      if (isSalesRep && territoryStates.length === 0) {
+        return res.status(403).json({
+          error: 'No sales territories are assigned to this user.',
+        })
+      }
+
       const existingDealer = await crmAccountsCollection.findOne(
         {
           sourceId: dealerSourceId,
@@ -2108,7 +2536,9 @@ export function registerCrmRoutes(app, deps) {
           projection: {
             _id: 0,
             sourceId: 1,
+            state: 1,
             isArchived: 1,
+            recordStatus: 1,
           },
         },
       )
@@ -2119,11 +2549,20 @@ export function registerCrmRoutes(app, deps) {
         })
       }
 
+      if (isSalesRep && !isDealerInTerritory(existingDealer.state, territoryStates)) {
+        return res.status(403).json({
+          error: 'You do not have territory access to this dealer.',
+        })
+      }
+
       const archivedAt = nowIso()
       const archivedByEmail = toTrimmedText(req.authUser?.email, 200) || null
       let dealer = null
 
-      if (toBoolean(existingDealer.isArchived)) {
+      if (
+        normalizeCrmRecordStatus(existingDealer.recordStatus) === crmRecordStatusDeleted
+        || toBoolean(existingDealer.isArchived)
+      ) {
         dealer = await crmAccountsCollection.findOne(
           {
             sourceId: dealerSourceId,
@@ -2155,6 +2594,9 @@ export function registerCrmRoutes(app, deps) {
               pictureUrlSource: 1,
               socialMedia: 1,
               socialMediaLinks: 1,
+              engagementReadinessStatus: 1,
+              engagementReadinessNote: 1,
+              recordStatus: 1,
               isArchived: 1,
               isFavorite: 1,
               contactCountSource: 1,
@@ -2206,6 +2648,9 @@ export function registerCrmRoutes(app, deps) {
               pictureUrlSource: 1,
               socialMedia: 1,
               socialMediaLinks: 1,
+              engagementReadinessStatus: 1,
+              engagementReadinessNote: 1,
+              recordStatus: 1,
               isArchived: 1,
               isFavorite: 1,
               contactCountSource: 1,
@@ -2253,8 +2698,9 @@ export function registerCrmRoutes(app, deps) {
     }
   })
 
-  app.post('/api/crm/dealers/:dealerSourceId/contacts', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+  app.post('/api/crm/dealers/:dealerSourceId/contacts', requireFirebaseAuth, requireSalesManagerOrAdminRole, async (req, res, next) => {
     try {
+      const { isSalesRep, territoryStates } = resolveCrmAccessScope(req)
       const dealerSourceId = toTrimmedText(req.params.dealerSourceId, 160)
 
       if (!dealerSourceId) {
@@ -2269,7 +2715,19 @@ export function registerCrmRoutes(app, deps) {
         crmContactsCollection,
       } = await getCollections()
 
+      if (isSalesRep && territoryStates.length === 0) {
+        return res.status(403).json({
+          error: 'No sales territories are assigned to this user.',
+        })
+      }
+
       const dealer = await resolveDealerOrThrow(crmAccountsCollection, dealerSourceId)
+
+      if (isSalesRep && !isDealerInTerritory(dealer.state, territoryStates)) {
+        return res.status(403).json({
+          error: 'You do not have territory access to this dealer.',
+        })
+      }
       const requestedSourceId = toTrimmedText(body.sourceId, 160)
       const contactSourceId = requestedSourceId || `manual-${randomUUID()}`
 
@@ -2305,6 +2763,26 @@ export function registerCrmRoutes(app, deps) {
 
       const primaryEmail = toTrimmedText(body.primaryEmail, 200)
       const secondaryEmail = toTrimmedText(body.secondaryEmail, 200)
+      const engagementReadinessStatusInput = toLowerText(body.engagementReadinessStatus, 60)
+      const engagementReadinessStatus = engagementReadinessStatusInput || null
+      const engagementReadinessNote = toTrimmedText(body.engagementReadinessNote, 2000) || null
+
+      if (
+        engagementReadinessStatusInput
+        && engagementReadinessStatusInput !== engagementReadinessReady
+        && engagementReadinessStatusInput !== engagementReadinessNotReady
+      ) {
+        return res.status(400).json({
+          error: `engagementReadinessStatus must be '${engagementReadinessReady}', '${engagementReadinessNotReady}', or empty.`,
+        })
+      }
+
+      if (engagementReadinessStatus === engagementReadinessNotReady && !engagementReadinessNote) {
+        return res.status(400).json({
+          error: 'A note is required when engagementReadinessStatus is not_ready.',
+        })
+      }
+
       const now = nowIso()
 
       const contact = {
@@ -2334,6 +2812,9 @@ export function registerCrmRoutes(app, deps) {
         gender: toTrimmedText(body.gender, 50) || null,
         contactTypeId: toTrimmedText(body.contactTypeId, 160) || null,
         photoUrl: toTrimmedText(body.photoUrl, 500) || null,
+        recordStatus: crmRecordStatusActive,
+        engagementReadinessStatus,
+        engagementReadinessNote,
         isArchived: toBoolean(body.isArchived),
         contactOrigin: 'manual',
         createdDateSource: toIsoDateOrNull(body.createdDateSource) || now,
@@ -2355,8 +2836,9 @@ export function registerCrmRoutes(app, deps) {
     }
   })
 
-  app.patch('/api/crm/contacts/:contactSourceId', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+  app.patch('/api/crm/contacts/:contactSourceId', requireFirebaseAuth, requireSalesManagerOrAdminRole, async (req, res, next) => {
     try {
+      const { isSalesRep, territoryStates } = resolveCrmAccessScope(req)
       const contactSourceId = toTrimmedText(req.params.contactSourceId, 160)
 
       if (!contactSourceId) {
@@ -2370,6 +2852,17 @@ export function registerCrmRoutes(app, deps) {
         crmAccountsCollection,
         crmContactsCollection,
       } = await getCollections()
+
+      const salesRepDealerSourceIds = isSalesRep
+        ? await resolveTerritoryDealerSourceIds(crmAccountsCollection, territoryStates)
+        : []
+      const salesRepDealerSourceIdSet = new Set(salesRepDealerSourceIds)
+
+      if (isSalesRep && territoryStates.length === 0) {
+        return res.status(403).json({
+          error: 'No sales territories are assigned to this user.',
+        })
+      }
 
       const existingContact = await crmContactsCollection.findOne(
         {
@@ -2386,6 +2879,29 @@ export function registerCrmRoutes(app, deps) {
         return res.status(404).json({
           error: 'Contact not found.',
         })
+      }
+
+      if (normalizeCrmRecordStatus(existingContact.recordStatus) === crmRecordStatusDeleted) {
+        return res.status(404).json({
+          error: 'Contact not found.',
+        })
+      }
+
+      if (isSalesRep) {
+        const existingDealerSourceId = toTrimmedText(existingContact.accountSourceId, 160)
+        const existingContactState = toTrimmedText(existingContact.state, 80)
+        const hasDealerAccess = existingDealerSourceId
+          ? salesRepDealerSourceIdSet.has(existingDealerSourceId)
+          : false
+        const hasStateAccess = !existingDealerSourceId
+          ? isDealerInTerritory(existingContactState, territoryStates)
+          : false
+
+        if (!hasDealerAccess && !hasStateAccess) {
+          return res.status(403).json({
+            error: 'You do not have territory access to this contact.',
+          })
+        }
       }
 
       const updates = {}
@@ -2474,6 +2990,16 @@ export function registerCrmRoutes(app, deps) {
 
       if (Object.prototype.hasOwnProperty.call(body, 'state')) {
         updates.state = toTrimmedText(body.state, 80) || null
+
+        if (
+          isSalesRep
+          && !toTrimmedText(existingContact.accountSourceId, 160)
+          && !isDealerInTerritory(updates.state, territoryStates)
+        ) {
+          return res.status(403).json({
+            error: 'State must remain within your assigned sales territories.',
+          })
+        }
       }
 
       if (Object.prototype.hasOwnProperty.call(body, 'zip')) {
@@ -2492,12 +3018,41 @@ export function registerCrmRoutes(app, deps) {
         updates.contactTypeId = toTrimmedText(body.contactTypeId, 160) || null
       }
 
+      if (Object.prototype.hasOwnProperty.call(body, 'engagementReadinessStatus')) {
+        const readinessStatus = toLowerText(body.engagementReadinessStatus, 60)
+
+        if (
+          readinessStatus
+          && readinessStatus !== engagementReadinessReady
+          && readinessStatus !== engagementReadinessNotReady
+        ) {
+          return res.status(400).json({
+            error: `engagementReadinessStatus must be '${engagementReadinessReady}', '${engagementReadinessNotReady}', or empty.`,
+          })
+        }
+
+        updates.engagementReadinessStatus = readinessStatus || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'engagementReadinessNote')) {
+        updates.engagementReadinessNote = toTrimmedText(body.engagementReadinessNote, 2000) || null
+      }
+
       if (Object.prototype.hasOwnProperty.call(body, 'photoUrl')) {
         updates.photoUrl = toTrimmedText(body.photoUrl, 500) || null
       }
 
       if (Object.prototype.hasOwnProperty.call(body, 'isArchived')) {
         updates.isArchived = toBoolean(body.isArchived)
+
+        if (!updates.isArchived) {
+          updates.recordStatus = crmRecordStatusActive
+          updates.deletedAt = null
+          updates.deletedByEmail = null
+          updates.deleteRequestedAt = null
+          updates.deleteRequestedByUid = null
+          updates.deleteRequestedByEmail = null
+        }
       }
 
       if (Object.prototype.hasOwnProperty.call(body, 'dealerSourceId')) {
@@ -2512,6 +3067,12 @@ export function registerCrmRoutes(app, deps) {
           }
         } else {
           const dealer = await resolveDealerOrThrow(crmAccountsCollection, nextDealerSourceId)
+
+          if (isSalesRep && !isDealerInTerritory(dealer.state, territoryStates)) {
+            return res.status(403).json({
+              error: 'You do not have territory access to the selected dealer.',
+            })
+          }
 
           updates.accountSourceId = dealer.sourceId
           updates.accountName = dealer.name || dealer.sourceId
@@ -2548,6 +3109,52 @@ export function registerCrmRoutes(app, deps) {
         })
       }
 
+      if (isSalesRep) {
+        const effectiveDealerSourceId = toTrimmedText(
+          Object.prototype.hasOwnProperty.call(updates, 'accountSourceId')
+            ? updates.accountSourceId
+            : existingContact.accountSourceId,
+          160,
+        )
+
+        if (effectiveDealerSourceId) {
+          if (!salesRepDealerSourceIdSet.has(effectiveDealerSourceId)) {
+            return res.status(403).json({
+              error: 'You do not have territory access to this contact dealer.',
+            })
+          }
+        } else {
+          const effectiveState = toTrimmedText(
+            Object.prototype.hasOwnProperty.call(updates, 'state')
+              ? updates.state
+              : existingContact.state,
+            80,
+          )
+
+          if (!isDealerInTerritory(effectiveState, territoryStates)) {
+            return res.status(403).json({
+              error: 'Unlinked contacts must stay within your territory states.',
+            })
+          }
+        }
+      }
+
+      const effectiveEngagementStatus = Object.prototype.hasOwnProperty.call(updates, 'engagementReadinessStatus')
+        ? normalizeEngagementReadinessStatus(updates.engagementReadinessStatus)
+        : normalizeEngagementReadinessStatus(existingContact.engagementReadinessStatus)
+      const effectiveEngagementNote = toTrimmedText(
+        Object.prototype.hasOwnProperty.call(updates, 'engagementReadinessNote')
+          ? updates.engagementReadinessNote
+          : existingContact.engagementReadinessNote,
+        2000,
+      )
+
+      if (effectiveEngagementStatus === engagementReadinessNotReady && !effectiveEngagementNote) {
+        return res.status(400).json({
+          error: 'A note is required when engagementReadinessStatus is not_ready.',
+        })
+      }
+
       const now = nowIso()
 
       updates.updatedAt = now
@@ -2578,8 +3185,9 @@ export function registerCrmRoutes(app, deps) {
     }
   })
 
-  app.delete('/api/crm/contacts/:contactSourceId', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+  app.delete('/api/crm/contacts/:contactSourceId', requireFirebaseAuth, requireSalesManagerOrAdminRole, async (req, res, next) => {
     try {
+      const { isSalesRep, territoryStates } = resolveCrmAccessScope(req)
       const contactSourceId = toTrimmedText(req.params.contactSourceId, 160)
 
       if (!contactSourceId) {
@@ -2588,7 +3196,21 @@ export function registerCrmRoutes(app, deps) {
         })
       }
 
-      const { crmContactsCollection } = await getCollections()
+      const {
+        crmAccountsCollection,
+        crmContactsCollection,
+      } = await getCollections()
+
+      if (isSalesRep && territoryStates.length === 0) {
+        return res.status(403).json({
+          error: 'No sales territories are assigned to this user.',
+        })
+      }
+
+      const salesRepDealerSourceIds = isSalesRep
+        ? await resolveTerritoryDealerSourceIds(crmAccountsCollection, territoryStates)
+        : []
+      const salesRepDealerSourceIdSet = new Set(salesRepDealerSourceIds)
 
       const existingContact = await crmContactsCollection.findOne(
         {
@@ -2604,6 +3226,68 @@ export function registerCrmRoutes(app, deps) {
       if (!existingContact) {
         return res.status(404).json({
           error: 'Contact not found.',
+        })
+      }
+
+      if (isSalesRep) {
+        const linkedDealerSourceId = toTrimmedText(existingContact.accountSourceId, 160)
+        const contactState = toTrimmedText(existingContact.state, 80)
+        const hasDealerAccess = linkedDealerSourceId
+          ? salesRepDealerSourceIdSet.has(linkedDealerSourceId)
+          : false
+        const hasStateAccess = !linkedDealerSourceId
+          ? isDealerInTerritory(contactState, territoryStates)
+          : false
+
+        if (!hasDealerAccess && !hasStateAccess) {
+          return res.status(403).json({
+            error: 'You do not have territory access to this contact.',
+          })
+        }
+      }
+
+      if (normalizeCrmRecordStatus(existingContact.recordStatus) === crmRecordStatusDeleted) {
+        return res.json({
+          contact: existingContact,
+          queuedForDeletion: true,
+        })
+      }
+
+      if (isSalesRep) {
+        const deletedAt = nowIso()
+        const deletedByEmail = toTrimmedText(req.authUser?.email, 200) || null
+        const deletedByUid = toTrimmedText(req.authUser?.uid, 160) || null
+
+        const contact = await crmContactsCollection.findOneAndUpdate(
+          {
+            sourceId: contactSourceId,
+          },
+          {
+            $set: {
+              recordStatus: crmRecordStatusDeleted,
+              isArchived: true,
+              deletedAt,
+              deletedByEmail,
+              deleteRequestedAt: deletedAt,
+              deleteRequestedByUid: deletedByUid,
+              deleteRequestedByEmail: deletedByEmail,
+              updatedAt: deletedAt,
+            },
+          },
+          {
+            returnDocument: 'after',
+            projection: {
+              _id: 0,
+            },
+          },
+        )
+
+        cacheDeleteByPrefix(DEALERS_CACHE_PREFIX)
+        cacheDelete(OVERVIEW_CACHE_KEY)
+
+        return res.json({
+          contact,
+          queuedForDeletion: true,
         })
       }
 
@@ -2641,6 +3325,7 @@ export function registerCrmRoutes(app, deps) {
 
       return res.json({
         contact,
+        queuedForDeletion: false,
       })
     } catch (error) {
       next(error)
@@ -2649,6 +3334,7 @@ export function registerCrmRoutes(app, deps) {
 
   app.get('/api/crm/contacts', requireFirebaseAuth, async (req, res, next) => {
     try {
+      const { isSalesRep, territoryStates } = resolveCrmAccessScope(req)
       const includeArchived = toBoolean(req.query?.includeArchived)
       const searchRegex = buildContainsRegex(req.query?.search, 200)
       const dealerSourceId = toTrimmedText(req.query?.dealerSourceId, 160)
@@ -2660,8 +3346,57 @@ export function registerCrmRoutes(app, deps) {
       const offset = toNonNegativeInteger(req.query?.offset, 0)
       const limit = Math.min(500, Math.max(1, toNonNegativeInteger(req.query?.limit, 150)))
 
-      const { crmContactsCollection } = await getCollections()
+      if (isSalesRep && territoryStates.length === 0) {
+        return res.json({
+          contacts: [],
+          total: 0,
+          offset,
+          limit,
+          hasMore: false,
+        })
+      }
+
+      const { crmAccountsCollection, crmContactsCollection } = await getCollections()
       const filterClauses = []
+
+      filterClauses.push({
+        recordStatus: {
+          $ne: crmRecordStatusDeleted,
+        },
+      })
+
+      if (isSalesRep) {
+        const territoryDealerSourceIds = await resolveTerritoryDealerSourceIds(crmAccountsCollection, territoryStates)
+        const territoryStateRegexes = buildExactStateRegexes(territoryStates)
+
+        if (dealerSourceId && !territoryDealerSourceIds.includes(dealerSourceId)) {
+          return res.json({
+            contacts: [],
+            total: 0,
+            offset,
+            limit,
+            hasMore: false,
+          })
+        }
+
+        filterClauses.push({
+          $or: [
+            {
+              accountSourceId: {
+                $in: territoryDealerSourceIds,
+              },
+            },
+            {
+              accountSourceId: {
+                $in: [null, ''],
+              },
+              state: {
+                $in: territoryStateRegexes,
+              },
+            },
+          ],
+        })
+      }
 
       if (!includeArchived) {
         filterClauses.push({
@@ -2861,6 +3596,9 @@ export function registerCrmRoutes(app, deps) {
                 city: 1,
                 state: 1,
                 country: 1,
+                recordStatus: 1,
+                engagementReadinessStatus: 1,
+                engagementReadinessNote: 1,
                 isArchived: 1,
                 contactOrigin: 1,
                 createdDateSource: 1,
@@ -2880,6 +3618,392 @@ export function registerCrmRoutes(app, deps) {
         offset,
         limit,
         hasMore: offset + contacts.length < total,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/crm/deletion-queue', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+    try {
+      const limit = Math.min(2000, Math.max(1, toNonNegativeInteger(req.query?.limit, 500)))
+      const { crmAccountsCollection, crmContactsCollection } = await getCollections()
+
+      const [dealers, contacts] = await Promise.all([
+        crmAccountsCollection
+          .find(
+            {
+              recordStatus: crmRecordStatusDeleted,
+            },
+            {
+              projection: {
+                _id: 0,
+                sourceId: 1,
+                name: 1,
+                state: 1,
+                accountType: 1,
+                accountClass: 1,
+                salesRep: 1,
+                deleteRequestedAt: 1,
+                deleteRequestedByUid: 1,
+                deleteRequestedByEmail: 1,
+                deletedAt: 1,
+                deletedByEmail: 1,
+                updatedAt: 1,
+              },
+            },
+          )
+          .sort({ deleteRequestedAt: -1, deletedAt: -1, updatedAt: -1 })
+          .limit(limit)
+          .toArray(),
+        crmContactsCollection
+          .find(
+            {
+              recordStatus: crmRecordStatusDeleted,
+            },
+            {
+              projection: {
+                _id: 0,
+                sourceId: 1,
+                name: 1,
+                accountSourceId: 1,
+                accountName: 1,
+                state: 1,
+                deleteRequestedAt: 1,
+                deleteRequestedByUid: 1,
+                deleteRequestedByEmail: 1,
+                deletedAt: 1,
+                deletedByEmail: 1,
+                updatedAt: 1,
+              },
+            },
+          )
+          .sort({ deleteRequestedAt: -1, deletedAt: -1, updatedAt: -1 })
+          .limit(limit)
+          .toArray(),
+      ])
+
+      return res.json({
+        dealers,
+        contacts,
+        total: dealers.length + contacts.length,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.post('/api/crm/deletion-queue/:entityType/:sourceId/confirm', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+    try {
+      const entityType = toLowerText(req.params.entityType, 40)
+      const sourceId = toTrimmedText(req.params.sourceId, 160)
+
+      if (!sourceId) {
+        return res.status(400).json({ error: 'sourceId is required.' })
+      }
+
+      const { crmAccountsCollection, crmContactsCollection } = await getCollections()
+
+      if (entityType === 'dealer') {
+        const includeContacts = req.body?.includeContacts !== false
+
+        const dealerResult = await crmAccountsCollection.deleteOne({
+          sourceId,
+          recordStatus: crmRecordStatusDeleted,
+        })
+
+        if (Number(dealerResult.deletedCount ?? 0) <= 0) {
+          return res.status(404).json({ error: 'Dealer not found in deletion queue.' })
+        }
+
+        const contactsResult = includeContacts
+          ? await crmContactsCollection.deleteMany({
+              accountSourceId: sourceId,
+            })
+          : { deletedCount: 0 }
+
+        cacheDeleteByPrefix(DEALERS_CACHE_PREFIX)
+        cacheDelete(OVERVIEW_CACHE_KEY)
+
+        return res.json({
+          ok: true,
+          entityType,
+          sourceId,
+          deletedDealerCount: Number(dealerResult.deletedCount ?? 0),
+          deletedContactCount: Number(contactsResult.deletedCount ?? 0),
+        })
+      }
+
+      if (entityType === 'contact') {
+        const contactResult = await crmContactsCollection.deleteOne({
+          sourceId,
+          recordStatus: crmRecordStatusDeleted,
+        })
+
+        if (Number(contactResult.deletedCount ?? 0) <= 0) {
+          return res.status(404).json({ error: 'Contact not found in deletion queue.' })
+        }
+
+        cacheDeleteByPrefix(DEALERS_CACHE_PREFIX)
+        cacheDelete(OVERVIEW_CACHE_KEY)
+
+        return res.json({
+          ok: true,
+          entityType,
+          sourceId,
+          deletedContactCount: Number(contactResult.deletedCount ?? 0),
+        })
+      }
+
+      return res.status(400).json({
+        error: "entityType must be 'dealer' or 'contact'.",
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.post('/api/crm/deletion-queue/:entityType/:sourceId/restore', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+    try {
+      const entityType = toLowerText(req.params.entityType, 40)
+      const sourceId = toTrimmedText(req.params.sourceId, 160)
+
+      if (!sourceId) {
+        return res.status(400).json({ error: 'sourceId is required.' })
+      }
+
+      const restoredAt = nowIso()
+      const { crmAccountsCollection, crmContactsCollection } = await getCollections()
+
+      if (entityType === 'dealer') {
+        const dealer = await crmAccountsCollection.findOneAndUpdate(
+          {
+            sourceId,
+            recordStatus: crmRecordStatusDeleted,
+          },
+          {
+            $set: {
+              recordStatus: crmRecordStatusActive,
+              isArchived: false,
+              updatedAt: restoredAt,
+            },
+            $unset: {
+              deleteRequestedAt: '',
+              deleteRequestedByUid: '',
+              deleteRequestedByEmail: '',
+              deletedAt: '',
+              deletedByEmail: '',
+            },
+          },
+          {
+            returnDocument: 'after',
+            projection: {
+              _id: 0,
+            },
+          },
+        )
+
+        if (!dealer) {
+          return res.status(404).json({ error: 'Dealer not found in deletion queue.' })
+        }
+
+        cacheDeleteByPrefix(DEALERS_CACHE_PREFIX)
+        cacheDelete(OVERVIEW_CACHE_KEY)
+
+        return res.json({
+          ok: true,
+          entityType,
+          sourceId,
+          dealer,
+        })
+      }
+
+      if (entityType === 'contact') {
+        const contact = await crmContactsCollection.findOneAndUpdate(
+          {
+            sourceId,
+            recordStatus: crmRecordStatusDeleted,
+          },
+          {
+            $set: {
+              recordStatus: crmRecordStatusActive,
+              isArchived: false,
+              updatedAt: restoredAt,
+            },
+            $unset: {
+              deleteRequestedAt: '',
+              deleteRequestedByUid: '',
+              deleteRequestedByEmail: '',
+              deletedAt: '',
+              deletedByEmail: '',
+            },
+          },
+          {
+            returnDocument: 'after',
+            projection: {
+              _id: 0,
+            },
+          },
+        )
+
+        if (!contact) {
+          return res.status(404).json({ error: 'Contact not found in deletion queue.' })
+        }
+
+        cacheDeleteByPrefix(DEALERS_CACHE_PREFIX)
+        cacheDelete(OVERVIEW_CACHE_KEY)
+
+        return res.json({
+          ok: true,
+          entityType,
+          sourceId,
+          contact,
+        })
+      }
+
+      return res.status(400).json({
+        error: "entityType must be 'dealer' or 'contact'.",
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/crm/engagement-readiness', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+    try {
+      const status = toLowerText(req.query?.status, 40)
+      const searchRegex = buildContainsRegex(req.query?.search, 200)
+      const limit = Math.min(3000, Math.max(1, toNonNegativeInteger(req.query?.limit, 1200)))
+      const statusFilter =
+        status === engagementReadinessNotReady || status === engagementReadinessReady
+          ? status
+          : null
+      const { crmAccountsCollection, crmContactsCollection } = await getCollections()
+
+      const dealerFilter = combineFilterClauses([
+        {
+          recordStatus: {
+            $ne: crmRecordStatusDeleted,
+          },
+        },
+        statusFilter
+          ? {
+              engagementReadinessStatus: statusFilter,
+            }
+          : null,
+        searchRegex
+          ? {
+              $or: [
+                { sourceId: searchRegex },
+                { name: searchRegex },
+                { accountType: searchRegex },
+                { accountClass: searchRegex },
+                { state: searchRegex },
+                { engagementReadinessNote: searchRegex },
+              ],
+            }
+          : null,
+      ])
+
+      const contactFilter = combineFilterClauses([
+        {
+          recordStatus: {
+            $ne: crmRecordStatusDeleted,
+          },
+        },
+        statusFilter
+          ? {
+              engagementReadinessStatus: statusFilter,
+            }
+          : null,
+        searchRegex
+          ? {
+              $or: [
+                { sourceId: searchRegex },
+                { name: searchRegex },
+                { accountName: searchRegex },
+                { state: searchRegex },
+                { engagementReadinessNote: searchRegex },
+              ],
+            }
+          : null,
+      ])
+
+      const [dealers, contacts] = await Promise.all([
+        crmAccountsCollection
+          .find(
+            dealerFilter,
+            {
+              projection: {
+                _id: 0,
+                sourceId: 1,
+                name: 1,
+                state: 1,
+                accountType: 1,
+                accountClass: 1,
+                engagementReadinessStatus: 1,
+                engagementReadinessNote: 1,
+                updatedAt: 1,
+              },
+            },
+          )
+          .sort({ engagementReadinessStatus: 1, updatedAt: -1, nameLower: 1 })
+          .limit(limit)
+          .toArray(),
+        crmContactsCollection
+          .find(
+            contactFilter,
+            {
+              projection: {
+                _id: 0,
+                sourceId: 1,
+                name: 1,
+                accountSourceId: 1,
+                accountName: 1,
+                state: 1,
+                engagementReadinessStatus: 1,
+                engagementReadinessNote: 1,
+                updatedAt: 1,
+              },
+            },
+          )
+          .sort({ engagementReadinessStatus: 1, updatedAt: -1, nameLower: 1 })
+          .limit(limit)
+          .toArray(),
+      ])
+
+      const dealerReadyCount = dealers.filter(
+        (dealer) => normalizeEngagementReadinessStatus(dealer.engagementReadinessStatus) === engagementReadinessReady,
+      ).length
+      const dealerNotReadyCount = dealers.filter(
+        (dealer) => normalizeEngagementReadinessStatus(dealer.engagementReadinessStatus) === engagementReadinessNotReady,
+      ).length
+      const dealerNoneCount = dealers.length - dealerReadyCount - dealerNotReadyCount
+      const contactReadyCount = contacts.filter(
+        (contact) => normalizeEngagementReadinessStatus(contact.engagementReadinessStatus) === engagementReadinessReady,
+      ).length
+      const contactNotReadyCount = contacts.filter(
+        (contact) => normalizeEngagementReadinessStatus(contact.engagementReadinessStatus) === engagementReadinessNotReady,
+      ).length
+      const contactNoneCount = contacts.length - contactReadyCount - contactNotReadyCount
+
+      return res.json({
+        dealers,
+        contacts,
+        summary: {
+          dealers: {
+            total: dealers.length,
+            ready: dealerReadyCount,
+            notReady: dealerNotReadyCount,
+            none: dealerNoneCount,
+          },
+          contacts: {
+            total: contacts.length,
+            ready: contactReadyCount,
+            notReady: contactNotReadyCount,
+            none: contactNoneCount,
+          },
+        },
       })
     } catch (error) {
       next(error)
@@ -3754,6 +4878,9 @@ export function registerCrmRoutes(app, deps) {
                 pictureUrlSource: account.pictureUrlSource || null,
                 socialMedia: account.socialMedia || null,
                 socialMediaLinks,
+                recordStatus: account.recordStatus || crmRecordStatusActive,
+                engagementReadinessStatus: normalizeEngagementReadinessStatus(account.engagementReadinessStatus),
+                engagementReadinessNote: account.engagementReadinessNote || null,
                 isArchived: account.isArchived,
                 isFavorite: account.isFavorite,
                 contactCountSource: account.contacts.length,
@@ -3809,6 +4936,9 @@ export function registerCrmRoutes(app, deps) {
                 gender: contact.gender || null,
                 contactTypeId: contact.contactTypeId || null,
                 photoUrl: contact.photoUrl || null,
+                recordStatus: contact.recordStatus || crmRecordStatusActive,
+                engagementReadinessStatus: normalizeEngagementReadinessStatus(contact.engagementReadinessStatus),
+                engagementReadinessNote: contact.engagementReadinessNote || null,
                 isArchived: contact.isArchived,
                 contactOrigin: contact.contactOrigin,
                 lastImportRunId: importRunId,

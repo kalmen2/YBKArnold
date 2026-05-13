@@ -184,6 +184,7 @@ const ownerEmail = String(process.env.OWNER_EMAIL ?? '').trim()
 const authRoleStandard = 'standard'
 const authRoleManager = 'manager'
 const authRoleAdmin = 'admin'
+const authRoleSalesRep = 'sales_rep'
 const authApprovalPending = 'pending'
 const authApprovalApproved = 'approved'
 const authAccessTimeZoneUtc = 'UTC'
@@ -283,6 +284,7 @@ const {
   authClientPlatformWeb,
   authRoleAdmin,
   authRoleManager,
+  authRoleSalesRep,
   authRoleStandard,
   normalizeWorkerNumber,
   ownerEmail,
@@ -548,6 +550,7 @@ const { refreshOrdersUnifiedCollection } = createOrdersUnifiedService({
 const {
   requireAdminRole,
   requireManagerOrAdminRole,
+  requireSalesManagerOrAdminRole,
   requireApprovedLinkedWorker,
   requireFirebaseAuth,
   invalidateAuthUserCache,
@@ -558,6 +561,7 @@ const {
   authClientAccessModeWebAndApp,
   authClientPlatformWeb,
   authRoleAdmin,
+  authRoleSalesRep,
   authRoleStandard,
   formatAuthLoginHoursWindow,
   getAuth,
@@ -584,9 +588,11 @@ const routeDeps = {
   authAccessTimeZoneNewJersey,
   authApprovalApproved,
   authApprovalPending,
+  authClientAccessModeWebOnly,
   authClientAccessModeWebAndApp,
   authClientPlatformApp,
   authRoleAdmin,
+  authRoleSalesRep,
   authRoleStandard,
   buildOrderPhotoDownloadFileName,
   clearSupportSnapshotCache,
@@ -649,6 +655,7 @@ const routeDeps = {
   invalidateAuthUserCache,
   requireAdminRole,
   requireManagerOrAdminRole,
+  requireSalesManagerOrAdminRole,
   requireApprovedLinkedWorker,
   requireFirebaseAuth,
   saveOrderPhotoRecord,

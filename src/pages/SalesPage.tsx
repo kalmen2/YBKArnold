@@ -1,35 +1,53 @@
 import StoreRoundedIcon from '@mui/icons-material/StoreRounded'
 import ContactsRoundedIcon from '@mui/icons-material/ContactsRounded'
+import FactCheckRoundedIcon from '@mui/icons-material/FactCheckRounded'
 import MapRoundedIcon from '@mui/icons-material/MapRounded'
 import WorkspacesRoundedIcon from '@mui/icons-material/WorkspacesRounded'
 import { Box, Tab, Tabs } from '@mui/material'
+import { useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
+import { useAuth } from '../auth/useAuth'
 import CrmDealersPage from './CrmDealersPage'
 import CrmContactsPage from './CrmContactsPage'
+import SalesEngagementPage from './SalesEngagementPage'
 import SalesOpportunitiesPage from './SalesOpportunitiesPage'
 import SalesRepsPage from './SalesRepsPage'
 
-type SalesTab = 'dealers' | 'contacts' | 'opportunities' | 'sales-reps'
+type SalesTab = 'dealers' | 'contacts' | 'engagement' | 'opportunities' | 'sales-reps'
 
-function resolveTab(value: string | null): SalesTab {
+function resolveTab(value: string | null, allowedTabs: SalesTab[]): SalesTab {
+  const allowedTabSet = new Set(allowedTabs)
+
   if (value === 'contacts') {
-    return 'contacts'
+    return allowedTabSet.has('contacts') ? 'contacts' : 'dealers'
   }
 
   if (value === 'opportunities') {
-    return 'opportunities'
+    return allowedTabSet.has('opportunities') ? 'opportunities' : 'dealers'
   }
 
   if (value === 'sales-reps') {
-    return 'sales-reps'
+    return allowedTabSet.has('sales-reps') ? 'sales-reps' : 'dealers'
+  }
+
+  if (value === 'engagement') {
+    return allowedTabSet.has('engagement') ? 'engagement' : 'dealers'
   }
 
   return 'dealers'
 }
 
 export default function SalesPage() {
+  const { appUser } = useAuth()
   const [searchParams, setSearchParams] = useSearchParams()
-  const activeTab = resolveTab(searchParams.get('tab'))
+  const allowedTabs = useMemo<SalesTab[]>(() => {
+    if (appUser?.isSalesRep) {
+      return ['dealers', 'contacts', 'engagement']
+    }
+
+    return ['dealers', 'contacts', 'engagement', 'opportunities', 'sales-reps']
+  }, [appUser?.isSalesRep])
+  const activeTab = resolveTab(searchParams.get('tab'), allowedTabs)
 
   function handleTabChange(_: React.SyntheticEvent, value: SalesTab) {
     setSearchParams({ tab: value }, { replace: true })
@@ -45,7 +63,7 @@ export default function SalesPage() {
         >
           <Tab
             value="dealers"
-            label="Dealers"
+            label="Accounts"
             icon={<StoreRoundedIcon fontSize="small" />}
             iconPosition="start"
             sx={{ minHeight: 44, textTransform: 'none', fontWeight: 600, gap: 0.75 }}
@@ -58,19 +76,30 @@ export default function SalesPage() {
             sx={{ minHeight: 44, textTransform: 'none', fontWeight: 600, gap: 0.75 }}
           />
           <Tab
-            value="opportunities"
-            label="Opportunities"
-            icon={<WorkspacesRoundedIcon fontSize="small" />}
+            value="engagement"
+            label="Engagement"
+            icon={<FactCheckRoundedIcon fontSize="small" />}
             iconPosition="start"
             sx={{ minHeight: 44, textTransform: 'none', fontWeight: 600, gap: 0.75 }}
           />
-          <Tab
-            value="sales-reps"
-            label="Sales Reps"
-            icon={<MapRoundedIcon fontSize="small" />}
-            iconPosition="start"
-            sx={{ minHeight: 44, textTransform: 'none', fontWeight: 600, gap: 0.75 }}
-          />
+          {!appUser?.isSalesRep ? (
+            <Tab
+              value="opportunities"
+              label="Opportunities"
+              icon={<WorkspacesRoundedIcon fontSize="small" />}
+              iconPosition="start"
+              sx={{ minHeight: 44, textTransform: 'none', fontWeight: 600, gap: 0.75 }}
+            />
+          ) : null}
+          {!appUser?.isSalesRep ? (
+            <Tab
+              value="sales-reps"
+              label="Sales Reps"
+              icon={<MapRoundedIcon fontSize="small" />}
+              iconPosition="start"
+              sx={{ minHeight: 44, textTransform: 'none', fontWeight: 600, gap: 0.75 }}
+            />
+          ) : null}
         </Tabs>
       </Box>
 
@@ -78,6 +107,8 @@ export default function SalesPage() {
         ? <CrmDealersPage />
         : activeTab === 'contacts'
           ? <CrmContactsPage />
+          : activeTab === 'engagement'
+            ? <SalesEngagementPage />
           : activeTab === 'opportunities'
             ? <SalesOpportunitiesPage />
             : <SalesRepsPage />}

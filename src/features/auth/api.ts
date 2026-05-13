@@ -9,10 +9,18 @@ export type AdminWorkerOption = {
   email: string
 }
 
+export type AdminSalesRepOption = {
+  id: string
+  name: string
+  companyName: string | null
+  states: string[]
+}
+
 export type AuthBootstrapResponse = {
   users: AppAuthUser[]
   ownerEmail: string
   workers: AdminWorkerOption[]
+  salesReps: AdminSalesRepOption[]
 }
 
 export type AdminAlertRecord = {

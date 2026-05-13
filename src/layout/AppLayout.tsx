@@ -24,7 +24,7 @@ import {
 } from '@mui/material'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
-import { Outlet, useLocation } from 'react-router-dom'
+import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
 import { fetchMyAlerts, markMyAlertRead } from '../features/alerts/api'
 import { formatDateTime } from '../lib/formatters'
@@ -39,6 +39,7 @@ export default function AppLayout() {
   const theme = useTheme()
   const isMobile = useMediaQuery(theme.breakpoints.down('md'))
   const location = useLocation()
+  const navigate = useNavigate()
   const { appUser, signOutFromApp, logActivity } = useAuth()
   const [collapsed, setCollapsed] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
@@ -89,6 +90,18 @@ export default function AppLayout() {
       path: location.pathname,
     })
   }, [location.pathname, logActivity])
+
+  useEffect(() => {
+    if (!appUser?.isSalesRep) {
+      return
+    }
+
+    const isSalesRoute = location.pathname === '/sales' || location.pathname.startsWith('/sales/')
+
+    if (!isSalesRoute) {
+      navigate('/sales?tab=dealers', { replace: true })
+    }
+  }, [appUser?.isSalesRep, location.pathname, navigate])
 
   const headerTitle = useMemo(() => {
     const normalizedPath = (location.pathname || '/').replace(/\/+$/, '') || '/'

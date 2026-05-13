@@ -102,12 +102,13 @@ export function formatStatusLabel(value: string): string {
 export function roleLabel(role: AppAuthRole): string {
   if (role === 'admin') return 'Admin'
   if (role === 'manager') return 'Manager'
+  if (role === 'sales_rep') return 'Sales Rep'
   return 'Standard'
 }
 
 export function roleColor(role: AppAuthRole): 'default' | 'primary' | 'secondary' {
   if (role === 'admin') return 'secondary'
-  if (role === 'manager') return 'primary'
+  if (role === 'manager' || role === 'sales_rep') return 'primary'
   return 'default'
 }
 

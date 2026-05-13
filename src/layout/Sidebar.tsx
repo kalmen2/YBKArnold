@@ -40,6 +40,10 @@ function SidebarContent({ showText, onNavigate }: SidebarContentProps) {
   const { appUser } = useAuth()
 
   const canAccessNavItem = (item: NavItem) => {
+    if (appUser?.isSalesRep) {
+      return item.path === '/sales'
+    }
+
     if (item.adminOnly && !appUser?.isAdmin) {
       return false
     }

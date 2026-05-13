@@ -5,8 +5,10 @@ export function registerAuthRoutes(app, deps) {
     authAccessTimeZoneNewJersey,
     authApprovalApproved,
     authApprovalPending,
+    authClientAccessModeWebOnly,
     authClientAccessModeWebAndApp,
     authRoleAdmin,
+    authRoleSalesRep,
     authRoleStandard,
     ensureWorkersHaveWorkerNumbers,
     extractRequestIpAddress,
@@ -28,6 +30,23 @@ export function registerAuthRoutes(app, deps) {
     toBoundedInteger,
     toPublicAuthUser,
   } = deps
+
+  const usStateSet = new Set([
+    'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA',
+    'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD',
+    'MA', 'MI', 'MN', 'MS', 'MO', 'MT', 'NE', 'NV', 'NH', 'NJ',
+    'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI', 'SC',
+    'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY',
+  ])
+
+  function normalizeSalesTerritoryStates(input) {
+    const values = Array.isArray(input) ? input : [input]
+    const normalized = values
+      .map((value) => String(value ?? '').trim().toUpperCase())
+      .filter((value) => usStateSet.has(value))
+
+    return [...new Set(normalized)].sort((left, right) => left.localeCompare(right))
+  }
 
   async function requireUserByUid(req, res) {
     const targetUid = String(req.params.uid ?? '').trim()
@@ -145,9 +164,13 @@ app.get('/api/auth/workers', requireFirebaseAuth, requireAdminRole, async (_req,
 
 app.get('/api/auth/bootstrap', requireFirebaseAuth, requireAdminRole, async (_req, res, next) => {
   try {
-    const { authUsersCollection, workersCollection } = await getCollections()
+    const {
+      authUsersCollection,
+      workersCollection,
+      crmSalesRepsCollection,
+    } = await getCollections()
 
-    const [users, workers] = await Promise.all([
+    const [users, workers, salesReps] = await Promise.all([
       authUsersCollection
         .find({}, NO_ID)
         .sort({ approvalStatus: -1, createdAt: -1, emailLower: 1 })
@@ -155,6 +178,21 @@ app.get('/api/auth/bootstrap', requireFirebaseAuth, requireAdminRole, async (_re
       workersCollection
         .find({}, NO_ID)
         .sort({ fullName: 1 })
+        .toArray(),
+      crmSalesRepsCollection
+        .find(
+          { isDeleted: { $ne: true } },
+          {
+            projection: {
+              _id: 0,
+              id: 1,
+              name: 1,
+              companyName: 1,
+              states: 1,
+            },
+          },
+        )
+        .sort({ companyNameLower: 1, nameLower: 1, name: 1, id: 1 })
         .toArray(),
     ])
 
@@ -170,6 +208,107 @@ app.get('/api/auth/bootstrap', requireFirebaseAuth, requireAdminRole, async (_re
         role: String(worker.role ?? '').trim(),
         email: String(worker.email ?? '').trim(),
       })),
+      salesReps: salesReps.map((salesRep) => ({
+        id: String(salesRep.id ?? '').trim(),
+        name: String(salesRep.name ?? '').trim(),
+        companyName: String(salesRep.companyName ?? '').trim() || null,
+        states: normalizeSalesTerritoryStates(salesRep.states),
+      })),
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.patch('/api/auth/users/:uid/sales-link', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+  try {
+    const targetUid = String(req.params.uid ?? '').trim()
+
+    if (!targetUid) {
+      return res.status(400).json({ error: 'uid is required.' })
+    }
+
+    const requestedSalesRepId = String(req.body?.salesRepId ?? '').trim() || null
+    const hasTerritoryInput = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'territoryStates')
+    const requestedTerritoryStates = hasTerritoryInput
+      ? normalizeSalesTerritoryStates(req.body?.territoryStates)
+      : null
+
+    const {
+      authUsersCollection,
+      crmSalesRepsCollection,
+    } = await getCollections()
+
+    const existingUser = await authUsersCollection.findOne(
+      { uid: targetUid },
+      {
+        projection: {
+          _id: 0,
+          uid: 1,
+        },
+      },
+    )
+
+    if (!existingUser) {
+      return res.status(404).json({ error: 'User not found.' })
+    }
+
+    let linkedSalesRepId = null
+    let linkedSalesRepName = null
+    let territoryStates = []
+
+    if (requestedSalesRepId) {
+      const linkedSalesRep = await crmSalesRepsCollection.findOne(
+        {
+          id: requestedSalesRepId,
+          isDeleted: { $ne: true },
+        },
+        {
+          projection: {
+            _id: 0,
+            id: 1,
+            name: 1,
+            states: 1,
+          },
+        },
+      )
+
+      if (!linkedSalesRep) {
+        return res.status(400).json({ error: 'Selected sales rep was not found.' })
+      }
+
+      linkedSalesRepId = String(linkedSalesRep.id ?? '').trim() || null
+      linkedSalesRepName = String(linkedSalesRep.name ?? '').trim() || null
+      territoryStates = normalizeSalesTerritoryStates(linkedSalesRep.states)
+    }
+
+    if (requestedTerritoryStates) {
+      territoryStates = requestedTerritoryStates
+    }
+
+    const now = nowIso()
+    const updatedUser = await authUsersCollection.findOneAndUpdate(
+      { uid: targetUid },
+      {
+        $set: {
+          linkedSalesRepId,
+          linkedSalesRepName,
+          salesTerritoryStates: territoryStates,
+          updatedAt: now,
+        },
+      },
+      {
+        returnDocument: 'after',
+        projection: {
+          _id: 0,
+        },
+      },
+    )
+
+    invalidateAuthUserCache(targetUid)
+
+    return res.json({
+      user: toPublicAuthUser(updatedUser),
     })
   } catch (error) {
     next(error)
@@ -359,7 +498,7 @@ app.patch('/api/auth/users/:uid/approval', requireFirebaseAuth, requireAdminRole
     const role = normalizeAuthRole(req.body?.role)
 
     if (!role) {
-      return res.status(400).json({ error: "role must be 'standard', 'manager', or 'admin'." })
+      return res.status(400).json({ error: "role must be 'standard', 'manager', 'sales_rep', or 'admin'." })
     }
 
     const existingUser = await requireUserByUid(req, res)
@@ -383,6 +522,18 @@ app.patch('/api/auth/users/:uid/approval', requireFirebaseAuth, requireAdminRole
       approvedAt: nowIso(),
       approvedByUid: String(req.authUser?.uid ?? '').trim() || null,
       approvedByEmail: normalizeEmail(req.authUser?.emailLower) ? String(req.authUser.emailLower) : ownerEmail,
+      ...(!isOwnerTarget && role === authRoleSalesRep
+        ? {
+          clientAccessMode: authClientAccessModeWebOnly,
+        }
+        : {}),
+      ...(!isOwnerTarget && role !== authRoleSalesRep
+        ? {
+          linkedSalesRepId: null,
+          linkedSalesRepName: null,
+          salesTerritoryStates: [],
+        }
+        : {}),
     })
   } catch (error) {
     next(error)
@@ -430,6 +581,9 @@ app.patch('/api/auth/users/:uid/unapprove', requireFirebaseAuth, requireAdminRol
       approvedAt: null,
       approvedByUid: null,
       approvedByEmail: null,
+      linkedSalesRepId: null,
+      linkedSalesRepName: null,
+      salesTerritoryStates: [],
     })
   } catch (error) {
     next(error)

@@ -37,7 +37,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Navigate } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
 import { apiRequest } from '../features/api-client'
-import { fetchAuthBootstrap } from '../features/auth/api'
+import { fetchAuthBootstrap, type AdminSalesRepOption } from '../features/auth/api'
 import { fetchZendeskSupportAgents, type ZendeskSupportAgent } from '../features/support/api'
 import type { AppAuthRole, AppAuthUser } from '../auth/types'
 import { QUERY_KEYS } from '../lib/queryKeys'
@@ -95,6 +95,25 @@ function formatLinkedZendeskLabel(user: AppAuthUser) {
   return `${agentName} (#${user.linkedZendeskUserId})`
 }
 
+function formatLinkedSalesRepLabel(user: AppAuthUser) {
+  const linkedSalesRepName = String(user.linkedSalesRepName ?? '').trim()
+  const territoryCount = Array.isArray(user.salesTerritoryStates)
+    ? user.salesTerritoryStates.length
+    : 0
+
+  if (!linkedSalesRepName && territoryCount <= 0) {
+    return 'Not linked'
+  }
+
+  if (!linkedSalesRepName) {
+    return `${territoryCount} states`
+  }
+
+  return territoryCount > 0
+    ? `${linkedSalesRepName} (${territoryCount} states)`
+    : linkedSalesRepName
+}
+
 function formatClientAccessLabel(mode: ClientAccessMode) {
   if (mode === 'app_only') {
     return 'App only'
@@ -120,6 +139,7 @@ export default function AdminUsersPage() {
   const { appUser } = useAuth()
   const [users, setUsers] = useState<AppAuthUser[]>([])
   const [workerOptions, setWorkerOptions] = useState<AdminWorkerOption[]>([])
+  const [salesRepOptions, setSalesRepOptions] = useState<AdminSalesRepOption[]>([])
   const [actionMessage, setActionMessage] = useState<string | null>(null)
   const [activeUserId, setActiveUserId] = useState<string | null>(null)
   const [promotionTarget, setPromotionTarget] = useState<AppAuthUser | null>(null)
@@ -134,6 +154,9 @@ export default function AdminUsersPage() {
   const [workerLinkWorkerId, setWorkerLinkWorkerId] = useState('')
   const [zendeskLinkTarget, setZendeskLinkTarget] = useState<AppAuthUser | null>(null)
   const [zendeskLinkUserId, setZendeskLinkUserId] = useState('')
+  const [salesLinkTarget, setSalesLinkTarget] = useState<AppAuthUser | null>(null)
+  const [salesLinkSalesRepId, setSalesLinkSalesRepId] = useState('')
+  const [salesLinkTerritories, setSalesLinkTerritories] = useState('')
   const [workerApproveTarget, setWorkerApproveTarget] = useState<AppAuthUser | null>(null)
   const [workerApproveWorkerId, setWorkerApproveWorkerId] = useState('')
   const [actionsAnchorEl, setActionsAnchorEl] = useState<HTMLElement | null>(null)
@@ -167,6 +190,7 @@ export default function AdminUsersPage() {
     if (!data) return
     setUsers(Array.isArray(data.users) ? data.users : [])
     setWorkerOptions(Array.isArray(data.workers) ? data.workers : [])
+    setSalesRepOptions(Array.isArray(data.salesReps) ? data.salesReps : [])
   }, [bootstrapQuery.data])
 
   useEffect(() => {
@@ -206,6 +230,8 @@ export default function AdminUsersPage() {
             ? 'User approved as Admin.'
             : role === 'manager'
               ? 'User approved as Manager.'
+              : role === 'sales_rep'
+                ? 'User approved as Sales Rep.'
               : 'User approved as Standard.',
         )
       } catch (error) {
@@ -420,6 +446,12 @@ export default function AdminUsersPage() {
     setZendeskLinkUserId(user.linkedZendeskUserId ? String(user.linkedZendeskUserId) : '')
   }, [])
 
+  const openSalesLinkDialog = useCallback((user: AppAuthUser) => {
+    setSalesLinkTarget(user)
+    setSalesLinkSalesRepId(user.linkedSalesRepId ?? '')
+    setSalesLinkTerritories((user.salesTerritoryStates ?? []).join(', '))
+  }, [])
+
   const handleSaveWorkerLink = useCallback(async () => {
     if (!workerLinkTarget) {
       return
@@ -515,6 +547,61 @@ export default function AdminUsersPage() {
     }
   }, [zendeskAgentsQuery.data?.agents, zendeskLinkTarget, zendeskLinkUserId, setErrorMessage])
 
+  const handleSaveSalesLink = useCallback(async () => {
+    if (!salesLinkTarget) {
+      return
+    }
+
+    const normalizedSalesRepId = String(salesLinkSalesRepId ?? '').trim()
+    const normalizedTerritoryStates = [...new Set(
+      String(salesLinkTerritories ?? '')
+        .split(/[\s,]+/)
+        .map((value) => value.trim().toUpperCase())
+        .filter((value) => /^[A-Z]{2}$/.test(value)),
+    )].sort((left, right) => left.localeCompare(right))
+
+    setErrorMessage(null)
+    setActionMessage(null)
+    setActiveUserId(salesLinkTarget.uid)
+
+    try {
+      const body: {
+        salesRepId: string | null
+        territoryStates?: string[]
+      } = {
+        salesRepId: normalizedSalesRepId || null,
+      }
+
+      if (normalizedTerritoryStates.length > 0) {
+        body.territoryStates = normalizedTerritoryStates
+      }
+
+      const payload = await apiRequest<{ user: AppAuthUser }>(
+        `/api/auth/users/${salesLinkTarget.uid}/sales-link`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify(body),
+        },
+      )
+
+      setUsers((currentUsers) =>
+        currentUsers.map((user) =>
+          user.uid === payload.user.uid ? payload.user : user,
+        ),
+      )
+      setActionMessage('Sales rep assignment updated.')
+      setSalesLinkTarget(null)
+      setSalesLinkSalesRepId('')
+      setSalesLinkTerritories('')
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : 'Could not update sales territories.',
+      )
+    } finally {
+      setActiveUserId(null)
+    }
+  }, [salesLinkSalesRepId, salesLinkTarget, salesLinkTerritories, setErrorMessage])
+
   const closePromotionDialog = useCallback(() => {
     setPromotionTarget(null)
     setPromotionConfirmationText('')
@@ -597,6 +684,10 @@ export default function AdminUsersPage() {
 
     return !zendeskAgents.some((agent) => String(agent.id) === zendeskLinkUserId)
   }, [zendeskAgents, zendeskLinkUserId])
+  const selectedSalesRepOption = useMemo(
+    () => salesRepOptions.find((salesRep) => salesRep.id === salesLinkSalesRepId) ?? null,
+    [salesLinkSalesRepId, salesRepOptions],
+  )
 
   const actionsMenuOpen = Boolean(actionsAnchorEl && actionsTarget)
   const actionsSubmenuOpen = Boolean(actionsMenuOpen && actionsSubmenuAnchorEl && actionsSubmenuSection)
@@ -678,6 +769,7 @@ export default function AdminUsersPage() {
                 <TableCell>Login Hours</TableCell>
                 <TableCell>Worker Login</TableCell>
                 <TableCell>Zendesk Agent</TableCell>
+                <TableCell>Sales Access</TableCell>
                 <TableCell>Client Access</TableCell>
                 <TableCell align="right">Actions</TableCell>
               </TableRow>
@@ -739,6 +831,22 @@ export default function AdminUsersPage() {
                         variant="outlined"
                         color={user.linkedZendeskUserId ? 'primary' : 'default'}
                       />
+                    </TableCell>
+
+                    <TableCell>
+                      <Stack spacing={0.35}>
+                        <Chip
+                          label={formatLinkedSalesRepLabel(user)}
+                          size="small"
+                          variant="outlined"
+                          color={user.role === 'sales_rep' ? 'primary' : 'default'}
+                        />
+                        {(user.salesTerritoryStates ?? []).length > 0 ? (
+                          <Typography variant="caption" color="text.secondary">
+                            {(user.salesTerritoryStates ?? []).join(', ')}
+                          </Typography>
+                        ) : null}
+                      </Stack>
                     </TableCell>
 
                     <TableCell>
@@ -866,6 +974,20 @@ export default function AdminUsersPage() {
             </MenuItem>
 
             <MenuItem
+              disabled={actionsTargetIsSaving || !actionsTargetCanAssignStandard}
+              onClick={() => {
+                if (!actionsTarget) {
+                  return
+                }
+
+                closeRowActions()
+                void handleApprove(actionsTarget.uid, 'sales_rep')
+              }}
+            >
+              {actionsTarget?.isApproved && actionsTarget.role === 'sales_rep' ? 'Sales Rep' : 'Set Sales Rep'}
+            </MenuItem>
+
+            <MenuItem
               disabled={actionsTargetIsSaving || Boolean(actionsTarget?.isOwner)}
               onClick={() => {
                 if (!actionsTarget) {
@@ -940,6 +1062,20 @@ export default function AdminUsersPage() {
               }}
             >
               Assign Zendesk Agent
+            </MenuItem>
+
+            <MenuItem
+              disabled={actionsTargetIsSaving || !actionsTargetCanAssignZendesk}
+              onClick={() => {
+                if (!actionsTarget) {
+                  return
+                }
+
+                closeRowActions()
+                openSalesLinkDialog(actionsTarget)
+              }}
+            >
+              Assign Sales Territories
             </MenuItem>
           </>
         ) : null}
@@ -1432,6 +1568,82 @@ export default function AdminUsersPage() {
             disabled={!workerLinkTarget || activeUserId === workerLinkTarget.uid}
           >
             Save Link
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(salesLinkTarget)}
+        onClose={() => {
+          if (!activeUserId) {
+            setSalesLinkTarget(null)
+            setSalesLinkSalesRepId('')
+            setSalesLinkTerritories('')
+          }
+        }}
+        fullWidth
+        maxWidth="sm"
+      >
+        <DialogTitle>Assign Sales Territories</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ pt: 1 }}>
+            <Typography variant="body2" color="text.secondary">
+              {salesLinkTarget?.email}
+            </Typography>
+
+            <TextField
+              select
+              fullWidth
+              label="Linked Sales Rep"
+              value={salesLinkSalesRepId}
+              onChange={(event) => {
+                setSalesLinkSalesRepId(event.target.value)
+              }}
+            >
+              <MenuItem value="">Not linked</MenuItem>
+              {salesRepOptions.map((salesRep) => (
+                <MenuItem key={salesRep.id} value={salesRep.id}>
+                  {salesRep.name}
+                  {salesRep.companyName ? ` (${salesRep.companyName})` : ''}
+                </MenuItem>
+              ))}
+            </TextField>
+
+            <TextField
+              fullWidth
+              label="Territory states override"
+              placeholder="NY, NJ"
+              value={salesLinkTerritories}
+              onChange={(event) => {
+                setSalesLinkTerritories(event.target.value)
+              }}
+              helperText={
+                selectedSalesRepOption?.states?.length
+                  ? `Linked rep states: ${selectedSalesRepOption.states.join(', ')}`
+                  : 'Optional: provide comma-separated state codes to override linked sales rep states.'
+              }
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={() => {
+              setSalesLinkTarget(null)
+              setSalesLinkSalesRepId('')
+              setSalesLinkTerritories('')
+            }}
+            disabled={Boolean(activeUserId)}
+          >
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            onClick={() => {
+              void handleSaveSalesLink()
+            }}
+            disabled={!salesLinkTarget || activeUserId === salesLinkTarget.uid}
+          >
+            Save Territories
           </Button>
         </DialogActions>
       </Dialog>

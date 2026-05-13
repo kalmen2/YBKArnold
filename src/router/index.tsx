@@ -9,6 +9,7 @@ import {
   AdminAlertsPage,
   AdminIssuesPage,
   AdminLogsPage,
+  AdminSalesReviewPage,
   AdminUsersPage,
   AppLayout,
   CrmPage,
@@ -125,6 +126,14 @@ export const router = createBrowserRouter([
         element: withRouteSuspense(
           <RequireAdminRoute>
             <AdminLogsPage />
+          </RequireAdminRoute>,
+        ),
+      },
+      {
+        path: 'admin/sales-review',
+        element: withRouteSuspense(
+          <RequireAdminRoute>
+            <AdminSalesReviewPage />
           </RequireAdminRoute>,
         ),
       },

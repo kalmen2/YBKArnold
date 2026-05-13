@@ -3,6 +3,7 @@ import AccountBalanceRoundedIcon from '@mui/icons-material/AccountBalanceRounded
 import BusinessRoundedIcon from '@mui/icons-material/BusinessRounded'
 import DashboardRoundedIcon from '@mui/icons-material/DashboardRounded'
 import DescriptionRoundedIcon from '@mui/icons-material/DescriptionRounded'
+import FactCheckRoundedIcon from '@mui/icons-material/FactCheckRounded'
 import Inventory2RoundedIcon from '@mui/icons-material/Inventory2Rounded'
 import ManageHistoryRoundedIcon from '@mui/icons-material/ManageHistoryRounded'
 import NotificationsActiveRoundedIcon from '@mui/icons-material/NotificationsActiveRounded'
@@ -91,6 +92,12 @@ export const navItems: NavItem[] = [
     label: 'Logs',
     path: '/admin/logs',
     icon: ManageHistoryRoundedIcon,
+    adminOnly: true,
+  },
+  {
+    label: 'Sales Review',
+    path: '/admin/sales-review',
+    icon: FactCheckRoundedIcon,
     adminOnly: true,
   },
   {
