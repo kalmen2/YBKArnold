@@ -32,7 +32,9 @@ const quickBooksKnownLoanOwners = [
   {
     key: 'yb_coit',
     label: 'Loan from YB Coit',
-    matchers: ['yb coit', 'coit', 'ybcoit'],
+    // Keep YB matching specific so other Coit-related accounts (for example
+    // ABC Coit) do not leak into this bucket.
+    matchers: ['yb coit', 'ybcoit'],
     accountNumberAliases: [],
   },
 ]

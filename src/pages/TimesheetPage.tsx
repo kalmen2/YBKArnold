@@ -57,6 +57,7 @@ import {
   type TimesheetEntry,
   type TimesheetOrderProgress,
   type TimesheetStage,
+  type TimesheetUnifiedOrder,
   type TimesheetWorker,
 } from '../features/timesheet/api'
 import {
@@ -123,9 +124,12 @@ type DateReportOrderRow = {
 
 type ManagerProgressRow = {
   jobName: string
+  displayOrderNumber: string
   totalHours: number
   workerCount: number
+  matchSource: 'unified' | 'orders_track' | 'shipped_orders' | 'none'
   isShippedFallback: boolean
+  hazardReason: string | null
   readyPercentLocked: boolean
   workerHoursByWorker: Array<{
     workerId: string
@@ -144,9 +148,24 @@ type ManagerProgressRow = {
 type MissingManagerInfoRow = {
   date: string
   jobName: string
+  displayOrderNumber: string
   totalHours: number
   workerCount: number
+  matchSource: 'unified' | 'orders_track' | 'shipped_orders' | 'none'
   isShippedFallback: boolean
+  hazardReason: string | null
+  mondayOrderId: string | null
+  mondayItemName: string | null
+  shopDrawingUrl: string | null
+  shopDrawingFileName: string | null
+  shopDrawingCachedUrl: string | null
+}
+
+type ManagerOrderMatch = {
+  displayOrderNumber: string
+  matchSource: 'unified' | 'orders_track' | 'shipped_orders' | 'none'
+  isShippedFallback: boolean
+  hazardReason: string | null
   mondayOrderId: string | null
   mondayItemName: string | null
   shopDrawingUrl: string | null
@@ -249,6 +268,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
   const [managerProgressByJob, setManagerProgressByJob] = useState<Record<string, string>>({})
   const [isSavingManagerProgress, setIsSavingManagerProgress] = useState(false)
   const [mondayOrders, setMondayOrders] = useState<DashboardOrder[]>([])
+  const [unifiedOrders, setUnifiedOrders] = useState<TimesheetUnifiedOrder[]>([])
 
   const quickBooksQuery = useQuery({
     queryKey: QUERY_KEYS.quickbooksOverview,
@@ -340,6 +360,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     setStages(payload.stages)
     setOrderProgress(payload.orderProgress ?? [])
     setMondayOrders(Array.isArray(payload.mondaySnapshot?.orders) ? payload.mondaySnapshot.orders : [])
+    setUnifiedOrders(Array.isArray(payload.unifiedOrders) ? payload.unifiedOrders : [])
     setMissingReviewByKey(buildMissingReviewMap(payload.missingWorkerReviews ?? []))
     setWorkerViewWorkerId((current) => {
       if (current && payload.workers.some((worker) => worker.id === current)) {
@@ -958,6 +979,137 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     }
   }, [mondayOrders])
 
+  const unifiedOrderLookup = useMemo(() => {
+    const byNormalizedKey = new Map<string, TimesheetUnifiedOrder>()
+    const byDigits = new Map<string, TimesheetUnifiedOrder>()
+
+    const hasDrawing = (order: TimesheetUnifiedOrder | undefined | null) => Boolean(
+      String(order?.shopDrawingCachedUrl ?? order?.shopDrawingUrl ?? '').trim(),
+    )
+
+    const shouldReplace = (
+      existingOrder: TimesheetUnifiedOrder | undefined,
+      candidateOrder: TimesheetUnifiedOrder,
+    ) => {
+      if (!existingOrder) {
+        return true
+      }
+
+      const existingHasDrawing = hasDrawing(existingOrder)
+      const candidateHasDrawing = hasDrawing(candidateOrder)
+
+      if (candidateHasDrawing && !existingHasDrawing) {
+        return true
+      }
+
+      if (candidateOrder.hasMondayRecord && !existingOrder.hasMondayRecord) {
+        return true
+      }
+
+      return false
+    }
+
+    const register = (
+      map: Map<string, TimesheetUnifiedOrder>,
+      key: string | null,
+      order: TimesheetUnifiedOrder,
+    ) => {
+      if (!key) {
+        return
+      }
+
+      if (shouldReplace(map.get(key), order)) {
+        map.set(key, order)
+      }
+    }
+
+    unifiedOrders.forEach((order) => {
+      const orderNumberKey = normalizeJobName(order.orderNumber ?? '')
+      const orderNameKey = normalizeJobName(order.orderName ?? '')
+      const mondayItemKey = normalizeJobName(order.mondayItemId ?? '')
+
+      register(byNormalizedKey, orderNumberKey, order)
+      register(byNormalizedKey, orderNameKey, order)
+      register(byNormalizedKey, mondayItemKey, order)
+
+      const orderNumberDigits = extractDigits(order.orderNumber ?? '')
+      const orderNameDigits = extractDigits(order.orderName ?? '')
+      const mondayItemDigits = extractDigits(order.mondayItemId ?? '')
+
+      register(byDigits, orderNumberDigits, order)
+      register(byDigits, orderNameDigits, order)
+      register(byDigits, mondayItemDigits, order)
+    })
+
+    return {
+      byNormalizedKey,
+      byDigits,
+    }
+  }, [unifiedOrders])
+
+  const resolveManagerOrderMatch = useCallback((jobName: string): ManagerOrderMatch => {
+    const jobKey = normalizeJobName(jobName)
+    const jobDigits = extractDigits(jobName)
+    const unifiedMatchedOrder =
+      unifiedOrderLookup.byNormalizedKey.get(jobKey)
+      || (jobDigits ? unifiedOrderLookup.byDigits.get(jobDigits) : null)
+      || null
+    const primaryMatchedMondayOrder =
+      mondayOrderLookup.primaryByNormalizedKey.get(jobKey)
+      || (jobDigits ? mondayOrderLookup.primaryByDigits.get(jobDigits) : null)
+      || null
+    const shippedMatchedMondayOrder =
+      mondayOrderLookup.shippedByNormalizedKey.get(jobKey)
+      || (jobDigits ? mondayOrderLookup.shippedByDigits.get(jobDigits) : null)
+      || null
+    const primaryMatchedDrawingUrl = String(
+      primaryMatchedMondayOrder?.shopDrawingCachedUrl
+      || primaryMatchedMondayOrder?.shopDrawingUrl
+      || '',
+    ).trim()
+    const matchedMondayOrder = primaryMatchedDrawingUrl
+      ? primaryMatchedMondayOrder
+      : shippedMatchedMondayOrder || primaryMatchedMondayOrder
+    const matchSource: ManagerOrderMatch['matchSource'] = unifiedMatchedOrder
+      ? 'unified'
+      : matchedMondayOrder
+        ? matchedMondayOrder.mondaySourceBoardType === 'shipped_orders'
+          ? 'shipped_orders'
+          : 'orders_track'
+        : 'none'
+    const resolvedShopDrawingUrl =
+      unifiedMatchedOrder?.shopDrawingUrl
+      || matchedMondayOrder?.shopDrawingUrl
+      || null
+    const resolvedShopDrawingCachedUrl =
+      unifiedMatchedOrder?.shopDrawingCachedUrl
+      || matchedMondayOrder?.shopDrawingCachedUrl
+      || null
+    const displayOrderNumber =
+      String(unifiedMatchedOrder?.orderNumber ?? '').trim()
+      || String(jobName ?? '').trim()
+
+    return {
+      displayOrderNumber,
+      matchSource,
+      isShippedFallback: matchSource === 'shipped_orders',
+      hazardReason: unifiedMatchedOrder?.hazardReason ?? null,
+      mondayOrderId: unifiedMatchedOrder?.mondayItemId || matchedMondayOrder?.id || null,
+      mondayItemName: unifiedMatchedOrder?.orderName || matchedMondayOrder?.name || null,
+      shopDrawingUrl: resolvedShopDrawingUrl,
+      shopDrawingFileName:
+        unifiedMatchedOrder?.shopDrawingFileName || matchedMondayOrder?.shopDrawingFileName || null,
+      shopDrawingCachedUrl: resolvedShopDrawingCachedUrl,
+    }
+  }, [
+    mondayOrderLookup.primaryByDigits,
+    mondayOrderLookup.primaryByNormalizedKey,
+    mondayOrderLookup.shippedByDigits,
+    mondayOrderLookup.shippedByNormalizedKey,
+    unifiedOrderLookup.byDigits,
+    unifiedOrderLookup.byNormalizedKey,
+  ])
+
   const managerProgressRows = useMemo<ManagerProgressRow[]>(() => {
     const entriesByJobKey = new Map<
       string,
@@ -993,27 +1145,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
 
     return managerDayJobs.map((jobName) => {
       const jobKey = normalizeJobName(jobName)
-      const jobDigits = extractDigits(jobName)
-      const primaryMatchedMondayOrder =
-        mondayOrderLookup.primaryByNormalizedKey.get(jobKey)
-        || (jobDigits ? mondayOrderLookup.primaryByDigits.get(jobDigits) : null)
-        || null
-      const shippedMatchedMondayOrder =
-        mondayOrderLookup.shippedByNormalizedKey.get(jobKey)
-        || (jobDigits ? mondayOrderLookup.shippedByDigits.get(jobDigits) : null)
-        || null
-      const primaryMatchedDrawingUrl = String(
-        primaryMatchedMondayOrder?.shopDrawingCachedUrl
-        || primaryMatchedMondayOrder?.shopDrawingUrl
-        || '',
-      ).trim()
-      const matchedMondayOrder = primaryMatchedDrawingUrl
-        ? primaryMatchedMondayOrder
-        : shippedMatchedMondayOrder || primaryMatchedMondayOrder
-      const isShippedFallback = Boolean(
-        matchedMondayOrder
-        && matchedMondayOrder.mondaySourceBoardType === 'shipped_orders',
-      )
+      const orderMatch = resolveManagerOrderMatch(jobName)
       const totals = entriesByJobKey.get(jobKey)
       const progressKey = `${managerSelectedDate}:${jobKey}`
       const savedProgress = orderProgressByDateJobKey.get(progressKey)
@@ -1036,18 +1168,21 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
 
       return {
         jobName,
+        displayOrderNumber: orderMatch.displayOrderNumber,
         totalHours: totals?.totalHours ?? 0,
         workerCount: workerHoursByWorker.length,
-        isShippedFallback,
+        matchSource: orderMatch.matchSource,
+        isShippedFallback: orderMatch.isShippedFallback,
+        hazardReason: orderMatch.hazardReason,
         readyPercentLocked,
         workerHoursByWorker,
         savedReadyPercent,
         editReadyPercent,
-        mondayOrderId: matchedMondayOrder?.id ?? null,
-        mondayItemName: matchedMondayOrder?.name ?? null,
-        shopDrawingUrl: matchedMondayOrder?.shopDrawingUrl ?? null,
-        shopDrawingFileName: matchedMondayOrder?.shopDrawingFileName ?? null,
-        shopDrawingCachedUrl: matchedMondayOrder?.shopDrawingCachedUrl ?? null,
+        mondayOrderId: orderMatch.mondayOrderId,
+        mondayItemName: orderMatch.mondayItemName,
+        shopDrawingUrl: orderMatch.shopDrawingUrl,
+        shopDrawingFileName: orderMatch.shopDrawingFileName,
+        shopDrawingCachedUrl: orderMatch.shopDrawingCachedUrl,
       }
     })
   }, [
@@ -1055,11 +1190,8 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     managerDayJobs,
     managerProgressByJob,
     managerSelectedDate,
-    mondayOrderLookup.primaryByDigits,
-    mondayOrderLookup.primaryByNormalizedKey,
-    mondayOrderLookup.shippedByDigits,
-    mondayOrderLookup.shippedByNormalizedKey,
     orderProgressByDateJobKey,
+    resolveManagerOrderMatch,
     workersById,
   ])
 
@@ -1485,42 +1617,23 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
       if (orderProgressByDateJobKey.has(key)) {
         return
       }
-
-      const jobKey = normalizeJobName(entryGroup.jobName)
-      const jobDigits = extractDigits(entryGroup.jobName)
-      const primaryMatchedMondayOrder =
-        mondayOrderLookup.primaryByNormalizedKey.get(jobKey)
-        || (jobDigits ? mondayOrderLookup.primaryByDigits.get(jobDigits) : null)
-        || null
-      const shippedMatchedMondayOrder =
-        mondayOrderLookup.shippedByNormalizedKey.get(jobKey)
-        || (jobDigits ? mondayOrderLookup.shippedByDigits.get(jobDigits) : null)
-        || null
-      const primaryMatchedDrawingUrl = String(
-        primaryMatchedMondayOrder?.shopDrawingCachedUrl
-        || primaryMatchedMondayOrder?.shopDrawingUrl
-        || '',
-      ).trim()
-      const matchedMondayOrder = primaryMatchedDrawingUrl
-        ? primaryMatchedMondayOrder
-        : shippedMatchedMondayOrder || primaryMatchedMondayOrder
-      const isShippedFallback = Boolean(
-        matchedMondayOrder
-        && matchedMondayOrder.mondaySourceBoardType === 'shipped_orders',
-      )
+      const orderMatch = resolveManagerOrderMatch(entryGroup.jobName)
 
       const currentDateRows = missingByDate.get(entryGroup.date) ?? []
       currentDateRows.push({
         date: entryGroup.date,
         jobName: entryGroup.jobName,
+        displayOrderNumber: orderMatch.displayOrderNumber,
         totalHours: entryGroup.totalHours,
         workerCount: entryGroup.workerIds.size,
-        isShippedFallback,
-        mondayOrderId: matchedMondayOrder?.id ?? null,
-        mondayItemName: matchedMondayOrder?.name ?? null,
-        shopDrawingUrl: matchedMondayOrder?.shopDrawingUrl ?? null,
-        shopDrawingFileName: matchedMondayOrder?.shopDrawingFileName ?? null,
-        shopDrawingCachedUrl: matchedMondayOrder?.shopDrawingCachedUrl ?? null,
+        matchSource: orderMatch.matchSource,
+        isShippedFallback: orderMatch.isShippedFallback,
+        hazardReason: orderMatch.hazardReason,
+        mondayOrderId: orderMatch.mondayOrderId,
+        mondayItemName: orderMatch.mondayItemName,
+        shopDrawingUrl: orderMatch.shopDrawingUrl,
+        shopDrawingFileName: orderMatch.shopDrawingFileName,
+        shopDrawingCachedUrl: orderMatch.shopDrawingCachedUrl,
       })
       missingByDate.set(entryGroup.date, currentDateRows)
     })
@@ -1534,11 +1647,8 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     return missingByDate
   }, [
     entries,
-    mondayOrderLookup.primaryByDigits,
-    mondayOrderLookup.primaryByNormalizedKey,
-    mondayOrderLookup.shippedByDigits,
-    mondayOrderLookup.shippedByNormalizedKey,
     orderProgressByDateJobKey,
+    resolveManagerOrderMatch,
   ])
 
   const missingManagerInfoDates = useMemo(
@@ -2225,9 +2335,12 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
   const handleOpenMissingManagerShopDrawingPreview = (row: MissingManagerInfoRow) => {
     void handleOpenShopDrawingPreview({
       jobName: row.jobName,
+      displayOrderNumber: row.displayOrderNumber,
       totalHours: row.totalHours,
       workerCount: row.workerCount,
+      matchSource: row.matchSource,
       isShippedFallback: row.isShippedFallback,
+      hazardReason: row.hazardReason,
       readyPercentLocked: false,
       workerHoursByWorker: [],
       savedReadyPercent: 0,
@@ -2891,7 +3004,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                                     : undefined
                                 }
                               >
-                                <TableCell>{row.mondayOrderId || row.jobName}</TableCell>
+                                <TableCell>{row.displayOrderNumber || row.jobName}</TableCell>
                                 <TableCell>
                                   {row.mondayItemName ? (
                                     <Stack spacing={0.3}>
@@ -4047,7 +4160,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
       >
         <DialogTitle>
           {managerWorkersPopupRow
-            ? `Workers - ${managerWorkersPopupRow.mondayOrderId || managerWorkersPopupRow.jobName}`
+            ? `Workers - ${managerWorkersPopupRow.displayOrderNumber || managerWorkersPopupRow.jobName}`
             : 'Workers'}
         </DialogTitle>
         <DialogContent dividers>
@@ -4157,7 +4270,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
 
                         return (
                           <TableRow key={`${row.date}:${row.jobName}`} hover>
-                            <TableCell>{row.mondayOrderId || row.jobName}</TableCell>
+                            <TableCell>{row.displayOrderNumber || row.jobName}</TableCell>
                             <TableCell>
                               {row.mondayItemName ? (
                                 <Stack spacing={0.3}>

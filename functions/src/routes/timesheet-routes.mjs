@@ -31,6 +31,7 @@ export function registerTimesheetRoutes(app, deps) {
   } = deps
 
   const isoDatePattern = /^\d{4}-\d{2}-\d{2}$/
+  const canonicalOrderNumberPattern = /^\d{4,}([A-Z]|-[A-Z])?$/
   const duplicateConstraintMessage =
     'Daily sheet save failed due to a duplicate database constraint. Please refresh and try again.'
 
@@ -40,6 +41,273 @@ export function registerTimesheetRoutes(app, deps) {
 
   function buildDuplicateKeyError() {
     return new AppError(duplicateConstraintMessage, 400)
+  }
+
+  function extractOrderDigits(value) {
+    return String(value ?? '').replace(/\D+/g, '').trim()
+  }
+
+  function normalizeLooseOrderLookup(value) {
+    return String(value ?? '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '')
+  }
+
+  function isGeneralOrderJobName(jobName) {
+    const digits = extractOrderDigits(jobName)
+
+    return Boolean(digits && /^0+$/.test(digits))
+  }
+
+  function resolveShopDrawingFileName({
+    shopDrawingCachedUrl,
+    shopDrawingSourceUrl,
+    shopDrawingValue,
+  }) {
+    const candidates = [shopDrawingCachedUrl, shopDrawingSourceUrl, shopDrawingValue]
+
+    for (const candidate of candidates) {
+      const trimmedCandidate = String(candidate ?? '').trim()
+
+      if (!trimmedCandidate) {
+        continue
+      }
+
+      try {
+        const parsedUrl = new URL(trimmedCandidate)
+        const pathname = String(parsedUrl.pathname ?? '').trim()
+        const fileName = decodeURIComponent(pathname.split('/').pop() ?? '').trim()
+
+        if (fileName) {
+          return fileName
+        }
+      } catch {
+        const withoutQuery = trimmedCandidate.split('?')[0]
+        const fileName = String(withoutQuery.split('/').pop() ?? '').trim()
+
+        if (fileName && !fileName.includes(':')) {
+          return fileName
+        }
+      }
+    }
+
+    return null
+  }
+
+  function toPublicUnifiedOrder(document) {
+    const orderNumber = normalizeOptionalShortText(document?.order_number, 120) || null
+    const orderName = normalizeOptionalShortText(document?.order_name, 260) || null
+    const mondayItemId = normalizeOptionalShortText(document?.monday_item_id, 120) || null
+    const shopDrawingCachedUrl = normalizeOptionalShortText(document?.Shop_drawing_cached, 800) || null
+    const shopDrawingSourceUrl =
+      normalizeOptionalShortText(document?.Shop_drawing_source, 800)
+      || normalizeOptionalShortText(document?.Shop_drawing, 800)
+      || null
+    const sourceValue = String(document?.source ?? '').trim().toLowerCase()
+    const source =
+      sourceValue === 'monday' || sourceValue === 'quickbooks' || sourceValue === 'merged'
+        ? sourceValue
+        : Boolean(document?.has_monday_record)
+          ? 'monday'
+          : 'quickbooks'
+
+    return {
+      orderKey: normalizeOptionalShortText(document?.orderKey, 200) || null,
+      orderNumber,
+      orderName,
+      mondayItemId,
+      shopDrawingCachedUrl,
+      shopDrawingUrl: shopDrawingSourceUrl,
+      shopDrawingFileName: resolveShopDrawingFileName({
+        shopDrawingCachedUrl,
+        shopDrawingSourceUrl,
+        shopDrawingValue: document?.Shop_drawing,
+      }),
+      hasMondayRecord: Boolean(document?.has_monday_record),
+      hasQuickBooksRecord: Boolean(document?.has_quickbooks_record),
+      inDesign: Boolean(document?.in_design),
+      isShipped: Boolean(document?.is_shipped),
+      source,
+      hazardReason: normalizeOptionalShortText(document?.hazard_reason, 500) || null,
+      mondayUpdatedAt: normalizeOptionalShortText(document?.monday_updated_at, 80) || null,
+    }
+  }
+
+  function buildEmptyWebsiteIssues() {
+    return {
+      generatedAt: new Date().toISOString(),
+      counts: {
+        total: 0,
+        hazard: 0,
+        duplicateMondayLinks: 0,
+        unmappedTimesheetJobs: 0,
+        missingShopDrawings: 0,
+      },
+      hazards: [],
+      duplicateMondayLinks: [],
+      unmappedTimesheetJobs: [],
+      missingShopDrawings: [],
+    }
+  }
+
+  async function loadUnifiedOrdersAndIssues(timesheetState) {
+    const { ordersUnifiedCollection } = await getCollections()
+    const unifiedOrderDocuments = await ordersUnifiedCollection
+      .find(
+        {},
+        {
+          projection: {
+            _id: 0,
+            orderKey: 1,
+            order_number: 1,
+            order_name: 1,
+            monday_item_id: 1,
+            Shop_drawing: 1,
+            Shop_drawing_cached: 1,
+            Shop_drawing_source: 1,
+            has_monday_record: 1,
+            has_quickbooks_record: 1,
+            in_design: 1,
+            is_shipped: 1,
+            source: 1,
+            hazard_reason: 1,
+            monday_updated_at: 1,
+            updatedAt: 1,
+          },
+        },
+      )
+      .sort({ updatedAt: -1, order_number: 1 })
+      .toArray()
+
+    const unifiedOrders = unifiedOrderDocuments.map(toPublicUnifiedOrder)
+    const duplicateMondayLinks = []
+
+    const hazards = unifiedOrders
+      .filter((order) => String(order?.hazardReason ?? '').trim())
+      .map((order) => ({
+        orderNumber: order.orderNumber,
+        orderName: order.orderName,
+        hazardReason: order.hazardReason,
+        hasMondayRecord: order.hasMondayRecord,
+        hasQuickBooksRecord: order.hasQuickBooksRecord,
+      }))
+      .slice(0, 250)
+
+    const missingShopDrawings = unifiedOrders
+      .filter((order) => (
+        order.hasMondayRecord
+        && !order.isShipped
+        && !String(order.shopDrawingCachedUrl ?? '').trim()
+        && !String(order.shopDrawingUrl ?? '').trim()
+      ))
+      .map((order) => ({
+        orderNumber: order.orderNumber,
+        orderName: order.orderName,
+        mondayItemId: order.mondayItemId,
+        source: order.source,
+        hazardReason: order.hazardReason,
+      }))
+      .slice(0, 250)
+
+    const unifiedOrderNumbersExact = new Set(
+      unifiedOrders
+        .map((order) => String(order?.orderNumber ?? '').trim())
+        .filter(Boolean),
+    )
+    const unifiedOrderNumbersLoose = new Set(
+      unifiedOrders
+        .map((order) => normalizeLooseOrderLookup(order?.orderNumber))
+        .filter(Boolean),
+    )
+    const timesheetJobCountsByName = new Map()
+
+    ;(Array.isArray(timesheetState?.entries) ? timesheetState.entries : []).forEach((entry) => {
+      const jobName = String(entry?.jobName ?? '').trim()
+
+      if (!jobName || isGeneralOrderJobName(jobName)) {
+        return
+      }
+
+      const currentCounts = timesheetJobCountsByName.get(jobName) ?? {
+        jobName,
+        entryCount: 0,
+        progressCount: 0,
+      }
+
+      currentCounts.entryCount += 1
+      timesheetJobCountsByName.set(jobName, currentCounts)
+    })
+
+    ;(Array.isArray(timesheetState?.orderProgress) ? timesheetState.orderProgress : []).forEach((progress) => {
+      const jobName = String(progress?.jobName ?? '').trim()
+
+      if (!jobName || isGeneralOrderJobName(jobName)) {
+        return
+      }
+
+      const currentCounts = timesheetJobCountsByName.get(jobName) ?? {
+        jobName,
+        entryCount: 0,
+        progressCount: 0,
+      }
+
+      currentCounts.progressCount += 1
+      timesheetJobCountsByName.set(jobName, currentCounts)
+    })
+
+    const unmappedTimesheetJobs = [...timesheetJobCountsByName.values()]
+      .filter((jobCounts) => {
+        const jobName = String(jobCounts?.jobName ?? '').trim()
+
+        if (!jobName) {
+          return false
+        }
+
+        if (unifiedOrderNumbersExact.has(jobName)) {
+          return false
+        }
+
+        const looseJobName = normalizeLooseOrderLookup(jobName)
+
+        if (looseJobName && unifiedOrderNumbersLoose.has(looseJobName)) {
+          return false
+        }
+
+        return canonicalOrderNumberPattern.test(jobName.toUpperCase())
+      })
+      .sort((left, right) => {
+        const leftTotal = Number(left?.entryCount ?? 0) + Number(left?.progressCount ?? 0)
+        const rightTotal = Number(right?.entryCount ?? 0) + Number(right?.progressCount ?? 0)
+
+        if (rightTotal !== leftTotal) {
+          return rightTotal - leftTotal
+        }
+
+        return String(left?.jobName ?? '').localeCompare(String(right?.jobName ?? ''))
+      })
+      .slice(0, 250)
+
+    const websiteIssues = {
+      generatedAt: new Date().toISOString(),
+      counts: {
+        total:
+          hazards.length
+          + duplicateMondayLinks.length
+          + unmappedTimesheetJobs.length
+          + missingShopDrawings.length,
+        hazard: hazards.length,
+        duplicateMondayLinks: duplicateMondayLinks.length,
+        unmappedTimesheetJobs: unmappedTimesheetJobs.length,
+        missingShopDrawings: missingShopDrawings.length,
+      },
+      hazards,
+      duplicateMondayLinks: duplicateMondayLinks.slice(0, 250),
+      unmappedTimesheetJobs,
+      missingShopDrawings,
+    }
+
+    return {
+      unifiedOrders,
+      websiteIssues,
+    }
   }
 
   async function fetchWorkerRateById(workersCollection, workerIds) {
@@ -385,14 +653,27 @@ app.get('/api/timesheet/state', requireFirebaseAuth, async (req, res, next) => {
 
 app.get('/api/timesheet/bootstrap', requireFirebaseAuth, async (req, res, next) => {
   try {
-    const [timesheetState, mondaySnapshot] = await Promise.all([
-      buildTimesheetStatePayload(req),
+    const timesheetState = await buildTimesheetStatePayload(req)
+    const [mondaySnapshot, unifiedContext] = await Promise.all([
       loadMondaySnapshot(req),
+      loadUnifiedOrdersAndIssues(timesheetState)
+        .catch((error) => {
+          console.error('Unable to load unified orders context for timesheet bootstrap.', error)
+
+          return {
+            unifiedOrders: [],
+            websiteIssues: buildEmptyWebsiteIssues(),
+          }
+        }),
     ])
 
     res.json({
       ...timesheetState,
       mondaySnapshot,
+      unifiedOrders: Array.isArray(unifiedContext?.unifiedOrders)
+        ? unifiedContext.unifiedOrders
+        : [],
+      websiteIssues: unifiedContext?.websiteIssues ?? buildEmptyWebsiteIssues(),
     })
   } catch (error) {
     next(error)

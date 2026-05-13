@@ -59,8 +59,73 @@ export type TimesheetStateResponse = {
   missingWorkerReviews?: TimesheetMissingWorkerReview[]
 }
 
+export type TimesheetUnifiedOrder = {
+  orderKey: string | null
+  orderNumber: string | null
+  orderName: string | null
+  mondayItemId: string | null
+  shopDrawingUrl: string | null
+  shopDrawingCachedUrl: string | null
+  shopDrawingFileName: string | null
+  hasMondayRecord: boolean
+  hasQuickBooksRecord: boolean
+  inDesign: boolean
+  isShipped: boolean
+  source: 'monday' | 'quickbooks' | 'merged'
+  hazardReason: string | null
+  mondayUpdatedAt: string | null
+}
+
+export type TimesheetWebsiteIssueCounts = {
+  total: number
+  hazard: number
+  duplicateMondayLinks: number
+  unmappedTimesheetJobs: number
+  missingShopDrawings: number
+}
+
+export type TimesheetWebsiteIssueHazard = {
+  orderNumber: string | null
+  orderName: string | null
+  hazardReason: string | null
+  hasMondayRecord: boolean
+  hasQuickBooksRecord: boolean
+}
+
+export type TimesheetWebsiteIssueDuplicateMondayLink = {
+  mondayItemId: string
+  count: number
+  orderNumbers: string[]
+  orderKeys: string[]
+}
+
+export type TimesheetWebsiteIssueUnmappedJob = {
+  jobName: string
+  entryCount: number
+  progressCount: number
+}
+
+export type TimesheetWebsiteIssueMissingShopDrawing = {
+  orderNumber: string | null
+  orderName: string | null
+  mondayItemId: string | null
+  source: 'monday' | 'quickbooks' | 'merged'
+  hazardReason: string | null
+}
+
+export type TimesheetWebsiteIssues = {
+  generatedAt: string
+  counts: TimesheetWebsiteIssueCounts
+  hazards: TimesheetWebsiteIssueHazard[]
+  duplicateMondayLinks: TimesheetWebsiteIssueDuplicateMondayLink[]
+  unmappedTimesheetJobs: TimesheetWebsiteIssueUnmappedJob[]
+  missingShopDrawings: TimesheetWebsiteIssueMissingShopDrawing[]
+}
+
 export type TimesheetBootstrapResponse = TimesheetStateResponse & {
   mondaySnapshot: MondayDashboardSnapshot | null
+  unifiedOrders?: TimesheetUnifiedOrder[]
+  websiteIssues?: TimesheetWebsiteIssues | null
 }
 
 type CreateWorkerInput = {

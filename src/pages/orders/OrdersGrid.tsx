@@ -4,6 +4,7 @@ import PictureAsPdfRoundedIcon from '@mui/icons-material/PictureAsPdfRounded'
 import FormatListBulletedRoundedIcon from '@mui/icons-material/FormatListBulletedRounded'
 import LocalShippingRoundedIcon from '@mui/icons-material/LocalShippingRounded'
 import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded'
+import EditRoundedIcon from '@mui/icons-material/EditRounded'
 import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded'
 import {
   Alert,
@@ -371,6 +372,7 @@ type OrdersGridProps = {
     order: OrdersOverviewOrder,
     metric: OrdersQuickBooksDrilldownMetric,
   ) => void
+  onRequestOrderNumberEdit: (order: OrdersOverviewOrder) => void
   onCopyOrderNumber: (orderNumber: string) => void
   onMissingMondayLink: () => void
 }
@@ -386,6 +388,7 @@ export function OrdersGrid({
   onOpenBolDocument,
   onOpenJobDialog,
   onOpenQuickBooksDialog,
+  onRequestOrderNumberEdit,
   onCopyOrderNumber,
   onMissingMondayLink,
 }: OrdersGridProps) {
@@ -692,6 +695,20 @@ export function OrdersGrid({
           >
             <ContentCopyRoundedIcon fontSize="inherit" />
           </IconButton>
+          {row.hasMondayRecord ? (
+            <IconButton
+              size="small"
+              aria-label="Edit order number"
+              title="Edit order number in Monday"
+              onClick={(event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                onRequestOrderNumberEdit(row)
+              }}
+            >
+              <EditRoundedIcon fontSize="inherit" />
+            </IconButton>
+          ) : null}
           {row.mondayItemUrl ? (
             <IconButton
               size="small"
@@ -1254,6 +1271,7 @@ export function OrdersGrid({
     onOpenBolDocument,
     onOpenJobDialog,
     onOpenQuickBooksDialog,
+    onRequestOrderNumberEdit,
     onCopyOrderNumber,
     onMissingMondayLink,
     handleOpenStatusPopover,

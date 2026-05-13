@@ -2,10 +2,12 @@ import AdminPanelSettingsRoundedIcon from '@mui/icons-material/AdminPanelSetting
 import AccountBalanceRoundedIcon from '@mui/icons-material/AccountBalanceRounded'
 import BusinessRoundedIcon from '@mui/icons-material/BusinessRounded'
 import DashboardRoundedIcon from '@mui/icons-material/DashboardRounded'
+import DescriptionRoundedIcon from '@mui/icons-material/DescriptionRounded'
 import Inventory2RoundedIcon from '@mui/icons-material/Inventory2Rounded'
 import ManageHistoryRoundedIcon from '@mui/icons-material/ManageHistoryRounded'
 import NotificationsActiveRoundedIcon from '@mui/icons-material/NotificationsActiveRounded'
 import PhotoLibraryRoundedIcon from '@mui/icons-material/PhotoLibraryRounded'
+import ReportProblemRoundedIcon from '@mui/icons-material/ReportProblemRounded'
 import SmartToyRoundedIcon from '@mui/icons-material/SmartToyRounded'
 import StoreRoundedIcon from '@mui/icons-material/StoreRounded'
 import ShoppingCartRoundedIcon from '@mui/icons-material/ShoppingCartRounded'
@@ -53,6 +55,11 @@ export const navItems: NavItem[] = [
     icon: Inventory2RoundedIcon,
   },
   {
+    label: 'Templates',
+    path: '/templates',
+    icon: DescriptionRoundedIcon,
+  },
+  {
     label: 'Support',
     path: '/support',
     icon: SupportAgentRoundedIcon,
@@ -72,6 +79,12 @@ export const navItems: NavItem[] = [
     label: 'Notifications',
     path: '/admin/alerts',
     icon: NotificationsActiveRoundedIcon,
+    adminOnly: true,
+  },
+  {
+    label: 'Issues',
+    path: '/admin/issues',
+    icon: ReportProblemRoundedIcon,
     adminOnly: true,
   },
   {

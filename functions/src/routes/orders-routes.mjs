@@ -4,17 +4,29 @@
 
 export function registerOrdersRoutes(app, deps) {
   const {
+    authApprovalApproved,
+    authRoleAdmin,
     fetchMondayBoardItemsByIds,
     fetchMondayStatusColumnOptions,
     getCollections,
+    mobileAlertTargetModeSelected,
+    normalizeEmail,
+    normalizeOptionalShortText,
+    randomUUID,
     refreshOrdersUnifiedCollection,
     requireFirebaseAuth,
     requireManagerOrAdminRole,
+    toPublicAuthUser,
+    toPublicMobileAlert,
+    updateMondayItemName,
     updateMondayItemStatusColumn,
+    updateMondayItemTextColumn,
   } = deps
   const laborLookupsCacheTtlMs = 30 * 1000
   let cachedLaborLookups = null
   let cachedLaborLookupsExpiresAt = 0
+  const linkedOrderNumberChangeMessage =
+    'Sorry, this cannot be done because of its linked. If it needs to be done, contact admin.'
 
   // ---- Helpers ----------------------------------------------------------
 
@@ -302,6 +314,183 @@ export function registerOrdersRoutes(app, deps) {
         .map((entry) => String(entry?.columnId ?? '').trim())
         .filter(Boolean),
     )]
+  }
+
+  function normalizeOrderNumberInput(value) {
+    return normalizeOptionalShortText(value, 120)
+  }
+
+  function hasLinkedOrderNumberBlockers(linkState) {
+    return Boolean(
+      linkState?.hasTimesheetEntries
+      || linkState?.hasTimesheetProgressHistory
+      || linkState?.hasQuickBooksRecordOnOrder
+      || linkState?.hasQuickBooksOrderForCurrentNumber
+      || linkState?.hasQuickBooksOrderForNextNumber,
+    )
+  }
+
+  async function resolveOrderNumberChangeLinkState({
+    entriesCollection,
+    orderProgressCollection,
+    ordersUnifiedCollection,
+    mondayItemId,
+    currentOrderNumber,
+    nextOrderNumber,
+    hasQuickBooksRecordOnOrder,
+  }) {
+    const normalizedCurrentOrderNumber = normalizeOrderNumberInput(currentOrderNumber)
+    const normalizedNextOrderNumber = normalizeOrderNumberInput(nextOrderNumber)
+    const normalizedMondayItemId = String(mondayItemId ?? '').trim()
+
+    const timesheetEntriesPromise = normalizedCurrentOrderNumber
+      ? entriesCollection.countDocuments(
+        { jobName: normalizedCurrentOrderNumber },
+        { limit: 1 },
+      )
+      : Promise.resolve(0)
+    const timesheetProgressPromise = normalizedCurrentOrderNumber
+      ? orderProgressCollection.countDocuments(
+        { jobName: normalizedCurrentOrderNumber },
+        { limit: 1 },
+      )
+      : Promise.resolve(0)
+    const quickBooksCurrentPromise = normalizedCurrentOrderNumber
+      ? ordersUnifiedCollection.countDocuments(
+        {
+          has_quickbooks_record: true,
+          order_number: normalizedCurrentOrderNumber,
+        },
+        { limit: 1 },
+      )
+      : Promise.resolve(0)
+    const quickBooksNextPromise = normalizedNextOrderNumber
+      ? ordersUnifiedCollection.countDocuments(
+        {
+          has_quickbooks_record: true,
+          order_number: normalizedNextOrderNumber,
+          ...(normalizedMondayItemId
+            ? { monday_item_id: { $ne: normalizedMondayItemId } }
+            : {}),
+        },
+        { limit: 1 },
+      )
+      : Promise.resolve(0)
+
+    const [
+      timesheetEntriesCount,
+      timesheetProgressCount,
+      quickBooksCurrentCount,
+      quickBooksNextCount,
+    ] = await Promise.all([
+      timesheetEntriesPromise,
+      timesheetProgressPromise,
+      quickBooksCurrentPromise,
+      quickBooksNextPromise,
+    ])
+
+    return {
+      hasTimesheetEntries: Number(timesheetEntriesCount) > 0,
+      hasTimesheetProgressHistory: Number(timesheetProgressCount) > 0,
+      hasQuickBooksRecordOnOrder: Boolean(hasQuickBooksRecordOnOrder),
+      hasQuickBooksOrderForCurrentNumber: Number(quickBooksCurrentCount) > 0,
+      hasQuickBooksOrderForNextNumber: Number(quickBooksNextCount) > 0,
+    }
+  }
+
+  async function createOrderNumberChangeAdminAlert({
+    authUsersCollection,
+    mobileAlertsCollection,
+    publicUser,
+    mondayItemId,
+    currentOrderNumber,
+    requestedOrderNumber,
+    linkedState,
+  }) {
+    const adminUsers = await authUsersCollection
+      .find(
+        {
+          approvalStatus: authApprovalApproved,
+          role: authRoleAdmin,
+        },
+        {
+          projection: {
+            _id: 0,
+          },
+        },
+      )
+      .toArray()
+
+    const recipientUids = adminUsers
+      .map((document) => toPublicAuthUser(document))
+      .filter((user) => Boolean(user?.uid && user.isApproved && user.isAdmin))
+      .map((user) => String(user.uid))
+
+    if (recipientUids.length === 0) {
+      throw {
+        status: 404,
+        message: 'No approved admin recipients found.',
+      }
+    }
+
+    const senderLabel = normalizeOptionalShortText(publicUser?.displayName, 120)
+      || normalizeOptionalShortText(publicUser?.email, 200)
+      || 'A team member'
+    const currentValue = normalizeOrderNumberInput(currentOrderNumber) || '(unknown)'
+    const nextValue = normalizeOrderNumberInput(requestedOrderNumber) || '(unknown)'
+
+    const reasonParts = []
+
+    if (linkedState?.hasTimesheetEntries || linkedState?.hasTimesheetProgressHistory) {
+      reasonParts.push('linked to timesheet history')
+    }
+
+    if (
+      linkedState?.hasQuickBooksRecordOnOrder
+      || linkedState?.hasQuickBooksOrderForCurrentNumber
+      || linkedState?.hasQuickBooksOrderForNextNumber
+    ) {
+      reasonParts.push('linked in QuickBooks')
+    }
+
+    const reasonText = reasonParts.length > 0
+      ? ` Blocked reason: ${reasonParts.join(' and ')}.`
+      : ''
+    const now = new Date().toISOString()
+    const alertDocument = {
+      id: randomUUID(),
+      title: 'Order Number Change Request',
+      message:
+        `${senderLabel} requested order number change ${currentValue} -> ${nextValue} for Monday item ${mondayItemId}.`
+        + reasonText,
+      isUpdate: false,
+      targetMode: mobileAlertTargetModeSelected,
+      targetUserUids: recipientUids,
+      createdByUid: String(publicUser?.uid ?? '').trim() || null,
+      createdByEmail: normalizeEmail(publicUser?.email) || null,
+      delivery: {
+        targetUserCount: recipientUids.length,
+        pushTokenCount: 0,
+        pushAcceptedCount: 0,
+        pushErrorCount: 0,
+        errorSamples: [],
+      },
+      metadata: {
+        type: 'orders_order_number_change_request',
+        mondayItemId: String(mondayItemId ?? '').trim() || null,
+        currentOrderNumber: currentValue,
+        requestedOrderNumber: nextValue,
+        sourceUid: String(publicUser?.uid ?? '').trim() || null,
+        sourceEmail: normalizeEmail(publicUser?.email) || null,
+        linkedState,
+      },
+      createdAt: now,
+      updatedAt: now,
+    }
+
+    await mobileAlertsCollection.insertOne(alertDocument)
+
+    return alertDocument
   }
 
   async function resolveMondayOrderContext({
@@ -1042,6 +1231,388 @@ export function registerOrdersRoutes(app, deps) {
             progressStatusDetails,
           }),
           ok: true,
+        })
+      } catch (error) {
+        next(error)
+      }
+    },
+  )
+
+  // POST /api/orders/monday/order-number — update the Monday order number
+  // (ack column when available; fallback to item name). Non-admin updates are
+  // blocked when linked to timesheet history or QuickBooks.
+  app.post(
+    '/api/orders/monday/order-number',
+    requireFirebaseAuth,
+    async (req, res, next) => {
+      try {
+        const mondayItemId = String(req.body?.mondayItemId ?? '').trim()
+        const requestedOrderNumber = normalizeOrderNumberInput(req.body?.orderNumber)
+        const requestedCurrentOrderNumber = normalizeOrderNumberInput(req.body?.currentOrderNumber)
+        const publicUser = toPublicAuthUser(req.authUser)
+
+        if (!publicUser?.isApproved) {
+          return res.status(403).json({
+            error: 'Approved access is required.',
+          })
+        }
+
+        if (!mondayItemId) {
+          return res.status(400).json({ error: 'mondayItemId is required.' })
+        }
+
+        if (!requestedOrderNumber) {
+          return res.status(400).json({ error: 'orderNumber is required.' })
+        }
+
+        const {
+          mondayOrdersCollection,
+          ordersUnifiedCollection,
+          entriesCollection,
+          orderProgressCollection,
+        } = await getCollections()
+
+        const context = await resolveMondayOrderContext({
+          mondayItemId,
+          mondayOrdersCollection,
+          ordersUnifiedCollection,
+        })
+
+        if (!context?.boardId) {
+          return res.status(404).json({
+            error: 'Could not resolve Monday board for this order.',
+          })
+        }
+
+        const [existingOrderDocument, liveSnapshot] = await Promise.all([
+          ordersUnifiedCollection.findOne(
+            { monday_item_id: mondayItemId },
+            {
+              projection: {
+                _id: 0,
+                monday_item_id: 1,
+                order_number: 1,
+                has_quickbooks_record: 1,
+              },
+            },
+          ),
+          fetchMondayBoardItemsByIds({
+            boardId: context.boardId,
+            boardName: context.boardName,
+            boardUrl: context.boardUrl,
+            itemIds: [mondayItemId],
+          }),
+        ])
+
+        const liveOrder = Array.isArray(liveSnapshot?.orders)
+          ? liveSnapshot.orders[0]
+          : null
+
+        if (!liveOrder) {
+          return res.status(404).json({
+            error: 'Monday item was not found on the configured board.',
+          })
+        }
+
+        const currentOrderNumber =
+          normalizeOrderNumberInput(existingOrderDocument?.order_number)
+          || normalizeOrderNumberInput(liveOrder?.jobNumber)
+          || requestedCurrentOrderNumber
+
+        if (!currentOrderNumber) {
+          return res.status(400).json({
+            error: 'Current order number could not be resolved for this Monday item.',
+          })
+        }
+
+        if (requestedOrderNumber === currentOrderNumber) {
+          return res.json({
+            ok: true,
+            noChange: true,
+            order: {
+              mondayItemId,
+              orderNumber: currentOrderNumber,
+              previousOrderNumber: currentOrderNumber,
+            },
+          })
+        }
+
+        const conflictingOrder = await ordersUnifiedCollection.findOne(
+          {
+            order_number: requestedOrderNumber,
+            monday_item_id: { $ne: mondayItemId },
+          },
+          {
+            projection: {
+              _id: 0,
+              monday_item_id: 1,
+            },
+          },
+        )
+
+        if (conflictingOrder) {
+          return res.status(409).json({
+            error: 'This order number is already assigned to another order.',
+          })
+        }
+
+        const linkedState = await resolveOrderNumberChangeLinkState({
+          entriesCollection,
+          orderProgressCollection,
+          ordersUnifiedCollection,
+          mondayItemId,
+          currentOrderNumber,
+          nextOrderNumber: requestedOrderNumber,
+          hasQuickBooksRecordOnOrder: Boolean(existingOrderDocument?.has_quickbooks_record),
+        })
+
+        if (!publicUser.isAdmin && hasLinkedOrderNumberBlockers(linkedState)) {
+          return res.status(403).json({
+            error: linkedOrderNumberChangeMessage,
+            code: 'ORDER_NUMBER_CHANGE_REQUIRES_ADMIN',
+            canContactAdmin: true,
+            linkedState,
+          })
+        }
+
+        const orderNumberColumnId = String(liveSnapshot?.columnDetection?.ackColumnId ?? '').trim() || null
+
+        if (orderNumberColumnId) {
+          await updateMondayItemTextColumn({
+            boardId: context.boardId,
+            itemId: mondayItemId,
+            columnId: orderNumberColumnId,
+            textValue: requestedOrderNumber,
+          })
+        } else {
+          await updateMondayItemName({
+            boardId: context.boardId,
+            itemId: mondayItemId,
+            itemName: requestedOrderNumber,
+          })
+        }
+
+        const {
+          liveOrder: refreshedLiveOrder,
+          resolvedBoardName,
+          resolvedBoardUrl,
+          progressStatusDetails,
+        } = await pullLiveMondayProgressDetails({
+          boardId: context.boardId,
+          boardName: context.boardName,
+          boardUrl: context.boardUrl,
+          mondayItemId,
+        })
+
+        const syncResult = await syncMondayProgressDetailsToCollections({
+          mondayItemId,
+          boardId: context.boardId,
+          boardName: resolvedBoardName,
+          boardUrl: resolvedBoardUrl,
+          liveOrder: refreshedLiveOrder,
+          progressStatusDetails,
+          mondayOrdersCollection,
+          ordersUnifiedCollection,
+        })
+
+        const now = new Date().toISOString()
+        const refreshedOrderNumber =
+          normalizeOrderNumberInput(refreshedLiveOrder?.jobNumber)
+          || requestedOrderNumber
+        const refreshedOrderName = normalizeOptionalShortText(refreshedLiveOrder?.name, 250) || null
+
+        await Promise.all([
+          mondayOrdersCollection.updateOne(
+            { mondayItemId },
+            {
+              $set: {
+                mondayItemId,
+                jobNumber: refreshedOrderNumber,
+                orderName: refreshedOrderName,
+                mondayBoardId: context.boardId,
+                mondayBoardName: resolvedBoardName,
+                mondayBoardUrl: resolvedBoardUrl,
+                mondayUpdatedAt: syncResult.mondayUpdatedAt,
+                updatedAt: now,
+                lastSeenAt: now,
+              },
+            },
+            { upsert: true },
+          ),
+          ordersUnifiedCollection.updateOne(
+            { monday_item_id: mondayItemId },
+            {
+              $set: {
+                has_monday_record: true,
+                monday_item_id: mondayItemId,
+                monday_board_id: context.boardId,
+                monday_board_name: resolvedBoardName,
+                Monday_url:
+                  String(refreshedLiveOrder?.itemUrl ?? '').trim()
+                  || resolvedBoardUrl
+                  || null,
+                order_number: refreshedOrderNumber,
+                order_name: refreshedOrderName,
+                monday_updated_at: syncResult.mondayUpdatedAt,
+                updatedAt: now,
+                lastSyncedAt: now,
+              },
+            },
+            { upsert: true },
+          ),
+        ])
+
+        let refreshWarning = null
+
+        try {
+          await refreshOrdersUnifiedCollection()
+        } catch (refreshError) {
+          refreshWarning = refreshError instanceof Error
+            ? refreshError.message
+            : 'Order saved to Monday, but unified refresh failed.'
+        }
+
+        const updatedOrderDocument = await ordersUnifiedCollection.findOne(
+          { monday_item_id: mondayItemId },
+          {
+            projection: {
+              _id: 0,
+              order_number: 1,
+              monday_updated_at: 1,
+            },
+          },
+        )
+
+        return res.json({
+          ok: true,
+          order: {
+            mondayItemId,
+            previousOrderNumber: currentOrderNumber,
+            orderNumber:
+              normalizeOrderNumberInput(updatedOrderDocument?.order_number)
+              || refreshedOrderNumber,
+            mondayUpdatedAt:
+              String(updatedOrderDocument?.monday_updated_at ?? '').trim()
+              || syncResult.mondayUpdatedAt,
+          },
+          updatedVia: orderNumberColumnId
+            ? 'monday_order_number_column'
+            : 'monday_item_name',
+          warning: refreshWarning,
+        })
+      } catch (error) {
+        next(error)
+      }
+    },
+  )
+
+  // POST /api/orders/monday/order-number/contact-admin — send an admin bell
+  // request when a linked order-number change requires admin action.
+  app.post(
+    '/api/orders/monday/order-number/contact-admin',
+    requireFirebaseAuth,
+    async (req, res, next) => {
+      try {
+        const mondayItemId = String(req.body?.mondayItemId ?? '').trim()
+        const requestedOrderNumber = normalizeOrderNumberInput(
+          req.body?.requestedOrderNumber ?? req.body?.orderNumber,
+        )
+        const requestedCurrentOrderNumber = normalizeOrderNumberInput(req.body?.currentOrderNumber)
+        const publicUser = toPublicAuthUser(req.authUser)
+
+        if (!publicUser?.isApproved) {
+          return res.status(403).json({
+            error: 'Approved access is required.',
+          })
+        }
+
+        if (!mondayItemId) {
+          return res.status(400).json({ error: 'mondayItemId is required.' })
+        }
+
+        if (!requestedOrderNumber) {
+          return res.status(400).json({ error: 'requestedOrderNumber is required.' })
+        }
+
+        const {
+          authUsersCollection,
+          entriesCollection,
+          mobileAlertsCollection,
+          mondayOrdersCollection,
+          orderProgressCollection,
+          ordersUnifiedCollection,
+        } = await getCollections()
+
+        const context = await resolveMondayOrderContext({
+          mondayItemId,
+          mondayOrdersCollection,
+          ordersUnifiedCollection,
+        })
+
+        if (!context?.boardId) {
+          return res.status(404).json({
+            error: 'Could not resolve Monday board for this order.',
+          })
+        }
+
+        const [existingOrderDocument, liveSnapshot] = await Promise.all([
+          ordersUnifiedCollection.findOne(
+            { monday_item_id: mondayItemId },
+            {
+              projection: {
+                _id: 0,
+                monday_item_id: 1,
+                order_number: 1,
+                has_quickbooks_record: 1,
+              },
+            },
+          ),
+          fetchMondayBoardItemsByIds({
+            boardId: context.boardId,
+            boardName: context.boardName,
+            boardUrl: context.boardUrl,
+            itemIds: [mondayItemId],
+          }),
+        ])
+
+        const liveOrder = Array.isArray(liveSnapshot?.orders)
+          ? liveSnapshot.orders[0]
+          : null
+
+        if (!liveOrder) {
+          return res.status(404).json({
+            error: 'Monday item was not found on the configured board.',
+          })
+        }
+
+        const currentOrderNumber =
+          normalizeOrderNumberInput(existingOrderDocument?.order_number)
+          || normalizeOrderNumberInput(liveOrder?.jobNumber)
+          || requestedCurrentOrderNumber
+
+        const linkedState = await resolveOrderNumberChangeLinkState({
+          entriesCollection,
+          orderProgressCollection,
+          ordersUnifiedCollection,
+          mondayItemId,
+          currentOrderNumber,
+          nextOrderNumber: requestedOrderNumber,
+          hasQuickBooksRecordOnOrder: Boolean(existingOrderDocument?.has_quickbooks_record),
+        })
+
+        const alertDocument = await createOrderNumberChangeAdminAlert({
+          authUsersCollection,
+          mobileAlertsCollection,
+          publicUser,
+          mondayItemId,
+          currentOrderNumber,
+          requestedOrderNumber,
+          linkedState,
+        })
+
+        return res.status(201).json({
+          ok: true,
+          alert: toPublicMobileAlert(alertDocument),
         })
       } catch (error) {
         next(error)

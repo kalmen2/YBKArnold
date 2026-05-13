@@ -676,6 +676,126 @@ mutation UpdateMondayItemStatusColumn($boardId: ID!, $itemId: ID!, $columnId: St
     }
   }
 
+  async function updateMondayItemTextColumn({ boardId, itemId, columnId, textValue }) {
+    ensureMondayConfiguration()
+
+    const normalizedBoardId = String(boardId ?? '').trim()
+    const normalizedItemId = String(itemId ?? '').trim()
+    const normalizedColumnId = String(columnId ?? '').trim()
+    const normalizedTextValue = String(textValue ?? '').trim()
+
+    if (!normalizedBoardId) {
+      throw {
+        status: 500,
+        message: 'Missing Monday board id for text update.',
+      }
+    }
+
+    if (!normalizedItemId) {
+      throw {
+        status: 400,
+        message: 'Missing Monday item id for text update.',
+      }
+    }
+
+    if (!normalizedColumnId) {
+      throw {
+        status: 400,
+        message: 'Missing Monday column id for text update.',
+      }
+    }
+
+    if (!normalizedTextValue) {
+      throw {
+        status: 400,
+        message: 'Missing Monday text value for text update.',
+      }
+    }
+
+    await callMondayGraphql(
+      `
+mutation UpdateMondayItemTextColumn($boardId: ID!, $itemId: ID!, $columnId: String!, $value: String!) {
+  change_simple_column_value(
+    board_id: $boardId,
+    item_id: $itemId,
+    column_id: $columnId,
+    value: $value
+  ) {
+    id
+  }
+}
+`,
+      {
+        boardId: normalizedBoardId,
+        itemId: normalizedItemId,
+        columnId: normalizedColumnId,
+        value: normalizedTextValue,
+      },
+    )
+
+    return {
+      boardId: normalizedBoardId,
+      itemId: normalizedItemId,
+      columnId: normalizedColumnId,
+      textValue: normalizedTextValue,
+    }
+  }
+
+  async function updateMondayItemName({ boardId, itemId, itemName }) {
+    ensureMondayConfiguration()
+
+    const normalizedBoardId = String(boardId ?? '').trim()
+    const normalizedItemId = String(itemId ?? '').trim()
+    const normalizedItemName = String(itemName ?? '').trim()
+
+    if (!normalizedBoardId) {
+      throw {
+        status: 500,
+        message: 'Missing Monday board id for item name update.',
+      }
+    }
+
+    if (!normalizedItemId) {
+      throw {
+        status: 400,
+        message: 'Missing Monday item id for item name update.',
+      }
+    }
+
+    if (!normalizedItemName) {
+      throw {
+        status: 400,
+        message: 'Missing Monday item name for item name update.',
+      }
+    }
+
+    await callMondayGraphql(
+      `
+mutation UpdateMondayItemName($boardId: ID!, $itemId: ID!, $name: String!) {
+  change_simple_column_value(
+    board_id: $boardId,
+    item_id: $itemId,
+    column_id: "name",
+    value: $name
+  ) {
+    id
+  }
+}
+`,
+      {
+        boardId: normalizedBoardId,
+        itemId: normalizedItemId,
+        name: normalizedItemName,
+      },
+    )
+
+    return {
+      boardId: normalizedBoardId,
+      itemId: normalizedItemId,
+      itemName: normalizedItemName,
+    }
+  }
+
   // Targeted name-only fetch: pull every item on a board with just id+name
   // (no column_values block). Used for "is this order on the Shipped board?" /
   // "is this order on the Design board?" without paying for the full column
@@ -919,6 +1039,8 @@ query GetItemsByIds($itemIds: [ID!]!) {
     fetchMondayDashboardSnapshot,
     fetchMondayStatusColumnOptions,
     invalidateMondayBoardNamesCache,
+    updateMondayItemName,
     updateMondayItemStatusColumn,
+    updateMondayItemTextColumn,
   }
 }

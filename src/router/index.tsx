@@ -7,6 +7,7 @@ import {
 import {
   AiConfigPage,
   AdminAlertsPage,
+  AdminIssuesPage,
   AdminLogsPage,
   AdminUsersPage,
   AppLayout,
@@ -16,6 +17,7 @@ import {
   PicturesPage,
   PurchasingPage,
   QuickBooksPage,
+  TemplatesPage,
   SalesPage,
   SupportPage,
   TimesheetPage,
@@ -48,6 +50,10 @@ export const router = createBrowserRouter([
       {
         path: 'orders',
         element: withRouteSuspense(<OrdersPage />),
+      },
+      {
+        path: 'templates',
+        element: withRouteSuspense(<TemplatesPage />),
       },
       {
         path: 'workers',
@@ -103,6 +109,14 @@ export const router = createBrowserRouter([
         element: withRouteSuspense(
           <RequireAdminRoute>
             <AdminAlertsPage />
+          </RequireAdminRoute>,
+        ),
+      },
+      {
+        path: 'admin/issues',
+        element: withRouteSuspense(
+          <RequireAdminRoute>
+            <AdminIssuesPage />
           </RequireAdminRoute>,
         ),
       },

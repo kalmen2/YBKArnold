@@ -1,8 +1,25 @@
 import * as XLSX from 'xlsx'
-import { Alert, Stack } from '@mui/material'
+import {
+  Alert,
+  Button,
+  CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogContentText,
+  DialogTitle,
+  Stack,
+  TextField,
+} from '@mui/material'
+import { useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAuth } from '../auth/useAuth'
-import type { OrdersOverviewOrder } from '../features/orders/api'
+import {
+  postOrdersOrderNumberContactAdmin,
+  postOrdersOrderNumberUpdate,
+  type OrdersOverviewOrder,
+} from '../features/orders/api'
+import { QUERY_KEYS } from '../lib/queryKeys'
 import { JobDetailsDialog, type JobDetailsMode } from './orders/JobDetailsDialog'
 import {
   OrdersGrid,
@@ -23,9 +40,16 @@ import { useOrdersOverview } from './orders/useOrdersOverview'
 
 const FEEDBACK_TOAST_MS = 2000
 const WARNING_TOAST_MS = 3000
+const ORDER_NUMBER_CHANGE_LINKED_MESSAGE =
+  'Sorry, this cannot be done because of its linked. If it needs to be done, contact admin.'
+
+function isLinkedOrderNumberChangeMessage(message: string | null | undefined) {
+  return String(message ?? '').trim() === ORDER_NUMBER_CHANGE_LINKED_MESSAGE
+}
 
 export default function OrdersPage() {
   const { appUser, getIdToken } = useAuth()
+  const queryClient = useQueryClient()
   const overview = useOrdersOverview()
   const canUseAdminView = appUser?.isAdmin === true
   const canEditMondayStages = appUser?.isAdmin === true || appUser?.isManager === true
@@ -39,6 +63,12 @@ export default function OrdersPage() {
   const [quickBooksDialogOrder, setQuickBooksDialogOrder] = useState<OrdersOverviewOrder | null>(null)
   const [quickBooksDialogMetric, setQuickBooksDialogMetric] =
     useState<OrdersQuickBooksDrilldownMetric | null>(null)
+  const [orderNumberEditOrder, setOrderNumberEditOrder] = useState<OrdersOverviewOrder | null>(null)
+  const [orderNumberDraft, setOrderNumberDraft] = useState('')
+  const [orderNumberEditError, setOrderNumberEditError] = useState<string | null>(null)
+  const [isSavingOrderNumber, setIsSavingOrderNumber] = useState(false)
+  const [canContactAdminForOrderNumber, setCanContactAdminForOrderNumber] = useState(false)
+  const [isContactingAdminForOrderNumber, setIsContactingAdminForOrderNumber] = useState(false)
 
   const shopDrawingHandle = useRef<ShopDrawingPreviewHandle | null>(null)
   const cutListHandle = useRef<CutListPreviewHandle | null>(null)
@@ -217,6 +247,129 @@ export default function OrdersPage() {
     setQuickBooksDialogMetric(null)
   }, [])
 
+  const handleOpenOrderNumberEdit = useCallback((order: OrdersOverviewOrder) => {
+    if (!order.hasMondayRecord || !String(order.mondayItemId ?? '').trim()) {
+      setErrorMessage('Only Monday-linked orders can be edited here.')
+      return
+    }
+
+    setOrderNumberEditOrder(order)
+    setOrderNumberDraft(String(order.orderNumber ?? '').trim())
+    setOrderNumberEditError(null)
+    setCanContactAdminForOrderNumber(false)
+  }, [])
+
+  const handleCloseOrderNumberEdit = useCallback(() => {
+    if (isSavingOrderNumber || isContactingAdminForOrderNumber) {
+      return
+    }
+
+    setOrderNumberEditOrder(null)
+    setOrderNumberDraft('')
+    setOrderNumberEditError(null)
+    setCanContactAdminForOrderNumber(false)
+  }, [isContactingAdminForOrderNumber, isSavingOrderNumber])
+
+  const handleSaveOrderNumberEdit = useCallback(async () => {
+    const order = orderNumberEditOrder
+
+    if (!order) {
+      return
+    }
+
+    const mondayItemId = String(order.mondayItemId ?? '').trim()
+    const requestedOrderNumber = String(orderNumberDraft ?? '').trim()
+    const currentOrderNumber = String(order.orderNumber ?? '').trim()
+
+    if (!mondayItemId) {
+      setOrderNumberEditError('Monday item id is missing for this order.')
+      return
+    }
+
+    if (!requestedOrderNumber) {
+      setOrderNumberEditError('Order number is required.')
+      return
+    }
+
+    setIsSavingOrderNumber(true)
+    setOrderNumberEditError(null)
+    setCanContactAdminForOrderNumber(false)
+
+    try {
+      const response = await postOrdersOrderNumberUpdate({
+        mondayItemId,
+        orderNumber: requestedOrderNumber,
+        currentOrderNumber,
+      })
+
+      if (response.warning) {
+        setWarningMessage(response.warning)
+      }
+
+      setSuccessMessage(
+        `Order number updated: ${response.order.previousOrderNumber} -> ${response.order.orderNumber}`,
+      )
+      setOrderNumberEditOrder(null)
+      setOrderNumberDraft('')
+      setOrderNumberEditError(null)
+      setCanContactAdminForOrderNumber(false)
+      void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.ordersOverview })
+    } catch (error) {
+      const message = error instanceof Error
+        ? error.message
+        : 'Could not update order number.'
+
+      setOrderNumberEditError(message)
+      setCanContactAdminForOrderNumber(isLinkedOrderNumberChangeMessage(message))
+    } finally {
+      setIsSavingOrderNumber(false)
+    }
+  }, [orderNumberDraft, orderNumberEditOrder, queryClient])
+
+  const handleContactAdminForOrderNumber = useCallback(async () => {
+    const order = orderNumberEditOrder
+
+    if (!order) {
+      return
+    }
+
+    const mondayItemId = String(order.mondayItemId ?? '').trim()
+    const requestedOrderNumber = String(orderNumberDraft ?? '').trim()
+    const currentOrderNumber = String(order.orderNumber ?? '').trim()
+
+    if (!mondayItemId) {
+      setOrderNumberEditError('Monday item id is missing for this order.')
+      return
+    }
+
+    if (!requestedOrderNumber) {
+      setOrderNumberEditError('Order number is required.')
+      return
+    }
+
+    setIsContactingAdminForOrderNumber(true)
+
+    try {
+      await postOrdersOrderNumberContactAdmin({
+        mondayItemId,
+        requestedOrderNumber,
+        currentOrderNumber,
+      })
+
+      setSuccessMessage('Admin was notified about this order number change request.')
+      setCanContactAdminForOrderNumber(false)
+      setOrderNumberEditError(null)
+    } catch (error) {
+      setOrderNumberEditError(
+        error instanceof Error
+          ? error.message
+          : 'Could not notify admin right now.',
+      )
+    } finally {
+      setIsContactingAdminForOrderNumber(false)
+    }
+  }, [orderNumberDraft, orderNumberEditOrder])
+
   const handleExport = useCallback(() => {
     const rows = overview.visibleOrders.map((order) => {
       const invoice = Number(order.invoiceAmount)
@@ -302,9 +455,67 @@ export default function OrdersPage() {
         onOpenBolDocument={handleOpenBolDocument}
         onOpenJobDialog={handleOpenJobDialog}
         onOpenQuickBooksDialog={handleOpenQuickBooksDialog}
+        onRequestOrderNumberEdit={handleOpenOrderNumberEdit}
         onCopyOrderNumber={handleCopyOrderNumber}
         onMissingMondayLink={handleMissingMondayLink}
       />
+
+      <Dialog
+        open={Boolean(orderNumberEditOrder)}
+        onClose={handleCloseOrderNumberEdit}
+        fullWidth
+        maxWidth="xs"
+      >
+        <DialogTitle>Edit Order Number</DialogTitle>
+        <DialogContent>
+          <Stack spacing={1.5} sx={{ pt: 0.5 }}>
+            <DialogContentText>
+              This edit updates Monday data. If this order number is linked in timesheets or QuickBooks,
+              only admin can complete the change.
+            </DialogContentText>
+
+            {orderNumberEditError ? (
+              <Alert severity="error">{orderNumberEditError}</Alert>
+            ) : null}
+
+            <TextField
+              autoFocus
+              size="small"
+              label="Order number"
+              value={orderNumberDraft}
+              onChange={(event) => setOrderNumberDraft(event.target.value)}
+              disabled={isSavingOrderNumber || isContactingAdminForOrderNumber}
+              fullWidth
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={handleCloseOrderNumberEdit}
+            disabled={isSavingOrderNumber || isContactingAdminForOrderNumber}
+          >
+            Cancel
+          </Button>
+          {canContactAdminForOrderNumber ? (
+            <Button
+              color="warning"
+              onClick={handleContactAdminForOrderNumber}
+              disabled={isSavingOrderNumber || isContactingAdminForOrderNumber}
+              startIcon={isContactingAdminForOrderNumber ? <CircularProgress size={14} /> : null}
+            >
+              Contact Admin
+            </Button>
+          ) : null}
+          <Button
+            variant="contained"
+            onClick={handleSaveOrderNumberEdit}
+            disabled={isSavingOrderNumber || isContactingAdminForOrderNumber}
+            startIcon={isSavingOrderNumber ? <CircularProgress size={14} /> : null}
+          >
+            Save
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <ShopDrawingPreview onError={setErrorMessage} bind={bindShopDrawing} />
       <CutListPreview onError={setErrorMessage} bind={bindCutList} />

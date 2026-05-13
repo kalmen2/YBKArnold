@@ -41,6 +41,24 @@ export type OrdersMondayProgressStatusUpdateResponse = OrdersMondayProgressDetai
   ok: boolean
 }
 
+export type OrdersOrderNumberUpdateResponse = {
+  ok: boolean
+  noChange?: boolean
+  order: {
+    mondayItemId: string
+    orderNumber: string
+    previousOrderNumber: string
+    mondayUpdatedAt?: string | null
+  }
+  updatedVia?: 'monday_order_number_column' | 'monday_item_name'
+  warning?: string | null
+}
+
+export type OrdersOrderNumberContactAdminResponse = {
+  ok: boolean
+  alert?: unknown
+}
+
 export type OrdersOverviewOrder = {
   id: string
   mondayItemId: string
@@ -292,6 +310,70 @@ export function postOrdersMondayProgressStatusUpdate(input: UpdateOrdersMondayPr
     {
       method: 'POST',
       body: JSON.stringify({ mondayItemId, columnId, status }),
+    },
+  )
+}
+
+type UpdateOrdersOrderNumberInput = {
+  mondayItemId: string
+  orderNumber: string
+  currentOrderNumber?: string | null
+}
+
+export function postOrdersOrderNumberUpdate(input: UpdateOrdersOrderNumberInput) {
+  const mondayItemId = String(input?.mondayItemId ?? '').trim()
+  const orderNumber = String(input?.orderNumber ?? '').trim()
+  const currentOrderNumber = String(input?.currentOrderNumber ?? '').trim()
+
+  if (!mondayItemId) {
+    throw new Error('mondayItemId is required.')
+  }
+
+  if (!orderNumber) {
+    throw new Error('orderNumber is required.')
+  }
+
+  return apiRequest<OrdersOrderNumberUpdateResponse>(
+    '/api/orders/monday/order-number',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        mondayItemId,
+        orderNumber,
+        currentOrderNumber: currentOrderNumber || undefined,
+      }),
+    },
+  )
+}
+
+type ContactAdminForOrderNumberInput = {
+  mondayItemId: string
+  requestedOrderNumber: string
+  currentOrderNumber?: string | null
+}
+
+export function postOrdersOrderNumberContactAdmin(input: ContactAdminForOrderNumberInput) {
+  const mondayItemId = String(input?.mondayItemId ?? '').trim()
+  const requestedOrderNumber = String(input?.requestedOrderNumber ?? '').trim()
+  const currentOrderNumber = String(input?.currentOrderNumber ?? '').trim()
+
+  if (!mondayItemId) {
+    throw new Error('mondayItemId is required.')
+  }
+
+  if (!requestedOrderNumber) {
+    throw new Error('requestedOrderNumber is required.')
+  }
+
+  return apiRequest<OrdersOrderNumberContactAdminResponse>(
+    '/api/orders/monday/order-number/contact-admin',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        mondayItemId,
+        requestedOrderNumber,
+        currentOrderNumber: currentOrderNumber || undefined,
+      }),
     },
   )
 }
