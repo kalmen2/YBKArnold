@@ -46,6 +46,18 @@ const crmRecordStatusActive = 'active'
 const crmRecordStatusDeleted = 'deleted'
 const engagementReadinessReady = 'ready'
 const engagementReadinessNotReady = 'not_ready'
+const engagementReadinessReadyFilterValues = [engagementReadinessReady, 'yes']
+const engagementReadinessNotReadyFilterValues = [
+  engagementReadinessNotReady,
+  'no',
+  'engagement',
+  'not ready',
+  'notready',
+]
+const engagementReadinessKnownFilterValues = [
+  ...engagementReadinessReadyFilterValues,
+  ...engagementReadinessNotReadyFilterValues,
+]
 
 function toTrimmedText(value, maxLength = 4000) {
   if (value === null || value === undefined) {
@@ -412,6 +424,20 @@ function normalizeEngagementReadinessStatus(value) {
 
   if (normalized === engagementReadinessReady) {
     return engagementReadinessReady
+  }
+
+  return null
+}
+
+function normalizeEngagementReadinessStatusForFiltering(value) {
+  const normalized = toLowerText(value, 60)
+
+  if (engagementReadinessReadyFilterValues.includes(normalized)) {
+    return engagementReadinessReady
+  }
+
+  if (engagementReadinessNotReadyFilterValues.includes(normalized)) {
+    return engagementReadinessNotReady
   }
 
   return null
@@ -1186,6 +1212,54 @@ export function registerCrmRoutes(app, deps) {
     }
   }
 
+  let crmAccountChatsIndexesPromise
+
+  async function getCrmAccountChatsCollection(collectionsFromCaller = null) {
+    const collections = collectionsFromCaller ?? await getCollections()
+    const crmDatabase = collections?.databasesByDomain?.crm
+
+    if (!crmDatabase) {
+      throw new Error('CRM database is unavailable.')
+    }
+
+    const crmAccountChatsCollection = crmDatabase.collection('crm_account_chats')
+
+    if (!crmAccountChatsIndexesPromise) {
+      crmAccountChatsIndexesPromise = Promise.all([
+        crmAccountChatsCollection.createIndex({ id: 1 }, { unique: true }),
+        crmAccountChatsCollection.createIndex({ dealerSourceId: 1, createdAt: 1 }),
+        crmAccountChatsCollection.createIndex({ createdAt: -1 }),
+      ])
+    }
+
+    try {
+      await crmAccountChatsIndexesPromise
+    } catch (error) {
+      crmAccountChatsIndexesPromise = undefined
+      throw error
+    }
+
+    return crmAccountChatsCollection
+  }
+
+  function canManageCrmAccountChatMessage({ publicUser, authUser, chatMessage }) {
+    const isAdmin = Boolean(publicUser?.isApproved && publicUser?.isAdmin)
+
+    if (isAdmin) {
+      return true
+    }
+
+    const requesterUid = toTrimmedText(authUser?.uid, 200)
+    const requesterEmail = toLowerText(authUser?.email, 200)
+    const createdByUid = toTrimmedText(chatMessage?.createdByUid, 200)
+    const createdByEmail = toLowerText(chatMessage?.createdByEmail, 200)
+
+    return Boolean(
+      (requesterUid && createdByUid && requesterUid === createdByUid)
+      || (requesterEmail && createdByEmail && requesterEmail === createdByEmail),
+    )
+  }
+
   app.post('/api/crm/imports/preview', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
     try {
       const analysis = buildImportAnalysis(req.body?.payload)
@@ -1504,6 +1578,8 @@ export function registerCrmRoutes(app, deps) {
       const includeArchived = toBoolean(req.query?.includeArchived)
       const ownerEmail = toLowerText(req.query?.ownerEmail, 200)
       const accountType = toLowerText(req.query?.accountType, 60)
+      const engagementBucket = toLowerText(req.query?.engagementBucket, 20)
+      const normalizedEngagementBucket = normalizeEngagementReadinessStatusForFiltering(engagementBucket)
       const hasEmail = toNullableBoolean(req.query?.hasEmail)
       const offset = toNonNegativeInteger(req.query?.offset, 0)
       const limit = Math.min(2500, Math.max(1, toNonNegativeInteger(req.query?.limit, 1200)))
@@ -1526,6 +1602,7 @@ export function registerCrmRoutes(app, deps) {
         includeArchived,
         ownerEmail,
         accountType,
+        engagementBucket: normalizedEngagementBucket || engagementBucket,
         hasEmail,
         territoryStates,
         offset,
@@ -1538,7 +1615,9 @@ export function registerCrmRoutes(app, deps) {
         return res.json(cached)
       }
 
-      const { crmAccountsCollection, crmContactsCollection } = await getCollections()
+      const collections = await getCollections()
+      const { crmAccountsCollection, crmContactsCollection } = collections
+      const crmAccountChatsCollection = await getCrmAccountChatsCollection(collections)
       const filterClauses = []
       let accountSourceIdsFromContactSearch = []
 
@@ -1571,16 +1650,51 @@ export function registerCrmRoutes(app, deps) {
       }
 
       if (accountType && accountType !== 'all') {
-        filterClauses.push({
-          $or: [
-            {
-              accountType: new RegExp(`^${escapeRegex(accountType)}$`, 'i'),
+        if (accountType === 'none') {
+          filterClauses.push({
+            $nor: [
+              {
+                accountType: /^(dealer|designer)$/i,
+              },
+              {
+                accountClass: /^(dealer|designer)$/i,
+              },
+            ],
+          })
+        } else {
+          filterClauses.push({
+            $or: [
+              {
+                accountType: new RegExp(`^${escapeRegex(accountType)}$`, 'i'),
+              },
+              {
+                accountClass: new RegExp(`^${escapeRegex(accountType)}$`, 'i'),
+              },
+            ],
+          })
+        }
+      }
+
+      if (engagementBucket && engagementBucket !== 'all') {
+        if (normalizedEngagementBucket === engagementReadinessReady) {
+          filterClauses.push({
+            engagementReadinessStatus: {
+              $in: engagementReadinessReadyFilterValues,
             },
-            {
-              accountClass: new RegExp(`^${escapeRegex(accountType)}$`, 'i'),
+          })
+        } else if (normalizedEngagementBucket === engagementReadinessNotReady) {
+          filterClauses.push({
+            engagementReadinessStatus: {
+              $in: engagementReadinessNotReadyFilterValues,
             },
-          ],
-        })
+          })
+        } else if (engagementBucket === 'none') {
+          filterClauses.push({
+            engagementReadinessStatus: {
+              $nin: engagementReadinessKnownFilterValues,
+            },
+          })
+        }
       }
 
       if (hasEmail === true) {
@@ -1755,12 +1869,58 @@ export function registerCrmRoutes(app, deps) {
           .toArray(),
       ])
 
+      const normalizedDealers = dealers.map((dealer) => ({
+        ...dealer,
+        engagementReadinessStatus: normalizeEngagementReadinessStatusForFiltering(
+          dealer.engagementReadinessStatus,
+        ),
+      }))
+
+      const dealerSourceIds = [...new Set(
+        normalizedDealers
+          .map((dealer) => toTrimmedText(dealer.sourceId, 160))
+          .filter(Boolean),
+      )]
+
+      const chatCountRows = dealerSourceIds.length > 0
+        ? await crmAccountChatsCollection
+          .aggregate([
+            {
+              $match: {
+                dealerSourceId: {
+                  $in: dealerSourceIds,
+                },
+              },
+            },
+            {
+              $group: {
+                _id: '$dealerSourceId',
+                count: {
+                  $sum: 1,
+                },
+              },
+            },
+          ])
+          .toArray()
+        : []
+
+      const chatCountByDealerSourceId = new Map(
+        chatCountRows
+          .map((entry) => [toTrimmedText(entry._id, 160), toNonNegativeInteger(entry.count, 0)])
+          .filter(([sourceId]) => Boolean(sourceId)),
+      )
+
+      const dealersWithChatCounts = normalizedDealers.map((dealer) => ({
+        ...dealer,
+        chatMessageCount: chatCountByDealerSourceId.get(toTrimmedText(dealer.sourceId, 160)) ?? 0,
+      }))
+
       const payload = {
-        dealers,
+        dealers: dealersWithChatCounts,
         total,
         offset,
         limit,
-        hasMore: offset + dealers.length < total,
+        hasMore: offset + dealersWithChatCounts.length < total,
       }
 
       cacheSet(cacheKey, payload, DEALERS_CACHE_TTL_MS)
@@ -1991,6 +2151,347 @@ export function registerCrmRoutes(app, deps) {
     }
   })
 
+  app.get('/api/crm/dealers/:dealerSourceId/chats', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const { isSalesRep, territoryStates, publicUser } = resolveCrmAccessScope(req)
+      const isAdmin = Boolean(publicUser?.isApproved && publicUser?.isAdmin)
+      const dealerSourceId = toTrimmedText(req.params.dealerSourceId, 160)
+
+      if (!dealerSourceId) {
+        return res.status(400).json({
+          error: 'dealerSourceId is required.',
+        })
+      }
+
+      const offset = toNonNegativeInteger(req.query?.offset, 0)
+      const limit = Math.min(500, Math.max(1, toNonNegativeInteger(req.query?.limit, 150)))
+      const collections = await getCollections()
+      const { crmAccountsCollection } = collections
+      const crmAccountChatsCollection = await getCrmAccountChatsCollection(collections)
+
+      if (isSalesRep && !isAdmin && territoryStates.length === 0) {
+        return res.status(403).json({
+          error: 'No sales territories are assigned to this user.',
+        })
+      }
+
+      const dealer = await resolveDealerOrThrow(crmAccountsCollection, dealerSourceId)
+
+      if (isSalesRep && !isAdmin && !isDealerInTerritory(dealer.state, territoryStates)) {
+        return res.status(403).json({
+          error: 'You do not have territory access to this dealer.',
+        })
+      }
+
+      const filter = {
+        dealerSourceId: dealer.sourceId,
+      }
+
+      const [total, messages] = await Promise.all([
+        crmAccountChatsCollection.countDocuments(filter),
+        crmAccountChatsCollection
+          .find(
+            filter,
+            {
+              projection: {
+                _id: 0,
+                id: 1,
+                dealerSourceId: 1,
+                message: 1,
+                createdAt: 1,
+                createdByUid: 1,
+                createdByEmail: 1,
+                createdByName: 1,
+                updatedAt: 1,
+                updatedByUid: 1,
+                updatedByEmail: 1,
+                updatedByName: 1,
+              },
+            },
+          )
+          .sort({ createdAt: 1, id: 1 })
+          .skip(offset)
+          .limit(limit)
+          .toArray(),
+      ])
+
+      return res.json({
+        messages,
+        total,
+        offset,
+        limit,
+        hasMore: offset + messages.length < total,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.post('/api/crm/dealers/:dealerSourceId/chats', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const { isSalesRep, territoryStates, publicUser } = resolveCrmAccessScope(req)
+      const isAdmin = Boolean(publicUser?.isApproved && publicUser?.isAdmin)
+      const dealerSourceId = toTrimmedText(req.params.dealerSourceId, 160)
+      const body = toOptionalObject(req.body)
+      const messageText = toTrimmedText(body.message, 4000)
+
+      if (!dealerSourceId) {
+        return res.status(400).json({
+          error: 'dealerSourceId is required.',
+        })
+      }
+
+      if (!messageText) {
+        return res.status(400).json({
+          error: 'message is required.',
+        })
+      }
+
+      const collections = await getCollections()
+      const { crmAccountsCollection } = collections
+      const crmAccountChatsCollection = await getCrmAccountChatsCollection(collections)
+
+      if (isSalesRep && !isAdmin && territoryStates.length === 0) {
+        return res.status(403).json({
+          error: 'No sales territories are assigned to this user.',
+        })
+      }
+
+      const dealer = await resolveDealerOrThrow(crmAccountsCollection, dealerSourceId)
+
+      if (isSalesRep && !isAdmin && !isDealerInTerritory(dealer.state, territoryStates)) {
+        return res.status(403).json({
+          error: 'You do not have territory access to this dealer.',
+        })
+      }
+
+      const now = nowIso()
+      const message = {
+        id: randomUUID(),
+        dealerSourceId: dealer.sourceId,
+        message: messageText,
+        createdAt: now,
+        createdByUid: toTrimmedText(req.authUser?.uid, 200) || null,
+        createdByEmail: toTrimmedText(req.authUser?.email, 200) || null,
+        createdByName: toTrimmedText(publicUser?.displayName, 200) || null,
+      }
+
+      await crmAccountChatsCollection.insertOne(message)
+
+      cacheDeleteByPrefix(DEALERS_CACHE_PREFIX)
+
+      return res.status(201).json({
+        message,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.patch('/api/crm/dealers/:dealerSourceId/chats/:messageId', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const { isSalesRep, territoryStates, publicUser } = resolveCrmAccessScope(req)
+      const isAdmin = Boolean(publicUser?.isApproved && publicUser?.isAdmin)
+      const dealerSourceId = toTrimmedText(req.params.dealerSourceId, 160)
+      const messageId = toTrimmedText(req.params.messageId, 160)
+      const body = toOptionalObject(req.body)
+      const messageText = toTrimmedText(body.message, 4000)
+
+      if (!dealerSourceId) {
+        return res.status(400).json({
+          error: 'dealerSourceId is required.',
+        })
+      }
+
+      if (!messageId) {
+        return res.status(400).json({
+          error: 'messageId is required.',
+        })
+      }
+
+      if (!messageText) {
+        return res.status(400).json({
+          error: 'message is required.',
+        })
+      }
+
+      const collections = await getCollections()
+      const { crmAccountsCollection } = collections
+      const crmAccountChatsCollection = await getCrmAccountChatsCollection(collections)
+
+      if (isSalesRep && !isAdmin && territoryStates.length === 0) {
+        return res.status(403).json({
+          error: 'No sales territories are assigned to this user.',
+        })
+      }
+
+      const dealer = await resolveDealerOrThrow(crmAccountsCollection, dealerSourceId)
+
+      if (isSalesRep && !isAdmin && !isDealerInTerritory(dealer.state, territoryStates)) {
+        return res.status(403).json({
+          error: 'You do not have territory access to this dealer.',
+        })
+      }
+
+      const existingMessage = await crmAccountChatsCollection.findOne(
+        {
+          id: messageId,
+          dealerSourceId: dealer.sourceId,
+        },
+        {
+          projection: {
+            _id: 0,
+            id: 1,
+            dealerSourceId: 1,
+            createdByUid: 1,
+            createdByEmail: 1,
+          },
+        },
+      )
+
+      if (!existingMessage) {
+        return res.status(404).json({
+          error: 'Chat message not found.',
+        })
+      }
+
+      if (!canManageCrmAccountChatMessage({
+        publicUser,
+        authUser: req.authUser,
+        chatMessage: existingMessage,
+      })) {
+        return res.status(403).json({
+          error: 'You can only edit your own chat messages unless you are an admin.',
+        })
+      }
+
+      const now = nowIso()
+      const message = await crmAccountChatsCollection.findOneAndUpdate(
+        {
+          id: messageId,
+          dealerSourceId: dealer.sourceId,
+        },
+        {
+          $set: {
+            message: messageText,
+            updatedAt: now,
+            updatedByUid: toTrimmedText(req.authUser?.uid, 200) || null,
+            updatedByEmail: toTrimmedText(req.authUser?.email, 200) || null,
+            updatedByName: toTrimmedText(publicUser?.displayName, 200) || null,
+          },
+        },
+        {
+          returnDocument: 'after',
+          projection: {
+            _id: 0,
+            id: 1,
+            dealerSourceId: 1,
+            message: 1,
+            createdAt: 1,
+            createdByUid: 1,
+            createdByEmail: 1,
+            createdByName: 1,
+            updatedAt: 1,
+            updatedByUid: 1,
+            updatedByEmail: 1,
+            updatedByName: 1,
+          },
+        },
+      )
+
+      return res.json({
+        message,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.delete('/api/crm/dealers/:dealerSourceId/chats/:messageId', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const { isSalesRep, territoryStates, publicUser } = resolveCrmAccessScope(req)
+      const isAdmin = Boolean(publicUser?.isApproved && publicUser?.isAdmin)
+      const dealerSourceId = toTrimmedText(req.params.dealerSourceId, 160)
+      const messageId = toTrimmedText(req.params.messageId, 160)
+
+      if (!dealerSourceId) {
+        return res.status(400).json({
+          error: 'dealerSourceId is required.',
+        })
+      }
+
+      if (!messageId) {
+        return res.status(400).json({
+          error: 'messageId is required.',
+        })
+      }
+
+      const collections = await getCollections()
+      const { crmAccountsCollection } = collections
+      const crmAccountChatsCollection = await getCrmAccountChatsCollection(collections)
+
+      if (isSalesRep && !isAdmin && territoryStates.length === 0) {
+        return res.status(403).json({
+          error: 'No sales territories are assigned to this user.',
+        })
+      }
+
+      const dealer = await resolveDealerOrThrow(crmAccountsCollection, dealerSourceId)
+
+      if (isSalesRep && !isAdmin && !isDealerInTerritory(dealer.state, territoryStates)) {
+        return res.status(403).json({
+          error: 'You do not have territory access to this dealer.',
+        })
+      }
+
+      const existingMessage = await crmAccountChatsCollection.findOne(
+        {
+          id: messageId,
+          dealerSourceId: dealer.sourceId,
+        },
+        {
+          projection: {
+            _id: 0,
+            id: 1,
+            dealerSourceId: 1,
+            createdByUid: 1,
+            createdByEmail: 1,
+          },
+        },
+      )
+
+      if (!existingMessage) {
+        return res.status(404).json({
+          error: 'Chat message not found.',
+        })
+      }
+
+      if (!canManageCrmAccountChatMessage({
+        publicUser,
+        authUser: req.authUser,
+        chatMessage: existingMessage,
+      })) {
+        return res.status(403).json({
+          error: 'You can only delete your own chat messages unless you are an admin.',
+        })
+      }
+
+      await crmAccountChatsCollection.deleteOne({
+        id: messageId,
+        dealerSourceId: dealer.sourceId,
+      })
+
+      cacheDeleteByPrefix(DEALERS_CACHE_PREFIX)
+
+      return res.json({
+        ok: true,
+        messageId,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
   app.patch('/api/crm/dealers/:dealerSourceId', requireFirebaseAuth, requireSalesManagerOrAdminRole, async (req, res, next) => {
     try {
       const { isSalesRep, territoryStates } = resolveCrmAccessScope(req)
@@ -2042,154 +2543,6 @@ export function registerCrmRoutes(app, deps) {
       if (isSalesRep && !isDealerInTerritory(existingDealer.state, territoryStates)) {
         return res.status(403).json({
           error: 'You do not have territory access to this dealer.',
-        })
-      }
-
-      if (isSalesRep) {
-        const deletedAt = nowIso()
-        const deletedByEmail = toTrimmedText(req.authUser?.email, 200) || null
-        const deletedByUid = toTrimmedText(req.authUser?.uid, 160) || null
-        let dealer = null
-
-        if (normalizeCrmRecordStatus(existingDealer.recordStatus) === crmRecordStatusDeleted) {
-          dealer = await crmAccountsCollection.findOne(
-            {
-              sourceId: dealerSourceId,
-            },
-            {
-              projection: {
-                _id: 0,
-                sourceId: 1,
-                name: 1,
-                phone: 1,
-                phone2: 1,
-                email: 1,
-                email2: 1,
-                address: 1,
-                city: 1,
-                state: 1,
-                zip: 1,
-                country: 1,
-                industry: 1,
-                accountClass: 1,
-                accountType: 1,
-                salesRep: 1,
-                website: 1,
-                emails: 1,
-                accountText: 1,
-                owner: 1,
-                ownerEmail: 1,
-                pictureUrl: 1,
-                pictureUrlSource: 1,
-                socialMedia: 1,
-                socialMediaLinks: 1,
-                engagementReadinessStatus: 1,
-                engagementReadinessNote: 1,
-                recordStatus: 1,
-                isArchived: 1,
-                isFavorite: 1,
-                contactCountSource: 1,
-                createdDateSource: 1,
-                modifiedDateSource: 1,
-                lastImportedAt: 1,
-              },
-            },
-          )
-        } else {
-          dealer = await crmAccountsCollection.findOneAndUpdate(
-            {
-              sourceId: dealerSourceId,
-            },
-            {
-              $set: {
-                recordStatus: crmRecordStatusDeleted,
-                isArchived: true,
-                deletedAt,
-                deletedByEmail,
-                deleteRequestedAt: deletedAt,
-                deleteRequestedByUid: deletedByUid,
-                deleteRequestedByEmail: deletedByEmail,
-                modifiedDateSource: deletedAt,
-                updatedAt: deletedAt,
-              },
-            },
-            {
-              returnDocument: 'after',
-              projection: {
-                _id: 0,
-                sourceId: 1,
-                name: 1,
-                phone: 1,
-                phone2: 1,
-                email: 1,
-                email2: 1,
-                address: 1,
-                city: 1,
-                state: 1,
-                zip: 1,
-                country: 1,
-                industry: 1,
-                accountClass: 1,
-                accountType: 1,
-                salesRep: 1,
-                website: 1,
-                emails: 1,
-                accountText: 1,
-                owner: 1,
-                ownerEmail: 1,
-                pictureUrl: 1,
-                pictureUrlSource: 1,
-                socialMedia: 1,
-                socialMediaLinks: 1,
-                engagementReadinessStatus: 1,
-                engagementReadinessNote: 1,
-                recordStatus: 1,
-                isArchived: 1,
-                isFavorite: 1,
-                contactCountSource: 1,
-                createdDateSource: 1,
-                modifiedDateSource: 1,
-                lastImportedAt: 1,
-              },
-            },
-          )
-        }
-
-        let archivedContactsCount = 0
-
-        if (archiveContacts) {
-          const contactsResult = await crmContactsCollection.updateMany(
-            {
-              accountSourceId: dealerSourceId,
-              recordStatus: {
-                $ne: crmRecordStatusDeleted,
-              },
-            },
-            {
-              $set: {
-                recordStatus: crmRecordStatusDeleted,
-                isArchived: true,
-                deletedAt,
-                deletedByEmail,
-                deleteRequestedAt: deletedAt,
-                deleteRequestedByUid: deletedByUid,
-                deleteRequestedByEmail: deletedByEmail,
-                updatedAt: deletedAt,
-              },
-            },
-          )
-
-          archivedContactsCount = Number(contactsResult.modifiedCount ?? 0)
-        }
-
-        cacheDeleteByPrefix(DEALERS_CACHE_PREFIX)
-        cacheDelete(OVERVIEW_CACHE_KEY)
-
-        return res.json({
-          dealer,
-          archivedContactsCount,
-          archiveContactsApplied: archiveContacts,
-          queuedForDeletion: true,
         })
       }
 
@@ -2303,12 +2656,6 @@ export function registerCrmRoutes(app, deps) {
 
       if (Object.prototype.hasOwnProperty.call(body, 'emails')) {
         const normalizedEmails = normalizeEmailList(body.emails)
-
-        if (normalizedEmails.length === 0) {
-          return res.status(400).json({
-            error: 'emails must include at least one valid email.',
-          })
-        }
 
         updates.emails = normalizedEmails
         updates.email = normalizedEmails[0] || null

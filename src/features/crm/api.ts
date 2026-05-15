@@ -147,6 +147,7 @@ export type CrmDealer = {
   sourceId: string
   name: string
   pictureUrl?: string | null
+  chatMessageCount?: number
   phone?: string | null
   city?: string | null
   state?: string | null
@@ -197,6 +198,7 @@ export type CrmDealersQueryOptions = {
   includeArchived?: boolean
   search?: string
   accountType?: 'dealer' | 'designer' | 'all' | string
+  engagementBucket?: 'ready' | 'not_ready' | 'yes' | 'no' | 'none' | 'all' | string
   ownerEmail?: string
   hasEmail?: boolean | null
 }
@@ -270,6 +272,28 @@ export type CrmDealerDetailResponse = {
   contactOffset: number
   contactLimit: number
   hasMoreContacts: boolean
+}
+
+export type CrmDealerChatMessage = {
+  id: string
+  dealerSourceId: string
+  message: string
+  createdAt: string
+  createdByUid: string | null
+  createdByEmail: string | null
+  createdByName: string | null
+  updatedAt?: string | null
+  updatedByUid?: string | null
+  updatedByEmail?: string | null
+  updatedByName?: string | null
+}
+
+export type CrmDealerChatsResponse = {
+  messages: CrmDealerChatMessage[]
+  total: number
+  offset: number
+  limit: number
+  hasMore: boolean
 }
 
 export type CrmContactsResponse = {
@@ -643,6 +667,7 @@ export function fetchCrmDealers(
       includeArchived: options.includeArchived ? 'true' : undefined,
       search: options.search ?? undefined,
       accountType: options.accountType ?? undefined,
+      engagementBucket: options.engagementBucket ?? undefined,
       ownerEmail: options.ownerEmail ?? undefined,
       hasEmail: options.hasEmail === null || options.hasEmail === undefined
         ? undefined
@@ -686,6 +711,44 @@ export function fetchCrmDealerDetail(
       contactOffset: options.contactOffset ?? 0,
       contactLimit: options.contactLimit ?? 250,
     }),
+  )
+}
+
+export function fetchCrmDealerChats(
+  dealerSourceId: string,
+  options: { limit?: number; offset?: number } = {},
+) {
+  return apiRequest<CrmDealerChatsResponse>(
+    withQuery(`/api/crm/dealers/${encodeURIComponent(dealerSourceId)}/chats`, {
+      limit: options.limit ?? 150,
+      offset: options.offset ?? 0,
+    }),
+  )
+}
+
+export function createCrmDealerChatMessage(dealerSourceId: string, message: string) {
+  return apiRequest<{ message: CrmDealerChatMessage }>(`/api/crm/dealers/${encodeURIComponent(dealerSourceId)}/chats`, {
+    method: 'POST',
+    body: JSON.stringify({ message }),
+  })
+}
+
+export function updateCrmDealerChatMessage(dealerSourceId: string, messageId: string, message: string) {
+  return apiRequest<{ message: CrmDealerChatMessage }>(
+    `/api/crm/dealers/${encodeURIComponent(dealerSourceId)}/chats/${encodeURIComponent(messageId)}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify({ message }),
+    },
+  )
+}
+
+export function removeCrmDealerChatMessage(dealerSourceId: string, messageId: string) {
+  return apiRequest<{ ok: boolean; messageId: string }>(
+    `/api/crm/dealers/${encodeURIComponent(dealerSourceId)}/chats/${encodeURIComponent(messageId)}`,
+    {
+      method: 'DELETE',
+    },
   )
 }
 

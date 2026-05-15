@@ -902,11 +902,6 @@ export default function CrmDealersPage() {
       .map((value) => value.trim())
       .filter(Boolean)
 
-    if (normalizedEmails.length === 0) {
-      setErrorMessage('At least one dealership email is required.')
-      return
-    }
-
     const normalizedEngagementReadinessNote = dealerForm.engagementReadinessNote.trim()
     const normalizedAccountType = dealerForm.accountType.trim().toLowerCase()
 
@@ -1598,7 +1593,7 @@ export default function CrmDealersPage() {
                         <TextField size="small" label="Account name" value={dealerForm.name} onChange={(e) => setDealerTextField('name', e.target.value)} />
                         <TextField size="small" label="Owner" value={dealerForm.owner} onChange={(e) => setDealerTextField('owner', e.target.value)} />
                         <TextField size="small" label="Owner email" value={dealerForm.ownerEmail} onChange={(e) => setDealerTextField('ownerEmail', e.target.value)} />
-                        <TextField size="small" label="Primary email" value={dealerForm.primaryEmail} onChange={(e) => setDealerTextField('primaryEmail', e.target.value)} />
+                        <TextField size="small" label="Primary email (optional)" value={dealerForm.primaryEmail} onChange={(e) => setDealerTextField('primaryEmail', e.target.value)} />
                         <TextField size="small" label="Optional email" value={dealerForm.secondaryEmail} onChange={(e) => setDealerTextField('secondaryEmail', e.target.value)} />
                         <TextField size="small" label="Sales rep" value={dealerForm.salesRep} onChange={(e) => setDealerTextField('salesRep', e.target.value)} />
                         <TextField size="small" label="Primary phone" value={dealerForm.phone} onChange={(e) => setDealerTextField('phone', e.target.value)} />
