@@ -47,7 +47,7 @@ export function createMondayDashboardService({
       normalizeColumnOverrideId(columnOverrides.shipDateColumnId) ||
       pickColumnId(
       columns,
-      ['ship date', 'date shipped', 'shipped'],
+      ['ship date', 'date shipped', 'shipped date', 'shipped on', 'shipping date'],
       ['date', 'timeline'],
       )
     const leadTimeColumnId =
@@ -229,7 +229,7 @@ export function createMondayDashboardService({
       findColumnByKeywords(columnValues, ['design', 'stage'])
     const shipDateColumn =
       findColumnById(columnValues, columnMap.shipDateColumnId) ||
-      findColumnByKeywords(columnValues, ['ship date', 'shipped'])
+      findColumnByKeywords(columnValues, ['ship date', 'date shipped', 'shipped date', 'shipped on', 'shipping date'])
     const leadTimeColumn =
       findColumnById(columnValues, columnMap.leadTimeColumnId) ||
       findColumnByKeywords(columnValues, ['lead'])

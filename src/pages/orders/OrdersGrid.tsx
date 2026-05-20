@@ -4,7 +4,6 @@ import PictureAsPdfRoundedIcon from '@mui/icons-material/PictureAsPdfRounded'
 import FormatListBulletedRoundedIcon from '@mui/icons-material/FormatListBulletedRounded'
 import LocalShippingRoundedIcon from '@mui/icons-material/LocalShippingRounded'
 import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded'
-import EditRoundedIcon from '@mui/icons-material/EditRounded'
 import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded'
 import {
   Alert,
@@ -44,6 +43,7 @@ import { QUERY_KEYS } from '../../lib/queryKeys'
 import type { JobDetailsMode } from './JobDetailsDialog'
 import { type CutListPreviewHandle } from './CutListPreview.tsx'
 import { type ShopDrawingPreviewHandle } from './ShopDrawingPreview'
+import type { OrdersListTab } from './useOrdersOverview'
 import { resolveBolUrl } from './bolUrl'
 import { resolveCutListUrl } from './cutListUrl.ts'
 import { resolveShopDrawingUrl } from './shopDrawingUrl'
@@ -284,33 +284,6 @@ const leadTimeFilterOperators = getGridDateOperators()
     return operator
   })
 
-function toIsoDay(value: string | null | undefined) {
-  const parsed = new Date(String(value ?? '').trim())
-
-  if (Number.isNaN(parsed.getTime())) {
-    return null
-  }
-
-  const year = parsed.getFullYear()
-  const month = String(parsed.getMonth() + 1).padStart(2, '0')
-  const day = String(parsed.getDate()).padStart(2, '0')
-
-  return `${year}-${month}-${day}`
-}
-
-function formatMonthDay(value: string | null | undefined) {
-  const parsed = new Date(String(value ?? '').trim())
-
-  if (Number.isNaN(parsed.getTime())) {
-    return 'unknown date'
-  }
-
-  return new Intl.DateTimeFormat('en-US', {
-    month: 'short',
-    day: 'numeric',
-  }).format(parsed)
-}
-
 function normalizeOrderCode(value: string | null | undefined) {
   return String(value ?? '')
     .toUpperCase()
@@ -358,8 +331,35 @@ function resolveDisplayOrderName(order: OrdersOverviewOrder) {
   return filteredSegments.join(' / ')
 }
 
+function comparePaidStatus(
+  left: boolean | null | undefined,
+  right: boolean | null | undefined,
+) {
+  const leftKnown = typeof left === 'boolean'
+  const rightKnown = typeof right === 'boolean'
+
+  if (!leftKnown && !rightKnown) {
+    return 0
+  }
+
+  if (!leftKnown) {
+    return 1
+  }
+
+  if (!rightKnown) {
+    return -1
+  }
+
+  if (left === right) {
+    return 0
+  }
+
+  return left ? 1 : -1
+}
+
 type OrdersGridProps = {
   orders: OrdersOverviewOrder[]
+  activeTab: OrdersListTab
   viewMode: OrdersViewMode
   canEditMondayStages: boolean
   lastRefreshedAt: string | null
@@ -372,13 +372,13 @@ type OrdersGridProps = {
     order: OrdersOverviewOrder,
     metric: OrdersQuickBooksDrilldownMetric,
   ) => void
-  onRequestOrderNumberEdit: (order: OrdersOverviewOrder) => void
   onCopyOrderNumber: (orderNumber: string) => void
   onMissingMondayLink: () => void
 }
 
 export function OrdersGrid({
   orders,
+  activeTab,
   viewMode,
   canEditMondayStages,
   lastRefreshedAt,
@@ -388,11 +388,11 @@ export function OrdersGrid({
   onOpenBolDocument,
   onOpenJobDialog,
   onOpenQuickBooksDialog,
-  onRequestOrderNumberEdit,
   onCopyOrderNumber,
   onMissingMondayLink,
 }: OrdersGridProps) {
   const queryClient = useQueryClient()
+  const statusColumnHeader = activeTab === 'shipped' ? 'Ship Date' : 'Monday Status'
   const [rowSelectionModel, setRowSelectionModel] = useState<GridRowSelectionModel>({
     type: 'include',
     ids: new Set(),
@@ -695,20 +695,6 @@ export function OrdersGrid({
           >
             <ContentCopyRoundedIcon fontSize="inherit" />
           </IconButton>
-          {row.hasMondayRecord ? (
-            <IconButton
-              size="small"
-              aria-label="Edit order number"
-              title="Edit order number in Monday"
-              onClick={(event) => {
-                event.preventDefault()
-                event.stopPropagation()
-                onRequestOrderNumberEdit(row)
-              }}
-            >
-              <EditRoundedIcon fontSize="inherit" />
-            </IconButton>
-          ) : null}
           {row.mondayItemUrl ? (
             <IconButton
               size="small"
@@ -762,15 +748,59 @@ export function OrdersGrid({
       minWidth: 220,
       width: 260,
       sortable: false,
-      renderCell: ({ row }) => (
-        <Typography
-          variant="body2"
-          sx={{ fontSize: '0.78rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
-          title={row.description ?? ''}
-        >
-          {row.description || '—'}
-        </Typography>
-      ),
+      renderCell: ({ row }) => {
+        const content = String(row.description ?? '').trim()
+
+        if (!content) {
+          return (
+            <Typography
+              variant="body2"
+              sx={{ fontSize: '0.78rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+            >
+              —
+            </Typography>
+          )
+        }
+
+        if (!row.hasMondayRecord) {
+          return (
+            <Typography
+              variant="body2"
+              sx={{ fontSize: '0.78rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+              title={content}
+            >
+              {content}
+            </Typography>
+          )
+        }
+
+        return (
+          <Button
+            size="small"
+            variant="text"
+            sx={{
+              minWidth: 0,
+              px: 0,
+              maxWidth: '100%',
+              textTransform: 'none',
+              justifyContent: 'flex-start',
+              fontWeight: 500,
+              fontSize: '0.78rem',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              color: 'text.primary',
+            }}
+            title={content}
+            onMouseEnter={() => prefetchJobDetails(row)}
+            onClick={() => {
+              onOpenJobDialog(row, 'details')
+            }}
+          >
+            {content}
+          </Button>
+        )
+      },
     },
     {
       field: 'notes',
@@ -778,15 +808,59 @@ export function OrdersGrid({
       minWidth: 220,
       width: 260,
       sortable: false,
-      renderCell: ({ row }) => (
-        <Typography
-          variant="body2"
-          sx={{ fontSize: '0.78rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
-          title={row.notes ?? ''}
-        >
-          {row.notes || '—'}
-        </Typography>
-      ),
+      renderCell: ({ row }) => {
+        const content = String(row.notes ?? '').trim()
+
+        if (!content) {
+          return (
+            <Typography
+              variant="body2"
+              sx={{ fontSize: '0.78rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+            >
+              —
+            </Typography>
+          )
+        }
+
+        if (!row.hasMondayRecord) {
+          return (
+            <Typography
+              variant="body2"
+              sx={{ fontSize: '0.78rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+              title={content}
+            >
+              {content}
+            </Typography>
+          )
+        }
+
+        return (
+          <Button
+            size="small"
+            variant="text"
+            sx={{
+              minWidth: 0,
+              px: 0,
+              maxWidth: '100%',
+              textTransform: 'none',
+              justifyContent: 'flex-start',
+              fontWeight: 500,
+              fontSize: '0.78rem',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              color: 'text.primary',
+            }}
+            title={content}
+            onMouseEnter={() => prefetchJobDetails(row)}
+            onClick={() => {
+              onOpenJobDialog(row, 'details')
+            }}
+          >
+            {content}
+          </Button>
+        )
+      },
     },
     {
       field: 'shipTo',
@@ -968,23 +1042,31 @@ export function OrdersGrid({
     },
     {
       field: 'rowStatus',
-      headerName: 'Monday Status',
+      headerName: statusColumnHeader,
       minWidth: 170,
       sortable: false,
       renderCell: ({ row }) => {
-        const shippedDay = toIsoDay(row.shippedAt)
-        const refreshDay = toIsoDay(lastRefreshedAt)
-        const inferredFromRefresh = Boolean(
-          row.isShipped && shippedDay && refreshDay && shippedDay === refreshDay,
-        )
-        const inferredLabelDay = formatMonthDay(lastRefreshedAt)
+        const hasShippedDate = Boolean(row.shippedAt)
+        const missingShipDate = row.isShipped && !hasShippedDate
+        const inferredShippedDate = row.isShipped && row.shippedAtInferred === true
+        const isWarningShippedDate = missingShipDate || inferredShippedDate
+        const shippedDateLabel = hasShippedDate ? formatDate(row.shippedAt) : null
+
         const statusLabel = row.isShipped
-          ? inferredFromRefresh
-            ? `Shipped prior to ${inferredLabelDay}`
-            : `Shipped${row.shippedAt ? ` (${formatDate(row.shippedAt)})` : ''}`
+          ? hasShippedDate
+            ? shippedDateLabel
+            : 'No Ship Date'
           : row.rowStatus
-        const tooltipTitle = inferredFromRefresh
-          ? `Detected as shipped on ${inferredLabelDay}; actual ship date was earlier.`
+
+        const statusChipColor = row.isShipped
+          ? isWarningShippedDate ? 'warning' : 'success'
+          : 'default'
+        const statusChipVariant = row.isShipped ? 'filled' : 'outlined'
+
+        const tooltipTitle = row.isShipped && isWarningShippedDate
+          ? shippedDateLabel
+            ? `Ship Date is missing in Monday; fallback date is anchored to first shipped detection (${shippedDateLabel}).`
+            : 'Ship Date is missing in Monday.'
           : null
 
         return (
@@ -992,8 +1074,8 @@ export function OrdersGrid({
             <Chip
               size="small"
               label={statusLabel}
-              color={row.isShipped ? 'success' : 'default'}
-              variant={row.isShipped ? 'filled' : 'outlined'}
+              color={statusChipColor}
+              variant={statusChipVariant}
               onClick={(event) => {
                 if (!row.hasMondayRecord) {
                   return
@@ -1246,9 +1328,13 @@ export function OrdersGrid({
     },
     {
       field: 'paidInFull',
-      headerName: 'Paid In Full',
+      headerName: 'Paid',
       minWidth: 120,
-      sortable: false,
+      sortable: true,
+      sortComparator: (left, right) => comparePaidStatus(
+        left as boolean | null | undefined,
+        right as boolean | null | undefined,
+      ),
       renderCell: ({ row }) => {
         if (typeof row.paidInFull !== 'boolean') {
           return '—'
@@ -1265,13 +1351,13 @@ export function OrdersGrid({
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
   ], [
+    statusColumnHeader,
     lastRefreshedAt,
     shopDrawingHandle,
     cutListHandle,
     onOpenBolDocument,
     onOpenJobDialog,
     onOpenQuickBooksDialog,
-    onRequestOrderNumberEdit,
     onCopyOrderNumber,
     onMissingMondayLink,
     handleOpenStatusPopover,
@@ -1282,17 +1368,13 @@ export function OrdersGrid({
       { field: 'orderNumber', label: 'Order' },
       { field: 'orderName', label: 'Order Name' },
       { field: 'poNumber', label: 'PO Number' },
-      { field: 'description', label: 'Description' },
-      { field: 'notes', label: 'Notes' },
       { field: 'shopDrawingUrl', label: 'Drawings' },
-      { field: 'rowStatus', label: 'Monday Status' },
+      { field: 'cutListUrl', label: 'Cut List' },
+      { field: 'rowStatus', label: statusColumnHeader },
       { field: 'managerReadyPercent', label: 'Status History' },
       { field: 'leadTimeDays', label: 'Lead Time' },
       { field: 'orderDate', label: 'Order Date' },
-      { field: 'shipTo', label: 'Ship To' },
-      { field: 'shipNotes', label: 'Ship Notes' },
-      { field: 'bol', label: 'BOL' },
-      { field: 'cutListUrl', label: 'Cut List' },
+      { field: 'paidInFull', label: 'Paid' },
     ] as const
 
     const adminColumnsByField = new Map(
@@ -1315,7 +1397,7 @@ export function OrdersGrid({
     })
 
     return orderedColumns
-  }, [adminColumns])
+  }, [adminColumns, statusColumnHeader])
 
   const adminColumnGroupingModel = useMemo<GridColumnGroupingModel>(
     () => [
@@ -1326,17 +1408,12 @@ export function OrdersGrid({
           { field: 'orderNumber' },
           { field: 'orderName' },
           { field: 'poNumber' },
-          { field: 'description' },
-          { field: 'notes' },
           { field: 'shopDrawingUrl' },
+          { field: 'cutListUrl' },
           { field: 'rowStatus' },
           { field: 'managerReadyPercent' },
           { field: 'leadTimeDays' },
           { field: 'orderDate' },
-          { field: 'shipTo' },
-          { field: 'shipNotes' },
-          { field: 'bol' },
-          { field: 'cutListUrl' },
         ],
       },
       {
@@ -1366,7 +1443,19 @@ export function OrdersGrid({
     [],
   )
 
-  const columns = viewMode === 'admin' ? adminColumns : standardColumns
+  const visibleAdminColumns = useMemo(
+    () => adminColumns.filter((column) => {
+      const field = String(column.field)
+      return field !== 'shipTo'
+        && field !== 'shipNotes'
+        && field !== 'bol'
+        && field !== 'description'
+        && field !== 'notes'
+    }),
+    [adminColumns],
+  )
+
+  const columns = viewMode === 'admin' ? visibleAdminColumns : standardColumns
   const columnGroupingModel = viewMode === 'admin' ? adminColumnGroupingModel : undefined
   const isStandardView = viewMode === 'standard'
   const statusPopoverOpen = Boolean(statusPopoverAnchorEl && statusPopoverOrder)

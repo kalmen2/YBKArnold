@@ -5,11 +5,11 @@ import {
   Button,
   Chip,
   Divider,
-  FormControlLabel,
   InputAdornment,
   Paper,
   Stack,
-  Switch,
+  Tab,
+  Tabs,
   TextField,
   ToggleButton,
   ToggleButtonGroup,
@@ -17,15 +17,21 @@ import {
 } from '@mui/material'
 import { formatDateTime } from '../../lib/formatters'
 import type { OrdersViewMode } from './OrdersGrid'
+import type { OrdersListTab } from './useOrdersOverview'
 
 type OrdersToolbarProps = {
   totalRows: number
   lastRefreshedAt: string | null
+  activeTab: OrdersListTab
+  onActiveTabChange: (next: OrdersListTab) => void
+  tabCounts: {
+    orders: number
+    design: number
+    shipped: number
+  }
   viewMode: OrdersViewMode
   onViewModeChange: (next: OrdersViewMode) => void
   canUseAdminView: boolean
-  includeShipped: boolean
-  onIncludeShippedChange: (next: boolean) => void
   searchText: string
   onSearchTextChange: (next: string) => void
   isRefreshing: boolean
@@ -36,11 +42,12 @@ type OrdersToolbarProps = {
 export function OrdersToolbar({
   totalRows,
   lastRefreshedAt,
+  activeTab,
+  onActiveTabChange,
+  tabCounts,
   viewMode,
   onViewModeChange,
   canUseAdminView,
-  includeShipped,
-  onIncludeShippedChange,
   searchText,
   onSearchTextChange,
   isRefreshing,
@@ -57,6 +64,27 @@ export function OrdersToolbar({
       }}
     >
       <Stack spacing={1.5}>
+        <Tabs
+          value={activeTab}
+          onChange={(_event, nextTab: OrdersListTab) => {
+            onActiveTabChange(nextTab)
+          }}
+          variant="scrollable"
+          allowScrollButtonsMobile
+          sx={{
+            minHeight: 40,
+            '& .MuiTab-root': {
+              minHeight: 40,
+              textTransform: 'none',
+              fontWeight: 700,
+            },
+          }}
+        >
+          <Tab value="orders" label={`Orders (${tabCounts.orders})`} />
+          <Tab value="design" label={`Design (${tabCounts.design})`} />
+          <Tab value="shipped" label={`Shipped (${tabCounts.shipped})`} />
+        </Tabs>
+
         <Stack
           direction={{ xs: 'column', lg: 'row' }}
           spacing={1.5}
@@ -135,17 +163,6 @@ export function OrdersToolbar({
                 <ToggleButton value="admin">Admin View</ToggleButton>
               </ToggleButtonGroup>
             ) : null}
-            <FormControlLabel
-              control={(
-                <Switch
-                  checked={includeShipped}
-                  onChange={(event) => {
-                    onIncludeShippedChange(event.target.checked)
-                  }}
-                />
-              )}
-              label="Show shipped orders"
-            />
           </Stack>
         </Stack>
       </Stack>

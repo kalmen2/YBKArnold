@@ -4,12 +4,13 @@ import * as AppleAuthentication from 'expo-apple-authentication'
 import * as Crypto from 'expo-crypto'
 import * as Google from 'expo-auth-session/providers/google'
 import Constants from 'expo-constants'
+import { Ionicons } from '@expo/vector-icons'
 import { StatusBar } from 'expo-status-bar'
 import * as ImagePicker from 'expo-image-picker'
 import * as LocalAuthentication from 'expo-local-authentication'
 import * as Notifications from 'expo-notifications'
 import * as WebBrowser from 'expo-web-browser'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   AppState,
@@ -24,6 +25,7 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native'
+import { GestureHandlerRootView } from 'react-native-gesture-handler'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import {
   GoogleAuthProvider,
@@ -34,7 +36,7 @@ import {
   signOut,
   type User,
 } from 'firebase/auth'
-import { ORDER_TONES, SIDEBAR_ITEMS, TICKET_TONES } from './appConstants'
+import { ORDER_TONES, TICKET_TONES } from './appConstants'
 import type {
   AppLanguage,
   AppScreen,
@@ -48,6 +50,7 @@ import type {
   MobileTimesheetStage,
   MobileTimesheetWorker,
   OrderPhoto,
+  OrderJobDetailsSnapshot,
   SupportTicketsSnapshot,
   ZendeskTicketSummarySnapshot,
 } from './appTypes'
@@ -56,7 +59,6 @@ import {
   buildOrderBuckets,
   formatDateInput,
   formatDisplayDate,
-  formatSyncTimestamp,
   normalizeTicketStatus,
 } from './appUtils'
 import { API_BASE_URL, request, withBuildQuery } from './appApi'
@@ -73,6 +75,7 @@ import {
   SettingsOverviewSection,
   TimesheetSection,
 } from './appSections'
+import { WebView } from 'react-native-webview'
 
 WebBrowser.maybeCompleteAuthSession()
 
@@ -96,6 +99,17 @@ const GOOGLE_EXPO_IOS_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_EXPO_IOS_CLIENT
 const GOOGLE_EXPO_ANDROID_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_EXPO_ANDROID_CLIENT_ID ?? ''
 const GOOGLE_ANDROID_REDIRECT_URI = `${MOBILE_ANDROID_PACKAGE}:/oauthredirect`
 const ORDERS_PAGE_SIZE = 10
+const WEB_APP_BASE_URL = 'https://ybkarnold-b7ec0.web.app'
+const ADMIN_PORTAL_PAGES = [
+  { path: '/admin/users', labelEn: 'Users', labelEs: 'Usuarios' },
+  { path: '/admin/alerts', labelEn: 'Admin Alerts', labelEs: 'Alertas admin' },
+  { path: '/admin/issues', labelEn: 'Admin Issues', labelEs: 'Incidencias admin' },
+  { path: '/admin/logs', labelEn: 'Admin Logs', labelEs: 'Logs admin' },
+  { path: '/admin/sales-review', labelEn: 'Sales Review', labelEs: 'Revision de ventas' },
+  { path: '/admin/crm', labelEn: 'Admin CRM', labelEs: 'CRM admin' },
+  { path: '/admin/ai-config', labelEn: 'AI Config', labelEs: 'Config AI' },
+  { path: '/orders?view=admin', labelEn: 'Orders (Admin)', labelEs: 'Ordenes (Admin)' },
+] as const
 
 type AppUpdateStatusResponse = {
   url?: string | null
@@ -103,7 +117,8 @@ type AppUpdateStatusResponse = {
   version?: string | null
 }
 
-type SettingsMenuId = 'security' | 'language' | 'notifications' | 'updates' | 'account'
+type SettingsMenuId = 'security' | 'language' | 'notifications' | 'updates' | 'admin' | 'account'
+type BottomNavScreen = 'orders' | 'pictures' | 'timesheet' | 'manager' | 'alerts' | 'admin'
 
 function normalizeJobName(value: string) {
   return String(value ?? '')
@@ -172,6 +187,30 @@ function toTimestampMs(value: string | null | undefined) {
   return Number.isFinite(timestamp) ? timestamp : null
 }
 
+function parseBuildNumberLike(value: unknown) {
+  const normalized = String(value ?? '').trim()
+
+  if (!normalized) {
+    return null
+  }
+
+  const direct = Number(normalized)
+
+  if (Number.isFinite(direct)) {
+    return Math.floor(direct)
+  }
+
+  const digitGroups = normalized.match(/\d+/g)
+
+  if (!digitGroups || digitGroups.length === 0) {
+    return null
+  }
+
+  const trailingDigits = Number(digitGroups[digitGroups.length - 1])
+
+  return Number.isFinite(trailingDigits) ? trailingDigits : null
+}
+
 export default function App() {
   const { height: windowHeight } = useWindowDimensions()
   const isExpoGo = Constants.appOwnership === 'expo'
@@ -209,7 +248,7 @@ export default function App() {
   })
 
   const [activeScreen, setActiveScreen] = useState<AppScreen>('dashboard')
-  const [isSidebarOpen, setIsSidebarOpen] = useState(false)
+  const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false)
 
   const [isLoading, setIsLoading] = useState(false)
   const [isRefreshing, setIsRefreshing] = useState(false)
@@ -220,6 +259,11 @@ export default function App() {
   const [supportTicketsSnapshot, setSupportTicketsSnapshot] = useState<SupportTicketsSnapshot | null>(null)
 
   const [detailSelection, setDetailSelection] = useState<DetailSelection>(null)
+  const [dashboardMetricZoomOrderId, setDashboardMetricZoomOrderId] = useState<string | null>(null)
+  const dashboardMetricZoomTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [adminPortalRoutePath, setAdminPortalRoutePath] = useState<string | null>(null)
+  const [adminPortalCanGoBack, setAdminPortalCanGoBack] = useState(false)
+  const adminPortalWebViewRef = useRef<WebView | null>(null)
 
   const [selectedPictureOrderId, setSelectedPictureOrderId] = useState<string | null>(null)
   const [isPicturesModalOpen, setIsPicturesModalOpen] = useState(false)
@@ -227,6 +271,10 @@ export default function App() {
   const [ordersSearchQuery, setOrdersSearchQuery] = useState('')
   const [ordersPage, setOrdersPage] = useState(1)
   const [selectedOrderForDetails, setSelectedOrderForDetails] = useState<DashboardOrder | null>(null)
+  const [isOrderDetailsFromDashboardMetric, setIsOrderDetailsFromDashboardMetric] = useState(false)
+  const [selectedOrderDetailsView, setSelectedOrderDetailsView] = useState<'overview' | 'admin'>('overview')
+  const [isOrderDetailsLoading, setIsOrderDetailsLoading] = useState(false)
+  const [orderJobDetailsByOrderId, setOrderJobDetailsByOrderId] = useState<Record<string, OrderJobDetailsSnapshot>>({})
   const [ordersDetailMessage, setOrdersDetailMessage] = useState<string | null>(null)
   const [orderPhotosByOrderId, setOrderPhotosByOrderId] = useState<Record<string, OrderPhoto[]>>({})
   const [isLoadingOrderPhotos, setIsLoadingOrderPhotos] = useState(false)
@@ -266,12 +314,14 @@ export default function App() {
   const [isAlertsLoading, setIsAlertsLoading] = useState(false)
   const [alertsMessage, setAlertsMessage] = useState<string | null>(null)
   const [alertsUnreadCount, setAlertsUnreadCount] = useState(0)
+  const [showReadAlerts, setShowReadAlerts] = useState(false)
   const [registeredPushToken, setRegisteredPushToken] = useState<string | null>(null)
   const [isNotificationsEnabled, setIsNotificationsEnabled] = useState(true)
   const [updateMessage, setUpdateMessage] = useState<string | null>(null)
   const [isCheckingForUpdates, setIsCheckingForUpdates] = useState(false)
   const [isInstallingUpdate, setIsInstallingUpdate] = useState(false)
   const [resolvedUpdateUrl, setResolvedUpdateUrl] = useState('')
+  const [adminPortalMessage, setAdminPortalMessage] = useState<string | null>(null)
   const [activeSettingsMenuId, setActiveSettingsMenuId] = useState<SettingsMenuId | null>(null)
 
   const isSpanish = language === 'es'
@@ -285,25 +335,58 @@ export default function App() {
   )
   const isBiometricLocked = isBiometricEnabled && !hasBiometricSessionAuth
   const hasApprovedSessionAccess = Boolean(authProfile?.isApproved) && !isBiometricLocked
-  const hasManagerSheetAccess = Boolean(authProfile?.isAdmin || authProfile?.isManager)
-
-  const localizedScreenLabels = useMemo<Record<AppScreen, string>>(
-    () => ({
-      dashboard: t('Dashboard', 'Panel'),
-      orders: t('Orders', 'Ordenes'),
-      pictures: t('Pictures', 'Fotos'),
-      timesheet: t('Timesheet', 'Horas'),
-      manager: t('Manager Sheet', 'Hoja gerente'),
-      alerts: t('Notifications', 'Notificaciones'),
-      settings: t('Settings', 'Configuracion'),
-    }),
-    [t],
+  const isAdminUser = Boolean(authProfile?.isAdmin)
+  const hasManagerSheetAccess = !isAdminUser && Boolean(authProfile?.isManager)
+  const hasAdminOrderDetailsAccess = Boolean(authProfile?.isAdmin)
+  const profileDisplayName = useMemo(
+    () => String(firebaseUser?.displayName ?? '').trim()
+      || String(firebaseUser?.email ?? '').trim()
+      || 'Arnold user',
+    [firebaseUser?.displayName, firebaseUser?.email],
+  )
+  const profileEmail = useMemo(
+    () => String(firebaseUser?.email ?? '').trim(),
+    [firebaseUser?.email],
+  )
+  const profilePhotoUrl = useMemo(
+    () => String(firebaseUser?.photoURL ?? '').trim(),
+    [firebaseUser?.photoURL],
+  )
+  const profileInitial = useMemo(
+    () => profileDisplayName.charAt(0).toUpperCase() || 'A',
+    [profileDisplayName],
   )
 
-  const sidebarItems = useMemo(
-    () => SIDEBAR_ITEMS.filter((item) => item.id !== 'manager' || hasManagerSheetAccess),
-    [hasManagerSheetAccess],
-  )
+  const bottomNavItems = useMemo<Array<{
+    id: BottomNavScreen
+    label: string
+    icon: keyof typeof Ionicons.glyphMap
+  }>>(() => {
+    if (isAdminUser) {
+      return [
+        { id: 'orders', label: t('Orders', 'Ordenes'), icon: 'receipt-outline' },
+        { id: 'pictures', label: t('Pictures', 'Fotos'), icon: 'images-outline' },
+        { id: 'alerts', label: t('Notifications', 'Notificaciones'), icon: 'notifications-outline' },
+        { id: 'admin', label: t('Admin', 'Admin'), icon: 'settings-outline' },
+      ]
+    }
+
+    if (hasManagerSheetAccess) {
+      return [
+        { id: 'orders', label: t('Orders', 'Ordenes'), icon: 'receipt-outline' },
+        { id: 'pictures', label: t('Pictures', 'Fotos'), icon: 'images-outline' },
+        { id: 'manager', label: t('Manager Sheet', 'Hoja gerente'), icon: 'clipboard-outline' },
+        { id: 'alerts', label: t('Notifications', 'Notificaciones'), icon: 'notifications-outline' },
+      ]
+    }
+
+    return [
+      { id: 'orders', label: t('Orders', 'Ordenes'), icon: 'receipt-outline' },
+      { id: 'pictures', label: t('Pictures', 'Fotos'), icon: 'images-outline' },
+      { id: 'timesheet', label: t('Time Sheet', 'Horas'), icon: 'time-outline' },
+      { id: 'alerts', label: t('Notifications', 'Notificaciones'), icon: 'notifications-outline' },
+    ]
+  }, [hasManagerSheetAccess, isAdminUser, t])
 
   const dashboardUnreadSummary = useMemo(() => {
     if (alertsUnreadCount <= 0) {
@@ -321,10 +404,21 @@ export default function App() {
       : `You have ${alertsUnreadCount} unread messages.`
   }, [alertsUnreadCount, isSpanish])
 
-  const installedNativeVersion = useMemo(
-    () => String(Constants.nativeAppVersion ?? Constants.expoConfig?.version ?? 'unknown').trim() || 'unknown',
-    [],
-  )
+  const installedNativeVersion = useMemo(() => {
+    const nativeVersion = String(Constants.nativeAppVersion ?? '').trim()
+
+    if (nativeVersion) {
+      return nativeVersion
+    }
+
+    if (!isExpoGo) {
+      return 'unknown'
+    }
+
+    const fallbackVersion = String(Constants.expoConfig?.version ?? '').trim()
+
+    return fallbackVersion || 'unknown'
+  }, [isExpoGo])
 
   const installedNativeBuildLabel = useMemo(() => {
     const nativeBuild = String(Constants.nativeBuildVersion ?? '').trim()
@@ -333,18 +427,20 @@ export default function App() {
       return nativeBuild
     }
 
+    if (!isExpoGo) {
+      return ''
+    }
+
     const fallbackBuild =
       Platform.OS === 'android'
         ? Constants.expoConfig?.android?.versionCode
         : Constants.expoConfig?.ios?.buildNumber
 
     return String(fallbackBuild ?? '').trim()
-  }, [])
+  }, [isExpoGo])
 
   const installedNativeBuildNumber = useMemo(() => {
-    const parsed = Number(installedNativeBuildLabel)
-
-    return Number.isFinite(parsed) ? parsed : null
+    return parseBuildNumberLike(installedNativeBuildLabel)
   }, [installedNativeBuildLabel])
 
   const appVersionLabel = useMemo(() => {
@@ -354,38 +450,43 @@ export default function App() {
   }, [installedNativeBuildLabel, installedNativeVersion])
 
   const settingsMenuItems = useMemo<Array<{ id: SettingsMenuId; title: string; subtitle: string; status: string }>>(
-    () => [
-      {
-        id: 'security',
-        title: t('Security', 'Seguridad'),
-        subtitle: t('Biometric sign-in controls.', 'Controles de inicio biometrico.'),
-        status: isBiometricEnabled ? t('Enabled', 'Activada') : t('Disabled', 'Desactivada'),
-      },
-      {
-        id: 'language',
-        title: t('Language', 'Idioma'),
-        subtitle: t('Choose your app language.', 'Elige el idioma de la aplicacion.'),
-        status: language === 'es' ? 'Espanol' : 'English',
-      },
-      {
-        id: 'notifications',
-        title: t('Notifications', 'Notificaciones'),
-        subtitle: t('Enable, disable, or manage notification access.', 'Activa, desactiva o administra acceso de notificaciones.'),
-        status: isNotificationsEnabled ? t('On', 'Activas') : t('Off', 'Desactivadas'),
-      },
-      {
-        id: 'updates',
-        title: t('App Updates', 'Actualizaciones'),
-        subtitle: t('Check and install the latest build.', 'Busca e instala la compilacion mas reciente.'),
-        status: appVersionLabel,
-      },
-      {
+    () => {
+      const items: Array<{ id: SettingsMenuId; title: string; subtitle: string; status: string }> = [
+        {
+          id: 'security',
+          title: t('Security', 'Seguridad'),
+          subtitle: t('Biometric sign-in controls.', 'Controles de inicio biometrico.'),
+          status: isBiometricEnabled ? t('Enabled', 'Activada') : t('Disabled', 'Desactivada'),
+        },
+        {
+          id: 'language',
+          title: t('Language', 'Idioma'),
+          subtitle: t('Choose your app language.', 'Elige el idioma de la aplicacion.'),
+          status: language === 'es' ? 'Espanol' : 'English',
+        },
+        {
+          id: 'notifications',
+          title: t('Notifications', 'Notificaciones'),
+          subtitle: t('Enable, disable, or manage notification access.', 'Activa, desactiva o administra acceso de notificaciones.'),
+          status: isNotificationsEnabled ? t('On', 'Activas') : t('Off', 'Desactivadas'),
+        },
+        {
+          id: 'updates',
+          title: t('App Updates', 'Actualizaciones'),
+          subtitle: t('Check and install the latest build.', 'Busca e instala la compilacion mas reciente.'),
+          status: appVersionLabel,
+        },
+      ]
+
+      items.push({
         id: 'account',
         title: t('Account', 'Cuenta'),
         subtitle: t('Sign-out and session actions.', 'Acciones de sesion y cierre de sesion.'),
         status: t('Open', 'Abrir'),
-      },
-    ],
+      })
+
+      return items
+    },
     [appVersionLabel, isBiometricEnabled, isNotificationsEnabled, language, t],
   )
 
@@ -442,7 +543,40 @@ export default function App() {
 
   const closeSettingsMenu = useCallback(() => {
     setActiveSettingsMenuId(null)
+    setAdminPortalMessage(null)
   }, [])
+
+  const closeAdminPortalWebView = useCallback(() => {
+    setAdminPortalRoutePath(null)
+    setAdminPortalCanGoBack(false)
+  }, [])
+
+  const handleAdminPortalWebBackPress = useCallback(() => {
+    if (adminPortalCanGoBack) {
+      adminPortalWebViewRef.current?.goBack()
+      return
+    }
+
+    closeAdminPortalWebView()
+  }, [adminPortalCanGoBack, closeAdminPortalWebView])
+
+  const handleOpenAdminPortalPage = useCallback((
+    routePath: string,
+    englishLabel: string,
+    spanishLabel: string,
+  ) => {
+    const normalizedPath = routePath.startsWith('/') ? routePath : `/${routePath}`
+
+    if (!normalizedPath || normalizedPath === '/') {
+      setAdminPortalMessage(t(`Could not open ${englishLabel}.`, `No se pudo abrir ${spanishLabel}.`))
+      return
+    }
+
+    setAdminPortalMessage(null)
+    setActiveSettingsMenuId(null)
+    setAdminPortalCanGoBack(false)
+    setAdminPortalRoutePath(normalizedPath)
+  }, [t])
 
   const requestWithSession = useCallback(
     async <T,>(path: string, refreshRequested = false, init: RequestInit = {}) => {
@@ -735,10 +869,10 @@ export default function App() {
         `/api/app-updates/status?platform=${updatePlatform}`,
       )
       const backendUpdateUrl = String(payload?.url ?? '').trim()
-      const latestBuildNumber = Number(payload?.build)
-      const candidateUpdateUrl = withBuildQuery(backendUpdateUrl, latestBuildNumber)
+      const latestBuildNumber = parseBuildNumberLike(payload?.build)
+      const candidateUpdateUrl = withBuildQuery(backendUpdateUrl, latestBuildNumber ?? Number.NaN)
       const latestVersion = String(payload?.version ?? '').trim()
-      const hasComparableBuilds = Number.isFinite(latestBuildNumber) && installedNativeBuildNumber !== null
+      const hasComparableBuilds = latestBuildNumber !== null && installedNativeBuildNumber !== null
       const hasNewNativeBuild = hasComparableBuilds
         ? latestBuildNumber > installedNativeBuildNumber
         : Boolean(candidateUpdateUrl)
@@ -766,7 +900,7 @@ export default function App() {
       }
 
       setResolvedUpdateUrl(candidateUpdateUrl)
-      if (latestVersion && Number.isFinite(latestBuildNumber)) {
+      if (latestVersion && latestBuildNumber !== null) {
         setUpdateMessage(
           t(
             `Native update found (v${latestVersion} build ${latestBuildNumber}). Tap Install Update.`,
@@ -847,7 +981,7 @@ export default function App() {
     closeSettingsMenu()
     setDetailSelection(null)
     closePicturesModal()
-    setIsSidebarOpen(false)
+    setIsAccountMenuOpen(false)
     lockBiometricSession()
     setIsDisableBiometricConfirmOpen(false)
     setLastAutoBiometricAttemptAt(0)
@@ -1167,7 +1301,11 @@ export default function App() {
       setManagerMessage(null)
       setAlerts([])
       setAlertsUnreadCount(0)
+      setShowReadAlerts(false)
       setAlertsMessage(null)
+      setOrderJobDetailsByOrderId({})
+      setSelectedOrderDetailsView('overview')
+      setIsOrderDetailsLoading(false)
       lockBiometricSession()
       setLastAutoBiometricAttemptAt(0)
       return
@@ -1179,16 +1317,33 @@ export default function App() {
   }, [closeSettingsMenu, firebaseUser, lockBiometricSession, syncAuthProfile])
 
   useEffect(() => {
+    if (activeScreen === 'timesheet' && hasManagerSheetAccess) {
+      setActiveScreen('manager')
+      return
+    }
+
     if (activeScreen === 'manager' && !hasManagerSheetAccess) {
       setActiveScreen('dashboard')
     }
   }, [activeScreen, hasManagerSheetAccess])
 
   useEffect(() => {
+    if (activeScreen === 'admin' && !isAdminUser) {
+      setActiveScreen('dashboard')
+    }
+  }, [activeScreen, isAdminUser])
+
+  useEffect(() => {
     if (activeScreen !== 'manager') {
       setIsManagerDatePickerOpen(false)
     }
   }, [activeScreen])
+
+  useEffect(() => {
+    if (activeSettingsMenuId !== 'admin') {
+      setAdminPortalMessage(null)
+    }
+  }, [activeSettingsMenuId])
 
   useEffect(() => {
     maybeAutoPromptBiometric()
@@ -1378,7 +1533,7 @@ export default function App() {
         workers?: MobileTimesheetWorker[]
         entries?: MobileTimesheetEntry[]
         orderProgress?: MobileManagerOrderProgress[]
-      }>('/api/timesheet/state')
+      }>('/api/timesheet/state?from=2020-01-01')
 
       setManagerWorkers(Array.isArray(payload.workers) ? payload.workers : [])
       setManagerEntries(Array.isArray(payload.entries) ? payload.entries : [])
@@ -1503,6 +1658,45 @@ export default function App() {
           error,
           'Could not mark this notification as read.',
           'No se pudo marcar esta notificacion como leida.',
+        ),
+      )
+    }
+  }, [getErrorMessage, requestWithSession])
+
+  const markAlertAsUnread = useCallback(async (alertItem: MobileAlert) => {
+    const alertId = String(alertItem?.id ?? '').trim()
+
+    if (!alertId || !alertItem.isRead) {
+      return
+    }
+
+    try {
+      await requestWithSession(
+        `/api/alerts/${encodeURIComponent(alertId)}/unread`,
+        false,
+        {
+          method: 'POST',
+        },
+      )
+
+      setAlerts((previous) =>
+        previous.map((entry) =>
+          entry.id === alertId
+            ? {
+                ...entry,
+                isRead: false,
+                readAt: null,
+              }
+            : entry,
+        ),
+      )
+      setAlertsUnreadCount((current) => Math.max(0, current + 1))
+    } catch (error) {
+      setAlertsMessage(
+        getErrorMessage(
+          error,
+          'Could not mark this notification as unread.',
+          'No se pudo marcar esta notificacion como no leida.',
         ),
       )
     }
@@ -1848,8 +2042,21 @@ export default function App() {
       return
     }
 
+    if (activeScreen === 'admin') {
+      setAdminPortalMessage(null)
+      return
+    }
+
     void loadDashboard(true)
-  }, [activeScreen, handleCheckForUpdates, loadAlerts, loadDashboard, loadManagerSheet, loadTimesheet, syncAuthProfile])
+  }, [
+    activeScreen,
+    handleCheckForUpdates,
+    loadAlerts,
+    loadDashboard,
+    loadManagerSheet,
+    loadTimesheet,
+    syncAuthProfile,
+  ])
 
   useEffect(() => {
     const firstOrderId = mondaySnapshot?.orders?.[0]?.id ?? null
@@ -2021,7 +2228,18 @@ export default function App() {
       return currentTime > latestTime ? current : latest
     })
 
-    return formatSyncTimestamp(newestRaw, locale)
+    const parsedNewest = new Date(newestRaw)
+
+    if (Number.isNaN(parsedNewest.getTime())) {
+      return newestRaw
+    }
+
+    return new Intl.DateTimeFormat(locale, {
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    }).format(parsedNewest)
   }, [locale, mondaySnapshot, supportTicketsSnapshot, t, zendeskSnapshot])
 
   const detailOrders = useMemo(() => {
@@ -2085,6 +2303,48 @@ export default function App() {
       }
     })
   }, [detailSelection, supportTicketsSnapshot])
+
+  const clearDashboardMetricZoomTimeout = useCallback(() => {
+    if (dashboardMetricZoomTimeoutRef.current) {
+      clearTimeout(dashboardMetricZoomTimeoutRef.current)
+      dashboardMetricZoomTimeoutRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      clearDashboardMetricZoomTimeout()
+    }
+  }, [clearDashboardMetricZoomTimeout])
+
+  useEffect(() => {
+    if (!detailSelection || detailSelection.type !== 'order') {
+      clearDashboardMetricZoomTimeout()
+      setDashboardMetricZoomOrderId(null)
+    }
+  }, [clearDashboardMetricZoomTimeout, detailSelection])
+
+  const handleToggleDashboardMetricOrderZoom = useCallback((orderId: string) => {
+    clearDashboardMetricZoomTimeout()
+    setDashboardMetricZoomOrderId((current) => (current === orderId ? null : orderId))
+  }, [clearDashboardMetricZoomTimeout])
+
+  const handleOpenDashboardOrderFromMetrics = useCallback((order: DashboardOrder) => {
+    if (!String(order.id ?? '').trim()) {
+      return
+    }
+
+    clearDashboardMetricZoomTimeout()
+    setDetailSelection(null)
+    setActiveScreen('orders')
+    setOrdersSearchQuery('')
+    setOrdersPage(1)
+    setSelectedOrderForDetails(order)
+    setSelectedOrderDetailsView('overview')
+    setOrdersDetailMessage(null)
+    setIsOrderDetailsFromDashboardMetric(true)
+    setDashboardMetricZoomOrderId(null)
+  }, [clearDashboardMetricZoomTimeout])
 
   const allOrdersForPictures = useMemo(() => mondaySnapshot?.orders ?? [], [mondaySnapshot])
 
@@ -2428,6 +2688,80 @@ export default function App() {
     return map
   }, [managerDate, managerProgressByDateJobKey, managerRows])
 
+  const allTimeEntryTotalsByOrderId = useMemo(() => {
+    const map = new Map<string, {
+      workerIds: Set<string>
+      totalHours: number
+      updatedAt: string | null
+      timestamp: number
+    }>()
+
+    managerEntries.forEach((entry) => {
+      const jobName = String(entry.jobName ?? '').trim()
+
+      if (!jobName) {
+        return
+      }
+
+      const normalizedJobName = normalizeJobName(jobName)
+      const jobDigits = extractDigits(jobName)
+      const matchedOrder =
+        mondayOrderLookup.byNormalizedKey.get(normalizedJobName)
+        || (jobDigits ? mondayOrderLookup.byDigits.get(jobDigits) : null)
+        || null
+      const orderId = String(matchedOrder?.id ?? '').trim()
+
+      if (!orderId) {
+        return
+      }
+
+      const currentTotals = map.get(orderId) ?? {
+        workerIds: new Set<string>(),
+        totalHours: 0,
+        updatedAt: null,
+        timestamp: 0,
+      }
+      const workerId = String(entry.workerId ?? '').trim()
+
+      if (workerId) {
+        currentTotals.workerIds.add(workerId)
+      }
+
+      const entryHours = Number(entry.hours)
+
+      if (Number.isFinite(entryHours)) {
+        currentTotals.totalHours += entryHours
+      }
+
+      const normalizedDate = normalizeIsoDate(String(entry.date ?? '').trim())
+      const entryDate = normalizedDate ?? (String(entry.date ?? '').trim() || null)
+      const entryTimestamp = toTimestampMs(entryDate) ?? 0
+
+      if (entryTimestamp >= currentTotals.timestamp) {
+        currentTotals.timestamp = entryTimestamp
+        currentTotals.updatedAt = entryDate
+      }
+
+      map.set(orderId, currentTotals)
+    })
+
+    const totalsByOrderId = new Map<string, {
+      workerCount: number
+      totalHours: number
+      updatedAt: string | null
+    }>()
+
+    map.forEach((value, orderId) => {
+      totalsByOrderId.set(orderId, {
+        workerCount: value.workerIds.size,
+        totalHours: value.totalHours,
+        updatedAt: value.updatedAt,
+      })
+    })
+
+    return totalsByOrderId
+  }, [managerEntries, mondayOrderLookup.byDigits, mondayOrderLookup.byNormalizedKey])
+
   const orderManagerInsightsByOrderId = useMemo(() => {
     const insightsByOrderId: Record<string, {
       readyPercent: number | null
@@ -2445,17 +2779,254 @@ export default function App() {
 
       const sameDayRow = managerRowByOrderId.get(orderId)
       const latestProgress = latestManagerProgressByOrderId.get(orderId)
+      const allTimeEntryTotals = allTimeEntryTotalsByOrderId.get(orderId)
 
       insightsByOrderId[orderId] = {
         readyPercent: sameDayRow?.savedReadyPercent ?? latestProgress?.readyPercent ?? null,
-        workerCount: sameDayRow?.workerCount ?? 0,
-        totalHours: sameDayRow?.totalHours ?? 0,
-        updatedAt: sameDayRow?.updatedAt ?? latestProgress?.updatedAt ?? null,
+        workerCount: allTimeEntryTotals?.workerCount ?? sameDayRow?.workerCount ?? 0,
+        totalHours: allTimeEntryTotals?.totalHours ?? sameDayRow?.totalHours ?? 0,
+        updatedAt: allTimeEntryTotals?.updatedAt ?? sameDayRow?.updatedAt ?? latestProgress?.updatedAt ?? null,
       }
     })
 
     return insightsByOrderId
-  }, [allOrdersForPictures, latestManagerProgressByOrderId, managerRowByOrderId])
+  }, [allOrdersForPictures, allTimeEntryTotalsByOrderId, latestManagerProgressByOrderId, managerRowByOrderId])
+
+  const selectedOrderIdForDetails = useMemo(
+    () => String(selectedOrderForDetails?.id ?? '').trim(),
+    [selectedOrderForDetails?.id],
+  )
+
+  const selectedOrderJobDetails = useMemo(() => {
+    if (!selectedOrderIdForDetails) {
+      return null
+    }
+
+    return orderJobDetailsByOrderId[selectedOrderIdForDetails] ?? null
+  }, [orderJobDetailsByOrderId, selectedOrderIdForDetails])
+
+  const selectedOrderOverviewDetails = useMemo(() => {
+    const detailsOrder = selectedOrderJobDetails?.order ?? null
+    const fallbackOrder = selectedOrderForDetails
+    const orderNumber = String(
+      detailsOrder?.orderNumber
+      ?? detailsOrder?.jobNumber
+      ?? fallbackOrder?.id
+      ?? '',
+    ).trim() || null
+    const orderName = String(detailsOrder?.orderName ?? fallbackOrder?.name ?? '').trim() || null
+    const poNumber = String(detailsOrder?.poNumber ?? '').trim() || null
+    const mondayStatus = String(detailsOrder?.mondayStatus ?? fallbackOrder?.statusLabel ?? '').trim() || null
+    const leadTimeRaw = Number(detailsOrder?.leadTimeDays ?? fallbackOrder?.leadTimeDays)
+    const leadTimeDays = Number.isFinite(leadTimeRaw) ? leadTimeRaw : null
+    const orderDate = String(detailsOrder?.orderDate ?? fallbackOrder?.orderDate ?? '').trim() || null
+    const dueDate = String(
+      detailsOrder?.dueDate
+      ?? fallbackOrder?.effectiveDueDate
+      ?? fallbackOrder?.dueDate
+      ?? '',
+    ).trim() || null
+    const shippedAt = String(detailsOrder?.shippedAt ?? fallbackOrder?.shippedAt ?? '').trim() || null
+    const paidInFull =
+      typeof detailsOrder?.paidInFull === 'boolean'
+        ? detailsOrder.paidInFull
+        : typeof fallbackOrder?.paidInFull === 'boolean'
+          ? fallbackOrder.paidInFull
+          : null
+    const totalHoursRaw = Number(detailsOrder?.totalHours)
+    const summaryHoursRaw = Number(selectedOrderJobDetails?.summary?.totalHours)
+    const totalHoursWorked = Number.isFinite(totalHoursRaw)
+      ? totalHoursRaw
+      : Number.isFinite(summaryHoursRaw)
+        ? summaryHoursRaw
+        : null
+    const totalLaborCostRaw = Number(detailsOrder?.totalLaborCost ?? selectedOrderJobDetails?.summary?.totalLaborCost)
+    const totalLaborCost = Number.isFinite(totalLaborCostRaw) ? totalLaborCostRaw : null
+    const amountOwedRaw = Number(detailsOrder?.amountOwed ?? fallbackOrder?.amountOwed)
+    const amountOwed = Number.isFinite(amountOwedRaw) ? amountOwedRaw : null
+    const poAmountRaw = Number(detailsOrder?.poAmount ?? fallbackOrder?.poAmount)
+    const poAmount = Number.isFinite(poAmountRaw) ? poAmountRaw : null
+    const billedAmountRaw = Number(detailsOrder?.billedAmount)
+    const billedAmount = Number.isFinite(billedAmountRaw) ? billedAmountRaw : null
+    const invoiceAmountRaw = Number(detailsOrder?.invoiceAmount)
+    const invoiceAmount = Number.isFinite(invoiceAmountRaw) ? invoiceAmountRaw : null
+    const billBalanceAmountRaw = Number(detailsOrder?.billBalanceAmount)
+    const billBalanceAmount = Number.isFinite(billBalanceAmountRaw) ? billBalanceAmountRaw : null
+    const progressPercentRaw = Number(detailsOrder?.progressPercent)
+    const progressPercent = Number.isFinite(progressPercentRaw) ? progressPercentRaw : null
+    const managerReadyPercentRaw = Number(
+      detailsOrder?.managerReadyPercent
+      ?? selectedOrderJobDetails?.job?.latestManagerReadyPercent,
+    )
+    const managerReadyPercent = Number.isFinite(managerReadyPercentRaw) ? managerReadyPercentRaw : null
+    const quickBooksProjectIds = Array.isArray(detailsOrder?.quickBooksProjectIds)
+      ? detailsOrder.quickBooksProjectIds
+        .map((value) => String(value ?? '').trim())
+        .filter(Boolean)
+      : []
+    const quickBooksProjectNames = Array.isArray(detailsOrder?.quickBooksProjectNames)
+      ? detailsOrder.quickBooksProjectNames
+        .map((value) => String(value ?? '').trim())
+        .filter(Boolean)
+      : []
+    const statusHistory = Array.isArray(detailsOrder?.statusHistory) && detailsOrder.statusHistory.length > 0
+      ? detailsOrder.statusHistory
+      : Array.isArray(selectedOrderJobDetails?.managerHistory)
+        ? selectedOrderJobDetails.managerHistory
+        : []
+
+    return {
+      orderNumber,
+      orderName,
+      poNumber,
+      mondayStatus,
+      leadTimeDays,
+      orderDate,
+      dueDate,
+      shippedAt,
+      paidInFull,
+      totalHoursWorked,
+      totalLaborCost,
+      shipTo: String(detailsOrder?.shipTo ?? '').trim() || null,
+      shipNotes: String(detailsOrder?.shipNotes ?? '').trim() || null,
+      invoiceNumber: String(detailsOrder?.invoiceNumber ?? fallbackOrder?.invoiceNumber ?? '').trim() || null,
+      amountOwed,
+      poAmount,
+      billedAmount,
+      invoiceAmount,
+      billBalanceAmount,
+      notes: String(detailsOrder?.notes ?? '').trim() || null,
+      description: String(detailsOrder?.description ?? '').trim() || null,
+      bolCachedUrl: String(detailsOrder?.bolCachedUrl ?? '').trim() || null,
+      bolUrl: String(detailsOrder?.bolUrl ?? detailsOrder?.bol ?? '').trim() || null,
+      drawingCachedUrl: String(detailsOrder?.shopDrawingCachedUrl ?? '').trim() || null,
+      drawingUrl: String(detailsOrder?.shopDrawingUrl ?? fallbackOrder?.shopDrawingCachedUrl ?? fallbackOrder?.shopDrawingUrl ?? '').trim() || null,
+      cutListCachedUrl: String(detailsOrder?.cutListCachedUrl ?? '').trim() || null,
+      cutListUrl: String(detailsOrder?.cutListUrl ?? '').trim() || null,
+      rowStatus: String(detailsOrder?.rowStatus ?? '').trim() || null,
+      source: String(detailsOrder?.source ?? '').trim() || null,
+      progressPercent,
+      managerReadyPercent,
+      managerReadyDate: String(
+        detailsOrder?.managerReadyDate
+        ?? selectedOrderJobDetails?.job?.latestManagerReadyDate
+        ?? '',
+      ).trim() || null,
+      managerReadyUpdatedAt: String(
+        detailsOrder?.managerReadyUpdatedAt
+        ?? selectedOrderJobDetails?.job?.latestManagerReadyUpdatedAt
+        ?? '',
+      ).trim() || null,
+      mondayBoardId: String(
+        detailsOrder?.mondayBoardId
+        ?? selectedOrderJobDetails?.job?.mondayBoardId
+        ?? '',
+      ).trim() || null,
+      mondayBoardName: String(
+        detailsOrder?.mondayBoardName
+        ?? selectedOrderJobDetails?.job?.mondayBoardName
+        ?? '',
+      ).trim() || null,
+      mondayItemId: String(
+        detailsOrder?.mondayItemId
+        ?? selectedOrderJobDetails?.job?.mondayItemId
+        ?? fallbackOrder?.id
+        ?? '',
+      ).trim() || null,
+      mondayItemUrl: String(
+        detailsOrder?.mondayItemUrl
+        ?? selectedOrderJobDetails?.job?.mondayItemUrl
+        ?? fallbackOrder?.itemUrl
+        ?? '',
+      ).trim() || null,
+      mondayUpdatedAt: String(
+        detailsOrder?.mondayUpdatedAt
+        ?? selectedOrderJobDetails?.job?.mondayUpdatedAt
+        ?? '',
+      ).trim() || null,
+      hasMondayRecord:
+        typeof detailsOrder?.hasMondayRecord === 'boolean'
+          ? detailsOrder.hasMondayRecord
+          : null,
+      hasQuickBooksRecord:
+        typeof detailsOrder?.hasQuickBooksRecord === 'boolean'
+          ? detailsOrder.hasQuickBooksRecord
+          : null,
+      inDesign:
+        typeof detailsOrder?.inDesign === 'boolean'
+          ? detailsOrder.inDesign
+          : null,
+      isShipped:
+        typeof detailsOrder?.isShipped === 'boolean'
+          ? detailsOrder.isShipped
+          : Boolean(fallbackOrder?.movedToShippedAt || fallbackOrder?.shippedAt),
+      shippedAtInferred:
+        typeof detailsOrder?.shippedAtInferred === 'boolean'
+          ? detailsOrder.shippedAtInferred
+          : null,
+      quickBooksProjectId: String(detailsOrder?.quickBooksProjectId ?? '').trim() || null,
+      quickBooksProjectName: String(detailsOrder?.quickBooksProjectName ?? '').trim() || null,
+      quickBooksProjectIds,
+      quickBooksProjectNames,
+      hazardReason: String(detailsOrder?.hazardReason ?? '').trim() || null,
+      statusHistory,
+    }
+  }, [selectedOrderForDetails, selectedOrderJobDetails])
+
+  useEffect(() => {
+    if (!selectedOrderIdForDetails) {
+      setIsOrderDetailsLoading(false)
+      return
+    }
+
+    if (orderJobDetailsByOrderId[selectedOrderIdForDetails]) {
+      setIsOrderDetailsLoading(false)
+      return
+    }
+
+    let isCancelled = false
+
+    setIsOrderDetailsLoading(true)
+
+    void requestWithSession<OrderJobDetailsSnapshot>(
+      `/api/orders/job-details?mondayItemId=${encodeURIComponent(selectedOrderIdForDetails)}`,
+      false,
+    )
+      .then((payload) => {
+        if (isCancelled) {
+          return
+        }
+
+        setOrderJobDetailsByOrderId((previous) => ({
+          ...previous,
+          [selectedOrderIdForDetails]: payload,
+        }))
+      })
+      .catch((error) => {
+        if (isCancelled) {
+          return
+        }
+
+        setOrdersDetailMessage(
+          getErrorMessage(
+            error,
+            'Could not load admin order details.',
+            'No se pudieron cargar los detalles admin de la orden.',
+          ),
+        )
+      })
+      .finally(() => {
+        if (isCancelled) {
+          return
+        }
+
+        setIsOrderDetailsLoading(false)
+      })
+
+    return () => {
+      isCancelled = true
+    }
+  }, [getErrorMessage, orderJobDetailsByOrderId, requestWithSession, selectedOrderIdForDetails])
 
   const selectedTimesheetDate = useMemo(() => {
     const parsed = new Date(`${timesheetDate.trim()}T12:00:00`)
@@ -2569,11 +3140,57 @@ export default function App() {
     }
   }, [getErrorMessage, t])
 
-  const handleOpenOrderShopDrawing = useCallback(async (order: DashboardOrder) => {
-    const cachedPreviewUrl = String(order.shopDrawingCachedUrl ?? '').trim()
-    const orderId = String(order.id ?? '').trim()
+  const closeOrderDetails = useCallback(() => {
+    setSelectedOrderForDetails(null)
+    setSelectedOrderDetailsView('overview')
+    setOrdersDetailMessage(null)
 
-    if (!cachedPreviewUrl && !orderId) {
+    if (isOrderDetailsFromDashboardMetric) {
+      setOrdersSearchQuery('')
+      setOrdersPage(1)
+      setIsOrderDetailsFromDashboardMetric(false)
+    }
+  }, [isOrderDetailsFromDashboardMetric])
+
+  const handleOpenOrderDocumentUrl = useCallback(async (
+    rawUrl: string | null | undefined,
+    missingMessageEnglish: string,
+    missingMessageSpanish: string,
+    errorMessageEnglish: string,
+    errorMessageSpanish: string,
+  ) => {
+    const targetUrl = String(rawUrl ?? '').trim()
+
+    if (!targetUrl) {
+      setOrdersDetailMessage(t(missingMessageEnglish, missingMessageSpanish))
+      return
+    }
+
+    setOrdersDetailMessage(null)
+
+    try {
+      await WebBrowser.openBrowserAsync(targetUrl)
+    } catch (error) {
+      setOrdersDetailMessage(
+        getErrorMessage(
+          error,
+          errorMessageEnglish,
+          errorMessageSpanish,
+        ),
+      )
+    }
+  }, [getErrorMessage, t])
+
+  const handleOpenOrderShopDrawing = useCallback(async (
+    order: DashboardOrder,
+    detailsSnapshot: OrderJobDetailsSnapshot | null,
+  ) => {
+    const detailsOrder = detailsSnapshot?.order ?? null
+    const cachedPreviewUrl = String(detailsOrder?.shopDrawingCachedUrl ?? order.shopDrawingCachedUrl ?? '').trim()
+    const sourcePreviewUrl = String(detailsOrder?.shopDrawingUrl ?? order.shopDrawingUrl ?? '').trim()
+    const orderId = String(detailsOrder?.mondayItemId ?? order.id ?? '').trim()
+
+    if (!cachedPreviewUrl && !sourcePreviewUrl && !orderId) {
       setOrdersDetailMessage(
         t(
           'This order is not linked to Monday yet.',
@@ -2588,6 +3205,11 @@ export default function App() {
     try {
       if (cachedPreviewUrl) {
         await WebBrowser.openBrowserAsync(cachedPreviewUrl)
+        return
+      }
+
+      if (sourcePreviewUrl) {
+        await WebBrowser.openBrowserAsync(sourcePreviewUrl)
         return
       }
 
@@ -2608,6 +3230,57 @@ export default function App() {
       )
     }
   }, [getErrorMessage, t])
+
+  const handleOpenOrderCutList = useCallback(async (detailsSnapshot: OrderJobDetailsSnapshot | null) => {
+    const detailsOrder = detailsSnapshot?.order ?? null
+    const cachedUrl = String(detailsOrder?.cutListCachedUrl ?? '').trim()
+    const sourceUrl = String(detailsOrder?.cutListUrl ?? '').trim()
+
+    if (!cachedUrl && !sourceUrl) {
+      setOrdersDetailMessage(
+        t(
+          'Cut list is not available for this order yet.',
+          'La lista de corte aun no esta disponible para esta orden.',
+        ),
+      )
+      return
+    }
+
+    setOrdersDetailMessage(null)
+
+    try {
+      await WebBrowser.openBrowserAsync(cachedUrl || sourceUrl)
+    } catch (error) {
+      setOrdersDetailMessage(
+        getErrorMessage(
+          error,
+          'Could not open cut list.',
+          'No se pudo abrir la lista de corte.',
+        ),
+      )
+    }
+  }, [getErrorMessage, t])
+
+  const handleOpenOrderAdminView = useCallback(async (
+    order: DashboardOrder,
+    detailsSnapshot: OrderJobDetailsSnapshot | null,
+  ) => {
+    const mondayItemUrl = String(detailsSnapshot?.job?.mondayItemUrl ?? order.itemUrl ?? '').trim()
+    const fallbackWebUrl = `https://ybkarnold-b7ec0.web.app/orders?orderId=${encodeURIComponent(order.id)}`
+    const targetUrl = mondayItemUrl || fallbackWebUrl
+
+    try {
+      await WebBrowser.openBrowserAsync(targetUrl)
+    } catch (error) {
+      setOrdersDetailMessage(
+        getErrorMessage(
+          error,
+          'Could not open admin order view.',
+          'No se pudo abrir la vista admin de la orden.',
+        ),
+      )
+    }
+  }, [getErrorMessage])
 
   const handleSaveManagerProgress = useCallback(async () => {
     if (!hasManagerSheetAccess) {
@@ -2893,16 +3566,17 @@ export default function App() {
   useEffect(() => {
     if (activeScreen !== 'orders') {
       setSelectedOrderForDetails(null)
+      setSelectedOrderDetailsView('overview')
       setOrdersDetailMessage(null)
+      setIsOrderDetailsFromDashboardMetric(false)
     }
   }, [activeScreen])
 
-  const handleSelectSidebarItem = useCallback((nextScreen: AppScreen) => {
+  const handleSelectScreen = useCallback((nextScreen: AppScreen) => {
     setActiveScreen(nextScreen)
-
-    if (nextScreen !== 'dashboard') {
-      setDetailSelection(null)
-    }
+    setDetailSelection(null)
+    clearDashboardMetricZoomTimeout()
+    setDashboardMetricZoomOrderId(null)
 
     if (nextScreen !== 'pictures') {
       closePicturesModal()
@@ -2910,15 +3584,17 @@ export default function App() {
 
     if (nextScreen !== 'orders') {
       setSelectedOrderForDetails(null)
+      setSelectedOrderDetailsView('overview')
       setOrdersDetailMessage(null)
+      setIsOrderDetailsFromDashboardMetric(false)
     }
 
     if (nextScreen !== 'settings') {
       closeSettingsMenu()
     }
 
-    setIsSidebarOpen(false)
-  }, [closePicturesModal, closeSettingsMenu])
+    setIsAccountMenuOpen(false)
+  }, [clearDashboardMetricZoomTimeout, closePicturesModal, closeSettingsMenu])
 
   const hasGoogleClientId =
     Platform.OS === 'ios'
@@ -3164,9 +3840,10 @@ export default function App() {
     || (activeScreen === 'settings' && (isCheckingForUpdates || isInstallingUpdate))
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <StatusBar style="light" />
-      <View style={styles.shell}>
+    <GestureHandlerRootView style={styles.gestureRoot}>
+      <SafeAreaView style={styles.safeArea} edges={['top']}>
+        <StatusBar style="dark" />
+        <View style={styles.shell}>
         <View style={styles.contentPane}>
           <ScrollView
             style={usesNestedListScroll ? styles.picturesScreenScroll : undefined}
@@ -3178,30 +3855,50 @@ export default function App() {
           >
             <View style={styles.topBarCard}>
               <View style={styles.topBarLeftGroup}>
-                <Pressable
-                  style={styles.menuButton}
-                  onPress={() => setIsSidebarOpen(true)}
-                >
-                  <View style={styles.menuIconWrap}>
-                    <View style={styles.menuLine} />
-                    <View style={styles.menuLine} />
-                    <View style={styles.menuLine} />
-                  </View>
-                </Pressable>
+                {activeScreen !== 'dashboard' ? (
+                  <Pressable
+                    style={styles.topBarBackButton}
+                    onPress={() => handleSelectScreen('dashboard')}
+                  >
+                    <Ionicons name="chevron-back" size={20} color="#1f3567" />
+                  </Pressable>
+                ) : null}
                 <Text style={styles.topBarSyncText}>{t('Last sync', 'Ultima sincronizacion')} {latestSyncText}</Text>
               </View>
 
-              <Pressable
-                style={[styles.refreshButton, isRefreshBusy ? styles.buttonDisabled : null]}
-                onPress={() => {
-                  handleRefreshActiveScreen()
-                }}
-                disabled={isRefreshBusy}
-              >
-                <Text style={styles.refreshButtonText}>
-                  {isRefreshBusy ? t('Refreshing', 'Actualizando') : t('Refresh', 'Actualizar')}
-                </Text>
-              </Pressable>
+              <View style={styles.topBarRightGroup}>
+                <Pressable
+                  style={[styles.refreshButton, isRefreshBusy ? styles.buttonDisabled : null]}
+                  onPress={() => {
+                    handleRefreshActiveScreen()
+                  }}
+                  disabled={isRefreshBusy}
+                >
+                  <View style={styles.refreshButtonContent}>
+                    <Ionicons
+                      name={isRefreshBusy ? 'sync' : 'refresh'}
+                      size={16}
+                      color="#ffffff"
+                    />
+                    <Text style={styles.refreshButtonText}>
+                      {isRefreshBusy ? t('Refreshing', 'Actualizando') : t('Refresh', 'Actualizar')}
+                    </Text>
+                  </View>
+                </Pressable>
+
+                <Pressable
+                  style={styles.profileAvatarButton}
+                  onPress={() => setIsAccountMenuOpen((current) => !current)}
+                >
+                  {profilePhotoUrl ? (
+                    <Image source={{ uri: profilePhotoUrl }} style={styles.profileAvatarImage} />
+                  ) : (
+                    <View style={styles.profileAvatarFallback}>
+                      <Text style={styles.profileAvatarFallbackText}>{profileInitial}</Text>
+                    </View>
+                  )}
+                </Pressable>
+              </View>
             </View>
 
             {errorMessage ? (
@@ -3273,7 +3970,9 @@ export default function App() {
                 }}
                 onOpenOrderDetails={(order) => {
                   setSelectedOrderForDetails(order)
+                  setSelectedOrderDetailsView('overview')
                   setOrdersDetailMessage(null)
+                  setIsOrderDetailsFromDashboardMetric(false)
                 }}
               />
             ) : null}
@@ -3338,10 +4037,45 @@ export default function App() {
                 isAlertsLoading={isAlertsLoading}
                 alerts={alerts}
                 alertsMessage={alertsMessage}
+                showReadAlerts={showReadAlerts}
+                onShowReadAlertsChange={setShowReadAlerts}
                 onMarkAlertAsRead={(alertItem) => {
                   void markAlertAsRead(alertItem)
                 }}
+                onMarkAlertAsUnread={(alertItem) => {
+                  void markAlertAsUnread(alertItem)
+                }}
               />
+            ) : null}
+
+            {activeScreen === 'admin' && isAdminUser ? (
+              <>
+                <Text style={styles.sectionTitle}>{t('Admin', 'Admin')}</Text>
+                <Text style={styles.sectionSubtitle}>
+                  {t(
+                    'Open full website admin pages from your phone.',
+                    'Abre paginas admin completas del sitio web desde tu telefono.',
+                  )}
+                </Text>
+
+                <View style={styles.ordersListCard}>
+                  <View style={styles.settingsAdminGrid}>
+                    {ADMIN_PORTAL_PAGES.map((adminPage) => (
+                      <Pressable
+                        key={adminPage.path}
+                        style={styles.settingsAdminBubble}
+                        onPress={() => {
+                          void handleOpenAdminPortalPage(adminPage.path, adminPage.labelEn, adminPage.labelEs)
+                        }}
+                      >
+                        <Text style={styles.settingsAdminBubbleText}>{t(adminPage.labelEn, adminPage.labelEs)}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                </View>
+
+                {adminPortalMessage ? <Text style={styles.settingsInlineStatus}>{adminPortalMessage}</Text> : null}
+              </>
             ) : null}
 
             {activeScreen === 'settings' ? (
@@ -3354,6 +4088,37 @@ export default function App() {
               />
             ) : null}
           </ScrollView>
+        </View>
+
+        <View style={styles.bottomNavBar}>
+          {bottomNavItems.map((item) => {
+            const isActive = activeScreen === item.id
+            const iconColor = isActive ? '#0c3f8f' : '#4e5f79'
+
+            return (
+              <Pressable
+                key={item.id}
+                style={[styles.bottomNavItem, isActive ? styles.bottomNavItemActive : null]}
+                onPress={() => handleSelectScreen(item.id)}
+              >
+                <Ionicons
+                  name={item.icon}
+                  size={20}
+                  color={iconColor}
+                />
+                <Text style={[styles.bottomNavLabel, isActive ? styles.bottomNavLabelActive : null]}>
+                  {item.label}
+                </Text>
+                {item.id === 'alerts' && alertsUnreadCount > 0 ? (
+                  <View style={styles.bottomNavBadge}>
+                    <Text style={styles.bottomNavBadgeText}>
+                      {alertsUnreadCount > 99 ? '99+' : String(alertsUnreadCount)}
+                    </Text>
+                  </View>
+                ) : null}
+              </Pressable>
+            )
+          })}
         </View>
 
         <Modal
@@ -3378,7 +4143,17 @@ export default function App() {
                 {detailSelection?.type === 'order' ? (
                   detailOrders.length > 0 ? (
                     detailOrders.map((order) => (
-                      <View key={`${order.id}-${order.name}`} style={styles.detailRow}>
+                      <Pressable
+                        key={`${order.id}-${order.name}`}
+                        style={({ pressed }) => [
+                          styles.detailRow,
+                          dashboardMetricZoomOrderId === order.id ? styles.detailRowZoomed : null,
+                          pressed ? styles.detailRowPressed : null,
+                        ]}
+                        onPress={() => {
+                          handleToggleDashboardMetricOrderZoom(order.id)
+                        }}
+                      >
                         <Text style={styles.detailPrimary} numberOfLines={1}>
                           {order.name || `Order ${order.id}`}
                         </Text>
@@ -3388,7 +4163,20 @@ export default function App() {
                         <Text style={styles.detailSecondary} numberOfLines={1}>
                           {order.statusLabel || t('No status', 'Sin estado')} • {t('Due', 'Vence')} {formatDisplayDate(order.effectiveDueDate, locale)}
                         </Text>
-                      </View>
+                        <Text style={styles.detailSecondary} numberOfLines={1}>
+                          {t('Tap to highlight, then Open', 'Toca para resaltar y luego Abrir')}
+                        </Text>
+                        {dashboardMetricZoomOrderId === order.id ? (
+                          <Pressable
+                            style={styles.detailOpenButton}
+                            onPress={() => {
+                              handleOpenDashboardOrderFromMetrics(order)
+                            }}
+                          >
+                            <Text style={styles.detailOpenButtonText}>{t('Open', 'Abrir')}</Text>
+                          </Pressable>
+                        ) : null}
+                      </Pressable>
                     ))
                   ) : (
                     <Text style={styles.emptyDetailText}>{t('No orders in this section.', 'No hay ordenes en esta seccion.')}</Text>
@@ -3419,66 +4207,472 @@ export default function App() {
 
         <Modal
           visible={Boolean(selectedOrderForDetails)}
-          transparent
-          animationType="fade"
-          onRequestClose={() => setSelectedOrderForDetails(null)}
+          transparent={false}
+          animationType="slide"
+          onRequestClose={closeOrderDetails}
         >
-          <View style={styles.modalBackdrop}>
-            <View style={styles.modalCard}>
-              <View style={styles.detailHeader}>
-                <Text style={styles.detailTitle}>
-                  {selectedOrderForDetails
-                    ? `${t('Order', 'Orden')} #${selectedOrderForDetails.id}`
-                    : t('Order details', 'Detalles de la orden')}
-                </Text>
-                <Pressable
-                  style={styles.detailCloseButton}
-                  onPress={() => setSelectedOrderForDetails(null)}
-                >
-                  <Text style={styles.detailCloseButtonText}>{t('Close', 'Cerrar')}</Text>
-                </Pressable>
-              </View>
+          <SafeAreaView style={styles.orderDetailScreen} edges={['top']}>
+            <View style={styles.orderDetailScreenHeader}>
+              <Pressable
+                style={styles.orderDetailScreenBackButton}
+                onPress={closeOrderDetails}
+              >
+                <Ionicons name="chevron-back" size={20} color="#1f3567" />
+              </Pressable>
 
-              {selectedOrderForDetails ? (
-                <ScrollView contentContainerStyle={styles.modalBodyContent}>
-                  <View style={styles.detailRow}>
-                    <Text style={styles.detailPrimary}>
-                      {selectedOrderForDetails.name || `${t('Order', 'Orden')} ${selectedOrderForDetails.id}`}
+              <View style={styles.orderDetailScreenHeaderTextWrap}>
+                <Text style={styles.orderDetailScreenHeaderTitle} numberOfLines={1}>
+                  {selectedOrderOverviewDetails.orderName
+                    || (selectedOrderForDetails
+                      ? `${t('Order', 'Orden')} ${selectedOrderForDetails.id}`
+                      : t('Order details', 'Detalles de la orden'))}
+                </Text>
+                <Text style={styles.orderDetailScreenHeaderMeta} numberOfLines={1}>
+                  {t('Order', 'Orden')} #{selectedOrderOverviewDetails.orderNumber || selectedOrderForDetails?.id || '-'}
+                </Text>
+              </View>
+            </View>
+
+            {selectedOrderForDetails ? (
+              <ScrollView
+                style={styles.orderDetailScreenScroll}
+                contentContainerStyle={styles.orderDetailScreenContent}
+              >
+                  <View style={styles.orderDetailSummaryCard}>
+                    <Text style={styles.orderDetailSummaryTitle}>
+                      {selectedOrderOverviewDetails.orderName || `${t('Order', 'Orden')} ${selectedOrderForDetails.id}`}
                     </Text>
-                    <Text style={styles.detailSecondary}>
-                      {t('Status', 'Estado')}: {selectedOrderForDetails.statusLabel || t('No status', 'Sin estado')}
+                    <Text style={styles.orderDetailSummaryMeta}>
+                      {t('Order', 'Orden')}: #{selectedOrderOverviewDetails.orderNumber || selectedOrderForDetails.id}
                     </Text>
-                    <Text style={styles.detailSecondary}>
-                      {t('Group', 'Grupo')}: {selectedOrderForDetails.groupTitle || t('No group', 'Sin grupo')}
-                    </Text>
-                    <Text style={styles.detailSecondary}>
-                      {t('Due', 'Vence')}: {formatDisplayDate(selectedOrderForDetails.effectiveDueDate, locale)}
-                    </Text>
+                    {selectedOrderOverviewDetails.mondayStatus ? (
+                      <Text style={styles.orderDetailSummaryMeta}>
+                        {t('Monday status', 'Estado de Monday')}: {selectedOrderOverviewDetails.mondayStatus}
+                      </Text>
+                    ) : null}
                   </View>
 
-                  <Pressable
-                    style={[
-                      styles.orderDetailActionButton,
-                      (!selectedOrderForDetails.shopDrawingCachedUrl && !selectedOrderForDetails.id)
-                        ? styles.orderDetailActionButtonDisabled
-                        : null,
-                    ]}
-                    onPress={() => {
-                      void handleOpenOrderShopDrawing(selectedOrderForDetails)
-                    }}
-                  >
-                    <Text style={styles.orderDetailActionButtonText}>
-                      {t('Open Shop Drawing', 'Abrir Shop Drawing')}
-                    </Text>
-                  </Pressable>
+                  <View style={styles.orderDetailTabsRow}>
+                    <Pressable
+                      style={[
+                        styles.orderDetailTabButton,
+                        selectedOrderDetailsView !== 'admin' ? styles.orderDetailTabButtonActive : null,
+                      ]}
+                      onPress={() => setSelectedOrderDetailsView('overview')}
+                    >
+                      <Text
+                        style={[
+                          styles.orderDetailTabLabel,
+                          selectedOrderDetailsView !== 'admin' ? styles.orderDetailTabLabelActive : null,
+                        ]}
+                      >
+                        {t('Overview', 'Resumen')}
+                      </Text>
+                    </Pressable>
+
+                    {hasAdminOrderDetailsAccess ? (
+                      <Pressable
+                        style={[
+                          styles.orderDetailTabButton,
+                          selectedOrderDetailsView === 'admin' ? styles.orderDetailTabButtonActive : null,
+                        ]}
+                        onPress={() => setSelectedOrderDetailsView('admin')}
+                      >
+                        <Text
+                          style={[
+                            styles.orderDetailTabLabel,
+                            selectedOrderDetailsView === 'admin' ? styles.orderDetailTabLabelActive : null,
+                          ]}
+                        >
+                          {t('Admin', 'Admin')}
+                        </Text>
+                      </Pressable>
+                    ) : null}
+                  </View>
+
+                  {selectedOrderDetailsView !== 'admin' ? (
+                    <>
+                      <View style={styles.orderDetailActionsRow}>
+                        <Pressable
+                          style={[
+                            styles.orderDetailActionButton,
+                            (!selectedOrderOverviewDetails.drawingCachedUrl
+                              && !selectedOrderOverviewDetails.drawingUrl
+                              && !selectedOrderForDetails.id)
+                              ? styles.orderDetailActionButtonDisabled
+                              : null,
+                          ]}
+                          onPress={() => {
+                            void handleOpenOrderShopDrawing(selectedOrderForDetails, selectedOrderJobDetails)
+                          }}
+                        >
+                          <Text style={styles.orderDetailActionButtonText}>
+                            {t('Drawing', 'Dibujo')}
+                          </Text>
+                        </Pressable>
+
+                        <Pressable
+                          style={[
+                            styles.orderDetailActionButton,
+                            (!selectedOrderOverviewDetails.cutListCachedUrl && !selectedOrderOverviewDetails.cutListUrl)
+                              ? styles.orderDetailActionButtonDisabled
+                              : null,
+                          ]}
+                          onPress={() => {
+                            void handleOpenOrderCutList(selectedOrderJobDetails)
+                          }}
+                        >
+                          <Text style={styles.orderDetailActionButtonText}>
+                            {t('Cut List', 'Lista de corte')}
+                          </Text>
+                        </Pressable>
+
+                        <Pressable
+                          style={[
+                            styles.orderDetailActionButton,
+                            styles.orderDetailActionButtonSecondary,
+                            (!selectedOrderOverviewDetails.bolCachedUrl && !selectedOrderOverviewDetails.bolUrl)
+                              ? styles.orderDetailActionButtonDisabled
+                              : null,
+                          ]}
+                          onPress={() => {
+                            void handleOpenOrderDocumentUrl(
+                              selectedOrderOverviewDetails.bolCachedUrl || selectedOrderOverviewDetails.bolUrl,
+                              'BOL is not available for this order yet.',
+                              'El BOL aun no esta disponible para esta orden.',
+                              'Could not open BOL.',
+                              'No se pudo abrir el BOL.',
+                            )
+                          }}
+                        >
+                          <Text style={[styles.orderDetailActionButtonText, styles.orderDetailActionButtonTextSecondary]}>
+                            BOL
+                          </Text>
+                        </Pressable>
+
+                        <Pressable
+                          style={[
+                            styles.orderDetailActionButton,
+                            styles.orderDetailActionButtonSecondary,
+                            !selectedOrderOverviewDetails.mondayItemUrl
+                              ? styles.orderDetailActionButtonDisabled
+                              : null,
+                          ]}
+                          onPress={() => {
+                            void handleOpenOrderDocumentUrl(
+                              selectedOrderOverviewDetails.mondayItemUrl,
+                              'Monday item link is not available for this order yet.',
+                              'El enlace de Monday aun no esta disponible para esta orden.',
+                              'Could not open Monday item link.',
+                              'No se pudo abrir el enlace de Monday.',
+                            )
+                          }}
+                        >
+                          <Text style={[styles.orderDetailActionButtonText, styles.orderDetailActionButtonTextSecondary]}>
+                            {t('Monday Item', 'Item de Monday')}
+                          </Text>
+                        </Pressable>
+
+                        {hasAdminOrderDetailsAccess ? (
+                          <Pressable
+                            style={[styles.orderDetailActionButton, styles.orderDetailActionButtonSecondary]}
+                            onPress={() => {
+                              void handleOpenOrderAdminView(selectedOrderForDetails, selectedOrderJobDetails)
+                            }}
+                          >
+                            <Text style={[styles.orderDetailActionButtonText, styles.orderDetailActionButtonTextSecondary]}>
+                              {t('Open Admin View', 'Abrir vista admin')}
+                            </Text>
+                          </Pressable>
+                        ) : null}
+                      </View>
+
+                      <View style={styles.orderDetailInfoCard}>
+                        <Text style={styles.orderDetailSectionTitle}>{t('Order basics', 'Datos basicos de la orden')}</Text>
+                        <View style={styles.orderDetailInfoRow}>
+                          <Text style={styles.orderDetailInfoLabel}>{t('Order', 'Orden')}</Text>
+                          <Text style={styles.orderDetailInfoValue}>#{selectedOrderOverviewDetails.orderNumber || '-'}</Text>
+                        </View>
+                        <View style={styles.orderDetailInfoRow}>
+                          <Text style={styles.orderDetailInfoLabel}>{t('Order name', 'Nombre de orden')}</Text>
+                          <Text style={styles.orderDetailInfoValue}>{selectedOrderOverviewDetails.orderName || '-'}</Text>
+                        </View>
+                        <View style={styles.orderDetailInfoRow}>
+                          <Text style={styles.orderDetailInfoLabel}>{t('P.O. number', 'Numero de P.O.')}</Text>
+                          <Text style={styles.orderDetailInfoValue}>{selectedOrderOverviewDetails.poNumber || '-'}</Text>
+                        </View>
+                        <View style={styles.orderDetailInfoRow}>
+                          <Text style={styles.orderDetailInfoLabel}>{t('Monday status', 'Estado de Monday')}</Text>
+                          <Text style={styles.orderDetailInfoValue}>{selectedOrderOverviewDetails.mondayStatus || '-'}</Text>
+                        </View>
+                        <View style={styles.orderDetailInfoRow}>
+                          <Text style={styles.orderDetailInfoLabel}>{t('Lead time', 'Lead time')}</Text>
+                          <Text style={styles.orderDetailInfoValue}>
+                            {selectedOrderOverviewDetails.leadTimeDays !== null
+                              ? `${selectedOrderOverviewDetails.leadTimeDays} ${t('days', 'dias')}`
+                              : '-'}
+                          </Text>
+                        </View>
+                        <View style={styles.orderDetailInfoRow}>
+                          <Text style={styles.orderDetailInfoLabel}>{t('Order date', 'Fecha de orden')}</Text>
+                          <Text style={styles.orderDetailInfoValue}>{formatDisplayDate(selectedOrderOverviewDetails.orderDate, locale)}</Text>
+                        </View>
+                        <View style={styles.orderDetailInfoRow}>
+                          <Text style={styles.orderDetailInfoLabel}>{t('Due date', 'Fecha limite')}</Text>
+                          <Text style={styles.orderDetailInfoValue}>{formatDisplayDate(selectedOrderOverviewDetails.dueDate, locale)}</Text>
+                        </View>
+                      </View>
+
+                      <View style={styles.orderDetailInfoCard}>
+                        <Text style={styles.orderDetailSectionTitle}>{t('Status and progress', 'Estado y progreso')}</Text>
+                        <View style={styles.orderDetailInfoRow}>
+                          <Text style={styles.orderDetailInfoLabel}>{t('Monday status', 'Estado de Monday')}</Text>
+                          <Text style={styles.orderDetailInfoValue}>{selectedOrderOverviewDetails.mondayStatus || '-'}</Text>
+                        </View>
+                        <View style={styles.orderDetailInfoRow}>
+                          <Text style={styles.orderDetailInfoLabel}>{t('Row status', 'Estado de fila')}</Text>
+                          <Text style={styles.orderDetailInfoValue}>{selectedOrderOverviewDetails.rowStatus || '-'}</Text>
+                        </View>
+                        <View style={styles.orderDetailInfoRow}>
+                          <Text style={styles.orderDetailInfoLabel}>{t('Progress', 'Progreso')}</Text>
+                          <Text style={styles.orderDetailInfoValue}>
+                            {selectedOrderOverviewDetails.progressPercent !== null
+                              ? `${selectedOrderOverviewDetails.progressPercent}%`
+                              : '-'}
+                          </Text>
+                        </View>
+                        <View style={styles.orderDetailInfoRow}>
+                          <Text style={styles.orderDetailInfoLabel}>{t('Manager ready', 'Avance gerente')}</Text>
+                          <Text style={styles.orderDetailInfoValue}>
+                            {selectedOrderOverviewDetails.managerReadyPercent !== null
+                              ? `${selectedOrderOverviewDetails.managerReadyPercent}%`
+                              : '-'}
+                          </Text>
+                        </View>
+                        <View style={styles.orderDetailInfoRow}>
+                          <Text style={styles.orderDetailInfoLabel}>{t('Source', 'Fuente')}</Text>
+                          <Text style={styles.orderDetailInfoValue}>{selectedOrderOverviewDetails.source || '-'}</Text>
+                        </View>
+                        <View style={styles.orderDetailInfoRow}>
+                          <Text style={styles.orderDetailInfoLabel}>{t('In design', 'En diseno')}</Text>
+                          <Text style={styles.orderDetailInfoValue}>
+                            {selectedOrderOverviewDetails.inDesign === null
+                              ? '-'
+                              : selectedOrderOverviewDetails.inDesign
+                                ? t('Yes', 'Si')
+                                : t('No', 'No')}
+                          </Text>
+                        </View>
+                      </View>
+
+                      <View style={styles.orderDetailInfoCard}>
+                        <Text style={styles.orderDetailSectionTitle}>{t('Finance', 'Finanzas')}</Text>
+                        <View style={styles.orderDetailInfoRow}>
+                          <Text style={styles.orderDetailInfoLabel}>{t('Paid in full', 'Pagado completo')}</Text>
+                          <Text style={styles.orderDetailInfoValue}>
+                            {selectedOrderOverviewDetails.paidInFull === null
+                              ? t('Unknown', 'Desconocido')
+                              : selectedOrderOverviewDetails.paidInFull
+                                ? t('Yes', 'Si')
+                                : t('No', 'No')}
+                          </Text>
+                        </View>
+                      </View>
+
+                      {(selectedOrderOverviewDetails.shippedAt
+                        || selectedOrderOverviewDetails.shipTo
+                        || selectedOrderOverviewDetails.shipNotes
+                        || selectedOrderOverviewDetails.shippedAtInferred !== null) ? (
+                        <View style={styles.orderDetailPaidCard}>
+                          <Text style={styles.orderDetailSectionTitle}>{t('Shipping', 'Envio')}</Text>
+                          <View style={styles.orderDetailInfoRow}>
+                            <Text style={styles.orderDetailInfoLabel}>{t('Shipped date', 'Fecha de envio')}</Text>
+                            <Text style={styles.orderDetailInfoValue}>{formatDisplayDate(selectedOrderOverviewDetails.shippedAt, locale)}</Text>
+                          </View>
+                          <View style={styles.orderDetailInfoRow}>
+                            <Text style={styles.orderDetailInfoLabel}>{t('Shipped (inferred)', 'Envio inferido')}</Text>
+                            <Text style={styles.orderDetailInfoValue}>
+                              {selectedOrderOverviewDetails.shippedAtInferred === null
+                                ? '-'
+                                : selectedOrderOverviewDetails.shippedAtInferred
+                                  ? t('Yes', 'Si')
+                                  : t('No', 'No')}
+                            </Text>
+                          </View>
+                          <View style={styles.orderDetailInfoRow}>
+                            <Text style={styles.orderDetailInfoLabel}>{t('Ship to', 'Enviar a')}</Text>
+                            <Text style={styles.orderDetailInfoValue}>{selectedOrderOverviewDetails.shipTo || '-'}</Text>
+                          </View>
+                          <View style={styles.orderDetailInfoRow}>
+                            <Text style={styles.orderDetailInfoLabel}>{t('Shipping notes', 'Notas de envio')}</Text>
+                            <Text style={styles.orderDetailInfoValue}>{selectedOrderOverviewDetails.shipNotes || '-'}</Text>
+                          </View>
+                        </View>
+                      ) : null}
+
+                      {(selectedOrderOverviewDetails.notes
+                        || selectedOrderOverviewDetails.description
+                        || selectedOrderOverviewDetails.hazardReason
+                        || selectedOrderOverviewDetails.invoiceNumber
+                        || selectedOrderOverviewDetails.managerReadyDate
+                        || selectedOrderOverviewDetails.managerReadyUpdatedAt
+                        || selectedOrderOverviewDetails.mondayUpdatedAt) ? (
+                        <View style={styles.orderDetailInfoCard}>
+                          <Text style={styles.orderDetailSectionTitle}>{t('Notes and timestamps', 'Notas y tiempos')}</Text>
+                          <View style={styles.orderDetailInfoRow}>
+                            <Text style={styles.orderDetailInfoLabel}>{t('Invoice #', 'Factura #')}</Text>
+                            <Text style={styles.orderDetailInfoValue}>{selectedOrderOverviewDetails.invoiceNumber || '-'}</Text>
+                          </View>
+                          <View style={styles.orderDetailInfoRow}>
+                            <Text style={styles.orderDetailInfoLabel}>{t('Manager ready date', 'Fecha avance gerente')}</Text>
+                            <Text style={styles.orderDetailInfoValue}>{formatDisplayDate(selectedOrderOverviewDetails.managerReadyDate, locale)}</Text>
+                          </View>
+                          <View style={styles.orderDetailInfoRow}>
+                            <Text style={styles.orderDetailInfoLabel}>{t('Manager ready updated', 'Actualizacion avance gerente')}</Text>
+                            <Text style={styles.orderDetailInfoValue}>{formatDisplayDate(selectedOrderOverviewDetails.managerReadyUpdatedAt, locale)}</Text>
+                          </View>
+                          <View style={styles.orderDetailInfoRow}>
+                            <Text style={styles.orderDetailInfoLabel}>{t('Monday updated', 'Monday actualizado')}</Text>
+                            <Text style={styles.orderDetailInfoValue}>{formatDisplayDate(selectedOrderOverviewDetails.mondayUpdatedAt, locale)}</Text>
+                          </View>
+                          <View style={styles.orderDetailInfoRow}>
+                            <Text style={styles.orderDetailInfoLabel}>{t('Hazard reason', 'Razon de riesgo')}</Text>
+                            <Text style={styles.orderDetailInfoValue}>{selectedOrderOverviewDetails.hazardReason || '-'}</Text>
+                          </View>
+                          <View style={styles.orderDetailInfoRow}>
+                            <Text style={styles.orderDetailInfoLabel}>{t('Notes', 'Notas')}</Text>
+                            <Text style={styles.orderDetailInfoValue}>{selectedOrderOverviewDetails.notes || '-'}</Text>
+                          </View>
+                          <View style={styles.orderDetailInfoRow}>
+                            <Text style={styles.orderDetailInfoLabel}>{t('Description', 'Descripcion')}</Text>
+                            <Text style={styles.orderDetailInfoValue}>{selectedOrderOverviewDetails.description || '-'}</Text>
+                          </View>
+                        </View>
+                      ) : null}
+
+                      <View style={styles.orderDetailHistoryCard}>
+                        <Text style={styles.orderDetailSectionTitle}>{t('Status history', 'Historial de estado')}</Text>
+                        {selectedOrderOverviewDetails.statusHistory.length > 0 ? (
+                          selectedOrderOverviewDetails.statusHistory.slice(0, 24).map((historyRow, index) => (
+                            <View
+                              key={`${historyRow.id ?? historyRow.updatedAt ?? historyRow.date ?? String(index)}`}
+                              style={styles.orderDetailHistoryRow}
+                            >
+                              <Text style={styles.orderDetailHistoryPrimary}>
+                                {formatDisplayDate(historyRow.date || historyRow.updatedAt, locale)}
+                                {'  '}•{'  '}
+                                {historyRow.readyPercent !== null && historyRow.readyPercent !== undefined
+                                  ? `${historyRow.readyPercent}%`
+                                  : t('No %', 'Sin %')}
+                              </Text>
+                              <Text style={styles.orderDetailHistorySecondary}>
+                                {historyRow.jobName || selectedOrderOverviewDetails.orderName || t('Order', 'Orden')}
+                              </Text>
+                            </View>
+                          ))
+                        ) : (
+                          <Text style={styles.orderDetailHintText}>
+                            {t('No status history found for this order yet.', 'Aun no hay historial de estado para esta orden.')}
+                          </Text>
+                        )}
+                      </View>
+                    </>
+                  ) : (
+                    <>
+                      {isOrderDetailsLoading && !selectedOrderJobDetails ? (
+                        <InlineLoading label={t('Loading admin order details...', 'Cargando detalles admin de la orden...')} />
+                      ) : null}
+
+                      {selectedOrderJobDetails ? (
+                        <>
+                          <View style={styles.detailRow}>
+                            <Text style={styles.detailPrimary}>
+                              {selectedOrderJobDetails.job.orderName || selectedOrderForDetails.name || `${t('Order', 'Orden')} ${selectedOrderForDetails.id}`}
+                            </Text>
+                            <Text style={styles.detailSecondary}>
+                              {t('Entries', 'Entradas')}: {selectedOrderJobDetails.summary.entryCount}
+                            </Text>
+                            <Text style={styles.detailSecondary}>
+                              {t('Workers', 'Trabajadores')}: {selectedOrderJobDetails.summary.workerCount}
+                            </Text>
+                            <Text style={styles.detailSecondary}>
+                              {t('Regular hours', 'Horas regulares')}: {selectedOrderJobDetails.summary.totalRegularHours.toFixed(2)}
+                            </Text>
+                            <Text style={styles.detailSecondary}>
+                              {t('Overtime hours', 'Horas extra')}: {selectedOrderJobDetails.summary.totalOvertimeHours.toFixed(2)}
+                            </Text>
+                            <Text style={styles.detailSecondary}>
+                              {t('Total hours', 'Horas totales')}: {selectedOrderJobDetails.summary.totalHours.toFixed(2)}
+                            </Text>
+                            <Text style={styles.detailSecondary}>
+                              {t('Labor cost', 'Costo mano de obra')}: ${selectedOrderJobDetails.summary.totalLaborCost.toFixed(2)}
+                            </Text>
+                            <Text style={styles.detailSecondary}>
+                              {t('Latest manager ready', 'Ultimo avance gerente')}: {selectedOrderJobDetails.job.latestManagerReadyPercent ?? 0}%
+                            </Text>
+                            <Text style={styles.detailSecondary}>
+                              {t('Monday board', 'Tablero de Monday')}: {selectedOrderJobDetails.job.mondayBoardName || '-'}
+                            </Text>
+                          </View>
+
+                          {selectedOrderJobDetails.workers.length > 0 ? (
+                            <View style={styles.orderDetailWorkersCard}>
+                              <Text style={styles.orderDetailWorkersTitle}>{t('Worker totals', 'Totales por trabajador')}</Text>
+                              {selectedOrderJobDetails.workers.slice(0, 12).map((worker) => (
+                                <Text key={`${worker.workerId}-${worker.workerName}`} style={styles.orderDetailWorkerRow}>
+                                  {worker.workerName}: {worker.totalHours.toFixed(2)}h
+                                </Text>
+                              ))}
+                            </View>
+                          ) : (
+                            <Text style={styles.orderDetailHintText}>
+                              {t('No worker hour entries found for this order yet.', 'Aun no hay entradas de horas para esta orden.')}
+                            </Text>
+                          )}
+
+                          {selectedOrderJobDetails.entries.length > 0 ? (
+                            <View style={styles.orderDetailWorkersCard}>
+                              <Text style={styles.orderDetailWorkersTitle}>{t('Recent entries', 'Entradas recientes')}</Text>
+                              {selectedOrderJobDetails.entries.slice(0, 12).map((entry) => (
+                                <Text key={entry.id} style={styles.orderDetailWorkerRow}>
+                                  {formatDisplayDate(entry.date, locale)} • {entry.workerName} • {entry.totalHours.toFixed(2)}h
+                                </Text>
+                              ))}
+                            </View>
+                          ) : null}
+                        </>
+                      ) : null}
+
+                      {!isOrderDetailsLoading && !selectedOrderJobDetails ? (
+                        <Text style={styles.orderDetailHintText}>
+                          {t(
+                            'Admin details are not available yet for this order.',
+                            'Los detalles admin aun no estan disponibles para esta orden.',
+                          )}
+                        </Text>
+                      ) : null}
+
+                      {hasAdminOrderDetailsAccess ? (
+                        <Pressable
+                          style={[styles.orderDetailActionButton, styles.orderDetailActionButtonSecondary]}
+                          onPress={() => {
+                            void handleOpenOrderAdminView(selectedOrderForDetails, selectedOrderJobDetails)
+                          }}
+                        >
+                          <Text style={[styles.orderDetailActionButtonText, styles.orderDetailActionButtonTextSecondary]}>
+                            {t('Open Admin View', 'Abrir vista admin')}
+                          </Text>
+                        </Pressable>
+                      ) : null}
+                    </>
+                  )}
 
                   {ordersDetailMessage ? (
                     <Text style={styles.orderDetailMessage}>{ordersDetailMessage}</Text>
                   ) : null}
-                </ScrollView>
-              ) : null}
-            </View>
-          </View>
+              </ScrollView>
+            ) : null}
+          </SafeAreaView>
         </Modal>
 
         <Modal
@@ -3651,6 +4845,34 @@ export default function App() {
                   </>
                 ) : null}
 
+                {activeSettingsMenuId === 'admin' ? (
+                  <>
+                    <Text style={styles.settingsTitle}>{t('Admin Portal', 'Portal admin')}</Text>
+                    <Text style={styles.settingsSubtitle}>
+                      {t(
+                        'Open full website admin pages from your phone.',
+                        'Abre paginas admin completas del sitio web desde tu telefono.',
+                      )}
+                    </Text>
+
+                    <View style={styles.settingsAdminGrid}>
+                      {ADMIN_PORTAL_PAGES.map((adminPage) => (
+                        <Pressable
+                          key={adminPage.path}
+                          style={styles.settingsAdminBubble}
+                          onPress={() => {
+                            void handleOpenAdminPortalPage(adminPage.path, adminPage.labelEn, adminPage.labelEs)
+                          }}
+                        >
+                          <Text style={styles.settingsAdminBubbleText}>{t(adminPage.labelEn, adminPage.labelEs)}</Text>
+                        </Pressable>
+                      ))}
+                    </View>
+
+                    {adminPortalMessage ? <Text style={styles.settingsInlineStatus}>{adminPortalMessage}</Text> : null}
+                  </>
+                ) : null}
+
                 {activeSettingsMenuId === 'account' ? (
                   <>
                     <Text style={styles.settingsTitle}>{t('Session', 'Sesion')}</Text>
@@ -3673,6 +4895,59 @@ export default function App() {
               </ScrollView>
             </View>
           </View>
+        </Modal>
+
+        <Modal
+          visible={Boolean(adminPortalRoutePath)}
+          transparent={false}
+          animationType="slide"
+          onRequestClose={handleAdminPortalWebBackPress}
+        >
+          <SafeAreaView style={styles.adminPortalScreen} edges={['top']}>
+            <View style={styles.adminPortalHeader}>
+              <Pressable
+                style={styles.adminPortalBackButton}
+                onPress={handleAdminPortalWebBackPress}
+              >
+                <Ionicons name="chevron-back" size={20} color="#1f3567" />
+              </Pressable>
+
+              <View style={styles.adminPortalHeaderTextWrap}>
+                <Text style={styles.adminPortalHeaderTitle} numberOfLines={1}>
+                  {t('Admin', 'Admin')}
+                </Text>
+                <Text style={styles.adminPortalHeaderUrl} numberOfLines={1}>
+                  {adminPortalRoutePath ? `${WEB_APP_BASE_URL}${adminPortalRoutePath}` : WEB_APP_BASE_URL}
+                </Text>
+              </View>
+
+              <Pressable
+                style={styles.adminPortalCloseButton}
+                onPress={closeAdminPortalWebView}
+              >
+                <Ionicons name="close" size={20} color="#2a3f73" />
+              </Pressable>
+            </View>
+
+            {adminPortalRoutePath ? (
+              <WebView
+                ref={adminPortalWebViewRef}
+                style={styles.adminPortalWebView}
+                source={{ uri: `${WEB_APP_BASE_URL}${adminPortalRoutePath}` }}
+                startInLoadingState
+                setSupportMultipleWindows={false}
+                onNavigationStateChange={(navigationState) => {
+                  setAdminPortalCanGoBack(Boolean(navigationState.canGoBack))
+                }}
+                renderLoading={() => (
+                  <View style={styles.adminPortalLoadingWrap}>
+                    <ActivityIndicator size="small" color="#2b60db" />
+                    <Text style={styles.adminPortalLoadingText}>{t('Loading admin page...', 'Cargando pagina admin...')}</Text>
+                  </View>
+                )}
+              />
+            ) : null}
+          </SafeAreaView>
         </Modal>
 
         <Modal
@@ -3889,52 +5164,52 @@ export default function App() {
           </View>
         </Modal>
 
-        {isSidebarOpen ? (
+        {isAccountMenuOpen ? (
           <>
-            <Pressable style={styles.sidebarScrim} onPress={() => setIsSidebarOpen(false)} />
-            <View style={styles.sidebarDrawer}>
-              <View style={styles.sidebarBrandBox}>
-                <Text style={styles.sidebarBrandA}>A</Text>
-                <Text style={styles.sidebarBrandText}>Arnold</Text>
+            <Pressable style={styles.accountMenuScrim} onPress={() => setIsAccountMenuOpen(false)} />
+            <View style={styles.accountMenuCard}>
+              <View style={styles.accountMenuProfileRow}>
+                {profilePhotoUrl ? (
+                  <Image source={{ uri: profilePhotoUrl }} style={styles.accountMenuProfileImage} />
+                ) : (
+                  <View style={styles.accountMenuProfileFallback}>
+                    <Text style={styles.accountMenuProfileFallbackText}>{profileInitial}</Text>
+                  </View>
+                )}
+                <View style={styles.accountMenuProfileTextWrap}>
+                  <Text style={styles.accountMenuProfileName} numberOfLines={1}>{profileDisplayName}</Text>
+                  {profileEmail ? (
+                    <Text style={styles.accountMenuProfileEmail} numberOfLines={1}>{profileEmail}</Text>
+                  ) : null}
+                </View>
               </View>
 
-              <View style={styles.sidebarNav}>
-                {sidebarItems.map((item) => (
-                  <Pressable
-                    key={item.id}
-                    style={[styles.sidebarItem, activeScreen === item.id ? styles.sidebarItemActive : null]}
-                    onPress={() => handleSelectSidebarItem(item.id)}
-                  >
-                    <Text style={styles.sidebarItemShort}>{item.shortLabel}</Text>
-                    <View style={styles.sidebarItemLabelRow}>
-                      <Text style={styles.sidebarItemLabel}>{localizedScreenLabels[item.id]}</Text>
-                      {item.id === 'alerts' && alertsUnreadCount > 0 ? (
-                        <View style={styles.sidebarAlertBadge}>
-                          <Text style={styles.sidebarAlertBadgeText}>
-                            {alertsUnreadCount > 99 ? '99+' : String(alertsUnreadCount)}
-                          </Text>
-                        </View>
-                      ) : null}
-                    </View>
-                  </Pressable>
-                ))}
-              </View>
+              <Pressable
+                style={styles.accountMenuActionButton}
+                onPress={() => {
+                  setActiveScreen('settings')
+                  setActiveSettingsMenuId(null)
+                  setIsAccountMenuOpen(false)
+                }}
+              >
+                <Text style={styles.accountMenuActionText}>{t('Settings', 'Configuracion')}</Text>
+              </Pressable>
 
-              <View style={styles.sidebarActions}>
-                <Pressable
-                  style={styles.sidebarSignOutButton}
-                  onPress={() => {
-                    void handleSignOut()
-                  }}
-                >
-                  <Text style={styles.sidebarSignOutText}>{t('Sign Out', 'Cerrar sesion')}</Text>
-                </Pressable>
-              </View>
+              <Pressable
+                style={styles.accountMenuSignOutButton}
+                onPress={() => {
+                  setIsAccountMenuOpen(false)
+                  void handleSignOut()
+                }}
+              >
+                <Text style={styles.accountMenuSignOutText}>{t('Sign Out', 'Cerrar sesion')}</Text>
+              </Pressable>
             </View>
           </>
         ) : null}
-      </View>
-    </SafeAreaView>
+        </View>
+      </SafeAreaView>
+    </GestureHandlerRootView>
   )
 }
 

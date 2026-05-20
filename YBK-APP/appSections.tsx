@@ -12,6 +12,7 @@ import {
   TextInput,
   View,
 } from 'react-native'
+import Swipeable from 'react-native-gesture-handler/Swipeable'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import type {
   DashboardOrder,
@@ -28,7 +29,7 @@ import { styles } from './appStyles'
 
 export type TranslateFn = (english: string, spanish: string) => string
 
-type SettingsMenuId = 'security' | 'language' | 'notifications' | 'updates' | 'account'
+type SettingsMenuId = 'security' | 'language' | 'notifications' | 'updates' | 'admin' | 'account'
 
 type OrderMetricItem = {
   key: OrderMetricKey
@@ -820,15 +821,27 @@ export function AlertsSection({
   isAlertsLoading,
   alerts,
   alertsMessage,
+  showReadAlerts,
+  onShowReadAlertsChange,
   onMarkAlertAsRead,
+  onMarkAlertAsUnread,
 }: {
   t: TranslateFn
   locale: string
   isAlertsLoading: boolean
   alerts: MobileAlert[]
   alertsMessage: string | null
+  showReadAlerts: boolean
+  onShowReadAlertsChange: (showRead: boolean) => void
   onMarkAlertAsRead: (alertItem: MobileAlert) => void
+  onMarkAlertAsUnread: (alertItem: MobileAlert) => void
 }) {
+  const unreadCount = alerts.reduce((total, alertItem) => total + (alertItem.isRead ? 0 : 1), 0)
+  const readCount = Math.max(0, alerts.length - unreadCount)
+  const visibleAlerts = showReadAlerts
+    ? alerts.filter((alertItem) => Boolean(alertItem.isRead))
+    : alerts.filter((alertItem) => !alertItem.isRead)
+
   return (
     <>
       <Text style={styles.sectionTitle}>{t('Notifications', 'Notificaciones')}</Text>
@@ -840,44 +853,111 @@ export function AlertsSection({
       </Text>
 
       <View style={styles.alertsCard}>
+        <View style={styles.alertTabsRow}>
+          <Pressable
+            style={[
+              styles.alertTabButton,
+              !showReadAlerts ? styles.alertTabButtonActive : null,
+            ]}
+            onPress={() => onShowReadAlertsChange(false)}
+          >
+            <Text
+              style={[
+                styles.alertTabButtonText,
+                !showReadAlerts ? styles.alertTabButtonTextActive : null,
+              ]}
+            >
+              {t('Unread', 'Sin leer')} ({unreadCount})
+            </Text>
+          </Pressable>
+
+          <Pressable
+            style={[
+              styles.alertTabButton,
+              showReadAlerts ? styles.alertTabButtonActive : null,
+            ]}
+            onPress={() => onShowReadAlertsChange(true)}
+          >
+            <Text
+              style={[
+                styles.alertTabButtonText,
+                showReadAlerts ? styles.alertTabButtonTextActive : null,
+              ]}
+            >
+              {t('Read', 'Leidas')} ({readCount})
+            </Text>
+          </Pressable>
+        </View>
+
+        <Text style={styles.alertSwipeHint}>
+          {showReadAlerts
+            ? t('Swipe right on a row to mark it unread.', 'Desliza a la derecha para marcar como no leida.')
+            : t('Swipe left on a row to mark it read.', 'Desliza a la izquierda para marcar como leida.')}
+        </Text>
+
         {isAlertsLoading ? (
           <InlineLoading label={t('Loading notifications...', 'Cargando notificaciones...')} />
-        ) : alerts.length === 0 ? (
-          <Text style={styles.emptyDetailText}>{t('No notifications yet.', 'Aun no hay notificaciones.')}</Text>
+        ) : visibleAlerts.length === 0 ? (
+          <Text style={styles.emptyDetailText}>
+            {showReadAlerts
+              ? t('No read notifications yet.', 'Aun no hay notificaciones leidas.')
+              : t('No unread notifications right now.', 'No hay notificaciones sin leer ahora.')}
+          </Text>
         ) : (
           <View style={styles.alertsList}>
-            {alerts.map((alertItem) => {
+            {visibleAlerts.map((alertItem) => {
               const isRead = Boolean(alertItem.isRead)
 
               return (
-                <Pressable
+                <Swipeable
                   key={alertItem.id}
-                  style={[styles.alertRow, !isRead ? styles.alertRowUnread : null]}
-                  onPress={() => {
-                    if (!isRead) {
+                  friction={1.8}
+                  rightThreshold={32}
+                  leftThreshold={32}
+                  renderLeftActions={
+                    isRead
+                      ? () => (
+                        <View style={[styles.alertSwipeAction, styles.alertSwipeActionUnread]}>
+                          <Text style={styles.alertSwipeActionText}>{t('Unread', 'Sin leer')}</Text>
+                        </View>
+                      )
+                      : undefined
+                  }
+                  renderRightActions={
+                    !isRead
+                      ? () => (
+                        <View style={[styles.alertSwipeAction, styles.alertSwipeActionRead]}>
+                          <Text style={styles.alertSwipeActionText}>{t('Read', 'Leida')}</Text>
+                        </View>
+                      )
+                      : undefined
+                  }
+                  onSwipeableOpen={(direction: 'left' | 'right') => {
+                    if (!isRead && direction === 'right') {
                       onMarkAlertAsRead(alertItem)
+                    }
+
+                    if (isRead && direction === 'left') {
+                      onMarkAlertAsUnread(alertItem)
                     }
                   }}
                 >
-                  <View style={styles.alertHeaderRow}>
-                    <Text style={styles.alertTitle}>{alertItem.title}</Text>
-                    {!isRead ? (
-                      <View style={styles.alertUnreadBadge}>
-                        <Text style={styles.alertUnreadBadgeText}>{t('Unread', 'Sin leer')}</Text>
-                      </View>
-                    ) : null}
-                  </View>
-                  <Text style={styles.alertBody}>{alertItem.message}</Text>
-                  <Text style={styles.alertMeta}>
-                    {formatSyncTimestamp(alertItem.createdAt, locale)}
-                    {alertItem.createdByEmail ? ` • ${alertItem.createdByEmail}` : ''}
-                  </Text>
-                  {!isRead ? (
-                    <Text style={styles.alertTapHint}>
-                      {t('Tap this notification to mark it as read.', 'Toca esta notificacion para marcarla como leida.')}
+                  <View style={[styles.alertRow, !isRead ? styles.alertRowUnread : null]}>
+                    <View style={styles.alertHeaderRow}>
+                      <Text style={styles.alertTitle}>{alertItem.title}</Text>
+                      {!isRead ? (
+                        <View style={styles.alertUnreadBadge}>
+                          <Text style={styles.alertUnreadBadgeText}>{t('Unread', 'Sin leer')}</Text>
+                        </View>
+                      ) : null}
+                    </View>
+                    <Text style={styles.alertBody}>{alertItem.message}</Text>
+                    <Text style={styles.alertMeta}>
+                      {formatSyncTimestamp(alertItem.createdAt, locale)}
+                      {alertItem.createdByEmail ? ` • ${alertItem.createdByEmail}` : ''}
                     </Text>
-                  ) : null}
-                </Pressable>
+                  </View>
+                </Swipeable>
               )
             })}
           </View>

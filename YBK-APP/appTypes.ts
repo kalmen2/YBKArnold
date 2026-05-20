@@ -1,14 +1,29 @@
 export type DashboardOrder = {
   id: string
   name: string
+  mondaySourceBoardType?: 'orders_track' | 'shipped_orders'
+  movedToShippedAt?: string | null
   groupTitle: string
   statusLabel: string
+  stageLabel?: string
+  readyLabel?: string
+  leadTimeDays?: number | null
+  progressPercent?: number | null
+  orderDate?: string | null
+  shippedAt?: string | null
+  dueDate?: string | null
+  computedDueDate?: string | null
   effectiveDueDate: string | null
   daysUntilDue: number | null
   isDone: boolean
+  itemUrl?: string | null
   shopDrawingUrl?: string | null
   shopDrawingFileName?: string | null
   shopDrawingCachedUrl?: string | null
+  invoiceNumber?: string | null
+  paidInFull?: boolean | null
+  amountOwed?: number | null
+  poAmount?: number | null
 }
 
 export type MondayDashboardSnapshot = {
@@ -113,6 +128,134 @@ export type MobileAlert = {
   readAt?: string | null
 }
 
+export type OrderJobDetailsSnapshot = {
+  generatedAt: string
+  order?: {
+    id: string | null
+    mondayItemId: string | null
+    orderNumber: string | null
+    jobNumber: string | null
+    orderName: string | null
+    poNumber: string | null
+    shopDrawingCachedUrl: string | null
+    shopDrawingUrl: string | null
+    cutListCachedUrl: string | null
+    cutListUrl: string | null
+    mondayStatus: string | null
+    leadTimeDays: number | null
+    orderDate: string | null
+    dueDate: string | null
+    paidInFull: boolean | null
+    amountOwed: number | null
+    totalHours: number | null
+    shippedAt: string | null
+    shipTo: string | null
+    shipNotes: string | null
+    invoiceNumber: string | null
+    bol?: string | null
+    bolCachedUrl?: string | null
+    bolUrl?: string | null
+    notes?: string | null
+    description?: string | null
+    poAmount?: number | null
+    billedAmount?: number | null
+    invoiceAmount?: number | null
+    billBalanceAmount?: number | null
+    totalLaborCost?: number | null
+    managerReadyPercent?: number | null
+    managerReadyDate?: string | null
+    managerReadyUpdatedAt?: string | null
+    progressPercent?: number | null
+    progressStatusDetails?: Array<{
+      key: string | null
+      label: string | null
+      weight: number
+      columnId: string | null
+      status: string | null
+      options: string[]
+      optionStyles: Array<{
+        label: string
+        color: string | null
+        border: string | null
+        varName: string | null
+      }>
+    }>
+    isShipped?: boolean
+    shippedAtInferred?: boolean | null
+    mondayBoardId?: string | null
+    mondayBoardName?: string | null
+    mondayUpdatedAt?: string | null
+    mondayItemUrl?: string | null
+    source?: string | null
+    hasMondayRecord?: boolean
+    hasQuickBooksRecord?: boolean
+    inDesign?: boolean
+    quickBooksProjectId?: string | null
+    quickBooksProjectName?: string | null
+    quickBooksProjectIds?: string[]
+    quickBooksProjectNames?: string[]
+    hazardReason?: string | null
+    rowStatus: string | null
+    statusHistory: Array<{
+      id: string | null
+      date: string | null
+      jobName: string | null
+      readyPercent: number | null
+      updatedAt: string | null
+    }>
+  } | null
+  job: {
+    mondayItemId: string | null
+    jobNumber: string | null
+    orderName: string | null
+    mondayStatusLabel: string | null
+    mondayItemUrl: string | null
+    mondayBoardId: string | null
+    mondayBoardName: string | null
+    mondayUpdatedAt: string | null
+    latestManagerReadyPercent: number | null
+    latestManagerReadyDate: string | null
+    latestManagerReadyUpdatedAt: string | null
+  }
+  summary: {
+    entryCount: number
+    workerCount: number
+    totalRegularHours: number
+    totalOvertimeHours: number
+    totalHours: number
+    totalLaborCost: number
+  }
+  workers: Array<{
+    workerId: string
+    workerName: string
+    totalRegularHours: number
+    totalOvertimeHours: number
+    totalHours: number
+    totalLaborCost: number
+  }>
+  entries: Array<{
+    id: string
+    workerId?: string
+    stageId?: string
+    date: string
+    jobName: string
+    notes: string
+    workerName: string
+    stageName: string | null
+    regularHours: number
+    overtimeHours: number
+    totalHours: number
+    laborCost: number
+  }>
+  managerHistory: Array<{
+    id: string | null
+    date: string | null
+    jobName: string | null
+    readyPercent: number | null
+    updatedAt: string | null
+  }>
+}
+
 export type MetricTone = {
   cardBackground: string
   borderColor: string
@@ -120,7 +263,7 @@ export type MetricTone = {
   valueColor: string
 }
 
-export type AppScreen = 'dashboard' | 'orders' | 'pictures' | 'timesheet' | 'manager' | 'alerts' | 'settings'
+export type AppScreen = 'dashboard' | 'orders' | 'pictures' | 'timesheet' | 'manager' | 'alerts' | 'admin' | 'settings'
 export type AppLanguage = 'en' | 'es'
 
 export type OrderMetricKey =

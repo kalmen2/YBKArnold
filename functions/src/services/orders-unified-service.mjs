@@ -219,6 +219,18 @@ export function createOrdersUnifiedService(deps) {
         Cut_list_cached: normalizeText(order?.cutListCachedUrl, 800) || null,
         Cut_list_source: normalizeText(order?.cutListUrl, 800) || null,
         shipped_at: toIsoOrNull(order?.shippedAt),
+        shipped_at_inferred: toIsoOrNull(order?.shippedAt)
+          ? false
+          : isShippedOrderDocument(
+            {
+              mondayBoardId: order?.boardId,
+              movedToShippedAt: order?.movedToShippedAt,
+              statusLabel: order?.statusLabel,
+            },
+            normalizedShippedBoardId,
+          )
+            ? true
+            : null,
         monday_board_id: normalizeText(order?.boardId, 120) || null,
         monday_board_name: normalizeText(order?.boardName, 260) || null,
         monday_updated_at: toIsoOrNull(order?.updatedAt),
@@ -261,6 +273,10 @@ export function createOrdersUnifiedService(deps) {
           Cut_list_source: incoming.Cut_list_source || null,
           Cut_list: incoming.Cut_list || row.Cut_list,
           shipped_at: incoming.shipped_at || row.shipped_at,
+          shipped_at_inferred:
+            incoming.shipped_at
+              ? false
+              : incoming.shipped_at_inferred ?? row.shipped_at_inferred,
           monday_board_id: incoming.monday_board_id,
           monday_board_name: incoming.monday_board_name,
           monday_updated_at: incoming.monday_updated_at,
@@ -519,7 +535,16 @@ export function createOrdersUnifiedService(deps) {
         row.monday_notes = normalizeText(detail?.notes, 2000) || row.monday_notes
         row.monday_description = normalizeText(detail?.description, 2000) || row.monday_description
         row.Monday_url = normalizeText(detail?.itemUrl, 500) || row.Monday_url
-        row.shipped_at = toIsoOrNull(detail?.shippedAt) || row.shipped_at || refreshedAt
+        const detailShippedAt = toIsoOrNull(detail?.shippedAt)
+        if (detailShippedAt) {
+          row.shipped_at = detailShippedAt
+          row.shipped_at_inferred = false
+        } else {
+          row.shipped_at = toIsoOrNull(row.shipped_at) || refreshedAt
+          if (typeof row.shipped_at_inferred !== 'boolean') {
+            row.shipped_at_inferred = true
+          }
+        }
         row.Due_date = toIsoOrNull(detail?.effectiveDueDate) || row.Due_date
         row.order_date = toIsoOrNull(detail?.orderDate) || row.order_date
         row.monday_updated_at = toIsoOrNull(detail?.updatedAt) || row.monday_updated_at
@@ -591,13 +616,38 @@ export function createOrdersUnifiedService(deps) {
 
     const { orderProgressCollection, ordersUnifiedCollection } = await getCollections()
 
-    const [orderProgressDocuments, existingNonShippedRows] = await Promise.all([
+    const [orderProgressDocuments, existingNonShippedRows, existingShippedRows] = await Promise.all([
       orderProgressCollection
         .find({}, { projection: { _id: 0, id: 1, date: 1, jobName: 1, readyPercent: 1, updatedAt: 1 } })
         .sort({ date: -1, updatedAt: -1 })
         .toArray(),
       ordersUnifiedCollection.find({ is_shipped: { $ne: true } }).toArray(),
+      ordersUnifiedCollection
+        .find(
+          { is_shipped: true },
+          {
+            projection: {
+              _id: 0,
+              orderKey: 1,
+              shipped_at: 1,
+              shipped_at_inferred: 1,
+            },
+          },
+        )
+        .toArray(),
     ])
+
+    const existingShippedByOrderKey = new Map(
+      (Array.isArray(existingShippedRows) ? existingShippedRows : [])
+        .map((row) => [
+          normalizeText(row?.orderKey, 200),
+          {
+            shippedAt: toIsoOrNull(row?.shipped_at),
+            shippedAtInferred: toBooleanOrNull(row?.shipped_at_inferred),
+          },
+        ])
+        .filter(([orderKey]) => Boolean(orderKey)),
+    )
 
     const statusHistoryLookups = buildStatusHistoryLookups(orderProgressDocuments)
     const mergedByKey = new Map()
@@ -695,10 +745,15 @@ export function createOrdersUnifiedService(deps) {
 
       if (match) {
         const matchedItemId = normalizeText(match?.id, 120)
+        const existingShipped = existingShippedByOrderKey.get(normalizeText(row.orderKey, 200))
 
         row.is_shipped = true
         row.Monday_status = 'Shipped'
-        row.shipped_at = row.shipped_at || refreshedAt
+        row.shipped_at = row.shipped_at || existingShipped?.shippedAt || refreshedAt
+        row.shipped_at_inferred =
+          typeof existingShipped?.shippedAtInferred === 'boolean'
+            ? existingShipped.shippedAtInferred
+            : true
         row.has_monday_record = true
         row.monday_item_id = row.monday_item_id || matchedItemId
         row.monday_board_id = normalizeText(mondayShippedBoardId, 120) || row.monday_board_id
@@ -773,6 +828,10 @@ export function createOrdersUnifiedService(deps) {
         row.Cut_list_source = normalizeText(row.Cut_list, 800) || null
       }
       row.Cut_list = row.Cut_list_cached || row.Cut_list_source || null
+      row.shipped_at = toIsoOrNull(row.shipped_at)
+      row.shipped_at_inferred = row.shipped_at
+        ? toBooleanOrNull(row.shipped_at_inferred) ?? false
+        : null
 
       // Hazard rules:
       //   - Order Track has it but QB doesn't  → real hazard (must be fixed)

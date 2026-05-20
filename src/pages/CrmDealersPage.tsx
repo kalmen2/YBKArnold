@@ -429,7 +429,8 @@ export default function CrmDealersPage() {
   const [dealerRowsPerPage, setDealerRowsPerPage] = useState(25)
   const [dealerSearchInput, setDealerSearchInput] = useState('')
   const dealerSearch = useDebounceValue(dealerSearchInput)
-  const [accountTypeFilter, setAccountTypeFilter] = useState<'all' | 'dealer' | 'designer'>('all')
+  const [accountTypeFilter, setAccountTypeFilter] = useState<'all' | 'dealer' | 'designer' | 'none'>('all')
+  const [engagementFilter, setEngagementFilter] = useState<'all' | 'ready' | 'not_ready' | 'none'>('all')
 
   const [contactSearchInput, setContactSearchInput] = useState('')
   const contactSearch = useDebounceValue(contactSearchInput)
@@ -492,7 +493,7 @@ export default function CrmDealersPage() {
 
   useEffect(() => {
     setDealerPage(0)
-  }, [accountTypeFilter])
+  }, [accountTypeFilter, engagementFilter])
 
   const { isLoading: isLoadingDealers, isRefreshing: isRefreshingDealers, errorMessage, setErrorMessage, load: loadDealers } = useDataLoader({
     fetcher: useCallback(() => fetchCrmDealers({
@@ -500,7 +501,8 @@ export default function CrmDealersPage() {
       offset: dealerPage * dealerRowsPerPage,
       search: dealerSearch || undefined,
       accountType: accountTypeFilter === 'all' ? undefined : accountTypeFilter,
-    }), [accountTypeFilter, dealerPage, dealerRowsPerPage, dealerSearch]),
+      engagementBucket: engagementFilter === 'all' ? undefined : engagementFilter,
+    }), [accountTypeFilter, dealerPage, dealerRowsPerPage, dealerSearch, engagementFilter]),
     onSuccess: useCallback((response: CrmDealersResponse) => {
       const nextDealers = Array.isArray(response.dealers) ? response.dealers : []
       const normalizedTotal = typeof response.total === 'number' && Number.isFinite(response.total)
@@ -1142,19 +1144,43 @@ export default function CrmDealersPage() {
               Accounts
             </Typography>
 
-            <Tabs
-              value={accountTypeFilter}
-              onChange={(_event, nextValue: 'all' | 'dealer' | 'designer') => {
-                setAccountTypeFilter(nextValue)
-              }}
-              variant="scrollable"
-              allowScrollButtonsMobile
-              sx={{ minHeight: 30 }}
+            <Stack
+              direction={{ xs: 'column', md: 'row' }}
+              spacing={0.75}
+              alignItems={{ xs: 'stretch', md: 'center' }}
             >
-              <Tab value="all" label="All" sx={{ minHeight: 30, textTransform: 'none', py: 0.25 }} />
-              <Tab value="dealer" label="Dealers" sx={{ minHeight: 30, textTransform: 'none', py: 0.25 }} />
-              <Tab value="designer" label="Designers" sx={{ minHeight: 30, textTransform: 'none', py: 0.25 }} />
-            </Tabs>
+              <Tabs
+                value={accountTypeFilter}
+                onChange={(_event, nextValue: 'all' | 'dealer' | 'designer' | 'none') => {
+                  setAccountTypeFilter(nextValue)
+                }}
+                variant="scrollable"
+                allowScrollButtonsMobile
+                sx={{ minHeight: 30 }}
+              >
+                <Tab value="all" label="All" sx={{ minHeight: 30, textTransform: 'none', py: 0.25 }} />
+                <Tab value="dealer" label="Dealers" sx={{ minHeight: 30, textTransform: 'none', py: 0.25 }} />
+                <Tab value="designer" label="Designers" sx={{ minHeight: 30, textTransform: 'none', py: 0.25 }} />
+                <Tab value="none" label="Not set" sx={{ minHeight: 30, textTransform: 'none', py: 0.25 }} />
+              </Tabs>
+
+              <FormControl size="small" sx={{ minWidth: { xs: '100%', md: 190 } }}>
+                <InputLabel id="accounts-readiness-filter-label">Readiness</InputLabel>
+                <Select
+                  labelId="accounts-readiness-filter-label"
+                  value={engagementFilter}
+                  label="Readiness"
+                  onChange={(event) => {
+                    setEngagementFilter(event.target.value as 'all' | 'ready' | 'not_ready' | 'none')
+                  }}
+                >
+                  <MenuItem value="all">All readiness</MenuItem>
+                  <MenuItem value="ready">Ready to engage</MenuItem>
+                  <MenuItem value="not_ready">Not ready</MenuItem>
+                  <MenuItem value="none">Not set</MenuItem>
+                </Select>
+              </FormControl>
+            </Stack>
           </Stack>
 
           <Box

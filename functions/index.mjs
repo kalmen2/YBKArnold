@@ -211,6 +211,10 @@ const dashboardDailyRefreshCron = String(process.env.DASHBOARD_DAILY_REFRESH_CRO
 const dashboardDailyRefreshTimeZone =
   String(process.env.DASHBOARD_DAILY_REFRESH_TIMEZONE ?? authAccessTimeZoneNewJersey).trim()
   || authAccessTimeZoneNewJersey
+const crmReminderDispatchCron = String(process.env.CRM_REMINDER_DISPATCH_CRON ?? '0 * * * *').trim() || '0 * * * *'
+const crmReminderDispatchTimeZone =
+  String(process.env.CRM_REMINDER_DISPATCH_TIMEZONE ?? authAccessTimeZoneNewJersey).trim()
+  || authAccessTimeZoneNewJersey
 const shipTransitionRecentWindowHours = Number(process.env.MONDAY_SHIP_TRANSITION_WINDOW_HOURS ?? 72)
 const systemRunLogsSnapshotKey = 'system_run_logs'
 const maxSystemRunLogs = 300
@@ -698,6 +702,212 @@ function buildRunLogId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`
 }
 
+function formatDateForTimeZone(date, timeZone) {
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  })
+
+  return formatter.format(date)
+}
+
+function normalizeUidListForDispatch(input, maxItems = 25) {
+  const sourceItems = Array.isArray(input)
+    ? input
+    : [input]
+  const seen = new Set()
+  const normalized = []
+
+  for (const rawValue of sourceItems) {
+    const value = String(rawValue ?? '').trim()
+
+    if (!value || seen.has(value)) {
+      continue
+    }
+
+    seen.add(value)
+    normalized.push(value)
+
+    if (normalized.length >= maxItems) {
+      break
+    }
+  }
+
+  return normalized
+}
+
+async function dispatchDueCrmChatReminders({ asOfDate }) {
+  const { databasesByDomain, authUsersCollection, mobileAlertsCollection } = await getCollections()
+  const crmAccountChatsCollection = databasesByDomain.crm.collection('crm_account_chats')
+  const now = new Date().toISOString()
+
+  const dueReminderMessages = await crmAccountChatsCollection
+    .find(
+      {
+        reminder: {
+          $type: 'object',
+        },
+        'reminder.dueDate': {
+          $lte: asOfDate,
+        },
+        'reminder.targetUserUids.0': {
+          $exists: true,
+        },
+        $or: [
+          {
+            'reminder.notifiedAt': {
+              $exists: false,
+            },
+          },
+          {
+            'reminder.notifiedAt': null,
+          },
+          {
+            'reminder.notifiedAt': '',
+          },
+        ],
+      },
+      {
+        projection: {
+          _id: 0,
+          id: 1,
+          dealerSourceId: 1,
+          message: 1,
+          createdByUid: 1,
+          createdByEmail: 1,
+          createdByName: 1,
+          reminder: 1,
+        },
+      },
+    )
+    .sort({ 'reminder.dueDate': 1, createdAt: 1 })
+    .limit(1000)
+    .toArray()
+
+  if (dueReminderMessages.length === 0) {
+    return {
+      scannedCount: 0,
+      alertedCount: 0,
+      alertDocumentCount: 0,
+    }
+  }
+
+  const allRequestedUids = normalizeUidListForDispatch(
+    dueReminderMessages.flatMap((message) => normalizeUidListForDispatch(message?.reminder?.targetUserUids, 50)),
+    5000,
+  )
+
+  const approvedUsers = allRequestedUids.length > 0
+    ? await authUsersCollection
+      .find(
+        {
+          uid: {
+            $in: allRequestedUids,
+          },
+          approvalStatus: authApprovalApproved,
+        },
+        {
+          projection: {
+            _id: 0,
+          },
+        },
+      )
+      .toArray()
+    : []
+
+  const approvedUsersByUid = new Map(
+    approvedUsers
+      .map((document) => toPublicAuthUser(document))
+      .filter((user) => Boolean(user?.uid))
+      .map((user) => [user.uid, user]),
+  )
+
+  const alertDocuments = []
+  const chatReminderUpdateOps = []
+  let alertedCount = 0
+
+  for (const chatMessage of dueReminderMessages) {
+    const reminder = chatMessage?.reminder && typeof chatMessage.reminder === 'object'
+      ? chatMessage.reminder
+      : null
+
+    if (!reminder) {
+      continue
+    }
+
+    const requestedRecipientUids = normalizeUidListForDispatch(reminder.targetUserUids)
+    const recipientUids = requestedRecipientUids.filter((uid) => approvedUsersByUid.has(uid))
+
+    if (recipientUids.length > 0) {
+      const actor = String(chatMessage.createdByName || chatMessage.createdByEmail || 'A teammate').trim()
+      const reminderNote = String(reminder.note ?? '').trim()
+
+      alertDocuments.push({
+        id: randomUUID(),
+        title: `Reminder due today: ${String(chatMessage.dealerSourceId ?? '').trim() || 'Account'}`,
+        message: reminderNote
+          ? `${actor} reminder is due today: ${reminderNote.slice(0, 300)}`
+          : `${actor} reminder is due today.`,
+        isUpdate: false,
+        targetMode: mobileAlertTargetModeSelected,
+        targetUserUids: recipientUids,
+        createdByUid: String(chatMessage.createdByUid ?? '').trim() || null,
+        createdByEmail: String(chatMessage.createdByEmail ?? '').trim() || null,
+        delivery: {
+          targetUserCount: recipientUids.length,
+          pushTokenCount: 0,
+          pushAcceptedCount: 0,
+          pushErrorCount: 0,
+          errorSamples: [],
+        },
+        metadata: {
+          source: 'crm_chat_reminder_due',
+          dealerSourceId: String(chatMessage.dealerSourceId ?? '').trim() || null,
+          chatMessageId: String(chatMessage.id ?? '').trim() || null,
+          reminderId: String(reminder.id ?? '').trim() || null,
+          dueDate: String(reminder.dueDate ?? '').trim() || null,
+        },
+        createdAt: now,
+        updatedAt: now,
+      })
+
+      alertedCount += recipientUids.length
+    }
+
+    chatReminderUpdateOps.push({
+      updateOne: {
+        filter: {
+          id: String(chatMessage.id ?? '').trim(),
+        },
+        update: {
+          $set: {
+            'reminder.notifiedAt': now,
+            'reminder.notifiedRecipientUids': recipientUids,
+          },
+        },
+      },
+    })
+  }
+
+  if (alertDocuments.length > 0) {
+    await mobileAlertsCollection.insertMany(alertDocuments)
+  }
+
+  if (chatReminderUpdateOps.length > 0) {
+    await crmAccountChatsCollection.bulkWrite(chatReminderUpdateOps, {
+      ordered: false,
+    })
+  }
+
+  return {
+    scannedCount: dueReminderMessages.length,
+    alertedCount,
+    alertDocumentCount: alertDocuments.length,
+  }
+}
+
 async function appendSystemRunLog({
   startedAt,
   completedAt,
@@ -937,6 +1147,29 @@ export const dailyDashboardRefresh = functions
 
       console.error('dailyDashboardRefresh failed.', error)
       throw error
+    }
+  })
+
+export const dispatchCrmReminderNotifications = functions
+  .region('us-central1')
+  .runWith({
+    timeoutSeconds: 540,
+    memory: '512MB',
+  })
+  .pubsub.schedule(crmReminderDispatchCron)
+  .timeZone(crmReminderDispatchTimeZone)
+  .onRun(async () => {
+    const asOfDate = formatDateForTimeZone(new Date(), crmReminderDispatchTimeZone)
+    const summary = await dispatchDueCrmChatReminders({ asOfDate })
+
+    console.info('dispatchCrmReminderNotifications completed.', {
+      asOfDate,
+      ...summary,
+    })
+
+    return {
+      asOfDate,
+      ...summary,
     }
   })
 

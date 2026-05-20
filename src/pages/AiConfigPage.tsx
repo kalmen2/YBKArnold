@@ -123,6 +123,7 @@ export default function AiConfigPage() {
       categoryMountedRef.current = true
       return
     }
+   
     setChatInput('')
     setChatError(null)
     setSaveSuccess(null)

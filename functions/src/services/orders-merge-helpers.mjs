@@ -282,6 +282,7 @@ export function createEmptyUnifiedOrder(orderKey) {
     paidInFull: null,
     poAmount: null,
     shipped_at: null,
+    shipped_at_inferred: null,
     has_monday_record: false,
     has_quickbooks_record: false,
     in_design: false,
@@ -350,6 +351,7 @@ export function hydrateUnifiedRowFromStoredDocument(stored) {
     paymentAmount: Number.isFinite(Number(fields?.paymentAmount)) ? Number(fields.paymentAmount) : null,
     poAmount: Number.isFinite(Number(fields?.poAmount)) ? Number(fields.poAmount) : null,
     paidInFull: toBooleanOrNull(fields?.paidInFull),
+    shipped_at_inferred: toBooleanOrNull(fields?.shipped_at_inferred),
     qb_project_ids: qbProjectIds,
     qb_project_names: qbProjectNames,
   }

@@ -3,9 +3,9 @@
     "name": "Arnold Contract",
     "slug": "YBK-APP",
     "scheme": "com.ybk.arnold",
-    "version": "1.8",
+    "version": "3.4",
     "runtimeVersion": {
-      "policy": "sdkVersion"
+      "policy": "appVersion"
     },
     "updates": {
       "url": "https://u.expo.dev/0df3eadf-2720-4daa-a49f-c3753c0a2255",
@@ -17,7 +17,7 @@
       }
     },
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/arnold-logo.png",
     "userInterfaceStyle": "light",
     "splash": {
       "image": "./assets/splash-icon.png",
@@ -38,11 +38,11 @@
       "package": "com.ybk.arnold",
       "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
+        "foregroundImage": "./assets/arnold-logo.png",
         "backgroundColor": "#ffffff"
       },
       "predictiveBackGestureEnabled": false,
-      "versionCode": 18
+      "versionCode": 36
     },
     "web": {
       "favicon": "./assets/favicon.png"

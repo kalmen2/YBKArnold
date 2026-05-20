@@ -11,6 +11,7 @@ import { useDebounceValue } from '../../hooks/useDebounceValue'
 import { QUERY_KEYS } from '../../lib/queryKeys'
 
 export type UseOrdersOverview = ReturnType<typeof useOrdersOverview>
+export type OrdersListTab = 'orders' | 'design' | 'shipped'
 
 function normalizeSearchValue(value: unknown) {
   return String(value ?? '').trim().toLowerCase()
@@ -100,7 +101,7 @@ function orderMatchesSearch(order: OrdersOverviewOrder, searchText: string) {
 
 export function useOrdersOverview() {
   const queryClient = useQueryClient()
-  const [includeShipped, setIncludeShipped] = useState(false)
+  const [activeTab, setActiveTab] = useState<OrdersListTab>('orders')
   const [searchText, setSearchText] = useState('')
   const debouncedSearchText = useDebounceValue(searchText, 220)
 
@@ -124,16 +125,50 @@ export function useOrdersOverview() {
   )
 
   const visibleOrders = useMemo(() => {
-    const shippedFilteredOrders = includeShipped
-      ? allOrders
-      : allOrders.filter((order) => !order.isShipped)
+    const tabFilteredOrders = allOrders.filter((order) => {
+      if (activeTab === 'shipped') {
+        return order.isShipped
+      }
+
+      if (activeTab === 'design') {
+        return !order.isShipped && order.inDesign
+      }
+
+      return !order.isShipped && !order.inDesign
+    })
 
     if (!debouncedSearchText) {
-      return shippedFilteredOrders
+      return tabFilteredOrders
     }
 
-    return shippedFilteredOrders.filter((order) => orderMatchesSearch(order, debouncedSearchText))
-  }, [allOrders, includeShipped, debouncedSearchText])
+    return tabFilteredOrders.filter((order) => orderMatchesSearch(order, debouncedSearchText))
+  }, [allOrders, activeTab, debouncedSearchText])
+
+  const tabCounts = useMemo(() => {
+    let orders = 0
+    let design = 0
+    let shipped = 0
+
+    allOrders.forEach((order) => {
+      if (order.isShipped) {
+        shipped += 1
+        return
+      }
+
+      if (order.inDesign) {
+        design += 1
+        return
+      }
+
+      orders += 1
+    })
+
+    return {
+      orders,
+      design,
+      shipped,
+    }
+  }, [allOrders])
 
   const counts = useMemo(() => {
     const apiCounts = data?.counts
@@ -153,8 +188,9 @@ export function useOrdersOverview() {
   return {
     visibleOrders,
     counts,
-    includeShipped,
-    setIncludeShipped,
+    activeTab,
+    setActiveTab,
+    tabCounts,
     searchText,
     setSearchText,
     isLoading: ordersQuery.isLoading,

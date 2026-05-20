@@ -443,6 +443,66 @@ function normalizeEngagementReadinessStatusForFiltering(value) {
   return null
 }
 
+function normalizeUidList(input, maxItems = 25) {
+  const sourceItems = Array.isArray(input)
+    ? input
+    : [input]
+  const seen = new Set()
+  const normalized = []
+
+  for (const rawValue of sourceItems) {
+    const value = toTrimmedText(rawValue, 200)
+
+    if (!value) {
+      continue
+    }
+
+    if (seen.has(value)) {
+      continue
+    }
+
+    seen.add(value)
+    normalized.push(value)
+
+    if (normalized.length >= maxItems) {
+      break
+    }
+  }
+
+  return normalized
+}
+
+function normalizeReminderDate(value) {
+  const normalized = toTrimmedText(value, 16)
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+    return ''
+  }
+
+  const parsed = new Date(`${normalized}T00:00:00.000Z`)
+
+  if (Number.isNaN(parsed.getTime())) {
+    return ''
+  }
+
+  return normalized
+}
+
+function normalizeChatReminderInput(input) {
+  const source = toOptionalObject(input)
+  const dueDate = normalizeReminderDate(source.dueDate)
+
+  if (!dueDate) {
+    return null
+  }
+
+  return {
+    dueDate,
+    note: toTrimmedText(source.note, 500) || null,
+    targetUserUids: normalizeUidList(source.targetUserUids, 25),
+  }
+}
+
 function normalizeQuoteDocuments(input) {
   if (!Array.isArray(input)) {
     return []
@@ -1258,6 +1318,45 @@ export function registerCrmRoutes(app, deps) {
       (requesterUid && createdByUid && requesterUid === createdByUid)
       || (requesterEmail && createdByEmail && requesterEmail === createdByEmail),
     )
+  }
+
+  async function createCrmChatInAppAlert({
+    mobileAlertsCollection,
+    randomUUID,
+    title,
+    message,
+    createdByUid,
+    createdByEmail,
+    recipientUids,
+    metadata,
+  }) {
+    if (!Array.isArray(recipientUids) || recipientUids.length === 0) {
+      return
+    }
+
+    const now = nowIso()
+    const alertDocument = {
+      id: randomUUID(),
+      title,
+      message,
+      isUpdate: false,
+      targetMode: 'selected',
+      targetUserUids: recipientUids,
+      createdByUid: createdByUid || null,
+      createdByEmail: createdByEmail || null,
+      delivery: {
+        targetUserCount: recipientUids.length,
+        pushTokenCount: 0,
+        pushAcceptedCount: 0,
+        pushErrorCount: 0,
+        errorSamples: [],
+      },
+      metadata: toOptionalObject(metadata),
+      createdAt: now,
+      updatedAt: now,
+    }
+
+    await mobileAlertsCollection.insertOne(alertDocument)
   }
 
   app.post('/api/crm/imports/preview', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
@@ -2151,6 +2250,54 @@ export function registerCrmRoutes(app, deps) {
     }
   })
 
+  app.get('/api/crm/chat-users', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const { publicUser } = resolveCrmAccessScope(req)
+
+      if (!publicUser?.isApproved) {
+        return res.status(403).json({
+          error: 'Approved access is required.',
+        })
+      }
+
+      const { authUsersCollection } = await getCollections()
+      const users = await authUsersCollection
+        .find(
+          {
+            approvalStatus: 'approved',
+          },
+          {
+            projection: {
+              _id: 0,
+            },
+          },
+        )
+        .sort({ displayName: 1, email: 1 })
+        .limit(300)
+        .toArray()
+
+      const publicUsers = users
+        .map((document) => toPublicAuthUser(document))
+        .filter((user) => Boolean(user?.uid && user.isApproved))
+        .map((user) => ({
+          uid: user.uid,
+          email: user.email,
+          displayName: user.displayName ?? null,
+          isAdmin: user.isAdmin,
+          isSalesRep: user.isSalesRep,
+          hasWebAccess: user.hasWebAccess,
+          hasAppAccess: user.hasAppAccess,
+          lastActivityAt: user.lastActivityAt ?? null,
+        }))
+
+      return res.json({
+        users: publicUsers,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
   app.get('/api/crm/dealers/:dealerSourceId/chats', requireFirebaseAuth, async (req, res, next) => {
     try {
       const { isSalesRep, territoryStates, publicUser } = resolveCrmAccessScope(req)
@@ -2198,6 +2345,9 @@ export function registerCrmRoutes(app, deps) {
                 id: 1,
                 dealerSourceId: 1,
                 message: 1,
+                mentionUserUids: 1,
+                mentionUserEmails: 1,
+                reminder: 1,
                 createdAt: 1,
                 createdByUid: 1,
                 createdByEmail: 1,
@@ -2234,6 +2384,8 @@ export function registerCrmRoutes(app, deps) {
       const dealerSourceId = toTrimmedText(req.params.dealerSourceId, 160)
       const body = toOptionalObject(req.body)
       const messageText = toTrimmedText(body.message, 4000)
+      const requestedMentionUserUids = normalizeUidList(body.mentionUserUids, 25)
+      const requestedReminder = normalizeChatReminderInput(body.reminder)
 
       if (!dealerSourceId) {
         return res.status(400).json({
@@ -2247,8 +2399,14 @@ export function registerCrmRoutes(app, deps) {
         })
       }
 
+      if (body.reminder && !requestedReminder) {
+        return res.status(400).json({
+          error: 'reminder.dueDate must be a valid ISO date in YYYY-MM-DD format.',
+        })
+      }
+
       const collections = await getCollections()
-      const { crmAccountsCollection } = collections
+      const { crmAccountsCollection, authUsersCollection, mobileAlertsCollection } = collections
       const crmAccountChatsCollection = await getCrmAccountChatsCollection(collections)
 
       if (isSalesRep && !isAdmin && territoryStates.length === 0) {
@@ -2266,17 +2424,90 @@ export function registerCrmRoutes(app, deps) {
       }
 
       const now = nowIso()
+      const requesterUid = toTrimmedText(req.authUser?.uid, 200)
+      const requesterEmail = toTrimmedText(req.authUser?.email, 200) || null
+      const requestedRecipientUids = normalizeUidList([
+        ...requestedMentionUserUids,
+        ...(requestedReminder?.targetUserUids ?? []),
+      ], 50)
+      const recipientUsers = requestedRecipientUids.length > 0
+        ? await authUsersCollection
+          .find(
+            {
+              uid: {
+                $in: requestedRecipientUids,
+              },
+              approvalStatus: 'approved',
+            },
+            {
+              projection: {
+                _id: 0,
+              },
+            },
+          )
+          .toArray()
+        : []
+      const recipientByUid = new Map(
+        recipientUsers
+          .map((document) => toPublicAuthUser(document))
+          .filter((user) => Boolean(user?.uid))
+          .map((user) => [user.uid, user]),
+      )
+      const mentionRecipientUids = requestedMentionUserUids
+        .filter((uid) => uid !== requesterUid)
+        .filter((uid) => recipientByUid.has(uid))
+      const mentionRecipientEmails = mentionRecipientUids
+        .map((uid) => toTrimmedText(recipientByUid.get(uid)?.email, 200))
+        .filter(Boolean)
+      const reminderRecipientUids = (requestedReminder?.targetUserUids ?? [])
+        .filter((uid) => recipientByUid.has(uid))
+      const reminderRecipientEmails = reminderRecipientUids
+        .map((uid) => toTrimmedText(recipientByUid.get(uid)?.email, 200))
+        .filter(Boolean)
+      const reminder = requestedReminder
+        ? {
+          id: randomUUID(),
+          dueDate: requestedReminder.dueDate,
+          note: requestedReminder.note || null,
+          targetUserUids: reminderRecipientUids,
+          targetUserEmails: reminderRecipientEmails,
+          notifiedAt: null,
+          createdAt: now,
+        }
+        : null
+
       const message = {
         id: randomUUID(),
         dealerSourceId: dealer.sourceId,
         message: messageText,
+        mentionUserUids: mentionRecipientUids,
+        mentionUserEmails: mentionRecipientEmails,
+        reminder,
         createdAt: now,
-        createdByUid: toTrimmedText(req.authUser?.uid, 200) || null,
-        createdByEmail: toTrimmedText(req.authUser?.email, 200) || null,
+        createdByUid: requesterUid || null,
+        createdByEmail: requesterEmail,
         createdByName: toTrimmedText(publicUser?.displayName, 200) || null,
       }
 
       await crmAccountChatsCollection.insertOne(message)
+
+      if (mentionRecipientUids.length > 0) {
+        await createCrmChatInAppAlert({
+          mobileAlertsCollection,
+          randomUUID,
+          title: `Mentioned in engagement chat: ${dealer.name || dealer.sourceId}`,
+          message: `${toTrimmedText(publicUser?.displayName || requesterEmail || 'A teammate', 120)} mentioned you: ${messageText.slice(0, 300)}`,
+          createdByUid: requesterUid,
+          createdByEmail: requesterEmail,
+          recipientUids: mentionRecipientUids,
+          metadata: {
+            source: 'crm_chat_mention',
+            dealerSourceId: dealer.sourceId,
+            dealerName: dealer.name || null,
+            chatMessageId: message.id,
+          },
+        })
+      }
 
       cacheDeleteByPrefix(DEALERS_CACHE_PREFIX)
 
@@ -2857,7 +3088,8 @@ export function registerCrmRoutes(app, deps) {
 
   app.delete('/api/crm/dealers/:dealerSourceId', requireFirebaseAuth, requireSalesManagerOrAdminRole, async (req, res, next) => {
     try {
-      const { isSalesRep, territoryStates } = resolveCrmAccessScope(req)
+      const { isSalesRep, territoryStates, publicUser } = resolveCrmAccessScope(req)
+      const isAdmin = Boolean(publicUser?.isApproved && publicUser?.isAdmin)
       const dealerSourceId = toTrimmedText(req.params.dealerSourceId, 160)
 
       if (!dealerSourceId) {
@@ -2866,7 +3098,7 @@ export function registerCrmRoutes(app, deps) {
         })
       }
 
-      const archiveContacts = toBoolean(req.query?.archiveContacts)
+      const archiveContacts = isAdmin && toBoolean(req.query?.archiveContacts)
       const { crmAccountsCollection, crmContactsCollection } = await getCollections()
 
       if (isSalesRep && territoryStates.length === 0) {
@@ -2904,7 +3136,79 @@ export function registerCrmRoutes(app, deps) {
 
       const archivedAt = nowIso()
       const archivedByEmail = toTrimmedText(req.authUser?.email, 200) || null
+      const archivedByUid = toTrimmedText(req.authUser?.uid, 200) || null
       let dealer = null
+
+      if (!isAdmin) {
+        dealer = await crmAccountsCollection.findOneAndUpdate(
+          {
+            sourceId: dealerSourceId,
+            isArchived: {
+              $ne: true,
+            },
+            recordStatus: {
+              $ne: crmRecordStatusDeleted,
+            },
+          },
+          {
+            $set: {
+              deleteRequestedAt: archivedAt,
+              deleteRequestedByUid: archivedByUid,
+              deleteRequestedByEmail: archivedByEmail,
+              updatedAt: archivedAt,
+            },
+          },
+          {
+            returnDocument: 'after',
+            projection: {
+              _id: 0,
+              sourceId: 1,
+              name: 1,
+              phone: 1,
+              phone2: 1,
+              email: 1,
+              email2: 1,
+              address: 1,
+              city: 1,
+              state: 1,
+              zip: 1,
+              country: 1,
+              industry: 1,
+              accountClass: 1,
+              accountType: 1,
+              salesRep: 1,
+              website: 1,
+              emails: 1,
+              accountText: 1,
+              owner: 1,
+              ownerEmail: 1,
+              pictureUrl: 1,
+              pictureUrlSource: 1,
+              socialMedia: 1,
+              socialMediaLinks: 1,
+              engagementReadinessStatus: 1,
+              engagementReadinessNote: 1,
+              recordStatus: 1,
+              isArchived: 1,
+              isFavorite: 1,
+              contactCountSource: 1,
+              createdDateSource: 1,
+              modifiedDateSource: 1,
+              lastImportedAt: 1,
+            },
+          },
+        )
+
+        cacheDeleteByPrefix(DEALERS_CACHE_PREFIX)
+        cacheDelete(OVERVIEW_CACHE_KEY)
+
+        return res.json({
+          dealer,
+          archivedContactsCount: 0,
+          archiveContactsApplied: false,
+          queuedForDeletion: true,
+        })
+      }
 
       if (
         normalizeCrmRecordStatus(existingDealer.recordStatus) === crmRecordStatusDeleted

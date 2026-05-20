@@ -344,6 +344,67 @@ app.post('/api/alerts/:alertId/read', requireFirebaseAuth, async (req, res, next
   }
 })
 
+app.post('/api/alerts/:alertId/unread', requireFirebaseAuth, async (req, res, next) => {
+  try {
+    const publicUser = toPublicAuthUser(req.authUser)
+
+    if (!publicUser?.isApproved) {
+      return res.status(403).json({
+        error: 'Approved access is required.',
+      })
+    }
+
+    const alertId = String(req.params.alertId ?? '').trim()
+
+    if (!alertId) {
+      return res.status(400).json({
+        error: 'alertId is required.',
+      })
+    }
+
+    const { mobileAlertsCollection, mobileAlertReadsCollection } = await getCollections()
+    const alertDocument = await mobileAlertsCollection.findOne(
+      {
+        id: alertId,
+        $or: [
+          {
+            targetMode: mobileAlertTargetModeAll,
+          },
+          {
+            targetUserUids: publicUser.uid,
+          },
+        ],
+      },
+      {
+        projection: {
+          _id: 0,
+          id: 1,
+        },
+      },
+    )
+
+    if (!alertDocument?.id) {
+      return res.status(404).json({
+        error: 'Alert not found.',
+      })
+    }
+
+    await mobileAlertReadsCollection.deleteOne({
+      uid: publicUser.uid,
+      alertId,
+    })
+
+    return res.json({
+      ok: true,
+      alertId,
+      isRead: false,
+      readAt: null,
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
 app.get('/api/admin/alerts', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
   try {
     const limit = toBoundedInteger(req.query?.limit, 10, 200, 80)

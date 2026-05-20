@@ -1,18 +1,22 @@
 import ChatBubbleOutlineRoundedIcon from '@mui/icons-material/ChatBubbleOutlineRounded'
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded'
+import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
 import EditRoundedIcon from '@mui/icons-material/EditRounded'
+import NotificationsActiveRoundedIcon from '@mui/icons-material/NotificationsActiveRounded'
 import SaveRoundedIcon from '@mui/icons-material/SaveRounded'
 import {
   Avatar,
   Badge,
   Box,
   Button,
+  Checkbox,
   Chip,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
   FormControl,
+  FormControlLabel,
   IconButton,
   InputLabel,
   MenuItem,
@@ -28,18 +32,22 @@ import {
 import { alpha } from '@mui/material/styles'
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useMemo, useState, type KeyboardEvent } from 'react'
+import { Mention, MentionsInput } from 'react-mentions'
 import { useAuth } from '../auth/useAuth'
 import { LoadingPanel } from '../components/LoadingPanel'
 import { StatusAlerts } from '../components/StatusAlerts'
 import {
   createCrmDealerChatMessage,
+  fetchCrmChatUsers,
   fetchCrmDealerChats,
   fetchCrmDealerDetail,
   fetchCrmDealers,
+  removeCrmDealer,
   removeCrmDealerChatMessage,
   updateCrmDealerChatMessage,
   updateCrmContact,
   updateCrmDealer,
+  type CrmChatUser,
   type CrmContact,
   type CrmDealer,
   type CrmDealerChatMessage,
@@ -229,9 +237,10 @@ function resolveStatusChipColor(status: EngagementStatus): 'success' | 'error' |
 type DealerCardProps = {
   dealer: CrmDealer
   onOpenDealer: (dealer: CrmDealer, initialTab?: QuickViewTab) => void
+  onDeleteDealer: (dealer: CrmDealer) => void
 }
 
-function DealerCard({ dealer, onOpenDealer }: DealerCardProps) {
+function DealerCard({ dealer, onOpenDealer, onDeleteDealer }: DealerCardProps) {
   const accountName = resolveDealerName(dealer)
   const accountType = resolveAccountTypeBucket(dealer)
   const engagementStatus = normalizeEngagementStatus(dealer.engagementReadinessStatus)
@@ -259,6 +268,11 @@ function DealerCard({ dealer, onOpenDealer }: DealerCardProps) {
   const handleOpenChat = (event: React.MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation()
     onOpenDealer(dealer, 'chat')
+  }
+
+  const handleDeleteAccount = (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation()
+    onDeleteDealer(dealer)
   }
 
   return (
@@ -410,9 +424,185 @@ function DealerCard({ dealer, onOpenDealer }: DealerCardProps) {
         <Typography variant="caption" color="text.secondary">
           Contacts {contextCount} · Updated {updatedAt}
         </Typography>
+
+        <IconButton
+          size="small"
+          color="error"
+          aria-label={`Delete ${accountName}`}
+          onClick={handleDeleteAccount}
+          sx={{
+            width: 28,
+            height: 28,
+            opacity: 0.82,
+            '&:hover': {
+              opacity: 1,
+            },
+          }}
+        >
+          <DeleteOutlineRoundedIcon sx={{ fontSize: 17 }} />
+        </IconButton>
       </Stack>
     </Paper>
   )
+}
+
+function normalizeMentionAlias(value: string | null | undefined) {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/^@+/, '')
+    .replace(/[^a-z0-9._-]+/g, '')
+}
+
+function resolveMentionFirstName(value: string | null | undefined) {
+  const normalized = String(value ?? '').trim()
+
+  if (!normalized) {
+    return ''
+  }
+
+  const source = normalized.includes('@')
+    ? normalized.slice(0, normalized.indexOf('@'))
+    : normalized
+  const alias = normalizeMentionAlias(source)
+  const firstToken = alias.split(/[._-]/).find(Boolean) ?? ''
+
+  if (!firstToken) {
+    return ''
+  }
+
+  return `${firstToken.charAt(0).toUpperCase()}${firstToken.slice(1)}`
+}
+
+type MentionSuggestionOption = {
+  id: string
+  display: string
+}
+
+const chatMentionsInputStyle = {
+  control: {
+    width: '100%',
+    fontFamily: 'inherit',
+    fontSize: 14,
+    lineHeight: 1.45,
+  },
+  '&multiLine': {
+    control: {
+      minHeight: 84,
+      maxHeight: 188,
+      border: '1px solid rgba(15, 23, 42, 0.26)',
+      borderRadius: 8,
+      backgroundColor: '#ffffff',
+      overflowY: 'auto',
+    },
+    highlighter: {
+      padding: '10px 12px',
+      border: '1px solid transparent',
+      boxSizing: 'border-box',
+      whiteSpace: 'pre-wrap',
+      overflowWrap: 'anywhere',
+      wordBreak: 'break-word',
+      color: 'transparent',
+    },
+    input: {
+      margin: 0,
+      padding: '10px 12px',
+      minHeight: 84,
+      border: '1px solid transparent',
+      outline: 0,
+      boxSizing: 'border-box',
+      fontFamily: 'inherit',
+      fontSize: 14,
+      lineHeight: 1.45,
+      color: '#0f172a',
+      backgroundColor: 'transparent',
+      whiteSpace: 'pre-wrap',
+      overflowWrap: 'anywhere',
+      wordBreak: 'break-word',
+    },
+  },
+  suggestions: {
+    list: {
+      zIndex: 1600,
+      backgroundColor: '#ffffff',
+      border: '1px solid rgba(15, 23, 42, 0.2)',
+      borderRadius: 8,
+      boxShadow: '0 10px 28px rgba(15, 23, 42, 0.16)',
+      maxHeight: 220,
+      overflowY: 'auto',
+      padding: '4px',
+    },
+    item: {
+      padding: '0',
+    },
+  },
+} as const
+
+function extractMentionUserUidsFromMarkup(markup: string) {
+  const ids = Array.from(String(markup ?? '').matchAll(/@\[[^\]]+\]\(([^)]+)\)/g))
+    .map((entry) => String(entry[1] ?? '').trim())
+    .filter(Boolean)
+
+  return [...new Set(ids)]
+}
+
+function extractMentionAliases(message: string) {
+  const aliases = Array.from(message.matchAll(/@([a-zA-Z0-9._-]+)/g))
+    .map((entry) => normalizeMentionAlias(entry[1]))
+    .filter(Boolean)
+
+  return [...new Set(aliases)]
+}
+
+function renderMessageWithMentionPills(message: string) {
+  const normalized = String(message ?? '').trim()
+
+  if (!normalized) {
+    return '-'
+  }
+
+  const segments = normalized.split(/(@[a-zA-Z0-9._-]+)/g)
+
+  return segments.map((segment, index) => {
+    if (!/^@[a-zA-Z0-9._-]+$/.test(segment)) {
+      return (
+        <Box key={`text-${index}`} component="span">
+          {segment}
+        </Box>
+      )
+    }
+
+    const label = resolveMentionFirstName(segment.slice(1))
+
+    if (!label) {
+      return (
+        <Box key={`mention-fallback-${index}`} component="span">
+          {segment}
+        </Box>
+      )
+    }
+
+    return (
+      <Box
+        key={`mention-${index}`}
+        component="span"
+        sx={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          px: 0.85,
+          py: 0.05,
+          mx: 0.2,
+          borderRadius: 999,
+          bgcolor: (theme) => alpha(theme.palette.info.main, 0.18),
+          color: (theme) => theme.palette.info.dark,
+          fontWeight: 700,
+          lineHeight: 1.35,
+        }}
+      >
+        @{label}
+      </Box>
+    )
+  })
 }
 
 export default function SalesEngagementPage() {
@@ -432,11 +622,18 @@ export default function SalesEngagementPage() {
   const [contactDraft, setContactDraft] = useState<ContactQuickEditState | null>(null)
   const [isSavingContact, setIsSavingContact] = useState(false)
   const [chatDraft, setChatDraft] = useState('')
+  const [chatDraftMarkup, setChatDraftMarkup] = useState('')
   const [isSendingChat, setIsSendingChat] = useState(false)
   const [editingChatMessageId, setEditingChatMessageId] = useState('')
   const [chatEditDraft, setChatEditDraft] = useState('')
   const [isSavingChatEdit, setIsSavingChatEdit] = useState(false)
   const [deletingChatMessageId, setDeletingChatMessageId] = useState('')
+  const [isDeletingDealerId, setIsDeletingDealerId] = useState('')
+  const [successMessage, setSuccessMessage] = useState<string | null>(null)
+  const [reminderEnabled, setReminderEnabled] = useState(false)
+  const [reminderDueDate, setReminderDueDate] = useState('')
+  const [reminderRecipientUids, setReminderRecipientUids] = useState<string[]>([])
+  const [reminderNote, setReminderNote] = useState('')
 
   const search = useDebounceValue(searchInput)
 
@@ -481,6 +678,12 @@ export default function SalesEngagementPage() {
     staleTime: 20 * 1000,
   })
 
+  const chatUsersQuery = useQuery({
+    queryKey: ['crm', 'engagement-chat-users'],
+    queryFn: () => fetchCrmChatUsers(),
+    staleTime: 2 * 60 * 1000,
+  })
+
   const dealers = dealersQuery.data?.dealers ?? []
   const totalAccounts = typeof dealersQuery.data?.total === 'number'
     ? dealersQuery.data.total
@@ -497,6 +700,8 @@ export default function SalesEngagementPage() {
   const errorMessage = dealersQuery.error instanceof Error
     ? dealersQuery.error.message
     : null
+
+  const combinedPageErrorMessage = errorMessage || (chatUsersQuery.error instanceof Error ? chatUsersQuery.error.message : null)
 
   const isInitialLoading = dealersQuery.isLoading && !dealersQuery.data
   const isQuickViewLoading = quickViewDealerQuery.isLoading && !quickViewDealerQuery.data
@@ -526,9 +731,14 @@ export default function SalesEngagementPage() {
     setEditingContactSourceId('')
     setContactDraft(null)
     setChatDraft('')
+    setChatDraftMarkup('')
     setEditingChatMessageId('')
     setChatEditDraft('')
     setDeletingChatMessageId('')
+    setReminderEnabled(false)
+    setReminderDueDate('')
+    setReminderRecipientUids([])
+    setReminderNote('')
   }
 
   const handleCloseQuickView = () => {
@@ -539,9 +749,14 @@ export default function SalesEngagementPage() {
     setEditingContactSourceId('')
     setContactDraft(null)
     setChatDraft('')
+    setChatDraftMarkup('')
     setEditingChatMessageId('')
     setChatEditDraft('')
     setDeletingChatMessageId('')
+    setReminderEnabled(false)
+    setReminderDueDate('')
+    setReminderRecipientUids([])
+    setReminderNote('')
   }
 
   const quickViewDealerRecord = quickViewDealerQuery.data?.dealer ?? quickViewDealer
@@ -572,6 +787,73 @@ export default function SalesEngagementPage() {
   const currentUserUid = String(appUser?.uid || firebaseUser?.uid || '').trim()
   const currentUserEmail = String(appUser?.email || firebaseUser?.email || '').trim().toLowerCase()
   const isCurrentUserAdmin = Boolean(appUser?.isApproved && appUser?.isAdmin)
+  const chatUsers = chatUsersQuery.data?.users ?? []
+
+  const mentionAliasToUsers = useMemo<Map<string, CrmChatUser[]>>(() => {
+    const aliasMap = new Map<string, CrmChatUser[]>()
+
+    chatUsers.forEach((user) => {
+      const aliases = new Set<string>([
+        normalizeMentionAlias(user.email),
+        normalizeMentionAlias(String(user.email ?? '').split('@')[0]),
+        normalizeMentionAlias(user.displayName),
+        normalizeMentionAlias(resolveMentionFirstName(user.displayName)),
+        normalizeMentionAlias(resolveMentionFirstName(user.email)),
+      ].filter(Boolean))
+
+      aliases.forEach((alias) => {
+        const existingUsers = aliasMap.get(alias) ?? []
+        aliasMap.set(alias, [...existingUsers, user])
+      })
+    })
+
+    return aliasMap
+  }, [chatUsers])
+
+  const mentionSuggestionSource = useMemo(() => chatUsers
+    .map((user) => {
+      const id = String(user.uid ?? '').trim()
+      const email = String(user.email ?? '').trim()
+      const display = resolveMentionFirstName(user.displayName || user.email)
+        || normalizeMentionAlias(email.split('@')[0])
+      const normalizedDisplay = normalizeMentionAlias(display)
+
+      return {
+        id,
+        email,
+        display,
+        normalizedDisplay,
+      }
+    })
+    .filter((entry) => Boolean(entry.id && entry.normalizedDisplay))
+    .sort((left, right) => left.display.localeCompare(right.display)), [chatUsers])
+
+  const mentionEmailByUid = useMemo(
+    () => new Map(mentionSuggestionSource.map((entry) => [entry.id, entry.email])),
+    [mentionSuggestionSource],
+  )
+
+  const loadMentionSuggestions = (
+    query: string,
+    callback: (items: MentionSuggestionOption[]) => void,
+  ) => {
+    const normalizedQuery = normalizeMentionAlias(query)
+
+    if (!normalizedQuery) {
+      callback([])
+      return
+    }
+
+    callback(
+      mentionSuggestionSource
+        .filter((entry) => entry.normalizedDisplay.startsWith(normalizedQuery))
+        .slice(0, 8)
+        .map((entry) => ({
+          id: entry.id,
+          display: entry.display,
+        })),
+    )
+  }
 
   useEffect(() => {
     if (!quickViewDealerRecord || isEditingDealer) {
@@ -660,26 +942,109 @@ export default function SalesEngagementPage() {
 
   const handleSendChatMessage = async () => {
     const nextMessage = chatDraft.trim()
+    const shouldCreateReminder = reminderEnabled
+    const reminderHasRequiredFields = Boolean(reminderDueDate && reminderRecipientUids.length > 0)
+    const fallbackReminderMessage = reminderNote.trim()
+    const finalMessage = nextMessage || (shouldCreateReminder ? fallbackReminderMessage : '')
 
-    if (!quickViewDealerId || !nextMessage) {
+    if (!quickViewDealerId || !finalMessage) {
+      return
+    }
+
+    if (shouldCreateReminder && !reminderHasRequiredFields) {
+      setQuickViewActionError('Reminder needs a due date and at least one recipient.')
       return
     }
 
     setQuickViewActionError(null)
+    setSuccessMessage(null)
     setIsSendingChat(true)
 
     try {
-      await createCrmDealerChatMessage(quickViewDealerId, nextMessage)
+      const mentionUserUidsFromMarkup = extractMentionUserUidsFromMarkup(chatDraftMarkup)
+      const mentionAliases = extractMentionAliases(finalMessage)
+      const mentionUserUidsFromAliases = [...new Set(
+        mentionAliases.flatMap((alias) => {
+          const matchedUsers = mentionAliasToUsers.get(alias) ?? []
+
+          return matchedUsers.length === 1
+            ? [matchedUsers[0].uid]
+            : []
+        }),
+      )]
+      const mentionUserUids = [...new Set([...mentionUserUidsFromMarkup, ...mentionUserUidsFromAliases])]
+
+      await createCrmDealerChatMessage(quickViewDealerId, {
+        message: finalMessage,
+        mentionUserUids,
+        reminder: shouldCreateReminder
+          ? {
+            dueDate: reminderDueDate,
+            note: reminderNote.trim() || null,
+            targetUserUids: reminderRecipientUids,
+          }
+          : null,
+      })
+
       setChatDraft('')
+      setChatDraftMarkup('')
+      setReminderEnabled(false)
+      setReminderDueDate('')
+      setReminderRecipientUids([])
+      setReminderNote('')
 
       await Promise.all([
         quickViewChatsQuery.refetch(),
         dealersQuery.refetch(),
       ])
+
+      if (shouldCreateReminder) {
+        setSuccessMessage('Chat reminder created. Recipients will get a bell notification on the due date.')
+      }
     } catch (error) {
       setQuickViewActionError(error instanceof Error ? error.message : 'Failed to send message.')
     } finally {
       setIsSendingChat(false)
+    }
+  }
+
+  const handleDeleteDealer = async (dealer: CrmDealer) => {
+    const dealerSourceId = String(dealer.sourceId ?? '').trim()
+    const dealerName = resolveDealerName(dealer)
+
+    if (!dealerSourceId) {
+      return
+    }
+
+    if (!window.confirm('Are you sure you want to delete it?')) {
+      return
+    }
+
+    setQuickViewActionError(null)
+    setSuccessMessage(null)
+    setIsDeletingDealerId(dealerSourceId)
+
+    try {
+      const result = await removeCrmDealer(dealerSourceId)
+
+      await Promise.all([
+        dealersQuery.refetch(),
+        quickViewDealerId === dealerSourceId ? quickViewDealerQuery.refetch() : Promise.resolve(),
+      ])
+
+      if (result.queuedForDeletion) {
+        setSuccessMessage(`${dealerName} was submitted to Sales Review for admin deletion approval.`)
+      } else {
+        setSuccessMessage(`${dealerName} was deleted.`)
+
+        if (quickViewDealerId === dealerSourceId) {
+          handleCloseQuickView()
+        }
+      }
+    } catch (error) {
+      setQuickViewActionError(error instanceof Error ? error.message : 'Failed to delete account.')
+    } finally {
+      setIsDeletingDealerId('')
     }
   }
 
@@ -842,7 +1207,7 @@ export default function SalesEngagementPage() {
         </Stack>
       </Paper>
 
-      <StatusAlerts errorMessage={errorMessage} />
+      <StatusAlerts errorMessage={combinedPageErrorMessage} successMessage={successMessage} />
       <LoadingPanel loading={isInitialLoading} message="Loading accounts..." contained />
 
       {!isInitialLoading ? (
@@ -873,7 +1238,9 @@ export default function SalesEngagementPage() {
                 }}
               >
                 {dealers.map((dealer) => (
-                  <DealerCard key={dealer.sourceId} dealer={dealer} onOpenDealer={handleOpenQuickView} />
+                  <DealerCard key={dealer.sourceId} dealer={dealer} onOpenDealer={handleOpenQuickView} onDeleteDealer={(targetDealer) => {
+                    void handleDeleteDealer(targetDealer)
+                  }} />
                 ))}
               </Box>
             )}
@@ -1395,9 +1762,30 @@ export default function SalesEngagementPage() {
                                   ) : null}
                                 </Stack>
 
-                                <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
-                                  {formatOptional(message.message)}
-                                </Typography>
+                                <Box
+                                  sx={{
+                                    whiteSpace: 'pre-wrap',
+                                    overflowWrap: 'anywhere',
+                                    fontSize: '0.875rem',
+                                    lineHeight: 1.45,
+                                  }}
+                                >
+                                  {renderMessageWithMentionPills(message.message)}
+                                </Box>
+
+                                {message.reminder ? (
+                                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.5}>
+                                    <Chip
+                                      size="small"
+                                      icon={<NotificationsActiveRoundedIcon fontSize="small" />}
+                                      label={`Reminder ${message.reminder.dueDate}`}
+                                      variant="outlined"
+                                    />
+                                    <Typography variant="caption" color="text.secondary" sx={{ overflowWrap: 'anywhere' }}>
+                                      For: {message.reminder.targetUserEmails.map((entry) => entry).join(', ') || '-'}
+                                    </Typography>
+                                  </Stack>
+                                ) : null}
                               </Stack>
                             </Paper>
                           )
@@ -1406,22 +1794,138 @@ export default function SalesEngagementPage() {
                     )}
                   </Paper>
 
-                  <TextField
-                    label="Write update"
-                    multiline
-                    minRows={2}
-                    maxRows={6}
-                    value={chatDraft}
-                    onChange={(event) => {
-                      setChatDraft(event.target.value)
-                    }}
-                  />
+                  <Stack spacing={0.4}>
+                    <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
+                      Write update
+                    </Typography>
+
+                    <MentionsInput
+                      value={chatDraftMarkup}
+                      onChange={(_event, nextMarkupValue, nextPlainTextValue) => {
+                        setChatDraftMarkup(nextMarkupValue)
+                        setChatDraft(nextPlainTextValue)
+                      }}
+                      placeholder="Write update"
+                      style={chatMentionsInputStyle}
+                      a11ySuggestionsListLabel="Mention users"
+                      allowSuggestionsAboveCursor
+                    >
+                      <Mention
+                        trigger="@"
+                        markup="@[__display__](__id__)"
+                        data={loadMentionSuggestions}
+                        appendSpaceOnAdd
+                        displayTransform={(_id, display) => `@${display}`}
+                        style={{
+                          backgroundColor: 'rgba(30, 144, 255, 0.18)',
+                          borderRadius: 4,
+                          color: 'transparent',
+                        }}
+                        renderSuggestion={(entry, _search, highlightedDisplay, _index, focused) => (
+                          <Box
+                            sx={{
+                              px: 0.8,
+                              py: 0.6,
+                              borderRadius: 0.8,
+                              bgcolor: focused ? alpha('#2196f3', 0.14) : 'transparent',
+                            }}
+                          >
+                            <Typography variant="body2" sx={{ fontWeight: 700, lineHeight: 1.2 }}>
+                              {highlightedDisplay}
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.15 }}>
+                              {mentionEmailByUid.get(String(entry.id ?? '')) || ''}
+                            </Typography>
+                          </Box>
+                        )}
+                      />
+                    </MentionsInput>
+                  </Stack>
+
+                  <Paper variant="outlined" sx={{ p: 0.75 }}>
+                    <Stack spacing={0.7}>
+                      <FormControlLabel
+                        control={(
+                          <Checkbox
+                            size="small"
+                            checked={reminderEnabled}
+                            onChange={(event) => {
+                              const nextValue = event.target.checked
+                              setReminderEnabled(nextValue)
+
+                              if (nextValue && currentUserUid && !reminderRecipientUids.includes(currentUserUid)) {
+                                setReminderRecipientUids((current) => [...new Set([...current, currentUserUid])])
+                              }
+                            }}
+                          />
+                        )}
+                        label="Create reminder"
+                      />
+
+                      {reminderEnabled ? (
+                        <Stack spacing={0.7}>
+                          <TextField
+                            size="small"
+                            type="date"
+                            label="Reminder date"
+                            InputLabelProps={{ shrink: true }}
+                            value={reminderDueDate}
+                            onChange={(event) => {
+                              setReminderDueDate(event.target.value)
+                            }}
+                          />
+
+                          <FormControl size="small">
+                            <InputLabel id="engagement-reminder-recipients-label">Notify workers</InputLabel>
+                            <Select
+                              labelId="engagement-reminder-recipients-label"
+                              multiple
+                              label="Notify workers"
+                              value={reminderRecipientUids}
+                              onChange={(event) => {
+                                const nextValue = event.target.value
+                                setReminderRecipientUids(Array.isArray(nextValue) ? nextValue.map(String) : String(nextValue).split(','))
+                              }}
+                              renderValue={(selected) => {
+                                const selectedIds = Array.isArray(selected) ? selected : []
+                                const selectedUsers = chatUsers.filter((user) => selectedIds.includes(user.uid))
+                                return selectedUsers.map((user) => String(user.displayName ?? '').trim() || user.email).join(', ')
+                              }}
+                            >
+                              {chatUsers.map((user) => (
+                                <MenuItem key={user.uid} value={user.uid}>
+                                  <Checkbox size="small" checked={reminderRecipientUids.includes(user.uid)} />
+                                  <Typography variant="body2">
+                                    {String(user.displayName ?? '').trim() || user.email} ({user.email})
+                                  </Typography>
+                                </MenuItem>
+                              ))}
+                            </Select>
+                          </FormControl>
+
+                          <TextField
+                            size="small"
+                            label="Reminder note"
+                            placeholder="What should they remember?"
+                            value={reminderNote}
+                            onChange={(event) => {
+                              setReminderNote(event.target.value)
+                            }}
+                          />
+                        </Stack>
+                      ) : null}
+                    </Stack>
+                  </Paper>
 
                   <Stack direction="row" justifyContent="flex-end">
                     <Button
                       variant="contained"
                       onClick={handleSendChatMessage}
-                      disabled={isSendingChat || !chatDraft.trim()}
+                      disabled={
+                        isSendingChat
+                        || isDeletingDealerId === quickViewDealerId
+                        || (!chatDraft.trim() && !(reminderEnabled && reminderDueDate && reminderRecipientUids.length > 0 && reminderNote.trim()))
+                      }
                     >
                       {isSendingChat ? 'Sending...' : 'Send'}
                     </Button>

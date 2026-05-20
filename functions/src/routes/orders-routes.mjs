@@ -636,6 +636,20 @@ export function registerOrdersRoutes(app, deps) {
     const mondayStatus = String(liveOrder?.statusLabel ?? '').trim() || null
     const mondayUpdatedAt = String(liveOrder?.updatedAt ?? '').trim() || now
     const isShipped = Boolean(liveOrder?.isDone || liveOrder?.shippedAt)
+    const liveShippedAt = String(liveOrder?.shippedAt ?? '').trim() || null
+    const shippedSetFields = liveShippedAt
+      ? {
+        shipped_at: liveShippedAt,
+        shipped_at_inferred: false,
+      }
+      : isShipped
+        ? {
+          shipped_at_inferred: true,
+        }
+        : {
+          shipped_at: null,
+          shipped_at_inferred: null,
+        }
 
     await Promise.all([
       mondayOrdersCollection.updateOne(
@@ -688,7 +702,7 @@ export function registerOrdersRoutes(app, deps) {
             Monday_url: String(liveOrder?.itemUrl ?? '').trim() || null,
             Monday_status: isShipped ? 'Shipped' : mondayStatus,
             is_shipped: isShipped,
-            shipped_at: String(liveOrder?.shippedAt ?? '').trim() || null,
+            ...shippedSetFields,
             Due_date:
               String(liveOrder?.effectiveDueDate ?? '').trim()
               || String(liveOrder?.dueDate ?? '').trim()
@@ -885,6 +899,10 @@ export function registerOrdersRoutes(app, deps) {
       statusHistory,
       isShipped,
       shippedAt: String(orderDocument?.shipped_at ?? '').trim() || null,
+      shippedAtInferred:
+        typeof orderDocument?.shipped_at_inferred === 'boolean'
+          ? Boolean(orderDocument.shipped_at_inferred)
+          : null,
       mondayBoardId: String(orderDocument?.monday_board_id ?? '').trim() || null,
       mondayBoardName: String(orderDocument?.monday_board_name ?? '').trim() || null,
       mondayUpdatedAt: String(orderDocument?.monday_updated_at ?? '').trim() || null,
@@ -967,6 +985,7 @@ export function registerOrdersRoutes(app, deps) {
               paidInFull: 1,
               poAmount: 1,
               shipped_at: 1,
+              shipped_at_inferred: 1,
               has_monday_record: 1,
               has_quickbooks_record: 1,
               in_design: 1,
@@ -1642,6 +1661,7 @@ export function registerOrdersRoutes(app, deps) {
           entriesCollection,
           workersCollection,
           stagesCollection,
+          ordersUnifiedCollection,
           orderProgressCollection,
         } = await getCollections()
 
@@ -1701,7 +1721,45 @@ export function registerOrdersRoutes(app, deps) {
         }
         const jobNameFilter = jobNameOrFilters.length > 0 ? { $or: jobNameOrFilters } : {}
 
-        const [entries, workers, stages, orderProgressDocuments] = await Promise.all([
+        const unifiedOrderFilters = []
+
+        if (mondayItemId) {
+          unifiedOrderFilters.push({ monday_item_id: mondayItemId })
+        }
+
+        if (resolvedJobNumber) {
+          unifiedOrderFilters.push({ order_number: resolvedJobNumber })
+        }
+
+        if (orderName) {
+          unifiedOrderFilters.push({ order_name: { $regex: escapeRegex(orderName), $options: 'i' } })
+        }
+
+        for (const digitValue of lookup.digitValues) {
+          const escaped = escapeRegex(digitValue)
+
+          if (!escaped) {
+            continue
+          }
+
+          unifiedOrderFilters.push({ order_number: { $regex: escaped } })
+          unifiedOrderFilters.push({ order_name: { $regex: escaped, $options: 'i' } })
+        }
+
+        for (const normalizedValue of lookup.normalizedValues) {
+          const escaped = escapeRegex(normalizedValue)
+
+          if (!escaped) {
+            continue
+          }
+
+          unifiedOrderFilters.push({ order_number: { $regex: escaped, $options: 'i' } })
+          unifiedOrderFilters.push({ order_name: { $regex: escaped, $options: 'i' } })
+        }
+
+        const unifiedOrderFilter = unifiedOrderFilters.length > 0 ? { $or: unifiedOrderFilters } : null
+
+        const [entries, workers, stages, orderProgressDocuments, unifiedOrderDocument] = await Promise.all([
           entriesCollection
             .find(jobNameFilter, {
               projection: {
@@ -1730,6 +1788,75 @@ export function registerOrdersRoutes(app, deps) {
             })
             .sort({ date: -1, updatedAt: -1 })
             .toArray(),
+          unifiedOrderFilter
+            ? ordersUnifiedCollection
+              .find(
+                unifiedOrderFilter,
+                {
+                  projection: {
+                    _id: 0,
+                    orderKey: 1,
+                    order_number: 1,
+                    monday_item_id: 1,
+                    Monday_url: 1,
+                    Monday_status: 1,
+                    order_name: 1,
+                    ship_to: 1,
+                    ship_notes: 1,
+                    bol: 1,
+                    BOL: 1,
+                    BOL_cached: 1,
+                    BOL_source: 1,
+                    po_number: 1,
+                    monday_notes: 1,
+                    monday_description: 1,
+                    is_shipped: 1,
+                    status: 1,
+                    Due_date: 1,
+                    Lead_time_days: 1,
+                    progress_percent: 1,
+                    progress_status_details: 1,
+                    order_date: 1,
+                    Shop_drawing: 1,
+                    Shop_drawing_cached: 1,
+                    Shop_drawing_source: 1,
+                    Cut_list: 1,
+                    Cut_list_cached: 1,
+                    Cut_list_source: 1,
+                    amountOwed: 1,
+                    billBalanceAmount: 1,
+                    billAmount: 1,
+                    billedAmount: 1,
+                    invoiceNumber: 1,
+                    invoiceAmount: 1,
+                    paidInFull: 1,
+                    poAmount: 1,
+                    shipped_at: 1,
+                    shipped_at_inferred: 1,
+                    has_monday_record: 1,
+                    has_quickbooks_record: 1,
+                    in_design: 1,
+                    hazard_reason: 1,
+                    source: 1,
+                    qb_project_id: 1,
+                    qb_project_name: 1,
+                    qb_project_ids: 1,
+                    qb_project_names: 1,
+                    monday_board_id: 1,
+                    monday_board_name: 1,
+                    monday_updated_at: 1,
+                    manager_ready_percent: 1,
+                    manager_ready_date: 1,
+                    manager_ready_updated_at: 1,
+                    quickbooks_synced_at: 1,
+                    updatedAt: 1,
+                  },
+                },
+              )
+              .sort({ updatedAt: -1, monday_updated_at: -1 })
+              .limit(1)
+              .next()
+            : null,
         ])
 
         const workersById = new Map(workers.map((w) => [String(w.id ?? '').trim(), w]))
@@ -1798,9 +1925,13 @@ export function registerOrdersRoutes(app, deps) {
           }))
 
         const latestManagerStatus = managerHistory[0] ?? null
+        const normalizedOrderDetails = unifiedOrderDocument
+          ? mapUnifiedOrderDocumentToOverviewRow(unifiedOrderDocument, null)
+          : null
 
         return res.json({
           generatedAt: new Date().toISOString(),
+          order: normalizedOrderDetails,
           job: {
             mondayItemId: String(orderDocument?.mondayItemId ?? mondayItemId).trim() || null,
             jobNumber: resolvedJobNumber || null,

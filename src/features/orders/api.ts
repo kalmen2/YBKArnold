@@ -94,6 +94,7 @@ export type OrdersOverviewOrder = {
   statusHistory: OrdersStatusHistoryRow[]
   isShipped: boolean
   shippedAt: string | null
+  shippedAtInferred: boolean | null
   mondayBoardId: string | null
   mondayBoardName: string | null
   mondayUpdatedAt: string | null

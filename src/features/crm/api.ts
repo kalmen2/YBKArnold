@@ -278,6 +278,18 @@ export type CrmDealerChatMessage = {
   id: string
   dealerSourceId: string
   message: string
+  mentionUserUids?: string[]
+  mentionUserEmails?: string[]
+  reminder?: {
+    id: string
+    dueDate: string
+    note: string | null
+    targetUserUids: string[]
+    targetUserEmails: string[]
+    notifiedAt?: string | null
+    notifiedRecipientUids?: string[]
+    createdAt: string
+  } | null
   createdAt: string
   createdByUid: string | null
   createdByEmail: string | null
@@ -294,6 +306,31 @@ export type CrmDealerChatsResponse = {
   offset: number
   limit: number
   hasMore: boolean
+}
+
+export type CrmChatUser = {
+  uid: string
+  email: string
+  displayName: string | null
+  isAdmin: boolean
+  isSalesRep: boolean
+  hasWebAccess: boolean
+  hasAppAccess: boolean
+  lastActivityAt: string | null
+}
+
+export type CrmChatUsersResponse = {
+  users: CrmChatUser[]
+}
+
+export type CrmDealerChatMessageCreateInput = {
+  message: string
+  mentionUserUids?: string[]
+  reminder?: {
+    dueDate: string
+    note?: string | null
+    targetUserUids?: string[]
+  } | null
 }
 
 export type CrmContactsResponse = {
@@ -726,10 +763,21 @@ export function fetchCrmDealerChats(
   )
 }
 
-export function createCrmDealerChatMessage(dealerSourceId: string, message: string) {
+export function fetchCrmChatUsers() {
+  return apiRequest<CrmChatUsersResponse>('/api/crm/chat-users')
+}
+
+export function createCrmDealerChatMessage(
+  dealerSourceId: string,
+  input: string | CrmDealerChatMessageCreateInput,
+) {
+  const payload = typeof input === 'string'
+    ? { message: input }
+    : input
+
   return apiRequest<{ message: CrmDealerChatMessage }>(`/api/crm/dealers/${encodeURIComponent(dealerSourceId)}/chats`, {
     method: 'POST',
-    body: JSON.stringify({ message }),
+    body: JSON.stringify(payload),
   })
 }
 
