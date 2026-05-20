@@ -59,6 +59,7 @@ import {
   buildOrderBuckets,
   formatDateInput,
   formatDisplayDate,
+  formatSyncTimestamp,
   normalizeTicketStatus,
 } from './appUtils'
 import { API_BASE_URL, request, withBuildQuery } from './appApi'
@@ -75,7 +76,6 @@ import {
   SettingsOverviewSection,
   TimesheetSection,
 } from './appSections'
-import { WebView } from 'react-native-webview'
 
 WebBrowser.maybeCompleteAuthSession()
 
@@ -99,22 +99,48 @@ const GOOGLE_EXPO_IOS_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_EXPO_IOS_CLIENT
 const GOOGLE_EXPO_ANDROID_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_EXPO_ANDROID_CLIENT_ID ?? ''
 const GOOGLE_ANDROID_REDIRECT_URI = `${MOBILE_ANDROID_PACKAGE}:/oauthredirect`
 const ORDERS_PAGE_SIZE = 10
-const WEB_APP_BASE_URL = 'https://ybkarnold-b7ec0.web.app'
 const ADMIN_PORTAL_PAGES = [
-  { path: '/admin/users', labelEn: 'Users', labelEs: 'Usuarios' },
-  { path: '/admin/alerts', labelEn: 'Admin Alerts', labelEs: 'Alertas admin' },
-  { path: '/admin/issues', labelEn: 'Admin Issues', labelEs: 'Incidencias admin' },
-  { path: '/admin/logs', labelEn: 'Admin Logs', labelEs: 'Logs admin' },
-  { path: '/admin/sales-review', labelEn: 'Sales Review', labelEs: 'Revision de ventas' },
-  { path: '/admin/crm', labelEn: 'Admin CRM', labelEs: 'CRM admin' },
-  { path: '/admin/ai-config', labelEn: 'AI Config', labelEs: 'Config AI' },
-  { path: '/orders?view=admin', labelEn: 'Orders (Admin)', labelEs: 'Ordenes (Admin)' },
+  { path: '/admin/users', labelEn: 'Users', labelEs: 'Usuarios', icon: 'people-outline' as const },
+  { path: '/admin/alerts', labelEn: 'Admin Alerts', labelEs: 'Alertas admin', icon: 'notifications-outline' as const },
+  { path: '/admin/issues', labelEn: 'Admin Issues', labelEs: 'Incidencias admin', icon: 'warning-outline' as const },
+  { path: '/admin/logs', labelEn: 'Admin Logs', labelEs: 'Logs admin', icon: 'document-text-outline' as const },
+  { path: '/admin/sales-review', labelEn: 'Sales Review', labelEs: 'Revision de ventas', icon: 'bar-chart-outline' as const },
+  { path: '/admin/crm', labelEn: 'Admin CRM', labelEs: 'CRM admin', icon: 'briefcase-outline' as const },
+  { path: '/admin/ai-config', labelEn: 'AI Config', labelEs: 'Config AI', icon: 'settings-outline' as const },
+  { path: '/orders?view=admin', labelEn: 'Orders (Admin)', labelEs: 'Ordenes (Admin)', icon: 'receipt-outline' as const },
 ] as const
+
+type AdminWorkspacePagePath = (typeof ADMIN_PORTAL_PAGES)[number]['path']
 
 type AppUpdateStatusResponse = {
   url?: string | null
   build?: number | string | null
   version?: string | null
+}
+
+type AdminWorkspaceStat = {
+  label: string
+  value: string
+}
+
+type AdminWorkspaceRow = {
+  id: string
+  title: string
+  subtitle: string
+  meta?: string
+}
+
+type AdminWorkspaceSection = {
+  title: string
+  rows: AdminWorkspaceRow[]
+  emptyText: string
+}
+
+type AdminWorkspacePanelData = {
+  stats: AdminWorkspaceStat[]
+  sections: AdminWorkspaceSection[]
+  note?: string
+  updatedAt?: string | null
 }
 
 type SettingsMenuId = 'security' | 'language' | 'notifications' | 'updates' | 'admin' | 'account'
@@ -211,6 +237,30 @@ function parseBuildNumberLike(value: unknown) {
   return Number.isFinite(trailingDigits) ? trailingDigits : null
 }
 
+function normalizeTextValue(value: unknown) {
+  return String(value ?? '').trim()
+}
+
+function toCountValue(value: unknown) {
+  const parsed = Number(value)
+
+  return Number.isFinite(parsed) ? Math.max(0, Math.round(parsed)) : 0
+}
+
+function clipTextValue(value: unknown, maxLength = 160) {
+  const normalized = normalizeTextValue(value)
+
+  if (!normalized) {
+    return ''
+  }
+
+  if (normalized.length <= maxLength) {
+    return normalized
+  }
+
+  return `${normalized.slice(0, Math.max(0, maxLength - 3))}...`
+}
+
 export default function App() {
   const { height: windowHeight } = useWindowDimensions()
   const isExpoGo = Constants.appOwnership === 'expo'
@@ -261,9 +311,7 @@ export default function App() {
   const [detailSelection, setDetailSelection] = useState<DetailSelection>(null)
   const [dashboardMetricZoomOrderId, setDashboardMetricZoomOrderId] = useState<string | null>(null)
   const dashboardMetricZoomTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const [adminPortalRoutePath, setAdminPortalRoutePath] = useState<string | null>(null)
-  const [adminPortalCanGoBack, setAdminPortalCanGoBack] = useState(false)
-  const adminPortalWebViewRef = useRef<WebView | null>(null)
+  const [adminPortalRoutePath, setAdminPortalRoutePath] = useState<AdminWorkspacePagePath | null>(null)
 
   const [selectedPictureOrderId, setSelectedPictureOrderId] = useState<string | null>(null)
   const [isPicturesModalOpen, setIsPicturesModalOpen] = useState(false)
@@ -322,6 +370,8 @@ export default function App() {
   const [isInstallingUpdate, setIsInstallingUpdate] = useState(false)
   const [resolvedUpdateUrl, setResolvedUpdateUrl] = useState('')
   const [adminPortalMessage, setAdminPortalMessage] = useState<string | null>(null)
+  const [adminWorkspaceLoadingPath, setAdminWorkspaceLoadingPath] = useState<AdminWorkspacePagePath | null>(null)
+  const [adminWorkspaceDataByPath, setAdminWorkspaceDataByPath] = useState<Partial<Record<AdminWorkspacePagePath, AdminWorkspacePanelData>>>({})
   const [activeSettingsMenuId, setActiveSettingsMenuId] = useState<SettingsMenuId | null>(null)
 
   const isSpanish = language === 'es'
@@ -546,37 +596,15 @@ export default function App() {
     setAdminPortalMessage(null)
   }, [])
 
-  const closeAdminPortalWebView = useCallback(() => {
-    setAdminPortalRoutePath(null)
-    setAdminPortalCanGoBack(false)
-  }, [])
-
-  const handleAdminPortalWebBackPress = useCallback(() => {
-    if (adminPortalCanGoBack) {
-      adminPortalWebViewRef.current?.goBack()
-      return
-    }
-
-    closeAdminPortalWebView()
-  }, [adminPortalCanGoBack, closeAdminPortalWebView])
-
   const handleOpenAdminPortalPage = useCallback((
-    routePath: string,
-    englishLabel: string,
-    spanishLabel: string,
+    routePath: AdminWorkspacePagePath,
   ) => {
-    const normalizedPath = routePath.startsWith('/') ? routePath : `/${routePath}`
-
-    if (!normalizedPath || normalizedPath === '/') {
-      setAdminPortalMessage(t(`Could not open ${englishLabel}.`, `No se pudo abrir ${spanishLabel}.`))
-      return
-    }
-
     setAdminPortalMessage(null)
     setActiveSettingsMenuId(null)
-    setAdminPortalCanGoBack(false)
-    setAdminPortalRoutePath(normalizedPath)
-  }, [t])
+    setActiveScreen('admin')
+    setIsAccountMenuOpen(false)
+    setAdminPortalRoutePath(routePath)
+  }, [])
 
   const requestWithSession = useCallback(
     async <T,>(path: string, refreshRequested = false, init: RequestInit = {}) => {
@@ -626,6 +654,686 @@ export default function App() {
     },
     [firebaseUser, signOutForExpiredSession],
   )
+
+  const loadAdminWorkspacePage = useCallback(
+    async (routePath: AdminWorkspacePagePath, forceReload = false) => {
+      if (!forceReload && adminWorkspaceDataByPath[routePath]) {
+        return
+      }
+
+      setAdminWorkspaceLoadingPath(routePath)
+      setAdminPortalMessage(null)
+
+      try {
+        let panelData: AdminWorkspacePanelData | null = null
+
+        switch (routePath) {
+          case '/admin/users': {
+            const payload = await requestWithSession<{
+              users?: Array<Record<string, unknown>>
+              workers?: unknown[]
+              salesReps?: unknown[]
+            }>('/api/auth/bootstrap')
+
+            const users = Array.isArray(payload.users)
+              ? payload.users.map((user, index) => ({
+                  id: normalizeTextValue(user.uid) || `user-${index + 1}`,
+                  email: normalizeTextValue(user.email) || '-',
+                  displayName: normalizeTextValue(user.displayName),
+                  role: normalizeTextValue(user.role) || 'standard',
+                  isApproved: user.isApproved === true,
+                  hasWebAccess: user.hasWebAccess === true,
+                  hasAppAccess: user.hasAppAccess === true,
+                  lastLoginAt: normalizeTextValue(user.lastLoginAt) || null,
+                }))
+              : []
+
+            const sortedUsers = [...users].sort(
+              (left, right) => (toTimestampMs(right.lastLoginAt) ?? 0) - (toTimestampMs(left.lastLoginAt) ?? 0),
+            )
+            const approvedCount = users.filter((user) => user.isApproved).length
+            const webAccessCount = users.filter((user) => user.hasWebAccess).length
+            const appAccessCount = users.filter((user) => user.hasAppAccess).length
+            const adminCount = users.filter((user) => user.role === 'admin').length
+
+            panelData = {
+              updatedAt: new Date().toISOString(),
+              stats: [
+                { label: t('Users', 'Usuarios'), value: String(users.length) },
+                { label: t('Approved', 'Aprobados'), value: String(approvedCount) },
+                { label: t('Admins', 'Admins'), value: String(adminCount) },
+                { label: t('Web access', 'Acceso web'), value: String(webAccessCount) },
+                { label: t('App access', 'Acceso app'), value: String(appAccessCount) },
+                { label: t('Workers', 'Trabajadores'), value: String(Array.isArray(payload.workers) ? payload.workers.length : 0) },
+                { label: t('Sales reps', 'Vendedores'), value: String(Array.isArray(payload.salesReps) ? payload.salesReps.length : 0) },
+              ],
+              sections: [
+                {
+                  title: t('User accounts', 'Cuentas de usuario'),
+                  emptyText: t('No users found.', 'No hay usuarios.'),
+                  rows: sortedUsers.slice(0, 120).map((user) => {
+                    const roleLabel = normalizeTextValue(user.role).toUpperCase() || 'STANDARD'
+                    const approvalLabel = user.isApproved
+                      ? t('Approved', 'Aprobado')
+                      : t('Pending', 'Pendiente')
+                    const webLabel = user.hasWebAccess ? t('Yes', 'Si') : t('No', 'No')
+                    const appLabel = user.hasAppAccess ? t('Yes', 'Si') : t('No', 'No')
+
+                    return {
+                      id: user.id,
+                      title: user.displayName || user.email,
+                      subtitle: `${roleLabel} - ${approvalLabel}`,
+                      meta: `${t('Web', 'Web')}: ${webLabel} - ${t('App', 'App')}: ${appLabel} - ${t('Last login', 'Ultimo acceso')}: ${formatSyncTimestamp(user.lastLoginAt, locale)}`,
+                    }
+                  }),
+                },
+              ],
+            }
+            break
+          }
+
+          case '/admin/alerts': {
+            const payload = await requestWithSession<{
+              users?: Array<Record<string, unknown>>
+              alerts?: Array<Record<string, unknown>>
+            }>('/api/admin/bootstrap?alertsLimit=80')
+
+            const alerts = Array.isArray(payload.alerts)
+              ? payload.alerts.map((alert, index) => ({
+                  id: normalizeTextValue(alert.id) || `alert-${index + 1}`,
+                  title: clipTextValue(alert.title, 100) || t('Untitled alert', 'Alerta sin titulo'),
+                  message: clipTextValue(alert.message, 160),
+                  targetMode: normalizeTextValue(alert.targetMode) || 'all',
+                  targetUserCount: toCountValue(alert.targetUserCount),
+                  pushAcceptedCount: toCountValue(alert.pushAcceptedCount),
+                  pushErrorCount: toCountValue(alert.pushErrorCount),
+                  isUpdate: alert.isUpdate === true,
+                  createdAt: normalizeTextValue(alert.createdAt) || null,
+                }))
+              : []
+
+            const sortedAlerts = [...alerts].sort(
+              (left, right) => (toTimestampMs(right.createdAt) ?? 0) - (toTimestampMs(left.createdAt) ?? 0),
+            )
+            const updateAlertsCount = sortedAlerts.filter((alert) => alert.isUpdate).length
+            const pushAcceptedTotal = sortedAlerts.reduce((total, alert) => total + alert.pushAcceptedCount, 0)
+            const pushErrorTotal = sortedAlerts.reduce((total, alert) => total + alert.pushErrorCount, 0)
+
+            panelData = {
+              updatedAt: new Date().toISOString(),
+              stats: [
+                { label: t('Alerts', 'Alertas'), value: String(sortedAlerts.length) },
+                { label: t('Update alerts', 'Alertas de actualizacion'), value: String(updateAlertsCount) },
+                { label: t('Users', 'Usuarios'), value: String(Array.isArray(payload.users) ? payload.users.length : 0) },
+                { label: t('Push accepted', 'Push aceptadas'), value: String(pushAcceptedTotal) },
+                { label: t('Push errors', 'Errores push'), value: String(pushErrorTotal) },
+              ],
+              sections: [
+                {
+                  title: t('Latest admin alerts', 'Ultimas alertas admin'),
+                  emptyText: t('No admin alerts found.', 'No hay alertas admin.'),
+                  rows: sortedAlerts.slice(0, 80).map((alert) => ({
+                    id: alert.id,
+                    title: alert.title,
+                    subtitle: alert.message || t('No message', 'Sin mensaje'),
+                    meta: `${alert.targetMode === 'selected' ? t('Selected users', 'Usuarios seleccionados') : t('All users', 'Todos los usuarios')} - ${t('Targets', 'Objetivos')}: ${alert.targetUserCount} - ${t('Accepted', 'Aceptadas')}: ${alert.pushAcceptedCount} - ${formatSyncTimestamp(alert.createdAt, locale)}`,
+                  })),
+                },
+              ],
+            }
+            break
+          }
+
+          case '/admin/issues': {
+            const payload = await requestWithSession<{
+              websiteIssues?: {
+                generatedAt?: string
+                counts?: Record<string, unknown>
+                hazards?: Array<Record<string, unknown>>
+                duplicateMondayLinks?: Array<Record<string, unknown>>
+                unmappedTimesheetJobs?: Array<Record<string, unknown>>
+                missingShopDrawings?: Array<Record<string, unknown>>
+              } | null
+            }>('/api/timesheet/bootstrap')
+
+            const websiteIssues = payload.websiteIssues ?? null
+            const counts = websiteIssues?.counts ?? {}
+            const hazards = Array.isArray(websiteIssues?.hazards) ? websiteIssues.hazards : []
+            const duplicateMondayLinks = Array.isArray(websiteIssues?.duplicateMondayLinks)
+              ? websiteIssues.duplicateMondayLinks
+              : []
+            const unmappedTimesheetJobs = Array.isArray(websiteIssues?.unmappedTimesheetJobs)
+              ? websiteIssues.unmappedTimesheetJobs
+              : []
+            const missingShopDrawings = Array.isArray(websiteIssues?.missingShopDrawings)
+              ? websiteIssues.missingShopDrawings
+              : []
+
+            panelData = {
+              updatedAt: normalizeTextValue(websiteIssues?.generatedAt) || new Date().toISOString(),
+              note: t(
+                'Website integrity checks from Timesheet bootstrap (direct DB/API data).',
+                'Validaciones de integridad del sitio desde Timesheet bootstrap (datos directos DB/API).',
+              ),
+              stats: [
+                { label: t('Total issues', 'Total incidencias'), value: String(toCountValue(counts.total)) },
+                { label: t('Hazards', 'Riesgos'), value: String(toCountValue(counts.hazard)) },
+                { label: t('Duplicate links', 'Links duplicados'), value: String(toCountValue(counts.duplicateMondayLinks)) },
+                { label: t('Unmapped jobs', 'Trabajos sin mapear'), value: String(toCountValue(counts.unmappedTimesheetJobs)) },
+                { label: t('Missing drawings', 'Planos faltantes'), value: String(toCountValue(counts.missingShopDrawings)) },
+              ],
+              sections: [
+                {
+                  title: t('Hazard orders', 'Ordenes en riesgo'),
+                  emptyText: t('No hazard orders.', 'No hay ordenes en riesgo.'),
+                  rows: hazards.slice(0, 60).map((hazard, index) => ({
+                    id: normalizeTextValue(hazard.orderNumber) || normalizeTextValue(hazard.orderName) || `hazard-${index + 1}`,
+                    title: `#${normalizeTextValue(hazard.orderNumber) || '-'} ${clipTextValue(hazard.orderName, 90)}`,
+                    subtitle: clipTextValue(hazard.hazardReason, 140) || t('No hazard reason provided.', 'Sin razon de riesgo.'),
+                    meta: `${t('Monday', 'Monday')}: ${hazard.hasMondayRecord === true ? t('Yes', 'Si') : t('No', 'No')} - ${t('QuickBooks', 'QuickBooks')}: ${hazard.hasQuickBooksRecord === true ? t('Yes', 'Si') : t('No', 'No')}`,
+                  })),
+                },
+                {
+                  title: t('Duplicate Monday links', 'Links Monday duplicados'),
+                  emptyText: t('No duplicate Monday links.', 'No hay links Monday duplicados.'),
+                  rows: duplicateMondayLinks.slice(0, 40).map((duplicateLink, index) => ({
+                    id: normalizeTextValue(duplicateLink.mondayItemId) || `duplicate-${index + 1}`,
+                    title: `${t('Item', 'Item')} ${normalizeTextValue(duplicateLink.mondayItemId) || '-'}`,
+                    subtitle: `${toCountValue(duplicateLink.count)} ${t('orders linked', 'ordenes enlazadas')}`,
+                    meta: `${t('Order numbers', 'Numeros de orden')}: ${clipTextValue(Array.isArray(duplicateLink.orderNumbers) ? duplicateLink.orderNumbers.join(', ') : '', 120) || '-'}`,
+                  })),
+                },
+                {
+                  title: t('Unmapped timesheet jobs', 'Trabajos timesheet sin mapa'),
+                  emptyText: t('No unmapped jobs.', 'No hay trabajos sin mapear.'),
+                  rows: unmappedTimesheetJobs.slice(0, 40).map((job, index) => ({
+                    id: normalizeTextValue(job.jobName) || `unmapped-${index + 1}`,
+                    title: normalizeTextValue(job.jobName) || t('Unnamed job', 'Trabajo sin nombre'),
+                    subtitle: `${t('Entries', 'Entradas')}: ${toCountValue(job.entryCount)}`,
+                    meta: `${t('Progress rows', 'Filas progreso')}: ${toCountValue(job.progressCount)}`,
+                  })),
+                },
+                {
+                  title: t('Missing shop drawings', 'Planos faltantes'),
+                  emptyText: t('No missing shop drawings.', 'No faltan planos.'),
+                  rows: missingShopDrawings.slice(0, 60).map((order, index) => ({
+                    id: normalizeTextValue(order.orderNumber) || normalizeTextValue(order.orderName) || `missing-drawing-${index + 1}`,
+                    title: `#${normalizeTextValue(order.orderNumber) || '-'} ${clipTextValue(order.orderName, 90)}`,
+                    subtitle: `${t('Source', 'Fuente')}: ${normalizeTextValue(order.source) || '-'}`,
+                    meta: clipTextValue(order.hazardReason, 140),
+                  })),
+                },
+              ],
+            }
+            break
+          }
+
+          case '/admin/logs': {
+            const [userLogsPayload, systemLogsPayload] = await Promise.all([
+              requestWithSession<{
+                users?: Array<{
+                  user?: Record<string, unknown>
+                  lastLoginAt?: string | null
+                  lastActivityAt?: string | null
+                  signIns?: Array<Record<string, unknown>>
+                }>
+              }>('/api/auth/logs/users?limit=200&signInsLimit=10'),
+              requestWithSession<{
+                logs?: Array<Record<string, unknown>>
+              }>('/api/auth/logs/system?limit=200'),
+            ])
+
+            const userLogs = Array.isArray(userLogsPayload.users) ? userLogsPayload.users : []
+            const systemLogs = Array.isArray(systemLogsPayload.logs) ? systemLogsPayload.logs : []
+            const totalSignIns = userLogs.reduce((total, userLog) => {
+              return total + (Array.isArray(userLog.signIns) ? userLog.signIns.length : 0)
+            }, 0)
+            const systemErrorCount = systemLogs.filter((log) => {
+              const status = normalizeTextValue(log.status).toLowerCase()
+
+              return status.includes('error') || Boolean(normalizeTextValue(log.errorMessage))
+            }).length
+
+            panelData = {
+              updatedAt: new Date().toISOString(),
+              stats: [
+                { label: t('User logs', 'Logs de usuario'), value: String(userLogs.length) },
+                { label: t('Sign-ins tracked', 'Inicios registrados'), value: String(totalSignIns) },
+                { label: t('System runs', 'Ejecuciones sistema'), value: String(systemLogs.length) },
+                { label: t('System errors', 'Errores sistema'), value: String(systemErrorCount) },
+              ],
+              sections: [
+                {
+                  title: t('User activity', 'Actividad de usuarios'),
+                  emptyText: t('No user activity logs.', 'No hay logs de actividad de usuarios.'),
+                  rows: userLogs.slice(0, 90).map((userLog, index) => {
+                    const user = userLog.user ?? {}
+                    const email = normalizeTextValue(user.email) || '-'
+                    const displayName = normalizeTextValue(user.displayName)
+                    const signInCount = Array.isArray(userLog.signIns) ? userLog.signIns.length : 0
+
+                    return {
+                      id: normalizeTextValue(user.uid) || `user-log-${index + 1}`,
+                      title: displayName || email,
+                      subtitle: `${t('Last login', 'Ultimo acceso')}: ${formatSyncTimestamp(userLog.lastLoginAt, locale)}`,
+                      meta: `${t('Last activity', 'Ultima actividad')}: ${formatSyncTimestamp(userLog.lastActivityAt, locale)} - ${t('Sign-ins', 'Inicios')}: ${signInCount}`,
+                    }
+                  }),
+                },
+                {
+                  title: t('System run logs', 'Logs de ejecucion sistema'),
+                  emptyText: t('No system logs.', 'No hay logs del sistema.'),
+                  rows: systemLogs.slice(0, 90).map((log, index) => ({
+                    id: normalizeTextValue(log.id) || `system-log-${index + 1}`,
+                    title: `${normalizeTextValue(log.jobName) || t('Unnamed job', 'Trabajo sin nombre')} - ${normalizeTextValue(log.status).toUpperCase() || 'UNKNOWN'}`,
+                    subtitle: `${t('Started', 'Inicio')}: ${formatSyncTimestamp(normalizeTextValue(log.startedAt) || null, locale)}`,
+                    meta: clipTextValue(log.errorMessage) || clipTextValue(log.message) || `${t('Completed', 'Completado')}: ${formatSyncTimestamp(normalizeTextValue(log.completedAt) || null, locale)}`,
+                  })),
+                },
+              ],
+            }
+            break
+          }
+
+          case '/admin/sales-review': {
+            const [deletionQueuePayload, readinessPayload] = await Promise.all([
+              requestWithSession<{
+                dealers?: Array<Record<string, unknown>>
+                contacts?: Array<Record<string, unknown>>
+                total?: number
+              }>('/api/crm/deletion-queue?limit=300'),
+              requestWithSession<{
+                dealers?: Array<Record<string, unknown>>
+                contacts?: Array<Record<string, unknown>>
+                summary?: {
+                  dealers?: { total?: number; ready?: number; notReady?: number }
+                  contacts?: { total?: number; ready?: number; notReady?: number }
+                }
+              }>('/api/crm/engagement-readiness?status=all&limit=1200'),
+            ])
+
+            const queuedDealers = Array.isArray(deletionQueuePayload.dealers)
+              ? deletionQueuePayload.dealers
+              : []
+            const queuedContacts = Array.isArray(deletionQueuePayload.contacts)
+              ? deletionQueuePayload.contacts
+              : []
+            const readinessDealers = Array.isArray(readinessPayload.dealers)
+              ? readinessPayload.dealers
+              : []
+            const readinessContacts = Array.isArray(readinessPayload.contacts)
+              ? readinessPayload.contacts
+              : []
+            const readinessSummary = readinessPayload.summary ?? {}
+
+            panelData = {
+              updatedAt: new Date().toISOString(),
+              stats: [
+                {
+                  label: t('Deletion queue', 'Cola borrado'),
+                  value: String(toCountValue(deletionQueuePayload.total)),
+                },
+                {
+                  label: t('Dealer queue', 'Cola dealers'),
+                  value: String(queuedDealers.length),
+                },
+                {
+                  label: t('Contact queue', 'Cola contactos'),
+                  value: String(queuedContacts.length),
+                },
+                {
+                  label: t('Dealers ready', 'Dealers listos'),
+                  value: `${toCountValue(readinessSummary.dealers?.ready)}/${toCountValue(readinessSummary.dealers?.total)}`,
+                },
+                {
+                  label: t('Contacts ready', 'Contactos listos'),
+                  value: `${toCountValue(readinessSummary.contacts?.ready)}/${toCountValue(readinessSummary.contacts?.total)}`,
+                },
+              ],
+              sections: [
+                {
+                  title: t('Deletion queue dealers', 'Dealers en cola de borrado'),
+                  emptyText: t('No dealers queued for deletion.', 'No hay dealers en cola para borrar.'),
+                  rows: queuedDealers.slice(0, 60).map((dealer, index) => ({
+                    id: normalizeTextValue(dealer.sourceId) || `dealer-queue-${index + 1}`,
+                    title: normalizeTextValue(dealer.name) || t('Unnamed dealer', 'Dealer sin nombre'),
+                    subtitle: `${t('State', 'Estado')}: ${normalizeTextValue(dealer.state) || '-'} - ${t('Type', 'Tipo')}: ${normalizeTextValue(dealer.accountType) || '-'}`,
+                    meta: `${t('Requested', 'Solicitado')}: ${formatSyncTimestamp(normalizeTextValue(dealer.deleteRequestedAt) || null, locale)} - ${clipTextValue(dealer.deleteRequestedByEmail, 80) || '-'}`,
+                  })),
+                },
+                {
+                  title: t('Deletion queue contacts', 'Contactos en cola de borrado'),
+                  emptyText: t('No contacts queued for deletion.', 'No hay contactos en cola para borrar.'),
+                  rows: queuedContacts.slice(0, 60).map((contact, index) => ({
+                    id: normalizeTextValue(contact.sourceId) || `contact-queue-${index + 1}`,
+                    title: normalizeTextValue(contact.name) || t('Unnamed contact', 'Contacto sin nombre'),
+                    subtitle: `${t('Account', 'Cuenta')}: ${clipTextValue(contact.accountName, 90) || '-'} - ${t('State', 'Estado')}: ${normalizeTextValue(contact.state) || '-'}`,
+                    meta: `${t('Requested', 'Solicitado')}: ${formatSyncTimestamp(normalizeTextValue(contact.deleteRequestedAt) || null, locale)} - ${clipTextValue(contact.deleteRequestedByEmail, 80) || '-'}`,
+                  })),
+                },
+                {
+                  title: t('Dealer readiness', 'Readiness de dealers'),
+                  emptyText: t('No dealer readiness data.', 'No hay datos de readiness de dealers.'),
+                  rows: readinessDealers
+                    .slice()
+                    .sort((left, right) => {
+                      const leftStatus = normalizeTextValue(left.engagementReadinessStatus)
+                      const rightStatus = normalizeTextValue(right.engagementReadinessStatus)
+
+                      if (leftStatus === rightStatus) {
+                        return 0
+                      }
+
+                      if (leftStatus === 'not_ready') {
+                        return -1
+                      }
+
+                      if (rightStatus === 'not_ready') {
+                        return 1
+                      }
+
+                      return 0
+                    })
+                    .slice(0, 90)
+                    .map((dealer, index) => ({
+                      id: normalizeTextValue(dealer.sourceId) || `dealer-readiness-${index + 1}`,
+                      title: normalizeTextValue(dealer.name) || t('Unnamed dealer', 'Dealer sin nombre'),
+                      subtitle: `${t('Status', 'Estado')}: ${normalizeTextValue(dealer.engagementReadinessStatus) || 'none'} - ${t('State', 'Estado')}: ${normalizeTextValue(dealer.state) || '-'}`,
+                      meta: clipTextValue(dealer.engagementReadinessNote, 150) || `${t('Updated', 'Actualizado')}: ${formatSyncTimestamp(normalizeTextValue(dealer.updatedAt) || null, locale)}`,
+                    })),
+                },
+                {
+                  title: t('Contact readiness', 'Readiness de contactos'),
+                  emptyText: t('No contact readiness data.', 'No hay datos de readiness de contactos.'),
+                  rows: readinessContacts
+                    .slice()
+                    .sort((left, right) => {
+                      const leftStatus = normalizeTextValue(left.engagementReadinessStatus)
+                      const rightStatus = normalizeTextValue(right.engagementReadinessStatus)
+
+                      if (leftStatus === rightStatus) {
+                        return 0
+                      }
+
+                      if (leftStatus === 'not_ready') {
+                        return -1
+                      }
+
+                      if (rightStatus === 'not_ready') {
+                        return 1
+                      }
+
+                      return 0
+                    })
+                    .slice(0, 90)
+                    .map((contact, index) => ({
+                      id: normalizeTextValue(contact.sourceId) || `contact-readiness-${index + 1}`,
+                      title: normalizeTextValue(contact.name) || t('Unnamed contact', 'Contacto sin nombre'),
+                      subtitle: `${t('Status', 'Estado')}: ${normalizeTextValue(contact.engagementReadinessStatus) || 'none'} - ${t('Account', 'Cuenta')}: ${clipTextValue(contact.accountName, 90) || '-'}`,
+                      meta: clipTextValue(contact.engagementReadinessNote, 150) || `${t('Updated', 'Actualizado')}: ${formatSyncTimestamp(normalizeTextValue(contact.updatedAt) || null, locale)}`,
+                    })),
+                },
+              ],
+            }
+            break
+          }
+
+          case '/admin/crm': {
+            const [overviewPayload, dealersPayload, contactsPayload] = await Promise.all([
+              requestWithSession<{
+                generatedAt?: string
+                dealers?: {
+                  totalAccounts?: number
+                  totalContacts?: number
+                  openConflictCount?: number
+                }
+                quotes?: {
+                  totalQuotes?: number
+                  acceptedQuotes?: number
+                  acceptanceRate?: number
+                  acceptedValue?: number
+                  topDealersByAcceptedValue?: Array<Record<string, unknown>>
+                }
+                orders?: {
+                  totalOrders?: number
+                }
+              }>('/api/crm/overview'),
+              requestWithSession<{
+                dealers?: Array<Record<string, unknown>>
+              }>('/api/crm/dealers?limit=80'),
+              requestWithSession<{
+                contacts?: Array<Record<string, unknown>>
+              }>('/api/crm/contacts?limit=80'),
+            ])
+
+            const dealers = Array.isArray(dealersPayload.dealers) ? dealersPayload.dealers : []
+            const contacts = Array.isArray(contactsPayload.contacts) ? contactsPayload.contacts : []
+            const topDealersByAcceptedValue = Array.isArray(overviewPayload.quotes?.topDealersByAcceptedValue)
+              ? overviewPayload.quotes?.topDealersByAcceptedValue
+              : []
+
+            panelData = {
+              updatedAt: normalizeTextValue(overviewPayload.generatedAt) || new Date().toISOString(),
+              stats: [
+                {
+                  label: t('Dealer accounts', 'Cuentas dealer'),
+                  value: String(toCountValue(overviewPayload.dealers?.totalAccounts)),
+                },
+                {
+                  label: t('Dealer contacts', 'Contactos dealer'),
+                  value: String(toCountValue(overviewPayload.dealers?.totalContacts)),
+                },
+                {
+                  label: t('Open conflicts', 'Conflictos abiertos'),
+                  value: String(toCountValue(overviewPayload.dealers?.openConflictCount)),
+                },
+                {
+                  label: t('Total quotes', 'Cotizaciones totales'),
+                  value: String(toCountValue(overviewPayload.quotes?.totalQuotes)),
+                },
+                {
+                  label: t('Accepted quotes', 'Cotizaciones aceptadas'),
+                  value: String(toCountValue(overviewPayload.quotes?.acceptedQuotes)),
+                },
+                {
+                  label: t('Total orders', 'Ordenes totales'),
+                  value: String(toCountValue(overviewPayload.orders?.totalOrders)),
+                },
+              ],
+              sections: [
+                {
+                  title: t('Dealers', 'Dealers'),
+                  emptyText: t('No dealers found.', 'No hay dealers.'),
+                  rows: dealers.slice(0, 80).map((dealer, index) => ({
+                    id: normalizeTextValue(dealer.sourceId) || `dealer-${index + 1}`,
+                    title: normalizeTextValue(dealer.name) || t('Unnamed dealer', 'Dealer sin nombre'),
+                    subtitle: `${t('State', 'Estado')}: ${normalizeTextValue(dealer.state) || '-'} - ${t('Sales rep', 'Vendedor')}: ${normalizeTextValue(dealer.salesRep) || '-'}`,
+                    meta: `${t('Readiness', 'Readiness')}: ${normalizeTextValue(dealer.engagementReadinessStatus) || 'none'} - ${t('Imported', 'Importado')}: ${formatSyncTimestamp(normalizeTextValue(dealer.lastImportedAt) || null, locale)}`,
+                  })),
+                },
+                {
+                  title: t('Contacts', 'Contactos'),
+                  emptyText: t('No contacts found.', 'No hay contactos.'),
+                  rows: contacts.slice(0, 80).map((contact, index) => ({
+                    id: normalizeTextValue(contact.sourceId) || `contact-${index + 1}`,
+                    title: normalizeTextValue(contact.name) || normalizeTextValue(contact.primaryEmail) || t('Unnamed contact', 'Contacto sin nombre'),
+                    subtitle: `${t('Account', 'Cuenta')}: ${clipTextValue(contact.accountName, 90) || '-'} - ${t('State', 'Estado')}: ${normalizeTextValue(contact.state) || '-'}`,
+                    meta: `${t('Primary email', 'Correo principal')}: ${clipTextValue(contact.primaryEmail, 80) || '-'}`,
+                  })),
+                },
+                {
+                  title: t('Top dealers by accepted value', 'Top dealers por valor aceptado'),
+                  emptyText: t('No accepted quote value data.', 'No hay datos de valor aceptado.'),
+                  rows: topDealersByAcceptedValue.slice(0, 20).map((entry, index) => {
+                    const acceptedValue = Number(entry.acceptedValue)
+                    const acceptedValueLabel = Number.isFinite(acceptedValue)
+                      ? acceptedValue.toLocaleString(locale, {
+                          style: 'currency',
+                          currency: 'USD',
+                          maximumFractionDigits: 0,
+                        })
+                      : '$0'
+
+                    return {
+                      id: normalizeTextValue(entry.dealerSourceId) || `top-dealer-${index + 1}`,
+                      title: normalizeTextValue(entry.dealerName) || t('Unnamed dealer', 'Dealer sin nombre'),
+                      subtitle: `${t('Accepted value', 'Valor aceptado')}: ${acceptedValueLabel}`,
+                      meta: `${t('Dealer source', 'Fuente dealer')}: ${normalizeTextValue(entry.dealerSourceId) || '-'}`,
+                    }
+                  }),
+                },
+              ],
+            }
+            break
+          }
+
+          case '/admin/ai-config': {
+            const categories = ['general', 'support', 'summaries', 'purchasing'] as const
+            const ruleEntries = await Promise.all(
+              categories.map(async (category) => {
+                const response = await requestWithSession<{
+                  content?: string
+                }>(`/api/ai/rules/${category}`)
+
+                return {
+                  category,
+                  content: normalizeTextValue(response.content),
+                }
+              }),
+            )
+
+            const totalCharacters = ruleEntries.reduce((total, entry) => total + entry.content.length, 0)
+
+            panelData = {
+              updatedAt: new Date().toISOString(),
+              note: t(
+                'All AI rule categories are loaded from the API and can now be reviewed in-app.',
+                'Todas las categorias de reglas AI cargan desde la API y ahora se pueden revisar en la app.',
+              ),
+              stats: [
+                {
+                  label: t('Categories', 'Categorias'),
+                  value: String(ruleEntries.length),
+                },
+                {
+                  label: t('Total characters', 'Total caracteres'),
+                  value: String(totalCharacters),
+                },
+              ],
+              sections: [
+                {
+                  title: t('AI rule categories', 'Categorias de reglas AI'),
+                  emptyText: t('No AI rules found.', 'No hay reglas AI.'),
+                  rows: ruleEntries.map((entry) => ({
+                    id: entry.category,
+                    title: entry.category.toUpperCase(),
+                    subtitle: `${t('Length', 'Longitud')}: ${entry.content.length}`,
+                    meta: clipTextValue(entry.content, 200) || t('No content.', 'Sin contenido.'),
+                  })),
+                },
+              ],
+            }
+            break
+          }
+
+          case '/orders?view=admin': {
+            const payload = await requestWithSession<{
+              generatedAt?: string
+              counts?: Record<string, unknown>
+              orders?: Array<Record<string, unknown>>
+            }>('/api/orders/overview')
+
+            const counts = payload.counts ?? {}
+            const orders = Array.isArray(payload.orders) ? payload.orders : []
+            const hazardOrders = orders.filter((order) => Boolean(normalizeTextValue(order.hazardReason)))
+            const activeOrders = orders.filter((order) => order.isShipped !== true)
+
+            panelData = {
+              updatedAt: normalizeTextValue(payload.generatedAt) || new Date().toISOString(),
+              stats: [
+                { label: t('Total', 'Total'), value: String(toCountValue(counts.total)) },
+                { label: t('Non shipped', 'No enviadas'), value: String(toCountValue(counts.nonShipped)) },
+                { label: t('Shipped', 'Enviadas'), value: String(toCountValue(counts.shipped)) },
+                { label: t('Hazard', 'Riesgo'), value: String(toCountValue(counts.hazard)) },
+                { label: t('Monday only', 'Solo Monday'), value: String(toCountValue(counts.mondayOnly)) },
+                { label: t('QuickBooks only', 'Solo QuickBooks'), value: String(toCountValue(counts.quickBooksOnly)) },
+              ],
+              sections: [
+                {
+                  title: t('Active orders', 'Ordenes activas'),
+                  emptyText: t('No active orders.', 'No hay ordenes activas.'),
+                  rows: activeOrders.slice(0, 90).map((order, index) => {
+                    const orderNumber = normalizeTextValue(order.orderNumber)
+                    const jobNumber = normalizeTextValue(order.jobNumber)
+                    const orderName = clipTextValue(order.orderName, 90)
+                    const rowStatus = normalizeTextValue(order.rowStatus) || '-'
+
+                    return {
+                      id: normalizeTextValue(order.id) || normalizeTextValue(order.mondayItemId) || `active-order-${index + 1}`,
+                      title: `#${orderNumber || jobNumber || '-'} ${orderName}`,
+                      subtitle: `${t('Status', 'Estado')}: ${rowStatus} - ${t('Due', 'Entrega')}: ${formatDisplayDate(normalizeTextValue(order.dueDate) || null, locale)}`,
+                      meta: `${t('Source', 'Fuente')}: ${normalizeTextValue(order.source) || '-'} - ${t('Updated', 'Actualizado')}: ${formatSyncTimestamp(normalizeTextValue(order.mondayUpdatedAt) || null, locale)}`,
+                    }
+                  }),
+                },
+                {
+                  title: t('Hazard orders', 'Ordenes en riesgo'),
+                  emptyText: t('No hazard orders.', 'No hay ordenes en riesgo.'),
+                  rows: hazardOrders.slice(0, 90).map((order, index) => {
+                    const orderNumber = normalizeTextValue(order.orderNumber)
+                    const jobNumber = normalizeTextValue(order.jobNumber)
+
+                    return {
+                      id: normalizeTextValue(order.id) || normalizeTextValue(order.mondayItemId) || `hazard-order-${index + 1}`,
+                      title: `#${orderNumber || jobNumber || '-'} ${clipTextValue(order.orderName, 90)}`,
+                      subtitle: clipTextValue(order.hazardReason, 150) || t('No hazard reason provided.', 'Sin razon de riesgo.'),
+                      meta: `${t('Source', 'Fuente')}: ${normalizeTextValue(order.source) || '-'} - ${t('Due', 'Entrega')}: ${formatDisplayDate(normalizeTextValue(order.dueDate) || null, locale)}`,
+                    }
+                  }),
+                },
+              ],
+            }
+            break
+          }
+
+          default: {
+            panelData = {
+              updatedAt: new Date().toISOString(),
+              stats: [],
+              sections: [],
+              note: t('Unsupported admin page.', 'Pagina admin no soportada.'),
+            }
+          }
+        }
+
+        if (panelData) {
+          setAdminWorkspaceDataByPath((previous) => ({
+            ...previous,
+            [routePath]: panelData,
+          }))
+        }
+      } catch (error) {
+        setAdminPortalMessage(
+          getErrorMessage(
+            error,
+            'Could not load admin data right now.',
+            'No se pudo cargar datos admin ahora.',
+          ),
+        )
+      } finally {
+        setAdminWorkspaceLoadingPath((current) => (current === routePath ? null : current))
+      }
+    },
+    [adminWorkspaceDataByPath, getErrorMessage, locale, requestWithSession, t],
+  )
+
+  const handleAdminWorkspaceRefresh = useCallback(() => {
+    if (!adminPortalRoutePath) {
+      return
+    }
+
+    void loadAdminWorkspacePage(adminPortalRoutePath, true)
+  }, [adminPortalRoutePath, loadAdminWorkspacePage])
 
   const syncAuthProfile = useCallback(async () => {
     if (!firebaseUser) {
@@ -1332,6 +2040,26 @@ export default function App() {
       setActiveScreen('dashboard')
     }
   }, [activeScreen, isAdminUser])
+
+  useEffect(() => {
+    if (activeScreen !== 'admin' || !isAdminUser) {
+      return
+    }
+
+    const hasSelectedAdminPage = Boolean(adminPortalRoutePath)
+
+    if (!hasSelectedAdminPage || !ADMIN_PORTAL_PAGES.some((page) => page.path === adminPortalRoutePath)) {
+      setAdminPortalRoutePath(ADMIN_PORTAL_PAGES[0].path)
+    }
+  }, [activeScreen, adminPortalRoutePath, isAdminUser])
+
+  useEffect(() => {
+    if (activeScreen !== 'admin' || !isAdminUser || !adminPortalRoutePath) {
+      return
+    }
+
+    void loadAdminWorkspacePage(adminPortalRoutePath)
+  }, [activeScreen, adminPortalRoutePath, isAdminUser, loadAdminWorkspacePage])
 
   useEffect(() => {
     if (activeScreen !== 'manager') {
@@ -2044,6 +2772,7 @@ export default function App() {
 
     if (activeScreen === 'admin') {
       setAdminPortalMessage(null)
+      handleAdminWorkspaceRefresh()
       return
     }
 
@@ -2051,6 +2780,7 @@ export default function App() {
   }, [
     activeScreen,
     handleCheckForUpdates,
+    handleAdminWorkspaceRefresh,
     loadAlerts,
     loadDashboard,
     loadManagerSheet,
@@ -2408,6 +3138,23 @@ export default function App() {
     () => Math.max(360, windowHeight - 330),
     [windowHeight],
   )
+
+  const adminWorkspaceHeight = useMemo(
+    () => Math.max(440, windowHeight - 300),
+    [windowHeight],
+  )
+
+  const selectedAdminPortalPage = useMemo(
+    () => ADMIN_PORTAL_PAGES.find((page) => page.path === adminPortalRoutePath) ?? ADMIN_PORTAL_PAGES[0],
+    [adminPortalRoutePath],
+  )
+
+  const selectedAdminWorkspaceData = useMemo(
+    () => adminWorkspaceDataByPath[selectedAdminPortalPage.path] ?? null,
+    [adminWorkspaceDataByPath, selectedAdminPortalPage.path],
+  )
+
+  const isAdminWorkspaceLoading = adminWorkspaceLoadingPath === selectedAdminPortalPage.path
 
   const selectedOrderPhotos = useMemo(() => {
     if (!selectedPictureOrder) {
@@ -3831,7 +4578,7 @@ export default function App() {
     )
   }
 
-  const usesNestedListScroll = activeScreen === 'pictures' || activeScreen === 'orders'
+  const usesNestedListScroll = activeScreen === 'pictures' || activeScreen === 'orders' || activeScreen === 'admin'
   const isRefreshBusy =
     isRefreshing
     || (activeScreen === 'timesheet' && isTimesheetLoading)
@@ -4053,25 +4800,123 @@ export default function App() {
                 <Text style={styles.sectionTitle}>{t('Admin', 'Admin')}</Text>
                 <Text style={styles.sectionSubtitle}>
                   {t(
-                    'Open full website admin pages from your phone.',
-                    'Abre paginas admin completas del sitio web desde tu telefono.',
+                    'Manage every admin section inside the app using the page bars below.',
+                    'Administra cada seccion de admin dentro de la app usando las barras de paginas de abajo.',
                   )}
                 </Text>
 
-                <View style={styles.ordersListCard}>
-                  <View style={styles.settingsAdminGrid}>
-                    {ADMIN_PORTAL_PAGES.map((adminPage) => (
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  style={styles.adminWorkspaceTabsScroll}
+                  contentContainerStyle={styles.adminWorkspaceTabsContent}
+                >
+                  {ADMIN_PORTAL_PAGES.map((adminPage) => {
+                    const isActive = selectedAdminPortalPage.path === adminPage.path
+
+                    return (
                       <Pressable
                         key={adminPage.path}
-                        style={styles.settingsAdminBubble}
+                        style={[styles.adminWorkspaceTab, isActive ? styles.adminWorkspaceTabActive : null]}
                         onPress={() => {
-                          void handleOpenAdminPortalPage(adminPage.path, adminPage.labelEn, adminPage.labelEs)
+                          void handleOpenAdminPortalPage(adminPage.path)
                         }}
                       >
-                        <Text style={styles.settingsAdminBubbleText}>{t(adminPage.labelEn, adminPage.labelEs)}</Text>
+                        <Ionicons
+                          name={adminPage.icon}
+                          size={15}
+                          color={isActive ? '#ffffff' : '#365792'}
+                        />
+                        <Text style={[styles.adminWorkspaceTabText, isActive ? styles.adminWorkspaceTabTextActive : null]}>
+                          {t(adminPage.labelEn, adminPage.labelEs)}
+                        </Text>
                       </Pressable>
-                    ))}
+                    )
+                  })}
+                </ScrollView>
+
+                <View style={[styles.adminWorkspaceCard, { height: adminWorkspaceHeight }]}> 
+                  <View style={styles.adminWorkspaceHeader}>
+                    <View style={styles.adminWorkspaceHeaderTextWrap}>
+                      <Text style={styles.adminWorkspaceHeaderTitle} numberOfLines={1}>
+                        {t(selectedAdminPortalPage.labelEn, selectedAdminPortalPage.labelEs)}
+                      </Text>
+                      <Text style={styles.adminWorkspaceHeaderMeta} numberOfLines={1}>
+                        {t('Direct API + database data in native app UI.', 'Datos directos API + base de datos en UI nativa.')}
+                      </Text>
+                    </View>
+
+                    <View style={styles.adminWorkspaceHeaderActions}>
+                      <Pressable
+                        style={[
+                          styles.adminWorkspaceHeaderButton,
+                          isAdminWorkspaceLoading ? styles.adminWorkspaceHeaderButtonDisabled : null,
+                        ]}
+                        onPress={handleAdminWorkspaceRefresh}
+                        disabled={isAdminWorkspaceLoading}
+                      >
+                        <Ionicons name="refresh" size={16} color={isAdminWorkspaceLoading ? '#90a3c9' : '#1f3567'} />
+                      </Pressable>
+                    </View>
                   </View>
+
+                  {isAdminWorkspaceLoading ? (
+                    <View style={styles.adminPortalLoadingWrap}>
+                      <ActivityIndicator size="small" color="#2b60db" />
+                      <Text style={styles.adminPortalLoadingText}>{t('Loading admin data...', 'Cargando datos admin...')}</Text>
+                    </View>
+                  ) : selectedAdminWorkspaceData ? (
+                    <ScrollView
+                      style={styles.adminWorkspaceBodyScroll}
+                      contentContainerStyle={styles.adminWorkspaceBodyContent}
+                      showsVerticalScrollIndicator={false}
+                    >
+                      {selectedAdminWorkspaceData.note ? (
+                        <Text style={styles.adminWorkspaceBodyNote}>{selectedAdminWorkspaceData.note}</Text>
+                      ) : null}
+
+                      {selectedAdminWorkspaceData.updatedAt ? (
+                        <Text style={styles.adminWorkspaceBodyUpdatedAt}>
+                          {t('Updated', 'Actualizado')}: {formatSyncTimestamp(selectedAdminWorkspaceData.updatedAt, locale)}
+                        </Text>
+                      ) : null}
+
+                      {selectedAdminWorkspaceData.stats.length > 0 ? (
+                        <View style={styles.adminWorkspaceStatsWrap}>
+                          {selectedAdminWorkspaceData.stats.map((stat) => (
+                            <View key={`${stat.label}-${stat.value}`} style={styles.adminWorkspaceStatChip}>
+                              <Text style={styles.adminWorkspaceStatLabel}>{stat.label}</Text>
+                              <Text style={styles.adminWorkspaceStatValue}>{stat.value}</Text>
+                            </View>
+                          ))}
+                        </View>
+                      ) : null}
+
+                      {selectedAdminWorkspaceData.sections.map((section) => (
+                        <View key={section.title} style={styles.adminWorkspaceSectionCard}>
+                          <Text style={styles.adminWorkspaceSectionTitle}>{section.title}</Text>
+
+                          {section.rows.length === 0 ? (
+                            <Text style={styles.adminWorkspaceSectionEmpty}>{section.emptyText}</Text>
+                          ) : (
+                            section.rows.map((row) => (
+                              <View key={`${section.title}-${row.id}`} style={styles.adminWorkspaceRowCard}>
+                                <Text style={styles.adminWorkspaceRowTitle}>{row.title}</Text>
+                                <Text style={styles.adminWorkspaceRowSubtitle}>{row.subtitle}</Text>
+                                {row.meta ? <Text style={styles.adminWorkspaceRowMeta}>{row.meta}</Text> : null}
+                              </View>
+                            ))
+                          )}
+                        </View>
+                      ))}
+                    </ScrollView>
+                  ) : (
+                    <View style={styles.adminWorkspaceEmptyWrap}>
+                      <Text style={styles.adminWorkspaceEmptyText}>
+                        {t('Select an admin page from the bars above.', 'Selecciona una pagina admin desde las barras de arriba.')}
+                      </Text>
+                    </View>
+                  )}
                 </View>
 
                 {adminPortalMessage ? <Text style={styles.settingsInlineStatus}>{adminPortalMessage}</Text> : null}
@@ -4847,11 +5692,11 @@ export default function App() {
 
                 {activeSettingsMenuId === 'admin' ? (
                   <>
-                    <Text style={styles.settingsTitle}>{t('Admin Portal', 'Portal admin')}</Text>
+                    <Text style={styles.settingsTitle}>{t('Admin Workspace', 'Area admin')}</Text>
                     <Text style={styles.settingsSubtitle}>
                       {t(
-                        'Open full website admin pages from your phone.',
-                        'Abre paginas admin completas del sitio web desde tu telefono.',
+                        'Open each admin page in native app screens backed by direct API/database data.',
+                        'Abre cada pagina admin en pantallas nativas con datos directos de API/base de datos.',
                       )}
                     </Text>
 
@@ -4861,7 +5706,7 @@ export default function App() {
                           key={adminPage.path}
                           style={styles.settingsAdminBubble}
                           onPress={() => {
-                            void handleOpenAdminPortalPage(adminPage.path, adminPage.labelEn, adminPage.labelEs)
+                            void handleOpenAdminPortalPage(adminPage.path)
                           }}
                         >
                           <Text style={styles.settingsAdminBubbleText}>{t(adminPage.labelEn, adminPage.labelEs)}</Text>
@@ -4895,59 +5740,6 @@ export default function App() {
               </ScrollView>
             </View>
           </View>
-        </Modal>
-
-        <Modal
-          visible={Boolean(adminPortalRoutePath)}
-          transparent={false}
-          animationType="slide"
-          onRequestClose={handleAdminPortalWebBackPress}
-        >
-          <SafeAreaView style={styles.adminPortalScreen} edges={['top']}>
-            <View style={styles.adminPortalHeader}>
-              <Pressable
-                style={styles.adminPortalBackButton}
-                onPress={handleAdminPortalWebBackPress}
-              >
-                <Ionicons name="chevron-back" size={20} color="#1f3567" />
-              </Pressable>
-
-              <View style={styles.adminPortalHeaderTextWrap}>
-                <Text style={styles.adminPortalHeaderTitle} numberOfLines={1}>
-                  {t('Admin', 'Admin')}
-                </Text>
-                <Text style={styles.adminPortalHeaderUrl} numberOfLines={1}>
-                  {adminPortalRoutePath ? `${WEB_APP_BASE_URL}${adminPortalRoutePath}` : WEB_APP_BASE_URL}
-                </Text>
-              </View>
-
-              <Pressable
-                style={styles.adminPortalCloseButton}
-                onPress={closeAdminPortalWebView}
-              >
-                <Ionicons name="close" size={20} color="#2a3f73" />
-              </Pressable>
-            </View>
-
-            {adminPortalRoutePath ? (
-              <WebView
-                ref={adminPortalWebViewRef}
-                style={styles.adminPortalWebView}
-                source={{ uri: `${WEB_APP_BASE_URL}${adminPortalRoutePath}` }}
-                startInLoadingState
-                setSupportMultipleWindows={false}
-                onNavigationStateChange={(navigationState) => {
-                  setAdminPortalCanGoBack(Boolean(navigationState.canGoBack))
-                }}
-                renderLoading={() => (
-                  <View style={styles.adminPortalLoadingWrap}>
-                    <ActivityIndicator size="small" color="#2b60db" />
-                    <Text style={styles.adminPortalLoadingText}>{t('Loading admin page...', 'Cargando pagina admin...')}</Text>
-                  </View>
-                )}
-              />
-            ) : null}
-          </SafeAreaView>
         </Modal>
 
         <Modal
