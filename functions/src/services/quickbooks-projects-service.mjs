@@ -3,8 +3,18 @@
 // pull customers/invoices/payments/POs, and the per-project rollup that the
 // orders refresh consumes.
 
-const quickBooksTokenUrl = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer'
-const quickBooksApiBaseUrlDefault = 'https://quickbooks.api.intuit.com'
+import {
+  QUICKBOOKS_API_BASE_URL_DEFAULT as quickBooksApiBaseUrlDefault,
+  QUICKBOOKS_TOKEN_URL as quickBooksTokenUrl,
+  extractQuickBooksRefValue as extractRefValue,
+} from '../utils/quickbooks-utils.mjs'
+import {
+  isExpiredAt,
+  normalizeText,
+  toIsoOrNull,
+  toMoneyOrNull as toMoney,
+  toTimestampMs,
+} from '../utils/value-utils.mjs'
 const quickBooksTokenDocId = 'primary'
 const quickBooksAccessTokenRefreshSkewMs = 2 * 60 * 1000
 const quickBooksQueryPageSize = 500
@@ -15,42 +25,6 @@ const quickBooksExplicitNonOrderProjectTokens = [
   'payroll',
   'repair',
 ]
-
-function normalizeText(value, maxLength = 500) {
-  return String(value ?? '').trim().slice(0, maxLength)
-}
-
-function toMoney(value) {
-  const parsed = Number(value)
-  return Number.isFinite(parsed) ? Number(parsed.toFixed(2)) : null
-}
-
-function toIsoOrNull(value) {
-  return normalizeText(value, 80) || null
-}
-
-function toTimestampMs(value) {
-  const ts = Date.parse(normalizeText(value, 80))
-  return Number.isFinite(ts) ? ts : null
-}
-
-function isExpiredAt(isoTimestamp, skewMs = 0) {
-  const ts = toTimestampMs(isoTimestamp)
-  if (!Number.isFinite(ts)) {
-    return true
-  }
-  return Date.now() >= ts - skewMs
-}
-
-function extractRefValue(refValue) {
-  if (typeof refValue === 'string') {
-    return normalizeText(refValue, 160)
-  }
-  if (!refValue || typeof refValue !== 'object') {
-    return ''
-  }
-  return normalizeText(refValue.value, 160) || normalizeText(refValue.id, 160) || ''
-}
 
 function collectCustomerRefsDeep(input, refsSet, depth = 0) {
   if (depth > 6 || !input) {

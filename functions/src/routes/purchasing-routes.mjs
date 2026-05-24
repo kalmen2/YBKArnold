@@ -1,5 +1,19 @@
-const quickBooksTokenUrl = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer'
-const quickBooksApiBaseUrlDefault = 'https://quickbooks.api.intuit.com'
+import { AppError } from '../utils/app-error.mjs'
+import {
+  QUICKBOOKS_API_BASE_URL_DEFAULT as quickBooksApiBaseUrlDefault,
+  QUICKBOOKS_TOKEN_URL as quickBooksTokenUrl,
+  extractQuickBooksRefName,
+  extractQuickBooksRefValue,
+  normalizeQuickBooksApiBaseUrl,
+  resolveQuickBooksErrorMessage,
+  toIsoTimeFromNow,
+} from '../utils/quickbooks-utils.mjs'
+import {
+  buildFirebaseStorageDownloadUrl,
+  isExpiredAt,
+  normalizeText,
+  toMoneyOrZero as toMoney,
+} from '../utils/value-utils.mjs'
 const quickBooksTokenDocId = 'primary'
 const quickBooksAccessTokenRefreshSkewMs = 2 * 60 * 1000
 const quickBooksBillPageSize = 200
@@ -11,23 +25,10 @@ const purchasingAiDeliveryLocation = 'United States (USA)'
 const purchasingAiSearchUrl = 'https://html.duckduckgo.com/html/'
 const purchasingAiMaxSearchCandidates = 12
 
-function createHttpError(message, status = 500) {
-  const error = new Error(message)
-  error.status = status
-  return error
-}
-
-function normalizeText(value, maxLength = 400) {
-  return String(value ?? '').trim().slice(0, maxLength)
-}
+const createHttpError = (message, status = 500) => new AppError(message, status)
 
 function normKey(value) {
   return String(value ?? '').trim().toLowerCase().replace(/\s+/g, ' ')
-}
-
-function toMoney(value) {
-  const n = Number(value)
-  return Number.isFinite(n) ? Number(n.toFixed(2)) : 0
 }
 
 function toNumber(value) {
@@ -284,16 +285,6 @@ function buildPurchasingAiSearchProfile(itemName) {
   }
 }
 
-function normalizeQuickBooksApiBaseUrl(value) {
-  const normalized = normalizeText(value, 400)
-
-  if (!normalized) {
-    return quickBooksApiBaseUrlDefault
-  }
-
-  return normalized.replace(/\/$/, '')
-}
-
 function parseDateOnly(value) {
   const raw = normalizeText(value, 80)
 
@@ -328,61 +319,6 @@ function parseDateOnly(value) {
   }
 
   return new Date(parsed).toISOString().slice(0, 10)
-}
-
-function isExpiredAt(isoTimestamp, skewMs = 0) {
-  const timestampMs = Date.parse(normalizeText(isoTimestamp, 80))
-
-  if (!Number.isFinite(timestampMs)) {
-    return true
-  }
-
-  return Date.now() >= timestampMs - skewMs
-}
-
-function toIsoTimeFromNow(secondsFromNow) {
-  const seconds = Number(secondsFromNow)
-
-  if (!Number.isFinite(seconds) || seconds <= 0) {
-    return null
-  }
-
-  return new Date(Date.now() + seconds * 1000).toISOString()
-}
-
-function resolveQuickBooksErrorMessage(payload, fallbackMessage) {
-  const faultError = payload?.Fault?.Error?.[0]
-  const faultMessage = normalizeText(faultError?.Detail || faultError?.Message, 700)
-
-  if (faultMessage) {
-    return faultMessage
-  }
-
-  return normalizeText(payload?.error_description || payload?.error, 700) || fallbackMessage
-}
-
-function extractQuickBooksRefValue(refValue) {
-  if (typeof refValue === 'string') {
-    return normalizeText(refValue, 160)
-  }
-
-  if (!refValue || typeof refValue !== 'object') {
-    return ''
-  }
-
-  return (
-    normalizeText(refValue.value, 160)
-    || normalizeText(refValue.id, 160)
-    || ''
-  )
-}
-
-function extractQuickBooksRefName(refValue) {
-  if (!refValue || typeof refValue !== 'object') {
-    return null
-  }
-
-  return normalizeText(refValue.name, 260) || null
 }
 
 function maxIsoTimestamp(left, right) {
@@ -1177,13 +1113,6 @@ export function registerPurchasingRoutes(app, deps) {
     }
 
     return parsed
-  }
-
-  function buildFirebaseStorageDownloadUrl(bucketName, objectPath, downloadToken) {
-    const encodedObjectPath = encodeURIComponent(String(objectPath ?? '').trim())
-    const encodedToken = encodeURIComponent(String(downloadToken ?? '').trim())
-
-    return `https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(bucketName)}/o/${encodedObjectPath}?alt=media&token=${encodedToken}`
   }
 
   async function buildPurchasingItemPhotoRecord(file, bucketName) {

@@ -2,6 +2,8 @@
 // trigger does live Monday + QuickBooks pulls), and job-details (DB only,
 // Mongo-side prefilter on jobName).
 
+import { toMoneyOrZero as toMoney } from '../utils/value-utils.mjs'
+
 export function registerOrdersRoutes(app, deps) {
   const {
     authApprovalApproved,
@@ -83,11 +85,6 @@ export function registerOrdersRoutes(app, deps) {
     }
     const fallback = Number(workerDocument?.hourlyRate)
     return Number.isFinite(fallback) && fallback > 0 ? fallback : 0
-  }
-
-  function toMoney(value) {
-    const parsed = Number(value)
-    return Number.isFinite(parsed) ? Number(parsed.toFixed(2)) : 0
   }
 
   function extractJobNumber(orderDocument) {

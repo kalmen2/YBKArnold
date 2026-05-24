@@ -40,7 +40,7 @@ import {
   type CrmEngagementReadinessDealer,
 } from '../features/crm/api'
 import { useDebounceValue } from '../hooks/useDebounceValue'
-import { formatDateTime } from '../lib/formatters'
+import { formatDateTime, formatOptional } from '../lib/formatters'
 import { QUERY_KEYS } from '../lib/queryKeys'
 
 type ReviewTab = 'deletions' | 'readiness'
@@ -57,11 +57,6 @@ function readinessStatusChip(status: 'ready' | 'not_ready' | null | undefined) {
   }
 
   return <Chip size="small" color="success" variant="outlined" label="Ready" sx={{ width: 'fit-content' }} />
-}
-
-function formatOptional(value: string | null | undefined) {
-  const normalized = String(value ?? '').trim()
-  return normalized || '-'
 }
 
 function byRequestedAtDescending<T extends { deleteRequestedAt: string | null; updatedAt: string | null }>(rows: T[]) {

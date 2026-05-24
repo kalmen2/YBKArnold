@@ -1,3 +1,5 @@
+import { normalizeText } from '../utils/value-utils.mjs'
+
 const MONGO_DOMAIN_KEYS = Object.freeze([
   'platform',
   'orders',
@@ -85,10 +87,6 @@ const MONGO_DOMAIN_COLLECTIONS = Object.freeze({
     'quickbooks_oauth_states',
   ]),
 })
-
-function normalizeText(value) {
-  return String(value ?? '').trim()
-}
 
 export function resolveMongoDomainConfiguration({
   mongoDbName,

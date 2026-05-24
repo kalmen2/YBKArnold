@@ -1,3 +1,5 @@
+import { buildFirebaseStorageDownloadUrl } from '../utils/value-utils.mjs'
+
 export function createMondayOrderPersistenceService({
   fetchMondayAssetDownloadInfo,
   getCollections,
@@ -90,13 +92,6 @@ export function createMondayOrderPersistenceService({
     } catch {
       return null
     }
-  }
-
-  function buildFirebaseStorageDownloadUrl(bucketName, objectPath, downloadToken) {
-    const encodedObjectPath = encodeURIComponent(String(objectPath ?? '').trim())
-    const encodedToken = encodeURIComponent(String(downloadToken ?? '').trim())
-
-    return `https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(bucketName)}/o/${encodedObjectPath}?alt=media&token=${encodedToken}`
   }
 
   function createDownloadToken() {

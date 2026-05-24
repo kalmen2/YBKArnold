@@ -4,7 +4,6 @@ import AssignmentRoundedIcon from '@mui/icons-material/AssignmentRounded'
 import LinkOffRoundedIcon from '@mui/icons-material/LinkOffRounded'
 import LinkRoundedIcon from '@mui/icons-material/LinkRounded'
 import PaymentsRoundedIcon from '@mui/icons-material/PaymentsRounded'
-import ReceiptLongRoundedIcon from '@mui/icons-material/ReceiptLongRounded'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import RequestQuoteRoundedIcon from '@mui/icons-material/RequestQuoteRounded'
 import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded'
@@ -18,6 +17,7 @@ import {
   DialogContent,
   DialogTitle,
   Paper,
+  MenuItem,
   Stack,
   Table,
   TableBody,
@@ -28,22 +28,29 @@ import {
   TextField,
   Typography,
 } from '@mui/material'
+import { DataGrid, GridToolbar, type GridColDef } from '@mui/x-data-grid'
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { formatCurrency, formatDateTime, formatInteger } from '../lib/formatters'
 import {
   createQuickBooksAuthorizeUrl,
+  fetchQuickBooksHistory,
   type QuickBooksLoanDetailRow,
   type QuickBooksLoanSummary,
   fetchQuickBooksOverview,
   fetchQuickBooksStatus,
+  type QuickBooksBankAccountTransaction,
   type QuickBooksDetailRow,
+  type QuickBooksHistoryDirection,
+  type QuickBooksHistoryType,
+  type QuickBooksOverviewResponse,
   type QuickBooksProjectSummary,
   type QuickBooksUnlinkedTransaction,
 } from '../features/quickbooks/api'
 import { splitQuickBooksProjectLabel } from '../features/quickbooks/utils'
 
 type QuickBooksDrilldownKey =
+  | 'bankAccount'
   | 'projects'
   | 'loanSummary'
   | 'purchaseOrders'
@@ -66,6 +73,13 @@ type QuickBooksSummaryCard = {
   color: string
   icon: ReactNode
   loanBucketId?: string
+}
+
+type QuickBooksSummaryCardGroup = {
+  id: string
+  title: string
+  description: string
+  cards: QuickBooksSummaryCard[]
 }
 
 type OAuthNotice = {
@@ -110,7 +124,68 @@ type ProjectMetricDrilldown = {
   metricType: ProjectMetricType
 }
 
+type BankHistoryGridRow = QuickBooksBankAccountTransaction & {
+  id: string
+}
+
+type DetailHistoryGridRow = QuickBooksDetailRow & {
+  id: string
+  candidateRefsText: string
+}
+
+type QuickBooksHistoryRequestFilters = {
+  fromDate?: string
+  toDate?: string
+  direction?: QuickBooksHistoryDirection
+}
+
+type QuickBooksHistoryFilterState = {
+  fromDate: string
+  toDate: string
+  direction: 'all' | QuickBooksHistoryDirection
+}
+
+const defaultQuickBooksHistoryFilterState: QuickBooksHistoryFilterState = {
+  fromDate: '',
+  toDate: '',
+  direction: 'all',
+}
+
+const quickBooksHistoryBatchSize = 30
+
+const quickBooksHistoryTypeByDrilldown: Partial<Record<QuickBooksDrilldownKey, QuickBooksHistoryType>> = {
+  bankAccount: 'bankAccountTransactions',
+  bills: 'bills',
+  outstandingProjects: 'outstandingInvoices',
+}
+
+function getQuickBooksHistoryPreviewRows(overview: QuickBooksOverviewResponse, type: QuickBooksHistoryType) {
+  if (type === 'bankAccountTransactions') {
+    return overview.bankAccountTransactions
+  }
+
+  if (type === 'bills') {
+    return overview.details.bills
+  }
+
+  // Outstanding invoices are pulled from a dedicated history endpoint filter.
+  return []
+}
+
+function getQuickBooksHistoryPreviewTotal(overview: QuickBooksOverviewResponse, type: QuickBooksHistoryType) {
+  if (type === 'bankAccountTransactions') {
+    return overview.historyMeta?.bankAccountTransactions.total ?? overview.bankAccountTransactions.length
+  }
+
+  if (type === 'bills') {
+    return overview.historyMeta?.details.bills.total ?? overview.details.bills.length
+  }
+
+  return overview.historyMeta?.outstandingInvoices.total ?? 0
+}
+
 const quickBooksDrilldownTitles: Record<QuickBooksDrilldownKey, string> = {
+  bankAccount: 'Bank Account',
   projects: 'Projects',
   loanSummary: 'Loan Summary',
   purchaseOrders: 'Purchase Orders',
@@ -120,7 +195,7 @@ const quickBooksDrilldownTitles: Record<QuickBooksDrilldownKey, string> = {
   invoices: 'Invoices',
   payments: 'Payments',
   unlinkedTransactions: 'Unlinked Transactions',
-  outstandingProjects: 'Projects With Outstanding Balance',
+  outstandingProjects: 'Outstanding Balance History',
 }
 
 const projectMetricTitleByType: Record<ProjectMetricType, string> = {
@@ -137,11 +212,25 @@ const nonOrderQuickBooksProjectMatchers = [
   'repair',
 ]
 
+const excludedQuickBooksLoanLabelMatchers = [
+  'employee short term loans',
+]
+
 function normalizeQuickBooksProjectMatcher(value: string | null | undefined) {
   return String(value ?? '')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, ' ')
     .trim()
+}
+
+function isExcludedQuickBooksLoanLabel(value: string | null | undefined) {
+  const normalized = normalizeQuickBooksProjectMatcher(value)
+
+  if (!normalized) {
+    return false
+  }
+
+  return excludedQuickBooksLoanLabelMatchers.some((matcher) => normalized.includes(matcher))
 }
 
 function isQuickBooksNonOrderProject(project: QuickBooksProjectSummary) {
@@ -253,6 +342,22 @@ function quickBooksLoanDirectionLabel(value: QuickBooksLoanDetailRow['direction'
   }
 
   return 'Unclassified'
+}
+
+function quickBooksBankDirectionLabel(value: QuickBooksBankAccountTransaction['direction']) {
+  if (value === 'in') {
+    return 'Money In'
+  }
+
+  if (value === 'out') {
+    return 'Money Out'
+  }
+
+  return 'Unclassified'
+}
+
+function quickBooksBankTxnTypeLabel(value: QuickBooksBankAccountTransaction['type']) {
+  return quickBooksLoanTxnTypeLabel(value)
 }
 
 function purchaseOrderKeyFromDetailRow(row: QuickBooksDetailRow) {
@@ -1032,6 +1137,21 @@ export default function QuickBooksPage() {
   const [activeDrilldown, setActiveDrilldown] = useState<QuickBooksDrilldownKey | null>(null)
   const [activeLoanBucketId, setActiveLoanBucketId] = useState<string | null>(null)
   const [projectMetricDrilldown, setProjectMetricDrilldown] = useState<ProjectMetricDrilldown | null>(null)
+  const [activeHistoryType, setActiveHistoryType] = useState<QuickBooksHistoryType | null>(null)
+  const [historyRows, setHistoryRows] = useState<Array<QuickBooksDetailRow | QuickBooksBankAccountTransaction>>([])
+  const [historyTotal, setHistoryTotal] = useState(0)
+  const [historyNextOffset, setHistoryNextOffset] = useState(0)
+  const [isHistoryLoading, setIsHistoryLoading] = useState(false)
+  const [isHistoryLoadingMore, setIsHistoryLoadingMore] = useState(false)
+  const [historyError, setHistoryError] = useState<string | null>(null)
+  const [historyFilters, setHistoryFilters] = useState<QuickBooksHistoryFilterState>(
+    defaultQuickBooksHistoryFilterState,
+  )
+
+  const handleCloseDrilldown = useCallback(() => {
+    setActiveDrilldown(null)
+    setHistoryFilters(defaultQuickBooksHistoryFilterState)
+  }, [])
 
   // ---------------------------------------------------------------------------
   // Status & overview queries
@@ -1150,20 +1270,181 @@ export default function QuickBooksPage() {
     return overview.loanSummaries.find((loanSummary) => loanSummary.bucketId === activeLoanBucketId) ?? null
   }, [activeLoanBucketId, overview])
 
+  const activeHistoryRequestFilters = useMemo<QuickBooksHistoryRequestFilters>(() => {
+    const isBankHistory = activeHistoryType === 'bankAccountTransactions'
+
+    return {
+      fromDate: historyFilters.fromDate || undefined,
+      toDate: historyFilters.toDate || undefined,
+      direction: isBankHistory && historyFilters.direction !== 'all'
+        ? historyFilters.direction
+        : undefined,
+    }
+  }, [activeHistoryType, historyFilters.direction, historyFilters.fromDate, historyFilters.toDate])
+
+  const hasActiveHistoryFilters = Boolean(
+    activeHistoryRequestFilters.fromDate
+    || activeHistoryRequestFilters.toDate
+    || activeHistoryRequestFilters.direction,
+  )
+
+  const historyHasMore = historyNextOffset < historyTotal
+
+  const loadQuickBooksHistoryChunk = useCallback(async (
+    type: QuickBooksHistoryType,
+    options: { reset?: boolean, offset?: number, filters?: QuickBooksHistoryRequestFilters } = {},
+  ) => {
+    const shouldReset = options.reset ?? false
+    const requestOffset = shouldReset ? 0 : Math.max(0, options.offset ?? 0)
+
+    setHistoryError(null)
+
+    if (shouldReset) {
+      setIsHistoryLoading(true)
+    } else {
+      setIsHistoryLoadingMore(true)
+    }
+
+    try {
+      const response = await fetchQuickBooksHistory({
+        type,
+        offset: requestOffset,
+        limit: quickBooksHistoryBatchSize,
+        fromDate: options.filters?.fromDate,
+        toDate: options.filters?.toDate,
+        direction: options.filters?.direction,
+      })
+
+      const nextRows = response.rows as Array<QuickBooksDetailRow | QuickBooksBankAccountTransaction>
+
+      setHistoryRows((previousRows) => shouldReset ? nextRows : [...previousRows, ...nextRows])
+      setHistoryTotal(response.total)
+      setHistoryNextOffset(response.nextOffset)
+    } catch (error) {
+      setHistoryError(toErrorMessage(error, 'Failed to load QuickBooks history.'))
+    } finally {
+      setIsHistoryLoading(false)
+      setIsHistoryLoadingMore(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!activeDrilldown || !overview) {
+      setActiveHistoryType(null)
+      setHistoryRows([])
+      setHistoryTotal(0)
+      setHistoryNextOffset(0)
+      setHistoryError(null)
+      setIsHistoryLoading(false)
+      setIsHistoryLoadingMore(false)
+      return
+    }
+
+    const mappedHistoryType = quickBooksHistoryTypeByDrilldown[activeDrilldown] ?? null
+
+    if (!mappedHistoryType) {
+      setActiveHistoryType(null)
+      setHistoryRows([])
+      setHistoryTotal(0)
+      setHistoryNextOffset(0)
+      setHistoryError(null)
+      setIsHistoryLoading(false)
+      setIsHistoryLoadingMore(false)
+      return
+    }
+
+    const requestFilters: QuickBooksHistoryRequestFilters = {
+      fromDate: historyFilters.fromDate || undefined,
+      toDate: historyFilters.toDate || undefined,
+      direction:
+        mappedHistoryType === 'bankAccountTransactions' && historyFilters.direction !== 'all'
+          ? historyFilters.direction
+          : undefined,
+    }
+    const hasServerFilters = Boolean(
+      requestFilters.fromDate || requestFilters.toDate || requestFilters.direction,
+    )
+
+    const previewRows = getQuickBooksHistoryPreviewRows(overview, mappedHistoryType)
+    const previewTotal = getQuickBooksHistoryPreviewTotal(overview, mappedHistoryType)
+
+    setActiveHistoryType(mappedHistoryType)
+    setHistoryError(null)
+    setIsHistoryLoading(false)
+    setIsHistoryLoadingMore(false)
+
+    if (hasServerFilters) {
+      setHistoryRows([])
+      setHistoryTotal(0)
+      setHistoryNextOffset(0)
+
+      void loadQuickBooksHistoryChunk(mappedHistoryType, {
+        reset: true,
+        filters: requestFilters,
+      })
+      return
+    }
+
+    setHistoryRows(previewRows)
+    setHistoryTotal(previewTotal)
+    setHistoryNextOffset(previewRows.length)
+
+    const shouldForceFetchFirstChunk = mappedHistoryType === 'outstandingInvoices'
+    const shouldFetchBecausePreviewIsEmpty = previewRows.length === 0 && previewTotal > 0
+
+    if (shouldForceFetchFirstChunk || shouldFetchBecausePreviewIsEmpty) {
+      void loadQuickBooksHistoryChunk(mappedHistoryType, {
+        reset: true,
+        filters: requestFilters,
+      })
+    }
+  }, [
+    activeDrilldown,
+    historyFilters.direction,
+    historyFilters.fromDate,
+    historyFilters.toDate,
+    loadQuickBooksHistoryChunk,
+    overview,
+  ])
+
   const summaryCards = useMemo<QuickBooksSummaryCard[]>(() => {
     const totals = overview?.totals
-    const loanCards = (overview?.loanSummaries ?? []).map((loanSummary) => ({
-      id: `loan-summary:${loanSummary.bucketId}`,
-      key: 'loanSummary' as const,
-      loanBucketId: loanSummary.bucketId,
-      title: loanSummary.label,
-      value: formatCurrency(loanSummary.totalLoanAmount),
-      helper: `In ${formatCurrency(loanSummary.totalInvestedAmount)} • Out ${formatCurrency(loanSummary.totalTakenOutAmount)}`,
-      color: '#00695c',
-      icon: <AccountBalanceRoundedIcon />,
-    }))
+    const loanCards = (overview?.loanSummaries ?? [])
+      .filter((loanSummary) => !isExcludedQuickBooksLoanLabel(loanSummary.label))
+      .map((loanSummary) => ({
+        id: `loan-summary:${loanSummary.bucketId}`,
+        key: 'loanSummary' as const,
+        loanBucketId: loanSummary.bucketId,
+        title: loanSummary.label,
+        value: formatCurrency(loanSummary.totalLoanAmount),
+        helper: `In ${formatCurrency(loanSummary.totalInvestedAmount)} • Out ${formatCurrency(loanSummary.totalTakenOutAmount)}`,
+        color: '#00695c',
+        icon: <AccountBalanceRoundedIcon />,
+      }))
 
     const standardCards: QuickBooksSummaryCard[] = [
+      {
+        id: 'bankAccount',
+        key: 'bankAccount',
+        title: 'Bank Balance',
+        value: overview?.bankAccountSnapshot
+          ? formatCurrency(overview.bankAccountSnapshot.currentBalance)
+          : '--',
+        helper: overview?.bankAccountSnapshot
+          ? `${overview.bankAccountSnapshot.accountName || 'Chase'} ending in ${overview.bankAccountSnapshot.endingIn || '2951'}`
+          : 'Chase bank account ending in 2951 not found in chart of accounts',
+        color: '#0d47a1',
+        icon: <AccountBalanceRoundedIcon />,
+      },
+      {
+        id: 'amountWeOwe',
+        key: 'bills',
+        title: 'Amount We Owe',
+        value: formatCurrency(totals?.billAmount ?? 0),
+        helper: `${formatInteger(totals?.billCount ?? 0)} unpaid vendor bills`,
+        color: '#6a1b9a',
+        icon: <RequestQuoteRoundedIcon />,
+      },
       {
         id: 'projects',
         key: 'projects',
@@ -1199,15 +1480,6 @@ export default function QuickBooksPage() {
         helper: `${formatCurrency(totals?.purchaseOrderLineWithoutProjectAmount ?? 0)} needs project mapping`,
         color: '#d84315',
         icon: <LinkOffRoundedIcon />,
-      },
-      {
-        id: 'bills',
-        key: 'bills',
-        title: 'Bills',
-        value: formatInteger(totals?.billCount ?? 0),
-        helper: formatCurrency(totals?.billAmount ?? 0),
-        color: '#2e7d32',
-        icon: <ReceiptLongRoundedIcon />,
       },
       {
         id: 'invoices',
@@ -1252,6 +1524,41 @@ export default function QuickBooksPage() {
       ...standardCards,
     ]
   }, [overview, outstandingProjects.length])
+
+  const summaryCardGroups = useMemo<QuickBooksSummaryCardGroup[]>(() => {
+    const cardById = new Map(summaryCards.map((card) => [card.id, card]))
+    const loanCards = summaryCards.filter((card) => card.key === 'loanSummary')
+    const pickCards = (cardIds: string[]) => cardIds
+      .map((cardId) => cardById.get(cardId))
+      .filter((card): card is QuickBooksSummaryCard => Boolean(card))
+
+    return [
+      {
+        id: 'loans',
+        title: 'Loans',
+        description: 'Loan balances and owner money movement.',
+        cards: loanCards,
+      },
+      {
+        id: 'cash-position',
+        title: 'Cash Position',
+        description: 'How much we have in bank, owe in bills, and are still owed.',
+        cards: pickCards(['bankAccount', 'amountWeOwe', 'outstandingProjects']),
+      },
+      {
+        id: 'purchase-orders',
+        title: 'Purchase Orders',
+        description: 'Everything tied to purchase orders and line mappings.',
+        cards: pickCards(['purchaseOrders', 'purchaseOrderLines', 'unlinkedPurchaseOrderLines']),
+      },
+      {
+        id: 'projects-billing',
+        title: 'Projects & Invoicing',
+        description: 'Project counts, invoices, payments, and unlinked transactions.',
+        cards: pickCards(['projects', 'invoices', 'payments', 'unlinkedTransactions']),
+      },
+    ].filter((group) => group.cards.length > 0)
+  }, [summaryCards])
 
   // Force-refresh bypasses the 5-min backend cache by sending refresh=true,
   // then seeds the React Query cache so the next navigation is instant.
@@ -1340,9 +1647,339 @@ export default function QuickBooksPage() {
     return []
   }, [overview, projectMetricDrilldown])
 
+  const bankHistoryGridRows = useMemo<BankHistoryGridRow[]>(() => {
+    if (activeHistoryType !== 'bankAccountTransactions') {
+      return []
+    }
+
+    return historyRows.map((row, index) => {
+      const typedRow = row as QuickBooksBankAccountTransaction
+
+      return {
+        ...typedRow,
+        id: `${typedRow.type}:${typedRow.id ?? 'none'}:${typedRow.docNumber ?? 'none'}:${typedRow.txnDate ?? 'none'}:${index}`,
+      }
+    })
+  }, [activeHistoryType, historyRows])
+
+  const detailHistoryGridRows = useMemo<DetailHistoryGridRow[]>(() => {
+    if (activeHistoryType !== 'bills' && activeHistoryType !== 'outstandingInvoices') {
+      return []
+    }
+
+    return historyRows.map((row, index) => {
+      const typedRow = row as QuickBooksDetailRow
+
+      return {
+        ...typedRow,
+        id: `${typedRow.type}:${typedRow.id ?? 'none'}:${typedRow.docNumber ?? 'none'}:${typedRow.lineNumber ?? 0}:${index}`,
+        candidateRefsText: formatCandidateRefs(typedRow.candidateProjectRefs),
+      }
+    })
+  }, [activeHistoryType, historyRows])
+
+  const bankHistoryColumns = useMemo<GridColDef<BankHistoryGridRow>[]>(() => [
+    {
+      field: 'txnDate',
+      headerName: 'Date',
+      minWidth: 130,
+      flex: 0.8,
+      renderCell: (params) => formatDate(params.row.txnDate),
+    },
+    {
+      field: 'type',
+      headerName: 'Type',
+      minWidth: 130,
+      flex: 0.9,
+      renderCell: (params) => quickBooksBankTxnTypeLabel(params.row.type),
+    },
+    {
+      field: 'docNumber',
+      headerName: 'Document',
+      minWidth: 170,
+      flex: 1,
+      renderCell: (params) => (
+        <Stack spacing={0.15} sx={{ py: 0.5 }}>
+          <Typography variant="body2" fontWeight={600} lineHeight={1.2}>
+            {params.row.docNumber || '-'}
+          </Typography>
+          <Typography variant="caption" color="text.secondary" lineHeight={1.2}>
+            {params.row.id || '-'}
+          </Typography>
+        </Stack>
+      ),
+    },
+    {
+      field: 'direction',
+      headerName: 'Direction',
+      minWidth: 140,
+      flex: 0.9,
+      renderCell: (params) => quickBooksBankDirectionLabel(params.row.direction),
+    },
+    {
+      field: 'amount',
+      headerName: 'Amount',
+      minWidth: 140,
+      flex: 0.9,
+      type: 'number',
+      renderCell: (params) => formatCurrency(Number(params.row.amount || 0)),
+    },
+    {
+      field: 'counterpartyAccountName',
+      headerName: 'Counterparty',
+      minWidth: 180,
+      flex: 1.1,
+      renderCell: (params) => params.row.counterpartyAccountName || '-',
+    },
+    {
+      field: 'description',
+      headerName: 'Description',
+      minWidth: 220,
+      flex: 1.3,
+      renderCell: (params) => params.row.description || '-',
+    },
+  ], [])
+
+  const detailHistoryColumns = useMemo<GridColDef<DetailHistoryGridRow>[]>(() => [
+    {
+      field: 'docNumber',
+      headerName: 'Document',
+      minWidth: 170,
+      flex: 1,
+      renderCell: (params) => (
+        <Stack spacing={0.15} sx={{ py: 0.5 }}>
+          <Typography variant="body2" fontWeight={600} lineHeight={1.2}>
+            {params.row.docNumber || '-'}
+          </Typography>
+          <Typography variant="caption" color="text.secondary" lineHeight={1.2}>
+            {params.row.id || '-'}
+          </Typography>
+        </Stack>
+      ),
+    },
+    {
+      field: 'txnDate',
+      headerName: 'Date',
+      minWidth: 130,
+      flex: 0.8,
+      renderCell: (params) => formatDate(params.row.txnDate),
+    },
+    {
+      field: 'projectName',
+      headerName: 'Project',
+      minWidth: 180,
+      flex: 1,
+      renderCell: (params) => {
+        if (!params.row.projectName && !params.row.projectId) {
+          return '-'
+        }
+
+        return (
+          <Stack spacing={0.15} sx={{ py: 0.5 }}>
+            <Typography variant="body2" lineHeight={1.2}>
+              {params.row.projectName || '-'}
+            </Typography>
+            <Typography variant="caption" color="text.secondary" lineHeight={1.2}>
+              {params.row.projectId || '-'}
+            </Typography>
+          </Stack>
+        )
+      },
+    },
+    {
+      field: 'candidateRefsText',
+      headerName: 'Candidate Refs',
+      minWidth: 180,
+      flex: 1,
+    },
+    {
+      field: 'totalAmount',
+      headerName: 'Amount',
+      minWidth: 130,
+      flex: 0.8,
+      type: 'number',
+      renderCell: (params) => formatCurrency(Number(params.row.totalAmount || 0)),
+    },
+    {
+      field: 'balanceAmount',
+      headerName: 'Balance',
+      minWidth: 130,
+      flex: 0.8,
+      type: 'number',
+      renderCell: (params) => {
+        if (params.row.balanceAmount === null || params.row.balanceAmount === undefined) {
+          return '-'
+        }
+
+        return formatCurrency(params.row.balanceAmount)
+      },
+    },
+    {
+      field: 'reason',
+      headerName: 'Reason',
+      minWidth: 220,
+      flex: 1.4,
+      renderCell: (params) => params.row.reason || '-',
+    },
+  ], [])
+
+  const renderHistoryGrid = ({
+    rows,
+    columns,
+    emptyMessage,
+  }: {
+    rows: BankHistoryGridRow[] | DetailHistoryGridRow[]
+    columns: GridColDef[]
+    emptyMessage: string
+  }) => {
+    const rowCount = rows.length
+    const showDirectionFilter = activeHistoryType === 'bankAccountTransactions'
+
+    return (
+      <Stack spacing={1.1}>
+        {historyError ? <Alert severity="error">{historyError}</Alert> : null}
+
+        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'center' }}>
+          <TextField
+            size="small"
+            label="From"
+            type="date"
+            value={historyFilters.fromDate}
+            onChange={(event) => {
+              setHistoryFilters((previous) => ({
+                ...previous,
+                fromDate: event.target.value,
+              }))
+            }}
+            InputLabelProps={{ shrink: true }}
+            sx={{ minWidth: 170 }}
+          />
+          <TextField
+            size="small"
+            label="To"
+            type="date"
+            value={historyFilters.toDate}
+            onChange={(event) => {
+              setHistoryFilters((previous) => ({
+                ...previous,
+                toDate: event.target.value,
+              }))
+            }}
+            InputLabelProps={{ shrink: true }}
+            sx={{ minWidth: 170 }}
+          />
+          {showDirectionFilter ? (
+            <TextField
+              select
+              size="small"
+              label="Direction"
+              value={historyFilters.direction}
+              onChange={(event) => {
+                setHistoryFilters((previous) => ({
+                  ...previous,
+                  direction: event.target.value as QuickBooksHistoryFilterState['direction'],
+                }))
+              }}
+              sx={{ minWidth: 170 }}
+            >
+              <MenuItem value="all">All</MenuItem>
+              <MenuItem value="in">Money In</MenuItem>
+              <MenuItem value="out">Money Out</MenuItem>
+              <MenuItem value="unknown">Unclassified</MenuItem>
+            </TextField>
+          ) : null}
+
+          <Button
+            variant="text"
+            onClick={() => {
+              setHistoryFilters(defaultQuickBooksHistoryFilterState)
+            }}
+            disabled={!hasActiveHistoryFilters || isHistoryLoading || isHistoryLoadingMore}
+          >
+            Clear filters
+          </Button>
+        </Stack>
+
+        <Typography variant="body2" color="text.secondary">
+          Showing {formatInteger(rowCount)} of {formatInteger(historyTotal)} rows.
+        </Typography>
+
+        {rowCount === 0 && !isHistoryLoading ? (
+          <Typography color="text.secondary" sx={{ py: 1.5 }}>
+            {emptyMessage}
+          </Typography>
+        ) : (
+          <Box sx={{ height: 520, width: '100%' }}>
+            <DataGrid
+              rows={rows}
+              columns={columns}
+              loading={isHistoryLoading}
+              disableRowSelectionOnClick
+              hideFooter
+              initialState={{
+                sorting: {
+                  sortModel: [{ field: 'txnDate', sort: 'desc' }],
+                },
+              }}
+              slots={{ toolbar: GridToolbar }}
+            />
+          </Box>
+        )}
+
+        {historyHasMore && activeHistoryType ? (
+          <Box>
+            <Button
+              variant="outlined"
+              onClick={() => {
+                void loadQuickBooksHistoryChunk(activeHistoryType, {
+                  offset: historyNextOffset,
+                  filters: activeHistoryRequestFilters,
+                })
+              }}
+              disabled={isHistoryLoading || isHistoryLoadingMore}
+            >
+              {isHistoryLoadingMore ? 'Loading...' : `Load more ${quickBooksHistoryBatchSize}`}
+            </Button>
+          </Box>
+        ) : null}
+      </Stack>
+    )
+  }
+
   const renderDialogBody = () => {
     if (!overview || !activeDrilldown) {
       return <Typography color="text.secondary">No details to show.</Typography>
+    }
+
+    if (activeDrilldown === 'bankAccount') {
+      if (!overview.bankAccountSnapshot) {
+        return <Typography color="text.secondary">Chase bank account ending in 2951 was not found in chart of accounts.</Typography>
+      }
+
+      return (
+        <Stack spacing={1.5}>
+          <Stack spacing={0.5}>
+            <Typography variant="h6" fontWeight={700}>
+              {overview.bankAccountSnapshot.accountName || 'Chase'}
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              Account ending in {overview.bankAccountSnapshot.endingIn || '2951'}
+            </Typography>
+            <Typography variant="h4" fontWeight={800}>
+              {formatCurrency(overview.bankAccountSnapshot.currentBalance)}
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              Snapshot time {formatDateTime(overview.bankAccountSnapshot.asOf)}
+            </Typography>
+          </Stack>
+
+          {renderHistoryGrid({
+            rows: bankHistoryGridRows,
+            columns: bankHistoryColumns,
+            emptyMessage: 'No bank transaction history is available for this account yet.',
+          })}
+        </Stack>
+      )
     }
 
     if (activeDrilldown === 'loanSummary') {
@@ -1367,13 +2004,16 @@ export default function QuickBooksPage() {
 
     if (activeDrilldown === 'outstandingProjects') {
       return (
-        <ProjectSummaryTable
-          rows={outstandingProjects}
-          projectRollupsById={projectRollupsById}
-          onMetricClick={(input) => {
-            setProjectMetricDrilldown(input)
-          }}
-        />
+        <Stack spacing={1.25}>
+          <Typography variant="body2" color="text.secondary">
+            Open receivables history (invoices with remaining balance).
+          </Typography>
+          {renderHistoryGrid({
+            rows: detailHistoryGridRows,
+            columns: detailHistoryColumns,
+            emptyMessage: 'No outstanding invoice history to show.',
+          })}
+        </Stack>
       )
     }
 
@@ -1390,7 +2030,18 @@ export default function QuickBooksPage() {
     }
 
     if (activeDrilldown === 'bills') {
-      return <DetailRowsTable rows={overview.details.bills} />
+      return (
+        <Stack spacing={1.25}>
+          <Typography variant="body2" color="text.secondary">
+            Payables history for vendor bills.
+          </Typography>
+          {renderHistoryGrid({
+            rows: detailHistoryGridRows,
+            columns: detailHistoryColumns,
+            emptyMessage: 'No bill history to show.',
+          })}
+        </Stack>
+      )
     }
 
     if (activeDrilldown === 'invoices') {
@@ -1539,53 +2190,71 @@ export default function QuickBooksPage() {
                 Transaction Summary
               </Typography>
 
-              <Box
-                sx={{
-                  display: 'grid',
-                  gridTemplateColumns: {
-                    xs: 'repeat(1, minmax(0, 1fr))',
-                    sm: 'repeat(2, minmax(0, 1fr))',
-                    xl: 'repeat(3, minmax(0, 1fr))',
-                  },
-                  gap: 1.5,
-                }}
-              >
-                {summaryCards.map((card) => (
-                  <Paper
-                    key={card.id}
-                    variant="outlined"
-                    onClick={() => {
-                      setActiveDrilldown(card.key)
-                      setActiveLoanBucketId(card.key === 'loanSummary' ? card.loanBucketId ?? null : null)
-                    }}
-                    sx={{
-                      p: 2,
-                      borderLeft: `4px solid ${card.color}`,
-                      cursor: 'pointer',
-                      transition: 'transform 120ms ease, box-shadow 120ms ease',
-                      '&:hover': {
-                        transform: 'translateY(-2px)',
-                        boxShadow: 3,
-                      },
-                    }}
-                  >
-                    <Stack direction="row" justifyContent="space-between" alignItems="flex-start">
+              <Stack spacing={1.75}>
+                {summaryCardGroups.map((group) => (
+                  <Paper key={group.id} variant="outlined" sx={{ p: 1.5 }}>
+                    <Stack spacing={1.25}>
                       <Box>
+                        <Typography variant="subtitle2" fontWeight={700}>
+                          {group.title}
+                        </Typography>
                         <Typography variant="body2" color="text.secondary">
-                          {card.title}
-                        </Typography>
-                        <Typography variant="h4" fontWeight={800} lineHeight={1.1}>
-                          {card.value}
-                        </Typography>
-                        <Typography variant="caption" color="text.secondary">
-                          {card.helper}
+                          {group.description}
                         </Typography>
                       </Box>
-                      <Box sx={{ color: card.color }}>{card.icon}</Box>
+
+                      <Box
+                        sx={{
+                          display: 'grid',
+                          gridTemplateColumns: {
+                            xs: 'repeat(1, minmax(0, 1fr))',
+                            sm: 'repeat(2, minmax(0, 1fr))',
+                            xl: 'repeat(3, minmax(0, 1fr))',
+                          },
+                          gap: 1.5,
+                        }}
+                      >
+                        {group.cards.map((card) => (
+                          <Paper
+                            key={card.id}
+                            variant="outlined"
+                            onClick={() => {
+                              setActiveDrilldown(card.key)
+                              setActiveLoanBucketId(card.key === 'loanSummary' ? card.loanBucketId ?? null : null)
+                              setHistoryFilters(defaultQuickBooksHistoryFilterState)
+                            }}
+                            sx={{
+                              p: 2,
+                              borderLeft: `4px solid ${card.color}`,
+                              cursor: 'pointer',
+                              transition: 'transform 120ms ease, box-shadow 120ms ease',
+                              '&:hover': {
+                                transform: 'translateY(-2px)',
+                                boxShadow: 3,
+                              },
+                            }}
+                          >
+                            <Stack direction="row" justifyContent="space-between" alignItems="flex-start">
+                              <Box>
+                                <Typography variant="body2" color="text.secondary">
+                                  {card.title}
+                                </Typography>
+                                <Typography variant="h4" fontWeight={800} lineHeight={1.1}>
+                                  {card.value}
+                                </Typography>
+                                <Typography variant="caption" color="text.secondary">
+                                  {card.helper}
+                                </Typography>
+                              </Box>
+                              <Box sx={{ color: card.color }}>{card.icon}</Box>
+                            </Stack>
+                          </Paper>
+                        ))}
+                      </Box>
                     </Stack>
                   </Paper>
                 ))}
-              </Box>
+              </Stack>
 
               <Typography variant="body2" color="text.secondary">
                 Click any summary box to open full details.
@@ -1722,7 +2391,7 @@ export default function QuickBooksPage() {
 
       <Dialog
         open={Boolean(activeDrilldown)}
-        onClose={() => setActiveDrilldown(null)}
+        onClose={handleCloseDrilldown}
         maxWidth="xl"
         fullWidth
       >

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { createTtlCache } from '../utils/ttl-cache.mjs'
-import { nowIso } from '../utils/value-utils.mjs'
+import { normalizeText, nowIso } from '../utils/value-utils.mjs'
 
 const _cache = createTtlCache()
 const cacheGet = (key) => _cache.get(key)
@@ -59,17 +59,9 @@ const engagementReadinessKnownFilterValues = [
   ...engagementReadinessNotReadyFilterValues,
 ]
 
-function toTrimmedText(value, maxLength = 4000) {
-  if (value === null || value === undefined) {
-    return ''
-  }
+const toTrimmedText = (value, maxLength = 4000) => normalizeText(value, maxLength)
 
-  return String(value).trim().slice(0, maxLength)
-}
-
-function toLowerText(value, maxLength = 4000) {
-  return toTrimmedText(value, maxLength).toLowerCase()
-}
+const toLowerText = (value, maxLength = 4000) => toTrimmedText(value, maxLength).toLowerCase()
 
 function toIsoDateOrNull(value) {
   const normalized = toTrimmedText(value, 80)
@@ -3143,18 +3135,17 @@ export function registerCrmRoutes(app, deps) {
         dealer = await crmAccountsCollection.findOneAndUpdate(
           {
             sourceId: dealerSourceId,
-            isArchived: {
-              $ne: true,
-            },
-            recordStatus: {
-              $ne: crmRecordStatusDeleted,
-            },
           },
           {
             $set: {
+              recordStatus: crmRecordStatusDeleted,
+              isArchived: true,
+              deletedAt: archivedAt,
+              deletedByEmail: archivedByEmail,
               deleteRequestedAt: archivedAt,
               deleteRequestedByUid: archivedByUid,
               deleteRequestedByEmail: archivedByEmail,
+              modifiedDateSource: archivedAt,
               updatedAt: archivedAt,
             },
           },
@@ -5794,76 +5785,4 @@ export function registerCrmRoutes(app, deps) {
     }
   })
 
-  app.get('/api/crm/page-bootstrap', requireFirebaseAuth, requireAdminRole, async (_req, res, next) => {
-    try {
-      const {
-        crmAccountsCollection,
-        crmContactsCollection,
-        crmDuplicateQueueCollection,
-        crmImportRunsCollection,
-        crmQuotesCollection,
-        crmOrdersCollection,
-      } = await getCollections()
-
-      async function loadOverview() {
-        const cached = cacheGet(OVERVIEW_CACHE_KEY)
-        if (cached) {
-          return cached
-        }
-        const overview = await computeCrmOverview({
-          crmAccountsCollection,
-          crmContactsCollection,
-          crmDuplicateQueueCollection,
-          crmImportRunsCollection,
-          crmQuotesCollection,
-          crmOrdersCollection,
-        })
-        cacheSet(OVERVIEW_CACHE_KEY, overview, OVERVIEW_CACHE_TTL_MS)
-        return overview
-      }
-
-      const [overview, imports, conflicts, quotes, orders] = await Promise.all([
-        loadOverview(),
-        crmImportRunsCollection
-          .find(
-            {},
-            {
-              projection: {
-                _id: 0,
-                id: 1,
-                status: 1,
-                importedAt: 1,
-                importedByEmail: 1,
-                metadata: 1,
-                summary: 1,
-                conflictGroupCounts: 1,
-                writeSummary: 1,
-              },
-            },
-          )
-          .sort({ importedAt: -1 })
-          .limit(12)
-          .toArray(),
-        crmDuplicateQueueCollection
-          .find({ status: 'open' }, { projection: { _id: 0 } })
-          .sort({ createdAt: -1, sourceCount: -1 })
-          .limit(120)
-          .toArray(),
-        crmQuotesCollection
-          .find({}, { projection: { _id: 0 } })
-          .sort({ createdAt: -1, updatedAt: -1 })
-          .limit(200)
-          .toArray(),
-        crmOrdersCollection
-          .find({}, { projection: { _id: 0 } })
-          .sort({ createdAt: -1, updatedAt: -1 })
-          .limit(200)
-          .toArray(),
-      ])
-
-      return res.json({ overview, imports, conflicts, quotes, orders })
-    } catch (error) {
-      next(error)
-    }
-  })
 }

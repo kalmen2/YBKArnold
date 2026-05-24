@@ -98,19 +98,89 @@ const GOOGLE_ANDROID_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_I
 const GOOGLE_EXPO_IOS_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_EXPO_IOS_CLIENT_ID ?? ''
 const GOOGLE_EXPO_ANDROID_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_EXPO_ANDROID_CLIENT_ID ?? ''
 const GOOGLE_ANDROID_REDIRECT_URI = `${MOBILE_ANDROID_PACKAGE}:/oauthredirect`
-const ORDERS_PAGE_SIZE = 10
+const ORDERS_PAGE_SIZE = 30
 const ADMIN_PORTAL_PAGES = [
+  { path: '/admin/cash', labelEn: 'Cash Accounts', labelEs: 'Cuentas de caja', icon: 'cash-outline' as const },
+  { path: '/admin/reports', labelEn: 'Reports', labelEs: 'Reportes', icon: 'bar-chart-outline' as const },
   { path: '/admin/users', labelEn: 'Users', labelEs: 'Usuarios', icon: 'people-outline' as const },
-  { path: '/admin/alerts', labelEn: 'Admin Alerts', labelEs: 'Alertas admin', icon: 'notifications-outline' as const },
-  { path: '/admin/issues', labelEn: 'Admin Issues', labelEs: 'Incidencias admin', icon: 'warning-outline' as const },
-  { path: '/admin/logs', labelEn: 'Admin Logs', labelEs: 'Logs admin', icon: 'document-text-outline' as const },
-  { path: '/admin/sales-review', labelEn: 'Sales Review', labelEs: 'Revision de ventas', icon: 'bar-chart-outline' as const },
-  { path: '/admin/crm', labelEn: 'Admin CRM', labelEs: 'CRM admin', icon: 'briefcase-outline' as const },
-  { path: '/admin/ai-config', labelEn: 'AI Config', labelEs: 'Config AI', icon: 'settings-outline' as const },
-  { path: '/orders?view=admin', labelEn: 'Orders (Admin)', labelEs: 'Ordenes (Admin)', icon: 'receipt-outline' as const },
 ] as const
 
+const HEBREW_TRANSLATIONS: Record<string, string> = {
+  Orders: 'הזמנות',
+  Pictures: 'תמונות',
+  Notifications: 'התראות',
+  Admin: 'ניהול',
+  'Manager Sheet': 'דף מנהל',
+  'Time Sheet': 'גיליון שעות',
+  Settings: 'הגדרות',
+  Refresh: 'רענון',
+  Refreshing: 'מרענן',
+  Version: 'גרסה',
+  Security: 'אבטחה',
+  Language: 'שפה',
+  'Choose your app language.': 'בחר את שפת האפליקציה.',
+  Enabled: 'מופעל',
+  Disabled: 'כבוי',
+  On: 'פועל',
+  Off: 'כבוי',
+  'App Updates': 'עדכוני אפליקציה',
+  Account: 'חשבון',
+  Open: 'פתח',
+  Reports: 'דוחות',
+  Users: 'משתמשים',
+  Worker: 'עובד',
+  Workers: 'עובדים',
+  Entries: 'רשומות',
+  Hours: 'שעות',
+  Months: 'חודשים',
+  Jobs: 'עבודות',
+  Dates: 'תאריכים',
+  'Hours by worker': 'שעות לפי עובד',
+  'Hours by month': 'שעות לפי חודש',
+  'Hours by date': 'שעות לפי תאריך',
+  'No worker report rows.': 'אין שורות דוח לפי עובד.',
+  'No month report rows.': 'אין שורות דוח לפי חודש.',
+  'No date report rows.': 'אין שורות דוח לפי תאריך.',
+  'User access controls': 'בקרות גישה למשתמשים',
+  Role: 'תפקיד',
+  Approved: 'מאושר',
+  Pending: 'ממתין',
+  'Access mode': 'מצב גישה',
+  'Last login': 'כניסה אחרונה',
+  'Web + App': 'ווב + אפליקציה',
+  'Web only': 'ווב בלבד',
+  'App only': 'אפליקציה בלבד',
+  'Grant access': 'מתן גישה',
+  'Remove access': 'הסרת גישה',
+  Close: 'סגור',
+  Save: 'שמור',
+  'Saving...': 'שומר...',
+  'Open details': 'פתח פרטים',
+  'Hide details': 'הסתר פרטים',
+  Updated: 'עודכן',
+  'No users found.': 'לא נמצאו משתמשים.',
+  'Open access menu': 'פתח תפריט גישה',
+  'Change access': 'שינוי גישה',
+  'Select access mode for this user.': 'בחר מצב גישה עבור המשתמש הזה.',
+  'Current mode': 'מצב נוכחי',
+  'Report options': 'אפשרויות דוחות',
+  'Report by worker': 'דוח לפי עובד',
+  'Report by month': 'דוח לפי חודש',
+  'Back to report options': 'חזרה לאפשרויות דוחות',
+  'Open worker report': 'פתח דוח עובדים',
+  'Open month report': 'פתח דוח חודשי',
+  'No rows found for this report.': 'לא נמצאו שורות לדוח זה.',
+  'Pictures are hidden by menu.': 'התמונות מוסתרות על ידי התפריט.',
+  'Search by order #': 'חפש לפי מספר הזמנה',
+  'No orders match your search.': 'אין הזמנות התואמות לחיפוש שלך.',
+  Order: 'הזמנה',
+}
+
 type AdminWorkspacePagePath = (typeof ADMIN_PORTAL_PAGES)[number]['path']
+type OrdersViewFilter = 'orders' | 'design' | 'shipped'
+type AdminAccessMode = 'web_and_app' | 'web_only' | 'app_only'
+type AdminUserRole = 'standard' | 'manager' | 'sales_rep' | 'admin'
+type AdminReportsView = 'menu' | 'worker' | 'month'
 
 type AppUpdateStatusResponse = {
   url?: string | null
@@ -128,9 +198,11 @@ type AdminWorkspaceRow = {
   title: string
   subtitle: string
   meta?: string
+  details?: string[]
 }
 
 type AdminWorkspaceSection = {
+  id: string
   title: string
   rows: AdminWorkspaceRow[]
   emptyText: string
@@ -141,6 +213,18 @@ type AdminWorkspacePanelData = {
   sections: AdminWorkspaceSection[]
   note?: string
   updatedAt?: string | null
+}
+
+type AdminWorkspaceUserRecord = {
+  uid: string
+  email: string
+  displayName: string
+  role: AdminUserRole
+  isApproved: boolean
+  clientAccessMode: AdminAccessMode
+  hasWebAccess: boolean
+  hasAppAccess: boolean
+  lastLoginAt: string | null
 }
 
 type SettingsMenuId = 'security' | 'language' | 'notifications' | 'updates' | 'admin' | 'account'
@@ -207,6 +291,199 @@ function normalizeIsoDate(value: string) {
   return formatDateInput(parsed)
 }
 
+function formatMonthBucketLabel(monthKey: string, locale: string) {
+  const match = /^(\d{4})-(\d{2})$/.exec(String(monthKey ?? '').trim())
+
+  if (!match) {
+    return monthKey
+  }
+
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const parsed = new Date(year, month - 1, 1)
+
+  if (Number.isNaN(parsed.getTime())) {
+    return monthKey
+  }
+
+  return new Intl.DateTimeFormat(locale, {
+    year: 'numeric',
+    month: 'long',
+  }).format(parsed)
+}
+
+type MobileNonOrderCategory = 'general' | 'companyPurchase' | 'payroll'
+
+const MOBILE_NON_ORDER_CATEGORY_CONFIG: Array<{
+  category: MobileNonOrderCategory
+  label: string
+  matchers: string[]
+}> = [
+  {
+    category: 'general',
+    label: 'General',
+    matchers: ['general expense', 'general', 'repair', 'customer stock'],
+  },
+  {
+    category: 'companyPurchase',
+    label: 'Company Purchase',
+    matchers: ['company purchase'],
+  },
+  {
+    category: 'payroll',
+    label: 'Payroll',
+    matchers: ['payroll'],
+  },
+]
+
+function splitQuickBooksProjectLabel(projectName: string, fallbackProjectId: string) {
+  const normalizedName = String(projectName ?? '').trim()
+
+  if (!normalizedName) {
+    return {
+      customerName: '-',
+      projectNumber: String(fallbackProjectId || '-').trim() || '-',
+    }
+  }
+
+  const hasColonSeparator = normalizedName.includes(':')
+  const hasHyphenSeparator = normalizedName.includes(' - ')
+  const segments = hasColonSeparator
+    ? normalizedName.split(':').map((segment) => segment.trim()).filter(Boolean)
+    : hasHyphenSeparator
+      ? normalizedName.split(' - ').map((segment) => segment.trim()).filter(Boolean)
+      : [normalizedName]
+
+  if (segments.length <= 1) {
+    return {
+      customerName: '-',
+      projectNumber: segments[0] || String(fallbackProjectId || '-').trim() || '-',
+    }
+  }
+
+  return {
+    customerName: segments.slice(0, -1).join(' : '),
+    projectNumber: segments[segments.length - 1] || String(fallbackProjectId || '-').trim() || '-',
+  }
+}
+
+function normalizeMatcherValue(value: string | null | undefined) {
+  return String(value ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+}
+
+function resolveMobileNonOrderCategory(...candidates: Array<string | null | undefined>) {
+  const normalizedCandidates = candidates
+    .map((value) => normalizeMatcherValue(value))
+    .filter(Boolean)
+
+  if (normalizedCandidates.length === 0) {
+    return null
+  }
+
+  const matched = MOBILE_NON_ORDER_CATEGORY_CONFIG.find((config) => (
+    normalizedCandidates.some((candidate) => (
+      config.matchers.some((matcher) => {
+        const normalizedMatcher = normalizeMatcherValue(matcher)
+        return candidate === normalizedMatcher || candidate.includes(normalizedMatcher)
+      })
+    ))
+  ))
+
+  return matched?.category ?? null
+}
+
+function resolveMonthRange(monthKey: string) {
+  const match = String(monthKey ?? '').trim().match(/^(\d{4})-(\d{2})$/)
+
+  if (!match) {
+    return null
+  }
+
+  const year = Number(match[1])
+  const month = Number(match[2])
+
+  if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) {
+    return null
+  }
+
+  const start = `${year}-${String(month).padStart(2, '0')}-01`
+  const lastDay = new Date(year, month, 0).getDate()
+  const end = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
+
+  return {
+    start,
+    end,
+  }
+}
+
+function shiftIsoDateByDays(value: string, deltaDays: number) {
+  const normalized = normalizeIsoDate(value)
+
+  if (!normalized) {
+    return null
+  }
+
+  const [year, month, day] = normalized.split('-').map(Number)
+
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
+    return null
+  }
+
+  const nextDate = new Date(year, month - 1, day)
+  nextDate.setDate(nextDate.getDate() + deltaDays)
+
+  return formatDateInput(nextDate)
+}
+
+function resolveLatestReadyPercentOnOrBefore(
+  rows: Array<{ date: string; readyPercent: number | null }>,
+  date: string,
+) {
+  let latest: number | null = null
+
+  rows.forEach((row) => {
+    if (row.readyPercent === null || row.date > date) {
+      return
+    }
+
+    latest = row.readyPercent
+  })
+
+  return latest
+}
+
+function translateToHebrew(english: string) {
+  const normalized = String(english ?? '')
+  const direct = HEBREW_TRANSLATIONS[normalized]
+
+  if (direct) {
+    return direct
+  }
+
+  const pageMatch = /^Page\s+(\d+)\s+of\s+(\d+)$/.exec(normalized)
+
+  if (pageMatch) {
+    return `עמוד ${pageMatch[1]} מתוך ${pageMatch[2]}`
+  }
+
+  const uploadMatch = /^Upload\s+\((\d+)\)$/.exec(normalized)
+
+  if (uploadMatch) {
+    return `העלה (${uploadMatch[1]})`
+  }
+
+  const readyToUploadMatch = /^Ready to upload\s+\((\d+)\)$/.exec(normalized)
+
+  if (readyToUploadMatch) {
+    return `מוכן להעלאה (${readyToUploadMatch[1]})`
+  }
+
+  return normalized
+}
+
 function toTimestampMs(value: string | null | undefined) {
   const timestamp = Date.parse(String(value ?? '').trim())
 
@@ -259,6 +536,67 @@ function clipTextValue(value: unknown, maxLength = 160) {
   }
 
   return `${normalized.slice(0, Math.max(0, maxLength - 3))}...`
+}
+
+function formatCurrencyAmount(value: number, locale: string) {
+  return Number.isFinite(value)
+    ? value.toLocaleString(locale, {
+        style: 'currency',
+        currency: 'USD',
+        maximumFractionDigits: 0,
+      })
+    : '$0'
+}
+
+function formatCurrencyAmountPrecise(value: number, locale: string) {
+  return Number.isFinite(value)
+    ? value.toLocaleString(locale, {
+        style: 'currency',
+        currency: 'USD',
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      })
+    : '-'
+}
+
+function normalizeAdminAccessMode(value: unknown): AdminAccessMode {
+  const normalized = normalizeTextValue(value).toLowerCase()
+
+  if (normalized === 'web_only' || normalized === 'app_only') {
+    return normalized
+  }
+
+  return 'web_and_app'
+}
+
+function normalizeAdminUserRole(value: unknown): AdminUserRole {
+  const normalized = normalizeTextValue(value).toLowerCase()
+
+  if (normalized === 'manager' || normalized === 'sales_rep' || normalized === 'admin') {
+    return normalized
+  }
+
+  return 'standard'
+}
+
+function isShippedDashboardOrder(order: DashboardOrder) {
+  if (order.isDone || Boolean(order.movedToShippedAt || order.shippedAt)) {
+    return true
+  }
+
+  const normalizedStatus = normalizeTextValue(order.statusLabel).toLowerCase()
+
+  if (/\bnot\s+shipped\b/.test(normalizedStatus)) {
+    return false
+  }
+
+  return /\bshipped\b/.test(normalizedStatus)
+}
+
+function isDesignDashboardOrder(order: DashboardOrder) {
+  const combinedText = `${normalizeTextValue(order.stageLabel)} ${normalizeTextValue(order.statusLabel)}`.toLowerCase()
+
+  return /\bdesign\b/.test(combinedText)
 }
 
 export default function App() {
@@ -317,12 +655,14 @@ export default function App() {
   const [isPicturesModalOpen, setIsPicturesModalOpen] = useState(false)
   const [orderSearchQuery, setOrderSearchQuery] = useState('')
   const [ordersSearchQuery, setOrdersSearchQuery] = useState('')
+  const [ordersViewFilter, setOrdersViewFilter] = useState<OrdersViewFilter>('orders')
   const [ordersPage, setOrdersPage] = useState(1)
   const [selectedOrderForDetails, setSelectedOrderForDetails] = useState<DashboardOrder | null>(null)
   const [isOrderDetailsFromDashboardMetric, setIsOrderDetailsFromDashboardMetric] = useState(false)
   const [selectedOrderDetailsView, setSelectedOrderDetailsView] = useState<'overview' | 'admin'>('overview')
   const [isOrderDetailsLoading, setIsOrderDetailsLoading] = useState(false)
   const [orderJobDetailsByOrderId, setOrderJobDetailsByOrderId] = useState<Record<string, OrderJobDetailsSnapshot>>({})
+  const [expandedOrderStatusHistoryRowKey, setExpandedOrderStatusHistoryRowKey] = useState<string | null>(null)
   const [ordersDetailMessage, setOrdersDetailMessage] = useState<string | null>(null)
   const [orderPhotosByOrderId, setOrderPhotosByOrderId] = useState<Record<string, OrderPhoto[]>>({})
   const [isLoadingOrderPhotos, setIsLoadingOrderPhotos] = useState(false)
@@ -372,11 +712,31 @@ export default function App() {
   const [adminPortalMessage, setAdminPortalMessage] = useState<string | null>(null)
   const [adminWorkspaceLoadingPath, setAdminWorkspaceLoadingPath] = useState<AdminWorkspacePagePath | null>(null)
   const [adminWorkspaceDataByPath, setAdminWorkspaceDataByPath] = useState<Partial<Record<AdminWorkspacePagePath, AdminWorkspacePanelData>>>({})
+  const [adminUsersForAccess, setAdminUsersForAccess] = useState<AdminWorkspaceUserRecord[]>([])
+  const [adminUserSavingUid, setAdminUserSavingUid] = useState<string | null>(null)
+  const [adminAccessMenuUserUid, setAdminAccessMenuUserUid] = useState<string | null>(null)
+  const [adminReportsView, setAdminReportsView] = useState<AdminReportsView>('menu')
+  const [adminExpandedWorkspaceRowId, setAdminExpandedWorkspaceRowId] = useState<string | null>(null)
+  const [adminCashAccountModalRow, setAdminCashAccountModalRow] = useState<AdminWorkspaceRow | null>(null)
   const [activeSettingsMenuId, setActiveSettingsMenuId] = useState<SettingsMenuId | null>(null)
 
   const isSpanish = language === 'es'
-  const locale = isSpanish ? 'es-ES' : 'en-US'
-  const t = useCallback((english: string, spanish: string) => (isSpanish ? spanish : english), [isSpanish])
+  const isHebrew = language === 'he'
+  const locale = isSpanish ? 'es-ES' : isHebrew ? 'he-IL' : 'en-US'
+  const t = useCallback(
+    (english: string, spanish: string) => {
+      if (isSpanish) {
+        return spanish
+      }
+
+      if (isHebrew) {
+        return translateToHebrew(english)
+      }
+
+      return english
+    },
+    [isHebrew, isSpanish],
+  )
   const getErrorMessage = useCallback(
     (error: unknown, englishFallback: string, spanishFallback: string) => {
       return error instanceof Error ? error.message : t(englishFallback, spanishFallback)
@@ -449,10 +809,16 @@ export default function App() {
         : `Tienes ${alertsUnreadCount} mensajes sin leer.`
     }
 
+    if (isHebrew) {
+      return alertsUnreadCount === 1
+        ? 'יש לך הודעה אחת שלא נקראה.'
+        : `יש לך ${alertsUnreadCount} הודעות שלא נקראו.`
+    }
+
     return alertsUnreadCount === 1
       ? 'You have 1 unread message.'
       : `You have ${alertsUnreadCount} unread messages.`
-  }, [alertsUnreadCount, isSpanish])
+  }, [alertsUnreadCount, isHebrew, isSpanish])
 
   const installedNativeVersion = useMemo(() => {
     const nativeVersion = String(Constants.nativeAppVersion ?? '').trim()
@@ -512,7 +878,7 @@ export default function App() {
           id: 'language',
           title: t('Language', 'Idioma'),
           subtitle: t('Choose your app language.', 'Elige el idioma de la aplicacion.'),
-          status: language === 'es' ? 'Espanol' : 'English',
+          status: language === 'es' ? 'Espanol' : language === 'he' ? 'עברית' : 'English',
         },
         {
           id: 'notifications',
@@ -667,48 +1033,663 @@ export default function App() {
       try {
         let panelData: AdminWorkspacePanelData | null = null
 
+        if (routePath !== '/admin/users') {
+          setAdminUsersForAccess([])
+          setAdminAccessMenuUserUid(null)
+        }
+
         switch (routePath) {
+          case '/admin/cash': {
+            const payload = await requestWithSession<{
+              generatedAt?: string
+              totals?: Record<string, unknown>
+              loanSummaries?: Array<Record<string, unknown>>
+            }>('/api/quickbooks/overview')
+
+            const loanSummaries = Array.isArray(payload.loanSummaries)
+              ? payload.loanSummaries.map((summary, index) => {
+                  const details = Array.isArray(summary.details) ? summary.details : []
+                  const totalLoanAmount = Number(summary.totalLoanAmount)
+                  const totalInvestedAmount = Number(summary.totalInvestedAmount)
+                  const totalTakenOutAmount = Number(summary.totalTakenOutAmount)
+
+                  return {
+                    id: normalizeTextValue(summary.bucketId) || `loan-${index + 1}`,
+                    label: normalizeTextValue(summary.label) || t('Loan account', 'Cuenta de prestamo'),
+                    movementCount: toCountValue(summary.movementCount),
+                    totalLoanAmount: Number.isFinite(totalLoanAmount) ? totalLoanAmount : 0,
+                    totalInvestedAmount: Number.isFinite(totalInvestedAmount) ? totalInvestedAmount : 0,
+                    totalTakenOutAmount: Number.isFinite(totalTakenOutAmount) ? totalTakenOutAmount : 0,
+                    details,
+                  }
+                })
+              : []
+
+            const findLoanSummary = (aliases: string[]) => {
+              return loanSummaries.find((summary) => {
+                const normalizedLabel = summary.label.toLowerCase()
+
+                return aliases.some((alias) => normalizedLabel.includes(alias))
+              }) ?? null
+            }
+
+            const selectedLoans = [
+              {
+                id: 'loan-ben-tyberg',
+                title: t('Loan from Ben Tyberg', 'Prestamo de Ben Tyberg'),
+                aliases: ['ben tyberg', 'tyberg'],
+              },
+              {
+                id: 'loan-israel-kamionka',
+                title: t('Loan from Israel Kamionka', 'Prestamo de Israel Kamionka'),
+                aliases: ['israel kamionka', 'kamionka'],
+              },
+              {
+                id: 'loan-yb-coit',
+                title: t('Loan from YB Coit', 'Prestamo de YB Coit'),
+                aliases: ['yb coit', 'coit'],
+              },
+            ]
+
+            const cashRows = selectedLoans.map((loanItem) => {
+              const summary = findLoanSummary(loanItem.aliases)
+              const details = Array.isArray(summary?.details)
+                ? [...summary.details]
+                  .sort((left, right) => {
+                    return (toTimestampMs(normalizeTextValue(right.txnDate)) ?? 0)
+                      - (toTimestampMs(normalizeTextValue(left.txnDate)) ?? 0)
+                  })
+                  .slice(0, 30)
+                  .map((detail) => {
+                    const amount = Number(detail.amount)
+                    const amountValue = Number.isFinite(amount) ? amount : 0
+                    const direction = normalizeTextValue(detail.direction).toLowerCase()
+                    const directionLabel = direction === 'in'
+                      ? t('in', 'entra')
+                      : direction === 'out'
+                        ? t('out', 'sale')
+                        : t('move', 'mov')
+                    const txnDate = normalizeTextValue(detail.txnDate) || null
+                    const detailSource = clipTextValue(
+                      normalizeTextValue(detail.description)
+                      || normalizeTextValue(detail.docNumber)
+                      || normalizeTextValue(detail.accountName),
+                      90,
+                    )
+
+                    return `${formatDisplayDate(txnDate, locale)} - ${directionLabel} ${formatCurrencyAmount(amountValue, locale)} - ${detailSource || '-'}`
+                  })
+                : []
+
+              if (details.length === 0) {
+                details.push(t('No transactions found for this loan.', 'No se encontraron movimientos para este prestamo.'))
+              }
+
+              return {
+                id: loanItem.id,
+                title: loanItem.title,
+                subtitle: `${t('Total loan', 'Prestamo total')}: ${formatCurrencyAmount(summary?.totalLoanAmount ?? 0, locale)}`,
+                meta: `${t('Invested', 'Invertido')}: ${formatCurrencyAmount(summary?.totalInvestedAmount ?? 0, locale)} - ${t('Taken out', 'Retirado')}: ${formatCurrencyAmount(summary?.totalTakenOutAmount ?? 0, locale)} - ${t('Moves', 'Movimientos')}: ${summary?.movementCount ?? 0}`,
+                details,
+              }
+            })
+
+            panelData = {
+              updatedAt: normalizeTextValue(payload.generatedAt) || new Date().toISOString(),
+              stats: [],
+              sections: [
+                {
+                  id: 'loan_accounts',
+                  title: t('Loan accounts', 'Cuentas de prestamos'),
+                  emptyText: t('No loan accounts found.', 'No se encontraron cuentas de prestamos.'),
+                  rows: cashRows,
+                },
+              ],
+            }
+            break
+          }
+
+          case '/admin/reports': {
+            const [timesheetPayload, quickBooksPayload] = await Promise.all([
+              requestWithSession<{
+                workers?: Array<Record<string, unknown>>
+                entries?: Array<Record<string, unknown>>
+                orderProgress?: Array<Record<string, unknown>>
+              }>('/api/timesheet/state'),
+              requestWithSession<{
+                generatedAt?: string
+                projects?: Array<Record<string, unknown>>
+                details?: Record<string, unknown>
+              }>('/api/quickbooks/overview?full=1'),
+            ])
+
+            const workers = Array.isArray(timesheetPayload.workers) ? timesheetPayload.workers : []
+            const entries = Array.isArray(timesheetPayload.entries) ? timesheetPayload.entries : []
+            const orderProgress = Array.isArray(timesheetPayload.orderProgress)
+              ? timesheetPayload.orderProgress
+              : []
+            const quickBooksProjects = Array.isArray(quickBooksPayload.projects)
+              ? quickBooksPayload.projects
+              : []
+            const quickBooksDetails = quickBooksPayload.details && typeof quickBooksPayload.details === 'object'
+              ? quickBooksPayload.details
+              : {}
+            const quickBooksBills = Array.isArray(quickBooksDetails.bills)
+              ? quickBooksDetails.bills
+              : []
+            const quickBooksPayments = Array.isArray(quickBooksDetails.payments)
+              ? quickBooksDetails.payments
+              : []
+
+            const workerNameById = new Map<string, string>()
+            const workerRateById = new Map<string, number>()
+
+            workers.forEach((worker, index) => {
+              const workerId = normalizeTextValue(worker.id) || `worker-${index + 1}`
+              const workerNumber = normalizeTextValue(worker.workerNumber)
+              const workerName = normalizeTextValue(worker.fullName) || t('Unnamed worker', 'Trabajador sin nombre')
+              const displayWorker = workerNumber ? `${workerNumber} - ${workerName}` : workerName
+              const hourlyRate = Number(worker.hourlyRate)
+
+              workerNameById.set(workerId, displayWorker)
+              workerRateById.set(workerId, Number.isFinite(hourlyRate) && hourlyRate > 0 ? hourlyRate : 0)
+            })
+
+            const workerTotals = new Map<string, { label: string; hours: number; entryCount: number }>()
+            const monthJobs = new Map<string, Map<string, {
+              jobName: string
+              totalHours: number
+              totalLaborCost: number
+            }>>()
+            const monthKeysSet = new Set<string>()
+
+            let totalHours = 0
+            let totalLaborCost = 0
+
+            entries.forEach((entry, index) => {
+              const workerId = normalizeTextValue(entry.workerId)
+              const regularHours = Number(entry.hours)
+              const overtimeHours = Number(entry.overtimeHours)
+              const safeRegularHours = Number.isFinite(regularHours) ? Math.max(0, regularHours) : 0
+              const safeOvertimeHours = Number.isFinite(overtimeHours) ? Math.max(0, overtimeHours) : 0
+              const combinedHours = safeRegularHours + safeOvertimeHours
+
+              if (combinedHours <= 0) {
+                return
+              }
+
+              const workerSnapshotRate = Number(entry.payRate)
+              const fallbackRate = workerRateById.get(workerId) ?? 0
+              const resolvedRate = Number.isFinite(workerSnapshotRate) && workerSnapshotRate > 0
+                ? workerSnapshotRate
+                : fallbackRate
+              const laborCost = (safeRegularHours * resolvedRate) + (safeOvertimeHours * resolvedRate * 1.5)
+
+              totalHours += combinedHours
+              totalLaborCost += laborCost
+
+              const fallbackWorkerLabel = t('Unlinked worker', 'Trabajador sin enlace')
+              const workerLabel = workerNameById.get(workerId) || fallbackWorkerLabel
+              const workerKey = workerId || `worker-fallback-${index + 1}`
+              const workerCurrent = workerTotals.get(workerKey) ?? {
+                label: workerLabel,
+                hours: 0,
+                entryCount: 0,
+              }
+              workerCurrent.hours += combinedHours
+              workerCurrent.entryCount += 1
+              workerTotals.set(workerKey, workerCurrent)
+
+              const normalizedDate = normalizeIsoDate(normalizeTextValue(entry.date))
+              const monthKey = normalizedDate ? normalizedDate.slice(0, 7) : ''
+
+              if (!monthKey) {
+                return
+              }
+
+              monthKeysSet.add(monthKey)
+
+              const jobName = normalizeTextValue(entry.jobName) || t('Unnamed job', 'Trabajo sin nombre')
+              const jobKey = normalizeJobName(jobName) || `job-${index + 1}`
+              const jobsByKey = monthJobs.get(monthKey) ?? new Map<string, {
+                jobName: string
+                totalHours: number
+                totalLaborCost: number
+              }>()
+              const currentJob = jobsByKey.get(jobKey) ?? {
+                jobName,
+                totalHours: 0,
+                totalLaborCost: 0,
+              }
+
+              currentJob.totalHours += combinedHours
+              currentJob.totalLaborCost += laborCost
+              jobsByKey.set(jobKey, currentJob)
+              monthJobs.set(monthKey, jobsByKey)
+            })
+
+            const progressRowsByJobKey = new Map<string, Array<{ date: string; readyPercent: number | null }>>()
+
+            orderProgress.forEach((progress, index) => {
+              const normalizedDate = normalizeIsoDate(normalizeTextValue(progress.date))
+
+              if (!normalizedDate) {
+                return
+              }
+
+              const monthKey = normalizedDate.slice(0, 7)
+              const rawJobName = normalizeTextValue(progress.jobName)
+              const jobName = rawJobName || t('Unnamed job', 'Trabajo sin nombre')
+              const jobKey = normalizeJobName(jobName) || `progress-job-${index + 1}`
+              const readyPercentRaw = Number(progress.readyPercent)
+              const readyPercent = Number.isFinite(readyPercentRaw)
+                ? Math.min(100, Math.max(0, readyPercentRaw))
+                : null
+
+              monthKeysSet.add(monthKey)
+
+              const rows = progressRowsByJobKey.get(jobKey) ?? []
+              rows.push({
+                date: normalizedDate,
+                readyPercent,
+              })
+              progressRowsByJobKey.set(jobKey, rows)
+
+              const jobsByKey = monthJobs.get(monthKey) ?? new Map<string, {
+                jobName: string
+                totalHours: number
+                totalLaborCost: number
+              }>()
+
+              if (!jobsByKey.has(jobKey)) {
+                jobsByKey.set(jobKey, {
+                  jobName,
+                  totalHours: 0,
+                  totalLaborCost: 0,
+                })
+              }
+
+              monthJobs.set(monthKey, jobsByKey)
+            })
+
+            progressRowsByJobKey.forEach((rows) => {
+              rows.sort((left, right) => left.date.localeCompare(right.date))
+            })
+
+            const projectLookupById = new Map<string, {
+              jobKey: string
+              nonOrderCategory: MobileNonOrderCategory | null
+            }>()
+            const financialTotalsByJobKey = new Map<string, {
+              purchaseOrderAmount: number
+              billAmount: number
+              invoiceAmount: number
+              paymentAmount: number
+            }>()
+
+            quickBooksProjects.forEach((project, index) => {
+              const projectId = normalizeTextValue(project.projectId) || normalizeTextValue(project.id) || `project-${index + 1}`
+              const projectName = normalizeTextValue(project.projectName)
+              const splitLabel = splitQuickBooksProjectLabel(projectName, projectId)
+              const jobKey = normalizeJobName(splitLabel.projectNumber)
+
+              if (!jobKey) {
+                return
+              }
+
+              projectLookupById.set(projectId, {
+                jobKey,
+                nonOrderCategory: resolveMobileNonOrderCategory(projectName, splitLabel.projectNumber),
+              })
+
+              const purchaseOrderAmount = Number(project.purchaseOrderAmount)
+              const billAmount = Number(project.billAmount)
+              const invoiceAmount = Number(project.invoiceAmount)
+              const paymentAmount = Number(project.paymentAmount)
+              const current = financialTotalsByJobKey.get(jobKey) ?? {
+                purchaseOrderAmount: 0,
+                billAmount: 0,
+                invoiceAmount: 0,
+                paymentAmount: 0,
+              }
+
+              current.purchaseOrderAmount += Number.isFinite(purchaseOrderAmount) ? purchaseOrderAmount : 0
+              current.billAmount += Number.isFinite(billAmount) ? billAmount : 0
+              current.invoiceAmount += Number.isFinite(invoiceAmount) ? invoiceAmount : 0
+              current.paymentAmount += Number.isFinite(paymentAmount) ? paymentAmount : 0
+              financialTotalsByJobKey.set(jobKey, current)
+            })
+
+            const billsPaidByJobKey = new Map<string, number>()
+            const paymentsByMonthJobKey = new Map<string, number>()
+            const nonOrderByMonthCategory = new Map<string, Map<MobileNonOrderCategory, {
+              billedAmount: number
+              paidAmount: number
+            }>>()
+
+            quickBooksBills.forEach((bill) => {
+              const projectId = normalizeTextValue((bill as Record<string, unknown>).projectId)
+              const projectName = normalizeTextValue((bill as Record<string, unknown>).projectName)
+              const txnDate = normalizeIsoDate(normalizeTextValue((bill as Record<string, unknown>).txnDate))
+              const fallbackProjectNumber = splitQuickBooksProjectLabel(projectName, projectId).projectNumber
+              const projectLookup = projectLookupById.get(projectId)
+              const jobKey = projectLookup?.jobKey || normalizeJobName(fallbackProjectNumber)
+
+              if (!jobKey) {
+                return
+              }
+
+              const totalAmount = Number((bill as Record<string, unknown>).totalAmount)
+              const normalizedTotalAmount = Number.isFinite(totalAmount) ? totalAmount : 0
+
+              if (normalizedTotalAmount <= 0) {
+                return
+              }
+
+              const balanceAmount = Number((bill as Record<string, unknown>).balanceAmount)
+              const normalizedBalanceAmount = Number.isFinite(balanceAmount) ? Math.max(0, balanceAmount) : 0
+              const paidAmount = Math.max(0, normalizedTotalAmount - normalizedBalanceAmount)
+
+              billsPaidByJobKey.set(
+                jobKey,
+                Number(((billsPaidByJobKey.get(jobKey) ?? 0) + paidAmount).toFixed(2)),
+              )
+
+              if (!txnDate) {
+                return
+              }
+
+              const monthKey = txnDate.slice(0, 7)
+              const nonOrderCategory = projectLookup?.nonOrderCategory
+                ?? resolveMobileNonOrderCategory(projectName, fallbackProjectNumber)
+
+              if (!nonOrderCategory) {
+                return
+              }
+
+              const categoryTotals = nonOrderByMonthCategory.get(monthKey) ?? new Map<
+                MobileNonOrderCategory,
+                { billedAmount: number; paidAmount: number }
+              >()
+              const current = categoryTotals.get(nonOrderCategory) ?? {
+                billedAmount: 0,
+                paidAmount: 0,
+              }
+
+              current.billedAmount += normalizedTotalAmount
+              current.paidAmount += paidAmount
+              categoryTotals.set(nonOrderCategory, current)
+              nonOrderByMonthCategory.set(monthKey, categoryTotals)
+            })
+
+            quickBooksPayments.forEach((payment) => {
+              const projectId = normalizeTextValue((payment as Record<string, unknown>).projectId)
+              const projectName = normalizeTextValue((payment as Record<string, unknown>).projectName)
+              const txnDate = normalizeIsoDate(normalizeTextValue((payment as Record<string, unknown>).txnDate))
+
+              if (!txnDate) {
+                return
+              }
+
+              const monthKey = txnDate.slice(0, 7)
+              const fallbackProjectNumber = splitQuickBooksProjectLabel(projectName, projectId).projectNumber
+              const jobKey = projectLookupById.get(projectId)?.jobKey || normalizeJobName(fallbackProjectNumber)
+
+              if (!jobKey) {
+                return
+              }
+
+              const totalAmount = Number((payment as Record<string, unknown>).totalAmount)
+              const normalizedTotalAmount = Number.isFinite(totalAmount) ? totalAmount : 0
+
+              if (normalizedTotalAmount <= 0) {
+                return
+              }
+
+              const aggregateKey = `${monthKey}:${jobKey}`
+              paymentsByMonthJobKey.set(
+                aggregateKey,
+                Number(((paymentsByMonthJobKey.get(aggregateKey) ?? 0) + normalizedTotalAmount).toFixed(2)),
+              )
+            })
+
+            const monthKeys = [...monthKeysSet].sort((left, right) => right.localeCompare(left))
+
+            const workerRows = [...workerTotals.values()]
+              .sort((left, right) => right.hours - left.hours)
+              .slice(0, 80)
+              .map((row, index) => ({
+                id: `worker-report-${index + 1}`,
+                title: row.label,
+                subtitle: `${t('Hours', 'Horas')}: ${row.hours.toFixed(1)}`,
+                meta: `${t('Entries', 'Entradas')}: ${row.entryCount}`,
+              }))
+
+            const monthRows = monthKeys
+              .slice(0, 24)
+              .map((monthKey, monthIndex) => {
+                const jobsByKey = monthJobs.get(monthKey) ?? new Map<string, {
+                  jobName: string
+                  totalHours: number
+                  totalLaborCost: number
+                }>()
+                const monthRange = resolveMonthRange(monthKey)
+                const monthStart = monthRange?.start ?? `${monthKey}-01`
+                const previousDate = shiftIsoDateByDays(monthStart, -1) ?? monthStart
+
+                const jobRows = [...jobsByKey.entries()]
+                  .map(([jobKey, jobData], jobIndex) => {
+                    const financialTotals = financialTotalsByJobKey.get(jobKey) ?? {
+                      purchaseOrderAmount: 0,
+                      billAmount: 0,
+                      invoiceAmount: 0,
+                      paymentAmount: 0,
+                    }
+                    const readyRows = progressRowsByJobKey.get(jobKey) ?? []
+                    const previousReadyPercent = resolveLatestReadyPercentOnOrBefore(readyRows, previousDate) ?? 0
+                    const endReadyPercent = monthRange
+                      ? (resolveLatestReadyPercentOnOrBefore(readyRows, monthRange.end) ?? previousReadyPercent)
+                      : previousReadyPercent
+                    const progressDeltaPercent = Math.max(
+                      0,
+                      Number((endReadyPercent - previousReadyPercent).toFixed(1)),
+                    )
+                    const contractAmount = financialTotals.purchaseOrderAmount > 0
+                      ? financialTotals.purchaseOrderAmount
+                      : Math.max(financialTotals.invoiceAmount, financialTotals.paymentAmount)
+                    const expectedEarnedAmount = Number(((contractAmount * progressDeltaPercent) / 100).toFixed(2))
+                    const receivedThisMonth = paymentsByMonthJobKey.get(`${monthKey}:${jobKey}`) ?? 0
+                    const billsPaidTotal = billsPaidByJobKey.get(jobKey) ?? 0
+
+                    return {
+                      id: `month-job-${monthIndex + 1}-${jobIndex + 1}`,
+                      jobName: jobData.jobName,
+                      totalHours: jobData.totalHours,
+                      totalLaborCost: jobData.totalLaborCost,
+                      previousReadyPercent,
+                      endReadyPercent,
+                      progressDeltaPercent,
+                      contractAmount,
+                      expectedEarnedAmount,
+                      billsAmount: financialTotals.billAmount,
+                      billsPaidTotal,
+                      receivedTotal: financialTotals.paymentAmount,
+                      receivedThisMonth,
+                    }
+                  })
+                  .sort((left, right) => {
+                    if (right.expectedEarnedAmount !== left.expectedEarnedAmount) {
+                      return right.expectedEarnedAmount - left.expectedEarnedAmount
+                    }
+
+                    if (right.progressDeltaPercent !== left.progressDeltaPercent) {
+                      return right.progressDeltaPercent - left.progressDeltaPercent
+                    }
+
+                    return left.jobName.localeCompare(right.jobName)
+                  })
+
+                const monthHours = jobRows.reduce((sum, row) => sum + row.totalHours, 0)
+                const monthCost = jobRows.reduce((sum, row) => sum + row.totalLaborCost, 0)
+                const monthExpected = jobRows.reduce((sum, row) => sum + row.expectedEarnedAmount, 0)
+                const monthReceived = jobRows.reduce((sum, row) => sum + row.receivedThisMonth, 0)
+                const details = jobRows.length > 0
+                  ? jobRows.slice(0, 120).map((row) => (
+                    `${clipTextValue(row.jobName, 32)} - ${t('Hours', 'Horas')}: ${row.totalHours.toFixed(1)} - ${t('Labor', 'Mano de obra')}: ${formatCurrencyAmountPrecise(row.totalLaborCost, locale)} - ${t('Bills', 'Facturas')}: ${formatCurrencyAmountPrecise(row.billsAmount, locale)} - ${t('Bills paid', 'Facturas pagadas')}: ${formatCurrencyAmountPrecise(row.billsPaidTotal, locale)} - ${t('Received', 'Recibido')}: ${formatCurrencyAmountPrecise(row.receivedTotal, locale)} - ${t('Progress', 'Progreso')}: ${row.previousReadyPercent.toFixed(1)}% -> ${row.endReadyPercent.toFixed(1)}% (+${row.progressDeltaPercent.toFixed(1)}%) - ${t('Should earn', 'Debe ganar')}: ${formatCurrencyAmountPrecise(row.expectedEarnedAmount, locale)}`
+                  ))
+                  : [t('No jobs found for this month.', 'No se encontraron trabajos para este mes.')]
+
+                return {
+                  id: `month-report-${monthIndex + 1}`,
+                  title: formatMonthBucketLabel(monthKey, locale),
+                  subtitle: `${t('Jobs', 'Trabajos')}: ${jobRows.length} - ${t('Hours', 'Horas')}: ${monthHours.toFixed(1)} - ${t('Labor', 'Mano de obra')}: ${formatCurrencyAmountPrecise(monthCost, locale)}`,
+                  meta: `${t('Should earn', 'Debe ganar')}: ${formatCurrencyAmountPrecise(monthExpected, locale)} - ${t('Received this month', 'Recibido este mes')}: ${formatCurrencyAmountPrecise(monthReceived, locale)}`,
+                  details,
+                }
+              })
+
+            const nonOrderMonthRows = monthKeys
+              .slice(0, 24)
+              .map((monthKey, index) => {
+                const categoryTotals = nonOrderByMonthCategory.get(monthKey)
+                const details = MOBILE_NON_ORDER_CATEGORY_CONFIG.map((config) => {
+                  const totals = categoryTotals?.get(config.category) ?? {
+                    billedAmount: 0,
+                    paidAmount: 0,
+                  }
+
+                  return `${config.label} - ${t('Billed', 'Facturado')}: ${formatCurrencyAmountPrecise(totals.billedAmount, locale)} - ${t('Paid', 'Pagado')}: ${formatCurrencyAmountPrecise(totals.paidAmount, locale)}`
+                })
+                const billedTotal = details.reduce((sum, _detail, detailIndex) => {
+                  const config = MOBILE_NON_ORDER_CATEGORY_CONFIG[detailIndex]
+                  const totals = categoryTotals?.get(config.category)
+                  return sum + (totals?.billedAmount ?? 0)
+                }, 0)
+                const paidTotal = details.reduce((sum, _detail, detailIndex) => {
+                  const config = MOBILE_NON_ORDER_CATEGORY_CONFIG[detailIndex]
+                  const totals = categoryTotals?.get(config.category)
+                  return sum + (totals?.paidAmount ?? 0)
+                }, 0)
+
+                return {
+                  id: `month-non-order-${index + 1}`,
+                  title: formatMonthBucketLabel(monthKey, locale),
+                  subtitle: `${t('Billed', 'Facturado')}: ${formatCurrencyAmountPrecise(billedTotal, locale)}`,
+                  meta: `${t('Paid', 'Pagado')}: ${formatCurrencyAmountPrecise(paidTotal, locale)}`,
+                  details,
+                }
+              })
+
+            const uniqueJobCount = new Set(
+              [...monthJobs.values()].flatMap((jobsByKey) => [...jobsByKey.keys()]),
+            ).size
+
+            panelData = {
+              updatedAt: normalizeTextValue(quickBooksPayload.generatedAt) || new Date().toISOString(),
+              note: t(
+                'Reports are grouped by worker and month. Monthly rows include job-level bills, paid bills, actual received, and progress-based expected earnings.',
+                'Los reportes se agrupan por trabajador y mes. Las filas mensuales incluyen facturas por trabajo, facturas pagadas, cobros reales y ganancia esperada por progreso.',
+              ),
+              stats: [
+                {
+                  label: t('Workers', 'Trabajadores'),
+                  value: String(workers.length),
+                },
+                {
+                  label: t('Entries', 'Entradas'),
+                  value: String(entries.length),
+                },
+                {
+                  label: t('Hours', 'Horas'),
+                  value: totalHours.toFixed(1),
+                },
+                {
+                  label: t('Labor cost', 'Costo de mano de obra'),
+                  value: formatCurrencyAmountPrecise(totalLaborCost, locale),
+                },
+                {
+                  label: t('Jobs', 'Trabajos'),
+                  value: String(uniqueJobCount),
+                },
+                {
+                  label: t('Months', 'Meses'),
+                  value: String(monthKeys.length),
+                },
+              ],
+              sections: [
+                {
+                  id: 'report_worker',
+                  title: t('Hours by worker', 'Horas por trabajador'),
+                  emptyText: t('No worker report rows.', 'No hay filas por trabajador.'),
+                  rows: workerRows,
+                },
+                {
+                  id: 'report_month',
+                  title: t('Monthly jobs and earnings', 'Trabajos y ganancias por mes'),
+                  emptyText: t('No month report rows.', 'No hay filas por mes.'),
+                  rows: monthRows,
+                },
+                {
+                  id: 'report_month_non_order',
+                  title: t('Monthly non-order spending', 'Gasto mensual no relacionado a ordenes'),
+                  emptyText: t('No monthly non-order spending found.', 'No se encontro gasto no relacionado a ordenes.'),
+                  rows: nonOrderMonthRows,
+                },
+              ],
+            }
+            break
+          }
+
           case '/admin/users': {
             const payload = await requestWithSession<{
               users?: Array<Record<string, unknown>>
-              workers?: unknown[]
-              salesReps?: unknown[]
-            }>('/api/auth/bootstrap')
+            }>('/api/auth/users')
 
-            const users = Array.isArray(payload.users)
+            const users: AdminWorkspaceUserRecord[] = Array.isArray(payload.users)
               ? payload.users.map((user, index) => ({
-                  id: normalizeTextValue(user.uid) || `user-${index + 1}`,
+                  uid: normalizeTextValue(user.uid) || `user-${index + 1}`,
                   email: normalizeTextValue(user.email) || '-',
-                  displayName: normalizeTextValue(user.displayName),
-                  role: normalizeTextValue(user.role) || 'standard',
+                  displayName: normalizeTextValue(user.displayName) || '-',
+                  role: normalizeAdminUserRole(user.role),
                   isApproved: user.isApproved === true,
-                  hasWebAccess: user.hasWebAccess === true,
-                  hasAppAccess: user.hasAppAccess === true,
+                  clientAccessMode: normalizeAdminAccessMode(user.clientAccessMode),
+                  hasWebAccess: user.hasWebAccess === true || normalizeAdminAccessMode(user.clientAccessMode) !== 'app_only',
+                  hasAppAccess: user.hasAppAccess === true || normalizeAdminAccessMode(user.clientAccessMode) !== 'web_only',
                   lastLoginAt: normalizeTextValue(user.lastLoginAt) || null,
                 }))
               : []
 
             const sortedUsers = [...users].sort(
-              (left, right) => (toTimestampMs(right.lastLoginAt) ?? 0) - (toTimestampMs(left.lastLoginAt) ?? 0),
+              (left, right) => {
+                if (left.isApproved !== right.isApproved) {
+                  return Number(left.isApproved) - Number(right.isApproved)
+                }
+
+                return left.email.localeCompare(right.email)
+              },
             )
+
+            setAdminUsersForAccess(sortedUsers)
+
             const approvedCount = users.filter((user) => user.isApproved).length
             const webAccessCount = users.filter((user) => user.hasWebAccess).length
             const appAccessCount = users.filter((user) => user.hasAppAccess).length
             const adminCount = users.filter((user) => user.role === 'admin').length
+            const pendingCount = users.filter((user) => !user.isApproved).length
 
             panelData = {
               updatedAt: new Date().toISOString(),
               stats: [
                 { label: t('Users', 'Usuarios'), value: String(users.length) },
                 { label: t('Approved', 'Aprobados'), value: String(approvedCount) },
+                { label: t('Pending', 'Pendientes'), value: String(pendingCount) },
                 { label: t('Admins', 'Admins'), value: String(adminCount) },
                 { label: t('Web access', 'Acceso web'), value: String(webAccessCount) },
                 { label: t('App access', 'Acceso app'), value: String(appAccessCount) },
-                { label: t('Workers', 'Trabajadores'), value: String(Array.isArray(payload.workers) ? payload.workers.length : 0) },
-                { label: t('Sales reps', 'Vendedores'), value: String(Array.isArray(payload.salesReps) ? payload.salesReps.length : 0) },
               ],
               sections: [
                 {
+                  id: 'user_accounts',
                   title: t('User accounts', 'Cuentas de usuario'),
                   emptyText: t('No users found.', 'No hay usuarios.'),
                   rows: sortedUsers.slice(0, 120).map((user) => {
@@ -716,578 +1697,18 @@ export default function App() {
                     const approvalLabel = user.isApproved
                       ? t('Approved', 'Aprobado')
                       : t('Pending', 'Pendiente')
-                    const webLabel = user.hasWebAccess ? t('Yes', 'Si') : t('No', 'No')
-                    const appLabel = user.hasAppAccess ? t('Yes', 'Si') : t('No', 'No')
+                    const accessLabel =
+                      user.clientAccessMode === 'web_only'
+                        ? t('Web only', 'Solo web')
+                        : user.clientAccessMode === 'app_only'
+                          ? t('App only', 'Solo app')
+                          : t('Web + App', 'Web + App')
 
                     return {
-                      id: user.id,
+                      id: user.uid,
                       title: user.displayName || user.email,
                       subtitle: `${roleLabel} - ${approvalLabel}`,
-                      meta: `${t('Web', 'Web')}: ${webLabel} - ${t('App', 'App')}: ${appLabel} - ${t('Last login', 'Ultimo acceso')}: ${formatSyncTimestamp(user.lastLoginAt, locale)}`,
-                    }
-                  }),
-                },
-              ],
-            }
-            break
-          }
-
-          case '/admin/alerts': {
-            const payload = await requestWithSession<{
-              users?: Array<Record<string, unknown>>
-              alerts?: Array<Record<string, unknown>>
-            }>('/api/admin/bootstrap?alertsLimit=80')
-
-            const alerts = Array.isArray(payload.alerts)
-              ? payload.alerts.map((alert, index) => ({
-                  id: normalizeTextValue(alert.id) || `alert-${index + 1}`,
-                  title: clipTextValue(alert.title, 100) || t('Untitled alert', 'Alerta sin titulo'),
-                  message: clipTextValue(alert.message, 160),
-                  targetMode: normalizeTextValue(alert.targetMode) || 'all',
-                  targetUserCount: toCountValue(alert.targetUserCount),
-                  pushAcceptedCount: toCountValue(alert.pushAcceptedCount),
-                  pushErrorCount: toCountValue(alert.pushErrorCount),
-                  isUpdate: alert.isUpdate === true,
-                  createdAt: normalizeTextValue(alert.createdAt) || null,
-                }))
-              : []
-
-            const sortedAlerts = [...alerts].sort(
-              (left, right) => (toTimestampMs(right.createdAt) ?? 0) - (toTimestampMs(left.createdAt) ?? 0),
-            )
-            const updateAlertsCount = sortedAlerts.filter((alert) => alert.isUpdate).length
-            const pushAcceptedTotal = sortedAlerts.reduce((total, alert) => total + alert.pushAcceptedCount, 0)
-            const pushErrorTotal = sortedAlerts.reduce((total, alert) => total + alert.pushErrorCount, 0)
-
-            panelData = {
-              updatedAt: new Date().toISOString(),
-              stats: [
-                { label: t('Alerts', 'Alertas'), value: String(sortedAlerts.length) },
-                { label: t('Update alerts', 'Alertas de actualizacion'), value: String(updateAlertsCount) },
-                { label: t('Users', 'Usuarios'), value: String(Array.isArray(payload.users) ? payload.users.length : 0) },
-                { label: t('Push accepted', 'Push aceptadas'), value: String(pushAcceptedTotal) },
-                { label: t('Push errors', 'Errores push'), value: String(pushErrorTotal) },
-              ],
-              sections: [
-                {
-                  title: t('Latest admin alerts', 'Ultimas alertas admin'),
-                  emptyText: t('No admin alerts found.', 'No hay alertas admin.'),
-                  rows: sortedAlerts.slice(0, 80).map((alert) => ({
-                    id: alert.id,
-                    title: alert.title,
-                    subtitle: alert.message || t('No message', 'Sin mensaje'),
-                    meta: `${alert.targetMode === 'selected' ? t('Selected users', 'Usuarios seleccionados') : t('All users', 'Todos los usuarios')} - ${t('Targets', 'Objetivos')}: ${alert.targetUserCount} - ${t('Accepted', 'Aceptadas')}: ${alert.pushAcceptedCount} - ${formatSyncTimestamp(alert.createdAt, locale)}`,
-                  })),
-                },
-              ],
-            }
-            break
-          }
-
-          case '/admin/issues': {
-            const payload = await requestWithSession<{
-              websiteIssues?: {
-                generatedAt?: string
-                counts?: Record<string, unknown>
-                hazards?: Array<Record<string, unknown>>
-                duplicateMondayLinks?: Array<Record<string, unknown>>
-                unmappedTimesheetJobs?: Array<Record<string, unknown>>
-                missingShopDrawings?: Array<Record<string, unknown>>
-              } | null
-            }>('/api/timesheet/bootstrap')
-
-            const websiteIssues = payload.websiteIssues ?? null
-            const counts = websiteIssues?.counts ?? {}
-            const hazards = Array.isArray(websiteIssues?.hazards) ? websiteIssues.hazards : []
-            const duplicateMondayLinks = Array.isArray(websiteIssues?.duplicateMondayLinks)
-              ? websiteIssues.duplicateMondayLinks
-              : []
-            const unmappedTimesheetJobs = Array.isArray(websiteIssues?.unmappedTimesheetJobs)
-              ? websiteIssues.unmappedTimesheetJobs
-              : []
-            const missingShopDrawings = Array.isArray(websiteIssues?.missingShopDrawings)
-              ? websiteIssues.missingShopDrawings
-              : []
-
-            panelData = {
-              updatedAt: normalizeTextValue(websiteIssues?.generatedAt) || new Date().toISOString(),
-              note: t(
-                'Website integrity checks from Timesheet bootstrap (direct DB/API data).',
-                'Validaciones de integridad del sitio desde Timesheet bootstrap (datos directos DB/API).',
-              ),
-              stats: [
-                { label: t('Total issues', 'Total incidencias'), value: String(toCountValue(counts.total)) },
-                { label: t('Hazards', 'Riesgos'), value: String(toCountValue(counts.hazard)) },
-                { label: t('Duplicate links', 'Links duplicados'), value: String(toCountValue(counts.duplicateMondayLinks)) },
-                { label: t('Unmapped jobs', 'Trabajos sin mapear'), value: String(toCountValue(counts.unmappedTimesheetJobs)) },
-                { label: t('Missing drawings', 'Planos faltantes'), value: String(toCountValue(counts.missingShopDrawings)) },
-              ],
-              sections: [
-                {
-                  title: t('Hazard orders', 'Ordenes en riesgo'),
-                  emptyText: t('No hazard orders.', 'No hay ordenes en riesgo.'),
-                  rows: hazards.slice(0, 60).map((hazard, index) => ({
-                    id: normalizeTextValue(hazard.orderNumber) || normalizeTextValue(hazard.orderName) || `hazard-${index + 1}`,
-                    title: `#${normalizeTextValue(hazard.orderNumber) || '-'} ${clipTextValue(hazard.orderName, 90)}`,
-                    subtitle: clipTextValue(hazard.hazardReason, 140) || t('No hazard reason provided.', 'Sin razon de riesgo.'),
-                    meta: `${t('Monday', 'Monday')}: ${hazard.hasMondayRecord === true ? t('Yes', 'Si') : t('No', 'No')} - ${t('QuickBooks', 'QuickBooks')}: ${hazard.hasQuickBooksRecord === true ? t('Yes', 'Si') : t('No', 'No')}`,
-                  })),
-                },
-                {
-                  title: t('Duplicate Monday links', 'Links Monday duplicados'),
-                  emptyText: t('No duplicate Monday links.', 'No hay links Monday duplicados.'),
-                  rows: duplicateMondayLinks.slice(0, 40).map((duplicateLink, index) => ({
-                    id: normalizeTextValue(duplicateLink.mondayItemId) || `duplicate-${index + 1}`,
-                    title: `${t('Item', 'Item')} ${normalizeTextValue(duplicateLink.mondayItemId) || '-'}`,
-                    subtitle: `${toCountValue(duplicateLink.count)} ${t('orders linked', 'ordenes enlazadas')}`,
-                    meta: `${t('Order numbers', 'Numeros de orden')}: ${clipTextValue(Array.isArray(duplicateLink.orderNumbers) ? duplicateLink.orderNumbers.join(', ') : '', 120) || '-'}`,
-                  })),
-                },
-                {
-                  title: t('Unmapped timesheet jobs', 'Trabajos timesheet sin mapa'),
-                  emptyText: t('No unmapped jobs.', 'No hay trabajos sin mapear.'),
-                  rows: unmappedTimesheetJobs.slice(0, 40).map((job, index) => ({
-                    id: normalizeTextValue(job.jobName) || `unmapped-${index + 1}`,
-                    title: normalizeTextValue(job.jobName) || t('Unnamed job', 'Trabajo sin nombre'),
-                    subtitle: `${t('Entries', 'Entradas')}: ${toCountValue(job.entryCount)}`,
-                    meta: `${t('Progress rows', 'Filas progreso')}: ${toCountValue(job.progressCount)}`,
-                  })),
-                },
-                {
-                  title: t('Missing shop drawings', 'Planos faltantes'),
-                  emptyText: t('No missing shop drawings.', 'No faltan planos.'),
-                  rows: missingShopDrawings.slice(0, 60).map((order, index) => ({
-                    id: normalizeTextValue(order.orderNumber) || normalizeTextValue(order.orderName) || `missing-drawing-${index + 1}`,
-                    title: `#${normalizeTextValue(order.orderNumber) || '-'} ${clipTextValue(order.orderName, 90)}`,
-                    subtitle: `${t('Source', 'Fuente')}: ${normalizeTextValue(order.source) || '-'}`,
-                    meta: clipTextValue(order.hazardReason, 140),
-                  })),
-                },
-              ],
-            }
-            break
-          }
-
-          case '/admin/logs': {
-            const [userLogsPayload, systemLogsPayload] = await Promise.all([
-              requestWithSession<{
-                users?: Array<{
-                  user?: Record<string, unknown>
-                  lastLoginAt?: string | null
-                  lastActivityAt?: string | null
-                  signIns?: Array<Record<string, unknown>>
-                }>
-              }>('/api/auth/logs/users?limit=200&signInsLimit=10'),
-              requestWithSession<{
-                logs?: Array<Record<string, unknown>>
-              }>('/api/auth/logs/system?limit=200'),
-            ])
-
-            const userLogs = Array.isArray(userLogsPayload.users) ? userLogsPayload.users : []
-            const systemLogs = Array.isArray(systemLogsPayload.logs) ? systemLogsPayload.logs : []
-            const totalSignIns = userLogs.reduce((total, userLog) => {
-              return total + (Array.isArray(userLog.signIns) ? userLog.signIns.length : 0)
-            }, 0)
-            const systemErrorCount = systemLogs.filter((log) => {
-              const status = normalizeTextValue(log.status).toLowerCase()
-
-              return status.includes('error') || Boolean(normalizeTextValue(log.errorMessage))
-            }).length
-
-            panelData = {
-              updatedAt: new Date().toISOString(),
-              stats: [
-                { label: t('User logs', 'Logs de usuario'), value: String(userLogs.length) },
-                { label: t('Sign-ins tracked', 'Inicios registrados'), value: String(totalSignIns) },
-                { label: t('System runs', 'Ejecuciones sistema'), value: String(systemLogs.length) },
-                { label: t('System errors', 'Errores sistema'), value: String(systemErrorCount) },
-              ],
-              sections: [
-                {
-                  title: t('User activity', 'Actividad de usuarios'),
-                  emptyText: t('No user activity logs.', 'No hay logs de actividad de usuarios.'),
-                  rows: userLogs.slice(0, 90).map((userLog, index) => {
-                    const user = userLog.user ?? {}
-                    const email = normalizeTextValue(user.email) || '-'
-                    const displayName = normalizeTextValue(user.displayName)
-                    const signInCount = Array.isArray(userLog.signIns) ? userLog.signIns.length : 0
-
-                    return {
-                      id: normalizeTextValue(user.uid) || `user-log-${index + 1}`,
-                      title: displayName || email,
-                      subtitle: `${t('Last login', 'Ultimo acceso')}: ${formatSyncTimestamp(userLog.lastLoginAt, locale)}`,
-                      meta: `${t('Last activity', 'Ultima actividad')}: ${formatSyncTimestamp(userLog.lastActivityAt, locale)} - ${t('Sign-ins', 'Inicios')}: ${signInCount}`,
-                    }
-                  }),
-                },
-                {
-                  title: t('System run logs', 'Logs de ejecucion sistema'),
-                  emptyText: t('No system logs.', 'No hay logs del sistema.'),
-                  rows: systemLogs.slice(0, 90).map((log, index) => ({
-                    id: normalizeTextValue(log.id) || `system-log-${index + 1}`,
-                    title: `${normalizeTextValue(log.jobName) || t('Unnamed job', 'Trabajo sin nombre')} - ${normalizeTextValue(log.status).toUpperCase() || 'UNKNOWN'}`,
-                    subtitle: `${t('Started', 'Inicio')}: ${formatSyncTimestamp(normalizeTextValue(log.startedAt) || null, locale)}`,
-                    meta: clipTextValue(log.errorMessage) || clipTextValue(log.message) || `${t('Completed', 'Completado')}: ${formatSyncTimestamp(normalizeTextValue(log.completedAt) || null, locale)}`,
-                  })),
-                },
-              ],
-            }
-            break
-          }
-
-          case '/admin/sales-review': {
-            const [deletionQueuePayload, readinessPayload] = await Promise.all([
-              requestWithSession<{
-                dealers?: Array<Record<string, unknown>>
-                contacts?: Array<Record<string, unknown>>
-                total?: number
-              }>('/api/crm/deletion-queue?limit=300'),
-              requestWithSession<{
-                dealers?: Array<Record<string, unknown>>
-                contacts?: Array<Record<string, unknown>>
-                summary?: {
-                  dealers?: { total?: number; ready?: number; notReady?: number }
-                  contacts?: { total?: number; ready?: number; notReady?: number }
-                }
-              }>('/api/crm/engagement-readiness?status=all&limit=1200'),
-            ])
-
-            const queuedDealers = Array.isArray(deletionQueuePayload.dealers)
-              ? deletionQueuePayload.dealers
-              : []
-            const queuedContacts = Array.isArray(deletionQueuePayload.contacts)
-              ? deletionQueuePayload.contacts
-              : []
-            const readinessDealers = Array.isArray(readinessPayload.dealers)
-              ? readinessPayload.dealers
-              : []
-            const readinessContacts = Array.isArray(readinessPayload.contacts)
-              ? readinessPayload.contacts
-              : []
-            const readinessSummary = readinessPayload.summary ?? {}
-
-            panelData = {
-              updatedAt: new Date().toISOString(),
-              stats: [
-                {
-                  label: t('Deletion queue', 'Cola borrado'),
-                  value: String(toCountValue(deletionQueuePayload.total)),
-                },
-                {
-                  label: t('Dealer queue', 'Cola dealers'),
-                  value: String(queuedDealers.length),
-                },
-                {
-                  label: t('Contact queue', 'Cola contactos'),
-                  value: String(queuedContacts.length),
-                },
-                {
-                  label: t('Dealers ready', 'Dealers listos'),
-                  value: `${toCountValue(readinessSummary.dealers?.ready)}/${toCountValue(readinessSummary.dealers?.total)}`,
-                },
-                {
-                  label: t('Contacts ready', 'Contactos listos'),
-                  value: `${toCountValue(readinessSummary.contacts?.ready)}/${toCountValue(readinessSummary.contacts?.total)}`,
-                },
-              ],
-              sections: [
-                {
-                  title: t('Deletion queue dealers', 'Dealers en cola de borrado'),
-                  emptyText: t('No dealers queued for deletion.', 'No hay dealers en cola para borrar.'),
-                  rows: queuedDealers.slice(0, 60).map((dealer, index) => ({
-                    id: normalizeTextValue(dealer.sourceId) || `dealer-queue-${index + 1}`,
-                    title: normalizeTextValue(dealer.name) || t('Unnamed dealer', 'Dealer sin nombre'),
-                    subtitle: `${t('State', 'Estado')}: ${normalizeTextValue(dealer.state) || '-'} - ${t('Type', 'Tipo')}: ${normalizeTextValue(dealer.accountType) || '-'}`,
-                    meta: `${t('Requested', 'Solicitado')}: ${formatSyncTimestamp(normalizeTextValue(dealer.deleteRequestedAt) || null, locale)} - ${clipTextValue(dealer.deleteRequestedByEmail, 80) || '-'}`,
-                  })),
-                },
-                {
-                  title: t('Deletion queue contacts', 'Contactos en cola de borrado'),
-                  emptyText: t('No contacts queued for deletion.', 'No hay contactos en cola para borrar.'),
-                  rows: queuedContacts.slice(0, 60).map((contact, index) => ({
-                    id: normalizeTextValue(contact.sourceId) || `contact-queue-${index + 1}`,
-                    title: normalizeTextValue(contact.name) || t('Unnamed contact', 'Contacto sin nombre'),
-                    subtitle: `${t('Account', 'Cuenta')}: ${clipTextValue(contact.accountName, 90) || '-'} - ${t('State', 'Estado')}: ${normalizeTextValue(contact.state) || '-'}`,
-                    meta: `${t('Requested', 'Solicitado')}: ${formatSyncTimestamp(normalizeTextValue(contact.deleteRequestedAt) || null, locale)} - ${clipTextValue(contact.deleteRequestedByEmail, 80) || '-'}`,
-                  })),
-                },
-                {
-                  title: t('Dealer readiness', 'Readiness de dealers'),
-                  emptyText: t('No dealer readiness data.', 'No hay datos de readiness de dealers.'),
-                  rows: readinessDealers
-                    .slice()
-                    .sort((left, right) => {
-                      const leftStatus = normalizeTextValue(left.engagementReadinessStatus)
-                      const rightStatus = normalizeTextValue(right.engagementReadinessStatus)
-
-                      if (leftStatus === rightStatus) {
-                        return 0
-                      }
-
-                      if (leftStatus === 'not_ready') {
-                        return -1
-                      }
-
-                      if (rightStatus === 'not_ready') {
-                        return 1
-                      }
-
-                      return 0
-                    })
-                    .slice(0, 90)
-                    .map((dealer, index) => ({
-                      id: normalizeTextValue(dealer.sourceId) || `dealer-readiness-${index + 1}`,
-                      title: normalizeTextValue(dealer.name) || t('Unnamed dealer', 'Dealer sin nombre'),
-                      subtitle: `${t('Status', 'Estado')}: ${normalizeTextValue(dealer.engagementReadinessStatus) || 'none'} - ${t('State', 'Estado')}: ${normalizeTextValue(dealer.state) || '-'}`,
-                      meta: clipTextValue(dealer.engagementReadinessNote, 150) || `${t('Updated', 'Actualizado')}: ${formatSyncTimestamp(normalizeTextValue(dealer.updatedAt) || null, locale)}`,
-                    })),
-                },
-                {
-                  title: t('Contact readiness', 'Readiness de contactos'),
-                  emptyText: t('No contact readiness data.', 'No hay datos de readiness de contactos.'),
-                  rows: readinessContacts
-                    .slice()
-                    .sort((left, right) => {
-                      const leftStatus = normalizeTextValue(left.engagementReadinessStatus)
-                      const rightStatus = normalizeTextValue(right.engagementReadinessStatus)
-
-                      if (leftStatus === rightStatus) {
-                        return 0
-                      }
-
-                      if (leftStatus === 'not_ready') {
-                        return -1
-                      }
-
-                      if (rightStatus === 'not_ready') {
-                        return 1
-                      }
-
-                      return 0
-                    })
-                    .slice(0, 90)
-                    .map((contact, index) => ({
-                      id: normalizeTextValue(contact.sourceId) || `contact-readiness-${index + 1}`,
-                      title: normalizeTextValue(contact.name) || t('Unnamed contact', 'Contacto sin nombre'),
-                      subtitle: `${t('Status', 'Estado')}: ${normalizeTextValue(contact.engagementReadinessStatus) || 'none'} - ${t('Account', 'Cuenta')}: ${clipTextValue(contact.accountName, 90) || '-'}`,
-                      meta: clipTextValue(contact.engagementReadinessNote, 150) || `${t('Updated', 'Actualizado')}: ${formatSyncTimestamp(normalizeTextValue(contact.updatedAt) || null, locale)}`,
-                    })),
-                },
-              ],
-            }
-            break
-          }
-
-          case '/admin/crm': {
-            const [overviewPayload, dealersPayload, contactsPayload] = await Promise.all([
-              requestWithSession<{
-                generatedAt?: string
-                dealers?: {
-                  totalAccounts?: number
-                  totalContacts?: number
-                  openConflictCount?: number
-                }
-                quotes?: {
-                  totalQuotes?: number
-                  acceptedQuotes?: number
-                  acceptanceRate?: number
-                  acceptedValue?: number
-                  topDealersByAcceptedValue?: Array<Record<string, unknown>>
-                }
-                orders?: {
-                  totalOrders?: number
-                }
-              }>('/api/crm/overview'),
-              requestWithSession<{
-                dealers?: Array<Record<string, unknown>>
-              }>('/api/crm/dealers?limit=80'),
-              requestWithSession<{
-                contacts?: Array<Record<string, unknown>>
-              }>('/api/crm/contacts?limit=80'),
-            ])
-
-            const dealers = Array.isArray(dealersPayload.dealers) ? dealersPayload.dealers : []
-            const contacts = Array.isArray(contactsPayload.contacts) ? contactsPayload.contacts : []
-            const topDealersByAcceptedValue = Array.isArray(overviewPayload.quotes?.topDealersByAcceptedValue)
-              ? overviewPayload.quotes?.topDealersByAcceptedValue
-              : []
-
-            panelData = {
-              updatedAt: normalizeTextValue(overviewPayload.generatedAt) || new Date().toISOString(),
-              stats: [
-                {
-                  label: t('Dealer accounts', 'Cuentas dealer'),
-                  value: String(toCountValue(overviewPayload.dealers?.totalAccounts)),
-                },
-                {
-                  label: t('Dealer contacts', 'Contactos dealer'),
-                  value: String(toCountValue(overviewPayload.dealers?.totalContacts)),
-                },
-                {
-                  label: t('Open conflicts', 'Conflictos abiertos'),
-                  value: String(toCountValue(overviewPayload.dealers?.openConflictCount)),
-                },
-                {
-                  label: t('Total quotes', 'Cotizaciones totales'),
-                  value: String(toCountValue(overviewPayload.quotes?.totalQuotes)),
-                },
-                {
-                  label: t('Accepted quotes', 'Cotizaciones aceptadas'),
-                  value: String(toCountValue(overviewPayload.quotes?.acceptedQuotes)),
-                },
-                {
-                  label: t('Total orders', 'Ordenes totales'),
-                  value: String(toCountValue(overviewPayload.orders?.totalOrders)),
-                },
-              ],
-              sections: [
-                {
-                  title: t('Dealers', 'Dealers'),
-                  emptyText: t('No dealers found.', 'No hay dealers.'),
-                  rows: dealers.slice(0, 80).map((dealer, index) => ({
-                    id: normalizeTextValue(dealer.sourceId) || `dealer-${index + 1}`,
-                    title: normalizeTextValue(dealer.name) || t('Unnamed dealer', 'Dealer sin nombre'),
-                    subtitle: `${t('State', 'Estado')}: ${normalizeTextValue(dealer.state) || '-'} - ${t('Sales rep', 'Vendedor')}: ${normalizeTextValue(dealer.salesRep) || '-'}`,
-                    meta: `${t('Readiness', 'Readiness')}: ${normalizeTextValue(dealer.engagementReadinessStatus) || 'none'} - ${t('Imported', 'Importado')}: ${formatSyncTimestamp(normalizeTextValue(dealer.lastImportedAt) || null, locale)}`,
-                  })),
-                },
-                {
-                  title: t('Contacts', 'Contactos'),
-                  emptyText: t('No contacts found.', 'No hay contactos.'),
-                  rows: contacts.slice(0, 80).map((contact, index) => ({
-                    id: normalizeTextValue(contact.sourceId) || `contact-${index + 1}`,
-                    title: normalizeTextValue(contact.name) || normalizeTextValue(contact.primaryEmail) || t('Unnamed contact', 'Contacto sin nombre'),
-                    subtitle: `${t('Account', 'Cuenta')}: ${clipTextValue(contact.accountName, 90) || '-'} - ${t('State', 'Estado')}: ${normalizeTextValue(contact.state) || '-'}`,
-                    meta: `${t('Primary email', 'Correo principal')}: ${clipTextValue(contact.primaryEmail, 80) || '-'}`,
-                  })),
-                },
-                {
-                  title: t('Top dealers by accepted value', 'Top dealers por valor aceptado'),
-                  emptyText: t('No accepted quote value data.', 'No hay datos de valor aceptado.'),
-                  rows: topDealersByAcceptedValue.slice(0, 20).map((entry, index) => {
-                    const acceptedValue = Number(entry.acceptedValue)
-                    const acceptedValueLabel = Number.isFinite(acceptedValue)
-                      ? acceptedValue.toLocaleString(locale, {
-                          style: 'currency',
-                          currency: 'USD',
-                          maximumFractionDigits: 0,
-                        })
-                      : '$0'
-
-                    return {
-                      id: normalizeTextValue(entry.dealerSourceId) || `top-dealer-${index + 1}`,
-                      title: normalizeTextValue(entry.dealerName) || t('Unnamed dealer', 'Dealer sin nombre'),
-                      subtitle: `${t('Accepted value', 'Valor aceptado')}: ${acceptedValueLabel}`,
-                      meta: `${t('Dealer source', 'Fuente dealer')}: ${normalizeTextValue(entry.dealerSourceId) || '-'}`,
-                    }
-                  }),
-                },
-              ],
-            }
-            break
-          }
-
-          case '/admin/ai-config': {
-            const categories = ['general', 'support', 'summaries', 'purchasing'] as const
-            const ruleEntries = await Promise.all(
-              categories.map(async (category) => {
-                const response = await requestWithSession<{
-                  content?: string
-                }>(`/api/ai/rules/${category}`)
-
-                return {
-                  category,
-                  content: normalizeTextValue(response.content),
-                }
-              }),
-            )
-
-            const totalCharacters = ruleEntries.reduce((total, entry) => total + entry.content.length, 0)
-
-            panelData = {
-              updatedAt: new Date().toISOString(),
-              note: t(
-                'All AI rule categories are loaded from the API and can now be reviewed in-app.',
-                'Todas las categorias de reglas AI cargan desde la API y ahora se pueden revisar en la app.',
-              ),
-              stats: [
-                {
-                  label: t('Categories', 'Categorias'),
-                  value: String(ruleEntries.length),
-                },
-                {
-                  label: t('Total characters', 'Total caracteres'),
-                  value: String(totalCharacters),
-                },
-              ],
-              sections: [
-                {
-                  title: t('AI rule categories', 'Categorias de reglas AI'),
-                  emptyText: t('No AI rules found.', 'No hay reglas AI.'),
-                  rows: ruleEntries.map((entry) => ({
-                    id: entry.category,
-                    title: entry.category.toUpperCase(),
-                    subtitle: `${t('Length', 'Longitud')}: ${entry.content.length}`,
-                    meta: clipTextValue(entry.content, 200) || t('No content.', 'Sin contenido.'),
-                  })),
-                },
-              ],
-            }
-            break
-          }
-
-          case '/orders?view=admin': {
-            const payload = await requestWithSession<{
-              generatedAt?: string
-              counts?: Record<string, unknown>
-              orders?: Array<Record<string, unknown>>
-            }>('/api/orders/overview')
-
-            const counts = payload.counts ?? {}
-            const orders = Array.isArray(payload.orders) ? payload.orders : []
-            const hazardOrders = orders.filter((order) => Boolean(normalizeTextValue(order.hazardReason)))
-            const activeOrders = orders.filter((order) => order.isShipped !== true)
-
-            panelData = {
-              updatedAt: normalizeTextValue(payload.generatedAt) || new Date().toISOString(),
-              stats: [
-                { label: t('Total', 'Total'), value: String(toCountValue(counts.total)) },
-                { label: t('Non shipped', 'No enviadas'), value: String(toCountValue(counts.nonShipped)) },
-                { label: t('Shipped', 'Enviadas'), value: String(toCountValue(counts.shipped)) },
-                { label: t('Hazard', 'Riesgo'), value: String(toCountValue(counts.hazard)) },
-                { label: t('Monday only', 'Solo Monday'), value: String(toCountValue(counts.mondayOnly)) },
-                { label: t('QuickBooks only', 'Solo QuickBooks'), value: String(toCountValue(counts.quickBooksOnly)) },
-              ],
-              sections: [
-                {
-                  title: t('Active orders', 'Ordenes activas'),
-                  emptyText: t('No active orders.', 'No hay ordenes activas.'),
-                  rows: activeOrders.slice(0, 90).map((order, index) => {
-                    const orderNumber = normalizeTextValue(order.orderNumber)
-                    const jobNumber = normalizeTextValue(order.jobNumber)
-                    const orderName = clipTextValue(order.orderName, 90)
-                    const rowStatus = normalizeTextValue(order.rowStatus) || '-'
-
-                    return {
-                      id: normalizeTextValue(order.id) || normalizeTextValue(order.mondayItemId) || `active-order-${index + 1}`,
-                      title: `#${orderNumber || jobNumber || '-'} ${orderName}`,
-                      subtitle: `${t('Status', 'Estado')}: ${rowStatus} - ${t('Due', 'Entrega')}: ${formatDisplayDate(normalizeTextValue(order.dueDate) || null, locale)}`,
-                      meta: `${t('Source', 'Fuente')}: ${normalizeTextValue(order.source) || '-'} - ${t('Updated', 'Actualizado')}: ${formatSyncTimestamp(normalizeTextValue(order.mondayUpdatedAt) || null, locale)}`,
-                    }
-                  }),
-                },
-                {
-                  title: t('Hazard orders', 'Ordenes en riesgo'),
-                  emptyText: t('No hazard orders.', 'No hay ordenes en riesgo.'),
-                  rows: hazardOrders.slice(0, 90).map((order, index) => {
-                    const orderNumber = normalizeTextValue(order.orderNumber)
-                    const jobNumber = normalizeTextValue(order.jobNumber)
-
-                    return {
-                      id: normalizeTextValue(order.id) || normalizeTextValue(order.mondayItemId) || `hazard-order-${index + 1}`,
-                      title: `#${orderNumber || jobNumber || '-'} ${clipTextValue(order.orderName, 90)}`,
-                      subtitle: clipTextValue(order.hazardReason, 150) || t('No hazard reason provided.', 'Sin razon de riesgo.'),
-                      meta: `${t('Source', 'Fuente')}: ${normalizeTextValue(order.source) || '-'} - ${t('Due', 'Entrega')}: ${formatDisplayDate(normalizeTextValue(order.dueDate) || null, locale)}`,
+                      meta: `${t('Access mode', 'Modo acceso')}: ${accessLabel} - ${t('Last login', 'Ultimo acceso')}: ${formatSyncTimestamp(user.lastLoginAt, locale)}`,
                     }
                   }),
                 },
@@ -1334,6 +1755,80 @@ export default function App() {
 
     void loadAdminWorkspacePage(adminPortalRoutePath, true)
   }, [adminPortalRoutePath, loadAdminWorkspacePage])
+
+  const handleUpdateAdminUserAccess = useCallback(async (uid: string, mode: AdminAccessMode) => {
+    const targetUid = normalizeTextValue(uid)
+
+    if (!targetUid) {
+      return
+    }
+
+    setAdminUserSavingUid(targetUid)
+    setAdminPortalMessage(null)
+
+    try {
+      await requestWithSession(`/api/auth/users/${encodeURIComponent(targetUid)}/client-access`, false, {
+        method: 'PATCH',
+        body: JSON.stringify({ mode }),
+      })
+      await loadAdminWorkspacePage('/admin/users', true)
+      setAdminPortalMessage(t('User access updated.', 'Acceso del usuario actualizado.'))
+    } catch (error) {
+      setAdminPortalMessage(
+        getErrorMessage(
+          error,
+          'Could not update user access right now.',
+          'No se pudo actualizar el acceso del usuario ahora.',
+        ),
+      )
+    } finally {
+      setAdminUserSavingUid((current) => (current === targetUid ? null : current))
+    }
+  }, [getErrorMessage, loadAdminWorkspacePage, requestWithSession, t])
+
+  const handleToggleAdminUserApproval = useCallback(async (user: AdminWorkspaceUserRecord) => {
+    const targetUid = normalizeTextValue(user.uid)
+
+    if (!targetUid) {
+      return
+    }
+
+    setAdminUserSavingUid(targetUid)
+    setAdminPortalMessage(null)
+
+    try {
+      const path = user.isApproved
+        ? `/api/auth/users/${encodeURIComponent(targetUid)}/unapprove`
+        : `/api/auth/users/${encodeURIComponent(targetUid)}/approval`
+      const payload = user.isApproved
+        ? {}
+        : {
+          role: user.role,
+          ...(user.role === 'admin' ? { confirmAdminPromotion: true } : {}),
+        }
+
+      await requestWithSession(path, false, {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      })
+      await loadAdminWorkspacePage('/admin/users', true)
+      setAdminPortalMessage(
+        user.isApproved
+          ? t('User access removed.', 'Acceso del usuario retirado.')
+          : t('User access granted.', 'Acceso del usuario otorgado.'),
+      )
+    } catch (error) {
+      setAdminPortalMessage(
+        getErrorMessage(
+          error,
+          'Could not update user approval right now.',
+          'No se pudo actualizar la aprobacion del usuario ahora.',
+        ),
+      )
+    } finally {
+      setAdminUserSavingUid((current) => (current === targetUid ? null : current))
+    }
+  }, [getErrorMessage, loadAdminWorkspacePage, requestWithSession, t])
 
   const syncAuthProfile = useCallback(async () => {
     if (!firebaseUser) {
@@ -1915,7 +2410,7 @@ export default function App() {
           setIsBiometricEnabled(false)
         }
 
-        if (storedLanguageValue === 'es' || storedLanguageValue === 'en') {
+        if (storedLanguageValue === 'es' || storedLanguageValue === 'en' || storedLanguageValue === 'he') {
           setLanguage(storedLanguageValue)
         }
 
@@ -2072,6 +2567,12 @@ export default function App() {
       setAdminPortalMessage(null)
     }
   }, [activeSettingsMenuId])
+
+  useEffect(() => {
+    setAdminExpandedWorkspaceRowId(null)
+    setAdminAccessMenuUserUid(null)
+    setAdminReportsView('menu')
+  }, [adminPortalRoutePath])
 
   useEffect(() => {
     maybeAutoPromptBiometric()
@@ -2748,6 +3249,105 @@ export default function App() {
     timesheetStageId,
   ])
 
+  const handleRefreshOrdersScreen = useCallback(() => {
+    void (async () => {
+      const selectedOrderKey = String(selectedOrderForDetails?.id ?? '').trim()
+      const selectedOrderDetailsSnapshot = selectedOrderKey
+        ? orderJobDetailsByOrderId[selectedOrderKey] ?? null
+        : null
+      const selectedMondayItemId = String(
+        selectedOrderDetailsSnapshot?.order?.mondayItemId
+        ?? selectedOrderDetailsSnapshot?.job?.mondayItemId
+        ?? selectedOrderForDetails?.mondayItemId
+        ?? selectedOrderForDetails?.id
+        ?? '',
+      ).trim()
+
+      setOrdersDetailMessage(null)
+
+      try {
+        await requestWithSession<{ ok?: boolean }>(
+          '/api/orders/refresh',
+          false,
+          {
+            method: 'POST',
+          },
+        )
+      } catch (error) {
+        setOrdersDetailMessage(
+          getErrorMessage(
+            error,
+            'Could not refresh orders from Monday.',
+            'No se pudo actualizar ordenes desde Monday.',
+          ),
+        )
+      }
+
+      await loadDashboard(true)
+
+      if (!selectedOrderKey || !selectedMondayItemId) {
+        return
+      }
+
+      try {
+        const bolRefreshPayload = await requestWithSession<{
+          ok?: boolean
+          cachedBolUrl?: string | null
+          fileName?: string | null
+        }>(
+          `/api/dashboard/monday/bol/download?orderId=${encodeURIComponent(selectedMondayItemId)}&cacheOnly=1&forceRefresh=1`,
+        )
+
+        const refreshedBolCachedUrl = String(bolRefreshPayload?.cachedBolUrl ?? '').trim()
+
+        if (refreshedBolCachedUrl) {
+          setOrderJobDetailsByOrderId((previous) => {
+            const existingDetails = previous[selectedOrderKey]
+
+            if (!existingDetails?.order) {
+              return previous
+            }
+
+            return {
+              ...previous,
+              [selectedOrderKey]: {
+                ...existingDetails,
+                order: {
+                  ...existingDetails.order,
+                  bolCachedUrl: refreshedBolCachedUrl,
+                },
+              },
+            }
+          })
+        }
+
+        const refreshedDetails = await requestWithSession<OrderJobDetailsSnapshot>(
+          `/api/orders/job-details?mondayItemId=${encodeURIComponent(selectedMondayItemId)}`,
+          true,
+        )
+
+        setOrderJobDetailsByOrderId((previous) => ({
+          ...previous,
+          [selectedOrderKey]: refreshedDetails,
+        }))
+      } catch (error) {
+        setOrdersDetailMessage(
+          getErrorMessage(
+            error,
+            'Could not refresh BOL from Monday. Tap Refresh again in a moment.',
+            'No se pudo actualizar el BOL desde Monday. Toca Actualizar otra vez en un momento.',
+          ),
+        )
+      }
+    })()
+  }, [
+    getErrorMessage,
+    loadDashboard,
+    orderJobDetailsByOrderId,
+    requestWithSession,
+    selectedOrderForDetails,
+  ])
+
   const handleRefreshActiveScreen = useCallback(() => {
     if (activeScreen === 'timesheet') {
       void loadTimesheet()
@@ -2776,11 +3376,17 @@ export default function App() {
       return
     }
 
+    if (activeScreen === 'orders') {
+      handleRefreshOrdersScreen()
+      return
+    }
+
     void loadDashboard(true)
   }, [
     activeScreen,
     handleCheckForUpdates,
     handleAdminWorkspaceRefresh,
+    handleRefreshOrdersScreen,
     loadAlerts,
     loadDashboard,
     loadManagerSheet,
@@ -3085,24 +3691,49 @@ export default function App() {
       return allOrdersForPictures
     }
 
-    return allOrdersForPictures.filter((order) =>
-      String(order.id).toLowerCase().includes(normalizedQuery),
-    )
+    return allOrdersForPictures.filter((order) => {
+      const orderId = String(order.id ?? '').toLowerCase()
+      const orderNumber = String(order.orderNumber ?? '').toLowerCase()
+      const orderName = String(order.name ?? '').toLowerCase()
+
+      return orderId.includes(normalizedQuery)
+        || orderNumber.includes(normalizedQuery)
+        || orderName.includes(normalizedQuery)
+    })
   }, [allOrdersForPictures, orderSearchQuery])
 
   const filteredOrdersForList = useMemo(() => {
     const normalizedQuery = ordersSearchQuery.trim().toLowerCase()
+    const viewFilteredOrders = allOrdersForPictures.filter((order) => {
+      const isShipped = isShippedDashboardOrder(order)
+      const isDesign = isDesignDashboardOrder(order)
+
+      if (ordersViewFilter === 'shipped') {
+        return isShipped
+      }
+
+      if (ordersViewFilter === 'design') {
+        return !isShipped && isDesign
+      }
+
+      return !isShipped && !isDesign
+    })
 
     if (!normalizedQuery) {
-      return allOrdersForPictures
+      return viewFilteredOrders
     }
 
-    return allOrdersForPictures.filter((order) => {
+    return viewFilteredOrders.filter((order) => {
       const orderId = String(order.id ?? '').toLowerCase()
+      const orderNumber = String(order.orderNumber ?? '').toLowerCase()
+      const poNumber = String(order.poNumber ?? '').toLowerCase()
       const orderName = String(order.name ?? '').toLowerCase()
-      return orderId.includes(normalizedQuery) || orderName.includes(normalizedQuery)
+      return orderId.includes(normalizedQuery)
+        || orderNumber.includes(normalizedQuery)
+        || poNumber.includes(normalizedQuery)
+        || orderName.includes(normalizedQuery)
     })
-  }, [allOrdersForPictures, ordersSearchQuery])
+  }, [allOrdersForPictures, ordersSearchQuery, ordersViewFilter])
 
   const ordersTotalPages = useMemo(
     () => Math.max(1, Math.ceil(filteredOrdersForList.length / ORDERS_PAGE_SIZE)),
@@ -3118,7 +3749,7 @@ export default function App() {
 
   useEffect(() => {
     setOrdersPage(1)
-  }, [ordersSearchQuery])
+  }, [ordersSearchQuery, ordersViewFilter])
 
   useEffect(() => {
     setOrdersPage((current) => Math.min(current, ordersTotalPages))
@@ -3130,14 +3761,42 @@ export default function App() {
   )
 
   const picturesCardHeight = useMemo(
-    () => Math.max(320, windowHeight - 330),
+    () => Math.max(390, windowHeight - 240),
     [windowHeight],
   )
 
   const ordersCardHeight = useMemo(
-    () => Math.max(360, windowHeight - 330),
+    () => Math.max(400, windowHeight - 300),
     [windowHeight],
   )
+
+  const alertsCardHeight = useMemo(
+    () => Math.max(400, windowHeight - 300),
+    [windowHeight],
+  )
+
+  const poNumberByOrderId = useMemo(() => {
+    const poByOrderId: Record<string, string | null> = {}
+
+    allOrdersForPictures.forEach((order) => {
+      const orderWithPo = order as DashboardOrder & { poNumber?: string | null; po_number?: string | null }
+      const poNumber = String(orderWithPo.poNumber ?? orderWithPo.po_number ?? '').trim()
+
+      if (poNumber) {
+        poByOrderId[String(order.id)] = poNumber
+      }
+    })
+
+    Object.entries(orderJobDetailsByOrderId).forEach(([orderId, detailsSnapshot]) => {
+      const poNumber = String(detailsSnapshot?.order?.poNumber ?? '').trim()
+
+      if (poNumber) {
+        poByOrderId[orderId] = poNumber
+      }
+    })
+
+    return poByOrderId
+  }, [allOrdersForPictures, orderJobDetailsByOrderId])
 
   const adminWorkspaceHeight = useMemo(
     () => Math.max(440, windowHeight - 300),
@@ -3153,6 +3812,53 @@ export default function App() {
     () => adminWorkspaceDataByPath[selectedAdminPortalPage.path] ?? null,
     [adminWorkspaceDataByPath, selectedAdminPortalPage.path],
   )
+
+  const selectedAdminAccessMenuUser = useMemo(
+    () => adminUsersForAccess.find((user) => user.uid === adminAccessMenuUserUid) ?? null,
+    [adminAccessMenuUserUid, adminUsersForAccess],
+  )
+
+  const selectedAdminReportSections = useMemo(() => {
+    if (selectedAdminPortalPage.path !== '/admin/reports') {
+      return {
+        worker: null,
+        month: null,
+      }
+    }
+
+    const sections = selectedAdminWorkspaceData?.sections ?? []
+
+    return {
+      worker: sections.find((section) => section.id === 'report_worker') ?? null,
+      month: sections.find((section) => section.id === 'report_month') ?? null,
+    }
+  }, [selectedAdminPortalPage.path, selectedAdminWorkspaceData])
+
+  const visibleAdminSections = useMemo(() => {
+    const sections = selectedAdminWorkspaceData?.sections ?? []
+
+    if (selectedAdminPortalPage.path !== '/admin/reports') {
+      return sections
+    }
+
+    if (adminReportsView === 'menu') {
+      return []
+    }
+
+    if (adminReportsView === 'worker') {
+      return sections.filter((section) => section.id === 'report_worker')
+    }
+
+    return sections.filter(
+      (section) => section.id === 'report_month' || section.id === 'report_month_non_order',
+    )
+  }, [adminReportsView, selectedAdminPortalPage.path, selectedAdminWorkspaceData])
+
+  useEffect(() => {
+    if (selectedAdminPortalPage.path !== '/admin/cash') {
+      setAdminCashAccountModalRow(null)
+    }
+  }, [selectedAdminPortalPage.path])
 
   const isAdminWorkspaceLoading = adminWorkspaceLoadingPath === selectedAdminPortalPage.path
 
@@ -3720,6 +4426,45 @@ export default function App() {
     }
   }, [selectedOrderForDetails, selectedOrderJobDetails])
 
+  const statusHistoryWorkersByDate = useMemo(() => {
+    const groupedByDate = new Map<string, Map<string, number>>()
+    const entries = Array.isArray(selectedOrderJobDetails?.entries)
+      ? selectedOrderJobDetails.entries
+      : []
+
+    entries.forEach((entry) => {
+      const normalizedDate = normalizeIsoDate(entry.date) || normalizeIsoDate(entry.date ? `${entry.date}T12:00:00` : '')
+
+      if (!normalizedDate) {
+        return
+      }
+
+      const workerName = String(entry.workerName ?? '').trim() || t('Unknown worker', 'Trabajador desconocido')
+      const totalHours = Number(entry.totalHours)
+      const safeHours = Number.isFinite(totalHours) ? totalHours : 0
+      const currentWorkerTotals = groupedByDate.get(normalizedDate) ?? new Map<string, number>()
+
+      currentWorkerTotals.set(workerName, (currentWorkerTotals.get(workerName) ?? 0) + safeHours)
+      groupedByDate.set(normalizedDate, currentWorkerTotals)
+    })
+
+    const normalized = new Map<string, Array<{ workerName: string; totalHours: number }>>()
+
+    groupedByDate.forEach((workerTotals, dateKey) => {
+      const rows = Array.from(workerTotals.entries())
+        .map(([workerName, totalHours]) => ({ workerName, totalHours }))
+        .sort((left, right) => right.totalHours - left.totalHours)
+
+      normalized.set(dateKey, rows)
+    })
+
+    return normalized
+  }, [selectedOrderJobDetails?.entries, t])
+
+  useEffect(() => {
+    setExpandedOrderStatusHistoryRowKey(null)
+  }, [selectedOrderIdForDetails])
+
   useEffect(() => {
     if (!selectedOrderIdForDetails) {
       setIsOrderDetailsLoading(false)
@@ -4007,27 +4752,6 @@ export default function App() {
       )
     }
   }, [getErrorMessage, t])
-
-  const handleOpenOrderAdminView = useCallback(async (
-    order: DashboardOrder,
-    detailsSnapshot: OrderJobDetailsSnapshot | null,
-  ) => {
-    const mondayItemUrl = String(detailsSnapshot?.job?.mondayItemUrl ?? order.itemUrl ?? '').trim()
-    const fallbackWebUrl = `https://ybkarnold-b7ec0.web.app/orders?orderId=${encodeURIComponent(order.id)}`
-    const targetUrl = mondayItemUrl || fallbackWebUrl
-
-    try {
-      await WebBrowser.openBrowserAsync(targetUrl)
-    } catch (error) {
-      setOrdersDetailMessage(
-        getErrorMessage(
-          error,
-          'Could not open admin order view.',
-          'No se pudo abrir la vista admin de la orden.',
-        ),
-      )
-    }
-  }, [getErrorMessage])
 
   const handleSaveManagerProgress = useCallback(async () => {
     if (!hasManagerSheetAccess) {
@@ -4578,7 +5302,7 @@ export default function App() {
     )
   }
 
-  const usesNestedListScroll = activeScreen === 'pictures' || activeScreen === 'orders' || activeScreen === 'admin'
+  const usesNestedListScroll = activeScreen === 'pictures' || activeScreen === 'orders' || activeScreen === 'alerts' || activeScreen === 'admin'
   const isRefreshBusy =
     isRefreshing
     || (activeScreen === 'timesheet' && isTimesheetLoading)
@@ -4704,6 +5428,9 @@ export default function App() {
                 filteredOrders={paginatedOrdersForList}
                 orderSearchQuery={ordersSearchQuery}
                 onOrderSearchQueryChange={setOrdersSearchQuery}
+                orderViewFilter={ordersViewFilter}
+                onOrderViewFilterChange={setOrdersViewFilter}
+                poNumberByOrderId={poNumberByOrderId}
                 ordersCardHeight={ordersCardHeight}
                 hasManagerInsights={hasManagerSheetAccess}
                 managerInsightsByOrderId={orderManagerInsightsByOrderId}
@@ -4781,6 +5508,7 @@ export default function App() {
               <AlertsSection
                 t={t}
                 locale={locale}
+                alertsCardHeight={alertsCardHeight}
                 isAlertsLoading={isAlertsLoading}
                 alerts={alerts}
                 alertsMessage={alertsMessage}
@@ -4798,12 +5526,6 @@ export default function App() {
             {activeScreen === 'admin' && isAdminUser ? (
               <>
                 <Text style={styles.sectionTitle}>{t('Admin', 'Admin')}</Text>
-                <Text style={styles.sectionSubtitle}>
-                  {t(
-                    'Manage every admin section inside the app using the page bars below.',
-                    'Administra cada seccion de admin dentro de la app usando las barras de paginas de abajo.',
-                  )}
-                </Text>
 
                 <ScrollView
                   horizontal
@@ -4841,9 +5563,11 @@ export default function App() {
                       <Text style={styles.adminWorkspaceHeaderTitle} numberOfLines={1}>
                         {t(selectedAdminPortalPage.labelEn, selectedAdminPortalPage.labelEs)}
                       </Text>
-                      <Text style={styles.adminWorkspaceHeaderMeta} numberOfLines={1}>
-                        {t('Direct API + database data in native app UI.', 'Datos directos API + base de datos en UI nativa.')}
-                      </Text>
+                      {selectedAdminPortalPage.path !== '/admin/cash' ? (
+                        <Text style={styles.adminWorkspaceHeaderMeta} numberOfLines={1}>
+                          {t('Direct API + database data in native app UI.', 'Datos directos API + base de datos en UI nativa.')}
+                        </Text>
+                      ) : null}
                     </View>
 
                     <View style={styles.adminWorkspaceHeaderActions}>
@@ -4871,17 +5595,17 @@ export default function App() {
                       contentContainerStyle={styles.adminWorkspaceBodyContent}
                       showsVerticalScrollIndicator={false}
                     >
-                      {selectedAdminWorkspaceData.note ? (
+                      {selectedAdminPortalPage.path !== '/admin/cash' && selectedAdminWorkspaceData.note ? (
                         <Text style={styles.adminWorkspaceBodyNote}>{selectedAdminWorkspaceData.note}</Text>
                       ) : null}
 
-                      {selectedAdminWorkspaceData.updatedAt ? (
+                      {selectedAdminPortalPage.path !== '/admin/cash' && selectedAdminWorkspaceData.updatedAt ? (
                         <Text style={styles.adminWorkspaceBodyUpdatedAt}>
                           {t('Updated', 'Actualizado')}: {formatSyncTimestamp(selectedAdminWorkspaceData.updatedAt, locale)}
                         </Text>
                       ) : null}
 
-                      {selectedAdminWorkspaceData.stats.length > 0 ? (
+                      {selectedAdminPortalPage.path !== '/admin/cash' && selectedAdminWorkspaceData.stats.length > 0 ? (
                         <View style={styles.adminWorkspaceStatsWrap}>
                           {selectedAdminWorkspaceData.stats.map((stat) => (
                             <View key={`${stat.label}-${stat.value}`} style={styles.adminWorkspaceStatChip}>
@@ -4892,19 +5616,169 @@ export default function App() {
                         </View>
                       ) : null}
 
-                      {selectedAdminWorkspaceData.sections.map((section) => (
-                        <View key={section.title} style={styles.adminWorkspaceSectionCard}>
+                      {selectedAdminPortalPage.path === '/admin/users' ? (
+                        <View style={styles.adminWorkspaceSectionCard}>
+                          <Text style={styles.adminWorkspaceSectionTitle}>{t('User access controls', 'Controles de acceso de usuario')}</Text>
+
+                          {adminUsersForAccess.length === 0 ? (
+                            <Text style={styles.adminWorkspaceSectionEmpty}>{t('No users found.', 'No hay usuarios.')}</Text>
+                          ) : (
+                            adminUsersForAccess.map((user) => {
+                              const isSaving = adminUserSavingUid === user.uid
+                              const accessModeLabel =
+                                user.clientAccessMode === 'web_only'
+                                  ? t('Web only', 'Solo web')
+                                  : user.clientAccessMode === 'app_only'
+                                    ? t('App only', 'Solo app')
+                                    : t('Web + App', 'Web + App')
+
+                              return (
+                                <View key={`access-${user.uid}`} style={styles.adminWorkspaceRowCard}>
+                                  <View style={styles.adminWorkspaceRowHeaderRow}>
+                                    <View style={styles.adminWorkspaceRowHeaderTextWrap}>
+                                      <Text style={styles.adminWorkspaceRowTitle}>{user.displayName || user.email}</Text>
+                                      <Text style={styles.adminWorkspaceRowSubtitle}>{user.email}</Text>
+                                    </View>
+
+                                    <Pressable
+                                      style={[styles.adminWorkspaceMenuButton, isSaving ? styles.buttonDisabled : null]}
+                                      disabled={isSaving}
+                                      onPress={() => {
+                                        setAdminAccessMenuUserUid(user.uid)
+                                      }}
+                                    >
+                                      <Ionicons name="ellipsis-horizontal" size={18} color="#23457f" />
+                                    </Pressable>
+                                  </View>
+
+                                  <Text style={styles.adminWorkspaceUserMeta}>
+                                    {`${t('Role', 'Rol')}: ${normalizeTextValue(user.role).toUpperCase()} - ${user.isApproved ? t('Approved', 'Aprobado') : t('Pending', 'Pendiente')}`}
+                                  </Text>
+                                  <Text style={styles.adminWorkspaceUserMeta}>
+                                    {`${t('Access mode', 'Modo acceso')}: ${accessModeLabel} - ${t('Last login', 'Ultimo acceso')}: ${formatSyncTimestamp(user.lastLoginAt, locale)}`}
+                                  </Text>
+
+                                  <Pressable
+                                    style={[
+                                      styles.adminWorkspaceApprovalButton,
+                                      user.isApproved ? styles.adminWorkspaceApprovalButtonDanger : null,
+                                      isSaving ? styles.buttonDisabled : null,
+                                    ]}
+                                    disabled={isSaving}
+                                    onPress={() => {
+                                      void handleToggleAdminUserApproval(user)
+                                    }}
+                                  >
+                                    <Text style={styles.adminWorkspaceApprovalButtonText}>
+                                      {isSaving
+                                        ? t('Saving...', 'Guardando...')
+                                        : user.isApproved
+                                          ? t('Remove access', 'Quitar acceso')
+                                          : t('Grant access', 'Dar acceso')}
+                                    </Text>
+                                  </Pressable>
+                                </View>
+                              )
+                            })
+                          )}
+                        </View>
+                      ) : null}
+
+                      {selectedAdminPortalPage.path === '/admin/reports' ? (
+                        <View style={styles.adminWorkspaceSectionCard}>
+                          {adminReportsView === 'menu' ? (
+                            <>
+                              <Text style={styles.adminWorkspaceSectionTitle}>{t('Report options', 'Opciones de reportes')}</Text>
+
+                              <Pressable
+                                style={[
+                                  styles.adminWorkspaceReportOptionButton,
+                                  !selectedAdminReportSections.worker ? styles.buttonDisabled : null,
+                                ]}
+                                disabled={!selectedAdminReportSections.worker}
+                                onPress={() => setAdminReportsView('worker')}
+                              >
+                                <Text style={styles.adminWorkspaceReportOptionTitle}>{t('Report by worker', 'Reporte por trabajador')}</Text>
+                                <Text style={styles.adminWorkspaceReportOptionSubtitle}>{t('Open worker report', 'Abrir reporte de trabajador')}</Text>
+                              </Pressable>
+
+                              <Pressable
+                                style={[
+                                  styles.adminWorkspaceReportOptionButton,
+                                  !selectedAdminReportSections.month ? styles.buttonDisabled : null,
+                                ]}
+                                disabled={!selectedAdminReportSections.month}
+                                onPress={() => setAdminReportsView('month')}
+                              >
+                                <Text style={styles.adminWorkspaceReportOptionTitle}>{t('Report by month', 'Reporte por mes')}</Text>
+                                <Text style={styles.adminWorkspaceReportOptionSubtitle}>{t('Open month report', 'Abrir reporte por mes')}</Text>
+                              </Pressable>
+                            </>
+                          ) : (
+                            <Pressable
+                              style={styles.adminWorkspaceBackButton}
+                              onPress={() => setAdminReportsView('menu')}
+                            >
+                              <Ionicons name="chevron-back" size={16} color="#24467c" />
+                              <Text style={styles.adminWorkspaceBackButtonText}>{t('Back to report options', 'Volver a opciones de reportes')}</Text>
+                            </Pressable>
+                          )}
+                        </View>
+                      ) : null}
+
+                      {visibleAdminSections.map((section) => (
+                        <View key={section.id} style={styles.adminWorkspaceSectionCard}>
                           <Text style={styles.adminWorkspaceSectionTitle}>{section.title}</Text>
 
                           {section.rows.length === 0 ? (
                             <Text style={styles.adminWorkspaceSectionEmpty}>{section.emptyText}</Text>
                           ) : (
                             section.rows.map((row) => (
-                              <View key={`${section.title}-${row.id}`} style={styles.adminWorkspaceRowCard}>
+                              <Pressable
+                                key={`${section.id}-${row.id}`}
+                                style={styles.adminWorkspaceRowCard}
+                                onPress={() => {
+                                  const rowKey = `${section.id}-${row.id}`
+                                  const canExpand = Array.isArray(row.details) && row.details.length > 0
+                                  const isCashPage = selectedAdminPortalPage.path === '/admin/cash'
+
+                                  if (!canExpand) {
+                                    return
+                                  }
+
+                                  if (isCashPage) {
+                                    setAdminCashAccountModalRow(row)
+                                    return
+                                  }
+
+                                  setAdminExpandedWorkspaceRowId((current) => (current === rowKey ? null : rowKey))
+                                }}
+                              >
                                 <Text style={styles.adminWorkspaceRowTitle}>{row.title}</Text>
                                 <Text style={styles.adminWorkspaceRowSubtitle}>{row.subtitle}</Text>
                                 {row.meta ? <Text style={styles.adminWorkspaceRowMeta}>{row.meta}</Text> : null}
-                              </View>
+
+                                {Array.isArray(row.details) && row.details.length > 0 ? (
+                                  <>
+                                    <Text style={styles.adminWorkspaceRowExpandHint}>
+                                      {selectedAdminPortalPage.path === '/admin/cash'
+                                        ? t('Open details', 'Abrir detalles')
+                                        : adminExpandedWorkspaceRowId === `${section.id}-${row.id}`
+                                          ? t('Hide details', 'Ocultar detalles')
+                                          : t('Open details', 'Abrir detalles')}
+                                    </Text>
+
+                                    {selectedAdminPortalPage.path !== '/admin/cash'
+                                      && adminExpandedWorkspaceRowId === `${section.id}-${row.id}`
+                                      ? row.details.map((detailLine, detailIndex) => (
+                                        <Text key={`${row.id}-detail-${detailIndex}`} style={styles.adminWorkspaceRowDetailLine}>
+                                          {detailLine}
+                                        </Text>
+                                      ))
+                                      : null}
+                                  </>
+                                ) : null}
+                              </Pressable>
                             ))
                           )}
                         </View>
@@ -4925,9 +5799,6 @@ export default function App() {
 
             {activeScreen === 'settings' ? (
               <SettingsOverviewSection
-                t={t}
-                appVersionLabel={appVersionLabel}
-                isNotificationsEnabled={isNotificationsEnabled}
                 settingsMenuItems={settingsMenuItems}
                 onSelectSettingsMenu={setActiveSettingsMenuId}
               />
@@ -5175,61 +6046,24 @@ export default function App() {
                         <Pressable
                           style={[
                             styles.orderDetailActionButton,
-                            styles.orderDetailActionButtonSecondary,
-                            (!selectedOrderOverviewDetails.bolCachedUrl && !selectedOrderOverviewDetails.bolUrl)
+                            !selectedOrderOverviewDetails.bolCachedUrl
                               ? styles.orderDetailActionButtonDisabled
                               : null,
                           ]}
                           onPress={() => {
                             void handleOpenOrderDocumentUrl(
-                              selectedOrderOverviewDetails.bolCachedUrl || selectedOrderOverviewDetails.bolUrl,
-                              'BOL is not available for this order yet.',
-                              'El BOL aun no esta disponible para esta orden.',
+                              selectedOrderOverviewDetails.bolCachedUrl,
+                              'BOL is not cached yet. Tap Refresh to sync it from Monday.',
+                              'El BOL aun no esta en cache. Toca Actualizar para sincronizarlo desde Monday.',
                               'Could not open BOL.',
                               'No se pudo abrir el BOL.',
                             )
                           }}
                         >
-                          <Text style={[styles.orderDetailActionButtonText, styles.orderDetailActionButtonTextSecondary]}>
+                          <Text style={styles.orderDetailActionButtonText}>
                             BOL
                           </Text>
                         </Pressable>
-
-                        <Pressable
-                          style={[
-                            styles.orderDetailActionButton,
-                            styles.orderDetailActionButtonSecondary,
-                            !selectedOrderOverviewDetails.mondayItemUrl
-                              ? styles.orderDetailActionButtonDisabled
-                              : null,
-                          ]}
-                          onPress={() => {
-                            void handleOpenOrderDocumentUrl(
-                              selectedOrderOverviewDetails.mondayItemUrl,
-                              'Monday item link is not available for this order yet.',
-                              'El enlace de Monday aun no esta disponible para esta orden.',
-                              'Could not open Monday item link.',
-                              'No se pudo abrir el enlace de Monday.',
-                            )
-                          }}
-                        >
-                          <Text style={[styles.orderDetailActionButtonText, styles.orderDetailActionButtonTextSecondary]}>
-                            {t('Monday Item', 'Item de Monday')}
-                          </Text>
-                        </Pressable>
-
-                        {hasAdminOrderDetailsAccess ? (
-                          <Pressable
-                            style={[styles.orderDetailActionButton, styles.orderDetailActionButtonSecondary]}
-                            onPress={() => {
-                              void handleOpenOrderAdminView(selectedOrderForDetails, selectedOrderJobDetails)
-                            }}
-                          >
-                            <Text style={[styles.orderDetailActionButtonText, styles.orderDetailActionButtonTextSecondary]}>
-                              {t('Open Admin View', 'Abrir vista admin')}
-                            </Text>
-                          </Pressable>
-                        ) : null}
                       </View>
 
                       <View style={styles.orderDetailInfoCard}>
@@ -5398,23 +6232,77 @@ export default function App() {
                       <View style={styles.orderDetailHistoryCard}>
                         <Text style={styles.orderDetailSectionTitle}>{t('Status history', 'Historial de estado')}</Text>
                         {selectedOrderOverviewDetails.statusHistory.length > 0 ? (
-                          selectedOrderOverviewDetails.statusHistory.slice(0, 24).map((historyRow, index) => (
-                            <View
-                              key={`${historyRow.id ?? historyRow.updatedAt ?? historyRow.date ?? String(index)}`}
-                              style={styles.orderDetailHistoryRow}
-                            >
-                              <Text style={styles.orderDetailHistoryPrimary}>
-                                {formatDisplayDate(historyRow.date || historyRow.updatedAt, locale)}
-                                {'  '}•{'  '}
-                                {historyRow.readyPercent !== null && historyRow.readyPercent !== undefined
-                                  ? `${historyRow.readyPercent}%`
-                                  : t('No %', 'Sin %')}
-                              </Text>
-                              <Text style={styles.orderDetailHistorySecondary}>
-                                {historyRow.jobName || selectedOrderOverviewDetails.orderName || t('Order', 'Orden')}
-                              </Text>
-                            </View>
-                          ))
+                          <ScrollView
+                            style={styles.orderDetailHistoryScroll}
+                            contentContainerStyle={styles.orderDetailHistoryScrollContent}
+                            nestedScrollEnabled
+                          >
+                            {selectedOrderOverviewDetails.statusHistory.slice(0, 40).map((historyRow, index) => {
+                              const historyDateRaw = String(historyRow.date ?? historyRow.updatedAt ?? '').trim()
+                              const historyDateKey = normalizeIsoDate(historyDateRaw) || null
+                              const rowKey = `${historyRow.id ?? 'history'}-${historyDateKey ?? historyDateRaw ?? 'unknown'}-${index}`
+                              const workerRows = historyDateKey
+                                ? statusHistoryWorkersByDate.get(historyDateKey) ?? []
+                                : []
+                              const isExpanded = expandedOrderStatusHistoryRowKey === rowKey
+
+                              return (
+                                <Pressable
+                                  key={rowKey}
+                                  style={styles.orderDetailHistoryRow}
+                                  onPress={() => {
+                                    setExpandedOrderStatusHistoryRowKey((current) => (current === rowKey ? null : rowKey))
+                                  }}
+                                >
+                                  <View style={styles.orderDetailHistoryHeaderRow}>
+                                    <Text style={styles.orderDetailHistoryPrimary}>
+                                      {formatDisplayDate(historyRow.date || historyRow.updatedAt, locale)}
+                                      {'  '}•{'  '}
+                                      {historyRow.readyPercent !== null && historyRow.readyPercent !== undefined
+                                        ? `${historyRow.readyPercent}%`
+                                        : t('No %', 'Sin %')}
+                                    </Text>
+                                    <Text style={styles.orderDetailHistoryExpandText}>
+                                      {isExpanded
+                                        ? t('Hide', 'Ocultar')
+                                        : t('Workers', 'Trabajadores')}
+                                    </Text>
+                                  </View>
+
+                                  <Text style={styles.orderDetailHistorySecondary}>
+                                    {historyRow.jobName || selectedOrderOverviewDetails.orderName || t('Order', 'Orden')}
+                                  </Text>
+
+                                  {isExpanded ? (
+                                    <View style={styles.orderDetailHistoryWorkersList}>
+                                      {workerRows.length > 0 ? (
+                                        workerRows.map((workerRow) => (
+                                          <View
+                                            key={`${rowKey}-${workerRow.workerName}`}
+                                            style={styles.orderDetailHistoryWorkerRow}
+                                          >
+                                            <Text style={styles.orderDetailHistoryWorkerName} numberOfLines={1}>
+                                              {workerRow.workerName}
+                                            </Text>
+                                            <Text style={styles.orderDetailHistoryWorkerHours} numberOfLines={1}>
+                                              {workerRow.totalHours.toFixed(2)}h
+                                            </Text>
+                                          </View>
+                                        ))
+                                      ) : (
+                                        <Text style={styles.orderDetailHistoryWorkerEmpty}>
+                                          {t(
+                                            'No worker hour entries for this day.',
+                                            'No hay entradas de horas de trabajadores para este dia.',
+                                          )}
+                                        </Text>
+                                      )}
+                                    </View>
+                                  ) : null}
+                                </Pressable>
+                              )
+                            })}
+                          </ScrollView>
                         ) : (
                           <Text style={styles.orderDetailHintText}>
                             {t('No status history found for this order yet.', 'Aun no hay historial de estado para esta orden.')}
@@ -5475,16 +6363,86 @@ export default function App() {
                             </Text>
                           )}
 
-                          {selectedOrderJobDetails.entries.length > 0 ? (
-                            <View style={styles.orderDetailWorkersCard}>
-                              <Text style={styles.orderDetailWorkersTitle}>{t('Recent entries', 'Entradas recientes')}</Text>
-                              {selectedOrderJobDetails.entries.slice(0, 12).map((entry) => (
-                                <Text key={entry.id} style={styles.orderDetailWorkerRow}>
-                                  {formatDisplayDate(entry.date, locale)} • {entry.workerName} • {entry.totalHours.toFixed(2)}h
-                                </Text>
-                              ))}
+                          <View style={styles.orderDetailWorkersCard}>
+                            <Text style={styles.orderDetailWorkersTitle}>{t('Admin finance columns', 'Columnas financieras admin')}</Text>
+
+                            <View style={styles.orderDetailInfoRow}>
+                              <Text style={styles.orderDetailInfoLabel}>{t('Purchase orders', 'Ordenes de compra')}</Text>
+                              <Text style={styles.orderDetailInfoValue}>
+                                {selectedOrderOverviewDetails.poAmount === null
+                                  ? '-'
+                                  : formatCurrencyAmountPrecise(selectedOrderOverviewDetails.poAmount, locale)}
+                              </Text>
                             </View>
-                          ) : null}
+
+                            <View style={styles.orderDetailInfoRow}>
+                              <Text style={styles.orderDetailInfoLabel}>{t('Bills', 'Facturas recibidas')}</Text>
+                              <Text style={styles.orderDetailInfoValue}>
+                                {selectedOrderOverviewDetails.billedAmount === null
+                                  ? '-'
+                                  : formatCurrencyAmountPrecise(selectedOrderOverviewDetails.billedAmount, locale)}
+                              </Text>
+                            </View>
+
+                            <View style={styles.orderDetailInfoRow}>
+                              <Text style={styles.orderDetailInfoLabel}>{t('Invoice total', 'Total factura')}</Text>
+                              <Text style={styles.orderDetailInfoValue}>
+                                {selectedOrderOverviewDetails.invoiceAmount === null
+                                  ? '-'
+                                  : formatCurrencyAmountPrecise(selectedOrderOverviewDetails.invoiceAmount, locale)}
+                              </Text>
+                            </View>
+
+                            <View style={styles.orderDetailInfoRow}>
+                              <Text style={styles.orderDetailInfoLabel}>{t('Bill balance', 'Balance de facturas')}</Text>
+                              <Text style={styles.orderDetailInfoValue}>
+                                {selectedOrderOverviewDetails.billBalanceAmount === null
+                                  ? '-'
+                                  : formatCurrencyAmountPrecise(selectedOrderOverviewDetails.billBalanceAmount, locale)}
+                              </Text>
+                            </View>
+
+                            <View style={styles.orderDetailInfoRow}>
+                              <Text style={styles.orderDetailInfoLabel}>{t('Amount owed', 'Monto adeudado')}</Text>
+                              <Text style={styles.orderDetailInfoValue}>
+                                {selectedOrderOverviewDetails.amountOwed === null
+                                  ? '-'
+                                  : formatCurrencyAmountPrecise(selectedOrderOverviewDetails.amountOwed, locale)}
+                              </Text>
+                            </View>
+
+                            <View style={styles.orderDetailInfoRow}>
+                              <Text style={styles.orderDetailInfoLabel}>{t('Labor cost', 'Costo mano de obra')}</Text>
+                              <Text style={styles.orderDetailInfoValue}>
+                                {selectedOrderOverviewDetails.totalLaborCost === null
+                                  ? '-'
+                                  : formatCurrencyAmountPrecise(selectedOrderOverviewDetails.totalLaborCost, locale)}
+                              </Text>
+                            </View>
+
+                            <View style={styles.orderDetailInfoRow}>
+                              <Text style={styles.orderDetailInfoLabel}>{t('Total profit', 'Ganancia total')}</Text>
+                              <Text style={styles.orderDetailInfoValue}>
+                                {selectedOrderOverviewDetails.invoiceAmount === null
+                                  ? '-'
+                                  : formatCurrencyAmountPrecise(
+                                    selectedOrderOverviewDetails.invoiceAmount
+                                      - (selectedOrderOverviewDetails.billedAmount ?? 0)
+                                      - (selectedOrderOverviewDetails.totalLaborCost ?? 0),
+                                    locale,
+                                  )}
+                              </Text>
+                            </View>
+
+                            <View style={styles.orderDetailInfoRow}>
+                              <Text style={styles.orderDetailInfoLabel}>{t('QuickBooks projects', 'Proyectos QuickBooks')}</Text>
+                              <Text style={styles.orderDetailInfoValue}>
+                                {selectedOrderOverviewDetails.quickBooksProjectNames.length > 0
+                                  ? selectedOrderOverviewDetails.quickBooksProjectNames.join(', ')
+                                  : selectedOrderOverviewDetails.quickBooksProjectName || '-'}
+                              </Text>
+                            </View>
+                          </View>
                         </>
                       ) : null}
 
@@ -5496,19 +6454,6 @@ export default function App() {
                           )}
                         </Text>
                       ) : null}
-
-                      {hasAdminOrderDetailsAccess ? (
-                        <Pressable
-                          style={[styles.orderDetailActionButton, styles.orderDetailActionButtonSecondary]}
-                          onPress={() => {
-                            void handleOpenOrderAdminView(selectedOrderForDetails, selectedOrderJobDetails)
-                          }}
-                        >
-                          <Text style={[styles.orderDetailActionButtonText, styles.orderDetailActionButtonTextSecondary]}>
-                            {t('Open Admin View', 'Abrir vista admin')}
-                          </Text>
-                        </Pressable>
-                      ) : null}
                     </>
                   )}
 
@@ -5518,6 +6463,56 @@ export default function App() {
               </ScrollView>
             ) : null}
           </SafeAreaView>
+        </Modal>
+
+        <Modal
+          visible={Boolean(adminCashAccountModalRow)}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setAdminCashAccountModalRow(null)}
+        >
+          <View style={styles.modalBackdrop}>
+            <View style={[styles.modalCard, styles.adminCashDetailsModalCard]}>
+              <View style={styles.detailHeader}>
+                <Text style={styles.detailTitle}>{adminCashAccountModalRow?.title || t('Cash account', 'Cuenta de caja')}</Text>
+                <Pressable
+                  style={styles.detailCloseButton}
+                  onPress={() => setAdminCashAccountModalRow(null)}
+                >
+                  <Text style={styles.detailCloseButtonText}>{t('Close', 'Cerrar')}</Text>
+                </Pressable>
+              </View>
+
+              {adminCashAccountModalRow?.subtitle ? (
+                <Text style={styles.adminCashDetailsModalSubtitle}>{adminCashAccountModalRow.subtitle}</Text>
+              ) : null}
+
+              {adminCashAccountModalRow?.meta ? (
+                <Text style={styles.adminCashDetailsModalMeta}>{adminCashAccountModalRow.meta}</Text>
+              ) : null}
+
+              <ScrollView
+                style={styles.adminCashDetailsModalScroll}
+                contentContainerStyle={styles.adminCashDetailsModalContent}
+                nestedScrollEnabled
+              >
+                {Array.isArray(adminCashAccountModalRow?.details) && adminCashAccountModalRow.details.length > 0
+                  ? adminCashAccountModalRow.details.map((detailLine, detailIndex) => (
+                    <Text
+                      key={`cash-detail-${detailIndex}`}
+                      style={styles.adminCashDetailsModalLine}
+                    >
+                      {detailLine}
+                    </Text>
+                  ))
+                  : (
+                    <Text style={styles.emptyDetailText}>
+                      {t('No transaction details found.', 'No se encontraron detalles de movimientos.')}
+                    </Text>
+                  )}
+              </ScrollView>
+            </View>
+          </View>
         </Modal>
 
         <Modal
@@ -5587,6 +6582,15 @@ export default function App() {
                         }}
                       >
                         <Text style={styles.settingsLanguageButtonText}>Espanol</Text>
+                      </Pressable>
+
+                      <Pressable
+                        style={[styles.settingsLanguageButton, language === 'he' ? styles.settingsLanguageButtonActive : null]}
+                        onPress={() => {
+                          void handleChangeLanguage('he')
+                        }}
+                      >
+                        <Text style={styles.settingsLanguageButtonText}>עברית</Text>
                       </Pressable>
                     </View>
                   </>
@@ -5875,6 +6879,80 @@ export default function App() {
                     ))}
                   </View>
                 )}
+              </ScrollView>
+            </View>
+          </View>
+        </Modal>
+
+        <Modal
+          visible={Boolean(selectedAdminAccessMenuUser)}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setAdminAccessMenuUserUid(null)}
+        >
+          <View style={styles.modalBackdrop}>
+            <View style={[styles.modalCard, styles.adminAccessModalCard]}>
+              <View style={styles.detailHeader}>
+                <Text style={styles.detailTitle}>{t('Change access', 'Cambiar acceso')}</Text>
+                <Pressable
+                  style={styles.detailCloseButton}
+                  onPress={() => setAdminAccessMenuUserUid(null)}
+                >
+                  <Text style={styles.detailCloseButtonText}>{t('Close', 'Cerrar')}</Text>
+                </Pressable>
+              </View>
+
+              <ScrollView contentContainerStyle={styles.modalBodyContent}>
+                <Text style={styles.settingsSubtitle}>{selectedAdminAccessMenuUser?.displayName || selectedAdminAccessMenuUser?.email}</Text>
+                <Text style={styles.settingsSubtitle}>{selectedAdminAccessMenuUser?.email}</Text>
+                <Text style={styles.settingsSubtitle}>{t('Select access mode for this user.', 'Selecciona el modo de acceso para este usuario.')}</Text>
+                <Text style={styles.settingsInlineStatus}>
+                  {t('Current mode', 'Modo actual')}: {
+                    selectedAdminAccessMenuUser?.clientAccessMode === 'web_only'
+                      ? t('Web only', 'Solo web')
+                      : selectedAdminAccessMenuUser?.clientAccessMode === 'app_only'
+                        ? t('App only', 'Solo app')
+                        : t('Web + App', 'Web + App')
+                  }
+                </Text>
+
+                {[
+                  { mode: 'web_and_app' as const, label: t('Web + App', 'Web + App') },
+                  { mode: 'web_only' as const, label: t('Web only', 'Solo web') },
+                  { mode: 'app_only' as const, label: t('App only', 'Solo app') },
+                ].map((option) => {
+                  const isSaving = adminUserSavingUid === selectedAdminAccessMenuUser?.uid
+                  const isCurrent = selectedAdminAccessMenuUser?.clientAccessMode === option.mode
+
+                  return (
+                    <Pressable
+                      key={`admin-access-option-${option.mode}`}
+                      style={[
+                        styles.adminWorkspaceAccessOptionButton,
+                        isCurrent ? styles.adminWorkspaceAccessOptionButtonActive : null,
+                        isSaving ? styles.buttonDisabled : null,
+                      ]}
+                      disabled={!selectedAdminAccessMenuUser || isSaving || isCurrent}
+                      onPress={() => {
+                        if (!selectedAdminAccessMenuUser) {
+                          return
+                        }
+
+                        setAdminAccessMenuUserUid(null)
+                        void handleUpdateAdminUserAccess(selectedAdminAccessMenuUser.uid, option.mode)
+                      }}
+                    >
+                      <Text
+                        style={[
+                          styles.adminWorkspaceAccessOptionText,
+                          isCurrent ? styles.adminWorkspaceAccessOptionTextActive : null,
+                        ]}
+                      >
+                        {option.label}
+                      </Text>
+                    </Pressable>
+                  )
+                })}
               </ScrollView>
             </View>
           </View>

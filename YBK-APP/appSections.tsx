@@ -217,12 +217,6 @@ export function PicturesSection({
   return (
     <>
       <Text style={styles.sectionTitle}>{t('Pictures', 'Fotos')}</Text>
-      <Text style={styles.sectionSubtitle}>
-        {t(
-          'Search an order number, then tap an order to open its pictures popup.',
-          'Busca un numero de orden y toca una orden para abrir su ventana de fotos.',
-        )}
-      </Text>
 
       {allOrdersForPictures.length === 0 ? (
         <View style={styles.emptyPicturesBox}>
@@ -246,7 +240,7 @@ export function PicturesSection({
           ) : (
             <ScrollView
               style={styles.ordersListScroll}
-              contentContainerStyle={styles.ordersListContent}
+              contentContainerStyle={styles.picturesListContent}
             >
               {filteredOrdersForPictures.map((order) => (
                 <Pressable
@@ -277,6 +271,9 @@ export function OrdersSection({
   filteredOrders,
   orderSearchQuery,
   onOrderSearchQueryChange,
+  orderViewFilter,
+  onOrderViewFilterChange,
+  poNumberByOrderId,
   ordersCardHeight,
   hasManagerInsights,
   managerInsightsByOrderId,
@@ -292,6 +289,9 @@ export function OrdersSection({
   filteredOrders: DashboardOrder[]
   orderSearchQuery: string
   onOrderSearchQueryChange: (value: string) => void
+  orderViewFilter: 'orders' | 'shipped' | 'design'
+  onOrderViewFilterChange: (value: 'orders' | 'shipped' | 'design') => void
+  poNumberByOrderId: Record<string, string | null>
   ordersCardHeight: number
   hasManagerInsights: boolean
   managerInsightsByOrderId: Record<string, {
@@ -309,12 +309,6 @@ export function OrdersSection({
   return (
     <>
       <Text style={styles.sectionTitle}>{t('Orders', 'Ordenes')}</Text>
-      <Text style={styles.sectionSubtitle}>
-        {t(
-          'Quick order list for mobile. Tap any order to view key details and shop drawing.',
-          'Lista rapida de ordenes para movil. Toca una orden para ver detalles y shop drawing.',
-        )}
-      </Text>
 
       {allOrders.length === 0 ? (
         <View style={styles.emptyPicturesBox}>
@@ -324,6 +318,29 @@ export function OrdersSection({
         </View>
       ) : (
         <View style={[styles.ordersListCard, { height: ordersCardHeight }]}>
+          <View style={styles.ordersFilterRow}>
+            <Text style={styles.ordersFilterLabel}>{t('Order view', 'Vista de ordenes')}</Text>
+            <View style={styles.ordersViewPickerShell}>
+              <Picker
+                selectedValue={orderViewFilter}
+                onValueChange={(value) => {
+                  const normalizedValue = String(value)
+
+                  if (normalizedValue === 'orders' || normalizedValue === 'shipped' || normalizedValue === 'design') {
+                    onOrderViewFilterChange(normalizedValue)
+                  }
+                }}
+                style={styles.ordersViewPicker}
+                itemStyle={styles.ordersViewPickerItem}
+                dropdownIconColor="#24467c"
+              >
+                <Picker.Item label={t('Orders', 'Ordenes')} value="orders" />
+                <Picker.Item label={t('Shipped', 'Enviadas')} value="shipped" />
+                <Picker.Item label={t('Design', 'Diseno')} value="design" />
+              </Picker>
+            </View>
+          </View>
+
           <TextInput
             value={orderSearchQuery}
             onChangeText={onOrderSearchQueryChange}
@@ -350,67 +367,67 @@ export function OrdersSection({
                     const managerReadyPercent = managerInsight?.readyPercent
                     const hasReadyPercent = typeof managerReadyPercent === 'number'
                       && Number.isFinite(managerReadyPercent)
-                    const displayReadyPercent = hasReadyPercent
+                    const displayManagerReadyPercent = hasReadyPercent
                       ? Math.min(100, Math.max(0, managerReadyPercent))
                       : null
-                    const workerCount = managerInsight?.workerCount ?? 0
-                    const totalHours = managerInsight?.totalHours ?? 0
+                    const orderProgressRaw = Number(order.progressPercent)
+                    const displayProgressPercent = displayManagerReadyPercent !== null
+                      ? displayManagerReadyPercent
+                      : Number.isFinite(orderProgressRaw)
+                        ? Math.min(100, Math.max(0, orderProgressRaw))
+                        : null
+                    const fallbackUpdatedAt = String(order.updatedAt ?? '').trim() || null
+                    const managerUpdatedAt = String(managerInsight?.updatedAt ?? fallbackUpdatedAt ?? '').trim() || null
+                    const cachedPoNumber = String(poNumberByOrderId[String(order.id)] ?? '').trim()
+                    const orderWithPoFields = order as DashboardOrder & { poNumber?: string | null; po_number?: string | null }
+                    const orderWithNumberFields = order as DashboardOrder & { orderNumber?: string | null; jobNumber?: string | null }
+                    const inlinePoNumber = String(orderWithPoFields.poNumber ?? orderWithPoFields.po_number ?? '').trim()
+                    const dbOrderNumber = String(orderWithNumberFields.orderNumber ?? orderWithNumberFields.jobNumber ?? '').trim()
+                    const sixDigitOrderNumber = /\b\d{6}\b/.exec(dbOrderNumber)?.[0]
+                      || /\b\d{6}\b/.exec(String(order.id ?? ''))?.[0]
+                      || /\b\d{6}\b/.exec(String(order.name ?? ''))?.[0]
+                      || String(order.id ?? '').trim()
+                    const poFromNameMatch = /\bP\.?\s*O\.?\s*#?\s*[:\-]?\s*([A-Za-z0-9\-]+)/i.exec(String(order.name ?? ''))
+                    const poFromName = String(poFromNameMatch?.[1] ?? '').trim()
+                    const resolvedPoNumber = cachedPoNumber || inlinePoNumber || poFromName || ''
+                    const descriptionText = String(order.name ?? '').trim() || `${t('Order', 'Orden')} ${String(order.id ?? '').trim()}`
 
                     return (
-                      <>
-                        <View style={styles.orderListTopRow}>
-                          <View style={styles.orderListIdBadge}>
-                            <Text style={styles.orderListIdText}>#{order.id}</Text>
-                          </View>
-                          <Text style={styles.orderListStatusPill} numberOfLines={1}>
-                            {order.statusLabel || t('No status', 'Sin estado')}
+                      <View style={styles.orderListMainRow}>
+                        <View style={styles.orderListLeftColumn}>
+                          <Text style={styles.orderListHeaderLine} numberOfLines={1}>
+                            #{sixDigitOrderNumber}
+                          </Text>
+
+                          {resolvedPoNumber ? (
+                            <Text style={styles.orderListPoLine} numberOfLines={1}>
+                              PO {resolvedPoNumber}
+                            </Text>
+                          ) : null}
+
+                          <Text style={styles.orderListName} numberOfLines={2}>
+                            {descriptionText}
                           </Text>
                         </View>
 
-                        <Text style={styles.orderListName} numberOfLines={1}>
-                          {order.name || `${t('Order', 'Orden')} ${order.id}`}
-                        </Text>
+                        <View style={styles.orderListRightColumn}>
+                          <Text style={styles.orderListProgressValue} numberOfLines={1}>
+                            {displayProgressPercent === null
+                              ? t('In progress', 'En progreso')
+                              : `${Math.round(displayProgressPercent)}%`}
+                          </Text>
 
-                        <Text style={styles.orderListMeta} numberOfLines={1}>
-                          {t('Due', 'Vence')}: {formatDisplayDate(order.effectiveDueDate, locale)}
-                        </Text>
+                          <Text style={styles.orderListDueMeta} numberOfLines={1}>
+                            {formatDisplayDate(order.effectiveDueDate, locale)}
+                          </Text>
 
-                        {hasManagerInsights ? (
-                          <>
-                            <View style={styles.orderProgressRow}>
-                              <Text style={styles.orderProgressLabel} numberOfLines={1}>
-                                {displayReadyPercent === null
-                                  ? t('Manager: no update yet', 'Gerente: sin actualizacion')
-                                  : t(
-                                    `Manager: ${Math.round(displayReadyPercent)}% ready`,
-                                    `Gerente: ${Math.round(displayReadyPercent)}% listo`,
-                                  )}
-                              </Text>
-                              <Text style={styles.orderProgressWorkersMeta} numberOfLines={1}>
-                                {t(
-                                  `${workerCount} workers • ${totalHours.toFixed(1)}h`,
-                                  `${workerCount} trabajadores • ${totalHours.toFixed(1)}h`,
-                                )}
-                              </Text>
-                            </View>
-
-                            <View style={styles.orderProgressTrack}>
-                              <View
-                                style={[
-                                  styles.orderProgressFill,
-                                  { width: `${displayReadyPercent ?? 0}%` },
-                                ]}
-                              />
-                            </View>
-
-                            {managerInsight?.updatedAt ? (
-                              <Text style={styles.orderProgressMeta} numberOfLines={1}>
-                                {t('Updated', 'Actualizado')}: {formatSyncTimestamp(managerInsight.updatedAt, locale)}
-                              </Text>
-                            ) : null}
-                          </>
-                        ) : null}
-                      </>
+                          {managerUpdatedAt ? (
+                            <Text style={styles.orderProgressMeta} numberOfLines={1}>
+                              {formatSyncTimestamp(managerUpdatedAt, locale)}
+                            </Text>
+                          ) : null}
+                        </View>
+                      </View>
                     )
                   })()}
                 </Pressable>
@@ -499,12 +516,6 @@ export function TimesheetSection({
   return (
     <>
       <Text style={styles.sectionTitle}>{t('My Daily Timesheet', 'Mi hoja diaria de horas')}</Text>
-      <Text style={styles.sectionSubtitle}>
-        {t(
-          'Submit your own daily entries. Reports are managed on the website.',
-          'Envia tus propias entradas diarias. Los reportes se manejan en el sitio web.',
-        )}
-      </Text>
 
       <View style={styles.timesheetCard}>
         <Text style={styles.timesheetWorkerText}>
@@ -655,12 +666,6 @@ export function ManagerSheetSection({
   return (
     <>
       <Text style={styles.sectionTitle}>{t('Manager Sheet', 'Hoja de gerente')}</Text>
-      <Text style={styles.sectionSubtitle}>
-        {t(
-          'Date defaults to today. Tap Date to open the calendar picker.',
-          'La fecha por defecto es hoy. Toca Fecha para abrir el calendario.',
-        )}
-      </Text>
 
       <View style={styles.managerSheetCard}>
         <Pressable style={styles.timesheetDateButton} onPress={onOpenManagerDatePicker}>
@@ -818,6 +823,7 @@ export function ManagerSheetSection({
 export function AlertsSection({
   t,
   locale,
+  alertsCardHeight,
   isAlertsLoading,
   alerts,
   alertsMessage,
@@ -828,6 +834,7 @@ export function AlertsSection({
 }: {
   t: TranslateFn
   locale: string
+  alertsCardHeight: number
   isAlertsLoading: boolean
   alerts: MobileAlert[]
   alertsMessage: string | null
@@ -845,14 +852,8 @@ export function AlertsSection({
   return (
     <>
       <Text style={styles.sectionTitle}>{t('Notifications', 'Notificaciones')}</Text>
-      <Text style={styles.sectionSubtitle}>
-        {t(
-          'Important updates from Admin will appear here and as push notifications.',
-          'Las actualizaciones importantes de Admin apareceran aqui y como notificaciones push.',
-        )}
-      </Text>
 
-      <View style={styles.alertsCard}>
+      <View style={[styles.alertsCard, { height: alertsCardHeight }]}> 
         <View style={styles.alertTabsRow}>
           <Pressable
             style={[
@@ -904,63 +905,69 @@ export function AlertsSection({
               : t('No unread notifications right now.', 'No hay notificaciones sin leer ahora.')}
           </Text>
         ) : (
-          <View style={styles.alertsList}>
-            {visibleAlerts.map((alertItem) => {
-              const isRead = Boolean(alertItem.isRead)
+          <ScrollView
+            style={styles.alertsListScroll}
+            contentContainerStyle={styles.alertsListContent}
+            nestedScrollEnabled
+          >
+            <View style={styles.alertsList}>
+              {visibleAlerts.map((alertItem) => {
+                const isRead = Boolean(alertItem.isRead)
 
-              return (
-                <Swipeable
-                  key={alertItem.id}
-                  friction={1.8}
-                  rightThreshold={32}
-                  leftThreshold={32}
-                  renderLeftActions={
-                    isRead
-                      ? () => (
-                        <View style={[styles.alertSwipeAction, styles.alertSwipeActionUnread]}>
-                          <Text style={styles.alertSwipeActionText}>{t('Unread', 'Sin leer')}</Text>
-                        </View>
-                      )
-                      : undefined
-                  }
-                  renderRightActions={
-                    !isRead
-                      ? () => (
-                        <View style={[styles.alertSwipeAction, styles.alertSwipeActionRead]}>
-                          <Text style={styles.alertSwipeActionText}>{t('Read', 'Leida')}</Text>
-                        </View>
-                      )
-                      : undefined
-                  }
-                  onSwipeableOpen={(direction: 'left' | 'right') => {
-                    if (!isRead && direction === 'right') {
-                      onMarkAlertAsRead(alertItem)
+                return (
+                  <Swipeable
+                    key={alertItem.id}
+                    friction={1.8}
+                    rightThreshold={32}
+                    leftThreshold={32}
+                    renderLeftActions={
+                      isRead
+                        ? () => (
+                          <View style={[styles.alertSwipeAction, styles.alertSwipeActionUnread]}>
+                            <Text style={styles.alertSwipeActionText}>{t('Unread', 'Sin leer')}</Text>
+                          </View>
+                        )
+                        : undefined
                     }
+                    renderRightActions={
+                      !isRead
+                        ? () => (
+                          <View style={[styles.alertSwipeAction, styles.alertSwipeActionRead]}>
+                            <Text style={styles.alertSwipeActionText}>{t('Read', 'Leida')}</Text>
+                          </View>
+                        )
+                        : undefined
+                    }
+                    onSwipeableOpen={(direction: 'left' | 'right') => {
+                      if (!isRead && direction === 'right') {
+                        onMarkAlertAsRead(alertItem)
+                      }
 
-                    if (isRead && direction === 'left') {
-                      onMarkAlertAsUnread(alertItem)
-                    }
-                  }}
-                >
-                  <View style={[styles.alertRow, !isRead ? styles.alertRowUnread : null]}>
-                    <View style={styles.alertHeaderRow}>
-                      <Text style={styles.alertTitle}>{alertItem.title}</Text>
-                      {!isRead ? (
-                        <View style={styles.alertUnreadBadge}>
-                          <Text style={styles.alertUnreadBadgeText}>{t('Unread', 'Sin leer')}</Text>
-                        </View>
-                      ) : null}
+                      if (isRead && direction === 'left') {
+                        onMarkAlertAsUnread(alertItem)
+                      }
+                    }}
+                  >
+                    <View style={[styles.alertRow, !isRead ? styles.alertRowUnread : null]}>
+                      <View style={styles.alertHeaderRow}>
+                        <Text style={styles.alertTitle}>{alertItem.title}</Text>
+                        {!isRead ? (
+                          <View style={styles.alertUnreadBadge}>
+                            <Text style={styles.alertUnreadBadgeText}>{t('Unread', 'Sin leer')}</Text>
+                          </View>
+                        ) : null}
+                      </View>
+                      <Text style={styles.alertBody}>{alertItem.message}</Text>
+                      <Text style={styles.alertMeta}>
+                        {formatSyncTimestamp(alertItem.createdAt, locale)}
+                        {alertItem.createdByEmail ? ` • ${alertItem.createdByEmail}` : ''}
+                      </Text>
                     </View>
-                    <Text style={styles.alertBody}>{alertItem.message}</Text>
-                    <Text style={styles.alertMeta}>
-                      {formatSyncTimestamp(alertItem.createdAt, locale)}
-                      {alertItem.createdByEmail ? ` • ${alertItem.createdByEmail}` : ''}
-                    </Text>
-                  </View>
-                </Swipeable>
-              )
-            })}
-          </View>
+                  </Swipeable>
+                )
+              })}
+            </View>
+          </ScrollView>
         )}
 
         {alertsMessage ? <Text style={styles.alertMessage}>{alertsMessage}</Text> : null}
@@ -970,42 +977,14 @@ export function AlertsSection({
 }
 
 export function SettingsOverviewSection({
-  t,
-  appVersionLabel,
-  isNotificationsEnabled,
   settingsMenuItems,
   onSelectSettingsMenu,
 }: {
-  t: TranslateFn
-  appVersionLabel: string
-  isNotificationsEnabled: boolean
   settingsMenuItems: Array<{ id: SettingsMenuId; title: string; subtitle: string; status: string }>
   onSelectSettingsMenu: (id: SettingsMenuId) => void
 }) {
   return (
     <>
-      <View style={styles.settingsPageHero}>
-        <Text style={styles.settingsPageTitle}>{t('Settings', 'Configuracion')}</Text>
-        <Text style={styles.settingsPageSubtitle}>
-          {t(
-            'Everything for your app account, notifications, and updates in one organized page.',
-            'Todo para tu cuenta, notificaciones y actualizaciones en una pagina organizada.',
-          )}
-        </Text>
-        <View style={styles.settingsMetaRow}>
-          <View style={styles.settingsMetaChip}>
-            <Text style={styles.settingsMetaChipText}>{t('Version', 'Version')} {appVersionLabel}</Text>
-          </View>
-          <View style={styles.settingsMetaChip}>
-            <Text style={styles.settingsMetaChipText}>
-              {isNotificationsEnabled
-                ? t('Push ready', 'Push listo')
-                : t('Push blocked', 'Push bloqueado')}
-            </Text>
-          </View>
-        </View>
-      </View>
-
       <View style={styles.settingsMenuCard}>
         {settingsMenuItems.map((menuItem) => (
           <Pressable

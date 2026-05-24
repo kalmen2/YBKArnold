@@ -34,3 +34,16 @@ export function markMyAlertRead(alertId: string) {
     method: 'POST',
   })
 }
+
+export function markMyAlertUnread(alertId: string) {
+  const normalizedAlertId = String(alertId ?? '').trim()
+
+  return apiRequest<{
+    ok: boolean
+    alertId: string
+    isRead: boolean
+    readAt: string | null
+  }>(`/api/alerts/${encodeURIComponent(normalizedAlertId)}/unread`, {
+    method: 'POST',
+  })
+}

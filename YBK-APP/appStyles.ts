@@ -101,7 +101,7 @@ export const styles = StyleSheet.create({
   scrollContent: {
     paddingHorizontal: 14,
     paddingVertical: 16,
-    paddingBottom: 112,
+    paddingBottom: 156,
     gap: 8,
   },
   scrollContentPictures: {
@@ -620,6 +620,13 @@ export const styles = StyleSheet.create({
   alertsList: {
     gap: 8,
   },
+  alertsListScroll: {
+    flex: 1,
+    minHeight: 120,
+  },
+  alertsListContent: {
+    paddingBottom: 6,
+  },
   alertSwipeAction: {
     minWidth: 96,
     borderRadius: 10,
@@ -832,10 +839,12 @@ export const styles = StyleSheet.create({
   },
   settingsLanguageRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 8,
   },
   settingsLanguageButton: {
     flex: 1,
+    minWidth: 96,
     borderWidth: 1,
     borderColor: '#c6d2f8',
     borderRadius: 10,
@@ -1065,7 +1074,7 @@ export const styles = StyleSheet.create({
     backgroundColor: '#f9fbff',
     paddingHorizontal: 8,
     paddingVertical: 6,
-    gap: 2,
+    gap: 4,
   },
   orderDetailHistoryPrimary: {
     color: '#2d487f',
@@ -1075,6 +1084,52 @@ export const styles = StyleSheet.create({
   orderDetailHistorySecondary: {
     color: '#5a6f99',
     fontSize: 12,
+    fontWeight: '600',
+  },
+  orderDetailHistoryScroll: {
+    maxHeight: 300,
+  },
+  orderDetailHistoryScrollContent: {
+    gap: 6,
+    paddingRight: 2,
+  },
+  orderDetailHistoryHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  orderDetailHistoryExpandText: {
+    color: '#2754ad',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  orderDetailHistoryWorkersList: {
+    borderTopWidth: 1,
+    borderTopColor: '#e3ebfc',
+    paddingTop: 6,
+    gap: 4,
+  },
+  orderDetailHistoryWorkerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  orderDetailHistoryWorkerName: {
+    color: '#36548b',
+    fontSize: 11,
+    fontWeight: '600',
+    flex: 1,
+  },
+  orderDetailHistoryWorkerHours: {
+    color: '#1f3f7d',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  orderDetailHistoryWorkerEmpty: {
+    color: '#5a6f99',
+    fontSize: 11,
     fontWeight: '600',
   },
   orderDetailTabButton: {
@@ -1101,17 +1156,18 @@ export const styles = StyleSheet.create({
   },
   orderDetailActionsRow: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
     gap: 8,
   },
   orderDetailActionButton: {
+    flex: 1,
     borderWidth: 1,
     borderColor: '#2f5ad4',
     backgroundColor: '#1f4fd5',
     borderRadius: 11,
     paddingHorizontal: 12,
     paddingVertical: 10,
-    alignSelf: 'flex-start',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   orderDetailActionButtonSecondary: {
     borderColor: '#9bb5ef',
@@ -1169,6 +1225,35 @@ export const styles = StyleSheet.create({
     padding: 12,
     gap: 10,
   },
+  ordersFilterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  ordersFilterLabel: {
+    color: '#2b477c',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  ordersViewPickerShell: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: '#c8d6ff',
+    borderRadius: 10,
+    backgroundColor: '#ffffff',
+    overflow: 'hidden',
+    minHeight: 48,
+    justifyContent: 'center',
+  },
+  ordersViewPicker: {
+    height: 48,
+    color: '#1b2a59',
+  },
+  ordersViewPickerItem: {
+    color: '#1b2a59',
+    fontSize: 15,
+    fontWeight: '700',
+  },
   orderSearchInput: {
     borderWidth: 1,
     borderColor: '#c8d6ff',
@@ -1184,7 +1269,11 @@ export const styles = StyleSheet.create({
   },
   ordersListContent: {
     gap: 8,
-    paddingBottom: 8,
+    paddingBottom: 22,
+  },
+  picturesListContent: {
+    gap: 8,
+    paddingBottom: 112,
   },
   orderListItem: {
     borderWidth: 1,
@@ -1193,7 +1282,7 @@ export const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 10,
     backgroundColor: '#fdfefe',
-    gap: 6,
+    gap: 7,
   },
   orderListItemPressed: {
     borderColor: '#9fb4d8',
@@ -1224,10 +1313,72 @@ export const styles = StyleSheet.create({
     fontWeight: '700',
     maxWidth: '70%',
   },
+  orderListMainRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  orderListLeftColumn: {
+    flex: 1,
+    gap: 3,
+  },
+  orderListRightColumn: {
+    minWidth: 108,
+    alignItems: 'flex-end',
+    gap: 3,
+  },
   orderListName: {
     color: '#22366f',
     fontSize: 13,
     fontWeight: '700',
+    flexShrink: 1,
+  },
+  orderListHeaderLine: {
+    color: '#1c315f',
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  orderListPoLine: {
+    color: '#365286',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  orderListNameProgressRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  orderListProgressValue: {
+    color: '#204ea9',
+    fontSize: 13,
+    fontWeight: '800',
+    textAlign: 'right',
+  },
+  orderListManagerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  orderListManagerLabel: {
+    color: '#3a578b',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  orderListManagerMeta: {
+    color: '#4e6294',
+    fontSize: 12,
+    fontWeight: '700',
+    textAlign: 'right',
+    flex: 1,
+  },
+  orderListDueMeta: {
+    color: '#4e6294',
+    fontSize: 11,
+    fontWeight: '600',
+    textAlign: 'right',
   },
   orderListMeta: {
     color: '#4e6294',
@@ -1270,6 +1421,7 @@ export const styles = StyleSheet.create({
     color: '#657aa6',
     fontSize: 10,
     fontWeight: '600',
+    textAlign: 'right',
   },
   ordersPaginationRow: {
     flexDirection: 'row',
@@ -1657,6 +1809,7 @@ export const styles = StyleSheet.create({
   adminWorkspaceBodyContent: {
     paddingHorizontal: 10,
     paddingVertical: 10,
+    paddingBottom: 38,
     gap: 10,
   },
   adminWorkspaceBodyNote: {
@@ -1722,6 +1875,27 @@ export const styles = StyleSheet.create({
     paddingVertical: 8,
     gap: 3,
   },
+  adminWorkspaceRowHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  adminWorkspaceRowHeaderTextWrap: {
+    flex: 1,
+    gap: 2,
+  },
+  adminWorkspaceMenuButton: {
+    width: 32,
+    height: 32,
+    borderWidth: 1,
+    borderColor: '#c5d5f1',
+    borderRadius: 999,
+    backgroundColor: '#eef4ff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 1,
+  },
   adminWorkspaceRowTitle: {
     color: '#213667',
     fontSize: 12,
@@ -1736,6 +1910,161 @@ export const styles = StyleSheet.create({
     color: '#5b709b',
     fontSize: 11,
     fontWeight: '600',
+  },
+  adminWorkspaceUserMeta: {
+    color: '#4a5f8f',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  adminWorkspaceInlineActionRow: {
+    marginTop: 6,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  adminWorkspaceInlineActionButton: {
+    borderWidth: 1,
+    borderColor: '#cad9f2',
+    borderRadius: 9,
+    backgroundColor: '#eef4ff',
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+  },
+  adminWorkspaceInlineActionButtonActive: {
+    borderColor: '#2c5abf',
+    backgroundColor: '#2c5abf',
+  },
+  adminWorkspaceInlineActionText: {
+    color: '#2f4f8e',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  adminWorkspaceInlineActionTextActive: {
+    color: '#ffffff',
+  },
+  adminWorkspaceApprovalButton: {
+    marginTop: 6,
+    borderWidth: 1,
+    borderColor: '#2c62df',
+    borderRadius: 10,
+    backgroundColor: '#2c62df',
+    alignSelf: 'flex-start',
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+  },
+  adminWorkspaceApprovalButtonDanger: {
+    borderColor: '#a63036',
+    backgroundColor: '#a63036',
+  },
+  adminWorkspaceApprovalButtonText: {
+    color: '#ffffff',
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  adminWorkspaceReportOptionButton: {
+    borderWidth: 1,
+    borderColor: '#d1def7',
+    borderRadius: 10,
+    backgroundColor: '#ffffff',
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    gap: 2,
+  },
+  adminWorkspaceReportOptionTitle: {
+    color: '#224179',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  adminWorkspaceReportOptionSubtitle: {
+    color: '#4f6694',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  adminWorkspaceBackButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    borderWidth: 1,
+    borderColor: '#c7d7f3',
+    borderRadius: 10,
+    backgroundColor: '#eef4ff',
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    gap: 4,
+  },
+  adminWorkspaceBackButtonText: {
+    color: '#264885',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  adminAccessModalCard: {
+    maxHeight: '72%',
+  },
+  adminWorkspaceAccessOptionButton: {
+    borderWidth: 1,
+    borderColor: '#cad9f2',
+    borderRadius: 10,
+    backgroundColor: '#edf4ff',
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+  },
+  adminWorkspaceAccessOptionButtonActive: {
+    borderColor: '#2c5abf',
+    backgroundColor: '#2c5abf',
+  },
+  adminWorkspaceAccessOptionText: {
+    color: '#2f4f8e',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  adminWorkspaceAccessOptionTextActive: {
+    color: '#ffffff',
+  },
+  adminWorkspaceRowExpandHint: {
+    marginTop: 4,
+    color: '#2f5596',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  adminWorkspaceRowDetailLine: {
+    color: '#3f5786',
+    fontSize: 11,
+    fontWeight: '600',
+    lineHeight: 15,
+  },
+  adminCashDetailsModalCard: {
+    maxHeight: '72%',
+    gap: 8,
+  },
+  adminCashDetailsModalSubtitle: {
+    color: '#244579',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  adminCashDetailsModalMeta: {
+    color: '#4f6694',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  adminCashDetailsModalScroll: {
+    flex: 1,
+    minHeight: 120,
+  },
+  adminCashDetailsModalContent: {
+    gap: 6,
+    paddingBottom: 6,
+  },
+  adminCashDetailsModalLine: {
+    color: '#334f83',
+    fontSize: 12,
+    fontWeight: '600',
+    lineHeight: 16,
+    borderWidth: 1,
+    borderColor: '#dce7fb',
+    backgroundColor: '#f8fbff',
+    borderRadius: 9,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
   },
   adminWorkspaceEmptyWrap: {
     flex: 1,

@@ -1,6 +1,10 @@
 export const nowIso = () => new Date().toISOString()
 export const NO_ID = Object.freeze({ projection: { _id: 0 } })
 
+export function normalizeText(value, maxLength = 500) {
+  return String(value ?? '').trim().slice(0, maxLength)
+}
+
 export function normalizeOptionalShortText(value, maxLength = 240) {
   const normalized = String(value ?? '').trim()
 
@@ -16,6 +20,49 @@ export function normalizeLookupValue(value) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, ' ')
     .trim()
+}
+
+export function normalizeLookupToken(value) {
+  return normalizeText(value, 500)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+}
+
+export function toIsoOrNull(value) {
+  return normalizeText(value, 80) || null
+}
+
+export function toTimestampMs(value) {
+  const parsed = Date.parse(normalizeText(value, 80))
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+export function isExpiredAt(isoTimestamp, skewMs = 0) {
+  const timestampMs = toTimestampMs(isoTimestamp)
+
+  if (!Number.isFinite(timestampMs)) {
+    return true
+  }
+
+  return Date.now() >= timestampMs - skewMs
+}
+
+export function toMoneyOrZero(value) {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? Number(parsed.toFixed(2)) : 0
+}
+
+export function toMoneyOrNull(value) {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? Number(parsed.toFixed(2)) : null
+}
+
+export function buildFirebaseStorageDownloadUrl(bucketName, objectPath, downloadToken) {
+  const encodedObjectPath = encodeURIComponent(String(objectPath ?? '').trim())
+  const encodedToken = encodeURIComponent(String(downloadToken ?? '').trim())
+
+  return `https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(bucketName)}/o/${encodedObjectPath}?alt=media&token=${encodedToken}`
 }
 
 export function toNonNegativeInteger(value) {

@@ -1,5 +1,8 @@
 export type DashboardOrder = {
   id: string
+  mondayItemId?: string | null
+  orderNumber?: string | null
+  poNumber?: string | null
   name: string
   mondaySourceBoardType?: 'orders_track' | 'shipped_orders'
   movedToShippedAt?: string | null
@@ -16,6 +19,7 @@ export type DashboardOrder = {
   effectiveDueDate: string | null
   daysUntilDue: number | null
   isDone: boolean
+  updatedAt?: string | null
   itemUrl?: string | null
   shopDrawingUrl?: string | null
   shopDrawingFileName?: string | null
@@ -264,7 +268,7 @@ export type MetricTone = {
 }
 
 export type AppScreen = 'dashboard' | 'orders' | 'pictures' | 'timesheet' | 'manager' | 'alerts' | 'admin' | 'settings'
-export type AppLanguage = 'en' | 'es'
+export type AppLanguage = 'en' | 'es' | 'he'
 
 export type OrderMetricKey =
   | 'lateOrders'

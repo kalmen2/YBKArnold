@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import compression from 'compression'
 import cors from 'cors'
 import express from 'express'
@@ -7,6 +8,7 @@ import * as functions from 'firebase-functions/v1'
 import { getApps, initializeApp } from 'firebase-admin/app'
 import { getAuth } from 'firebase-admin/auth'
 import { registerAiRoutes } from './src/routes/ai-routes.mjs'
+import { registerAdminApiRoutes } from './src/routes/admin-api-routes.mjs'
 import { registerAlertsRoutes } from './src/routes/alerts-routes.mjs'
 import { registerAuthRoutes } from './src/routes/auth-routes.mjs'
 import { registerCrmRoutes } from './src/routes/crm-routes.mjs'
@@ -16,7 +18,9 @@ import { registerOrdersRoutes } from './src/routes/orders-routes.mjs'
 import { registerPurchasingRoutes } from './src/routes/purchasing-routes.mjs'
 import { registerQuickBooksRoutes } from './src/routes/quickbooks-routes.mjs'
 import { registerTimesheetRoutes } from './src/routes/timesheet-routes.mjs'
+import { registerVisitorsRoutes } from './src/routes/visitors-routes.mjs'
 import { createAuthUtils } from './src/services/auth-utils.mjs'
+import { createApiKeyService } from './src/services/api-key-service.mjs'
 import { createAuthActivityService } from './src/services/auth-activity-service.mjs'
 import { createAuthRequestService } from './src/services/auth-request-service.mjs'
 import { createDashboardCacheService } from './src/services/dashboard-cache-service.mjs'
@@ -205,6 +209,7 @@ const defaultMobileIosLatestBuild = Number(process.env.MOBILE_IOS_LATEST_BUILD ?
 const defaultMobileLatestVersion = String(process.env.MOBILE_LATEST_VERSION ?? '').trim()
 const expoPushApiUrl = 'https://exp.host/--/api/v2/push/send'
 const openAiApiKey = String(process.env.OPENAI_API_KEY ?? '').trim()
+const apiKeyPepper = String(process.env.API_KEY_PEPPER ?? '').trim()
 const zendeskTicketFieldCacheTtlMs = 30 * 60 * 1000
 const zendeskTicketFieldErrorCacheTtlMs = 5 * 60 * 1000
 const dashboardDailyRefreshCron = String(process.env.DASHBOARD_DAILY_REFRESH_CRON ?? '0 17 * * *').trim() || '0 17 * * *'
@@ -293,6 +298,15 @@ const {
   normalizeWorkerNumber,
   ownerEmail,
   reviewerLoginEmails,
+})
+
+const {
+  buildApiKeyPreview,
+  generateApiKeyValue,
+  hashApiKeyValue,
+  normalizeApiKeyValue,
+} = createApiKeyService({
+  apiKeyPepper,
 })
 
 const {
@@ -570,9 +584,11 @@ const {
   formatAuthLoginHoursWindow,
   getAuth,
   getCollections,
+  hashApiKeyValue,
   isAllowedByAuthLoginHours,
   isApprovedAdminUser,
   isReviewerLoginEmail,
+  normalizeApiKeyValue,
   normalizeEmail,
   ownerEmail,
   resolveAuthClientPlatformFromRequest,
@@ -582,12 +598,987 @@ const {
   extractRequestUserAgent,
 })
 
+function listRegisteredApiRoutes() {
+  const operationActionByMethod = {
+    GET: 'Retrieve',
+    POST: 'Create',
+    PUT: 'Replace',
+    PATCH: 'Update',
+    DELETE: 'Delete',
+  }
+  const operationActionByKeyword = {
+    approval: 'Approve',
+    assign: 'Assign',
+    bootstrap: 'Load',
+    chat: 'Send',
+    download: 'Download',
+    import: 'Import',
+    link: 'Link',
+    preview: 'Preview',
+    refresh: 'Refresh',
+    revoke: 'Revoke',
+    upload: 'Upload',
+  }
+  const sectionDefinitions = {
+    admin: {
+      id: 'admin',
+      title: 'Administration',
+      description: 'Administrative controls, user governance, and system-level management operations.',
+    },
+    ai: {
+      id: 'ai',
+      title: 'AI',
+      description: 'AI-powered business workflows, assistant responses, and summarization tools.',
+    },
+    alerts: {
+      id: 'alerts',
+      title: 'Alerts',
+      description: 'System and mobile alert delivery, read state tracking, and notification management.',
+    },
+    auth: {
+      id: 'auth',
+      title: 'Authentication',
+      description: 'Identity, account access, user approval, and access-policy controls.',
+    },
+    crm: {
+      id: 'crm',
+      title: 'CRM',
+      description: 'Accounts, contacts, opportunities, quote/order lifecycle, and CRM workflows.',
+    },
+    dashboard: {
+      id: 'dashboard',
+      title: 'Dashboard',
+      description: 'Operational dashboard data, order intelligence, and support snapshots.',
+    },
+    orders: {
+      id: 'orders',
+      title: 'Orders',
+      description: 'Order retrieval, status synchronization, fulfillment progress, and related assets.',
+    },
+    purchasing: {
+      id: 'purchasing',
+      title: 'Purchasing',
+      description: 'Purchasing spend analysis, item details, transactions, and refresh utilities.',
+    },
+    quickbooks: {
+      id: 'quickbooks',
+      title: 'QuickBooks',
+      description: 'QuickBooks connectivity, OAuth handling, and accounting synchronization endpoints.',
+    },
+    timesheet: {
+      id: 'timesheet',
+      title: 'Timesheet',
+      description: 'Timesheet entries, workers, stage management, and production reporting.',
+    },
+    visitors: {
+      id: 'visitors',
+      title: 'Visitors',
+      description: 'Visitor check-in operations, shared saved visitors, and visitor history reporting.',
+    },
+    default: {
+      id: 'general',
+      title: 'General',
+      description: 'General API endpoints.',
+    },
+  }
+  const routeSourceFilePaths = [
+    'src/routes/ai-routes.mjs',
+    'src/routes/admin-api-routes.mjs',
+    'src/routes/alerts-routes.mjs',
+    'src/routes/auth-routes.mjs',
+    'src/routes/crm-routes.mjs',
+    'src/routes/dashboard-support-routes.mjs',
+    'src/routes/order-photos-routes.mjs',
+    'src/routes/orders-routes.mjs',
+    'src/routes/purchasing-routes.mjs',
+    'src/routes/quickbooks-routes.mjs',
+    'src/routes/timesheet-routes.mjs',
+    'src/routes/visitors-routes.mjs',
+  ]
+
+  function uniqueSorted(values) {
+    return [...new Set(values)].sort((left, right) => left.localeCompare(right))
+  }
+
+  function normalizeInputTarget(value) {
+    if (value === 'params') {
+      return 'path'
+    }
+
+    if (value === 'query') {
+      return 'query'
+    }
+
+    return 'body'
+  }
+
+  function normalizeConstraintValue(value) {
+    const normalized = String(value ?? '').trim()
+
+    if (!normalized) {
+      return null
+    }
+
+    if (normalized === 'true') {
+      return true
+    }
+
+    if (normalized === 'false') {
+      return false
+    }
+
+    const parsed = Number(normalized)
+
+    if (Number.isFinite(parsed)) {
+      return parsed
+    }
+
+    return normalized
+  }
+
+  function cleanErrorExpression(value) {
+    let normalized = String(value ?? '').replace(/\s+/g, ' ').trim()
+
+    if (!normalized) {
+      return ''
+    }
+
+    if (
+      (normalized.startsWith('"') && normalized.endsWith('"'))
+      || (normalized.startsWith("'") && normalized.endsWith("'"))
+      || (normalized.startsWith('`') && normalized.endsWith('`'))
+    ) {
+      normalized = normalized.slice(1, -1)
+    }
+
+    normalized = normalized.replace(/\$\{[^}]+\}/g, '...')
+
+    return normalized.trim()
+  }
+
+  function humanizeToken(input) {
+    const raw = String(input ?? '').trim()
+
+    if (!raw) {
+      return ''
+    }
+
+    return raw
+      .replace(/[-_]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/\b\w/g, (character) => character.toUpperCase())
+  }
+
+  function resolveSection(path) {
+    const segments = String(path ?? '')
+      .split('/')
+      .filter(Boolean)
+    const first = String(segments[1] ?? '').trim().toLowerCase()
+
+    if (first === 'admin') {
+      const second = String(segments[2] ?? '').trim().toLowerCase()
+
+      if (second && sectionDefinitions[second]) {
+        return sectionDefinitions[second]
+      }
+    }
+
+    return sectionDefinitions[first] ?? sectionDefinitions.default
+  }
+
+  function collectPathParams(path) {
+    const matches = [...String(path ?? '').matchAll(/:([A-Za-z0-9_]+)/g)]
+
+    return uniqueSorted(matches.map((match) => String(match[1] ?? '').trim()).filter(Boolean))
+  }
+
+  function collectReferencedFieldNames(source, target) {
+    const dotMatches = [...String(source ?? '').matchAll(
+      new RegExp(`req\\.${target}\\?\\.([A-Za-z0-9_]+)`, 'g'),
+    )]
+      .map((match) => String(match[1] ?? '').trim())
+      .filter(Boolean)
+    const bracketMatches = [...String(source ?? '').matchAll(
+      new RegExp(`req\\.${target}\\?\\.\\[['\"]([^'\"]+)['\"]\\]`, 'g'),
+    )]
+      .map((match) => String(match[1] ?? '').trim())
+      .filter(Boolean)
+
+    return uniqueSorted([...dotMatches, ...bracketMatches])
+  }
+
+  function collectStatusCodes(source, method) {
+    const explicitCodes = uniqueSorted(
+      [...String(source ?? '').matchAll(/res\.status\((\d{3})\)/g)]
+        .map((match) => String(match[1] ?? '').trim())
+        .filter(Boolean),
+    )
+
+    if (explicitCodes.length > 0) {
+      return explicitCodes
+    }
+
+    if (method === 'POST') {
+      return ['201']
+    }
+
+    if (method === 'DELETE') {
+      return ['200', '204']
+    }
+
+    return ['200']
+  }
+
+  function normalizePathTemplate(path) {
+    return String(path ?? '').replace(/:([A-Za-z0-9_]+)/g, '{$1}')
+  }
+
+  function parseStringLiteralValues(value) {
+    return uniqueSorted(
+      [...String(value ?? '').matchAll(/['\"]([^'\"]+)['\"]/g)]
+        .map((match) => String(match[1] ?? '').trim())
+        .filter(Boolean),
+    )
+  }
+
+  function extractConstantsByName(source) {
+    const constantsByName = new Map()
+    const setRegex = /const\s+([A-Za-z0-9_]+)\s*=\s*new\s+Set\s*\(\s*\[([\s\S]*?)\]\s*\)/g
+
+    for (const match of source.matchAll(setRegex)) {
+      const constantName = String(match[1] ?? '').trim()
+      const values = parseStringLiteralValues(match[2])
+
+      if (!constantName || values.length === 0) {
+        continue
+      }
+
+      constantsByName.set(constantName, values)
+    }
+
+    const arrayRegex = /const\s+([A-Za-z0-9_]+)\s*=\s*\[([\s\S]*?)\]/g
+
+    for (const match of source.matchAll(arrayRegex)) {
+      const constantName = String(match[1] ?? '').trim()
+
+      if (!constantName || constantsByName.has(constantName)) {
+        continue
+      }
+
+      const values = parseStringLiteralValues(match[2])
+
+      if (values.length === 0 || values.length > 80) {
+        continue
+      }
+
+      constantsByName.set(constantName, values)
+    }
+
+    return constantsByName
+  }
+
+  function extractRouteSnippetsByKey(source) {
+    const routeRegex = /app\.(get|post|put|patch|delete)\(\s*['\"]([^'\"]+)['\"]/g
+    const matches = [...source.matchAll(routeRegex)]
+    const snippetsByRouteKey = new Map()
+
+    for (let index = 0; index < matches.length; index += 1) {
+      const match = matches[index]
+      const method = String(match[1] ?? '').trim().toUpperCase()
+      const path = String(match[2] ?? '').trim()
+      const start = Number(match.index ?? 0)
+      const nextStart = index < matches.length - 1
+        ? Number(matches[index + 1].index ?? source.length)
+        : source.length
+
+      if (!method || !path) {
+        continue
+      }
+
+      const routeKey = `${method} ${path}`
+
+      if (!snippetsByRouteKey.has(routeKey)) {
+        snippetsByRouteKey.set(routeKey, source.slice(start, nextStart))
+      }
+    }
+
+    return snippetsByRouteKey
+  }
+
+  const routeSourceMetadata = routeSourceFilePaths
+    .map((relativePath) => {
+      try {
+        const source = readFileSync(new URL(relativePath, import.meta.url), 'utf8')
+
+        return {
+          relativePath,
+          source,
+          constantsByName: extractConstantsByName(source),
+          snippetsByRouteKey: extractRouteSnippetsByKey(source),
+        }
+      } catch {
+        return null
+      }
+    })
+    .filter(Boolean)
+
+  function resolveConstantValues(constantName, preferredMetadata) {
+    const key = String(constantName ?? '').trim()
+
+    if (!key) {
+      return []
+    }
+
+    const preferredValues = preferredMetadata?.constantsByName?.get(key)
+
+    if (Array.isArray(preferredValues) && preferredValues.length > 0) {
+      return preferredValues
+    }
+
+    for (const metadata of routeSourceMetadata) {
+      const values = metadata?.constantsByName?.get(key)
+
+      if (Array.isArray(values) && values.length > 0) {
+        return values
+      }
+    }
+
+    return []
+  }
+
+  function resolveRouteSourceInfo(method, path, fallbackSource) {
+    const routeKey = `${method} ${path}`
+
+    for (const metadata of routeSourceMetadata) {
+      const snippet = metadata?.snippetsByRouteKey?.get(routeKey)
+
+      if (snippet) {
+        return {
+          source: snippet,
+          metadata,
+        }
+      }
+    }
+
+    return {
+      source: fallbackSource,
+      metadata: null,
+    }
+  }
+
+  function parseVariableBindings(source) {
+    const bindings = new Map()
+    const declarationRegex = /(?:const|let|var)\s+([A-Za-z0-9_]+)\s*=\s*([\s\S]{0,600}?);/g
+
+    for (const match of String(source ?? '').matchAll(declarationRegex)) {
+      const variableName = String(match[1] ?? '').trim()
+      const expression = String(match[2] ?? '').trim()
+
+      if (!variableName || !expression) {
+        continue
+      }
+
+      const dotMatch = expression.match(/req\.(params|query|body)\?\.([A-Za-z0-9_]+)/)
+      const bracketMatch = expression.match(/req\.(params|query|body)\?\.\[['\"]([^'\"]+)['\"]\]/)
+      const sourceTarget = dotMatch?.[1] ?? bracketMatch?.[1]
+      const fieldName = dotMatch?.[2] ?? bracketMatch?.[2]
+
+      if (!sourceTarget || !fieldName) {
+        continue
+      }
+
+      bindings.set(variableName, {
+        variableName,
+        source: normalizeInputTarget(sourceTarget),
+        fieldName: String(fieldName).trim(),
+        expression,
+      })
+    }
+
+    return bindings
+  }
+
+  function inferFieldType(fieldName, bindingExpression, sourceName) {
+    const expression = String(bindingExpression ?? '')
+    const normalizedFieldName = String(fieldName ?? '').trim().toLowerCase()
+
+    if (
+      expression.includes('toBoundedInteger(')
+      || expression.includes('toNonNegativeInteger(')
+      || expression.includes('Number(')
+    ) {
+      return 'number'
+    }
+
+    if (expression.includes('Boolean(')) {
+      return 'boolean'
+    }
+
+    if (normalizedFieldName.endsWith('ids') || normalizedFieldName.endsWith('uids') || normalizedFieldName.endsWith('states')) {
+      return 'array'
+    }
+
+    if (normalizedFieldName.startsWith('is') || normalizedFieldName.startsWith('has')) {
+      return 'boolean'
+    }
+
+    if (sourceName === 'path') {
+      return 'string'
+    }
+
+    return 'string'
+  }
+
+  function collectBoundedConstraints(source) {
+    const constraintsByFieldKey = new Map()
+    const boundedRegex = /toBoundedInteger\(\s*req\.(params|query|body)\?\.([A-Za-z0-9_]+)\s*,\s*([^,\n]+)\s*,\s*([^,\n]+)\s*,\s*([^)\n]+)\)/g
+
+    for (const match of String(source ?? '').matchAll(boundedRegex)) {
+      const sourceTarget = normalizeInputTarget(String(match[1] ?? '').trim())
+      const fieldName = String(match[2] ?? '').trim()
+      const key = `${sourceTarget}:${fieldName}`
+
+      constraintsByFieldKey.set(key, {
+        minimum: normalizeConstraintValue(match[3]),
+        maximum: normalizeConstraintValue(match[4]),
+        defaultValue: normalizeConstraintValue(match[5]),
+      })
+    }
+
+    const nonNegativeRegex = /toNonNegativeInteger\(\s*req\.(params|query|body)\?\.([A-Za-z0-9_]+)\s*,\s*([^)\n]+)\)/g
+
+    for (const match of String(source ?? '').matchAll(nonNegativeRegex)) {
+      const sourceTarget = normalizeInputTarget(String(match[1] ?? '').trim())
+      const fieldName = String(match[2] ?? '').trim()
+      const key = `${sourceTarget}:${fieldName}`
+
+      if (!constraintsByFieldKey.has(key)) {
+        constraintsByFieldKey.set(key, {
+          minimum: 0,
+          maximum: null,
+          defaultValue: normalizeConstraintValue(match[3]),
+        })
+      }
+    }
+
+    return constraintsByFieldKey
+  }
+
+  function collectRequiredFieldDetails(source, variableBindings) {
+    const requiredByFieldKey = new Map()
+    const variableRequiredRegex = /if\s*\(\s*!\s*([A-Za-z0-9_]+)\s*\)\s*\{?[\s\S]{0,260}?res\.status\((\d{3})\)\.json\(\s*\{\s*error:\s*([\s\S]{0,220}?)\s*\}\s*\)/g
+
+    for (const match of String(source ?? '').matchAll(variableRequiredRegex)) {
+      const variableName = String(match[1] ?? '').trim()
+      const binding = variableBindings.get(variableName)
+
+      if (!binding) {
+        continue
+      }
+
+      const key = `${binding.source}:${binding.fieldName}`
+
+      requiredByFieldKey.set(key, {
+        required: true,
+        message: cleanErrorExpression(match[3]),
+      })
+    }
+
+    const directRequiredRegex = /if\s*\(\s*!\s*req\.(params|query|body)\?\.([A-Za-z0-9_]+)\s*\)\s*\{?[\s\S]{0,260}?res\.status\((\d{3})\)\.json\(\s*\{\s*error:\s*([\s\S]{0,220}?)\s*\}\s*\)/g
+
+    for (const match of String(source ?? '').matchAll(directRequiredRegex)) {
+      const sourceTarget = normalizeInputTarget(String(match[1] ?? '').trim())
+      const fieldName = String(match[2] ?? '').trim()
+      const key = `${sourceTarget}:${fieldName}`
+
+      if (!requiredByFieldKey.has(key)) {
+        requiredByFieldKey.set(key, {
+          required: true,
+          message: cleanErrorExpression(match[4]),
+        })
+      }
+    }
+
+    return requiredByFieldKey
+  }
+
+  function collectEnumFieldDetails(source, variableBindings, metadata) {
+    const enumsByFieldKey = new Map()
+    const setHasRegex = /([A-Za-z0-9_]+)\.has\(\s*([A-Za-z0-9_]+)\s*\)/g
+
+    for (const match of String(source ?? '').matchAll(setHasRegex)) {
+      const constantName = String(match[1] ?? '').trim()
+      const variableName = String(match[2] ?? '').trim()
+      const binding = variableBindings.get(variableName)
+
+      if (!binding) {
+        continue
+      }
+
+      const enumValues = resolveConstantValues(constantName, metadata)
+
+      if (enumValues.length === 0) {
+        continue
+      }
+
+      enumsByFieldKey.set(
+        `${binding.source}:${binding.fieldName}`,
+        enumValues,
+      )
+    }
+
+    const includesRegex = /([A-Za-z0-9_]+)\.includes\(\s*([A-Za-z0-9_]+)\s*\)/g
+
+    for (const match of String(source ?? '').matchAll(includesRegex)) {
+      const constantName = String(match[1] ?? '').trim()
+      const variableName = String(match[2] ?? '').trim()
+      const binding = variableBindings.get(variableName)
+
+      if (!binding) {
+        continue
+      }
+
+      const enumValues = resolveConstantValues(constantName, metadata)
+
+      if (enumValues.length === 0) {
+        continue
+      }
+
+      const key = `${binding.source}:${binding.fieldName}`
+
+      if (!enumsByFieldKey.has(key)) {
+        enumsByFieldKey.set(key, enumValues)
+      }
+    }
+
+    const templatedEnumRegex = /([A-Za-z0-9_]+)\s+must be one of:\s*\$\{\s*([A-Za-z0-9_]+)\.join\(/g
+
+    for (const match of String(source ?? '').matchAll(templatedEnumRegex)) {
+      const fieldName = String(match[1] ?? '').trim()
+      const constantName = String(match[2] ?? '').trim()
+      const enumValues = resolveConstantValues(constantName, metadata)
+
+      if (enumValues.length === 0) {
+        continue
+      }
+
+      for (const sourceTarget of ['path', 'query', 'body']) {
+        const key = `${sourceTarget}:${fieldName}`
+
+        if (!enumsByFieldKey.has(key)) {
+          enumsByFieldKey.set(key, enumValues)
+        }
+      }
+    }
+
+    return enumsByFieldKey
+  }
+
+  function collectErrorDetails(source) {
+    const rawErrors = []
+    const errorRegex = /res\.status\((\d{3})\)\.json\(\s*\{\s*error:\s*([\s\S]{0,220}?)\s*\}\s*\)/g
+
+    for (const match of String(source ?? '').matchAll(errorRegex)) {
+      const statusCode = String(match[1] ?? '').trim()
+      const message = cleanErrorExpression(match[2])
+
+      if (!statusCode || !message) {
+        continue
+      }
+
+      rawErrors.push({
+        statusCode,
+        message,
+      })
+    }
+
+    const dedupedMap = new Map()
+
+    for (const error of rawErrors) {
+      dedupedMap.set(`${error.statusCode}:${error.message}`, error)
+    }
+
+    return [...dedupedMap.values()].sort((left, right) => {
+      const codeCompare = left.statusCode.localeCompare(right.statusCode)
+
+      if (codeCompare !== 0) {
+        return codeCompare
+      }
+
+      return left.message.localeCompare(right.message)
+    })
+  }
+
+  function collectResponseTopLevelFields(source) {
+    const responseKeys = []
+    const responseObjectRegex = /res(?:\.status\(\d{3}\))?\.json\(\s*\{([\s\S]{0,1600}?)\}\s*\)/g
+
+    for (const match of String(source ?? '').matchAll(responseObjectRegex)) {
+      const objectBody = String(match[1] ?? '')
+      const keys = [...objectBody.matchAll(/([A-Za-z0-9_]+)\s*:/g)]
+        .map((entry) => String(entry[1] ?? '').trim())
+        .filter(Boolean)
+
+      responseKeys.push(...keys)
+    }
+
+    return uniqueSorted(responseKeys)
+  }
+
+  function buildFieldSpec({
+    inputTarget,
+    fieldName,
+    isPathParam = false,
+    variableBindings,
+    requiredByFieldKey,
+    enumsByFieldKey,
+    constraintsByFieldKey,
+  }) {
+    const sourceName = normalizeInputTarget(inputTarget)
+    const key = `${sourceName}:${fieldName}`
+    const binding = [...variableBindings.values()].find((entry) => (
+      entry.source === sourceName && entry.fieldName === fieldName
+    ))
+    const requirement = requiredByFieldKey.get(key)
+    const enumValues = enumsByFieldKey.get(key) ?? []
+    const constraints = constraintsByFieldKey.get(key) ?? null
+    const type = isPathParam
+      ? 'string'
+      : inferFieldType(fieldName, binding?.expression, sourceName)
+
+    return {
+      name: fieldName,
+      in: sourceName,
+      type,
+      required: isPathParam ? true : Boolean(requirement?.required),
+      description:
+        requirement?.message
+        || (sourceName === 'path'
+          ? 'Path parameter.'
+          : sourceName === 'query'
+            ? 'Query string parameter.'
+            : 'Request body field.'),
+      enumValues,
+      minimum: constraints?.minimum ?? null,
+      maximum: constraints?.maximum ?? null,
+      defaultValue: constraints?.defaultValue ?? null,
+    }
+  }
+
+  function sampleValueForField(field) {
+    if (Array.isArray(field?.enumValues) && field.enumValues.length > 0) {
+      return field.enumValues[0]
+    }
+
+    if (field?.defaultValue !== null && field?.defaultValue !== undefined) {
+      return field.defaultValue
+    }
+
+    const fieldName = String(field?.name ?? '').trim().toLowerCase()
+
+    if (field?.type === 'number') {
+      if (typeof field?.minimum === 'number') {
+        return field.minimum
+      }
+
+      return 1
+    }
+
+    if (field?.type === 'boolean') {
+      return true
+    }
+
+    if (field?.type === 'array') {
+      return ['value']
+    }
+
+    if (fieldName.includes('email')) {
+      return 'user@example.com'
+    }
+
+    if (fieldName.includes('date') || fieldName.endsWith('at') || fieldName.includes('time')) {
+      return '2026-01-01T00:00:00.000Z'
+    }
+
+    if (fieldName.includes('id') || fieldName.includes('uid')) {
+      return 'resource-id'
+    }
+
+    if (fieldName.includes('name') || fieldName.includes('title')) {
+      return 'Example value'
+    }
+
+    if (fieldName.includes('message') || fieldName.includes('note') || fieldName.includes('search')) {
+      return 'Example text'
+    }
+
+    return 'value'
+  }
+
+  function buildOperationTitle(method, pathTemplate, pathParams) {
+    const segments = String(pathTemplate)
+      .split('/')
+      .filter(Boolean)
+      .slice(1)
+      .filter((segment) => !segment.startsWith('{'))
+    const lastSegment = String(segments[segments.length - 1] ?? '').toLowerCase()
+    const previousSegment = String(segments[segments.length - 2] ?? '').toLowerCase()
+    const keywordAction = operationActionByKeyword[lastSegment]
+
+    if (keywordAction) {
+      const target = humanizeToken(previousSegment || 'resource')
+      return `${keywordAction} ${target}`
+    }
+
+    const baseAction = operationActionByMethod[method] ?? 'Call'
+    const labelSegments = segments.length > 0 ? segments : ['endpoint']
+    const noun = humanizeToken(labelSegments.join(' '))
+
+    if (method === 'GET' && pathParams.length === 0) {
+      return `List ${noun}`
+    }
+
+    return `${baseAction} ${noun}`
+  }
+
+  function buildOperationDescription({
+    title,
+    access,
+    requestFields,
+  }) {
+    const descriptionParts = [`${title}.`]
+    const requiredFieldNames = requestFields
+      .filter((field) => field.required)
+      .map((field) => field.name)
+
+    if (requiredFieldNames.length > 0) {
+      descriptionParts.push(`Required fields: ${requiredFieldNames.join(', ')}.`)
+    }
+
+    if (access.adminOnly) {
+      descriptionParts.push('Requires admin privileges.')
+    } else if (access.managerOrAdminOnly) {
+      descriptionParts.push('Requires manager or admin privileges.')
+    } else if (access.salesManagerOrAdminOnly) {
+      descriptionParts.push('Requires sales, manager, or admin privileges.')
+    } else if (access.approvedLinkedWorkerOnly) {
+      descriptionParts.push('Requires an approved account linked to a worker profile.')
+    } else if (access.requiresAuth) {
+      descriptionParts.push('Requires an authenticated approved account.')
+    } else {
+      descriptionParts.push('Accessible without authentication.')
+    }
+
+    return descriptionParts.join(' ')
+  }
+
+  function buildExampleCurl({
+    method,
+    pathTemplate,
+    requestFields,
+  }) {
+    const queryFields = requestFields
+      .filter((field) => field.in === 'query')
+      .slice(0, 4)
+    const bodyFields = requestFields
+      .filter((field) => field.in === 'body')
+      .slice(0, 8)
+    const sampleQueryString = queryFields.length > 0
+      ? queryFields
+        .map((field) => `${encodeURIComponent(field.name)}=${encodeURIComponent(String(sampleValueForField(field)))}`)
+        .join('&')
+      : ''
+    const url = sampleQueryString
+      ? `${pathTemplate}?${sampleQueryString}`
+      : pathTemplate
+    const lines = [
+      `curl -X ${method} "${url}"`,
+      '  -H "x-api-key: YOUR_API_KEY"',
+    ]
+
+    if (bodyFields.length > 0 && ['POST', 'PUT', 'PATCH'].includes(method)) {
+      const sampleBody = Object.fromEntries(
+        bodyFields.map((field) => [field.name, sampleValueForField(field)]),
+      )
+
+      lines.push('  -H "Content-Type: application/json"')
+      lines.push(`  -d '${JSON.stringify(sampleBody, null, 2)}'`)
+    }
+
+    return lines.join(' \\\n')
+  }
+
+  const router = app?._router ?? app?.router
+  const stack = Array.isArray(router?.stack) ? router.stack : []
+  const routes = []
+
+  for (const layer of stack) {
+    const route = layer?.route
+
+    if (!route) {
+      continue
+    }
+
+    const rawPath = route.path
+    const routePaths = Array.isArray(rawPath)
+      ? rawPath
+      : [rawPath]
+    const methods = Object.entries(route.methods ?? {})
+      .filter(([, enabled]) => Boolean(enabled))
+      .map(([method]) => String(method).toUpperCase())
+
+    const middlewareNames = Array.isArray(route.stack)
+      ? route.stack
+        .map((entry) => String(entry?.name ?? '').trim())
+        .filter(Boolean)
+      : []
+    const handlerSource = Array.isArray(route.stack)
+      ? route.stack
+        .map((entry) => {
+          const handler = entry?.handle
+
+          return typeof handler === 'function'
+            ? String(handler)
+            : ''
+        })
+        .join('\n')
+      : ''
+
+    for (const routePath of routePaths) {
+      const path = String(routePath ?? '').trim()
+
+      if (!path) {
+        continue
+      }
+
+      for (const method of methods) {
+        const access = {
+          requiresAuth: middlewareNames.includes('requireFirebaseAuth'),
+          adminOnly: middlewareNames.includes('requireAdminRole'),
+          managerOrAdminOnly: middlewareNames.includes('requireManagerOrAdminRole'),
+          salesManagerOrAdminOnly: middlewareNames.includes('requireSalesManagerOrAdminRole'),
+          approvedLinkedWorkerOnly: middlewareNames.includes('requireApprovedLinkedWorker'),
+        }
+        const routeSourceInfo = resolveRouteSourceInfo(method, path, handlerSource)
+        const analysisSource = String(routeSourceInfo?.source ?? handlerSource)
+        const pathParams = collectPathParams(path)
+        const queryParamNames = collectReferencedFieldNames(analysisSource, 'query')
+        const bodyFieldNames = collectReferencedFieldNames(analysisSource, 'body')
+        const pathTemplate = normalizePathTemplate(path)
+        const section = resolveSection(path)
+        const title = buildOperationTitle(method, pathTemplate, pathParams)
+        const variableBindings = parseVariableBindings(analysisSource)
+        const requiredByFieldKey = collectRequiredFieldDetails(analysisSource, variableBindings)
+        const enumsByFieldKey = collectEnumFieldDetails(
+          analysisSource,
+          variableBindings,
+          routeSourceInfo?.metadata,
+        )
+        const constraintsByFieldKey = collectBoundedConstraints(analysisSource)
+        const requestFields = [
+          ...pathParams.map((fieldName) => buildFieldSpec({
+            inputTarget: 'path',
+            fieldName,
+            isPathParam: true,
+            variableBindings,
+            requiredByFieldKey,
+            enumsByFieldKey,
+            constraintsByFieldKey,
+          })),
+          ...queryParamNames.map((fieldName) => buildFieldSpec({
+            inputTarget: 'query',
+            fieldName,
+            variableBindings,
+            requiredByFieldKey,
+            enumsByFieldKey,
+            constraintsByFieldKey,
+          })),
+          ...bodyFieldNames.map((fieldName) => buildFieldSpec({
+            inputTarget: 'body',
+            fieldName,
+            variableBindings,
+            requiredByFieldKey,
+            enumsByFieldKey,
+            constraintsByFieldKey,
+          })),
+        ].sort((left, right) => {
+          const inputOrder = {
+            path: 0,
+            query: 1,
+            body: 2,
+          }
+          const inCompare = (inputOrder[left.in] ?? 9) - (inputOrder[right.in] ?? 9)
+
+          if (inCompare !== 0) {
+            return inCompare
+          }
+
+          return left.name.localeCompare(right.name)
+        })
+        const statusCodes = collectStatusCodes(analysisSource, method)
+        const responseTopLevelFields = collectResponseTopLevelFields(analysisSource)
+        const errors = collectErrorDetails(analysisSource)
+
+        routes.push({
+          operationId: `${method}_${pathTemplate.replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '')}`,
+          method,
+          path,
+          pathTemplate,
+          title,
+          summary: title,
+          description: buildOperationDescription({
+            title,
+            access,
+            requestFields,
+          }),
+          section,
+          pathParams,
+          queryParams: queryParamNames,
+          bodyFields: bodyFieldNames,
+          statusCodes,
+          request: {
+            fields: requestFields,
+            path: requestFields.filter((field) => field.in === 'path'),
+            query: requestFields.filter((field) => field.in === 'query'),
+            body: requestFields.filter((field) => field.in === 'body'),
+          },
+          response: {
+            statusCodes,
+            topLevelFields: responseTopLevelFields,
+          },
+          errors,
+          exampleCurl: buildExampleCurl({
+            method,
+            pathTemplate,
+            requestFields,
+          }),
+          middleware: middlewareNames,
+          access,
+        })
+      }
+    }
+  }
+
+  return routes.sort((left, right) => {
+    const pathCompare = left.path.localeCompare(right.path)
+
+    if (pathCompare !== 0) {
+      return pathCompare
+    }
+
+    return left.method.localeCompare(right.method)
+  })
+}
+
 const routeDeps = {
   batchSummarizeComments,
+  buildApiKeyPreview,
   chatForRules,
   findExactItemPurchaseOptions,
   resolvePurchasingItemSearchMatches,
   generateSupportReply,
+  generateApiKeyValue,
   allocateWorkerNumbers,
   authAccessTimeZoneNewJersey,
   authApprovalApproved,
@@ -651,12 +1642,14 @@ const routeDeps = {
   normalizeStageName,
   normalizeWorkerNumber,
   ownerEmail,
+  hashApiKeyValue,
   parseOptionalAuthAccessTimeZone,
   parseOptionalAuthHour,
   refreshOrdersUnifiedCollection,
   randomUUID,
   redactPushTokenForLog,
   invalidateAuthUserCache,
+  listRegisteredApiRoutes,
   requireAdminRole,
   requireManagerOrAdminRole,
   requireSalesManagerOrAdminRole,
@@ -1063,6 +2056,7 @@ async function refreshDashboardSnapshotsAndTrackShippingMoves() {
 }
 
 registerAiRoutes(app, routeDeps)
+registerAdminApiRoutes(app, routeDeps)
 registerAuthRoutes(app, routeDeps)
 registerAlertsRoutes(app, routeDeps)
 registerCrmRoutes(app, routeDeps)
@@ -1072,6 +2066,7 @@ registerOrderPhotoRoutes(app, routeDeps)
 registerPurchasingRoutes(app, routeDeps)
 registerQuickBooksRoutes(app, routeDeps)
 registerTimesheetRoutes(app, routeDeps)
+registerVisitorsRoutes(app, routeDeps)
 app.use((error, _req, res, _next) => {
   const status = Number(error?.status ?? 500)
   const message =

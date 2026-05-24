@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { getStorage } from 'firebase-admin/storage'
+import { buildFirebaseStorageDownloadUrl } from '../utils/value-utils.mjs'
 
 export function createOrderPhotoService({ firebaseStorageBucketName }) {
   function normalizeOrderPhotoOrderId(rawOrderId) {
@@ -94,13 +95,6 @@ export function createOrderPhotoService({ firebaseStorageBucketName }) {
     return firebaseStorageBucketName
       ? storage.bucket(firebaseStorageBucketName)
       : storage.bucket()
-  }
-
-  function buildFirebaseStorageDownloadUrl(bucketName, objectPath, downloadToken) {
-    const encodedObjectPath = encodeURIComponent(String(objectPath ?? '').trim())
-    const encodedToken = encodeURIComponent(String(downloadToken ?? '').trim())
-
-    return `https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(bucketName)}/o/${encodedObjectPath}?alt=media&token=${encodedToken}`
   }
 
   async function buildOrderPhotoRecord(file, bucketName) {

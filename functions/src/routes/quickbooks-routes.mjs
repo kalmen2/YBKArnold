@@ -1,20 +1,35 @@
 import { AppError } from '../utils/app-error.mjs'
-import { createTtlCache } from '../utils/ttl-cache.mjs'
-import { nowIso } from '../utils/value-utils.mjs'
+import {
+  QUICKBOOKS_API_BASE_URL_DEFAULT as quickBooksApiBaseUrlDefault,
+  QUICKBOOKS_TOKEN_URL as quickBooksTokenUrl,
+  extractQuickBooksRefName,
+  extractQuickBooksRefValue,
+  normalizeQuickBooksApiBaseUrl,
+  resolveQuickBooksErrorMessage,
+  toIsoTimeFromNow,
+} from '../utils/quickbooks-utils.mjs'
+import {
+  isExpiredAt,
+  normalizeText,
+  nowIso,
+  toMoneyOrZero as normalizeMoney,
+} from '../utils/value-utils.mjs'
 
 const quickBooksAuthorizeUrl = 'https://appcenter.intuit.com/connect/oauth2'
-const quickBooksTokenUrl = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer'
-const quickBooksApiBaseUrlDefault = 'https://quickbooks.api.intuit.com'
 const quickBooksScopesDefault = 'com.intuit.quickbooks.accounting'
 const quickBooksTokenDocId = 'primary'
 const quickBooksOauthStateTtlMs = 10 * 60 * 1000
 const quickBooksAccessTokenRefreshSkewMs = 2 * 60 * 1000
 const quickBooksQueryPageSize = 500
-const quickBooksMaxQueryPages = 8
+const quickBooksMaxQueryPagesDefault = 8
+const quickBooksMaxQueryPagesBankTransactions = 40
 const quickBooksMaxUnlinkedTransactions = 500
 const quickBooksMaxDetailRowsPerType = 1200
 const quickBooksMaxLoanBuckets = 40
 const quickBooksMaxLoanDetailRowsPerBucket = 1200
+const quickBooksChaseBankEndingToken = '2951'
+const quickBooksHistoryInitialPageSize = 30
+const quickBooksHistoryMaxPageSize = 120
 
 const quickBooksKnownLoanOwners = [
   {
@@ -39,14 +54,15 @@ const quickBooksKnownLoanOwners = [
   },
 ]
 
-// The overview fires 5–40 live QB API calls (5 entity types × up to 8 pages
-// each). Caching for 5 minutes means repeat navigations hit memory instead
-// of QuickBooks. forceRefresh=1 bypasses the read but still seeds the cache.
-const _qbCache = createTtlCache()
-const qbCacheGet = (key) => _qbCache.get(key)
-const qbCacheSet = (key, value, ttlMs) => _qbCache.set(key, value, ttlMs)
+const quickBooksExcludedLoanLabelMatchers = [
+  'employee short term loans',
+]
 
-const QB_OVERVIEW_CACHE_KEY = 'qb:overview'
+// The overview fires up to ~80 live QB API calls (10 entity types × up to 8 pages
+// each). The cached payload is persisted to MongoDB so it survives Firebase
+// Functions cold starts — without this, every cold-start user pays the full
+// 15–25s rebuild cost. forceRefresh=1 bypasses the read but still seeds cache.
+const QB_OVERVIEW_CACHE_KEY = 'quickbooks_overview'
 const QB_OVERVIEW_CACHE_TTL_MS = 5 * 60 * 1000  // 5 minutes
 
 const txnTypeConfigByKey = {
@@ -76,15 +92,21 @@ const txnTypeConfigByKey = {
   },
 }
 
-function normalizeText(value, maxLength = 400) {
-  return String(value ?? '').trim().slice(0, maxLength)
-}
-
 function normalizeLookupToken(value) {
   return String(value ?? '')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, ' ')
     .trim()
+}
+
+function isExcludedQuickBooksLoanLabel(value) {
+  const normalized = normalizeLookupToken(value)
+
+  if (!normalized) {
+    return false
+  }
+
+  return quickBooksExcludedLoanLabelMatchers.some((matcher) => normalized.includes(matcher))
 }
 
 function normalizeAccountNumberToken(value) {
@@ -94,14 +116,212 @@ function normalizeAccountNumberToken(value) {
     .trim()
 }
 
-function normalizeMoney(value) {
-  const parsed = Number(value)
+function toNonNegativeInteger(value, fallback = 0) {
+  const parsedValue = Number.parseInt(String(value ?? ''), 10)
 
-  if (!Number.isFinite(parsed)) {
-    return 0
+  if (!Number.isFinite(parsedValue) || parsedValue < 0) {
+    return fallback
   }
 
-  return Number(parsed.toFixed(2))
+  return parsedValue
+}
+
+function toPositiveInteger(value, fallback, maxValue = Number.MAX_SAFE_INTEGER) {
+  const parsedValue = Number.parseInt(String(value ?? ''), 10)
+
+  if (!Number.isFinite(parsedValue) || parsedValue <= 0) {
+    return fallback
+  }
+
+  return Math.min(parsedValue, maxValue)
+}
+
+function normalizeQuickBooksHistoryDirection(value) {
+  const normalized = normalizeLookupToken(value)
+
+  if (!normalized || normalized === 'all') {
+    return null
+  }
+
+  if (normalized === 'in' || normalized === 'money in' || normalized === 'inflow') {
+    return 'in'
+  }
+
+  if (normalized === 'out' || normalized === 'money out' || normalized === 'outflow') {
+    return 'out'
+  }
+
+  if (normalized === 'unknown' || normalized === 'unclassified') {
+    return 'unknown'
+  }
+
+  return null
+}
+
+function parseQuickBooksHistoryDateBoundary(value, endOfDay = false) {
+  const normalized = normalizeText(value, 40)
+
+  if (!normalized) {
+    return null
+  }
+
+  const matched = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+
+  if (!matched) {
+    return Number.NaN
+  }
+
+  const isoDate = `${matched[1]}-${matched[2]}-${matched[3]}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}Z`
+  const parsed = Date.parse(isoDate)
+
+  return Number.isFinite(parsed) ? parsed : Number.NaN
+}
+
+function parseQuickBooksHistoryTxnDate(value) {
+  const normalized = normalizeText(value, 80)
+
+  if (!normalized) {
+    return null
+  }
+
+  const dateToParse = normalized.includes('T') ? normalized : `${normalized}T00:00:00.000Z`
+  const parsed = Date.parse(dateToParse)
+
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function filterQuickBooksHistoryRows({ rows, fromDate, toDate, direction = null }) {
+  const fromTimestamp = parseQuickBooksHistoryDateBoundary(fromDate, false)
+  const toTimestamp = parseQuickBooksHistoryDateBoundary(toDate, true)
+
+  if (Number.isNaN(fromTimestamp) || Number.isNaN(toTimestamp)) {
+    throw new AppError('Invalid history date filter. Use YYYY-MM-DD format.', 400)
+  }
+
+  if (fromTimestamp !== null && toTimestamp !== null && fromTimestamp > toTimestamp) {
+    throw new AppError('History date range is invalid: fromDate must be on or before toDate.', 400)
+  }
+
+  return rows.filter((row) => {
+    if (direction && normalizeText(row?.direction, 40) !== direction) {
+      return false
+    }
+
+    if (fromTimestamp === null && toTimestamp === null) {
+      return true
+    }
+
+    const rowTimestamp = parseQuickBooksHistoryTxnDate(row?.txnDate)
+
+    if (rowTimestamp === null) {
+      return false
+    }
+
+    if (fromTimestamp !== null && rowTimestamp < fromTimestamp) {
+      return false
+    }
+
+    if (toTimestamp !== null && rowTimestamp > toTimestamp) {
+      return false
+    }
+
+    return true
+  })
+}
+
+function filterOutstandingInvoiceHistoryRows(rows) {
+  if (!Array.isArray(rows)) {
+    return []
+  }
+
+  return rows
+    .filter((row) => normalizeMoney(row?.balanceAmount) > 0.004)
+    .sort((left, right) => {
+      const leftDate = Date.parse(left?.txnDate || '')
+      const rightDate = Date.parse(right?.txnDate || '')
+
+      if (Number.isFinite(leftDate) && Number.isFinite(rightDate) && leftDate !== rightDate) {
+        return rightDate - leftDate
+      }
+
+      return String(left?.docNumber || left?.id || '').localeCompare(String(right?.docNumber || right?.id || ''))
+    })
+}
+
+function buildQuickBooksOverviewPreview(cachedOverview) {
+  if (!cachedOverview || typeof cachedOverview !== 'object') {
+    return cachedOverview
+  }
+
+  const pageSize = quickBooksHistoryInitialPageSize
+  const details = cachedOverview.details && typeof cachedOverview.details === 'object'
+    ? cachedOverview.details
+    : {}
+  const bankAccountTransactions = Array.isArray(cachedOverview.bankAccountTransactions)
+    ? cachedOverview.bankAccountTransactions
+    : []
+  const purchaseOrderLines = Array.isArray(details.purchaseOrderLines)
+    ? details.purchaseOrderLines
+    : []
+  const bills = Array.isArray(details.bills)
+    ? details.bills
+    : []
+  const invoices = Array.isArray(details.invoices)
+    ? details.invoices
+    : []
+  const payments = Array.isArray(details.payments)
+    ? details.payments
+    : []
+  const unlinkedPurchaseOrderLines = Array.isArray(details.unlinkedPurchaseOrderLines)
+    ? details.unlinkedPurchaseOrderLines
+    : []
+  const outstandingInvoices = filterOutstandingInvoiceHistoryRows(invoices)
+
+  return {
+    ...cachedOverview,
+    bankAccountTransactions: bankAccountTransactions.slice(0, pageSize),
+    details: {
+      ...details,
+      purchaseOrderLines: purchaseOrderLines.slice(0, pageSize),
+      bills: bills.slice(0, pageSize),
+      invoices: invoices.slice(0, pageSize),
+      payments: payments.slice(0, pageSize),
+      unlinkedPurchaseOrderLines: unlinkedPurchaseOrderLines.slice(0, pageSize),
+    },
+    historyMeta: {
+      pageSize,
+      bankAccountTransactions: {
+        total: bankAccountTransactions.length,
+        loaded: Math.min(pageSize, bankAccountTransactions.length),
+      },
+      details: {
+        purchaseOrderLines: {
+          total: purchaseOrderLines.length,
+          loaded: Math.min(pageSize, purchaseOrderLines.length),
+        },
+        bills: {
+          total: bills.length,
+          loaded: Math.min(pageSize, bills.length),
+        },
+        invoices: {
+          total: invoices.length,
+          loaded: Math.min(pageSize, invoices.length),
+        },
+        payments: {
+          total: payments.length,
+          loaded: Math.min(pageSize, payments.length),
+        },
+        unlinkedPurchaseOrderLines: {
+          total: unlinkedPurchaseOrderLines.length,
+          loaded: Math.min(pageSize, unlinkedPurchaseOrderLines.length),
+        },
+      },
+      outstandingInvoices: {
+        total: outstandingInvoices.length,
+        loaded: Math.min(pageSize, outstandingInvoices.length),
+      },
+    },
+  }
 }
 
 function normalizeScopes(rawScopes) {
@@ -119,16 +339,6 @@ function normalizeScopes(rawScopes) {
   return normalizedScopes.length > 0
     ? normalizedScopes.join(' ')
     : quickBooksScopesDefault
-}
-
-function normalizeQuickBooksApiBaseUrl(value) {
-  const normalized = normalizeText(value, 400)
-
-  if (!normalized) {
-    return quickBooksApiBaseUrlDefault
-  }
-
-  return normalized.replace(/\/$/, '')
 }
 
 function sanitizeRedirectPath(value) {
@@ -186,16 +396,6 @@ function getQuickBooksConfig(req) {
   }
 }
 
-function isExpiredAt(isoTimestamp, skewMs = 0) {
-  const timestampMs = Date.parse(normalizeText(isoTimestamp, 80))
-
-  if (!Number.isFinite(timestampMs)) {
-    return true
-  }
-
-  return Date.now() >= timestampMs - skewMs
-}
-
 function isStaleState(createdAtIso) {
   const createdAtMs = Date.parse(normalizeText(createdAtIso, 80))
 
@@ -204,16 +404,6 @@ function isStaleState(createdAtIso) {
   }
 
   return Date.now() - createdAtMs > quickBooksOauthStateTtlMs
-}
-
-function toIsoTimeFromNow(secondsFromNow) {
-  const seconds = Number(secondsFromNow)
-
-  if (!Number.isFinite(seconds) || seconds <= 0) {
-    return null
-  }
-
-  return new Date(Date.now() + seconds * 1000).toISOString()
 }
 
 function mapQuickBooksTokenPayload(payload, existingTokenDoc) {
@@ -234,41 +424,6 @@ function mapQuickBooksTokenPayload(payload, existingTokenDoc) {
       ?? existingTokenDoc?.refreshTokenExpiresAt
       ?? null,
   }
-}
-
-function resolveQuickBooksErrorMessage(payload, fallbackMessage) {
-  const faultError = payload?.Fault?.Error?.[0]
-  const faultMessage = normalizeText(faultError?.Detail || faultError?.Message, 700)
-
-  if (faultMessage) {
-    return faultMessage
-  }
-
-  return normalizeText(payload?.error_description || payload?.error, 700) || fallbackMessage
-}
-
-function extractQuickBooksRefValue(refValue) {
-  if (typeof refValue === 'string') {
-    return normalizeText(refValue, 160)
-  }
-
-  if (!refValue || typeof refValue !== 'object') {
-    return ''
-  }
-
-  return (
-    normalizeText(refValue.value, 160)
-    || normalizeText(refValue.id, 160)
-    || ''
-  )
-}
-
-function extractQuickBooksRefName(refValue) {
-  if (!refValue || typeof refValue !== 'object') {
-    return null
-  }
-
-  return normalizeText(refValue.name, 260) || null
 }
 
 function includesAnyMatcher(normalizedValue, matchers) {
@@ -323,12 +478,51 @@ function getQuickBooksAccountNumber(accountRow) {
   return normalizeText(accountRow?.AcctNum, 120) || null
 }
 
+function getQuickBooksAccountEndingDigits(accountRow) {
+  const normalizedAccountNumber = normalizeAccountNumberToken(getQuickBooksAccountNumber(accountRow))
+
+  if (normalizedAccountNumber) {
+    if (normalizedAccountNumber.length <= 4) {
+      return normalizedAccountNumber
+    }
+
+    return normalizedAccountNumber.slice(-4)
+  }
+
+  // Some QB setups do not populate AcctNum; fallback to trailing digits in
+  // the account display name (for example: "Chase Bank Account 2951").
+  const normalizedDisplayName = normalizeAccountNumberToken(
+    getQuickBooksAccountDisplayName(accountRow),
+  )
+
+  if (!normalizedDisplayName) {
+    return null
+  }
+
+  if (normalizedDisplayName.length <= 4) {
+    return normalizedDisplayName
+  }
+
+  return normalizedDisplayName.slice(-4)
+}
+
+function isQuickBooksBankAccount(accountRow) {
+  const accountType = normalizeLookupToken(accountRow?.AccountType)
+  const accountSubType = normalizeLookupToken(accountRow?.AccountSubType)
+
+  return accountType.includes('bank') || accountSubType.includes('bank')
+}
+
 function isQuickBooksLoanAccount(accountRow) {
   const displayName = getQuickBooksAccountDisplayName(accountRow)
   const accountNumber = getQuickBooksAccountNumber(accountRow)
   const normalizedDisplayName = normalizeLookupToken(displayName)
   const accountType = normalizeLookupToken(accountRow?.AccountType)
   const accountSubType = normalizeLookupToken(accountRow?.AccountSubType)
+
+  if (isExcludedQuickBooksLoanLabel(displayName)) {
+    return false
+  }
 
   if (normalizedDisplayName.includes('loan')) {
     return true
@@ -654,13 +848,17 @@ async function quickBooksQuery({ apiBaseUrl, realmId, accessToken, query }) {
   return payload
 }
 
-async function queryAllQuickBooksRows(queryFn, entityName) {
+async function queryAllQuickBooksRows(queryFn, entityName, options = {}) {
+  const configuredMaxPages = Number(options?.maxPages)
+  const maxPages = Number.isFinite(configuredMaxPages) && configuredMaxPages > 0
+    ? Math.floor(configuredMaxPages)
+    : quickBooksMaxQueryPagesDefault
   const allRows = []
   let startPosition = 1
   let page = 0
   let truncated = false
 
-  while (page < quickBooksMaxQueryPages) {
+  while (page < maxPages) {
     const query = `SELECT * FROM ${entityName} STARTPOSITION ${startPosition} MAXRESULTS ${quickBooksQueryPageSize}`
     const payload = await queryFn(query)
     const batchRows = Array.isArray(payload?.QueryResponse?.[entityName])
@@ -676,7 +874,7 @@ async function queryAllQuickBooksRows(queryFn, entityName) {
 
     startPosition += quickBooksQueryPageSize
 
-    if (page >= quickBooksMaxQueryPages) {
+    if (page >= maxPages) {
       truncated = true
     }
   }
@@ -739,6 +937,39 @@ export function registerQuickBooksRoutes(app, deps) {
       quickBooksTokensCollection,
       quickBooksStatesCollection,
     }
+  }
+
+  async function loadCachedQuickBooksOverview() {
+    const { dashboardSnapshotsCollection } = await getCollections()
+    const document = await dashboardSnapshotsCollection.findOne(
+      { snapshotKey: QB_OVERVIEW_CACHE_KEY },
+      { projection: { _id: 0, snapshot: 1, expiresAt: 1 } },
+    )
+
+    if (!document?.snapshot || isExpiredAt(document.expiresAt)) {
+      return null
+    }
+
+    return document.snapshot
+  }
+
+  async function saveCachedQuickBooksOverview(snapshot) {
+    const { dashboardSnapshotsCollection } = await getCollections()
+    const now = nowIso()
+    const expiresAt = new Date(Date.now() + QB_OVERVIEW_CACHE_TTL_MS).toISOString()
+
+    await dashboardSnapshotsCollection.updateOne(
+      { snapshotKey: QB_OVERVIEW_CACHE_KEY },
+      {
+        $set: {
+          snapshotKey: QB_OVERVIEW_CACHE_KEY,
+          snapshot,
+          expiresAt,
+          updatedAt: now,
+        },
+      },
+      { upsert: true },
+    )
   }
 
   async function refreshQuickBooksAccessToken({
@@ -1023,13 +1254,16 @@ export function registerQuickBooksRoutes(app, deps) {
       const quickBooksConfig = getQuickBooksConfig(req)
       const { quickBooksTokensCollection } = await getQuickBooksCollections()
       const forceRefresh = String(req.query?.refresh ?? '').trim() === '1'
+      const includeFullOverview = String(req.query?.full ?? '').trim() === '1'
 
       // Return cached result when available and no refresh is requested.
       // forceRefresh still writes the fresh result into cache so the next
       // visitor benefits immediately.
       if (!forceRefresh) {
-        const cached = qbCacheGet(QB_OVERVIEW_CACHE_KEY)
-        if (cached) return res.json(cached)
+        const cached = await loadCachedQuickBooksOverview()
+        if (cached) {
+          return res.json(includeFullOverview ? cached : buildQuickBooksOverviewPreview(cached))
+        }
       }
 
       let tokenDoc = await resolveQuickBooksAccessToken({
@@ -1123,12 +1357,20 @@ export function registerQuickBooksRoutes(app, deps) {
         queryAllQuickBooksRows(queryFn, 'Invoice'),
         queryAllQuickBooksRows(queryFn, 'Payment'),
         queryAllQuickBooksRows(queryFn, 'Account'),
-        queryAllQuickBooksRows(queryFn, 'JournalEntry'),
-        queryAllQuickBooksRows(queryFn, 'Transfer'),
-        queryAllQuickBooksRows(queryFn, 'Deposit'),
+        queryAllQuickBooksRows(queryFn, 'JournalEntry', {
+          maxPages: quickBooksMaxQueryPagesBankTransactions,
+        }),
+        queryAllQuickBooksRows(queryFn, 'Transfer', {
+          maxPages: quickBooksMaxQueryPagesBankTransactions,
+        }),
+        queryAllQuickBooksRows(queryFn, 'Deposit', {
+          maxPages: quickBooksMaxQueryPagesBankTransactions,
+        }),
         // Some QuickBooks contexts reject SELECT * FROM Check; Purchase is the
         // supported transaction entity for check-like outflows.
-        queryAllQuickBooksRows(queryFn, 'Purchase'),
+        queryAllQuickBooksRows(queryFn, 'Purchase', {
+          maxPages: quickBooksMaxQueryPagesBankTransactions,
+        }),
       ])
 
       const projectsById = new Map()
@@ -1370,6 +1612,66 @@ export function registerQuickBooksRoutes(app, deps) {
       const loanAccountsById = new Map(
         [...accountsById.entries()].filter(([, accountRow]) => isQuickBooksLoanAccount(accountRow)),
       )
+      const chaseBankCandidates = [...accountsById.values()]
+        .filter((accountRow) => isQuickBooksBankAccount(accountRow))
+        .filter((accountRow) => getQuickBooksAccountEndingDigits(accountRow) === quickBooksChaseBankEndingToken)
+      const chaseNamedBankCandidates = chaseBankCandidates.filter((accountRow) => {
+        const displayName = normalizeLookupToken(getQuickBooksAccountDisplayName(accountRow))
+        return displayName.includes('chase')
+      })
+      const selectedChaseBankAccount =
+        chaseNamedBankCandidates[0]
+        || chaseBankCandidates[0]
+        || null
+      const selectedChaseBankAccountId = normalizeText(selectedChaseBankAccount?.Id, 160) || null
+      const bankAccountSnapshot = selectedChaseBankAccount
+        ? {
+            accountId: normalizeText(selectedChaseBankAccount?.Id, 160) || null,
+            accountName: getQuickBooksAccountDisplayName(selectedChaseBankAccount),
+            accountNumber: getQuickBooksAccountNumber(selectedChaseBankAccount),
+            endingIn: getQuickBooksAccountEndingDigits(selectedChaseBankAccount),
+            currentBalance: normalizeMoney(
+              selectedChaseBankAccount?.CurrentBalance
+              ?? selectedChaseBankAccount?.CurrentBalanceWithSubAccounts,
+            ),
+            asOf: nowIso(),
+          }
+        : null
+      const bankAccountTransactions = []
+      const appendBankAccountTransaction = ({
+        accountId,
+        txnType,
+        txnId,
+        txnDocNumber,
+        txnDate,
+        amount,
+        direction,
+        description = null,
+        counterpartyAccountName = null,
+      }) => {
+        const normalizedAccountId = normalizeText(accountId, 160)
+
+        if (!selectedChaseBankAccountId || !normalizedAccountId || normalizedAccountId !== selectedChaseBankAccountId) {
+          return
+        }
+
+        const normalizedAmount = normalizeMoney(amount)
+
+        if (normalizedAmount <= 0) {
+          return
+        }
+
+        bankAccountTransactions.push({
+          type: txnType,
+          id: normalizeText(txnId, 160) || null,
+          docNumber: normalizeText(txnDocNumber, 160) || null,
+          txnDate: normalizeText(txnDate, 40) || null,
+          amount: normalizedAmount,
+          direction,
+          description: normalizeText(description, 280) || null,
+          counterpartyAccountName: normalizeText(counterpartyAccountName, 260) || null,
+        })
+      }
       const loanBucketsById = new Map(
         quickBooksKnownLoanOwners.map((owner) => [
           owner.key,
@@ -1583,28 +1885,46 @@ export function registerQuickBooksRoutes(app, deps) {
 
         lines.forEach((line) => {
           const accountId = extractQuickBooksLineAccountRef(line)
+          const isSelectedBankAccount =
+            Boolean(selectedChaseBankAccountId)
+            && normalizeText(accountId, 160) === selectedChaseBankAccountId
 
-          if (!loanAccountsById.has(accountId)) {
+          if (!loanAccountsById.has(accountId) && !isSelectedBankAccount) {
             return
           }
 
           const accountRow = loanAccountsById.get(accountId)
           const direction = resolveLoanMovementDirectionFromPostingType({
             postingType: extractQuickBooksLinePostingType(line),
-            accountType: accountRow?.AccountType,
+            accountType: accountRow?.AccountType || selectedChaseBankAccount?.AccountType,
           }) || 'unknown'
 
-          appendLoanMovementDetail({
-            accountId,
-            txnType: 'journalEntry',
-            txnId,
-            txnDocNumber,
-            txnDate,
-            amount: line?.Amount,
-            direction,
-            description: line?.Description,
-            className: extractQuickBooksLineClassName(line),
-          })
+          if (loanAccountsById.has(accountId)) {
+            appendLoanMovementDetail({
+              accountId,
+              txnType: 'journalEntry',
+              txnId,
+              txnDocNumber,
+              txnDate,
+              amount: line?.Amount,
+              direction,
+              description: line?.Description,
+              className: extractQuickBooksLineClassName(line),
+            })
+          }
+
+          if (isSelectedBankAccount) {
+            appendBankAccountTransaction({
+              accountId,
+              txnType: 'journalEntry',
+              txnId,
+              txnDocNumber,
+              txnDate,
+              amount: line?.Amount,
+              direction,
+              description: line?.Description,
+            })
+          }
         })
       })
 
@@ -1632,6 +1952,18 @@ export function registerQuickBooksRoutes(app, deps) {
           })
         }
 
+        appendBankAccountTransaction({
+          accountId: fromAccountId,
+          txnType: 'transfer',
+          txnId,
+          txnDocNumber,
+          txnDate,
+          amount,
+          direction: 'out',
+          description: transfer?.PrivateNote || transfer?.Memo || null,
+          counterpartyAccountName: toAccountName,
+        })
+
         if (loanAccountsById.has(toAccountId)) {
           appendLoanMovementDetail({
             accountId: toAccountId,
@@ -1645,6 +1977,18 @@ export function registerQuickBooksRoutes(app, deps) {
             counterpartyAccountName: fromAccountName,
           })
         }
+
+        appendBankAccountTransaction({
+          accountId: toAccountId,
+          txnType: 'transfer',
+          txnId,
+          txnDocNumber,
+          txnDate,
+          amount,
+          direction: 'in',
+          description: transfer?.PrivateNote || transfer?.Memo || null,
+          counterpartyAccountName: fromAccountName,
+        })
       })
 
       depositsResult.rows.forEach((deposit) => {
@@ -1670,6 +2014,17 @@ export function registerQuickBooksRoutes(app, deps) {
             direction: 'in',
             description: line?.Description || deposit?.PrivateNote || deposit?.Memo || null,
             className: extractQuickBooksLineClassName(line),
+          })
+
+          appendBankAccountTransaction({
+            accountId,
+            txnType: 'deposit',
+            txnId,
+            txnDocNumber,
+            txnDate,
+            amount: line?.Amount,
+            direction: 'in',
+            description: line?.Description || deposit?.PrivateNote || deposit?.Memo || null,
           })
         })
       })
@@ -1698,14 +2053,36 @@ export function registerQuickBooksRoutes(app, deps) {
             description: line?.Description || check?.PrivateNote || check?.Memo || null,
             className: extractQuickBooksLineClassName(line),
           })
+
+          appendBankAccountTransaction({
+            accountId,
+            txnType: 'check',
+            txnId,
+            txnDocNumber,
+            txnDate,
+            amount: line?.Amount,
+            direction: 'out',
+            description: line?.Description || check?.PrivateNote || check?.Memo || null,
+          })
         })
+      })
+
+      const sortedBankAccountTransactions = [...bankAccountTransactions].sort((left, right) => {
+        const leftDate = Date.parse(left.txnDate || '')
+        const rightDate = Date.parse(right.txnDate || '')
+
+        if (Number.isFinite(leftDate) && Number.isFinite(rightDate) && leftDate !== rightDate) {
+          return rightDate - leftDate
+        }
+
+        return String(left.docNumber || left.id || '').localeCompare(String(right.docNumber || right.id || ''))
       })
 
       const knownLoanOwnerOrder = new Map(
         quickBooksKnownLoanOwners.map((owner, index) => [owner.key, index]),
       )
       const sortedLoanSummaries = [...loanBucketsById.values()]
-        .filter((bucket) => bucket.ownerKey || bucket.accountIds.length > 0)
+        .filter((bucket) => (bucket.ownerKey || bucket.accountIds.length > 0) && !isExcludedQuickBooksLoanLabel(bucket.label))
         .map((bucket) => {
           const effectiveLoanAmount = Math.abs(bucket.totalLoanAmount) > 0.004
             ? normalizeMoney(bucket.totalLoanAmount)
@@ -1800,6 +2177,15 @@ export function registerQuickBooksRoutes(app, deps) {
         warnings.push('One or more QuickBooks loan queries were truncated. Loan totals may be partial.')
       }
 
+      if (
+        journalEntriesResult.truncated
+        || transfersResult.truncated
+        || depositsResult.truncated
+        || checksResult.truncated
+      ) {
+        warnings.push('Bank account transactions were truncated by QuickBooks pagination limits. Older rows may be missing.')
+      }
+
       if (sortedLoanSummaries.length > loanSummaries.length) {
         warnings.push(
           `Loan summary list capped at ${quickBooksMaxLoanBuckets} buckets to keep the response fast.`,
@@ -1830,6 +2216,10 @@ export function registerQuickBooksRoutes(app, deps) {
       const visibleBillDetails = capDetails(billDetails, 'Bill')
       const visibleInvoiceDetails = capDetails(invoiceDetails, 'Invoice')
       const visiblePaymentDetails = capDetails(paymentDetails, 'Payment')
+      const visibleBankAccountTransactions = capDetails(
+        sortedBankAccountTransactions,
+        'Bank account transaction',
+      )
       const visibleUnlinkedPurchaseOrderLines = capDetails(
         unlinkedPurchaseOrderLines,
         'Unlinked purchase-order line',
@@ -1862,6 +2252,8 @@ export function registerQuickBooksRoutes(app, deps) {
         generatedAt: nowIso(),
         realmId: normalizeText(tokenDoc.realmId, 160),
         companyInfo,
+        bankAccountSnapshot,
+        bankAccountTransactions: visibleBankAccountTransactions,
         totals,
         projects,
         loanSummaries: visibleLoanSummaries,
@@ -1876,9 +2268,101 @@ export function registerQuickBooksRoutes(app, deps) {
         warnings,
       }
 
-      qbCacheSet(QB_OVERVIEW_CACHE_KEY, overviewPayload, QB_OVERVIEW_CACHE_TTL_MS)
+      await saveCachedQuickBooksOverview(overviewPayload)
 
-      return res.json(overviewPayload)
+      return res.json(includeFullOverview ? overviewPayload : buildQuickBooksOverviewPreview(overviewPayload))
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/quickbooks/history', requireFirebaseAuth, requireManagerOrAdminRole, async (req, res, next) => {
+    try {
+      const cachedOverview = await loadCachedQuickBooksOverview()
+
+      if (!cachedOverview) {
+        throw new AppError('QuickBooks history cache is empty. Refresh QuickBooks first.', 409)
+      }
+
+      const historyType = normalizeText(req.query?.type, 80)
+      const fromDate = normalizeText(req.query?.fromDate, 40) || null
+      const toDate = normalizeText(req.query?.toDate, 40) || null
+      const rawDirection = normalizeText(req.query?.direction, 40)
+      const direction = normalizeQuickBooksHistoryDirection(rawDirection)
+      const offset = toNonNegativeInteger(req.query?.offset, 0)
+      const limit = toPositiveInteger(
+        req.query?.limit,
+        quickBooksHistoryInitialPageSize,
+        quickBooksHistoryMaxPageSize,
+      )
+      const details = cachedOverview.details && typeof cachedOverview.details === 'object'
+        ? cachedOverview.details
+        : {}
+
+      let rows = []
+
+      if (historyType === 'bankAccountTransactions') {
+        rows = Array.isArray(cachedOverview.bankAccountTransactions)
+          ? cachedOverview.bankAccountTransactions
+          : []
+
+        if (rawDirection && !direction) {
+          throw new AppError('Unsupported bank direction filter. Use in, out, unknown, or all.', 400)
+        }
+
+        rows = filterQuickBooksHistoryRows({
+          rows,
+          fromDate,
+          toDate,
+          direction,
+        })
+      } else if (historyType === 'bills') {
+        rows = Array.isArray(details.bills)
+          ? details.bills
+          : []
+
+        if (rawDirection) {
+          throw new AppError('Direction filter is only supported for bank history.', 400)
+        }
+
+        rows = filterQuickBooksHistoryRows({
+          rows,
+          fromDate,
+          toDate,
+        })
+      } else if (historyType === 'outstandingInvoices') {
+        rows = filterOutstandingInvoiceHistoryRows(details.invoices)
+
+        if (rawDirection) {
+          throw new AppError('Direction filter is only supported for bank history.', 400)
+        }
+
+        rows = filterQuickBooksHistoryRows({
+          rows,
+          fromDate,
+          toDate,
+        })
+      } else {
+        throw new AppError('Unsupported QuickBooks history type.', 400)
+      }
+
+      const slicedRows = rows.slice(offset, offset + limit)
+      const nextOffset = offset + slicedRows.length
+
+      return res.json({
+        type: historyType,
+        offset,
+        limit,
+        total: rows.length,
+        hasMore: nextOffset < rows.length,
+        nextOffset,
+        filters: {
+          fromDate,
+          toDate,
+          direction: historyType === 'bankAccountTransactions' ? direction : null,
+        },
+        rows: slicedRows,
+      })
     } catch (error) {
       next(error)
     }

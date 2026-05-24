@@ -1,9 +1,9 @@
 {
   "expo": {
-    "name": "Arnold Contract",
+    "name": "Arnold",
     "slug": "YBK-APP",
     "scheme": "com.ybk.arnold",
-    "version": "3.6",
+    "version": "3.11",
     "runtimeVersion": {
       "policy": "appVersion"
     },
@@ -17,7 +17,7 @@
       }
     },
     "orientation": "portrait",
-    "icon": "./assets/arnold-logo.png",
+    "icon": "./assets/arnold-logo-padded.png",
     "userInterfaceStyle": "light",
     "splash": {
       "image": "./assets/splash-icon.png",
@@ -27,10 +27,10 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.ybk.arnold",
-      "buildNumber": "20",
+      "buildNumber": "22",
       "usesAppleSignIn": true,
       "infoPlist": {
-        "CFBundleDisplayName": "Arnold Contract",
+        "CFBundleDisplayName": "Arnold",
         "ITSAppUsesNonExemptEncryption": false
       }
     },
@@ -38,11 +38,11 @@
       "package": "com.ybk.arnold",
       "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
-        "foregroundImage": "./assets/arnold-logo.png",
+        "foregroundImage": "./assets/arnold-logo-padded.png",
         "backgroundColor": "#ffffff"
       },
       "predictiveBackGestureEnabled": false,
-      "versionCode": 38
+      "versionCode": 43
     },
     "web": {
       "favicon": "./assets/favicon.png"

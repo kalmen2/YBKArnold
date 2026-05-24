@@ -1,4 +1,8 @@
+import { useEffect, useState } from 'react'
 import { isRouteErrorResponse, useRouteError } from 'react-router-dom'
+
+const dynamicImportReloadKey = 'ybk-last-dynamic-import-reload-at'
+const dynamicImportReloadCooldownMs = 60_000
 
 function toErrorMessage(error: unknown) {
   if (typeof error === 'string') {
@@ -26,10 +30,43 @@ function isDynamicImportFailure(message: string) {
   )
 }
 
+function reloadOnceForDynamicImportFailure() {
+  if (typeof window === 'undefined') {
+    return false
+  }
+
+  const now = Date.now()
+  const previous = Number(window.sessionStorage.getItem(dynamicImportReloadKey) || '0')
+
+  if (Number.isFinite(previous) && now - previous < dynamicImportReloadCooldownMs) {
+    return false
+  }
+
+  window.sessionStorage.setItem(dynamicImportReloadKey, String(now))
+  window.location.reload()
+
+  return true
+}
+
 export default function RouteErrorBoundary() {
   const error = useRouteError()
+  const routeErrorResponse = isRouteErrorResponse(error)
+  const message = routeErrorResponse ? '' : toErrorMessage(error)
+  const dynamicImportFailure = !routeErrorResponse && isDynamicImportFailure(message)
+  const [isAutoRecovering, setIsAutoRecovering] = useState(false)
 
-  if (isRouteErrorResponse(error)) {
+  useEffect(() => {
+    if (!dynamicImportFailure) {
+      setIsAutoRecovering(false)
+      return
+    }
+
+    if (reloadOnceForDynamicImportFailure()) {
+      setIsAutoRecovering(true)
+    }
+  }, [dynamicImportFailure])
+
+  if (routeErrorResponse) {
     return (
       <main style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 20 }}>
         <section style={{ width: '100%', maxWidth: 700 }}>
@@ -45,8 +82,18 @@ export default function RouteErrorBoundary() {
     )
   }
 
-  const message = toErrorMessage(error)
-  const dynamicImportFailure = isDynamicImportFailure(message)
+  if (dynamicImportFailure && isAutoRecovering) {
+    return (
+      <main style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 20 }}>
+        <section style={{ width: '100%', maxWidth: 760 }}>
+          <h1 style={{ margin: '0 0 8px' }}>Updating App...</h1>
+          <p style={{ margin: 0, color: '#4b5563' }}>
+            Reloading to recover from a temporary update mismatch.
+          </p>
+        </section>
+      </main>
+    )
+  }
 
   return (
     <main style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 20 }}>

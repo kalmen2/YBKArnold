@@ -35,6 +35,7 @@ import {
   toBooleanOrNull,
   toTimestampMs,
 } from './orders-merge-helpers.mjs'
+import { toMoneyOrNull as toMoney } from '../utils/value-utils.mjs'
 
 function shouldReplaceMondayDetails(existing, incoming) {
   if (!existing?.has_monday_record) {
@@ -308,11 +309,6 @@ export function createOrdersUnifiedService(deps) {
 
       mondayOrderKeyByMatchKey.set(matchKey, orderKey)
     })
-
-    const toMoney = (value) => {
-      const parsed = Number(value)
-      return Number.isFinite(parsed) ? Number(parsed.toFixed(2)) : null
-    }
 
     const addMoney = (left, right) => {
       const leftValue = toMoney(left)

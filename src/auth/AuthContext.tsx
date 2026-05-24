@@ -268,9 +268,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
 
       const cachedUser = readCachedAuthUser()
+      const cachedUid = String(cachedUser?.uid ?? '').trim()
       const cachedEmail = String(cachedUser?.email ?? '').trim().toLowerCase()
+      const firebaseUid = String(nextUser.uid ?? '').trim()
       const firebaseEmail = String(nextUser.email ?? '').trim().toLowerCase()
-      const canUseCachedUser = Boolean(cachedUser && cachedEmail && cachedEmail === firebaseEmail)
+      const canUseCachedUser = Boolean(
+        cachedUser
+        && (
+          (cachedUid && firebaseUid && cachedUid === firebaseUid)
+          || (cachedEmail && firebaseEmail && cachedEmail === firebaseEmail)
+        ),
+      )
 
       if (canUseCachedUser) {
         setAppUser(cachedUser)

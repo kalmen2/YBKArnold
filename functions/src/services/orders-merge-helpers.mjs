@@ -1,28 +1,17 @@
 // Pure helpers used by the orders unified refresh — text/lookup/key building,
 // status history matching, order-number extraction. No I/O, no side effects.
 
-export function normalizeText(value, maxLength = 500) {
-  return String(value ?? '').trim().slice(0, maxLength)
-}
+import {
+  normalizeLookupToken,
+  normalizeText,
+  toIsoOrNull,
+  toTimestampMs,
+} from '../utils/value-utils.mjs'
 
-export function normalizeLookupToken(value) {
-  return normalizeText(value, 500)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, ' ')
-    .trim()
-}
-
-export function toIsoOrNull(value) {
-  return normalizeText(value, 80) || null
-}
+export { normalizeLookupToken, normalizeText, toIsoOrNull, toTimestampMs }
 
 export function toBooleanOrNull(value) {
   return typeof value === 'boolean' ? value : null
-}
-
-export function toTimestampMs(value) {
-  const ts = Date.parse(normalizeText(value, 80))
-  return Number.isFinite(ts) ? ts : null
 }
 
 export function extractOrderNumberToken(value) {

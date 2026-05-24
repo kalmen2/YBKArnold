@@ -1,27 +1,22 @@
 import { Navigate, createBrowserRouter } from 'react-router-dom'
-import { CrmDealersProvider } from '../features/crm/CrmDealersContext'
 import {
   RequireAdminRoute,
-  RequireManagerOrAdminRoute,
 } from './RouteGuards'
 import {
-  AiConfigPage,
+  AdminApiPage,
   AdminAlertsPage,
-  AdminIssuesPage,
-  AdminLogsPage,
-  AdminSalesReviewPage,
-  AdminUsersPage,
+  AdminSettingsPage,
   AppLayout,
-  CrmPage,
   DashboardPage,
+  OperatingCostsPage,
   OrdersPage,
   PicturesPage,
   PurchasingPage,
-  QuickBooksPage,
   TemplatesPage,
   SalesPage,
   SupportPage,
   TimesheetPage,
+  VisitorsPage,
 } from './RouteLazyPages'
 import RouteErrorBoundary from './RouteErrorBoundary'
 import { withRouteSuspense } from './withRouteSuspense'
@@ -43,9 +38,9 @@ export const router = createBrowserRouter([
       {
         path: 'reports',
         element: withRouteSuspense(
-          <RequireManagerOrAdminRoute>
+          <RequireAdminRoute>
             <TimesheetPage initialView="reports" />
-          </RequireManagerOrAdminRoute>,
+          </RequireAdminRoute>,
         ),
       },
       {
@@ -57,15 +52,19 @@ export const router = createBrowserRouter([
         element: withRouteSuspense(<TemplatesPage />),
       },
       {
+        path: 'visitors',
+        element: withRouteSuspense(<VisitorsPage />),
+      },
+      {
         path: 'workers',
         element: <Navigate to="/timesheet" replace />,
       },
       {
         path: 'quickbooks',
         element: withRouteSuspense(
-          <RequireManagerOrAdminRoute>
-            <QuickBooksPage />
-          </RequireManagerOrAdminRoute>,
+          <RequireAdminRoute>
+            <Navigate to="/reports" replace />
+          </RequireAdminRoute>,
         ),
       },
       {
@@ -88,6 +87,10 @@ export const router = createBrowserRouter([
         path: 'purchasing',
         element: withRouteSuspense(<PurchasingPage />),
       },
+      {
+        path: 'operating-costs',
+        element: <Navigate to="/admin/operating-costs" replace />,
+      },
       // Redirect old individual routes to the unified Sales page
       {
         path: 'admin/crm/dealers',
@@ -99,61 +102,59 @@ export const router = createBrowserRouter([
       },
       {
         path: 'admin/users',
+        element: <Navigate to="/admin/settings?tab=users" replace />,
+      },
+      {
+        path: 'admin/alerts',
+        element: withRouteSuspense(<AdminAlertsPage />),
+      },
+      {
+        path: 'admin/api',
         element: withRouteSuspense(
           <RequireAdminRoute>
-            <AdminUsersPage />
+            <AdminApiPage />
           </RequireAdminRoute>,
         ),
       },
       {
-        path: 'admin/alerts',
+        path: 'admin/operating-costs',
         element: withRouteSuspense(
           <RequireAdminRoute>
-            <AdminAlertsPage />
+            <OperatingCostsPage />
           </RequireAdminRoute>,
         ),
       },
       {
         path: 'admin/issues',
-        element: withRouteSuspense(
-          <RequireAdminRoute>
-            <AdminIssuesPage />
-          </RequireAdminRoute>,
-        ),
+        element: <Navigate to="/admin/alerts" replace />,
       },
       {
         path: 'admin/logs',
+        element: <Navigate to="/admin/settings?tab=logs" replace />,
+      },
+      {
+        path: 'admin/visitors',
+        element: <Navigate to="/admin/settings?tab=visitors" replace />,
+      },
+      {
+        path: 'admin/settings',
         element: withRouteSuspense(
           <RequireAdminRoute>
-            <AdminLogsPage />
+            <AdminSettingsPage />
           </RequireAdminRoute>,
         ),
       },
       {
         path: 'admin/sales-review',
-        element: withRouteSuspense(
-          <RequireAdminRoute>
-            <AdminSalesReviewPage />
-          </RequireAdminRoute>,
-        ),
+        element: <Navigate to="/admin/settings?tab=sales-review" replace />,
       },
       {
         path: 'admin/crm',
-        element: withRouteSuspense(
-          <CrmDealersProvider>
-            <RequireAdminRoute>
-              <CrmPage />
-            </RequireAdminRoute>
-          </CrmDealersProvider>,
-        ),
+        element: <Navigate to="/sales?tab=dealers" replace />,
       },
       {
         path: 'admin/ai-config',
-        element: withRouteSuspense(
-          <RequireAdminRoute>
-            <AiConfigPage />
-          </RequireAdminRoute>,
-        ),
+        element: <Navigate to="/admin/settings?tab=ai" replace />,
       },
     ],
   },

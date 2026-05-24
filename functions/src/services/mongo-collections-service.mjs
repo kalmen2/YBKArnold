@@ -205,9 +205,12 @@ export function createMongoCollectionsService({
         const orderProgressCollection = timesheetDatabase.collection('timesheet_order_progress')
         const missingWorkerReviewsCollection = timesheetDatabase.collection('timesheet_missing_worker_reviews')
         const dashboardSnapshotsCollection = platformDatabase.collection('dashboard_snapshots')
+        const visitorLogsCollection = platformDatabase.collection('visitor_logs')
+        const visitorShortcutsCollection = platformDatabase.collection('visitor_shortcuts')
         const mondayOrdersCollection = ordersDatabase.collection('monday_orders')
         const ordersUnifiedCollection = ordersDatabase.collection('orders_unified')
         const authUsersCollection = authDatabase.collection('auth_users')
+        const apiKeysCollection = authDatabase.collection('api_keys')
         const mobilePushTokensCollection = authDatabase.collection('mobile_push_tokens')
         const mobileAlertsCollection = authDatabase.collection('mobile_alerts')
         const mobileAlertReadsCollection = authDatabase.collection('mobile_alert_reads')
@@ -247,6 +250,12 @@ export function createMongoCollectionsService({
             missingWorkerReviewsCollection.createIndex({ date: -1 }),
             missingWorkerReviewsCollection.createIndex({ approved: 1, date: -1 }),
             dashboardSnapshotsCollection.createIndex({ snapshotKey: 1 }, { unique: true }),
+            visitorLogsCollection.createIndex({ id: 1 }, { unique: true }),
+            visitorLogsCollection.createIndex({ createdAt: -1 }),
+            visitorLogsCollection.createIndex({ createdByUid: 1, createdAt: -1 }),
+            visitorShortcutsCollection.createIndex({ id: 1 }, { unique: true }),
+            visitorShortcutsCollection.createIndex({ shortcutKey: 1 }, { unique: true }),
+            visitorShortcutsCollection.createIndex({ updatedAt: -1 }),
             mondayOrdersCollection.createIndex({ mondayItemId: 1 }, { unique: true }),
             mondayOrdersCollection.createIndex({ createdAt: -1 }),
             mondayOrdersCollection.createIndex({ orderName: 1 }),
@@ -265,6 +274,10 @@ export function createMongoCollectionsService({
             authUsersCollection.createIndex({ linkedWorkerId: 1 }, { unique: true, sparse: true }),
             authUsersCollection.createIndex({ linkedZendeskUserId: 1 }, { unique: true, sparse: true }),
             authUsersCollection.createIndex({ approvalStatus: 1, role: 1 }),
+            apiKeysCollection.createIndex({ id: 1 }, { unique: true }),
+            apiKeysCollection.createIndex({ keyHash: 1 }, { unique: true }),
+            apiKeysCollection.createIndex({ revokedAt: 1, createdAt: -1 }),
+            apiKeysCollection.createIndex({ createdAt: -1 }),
             mobilePushTokensCollection.createIndex({ token: 1 }, { unique: true }),
             mobilePushTokensCollection.createIndex({ uid: 1, active: 1, updatedAt: -1 }),
             mobilePushTokensCollection.createIndex({ emailLower: 1, active: 1 }),
@@ -387,9 +400,12 @@ export function createMongoCollectionsService({
           orderProgressCollection,
           missingWorkerReviewsCollection,
           dashboardSnapshotsCollection,
+          visitorLogsCollection,
+          visitorShortcutsCollection,
           mondayOrdersCollection,
           ordersUnifiedCollection,
           authUsersCollection,
+          apiKeysCollection,
           mobilePushTokensCollection,
           mobileAlertsCollection,
           mobileAlertReadsCollection,

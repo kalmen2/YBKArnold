@@ -99,6 +99,11 @@ export function formatStatusLabel(value: string): string {
     .join(' ')
 }
 
+export function formatOptional(value: string | null | undefined): string {
+  const normalized = String(value ?? '').trim()
+  return normalized || '-'
+}
+
 export function roleLabel(role: AppAuthRole): string {
   if (role === 'admin') return 'Admin'
   if (role === 'manager') return 'Manager'

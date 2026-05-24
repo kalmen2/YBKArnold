@@ -126,42 +126,43 @@ function normalizeProgressStatusOptionStyles(optionStyles: unknown) {
   return [...stylesByLabel.values()]
 }
 
-function hexToRgba(hexColor: string | null | undefined, alpha: number) {
+function parseHexColorRgb(hexColor: string | null | undefined) {
   const normalizedHex = String(hexColor ?? '').trim().replace('#', '')
-
-  if (!normalizedHex) {
-    return null
-  }
-
   const expandedHex = normalizedHex.length === 3
     ? normalizedHex.split('').map((char) => `${char}${char}`).join('')
     : normalizedHex
+
   if (!/^[0-9a-fA-F]{6}$/.test(expandedHex)) {
     return null
   }
 
-  const red = Number.parseInt(expandedHex.slice(0, 2), 16)
-  const green = Number.parseInt(expandedHex.slice(2, 4), 16)
-  const blue = Number.parseInt(expandedHex.slice(4, 6), 16)
+  return {
+    red: Number.parseInt(expandedHex.slice(0, 2), 16),
+    green: Number.parseInt(expandedHex.slice(2, 4), 16),
+    blue: Number.parseInt(expandedHex.slice(4, 6), 16),
+  }
+}
+
+function hexToRgba(hexColor: string | null | undefined, alpha: number) {
+  const rgb = parseHexColorRgb(hexColor)
+
+  if (!rgb) {
+    return null
+  }
+
   const boundedAlpha = Math.max(0, Math.min(1, Number(alpha)))
 
-  return `rgba(${red}, ${green}, ${blue}, ${boundedAlpha})`
+  return `rgba(${rgb.red}, ${rgb.green}, ${rgb.blue}, ${boundedAlpha})`
 }
 
 function resolveReadableTextColor(hexColor: string | null | undefined) {
-  const normalizedHex = String(hexColor ?? '').trim().replace('#', '')
-  const expandedHex = normalizedHex.length === 3
-    ? normalizedHex.split('').map((char) => `${char}${char}`).join('')
-    : normalizedHex
+  const rgb = parseHexColorRgb(hexColor)
 
-  if (!/^[0-9a-fA-F]{6}$/.test(expandedHex)) {
+  if (!rgb) {
     return 'rgba(15, 23, 42, 0.9)'
   }
 
-  const red = Number.parseInt(expandedHex.slice(0, 2), 16)
-  const green = Number.parseInt(expandedHex.slice(2, 4), 16)
-  const blue = Number.parseInt(expandedHex.slice(4, 6), 16)
-  const luminance = (0.299 * red + 0.587 * green + 0.114 * blue) / 255
+  const luminance = (0.299 * rgb.red + 0.587 * rgb.green + 0.114 * rgb.blue) / 255
 
   return luminance > 0.65 ? 'rgba(15, 23, 42, 0.92)' : '#ffffff'
 }

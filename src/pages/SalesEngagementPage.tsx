@@ -54,7 +54,7 @@ import {
   type CrmDealerDetail,
 } from '../features/crm/api'
 import { useDebounceValue } from '../hooks/useDebounceValue'
-import { formatDateTime } from '../lib/formatters'
+import { formatDateTime, formatOptional } from '../lib/formatters'
 
 type EngagementFilter = 'ready' | 'not_ready'
 type EngagementStatus = EngagementFilter | 'none'
@@ -92,11 +92,6 @@ const accountTypeOptions: Array<{ value: AccountTypeBucket; label: string }> = [
   { value: 'designer', label: 'Designer' },
   { value: 'none', label: 'None' },
 ]
-
-function formatOptional(value: string | null | undefined) {
-  const normalized = String(value ?? '').trim()
-  return normalized || '-'
-}
 
 function formatAddressLine(parts: Array<string | null | undefined>) {
   const normalized = parts

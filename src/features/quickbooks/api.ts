@@ -17,6 +17,26 @@ export type QuickBooksCompanyInfo = {
   country: string | null
 }
 
+export type QuickBooksBankAccountSnapshot = {
+  accountId: string | null
+  accountName: string | null
+  accountNumber: string | null
+  endingIn: string | null
+  currentBalance: number
+  asOf: string
+}
+
+export type QuickBooksBankAccountTransaction = {
+  type: 'journalEntry' | 'transfer' | 'deposit' | 'check'
+  id: string | null
+  docNumber: string | null
+  txnDate: string | null
+  amount: number
+  direction: 'in' | 'out' | 'unknown'
+  description: string | null
+  counterpartyAccountName: string | null
+}
+
 export type QuickBooksTotals = {
   projectCount: number
   purchaseOrderCount: number
@@ -121,15 +141,55 @@ export type QuickBooksOverviewDetails = {
   unlinkedPurchaseOrderLines: QuickBooksDetailRow[]
 }
 
+export type QuickBooksHistoryMetaBucket = {
+  total: number
+  loaded: number
+}
+
+export type QuickBooksHistoryMeta = {
+  pageSize: number
+  bankAccountTransactions: QuickBooksHistoryMetaBucket
+  details: {
+    purchaseOrderLines: QuickBooksHistoryMetaBucket
+    bills: QuickBooksHistoryMetaBucket
+    invoices: QuickBooksHistoryMetaBucket
+    payments: QuickBooksHistoryMetaBucket
+    unlinkedPurchaseOrderLines: QuickBooksHistoryMetaBucket
+  }
+  outstandingInvoices: QuickBooksHistoryMetaBucket
+}
+
+export type QuickBooksHistoryType = 'bankAccountTransactions' | 'bills' | 'outstandingInvoices'
+
+export type QuickBooksHistoryDirection = 'in' | 'out' | 'unknown'
+
+export type QuickBooksHistoryResponse = {
+  type: QuickBooksHistoryType
+  offset: number
+  limit: number
+  total: number
+  hasMore: boolean
+  nextOffset: number
+  filters?: {
+    fromDate: string | null
+    toDate: string | null
+    direction: QuickBooksHistoryDirection | null
+  }
+  rows: Array<QuickBooksBankAccountTransaction | QuickBooksDetailRow>
+}
+
 export type QuickBooksOverviewResponse = {
   generatedAt: string
   realmId: string
   companyInfo: QuickBooksCompanyInfo | null
+  bankAccountSnapshot: QuickBooksBankAccountSnapshot | null
+  bankAccountTransactions: QuickBooksBankAccountTransaction[]
   totals: QuickBooksTotals
   projects: QuickBooksProjectSummary[]
   loanSummaries: QuickBooksLoanSummary[]
   unlinkedTransactions: QuickBooksUnlinkedTransaction[]
   details: QuickBooksOverviewDetails
+  historyMeta?: QuickBooksHistoryMeta
   warnings: string[]
 }
 
@@ -161,10 +221,31 @@ export async function createQuickBooksAuthorizeUrl(redirectPath = '/quickbooks')
   return payload.authorizeUrl
 }
 
-export function fetchQuickBooksOverview(options: { refresh?: boolean } = {}) {
+export function fetchQuickBooksOverview(options: { refresh?: boolean, full?: boolean } = {}) {
   return apiRequest<QuickBooksOverviewResponse>(
     withQuery('/api/quickbooks/overview', {
       refresh: options.refresh ? 1 : undefined,
+      full: options.full ? 1 : undefined,
+    }),
+  )
+}
+
+export function fetchQuickBooksHistory(options: {
+  type: QuickBooksHistoryType
+  offset?: number
+  limit?: number
+  fromDate?: string
+  toDate?: string
+  direction?: QuickBooksHistoryDirection
+}) {
+  return apiRequest<QuickBooksHistoryResponse>(
+    withQuery('/api/quickbooks/history', {
+      type: options.type,
+      offset: options.offset ?? 0,
+      limit: options.limit,
+      fromDate: options.fromDate,
+      toDate: options.toDate,
+      direction: options.direction,
     }),
   )
 }

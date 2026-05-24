@@ -1,4 +1,5 @@
 import { createTtlCache } from '../utils/ttl-cache.mjs'
+import { buildFirebaseStorageDownloadUrl } from '../utils/value-utils.mjs'
 
 export function registerDashboardSupportRoutes(app, deps) {
   const {
@@ -137,13 +138,6 @@ export function registerDashboardSupportRoutes(app, deps) {
     }
 
     return `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`
-  }
-
-  function buildFirebaseStorageDownloadUrl(bucketName, objectPath, downloadToken) {
-    const encodedObjectPath = encodeURIComponent(String(objectPath ?? '').trim())
-    const encodedToken = encodeURIComponent(String(downloadToken ?? '').trim())
-
-    return `https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(bucketName)}/o/${encodedObjectPath}?alt=media&token=${encodedToken}`
   }
 
   function normalizeIsoDate(value) {
@@ -365,6 +359,9 @@ export function registerDashboardSupportRoutes(app, deps) {
 
     return {
       id,
+      mondayItemId: mondayItemId || null,
+      orderNumber: orderNumber || null,
+      poNumber: String(orderDocument?.po_number ?? '').trim() || null,
       name: String(orderDocument?.order_name ?? '').trim() || orderNumber || id || 'Untitled order',
       mondaySourceBoardType: isDone ? 'shipped_orders' : 'orders_track',
       movedToShippedAt: normalizeIsoDate(orderDocument?.shipped_at),
@@ -429,6 +426,7 @@ export function registerDashboardSupportRoutes(app, deps) {
             invoiceNumber: 1,
             paidInFull: 1,
             amountOwed: 1,
+            po_number: 1,
             poAmount: 1,
           },
         },
@@ -1009,9 +1007,15 @@ export function registerDashboardSupportRoutes(app, deps) {
 
 // Monday dashboard view is DB-backed from orders_unified so lateness/due
 // windows reflect the latest persisted merge state.
-app.get('/api/dashboard/monday', requireFirebaseAuth, async (_req, res, next) => {
+app.get('/api/dashboard/monday', requireFirebaseAuth, async (req, res, next) => {
   try {
+    const refreshRequested = isDashboardRefreshRequested(req)
     const cachedSnapshot = await getDashboardSnapshotFromCache('monday')
+
+    if (!refreshRequested && cachedSnapshot) {
+      return res.json(cachedSnapshot)
+    }
+
     const snapshot = await buildMondaySnapshotFromUnifiedOrders(cachedSnapshot)
 
     const shopDrawingCacheByOrderId = await loadShopDrawingCacheByOrderId(
@@ -1020,6 +1024,8 @@ app.get('/api/dashboard/monday', requireFirebaseAuth, async (_req, res, next) =>
         : [],
     )
     const enrichedSnapshot = enrichMondaySnapshotWithShopDrawingCache(snapshot, shopDrawingCacheByOrderId)
+
+    await setDashboardSnapshotCache('monday', enrichedSnapshot)
 
     res.json(enrichedSnapshot)
   } catch (error) {
@@ -1252,6 +1258,10 @@ app.get('/api/dashboard/monday/bol/download', requireFirebaseAuth, async (req, r
   try {
     const orderId = String(req.query?.orderId ?? '').trim()
     const renderInline = String(req.query?.inline ?? '').trim() === '1'
+    const cacheOnly = String(req.query?.cacheOnly ?? '').trim() === '1'
+    const forceRefresh =
+      String(req.query?.forceRefresh ?? '').trim() === '1'
+      || String(req.query?.refresh ?? '').trim() === '1'
 
     if (!orderId) {
       return res.status(400).json({ error: 'orderId is required.' })
@@ -1286,19 +1296,16 @@ app.get('/api/dashboard/monday/bol/download', requireFirebaseAuth, async (req, r
       return res.status(404).json({ error: 'Order not found in Monday data.' })
     }
 
-    let cachedBolUrl = String(orderDocument.bolDownloadUrl ?? '').trim()
+    const existingCachedBolUrl = String(orderDocument.bolDownloadUrl ?? '').trim()
+    let cachedBolUrl = forceRefresh ? '' : existingCachedBolUrl
+    const hasStoredSource = Boolean(
+      String(orderDocument.bolSourceUrl ?? '').trim()
+      || String(orderDocument.bolResolvedUrl ?? '').trim()
+      || String(orderDocument.bolUrl ?? '').trim()
+      || String(orderDocument.bol ?? '').trim(),
+    )
 
-    if (!cachedBolUrl) {
-      const hasStoredSource = Boolean(
-        String(orderDocument.bolSourceUrl ?? '').trim()
-        || String(orderDocument.bolResolvedUrl ?? '').trim()
-        || String(orderDocument.bolUrl ?? '').trim(),
-      )
-
-      if (!hasStoredSource) {
-        return res.status(404).json({ error: 'No BOL source found for this order.' })
-      }
-
+    if ((!cachedBolUrl || forceRefresh) && hasStoredSource) {
       try {
         const cacheResult = await cacheBolOnDemand(orderDocument)
         cachedBolUrl = String(cacheResult?.downloadUrl ?? '').trim()
@@ -1313,8 +1320,29 @@ app.get('/api/dashboard/monday/bol/download', requireFirebaseAuth, async (req, r
       }
     }
 
+    // If force refresh is requested but we have no source anymore, keep serving
+    // existing cache instead of failing the request.
+    if (!cachedBolUrl && forceRefresh && existingCachedBolUrl) {
+      cachedBolUrl = existingCachedBolUrl
+    }
+
     if (!cachedBolUrl) {
       return res.status(404).json({ error: 'No BOL source found for this order.' })
+    }
+
+    const downloadFileName = ensurePdfFileName(
+      orderDocument.bolFileName,
+      `order-${orderId}-bol.pdf`,
+    )
+
+    if (cacheOnly) {
+      return res.json({
+        ok: true,
+        orderId,
+        cachedBolUrl,
+        fileName: downloadFileName,
+        refreshedFromMonday: forceRefresh && hasStoredSource,
+      })
     }
 
     if (renderInline) {
@@ -1329,10 +1357,6 @@ app.get('/api/dashboard/monday/bol/download', requireFirebaseAuth, async (req, r
       })
     }
 
-    const downloadFileName = ensurePdfFileName(
-      orderDocument.bolFileName,
-      `order-${orderId}-bol.pdf`,
-    )
     const contentType =
       String(upstreamResponse.headers.get('content-type') ?? '').trim() ||
       'application/pdf'
@@ -1384,11 +1408,20 @@ app.get('/api/dashboard/bootstrap', requireFirebaseAuth, async (req, res, next) 
 
     async function loadMonday() {
       const cachedSnapshot = await getDashboardSnapshotFromCache('monday')
+
+      if (!refreshRequested && cachedSnapshot) {
+        return cachedSnapshot
+      }
+
       const snapshot = await buildMondaySnapshotFromUnifiedOrders(cachedSnapshot)
       const shopDrawingCacheByOrderId = await loadShopDrawingCacheByOrderId(
         Array.isArray(snapshot?.orders) ? snapshot.orders.map((order) => order?.id) : [],
       )
-      return enrichMondaySnapshotWithShopDrawingCache(snapshot, shopDrawingCacheByOrderId)
+      const enrichedSnapshot = enrichMondaySnapshotWithShopDrawingCache(snapshot, shopDrawingCacheByOrderId)
+
+      await setDashboardSnapshotCache('monday', enrichedSnapshot)
+
+      return enrichedSnapshot
     }
 
     async function loadZendesk() {
