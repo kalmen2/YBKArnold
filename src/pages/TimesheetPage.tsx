@@ -147,6 +147,7 @@ type GeneralExpenseComponentRow = {
   id:
     | 'qbGeneralBills'
     | 'qbCompanyPurchaseBills'
+    | 'qbUnassignedBills'
     | 'websitePayrollGeneralJobZero'
     | 'websitePayrollGeneralUnmapped'
     | 'quickBooksPayrollExtra'
@@ -1610,6 +1611,65 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     })
   }, [quickBooksProjectLookupById, quickBooksQuery.data?.details?.bills, reportDateRange])
 
+  const quickBooksUnassignedBillsInRange = useMemo(() => {
+    if (!reportDateRange) {
+      return {
+        rowCount: 0,
+        totalAmount: 0,
+      }
+    }
+
+    const billRows = quickBooksQuery.data?.details?.bills ?? []
+    let rowCount = 0
+    let totalAmount = 0
+
+    billRows.forEach((billRow) => {
+      const billDate = String(billRow.txnDate ?? '').trim()
+
+      if (!isDateInRange(billDate, reportDateRange.start, reportDateRange.end)) {
+        return
+      }
+
+      const jobKey = resolveQuickBooksJobKeyFromDetailRow(
+        {
+          projectId: billRow.projectId,
+          projectName: billRow.projectName,
+        },
+        quickBooksProjectLookupById,
+      )
+      const fallbackProjectNumber = splitQuickBooksProjectLabel(
+        billRow.projectName ?? '',
+        billRow.projectId ?? '',
+        { fallbackProjectNumber: billRow.projectId ?? '' },
+      ).projectNumber
+      const nonOrderCategory = resolveNonOrderSpendCategory(billRow.projectName, fallbackProjectNumber)
+
+      if ((jobKey && reportSpecificJobKeys.has(jobKey)) || nonOrderCategory) {
+        return
+      }
+
+      const totalAmountValue = Number(billRow.totalAmount)
+      const normalizedTotalAmount = Number.isFinite(totalAmountValue) ? Math.max(0, totalAmountValue) : 0
+
+      if (normalizedTotalAmount <= 0) {
+        return
+      }
+
+      rowCount += 1
+      totalAmount += normalizedTotalAmount
+    })
+
+    return {
+      rowCount,
+      totalAmount: Number(totalAmount.toFixed(2)),
+    }
+  }, [
+    quickBooksProjectLookupById,
+    quickBooksQuery.data?.details?.bills,
+    reportDateRange,
+    reportSpecificJobKeys,
+  ])
+
   const reportGeneralExpenseRows = useMemo<GeneralExpenseComponentRow[]>(() => {
     const quickBooksGeneralBills = reportNonOrderSpendRows.find((row) => row.category === 'general')?.billedAmount ?? 0
     const quickBooksCompanyPurchaseBills = reportNonOrderSpendRows.find((row) => row.category === 'companyPurchase')?.billedAmount ?? 0
@@ -1628,6 +1688,14 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
         amount: Number(quickBooksCompanyPurchaseBills.toFixed(2)),
       },
       {
+        id: 'qbUnassignedBills',
+        label: 'QuickBooks bills missing project assignment',
+        amount: Number(quickBooksUnassignedBillsInRange.totalAmount.toFixed(2)),
+        note: quickBooksUnassignedBillsInRange.rowCount > 0
+          ? `${quickBooksUnassignedBillsInRange.rowCount} bill rows in selected range are missing project assignment.`
+          : undefined,
+      },
+      {
         id: 'websitePayrollGeneralJobZero',
         label: 'Website payroll (job 0 / general)',
         amount: Number(websitePayrollInRange.generalJobZeroAmount.toFixed(2)),
@@ -1644,7 +1712,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
         note: `QB payroll in range ${formatCurrency(quickBooksPayrollBilled)} - website payroll in range ${formatCurrency(websitePayrollInRange.totalAmount)}`,
       },
     ]
-  }, [reportNonOrderSpendRows, websitePayrollInRange])
+  }, [quickBooksUnassignedBillsInRange, reportNonOrderSpendRows, websitePayrollInRange])
 
   const managerAvailableDates = useMemo(() => {
     const dates = new Set<string>()
@@ -2648,11 +2716,19 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
           && date
           && date <= reportDateRange.end,
         )
+        const isSpecificProjectBill = Boolean(jobKey && reportSpecificJobKeys.has(jobKey))
+        const isUnassignedBillInRange = isInRange
+          && !isSpecificProjectBill
+          && !nonOrderCategory
         const includeInRecognizedCostAmount = orderJobName && isOnOrBeforeEnd
           ? Number(((normalizedTotalAmount * progressDeltaPercent) / 100).toFixed(2))
           : 0
         const includeInGeneralExpenseAmount = isInRange
-          && (nonOrderCategory === 'general' || nonOrderCategory === 'companyPurchase')
+          && (
+            nonOrderCategory === 'general'
+            || nonOrderCategory === 'companyPurchase'
+            || isUnassignedBillInRange
+          )
           ? Number(normalizedTotalAmount.toFixed(2))
           : 0
 
@@ -2662,6 +2738,8 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
 
         const source = orderJobName
           ? orderJobName
+          : isUnassignedBillInRange
+            ? 'Unassigned (missing project)'
           : `${nonOrderLabelByCategory.get(nonOrderCategory as NonOrderSpendCategory) ?? 'Non-order'} (non-order)`
         const documentLabel = String(billRow.docNumber ?? billRow.id ?? '').trim() || '-'
 
@@ -2806,7 +2884,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
         title: 'General monthly expense breakdown',
         totalLabel: 'General monthly expense',
         totalAmount: reportSummaryTotals.totalGeneralExpense,
-        formula: 'Formula: QB general/company purchase bills + website payroll (job 0 and unmapped) + QB payroll extra over website payroll.',
+        formula: 'Formula: QB general/company purchase bills + QB bills missing project assignment + website payroll (job 0 and unmapped) + QB payroll extra over website payroll.',
         components: [
           ...generalExpenseRows,
         ],
@@ -2818,9 +2896,9 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
           },
         ],
         billRows: generalExpenseBillRows,
-        billsEmptyText: 'No QuickBooks general/company-purchase bill rows found in this range.',
+        billsEmptyText: 'No QuickBooks general/company-purchase/unassigned bill rows found in this range.',
         includedAmountLabel: 'Included in general expense',
-        billsScopeNote: 'This bill list covers QuickBooks general and company purchase rows. Payroll extra is shown in components.',
+        billsScopeNote: 'This bill list covers QuickBooks general, company purchase, and missing-project bill rows. Payroll extra is shown in components.',
       },
       netStanding: {
         title: 'Net monthly standing breakdown',
@@ -2860,6 +2938,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     quickBooksQuery.data?.details?.bills,
     reportDateRange,
     reportGeneralExpenseRows,
+    reportSpecificJobKeys,
     reportSummaryTotals,
   ])
 
@@ -5232,7 +5311,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                     {formatCurrency(reportSummaryTotals.totalGeneralExpense)}
                   </Typography>
                   <Typography variant="caption" color="text.secondary">
-                    Includes job 0, unmapped website payroll, and QB payroll extra.
+                    Includes job 0, unmapped website payroll, unassigned QB bills, and QB payroll extra.
                   </Typography>
                 </Paper>
 
