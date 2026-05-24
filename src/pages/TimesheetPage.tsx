@@ -98,6 +98,7 @@ import QuickBooksPage from './QuickBooksPage'
 import WorkersPage from './WorkersPage'
 
 type WorkerRangePreset = 'week' | 'month' | 'year' | 'custom'
+type ReportRangeMode = 'month' | 'custom'
 
 type DateReportWorkerRow = {
   workerId: string
@@ -116,19 +117,22 @@ type DateReportOrderRow = {
   jobName: string
   totalHours: number
   totalLaborCost: number
+  totalLaborCostToRangeEnd: number
+  totalBillsToRangeEndAmount: number
+  costBaseToRangeEndAmount: number
   workerRows: DateReportWorkerRow[]
   readyRows: DateReportReadyRow[]
   latestReadyPercent: number
   previousReadyPercent: number
   progressDeltaPercent: number
   contractAmount: number
-  expectedEarnedAmount: number
-  totalReceivedAmount: number
-  receivedThisMonthAmount: number
-  totalBillsAmount: number
-  totalBillsPaidAmount: number
-  totalOtherCostsAmount: number
-  totalOnProject: number
+  recognizedRevenueAmount: number
+  recognizedLaborCostAmount: number
+  recognizedBillsCostAmount: number
+  recognizedCostAmount: number
+  recognizedProfitAmount: number
+  cashReceivedInRangeAmount: number
+  cashGapVsRecognizedRevenueAmount: number
 }
 
 type NonOrderSpendCategory = 'general' | 'companyPurchase' | 'payroll'
@@ -137,7 +141,63 @@ type NonOrderSpendRow = {
   category: NonOrderSpendCategory
   label: string
   billedAmount: number
+}
+
+type GeneralExpenseComponentRow = {
+  id:
+    | 'qbGeneralBills'
+    | 'qbCompanyPurchaseBills'
+    | 'websitePayrollGeneralJobZero'
+    | 'websitePayrollGeneralUnmapped'
+    | 'quickBooksPayrollExtra'
+  label: string
+  amount: number
+  note?: string
+}
+
+type ReportSummaryBreakdownKey =
+  | 'recognizedRevenue'
+  | 'recognizedCost'
+  | 'generalExpense'
+  | 'netStanding'
+
+type ReportSummaryBreakdownRow = {
+  label: string
+  amount: number
+  note?: string
+}
+
+type ReportSummaryBreakdownBillRow = {
+  id: string
+  date: string
+  document: string
+  source: string
+  project: string
+  totalAmount: number
   paidAmount: number
+  unpaidAmount: number
+  includedAmount: number
+}
+
+type ReportSummaryBreakdownView = 'byJob' | 'bills'
+
+type ReportSummaryBreakdownSection = {
+  title: string
+  rows: ReportSummaryBreakdownRow[]
+  emptyText: string
+}
+
+type ReportSummaryBreakdown = {
+  title: string
+  totalLabel: string
+  totalAmount: number
+  formula: string
+  components: ReportSummaryBreakdownRow[]
+  sections: ReportSummaryBreakdownSection[]
+  billRows?: ReportSummaryBreakdownBillRow[]
+  billsEmptyText?: string
+  includedAmountLabel?: string
+  billsScopeNote?: string
 }
 
 type ManagerProgressRow = {
@@ -303,6 +363,26 @@ function resolveNonOrderSpendCategory(...candidates: Array<string | null | undef
   return matched?.category ?? null
 }
 
+function resolveQuickBooksJobKeyFromDetailRow(
+  input: {
+    projectId?: string | null
+    projectName?: string | null
+  },
+  lookupByProjectId: Map<string, QuickBooksProjectLookup>,
+) {
+  const projectLookup = input.projectId
+    ? lookupByProjectId.get(input.projectId)
+    : null
+  const fallbackProjectNumber = splitQuickBooksProjectLabel(
+    input.projectName ?? '',
+    input.projectId ?? '',
+    { fallbackProjectNumber: input.projectId ?? '' },
+  ).projectNumber
+  const jobKey = projectLookup?.jobKey || normalizeJobName(fallbackProjectNumber)
+
+  return jobKey || null
+}
+
 function resolveMonthRange(monthKey: string) {
   const match = String(monthKey ?? '').trim().match(/^(\d{4})-(\d{2})$/)
 
@@ -336,6 +416,11 @@ function resolveLatestReadyPercentOnOrBefore(rows: DateReportReadyRow[], date: s
   })
 
   return latest
+}
+
+function isGeneralJobReference(value: string | null | undefined) {
+  const digits = extractDigits(String(value ?? ''))
+  return Boolean(digits && /^0+$/.test(digits))
 }
 
 export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPageProps) {
@@ -372,8 +457,15 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
   const [bulkRows, setBulkRows] = useState<BulkWorkerRow[]>([])
 
   const [monthReportMonth, setMonthReportMonth] = useState(monthKeyFromIsoDate(todayIsoDate()))
+  const [reportRangeMode, setReportRangeMode] = useState<ReportRangeMode>('month')
+  const [customReportStartDate, setCustomReportStartDate] = useState(todayIsoDate())
+  const [customReportEndDate, setCustomReportEndDate] = useState(todayIsoDate())
   const [dateReportLaborRow, setDateReportLaborRow] = useState<DateReportOrderRow | null>(null)
   const [dateReportReadyRow, setDateReportReadyRow] = useState<DateReportOrderRow | null>(null)
+  const [activeReportSummaryBreakdown, setActiveReportSummaryBreakdown] =
+    useState<ReportSummaryBreakdownKey | null>(null)
+  const [reportSummaryBreakdownView, setReportSummaryBreakdownView] =
+    useState<ReportSummaryBreakdownView>('byJob')
 
   const [workerViewWorkerId, setWorkerViewWorkerId] = useState('')
   const [byJobGrouping, setByJobGrouping] = useState<'job' | 'stage'>('job')
@@ -410,7 +502,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
   const [missingReviewByKey, setMissingReviewByKey] =
     useState<Record<string, MissingWorkerReview>>({})
   const [workerRangePreset, setWorkerRangePreset] =
-    useState<WorkerRangePreset>('week')
+    useState<WorkerRangePreset>('month')
   const [workerCustomStartDate, setWorkerCustomStartDate] = useState(todayIsoDate())
   const [workerCustomEndDate, setWorkerCustomEndDate] = useState(todayIsoDate())
   const [profitInfoAnchorEl, setProfitInfoAnchorEl] = useState<HTMLElement | null>(null)
@@ -451,6 +543,16 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
 
   const handleCloseDateReportReadyPopup = useCallback(() => {
     setDateReportReadyRow(null)
+  }, [])
+
+  const handleOpenReportSummaryBreakdown = useCallback((key: ReportSummaryBreakdownKey) => {
+    setActiveReportSummaryBreakdown(key)
+    setReportSummaryBreakdownView('byJob')
+  }, [])
+
+  const handleCloseReportSummaryBreakdown = useCallback(() => {
+    setActiveReportSummaryBreakdown(null)
+    setReportSummaryBreakdownView('byJob')
   }, [])
 
   useEffect(() => {
@@ -653,44 +755,91 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     return map
   }, [quickBooksProjects])
 
-  const quickBooksBillsPaidByJobKey = useMemo(() => {
-    const map = new Map<string, number>()
-    const billRows = quickBooksQuery.data?.details?.bills ?? []
+  const reportJobDisplayNameByJobKey = useMemo(() => {
+    const map = new Map<string, string>()
 
-    billRows.forEach((billRow) => {
-      const projectLookup = billRow.projectId
-        ? quickBooksProjectLookupById.get(billRow.projectId)
-        : null
-      const fallbackProjectNumber = splitQuickBooksProjectLabel(
-        billRow.projectName ?? '',
-        billRow.projectId ?? '',
-        { fallbackProjectNumber: billRow.projectId ?? '' },
-      ).projectNumber
-      const jobKey = projectLookup?.jobKey || normalizeJobName(fallbackProjectNumber)
+    entries.forEach((entry) => {
+      const jobName = String(entry.jobName ?? '').trim()
 
-      if (!jobKey) {
+      if (!jobName) {
         return
       }
 
-      const totalAmount = Number(billRow.totalAmount)
-      const normalizedTotalAmount = Number.isFinite(totalAmount) ? totalAmount : 0
+      const jobKey = normalizeJobName(jobName) || jobName
 
-      if (normalizedTotalAmount <= 0) {
+      if (!map.has(jobKey)) {
+        map.set(jobKey, jobName)
+      }
+    })
+
+    orderProgress.forEach((progress) => {
+      const jobName = String(progress.jobName ?? '').trim()
+
+      if (!jobName) {
         return
       }
 
-      const balanceAmount = Number(billRow.balanceAmount)
-      const normalizedBalanceAmount = Number.isFinite(balanceAmount)
-        ? Math.max(0, balanceAmount)
-        : 0
-      const paidAmount = Math.max(0, normalizedTotalAmount - normalizedBalanceAmount)
-      const currentAmount = map.get(jobKey) ?? 0
+      const jobKey = normalizeJobName(jobName) || jobName
 
-      map.set(jobKey, Number((currentAmount + paidAmount).toFixed(2)))
+      if (!map.has(jobKey)) {
+        map.set(jobKey, jobName)
+      }
+    })
+
+    quickBooksProjects.forEach((project) => {
+      const splitLabel = splitQuickBooksProjectLabel(project.projectName, project.projectId, {
+        fallbackProjectNumber: project.projectId || '',
+      })
+      const projectNumber = String(splitLabel.projectNumber || '').trim()
+
+      if (!projectNumber) {
+        return
+      }
+
+      const jobKey = normalizeJobName(projectNumber)
+
+      if (jobKey && !map.has(jobKey)) {
+        map.set(jobKey, projectNumber)
+      }
     })
 
     return map
-  }, [quickBooksProjectLookupById, quickBooksQuery.data?.details?.bills])
+  }, [entries, orderProgress, quickBooksProjects])
+
+  const reportSpecificJobKeys = useMemo(() => {
+    const keys = new Set<string>()
+
+    quickBooksProjects.forEach((project) => {
+      const splitLabel = splitQuickBooksProjectLabel(project.projectName, project.projectId, {
+        fallbackProjectNumber: project.projectId || '',
+      })
+      const projectNumber = String(splitLabel.projectNumber || '').trim()
+      const jobKey = normalizeJobName(projectNumber)
+
+      if (!jobKey || isGeneralJobReference(projectNumber)) {
+        return
+      }
+
+      const nonOrderCategory = resolveNonOrderSpendCategory(project.projectName, projectNumber)
+
+      if (!nonOrderCategory) {
+        keys.add(jobKey)
+      }
+    })
+
+    orderProgress.forEach((progress) => {
+      const jobName = String(progress.jobName ?? '').trim()
+      const jobKey = normalizeJobName(jobName)
+
+      if (!jobKey || isGeneralJobReference(jobName)) {
+        return
+      }
+
+      keys.add(jobKey)
+    })
+
+    return keys
+  }, [orderProgress, quickBooksProjects])
 
   const byStageView = useMemo(() => {
     const dates = [...new Set(entries.map((entry) => entry.date))].sort()
@@ -874,17 +1023,6 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     )
   }, [sortedEntries, workerDateRange.end, workerDateRange.start, workerViewWorkerId])
 
-  const workerTotals = useMemo(() => {
-    return workerFilteredEntries.reduce(
-      (accumulator, entry) => {
-        accumulator.totalHours += getEntryTotalHours(entry)
-        accumulator.totalCost += getEntryCost(entry, workersById)
-        return accumulator
-      },
-      { totalHours: 0, totalCost: 0 },
-    )
-  }, [workerFilteredEntries, workersById])
-
   const workerByJobRows = useMemo(() => {
     const grouped = new Map<
       string,
@@ -916,6 +1054,162 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
 
     return [...grouped.values()].sort((left, right) => right.totalHours - left.totalHours)
   }, [workerFilteredEntries, workersById])
+
+  const workerReportRows = useMemo(() => {
+    const rowsByWorkerId = new Map<string, {
+      workerId: string
+      workerName: string
+      totalHours: number
+      totalCost: number
+      jobNames: Set<string>
+      progressContributionPercent: number
+    }>()
+
+    workers.forEach((worker) => {
+      rowsByWorkerId.set(worker.id, {
+        workerId: worker.id,
+        workerName: worker.fullName,
+        totalHours: 0,
+        totalCost: 0,
+        jobNames: new Set<string>(),
+        progressContributionPercent: 0,
+      })
+    })
+
+    const entriesInRange = sortedEntries.filter((entry) =>
+      isDateInRange(entry.date, workerDateRange.start, workerDateRange.end),
+    )
+    const jobHoursByWorker = new Map<string, Map<string, number>>()
+    const totalHoursByJob = new Map<string, number>()
+
+    entriesInRange.forEach((entry) => {
+      const workerName = workersById.get(entry.workerId)?.fullName ?? 'Unknown worker'
+      const existingWorkerRow = rowsByWorkerId.get(entry.workerId) ?? {
+        workerId: entry.workerId,
+        workerName,
+        totalHours: 0,
+        totalCost: 0,
+        jobNames: new Set<string>(),
+        progressContributionPercent: 0,
+      }
+      const totalHours = getEntryTotalHours(entry)
+      const totalCost = getEntryCost(entry, workersById)
+      const jobKey = normalizeJobName(entry.jobName)
+
+      existingWorkerRow.totalHours += totalHours
+      existingWorkerRow.totalCost += totalCost
+      if (entry.jobName) {
+        existingWorkerRow.jobNames.add(entry.jobName)
+      }
+      rowsByWorkerId.set(entry.workerId, existingWorkerRow)
+
+      if (!jobKey || totalHours <= 0) {
+        return
+      }
+
+      const workerHours = jobHoursByWorker.get(jobKey) ?? new Map<string, number>()
+      workerHours.set(entry.workerId, (workerHours.get(entry.workerId) ?? 0) + totalHours)
+      jobHoursByWorker.set(jobKey, workerHours)
+      totalHoursByJob.set(jobKey, (totalHoursByJob.get(jobKey) ?? 0) + totalHours)
+    })
+
+    const rangeEndDate = workerDateRange.end || todayIsoDate()
+
+    totalHoursByJob.forEach((_jobHours, jobKey) => {
+      const readyRows = orderProgress
+        .filter((progress) => {
+          const progressJobKey = normalizeJobName(progress.jobName)
+          const progressDate = String(progress.date ?? '').trim()
+
+          return progressJobKey === jobKey
+            && Boolean(progressDate)
+            && progressDate <= rangeEndDate
+        })
+        .map((progress) => {
+          const progressDate = String(progress.date ?? '').trim()
+          const rawReadyPercent = Number(progress.readyPercent)
+
+          return {
+            date: progressDate,
+            readyPercent: Number.isFinite(rawReadyPercent)
+              ? Math.min(100, Math.max(0, rawReadyPercent))
+              : null,
+          }
+        })
+        .sort((left, right) => left.date.localeCompare(right.date))
+
+      const previousReadyPercent = workerDateRange.start
+        ? (resolveLatestReadyPercentOnOrBefore(
+          readyRows,
+          addDaysToIsoDate(workerDateRange.start, -1),
+        ) ?? 0)
+        : 0
+      const latestReadyPercent = resolveLatestReadyPercentOnOrBefore(
+        readyRows,
+        rangeEndDate,
+      ) ?? previousReadyPercent
+      const progressDeltaPercent = Math.max(
+        0,
+        Number((latestReadyPercent - previousReadyPercent).toFixed(2)),
+      )
+
+      if (progressDeltaPercent <= 0) {
+        return
+      }
+
+      const totalJobHours = totalHoursByJob.get(jobKey) ?? 0
+
+      if (totalJobHours <= 0) {
+        return
+      }
+
+      const workerHours = jobHoursByWorker.get(jobKey)
+
+      if (!workerHours) {
+        return
+      }
+
+      workerHours.forEach((hours, workerId) => {
+        const workerRow = rowsByWorkerId.get(workerId)
+
+        if (!workerRow || hours <= 0) {
+          return
+        }
+
+        workerRow.progressContributionPercent += progressDeltaPercent * (hours / totalJobHours)
+        rowsByWorkerId.set(workerId, workerRow)
+      })
+    })
+
+    return [...rowsByWorkerId.values()]
+      .map((row) => ({
+        ...row,
+        progressContributionPercent: Number(row.progressContributionPercent.toFixed(2)),
+      }))
+      .filter((row) => row.totalHours > 0 || row.totalCost > 0 || row.jobNames.size > 0)
+      .sort((left, right) => {
+        if (right.totalHours !== left.totalHours) {
+          return right.totalHours - left.totalHours
+        }
+
+        return left.workerName.localeCompare(right.workerName)
+      })
+  }, [orderProgress, sortedEntries, workerDateRange.end, workerDateRange.start, workers, workersById])
+
+  useEffect(() => {
+    if (workerReportRows.length === 0) {
+      return
+    }
+
+    if (!workerReportRows.some((row) => row.workerId === workerViewWorkerId)) {
+      setWorkerViewWorkerId(workerReportRows[0].workerId)
+    }
+  }, [workerReportRows, workerViewWorkerId])
+
+  const selectedWorkerReportRow = useMemo(
+    () => workerReportRows.find((row) => row.workerId === workerViewWorkerId) ?? null,
+    [workerReportRows, workerViewWorkerId],
+  )
 
   const bulkRowCountByWorkerId = useMemo(() => {
     const map = new Map<string, number>()
@@ -991,41 +1285,172 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     [monthReportMonth],
   )
 
-  const monthViewEntries = useMemo(() => {
-    if (!monthReportRange) {
+  const reportDateRange = useMemo(() => {
+    if (reportRangeMode === 'month') {
+      return monthReportRange
+    }
+
+    const fallbackMonthRange = monthReportRange
+    const rawStartDate = (customReportStartDate || fallbackMonthRange?.start || '').trim()
+    const rawEndDate = (customReportEndDate || fallbackMonthRange?.end || '').trim()
+
+    if (!rawStartDate || !rawEndDate) {
+      return null
+    }
+
+    if (rawStartDate <= rawEndDate) {
+      return {
+        start: rawStartDate,
+        end: rawEndDate,
+      }
+    }
+
+    return {
+      start: rawEndDate,
+      end: rawStartDate,
+    }
+  }, [customReportEndDate, customReportStartDate, monthReportRange, reportRangeMode])
+
+  const reportDateRangeLabel = useMemo(() => {
+    if (!reportDateRange) {
+      return 'No range selected'
+    }
+
+    if (reportDateRange.start === reportDateRange.end) {
+      return reportDateRange.start
+    }
+
+    return `${reportDateRange.start} to ${reportDateRange.end}`
+  }, [reportDateRange])
+
+  const reportRangeEntries = useMemo(() => {
+    if (!reportDateRange) {
       return []
     }
 
     return sortedEntries.filter((entry) =>
-      isDateInRange(entry.date, monthReportRange.start, monthReportRange.end),
+      isDateInRange(entry.date, reportDateRange.start, reportDateRange.end),
     )
-  }, [monthReportRange, sortedEntries])
+  }, [reportDateRange, sortedEntries])
 
-  const quickBooksMonthlyPaymentsByJobKey = useMemo(() => {
+  const websitePayrollInRange = useMemo(() => {
+    const bySpecificJobKey = new Map<string, number>()
+    let totalAmount = 0
+    let generalJobZeroAmount = 0
+    let generalUnmappedAmount = 0
+
+    if (!reportDateRange) {
+      return {
+        totalAmount: 0,
+        generalJobZeroAmount: 0,
+        generalUnmappedAmount: 0,
+        bySpecificJobKey,
+      }
+    }
+
+    sortedEntries.forEach((entry) => {
+      if (!isDateInRange(String(entry.date ?? ''), reportDateRange.start, reportDateRange.end)) {
+        return
+      }
+
+      const laborCost = getEntryCost(entry, workersById)
+
+      if (!Number.isFinite(laborCost) || laborCost <= 0) {
+        return
+      }
+
+      totalAmount += laborCost
+
+      const jobName = String(entry.jobName ?? '').trim()
+
+      if (!jobName || isGeneralJobReference(jobName)) {
+        generalJobZeroAmount += laborCost
+        return
+      }
+
+      const jobKey = normalizeJobName(jobName) || jobName
+
+      if (reportSpecificJobKeys.has(jobKey)) {
+        const current = bySpecificJobKey.get(jobKey) ?? 0
+        bySpecificJobKey.set(jobKey, current + laborCost)
+        return
+      }
+
+      generalUnmappedAmount += laborCost
+    })
+
+    const normalizedBySpecificJobKey = new Map<string, number>()
+
+    bySpecificJobKey.forEach((amount, jobKey) => {
+      normalizedBySpecificJobKey.set(jobKey, Number(amount.toFixed(2)))
+    })
+
+    return {
+      totalAmount: Number(totalAmount.toFixed(2)),
+      generalJobZeroAmount: Number(generalJobZeroAmount.toFixed(2)),
+      generalUnmappedAmount: Number(generalUnmappedAmount.toFixed(2)),
+      bySpecificJobKey: normalizedBySpecificJobKey,
+    }
+  }, [reportDateRange, reportSpecificJobKeys, sortedEntries, workersById])
+
+  const laborCostToReportEndByJobKey = useMemo(() => {
     const map = new Map<string, number>()
 
-    if (!monthReportRange) {
+    if (!reportDateRange) {
+      return map
+    }
+
+    sortedEntries.forEach((entry) => {
+      const date = String(entry.date ?? '').trim()
+
+      if (!date || date > reportDateRange.end) {
+        return
+      }
+
+      const jobName = String(entry.jobName ?? '').trim()
+
+      if (!jobName || isGeneralJobReference(jobName)) {
+        return
+      }
+
+      const jobKey = normalizeJobName(jobName) || jobName
+
+      if (!reportSpecificJobKeys.has(jobKey)) {
+        return
+      }
+
+      const currentAmount = map.get(jobKey) ?? 0
+      const nextAmount = currentAmount + getEntryCost(entry, workersById)
+
+      map.set(jobKey, Number(nextAmount.toFixed(2)))
+    })
+
+    return map
+  }, [reportDateRange, reportSpecificJobKeys, sortedEntries, workersById])
+
+  const quickBooksPaymentsByReportRangeJobKey = useMemo(() => {
+    const map = new Map<string, number>()
+
+    if (!reportDateRange) {
       return map
     }
 
     const paymentRows = quickBooksQuery.data?.details?.payments ?? []
 
     paymentRows.forEach((paymentRow) => {
-      if (!isDateInRange(String(paymentRow.txnDate ?? ''), monthReportRange.start, monthReportRange.end)) {
+      if (!isDateInRange(String(paymentRow.txnDate ?? ''), reportDateRange.start, reportDateRange.end)) {
         return
       }
 
-      const projectLookup = paymentRow.projectId
-        ? quickBooksProjectLookupById.get(paymentRow.projectId)
-        : null
-      const fallbackProjectNumber = splitQuickBooksProjectLabel(
-        paymentRow.projectName ?? '',
-        paymentRow.projectId ?? '',
-        { fallbackProjectNumber: paymentRow.projectId ?? '' },
-      ).projectNumber
-      const jobKey = projectLookup?.jobKey || normalizeJobName(fallbackProjectNumber)
+      const jobKey = resolveQuickBooksJobKeyFromDetailRow(
+        {
+          projectId: paymentRow.projectId,
+          projectName: paymentRow.projectName,
+        },
+        quickBooksProjectLookupById,
+      )
 
-      if (!jobKey) {
+      if (!jobKey || !reportSpecificJobKeys.has(jobKey)) {
         return
       }
 
@@ -1041,28 +1466,109 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     })
 
     return map
-  }, [monthReportRange, quickBooksProjectLookupById, quickBooksQuery.data?.details?.payments])
+  }, [quickBooksProjectLookupById, quickBooksQuery.data?.details?.payments, reportDateRange, reportSpecificJobKeys])
 
-  const monthNonOrderSpendRows = useMemo<NonOrderSpendRow[]>(() => {
-    const rollupByCategory = new Map<NonOrderSpendCategory, { billedAmount: number; paidAmount: number }>()
+  const quickBooksBillsInReportRangeByJobKey = useMemo(() => {
+    const map = new Map<string, number>()
 
-    QUICKBOOKS_NON_ORDER_CATEGORY_CONFIG.forEach((config) => {
-      rollupByCategory.set(config.category, { billedAmount: 0, paidAmount: 0 })
+    if (!reportDateRange) {
+      return map
+    }
+
+    const billRows = quickBooksQuery.data?.details?.bills ?? []
+
+    billRows.forEach((billRow) => {
+      if (!isDateInRange(String(billRow.txnDate ?? ''), reportDateRange.start, reportDateRange.end)) {
+        return
+      }
+
+      const jobKey = resolveQuickBooksJobKeyFromDetailRow(
+        {
+          projectId: billRow.projectId,
+          projectName: billRow.projectName,
+        },
+        quickBooksProjectLookupById,
+      )
+
+      if (!jobKey || !reportSpecificJobKeys.has(jobKey)) {
+        return
+      }
+
+      const totalAmount = Number(billRow.totalAmount)
+      const normalizedTotalAmount = Number.isFinite(totalAmount) ? totalAmount : 0
+
+      if (normalizedTotalAmount <= 0) {
+        return
+      }
+
+      const currentAmount = map.get(jobKey) ?? 0
+      map.set(jobKey, Number((currentAmount + normalizedTotalAmount).toFixed(2)))
     })
 
-    if (!monthReportRange) {
+    return map
+  }, [quickBooksProjectLookupById, quickBooksQuery.data?.details?.bills, reportDateRange, reportSpecificJobKeys])
+
+  const quickBooksBillsToReportEndByJobKey = useMemo(() => {
+    const map = new Map<string, number>()
+
+    if (!reportDateRange) {
+      return map
+    }
+
+    const billRows = quickBooksQuery.data?.details?.bills ?? []
+
+    billRows.forEach((billRow) => {
+      const billDate = String(billRow.txnDate ?? '').trim()
+
+      if (!billDate || billDate > reportDateRange.end) {
+        return
+      }
+
+      const jobKey = resolveQuickBooksJobKeyFromDetailRow(
+        {
+          projectId: billRow.projectId,
+          projectName: billRow.projectName,
+        },
+        quickBooksProjectLookupById,
+      )
+
+      if (!jobKey || !reportSpecificJobKeys.has(jobKey)) {
+        return
+      }
+
+      const totalAmount = Number(billRow.totalAmount)
+      const normalizedTotalAmount = Number.isFinite(totalAmount) ? totalAmount : 0
+
+      if (normalizedTotalAmount <= 0) {
+        return
+      }
+
+      const currentAmount = map.get(jobKey) ?? 0
+      map.set(jobKey, Number((currentAmount + normalizedTotalAmount).toFixed(2)))
+    })
+
+    return map
+  }, [quickBooksProjectLookupById, quickBooksQuery.data?.details?.bills, reportDateRange, reportSpecificJobKeys])
+
+  const reportNonOrderSpendRows = useMemo<NonOrderSpendRow[]>(() => {
+    const rollupByCategory = new Map<NonOrderSpendCategory, { billedAmount: number }>()
+
+    QUICKBOOKS_NON_ORDER_CATEGORY_CONFIG.forEach((config) => {
+      rollupByCategory.set(config.category, { billedAmount: 0 })
+    })
+
+    if (!reportDateRange) {
       return QUICKBOOKS_NON_ORDER_CATEGORY_CONFIG.map((config) => ({
         category: config.category,
         label: config.label,
         billedAmount: 0,
-        paidAmount: 0,
       }))
     }
 
     const billRows = quickBooksQuery.data?.details?.bills ?? []
 
     billRows.forEach((billRow) => {
-      if (!isDateInRange(String(billRow.txnDate ?? ''), monthReportRange.start, monthReportRange.end)) {
+      if (!isDateInRange(String(billRow.txnDate ?? ''), reportDateRange.start, reportDateRange.end)) {
         return
       }
 
@@ -1089,27 +1595,56 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
 
       const totalAmount = Number(billRow.totalAmount)
       const normalizedTotalAmount = Number.isFinite(totalAmount) ? totalAmount : 0
-      const balanceAmount = Number(billRow.balanceAmount)
-      const normalizedBalanceAmount = Number.isFinite(balanceAmount)
-        ? Math.max(0, balanceAmount)
-        : 0
-      const paidAmount = Math.max(0, normalizedTotalAmount - normalizedBalanceAmount)
 
       bucket.billedAmount += normalizedTotalAmount
-      bucket.paidAmount += paidAmount
     })
 
     return QUICKBOOKS_NON_ORDER_CATEGORY_CONFIG.map((config) => {
-      const bucket = rollupByCategory.get(config.category) ?? { billedAmount: 0, paidAmount: 0 }
+      const bucket = rollupByCategory.get(config.category) ?? { billedAmount: 0 }
 
       return {
         category: config.category,
         label: config.label,
         billedAmount: Number(bucket.billedAmount.toFixed(2)),
-        paidAmount: Number(bucket.paidAmount.toFixed(2)),
       }
     })
-  }, [monthReportRange, quickBooksProjectLookupById, quickBooksQuery.data?.details?.bills])
+  }, [quickBooksProjectLookupById, quickBooksQuery.data?.details?.bills, reportDateRange])
+
+  const reportGeneralExpenseRows = useMemo<GeneralExpenseComponentRow[]>(() => {
+    const quickBooksGeneralBills = reportNonOrderSpendRows.find((row) => row.category === 'general')?.billedAmount ?? 0
+    const quickBooksCompanyPurchaseBills = reportNonOrderSpendRows.find((row) => row.category === 'companyPurchase')?.billedAmount ?? 0
+    const quickBooksPayrollBilled = reportNonOrderSpendRows.find((row) => row.category === 'payroll')?.billedAmount ?? 0
+    const quickBooksPayrollExtra = Math.max(0, quickBooksPayrollBilled - websitePayrollInRange.totalAmount)
+
+    return [
+      {
+        id: 'qbGeneralBills',
+        label: 'QuickBooks general bills',
+        amount: Number(quickBooksGeneralBills.toFixed(2)),
+      },
+      {
+        id: 'qbCompanyPurchaseBills',
+        label: 'QuickBooks company purchase bills',
+        amount: Number(quickBooksCompanyPurchaseBills.toFixed(2)),
+      },
+      {
+        id: 'websitePayrollGeneralJobZero',
+        label: 'Website payroll (job 0 / general)',
+        amount: Number(websitePayrollInRange.generalJobZeroAmount.toFixed(2)),
+      },
+      {
+        id: 'websitePayrollGeneralUnmapped',
+        label: 'Website payroll (not mapped to specific job)',
+        amount: Number(websitePayrollInRange.generalUnmappedAmount.toFixed(2)),
+      },
+      {
+        id: 'quickBooksPayrollExtra',
+        label: 'QuickBooks payroll extra over website payroll',
+        amount: Number(quickBooksPayrollExtra.toFixed(2)),
+        note: `QB payroll in range ${formatCurrency(quickBooksPayrollBilled)} - website payroll in range ${formatCurrency(websitePayrollInRange.totalAmount)}`,
+      },
+    ]
+  }, [reportNonOrderSpendRows, websitePayrollInRange])
 
   const managerAvailableDates = useMemo(() => {
     const dates = new Set<string>()
@@ -1712,7 +2247,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
   }, [orderProgressByDateJobKey, selectedJobEntries, selectedJobName])
 
   const dateReportRows = useMemo<DateReportOrderRow[]>(() => {
-    if (!monthReportRange) {
+    if (!reportDateRange) {
       return []
     }
 
@@ -1726,23 +2261,36 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
       }
     >()
 
-    monthViewEntries.forEach((entry) => {
+    const ensureGroupedByJobRow = (jobKey: string, preferredJobName?: string) => {
+      if (!jobKey || groupedByJob.has(jobKey)) {
+        return
+      }
+
+      const normalizedPreferredName = String(preferredJobName ?? '').trim()
+      const fallbackJobName = reportJobDisplayNameByJobKey.get(jobKey) ?? jobKey
+
+      groupedByJob.set(jobKey, {
+        jobName: normalizedPreferredName || fallbackJobName,
+        totalHours: 0,
+        totalLaborCost: 0,
+        workerRowsById: new Map<string, DateReportWorkerRow>(),
+      })
+    }
+
+    reportRangeEntries.forEach((entry) => {
       const jobName = String(entry.jobName ?? '').trim()
 
-      if (!jobName) {
+      if (!jobName || isGeneralJobReference(jobName)) {
         return
       }
 
       const jobKey = normalizeJobName(jobName) || jobName
 
-      if (!groupedByJob.has(jobKey)) {
-        groupedByJob.set(jobKey, {
-          jobName,
-          totalHours: 0,
-          totalLaborCost: 0,
-          workerRowsById: new Map<string, DateReportWorkerRow>(),
-        })
+      if (!reportSpecificJobKeys.has(jobKey)) {
+        return
       }
+
+      ensureGroupedByJobRow(jobKey, jobName)
 
       const row = groupedByJob.get(jobKey)
 
@@ -1770,35 +2318,57 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     orderProgress.forEach((progress) => {
       const progressDate = String(progress.date ?? '').trim()
 
-      if (!isDateInRange(progressDate, monthReportRange.start, monthReportRange.end)) {
+      if (!isDateInRange(progressDate, reportDateRange.start, reportDateRange.end)) {
         return
       }
 
       const jobName = String(progress.jobName ?? '').trim()
       const jobKey = normalizeJobName(jobName)
 
-      if (!jobKey || groupedByJob.has(jobKey)) {
+      if (!jobKey || isGeneralJobReference(jobName) || !reportSpecificJobKeys.has(jobKey)) {
         return
       }
 
-      groupedByJob.set(jobKey, {
-        jobName,
-        totalHours: 0,
-        totalLaborCost: 0,
-        workerRowsById: new Map<string, DateReportWorkerRow>(),
-      })
+      ensureGroupedByJobRow(jobKey, jobName)
     })
 
-    return [...groupedByJob.values()]
-      .map((jobRow) => {
-        const normalizedJobKey = normalizeJobName(jobRow.jobName)
+    quickBooksBillsInReportRangeByJobKey.forEach((_amount, jobKey) => {
+      if (reportSpecificJobKeys.has(jobKey)) {
+        ensureGroupedByJobRow(jobKey)
+      }
+    })
+
+    quickBooksPaymentsByReportRangeJobKey.forEach((_amount, jobKey) => {
+      if (reportSpecificJobKeys.has(jobKey)) {
+        ensureGroupedByJobRow(jobKey)
+      }
+    })
+
+    return [...groupedByJob.entries()]
+      .map(([groupedJobKey, jobRow]) => {
+        const normalizedJobKey = normalizeJobName(jobRow.jobName) || groupedJobKey
+
+        if (!normalizedJobKey) {
+          return null
+        }
+
         const metrics = quickBooksMetricsByJobKey.get(normalizedJobKey)
-        const totalReceivedAmount = Number(metrics?.paymentAmount ?? 0)
-        const receivedThisMonthAmount = quickBooksMonthlyPaymentsByJobKey.get(normalizedJobKey) ?? 0
-        const totalBillsAmount = Number(metrics?.billAmount ?? 0)
-        const totalBillsPaidAmount = quickBooksBillsPaidByJobKey.get(normalizedJobKey) ?? 0
-        const totalOtherCostsAmount = Number(metrics?.billAmount ?? 0)
-        const totalOnProject = totalReceivedAmount - totalOtherCostsAmount - jobRow.totalLaborCost
+        const cashReceivedInRangeAmount = Number(
+          (quickBooksPaymentsByReportRangeJobKey.get(normalizedJobKey) ?? 0).toFixed(2),
+        )
+        const totalBillsToRangeEndFromDetailRows = quickBooksBillsToReportEndByJobKey.get(normalizedJobKey) ?? 0
+        const fallbackTotalBillsAmount = Number(metrics?.billAmount ?? 0)
+        const totalBillsToRangeEndAmount = Number(
+          (totalBillsToRangeEndFromDetailRows > 0
+            ? totalBillsToRangeEndFromDetailRows
+            : fallbackTotalBillsAmount).toFixed(2),
+        )
+        const totalLaborCostToRangeEnd = Number(
+          (laborCostToReportEndByJobKey.get(normalizedJobKey) ?? 0).toFixed(2),
+        )
+        const costBaseToRangeEndAmount = Number(
+          (totalLaborCostToRangeEnd + totalBillsToRangeEndAmount).toFixed(2),
+        )
         const readyRows = orderProgress
           .filter((progress) => {
             const progressJobKey = normalizeJobName(progress.jobName)
@@ -1806,7 +2376,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
 
             return progressJobKey === normalizedJobKey
               && Boolean(progressDate)
-              && progressDate <= monthReportRange.end
+              && progressDate <= reportDateRange.end
           })
           .map((progress) => {
             const progressDate = String(progress.date ?? '').trim()
@@ -1823,24 +2393,39 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
 
         const previousReadyPercent = resolveLatestReadyPercentOnOrBefore(
           readyRows,
-          addDaysToIsoDate(monthReportRange.start, -1),
+          addDaysToIsoDate(reportDateRange.start, -1),
         ) ?? 0
         const latestReadyPercent = resolveLatestReadyPercentOnOrBefore(
           readyRows,
-          monthReportRange.end,
+          reportDateRange.end,
         ) ?? previousReadyPercent
-        const progressDeltaPercent = Math.max(
-          0,
-          Number((latestReadyPercent - previousReadyPercent).toFixed(1)),
+        const progressDeltaPercent = Number(
+          (latestReadyPercent - previousReadyPercent).toFixed(1),
         )
 
         const purchaseOrderAmount = Number(metrics?.purchaseOrderAmount ?? 0)
         const invoiceAmount = Number(metrics?.invoiceAmount ?? 0)
+        const paymentAmount = Number(metrics?.paymentAmount ?? 0)
         const contractAmount = purchaseOrderAmount > 0
           ? purchaseOrderAmount
-          : Math.max(invoiceAmount, totalReceivedAmount)
-        const expectedEarnedAmount = Number(
+          : Math.max(invoiceAmount, paymentAmount)
+        const recognizedRevenueAmount = Number(
           ((contractAmount * progressDeltaPercent) / 100).toFixed(2),
+        )
+        const recognizedLaborCostAmount = Number(
+          ((totalLaborCostToRangeEnd * progressDeltaPercent) / 100).toFixed(2),
+        )
+        const recognizedBillsCostAmount = Number(
+          ((totalBillsToRangeEndAmount * progressDeltaPercent) / 100).toFixed(2),
+        )
+        const recognizedCostAmount = Number(
+          (recognizedLaborCostAmount + recognizedBillsCostAmount).toFixed(2),
+        )
+        const recognizedProfitAmount = Number(
+          (recognizedRevenueAmount - recognizedCostAmount).toFixed(2),
+        )
+        const cashGapVsRecognizedRevenueAmount = Number(
+          (cashReceivedInRangeAmount - recognizedRevenueAmount).toFixed(2),
         )
         const workerRows = [...jobRow.workerRowsById.values()].sort(
           (left, right) =>
@@ -1850,46 +2435,440 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
         )
 
         return {
-          monthKey: monthReportMonth,
+          monthKey: monthKeyFromIsoDate(reportDateRange.start) || monthReportMonth,
           jobName: jobRow.jobName,
           totalHours: jobRow.totalHours,
           totalLaborCost: jobRow.totalLaborCost,
+          totalLaborCostToRangeEnd,
           workerRows,
           readyRows,
           latestReadyPercent,
           previousReadyPercent,
           progressDeltaPercent,
           contractAmount,
-          expectedEarnedAmount,
-          totalReceivedAmount,
-          receivedThisMonthAmount,
-          totalBillsAmount,
-          totalBillsPaidAmount,
-          totalOtherCostsAmount,
-          totalOnProject,
+          totalBillsToRangeEndAmount,
+          costBaseToRangeEndAmount,
+          recognizedRevenueAmount,
+          recognizedLaborCostAmount,
+          recognizedBillsCostAmount,
+          recognizedCostAmount,
+          recognizedProfitAmount,
+          cashReceivedInRangeAmount,
+          cashGapVsRecognizedRevenueAmount,
         }
       })
+      .filter((row): row is DateReportOrderRow => Boolean(row))
       .sort((left, right) => {
-        if (right.expectedEarnedAmount !== left.expectedEarnedAmount) {
-          return right.expectedEarnedAmount - left.expectedEarnedAmount
+        const absoluteRevenueDiff = Math.abs(right.recognizedRevenueAmount) - Math.abs(left.recognizedRevenueAmount)
+
+        if (absoluteRevenueDiff !== 0) {
+          return absoluteRevenueDiff
         }
 
-        if (right.progressDeltaPercent !== left.progressDeltaPercent) {
-          return right.progressDeltaPercent - left.progressDeltaPercent
+        const absoluteProfitDiff = Math.abs(right.recognizedProfitAmount) - Math.abs(left.recognizedProfitAmount)
+
+        if (absoluteProfitDiff !== 0) {
+          return absoluteProfitDiff
         }
 
         return left.jobName.localeCompare(right.jobName)
       })
   }, [
+    laborCostToReportEndByJobKey,
     monthReportMonth,
-    monthReportRange,
-    monthViewEntries,
     orderProgress,
-    quickBooksBillsPaidByJobKey,
+    quickBooksBillsInReportRangeByJobKey,
+    quickBooksBillsToReportEndByJobKey,
     quickBooksMetricsByJobKey,
-    quickBooksMonthlyPaymentsByJobKey,
+    quickBooksPaymentsByReportRangeJobKey,
+    reportJobDisplayNameByJobKey,
+    reportDateRange,
+    reportRangeEntries,
+    reportSpecificJobKeys,
     workersById,
   ])
+
+  const reportSummaryTotals = useMemo(() => {
+    const totalRecognizedRevenue = dateReportRows.reduce(
+      (sum, row) => sum + row.recognizedRevenueAmount,
+      0,
+    )
+    const totalRecognizedLaborCost = dateReportRows.reduce(
+      (sum, row) => sum + row.recognizedLaborCostAmount,
+      0,
+    )
+    const totalRecognizedBillsCost = dateReportRows.reduce(
+      (sum, row) => sum + row.recognizedBillsCostAmount,
+      0,
+    )
+    const totalRecognizedCost = dateReportRows.reduce(
+      (sum, row) => sum + row.recognizedCostAmount,
+      0,
+    )
+    const totalRecognizedProfit = dateReportRows.reduce(
+      (sum, row) => sum + row.recognizedProfitAmount,
+      0,
+    )
+    const totalCashReceivedInRange = dateReportRows.reduce(
+      (sum, row) => sum + row.cashReceivedInRangeAmount,
+      0,
+    )
+    const totalGeneralExpense = reportGeneralExpenseRows.reduce(
+      (sum, row) => sum + row.amount,
+      0,
+    )
+    const totalNetStanding = totalRecognizedProfit - totalGeneralExpense
+    const totalCashGapVsRecognizedRevenue = totalCashReceivedInRange - totalRecognizedRevenue
+
+    return {
+      totalRecognizedRevenue: Number(totalRecognizedRevenue.toFixed(2)),
+      totalRecognizedLaborCost: Number(totalRecognizedLaborCost.toFixed(2)),
+      totalRecognizedBillsCost: Number(totalRecognizedBillsCost.toFixed(2)),
+      totalRecognizedCost: Number(totalRecognizedCost.toFixed(2)),
+      totalRecognizedProfit: Number(totalRecognizedProfit.toFixed(2)),
+      totalGeneralExpense: Number(totalGeneralExpense.toFixed(2)),
+      totalNetStanding: Number(totalNetStanding.toFixed(2)),
+      totalCashReceivedInRange: Number(totalCashReceivedInRange.toFixed(2)),
+      totalCashGapVsRecognizedRevenue: Number(totalCashGapVsRecognizedRevenue.toFixed(2)),
+    }
+  }, [dateReportRows, reportGeneralExpenseRows])
+
+  const reportSummaryBreakdowns = useMemo<Record<ReportSummaryBreakdownKey, ReportSummaryBreakdown>>(() => {
+    const compareBreakdownRows = (
+      left: ReportSummaryBreakdownRow,
+      right: ReportSummaryBreakdownRow,
+    ) => {
+      const absoluteDiff = Math.abs(right.amount) - Math.abs(left.amount)
+
+      if (absoluteDiff !== 0) {
+        return absoluteDiff
+      }
+
+      return left.label.localeCompare(right.label)
+    }
+
+    const recognizedRevenueByOrderRows = dateReportRows
+      .filter((row) => row.recognizedRevenueAmount !== 0)
+      .map((row) => ({
+        label: row.jobName,
+        amount: Number(row.recognizedRevenueAmount.toFixed(2)),
+        note: `${row.progressDeltaPercent.toFixed(1)}% of ${formatCurrency(row.contractAmount)}`,
+      }))
+      .sort(compareBreakdownRows)
+
+    const recognizedCostByOrderRows = dateReportRows
+      .filter((row) => row.recognizedCostAmount !== 0)
+      .map((row) => ({
+        label: row.jobName,
+        amount: Number(row.recognizedCostAmount.toFixed(2)),
+        note: `${row.progressDeltaPercent.toFixed(1)}% of ${formatCurrency(row.costBaseToRangeEndAmount)} (labor ${formatCurrency(row.totalLaborCostToRangeEnd)} + bills ${formatCurrency(row.totalBillsToRangeEndAmount)})`,
+      }))
+      .sort(compareBreakdownRows)
+
+    const recognizedProfitByOrderRows = dateReportRows
+      .filter((row) => row.recognizedProfitAmount !== 0)
+      .map((row) => ({
+        label: row.jobName,
+        amount: Number(row.recognizedProfitAmount.toFixed(2)),
+        note: `Recognized revenue ${formatCurrency(row.recognizedRevenueAmount)} - recognized cost ${formatCurrency(row.recognizedCostAmount)}`,
+      }))
+      .sort(compareBreakdownRows)
+
+    const generalExpenseRows = reportGeneralExpenseRows
+      .filter((row) => row.amount > 0)
+      .map((row) => ({
+        label: row.label,
+        amount: Number(row.amount.toFixed(2)),
+        note: row.note,
+      }))
+      .sort(compareBreakdownRows)
+
+    const orderJobNameByKey = new Map<string, string>()
+    const progressDeltaByJobKey = new Map<string, number>()
+
+    dateReportRows.forEach((row) => {
+      const jobKey = normalizeJobName(row.jobName)
+
+      if (!jobKey) {
+        return
+      }
+
+      orderJobNameByKey.set(jobKey, row.jobName)
+      progressDeltaByJobKey.set(jobKey, row.progressDeltaPercent)
+    })
+
+    const nonOrderLabelByCategory = new Map<NonOrderSpendCategory, string>(
+      QUICKBOOKS_NON_ORDER_CATEGORY_CONFIG.map((config) => [config.category, config.label]),
+    )
+
+    const billRows = quickBooksQuery.data?.details?.bills ?? []
+
+    const baseBreakdownBillRows = billRows
+      .map((billRow, index) => {
+        const totalAmount = Number(billRow.totalAmount)
+        const normalizedTotalAmount = Number.isFinite(totalAmount)
+          ? Math.max(0, totalAmount)
+          : 0
+
+        if (normalizedTotalAmount <= 0) {
+          return null
+        }
+
+        const balanceAmount = Number(billRow.balanceAmount)
+        const normalizedBalanceAmount = Number.isFinite(balanceAmount)
+          ? Math.max(0, balanceAmount)
+          : 0
+        const paidAmount = Math.max(0, normalizedTotalAmount - normalizedBalanceAmount)
+        const date = String(billRow.txnDate ?? '').trim()
+        const projectLabel = splitQuickBooksProjectLabel(
+          billRow.projectName ?? '',
+          billRow.projectId ?? '',
+          { fallbackProjectNumber: billRow.projectId ?? '' },
+        ).projectNumber
+          || String(billRow.projectName ?? '').trim()
+          || String(billRow.projectId ?? '').trim()
+          || '-'
+        const jobKey = resolveQuickBooksJobKeyFromDetailRow(
+          {
+            projectId: billRow.projectId,
+            projectName: billRow.projectName,
+          },
+          quickBooksProjectLookupById,
+        )
+        const orderJobName = jobKey ? orderJobNameByKey.get(jobKey) : null
+        const progressDeltaPercent = jobKey ? (progressDeltaByJobKey.get(jobKey) ?? 0) : 0
+        const nonOrderCategory = resolveNonOrderSpendCategory(billRow.projectName, projectLabel)
+        const isInRange = Boolean(
+          reportDateRange
+          && date
+          && isDateInRange(date, reportDateRange.start, reportDateRange.end),
+        )
+        const isOnOrBeforeEnd = Boolean(
+          reportDateRange
+          && date
+          && date <= reportDateRange.end,
+        )
+        const includeInRecognizedCostAmount = orderJobName && isOnOrBeforeEnd
+          ? Number(((normalizedTotalAmount * progressDeltaPercent) / 100).toFixed(2))
+          : 0
+        const includeInGeneralExpenseAmount = isInRange
+          && (nonOrderCategory === 'general' || nonOrderCategory === 'companyPurchase')
+          ? Number(normalizedTotalAmount.toFixed(2))
+          : 0
+
+        if (includeInRecognizedCostAmount === 0 && includeInGeneralExpenseAmount === 0) {
+          return null
+        }
+
+        const source = orderJobName
+          ? orderJobName
+          : `${nonOrderLabelByCategory.get(nonOrderCategory as NonOrderSpendCategory) ?? 'Non-order'} (non-order)`
+        const documentLabel = String(billRow.docNumber ?? billRow.id ?? '').trim() || '-'
+
+        return {
+          id: `${billRow.id ?? 'no-id'}:${documentLabel}:${date || 'no-date'}:${index}`,
+          date,
+          document: documentLabel,
+          source,
+          project: projectLabel,
+          totalAmount: Number(normalizedTotalAmount.toFixed(2)),
+          paidAmount: Number(paidAmount.toFixed(2)),
+          unpaidAmount: Number(normalizedBalanceAmount.toFixed(2)),
+          includeInRecognizedCostAmount,
+          includeInGeneralExpenseAmount,
+        }
+      })
+      .filter((row): row is {
+        id: string
+        date: string
+        document: string
+        source: string
+        project: string
+        totalAmount: number
+        paidAmount: number
+        unpaidAmount: number
+        includeInRecognizedCostAmount: number
+        includeInGeneralExpenseAmount: number
+      } => Boolean(row))
+
+    const sortBreakdownBillRows = (
+      left: ReportSummaryBreakdownBillRow,
+      right: ReportSummaryBreakdownBillRow,
+    ) => {
+      const absoluteDiff = Math.abs(right.includedAmount) - Math.abs(left.includedAmount)
+
+      if (absoluteDiff !== 0) {
+        return absoluteDiff
+      }
+
+      const leftDate = left.date || ''
+      const rightDate = right.date || ''
+
+      if (rightDate !== leftDate) {
+        return rightDate.localeCompare(leftDate)
+      }
+
+      return left.source.localeCompare(right.source)
+    }
+
+    const recognizedCostBillRows: ReportSummaryBreakdownBillRow[] = baseBreakdownBillRows
+      .filter((row) => row.includeInRecognizedCostAmount !== 0)
+      .map((row) => ({
+        id: row.id,
+        date: row.date,
+        document: row.document,
+        source: row.source,
+        project: row.project,
+        totalAmount: row.totalAmount,
+        paidAmount: row.paidAmount,
+        unpaidAmount: row.unpaidAmount,
+        includedAmount: Number(row.includeInRecognizedCostAmount.toFixed(2)),
+      }))
+      .sort(sortBreakdownBillRows)
+
+    const generalExpenseBillRows: ReportSummaryBreakdownBillRow[] = baseBreakdownBillRows
+      .filter((row) => row.includeInGeneralExpenseAmount > 0)
+      .map((row) => ({
+        id: row.id,
+        date: row.date,
+        document: row.document,
+        source: row.source,
+        project: row.project,
+        totalAmount: row.totalAmount,
+        paidAmount: row.paidAmount,
+        unpaidAmount: row.unpaidAmount,
+        includedAmount: Number(row.includeInGeneralExpenseAmount.toFixed(2)),
+      }))
+      .sort(sortBreakdownBillRows)
+
+    return {
+      recognizedRevenue: {
+        title: 'Recognized project revenue breakdown',
+        totalLabel: 'Recognized project revenue',
+        totalAmount: reportSummaryTotals.totalRecognizedRevenue,
+        formula: 'Formula: sum of (progress delta in range x contract value) by project.',
+        components: [
+          {
+            label: 'Recognized project revenue',
+            amount: reportSummaryTotals.totalRecognizedRevenue,
+          },
+          {
+            label: 'Cash received in range',
+            amount: reportSummaryTotals.totalCashReceivedInRange,
+            note: 'Cash is shown as a separate view and is not mixed into recognition profit.',
+          },
+          {
+            label: 'Cash gap vs recognized revenue',
+            amount: reportSummaryTotals.totalCashGapVsRecognizedRevenue,
+            note: 'Positive means collections are ahead. Negative means collections are behind.',
+          },
+        ],
+        sections: [
+          {
+            title: 'Recognized revenue by project',
+            rows: recognizedRevenueByOrderRows,
+            emptyText: 'No recognized revenue rows found in this range.',
+          },
+        ],
+      },
+      recognizedCost: {
+        title: 'Recognized project cost breakdown',
+        totalLabel: 'Recognized project cost',
+        totalAmount: reportSummaryTotals.totalRecognizedCost,
+        formula: 'Formula: sum of (progress delta in range x project cost base to range end).',
+        components: [
+          {
+            label: 'Recognized labor cost',
+            amount: reportSummaryTotals.totalRecognizedLaborCost,
+          },
+          {
+            label: 'Recognized bills cost',
+            amount: reportSummaryTotals.totalRecognizedBillsCost,
+          },
+          {
+            label: 'Total recognized project cost',
+            amount: reportSummaryTotals.totalRecognizedCost,
+          },
+        ],
+        sections: [
+          {
+            title: 'Recognized cost by project',
+            rows: recognizedCostByOrderRows,
+            emptyText: 'No recognized cost rows found in this range.',
+          },
+        ],
+        billRows: recognizedCostBillRows,
+        billsEmptyText: 'No bill rows contributed to recognized project cost.',
+        includedAmountLabel: 'Included in recognized cost',
+        billsScopeNote: 'Included amount is bill amount x progress delta for each project in this range.',
+      },
+      generalExpense: {
+        title: 'General monthly expense breakdown',
+        totalLabel: 'General monthly expense',
+        totalAmount: reportSummaryTotals.totalGeneralExpense,
+        formula: 'Formula: QB general/company purchase bills + website payroll (job 0 and unmapped) + QB payroll extra over website payroll.',
+        components: [
+          ...generalExpenseRows,
+        ],
+        sections: [
+          {
+            title: 'General expense components',
+            rows: generalExpenseRows,
+            emptyText: 'No general expense components found in this range.',
+          },
+        ],
+        billRows: generalExpenseBillRows,
+        billsEmptyText: 'No QuickBooks general/company-purchase bill rows found in this range.',
+        includedAmountLabel: 'Included in general expense',
+        billsScopeNote: 'This bill list covers QuickBooks general and company purchase rows. Payroll extra is shown in components.',
+      },
+      netStanding: {
+        title: 'Net monthly standing breakdown',
+        totalLabel: 'Net monthly standing',
+        totalAmount: reportSummaryTotals.totalNetStanding,
+        formula: 'Formula: recognized project profit - general monthly expense.',
+        components: [
+          {
+            label: 'Recognized project profit',
+            amount: reportSummaryTotals.totalRecognizedProfit,
+          },
+          {
+            label: 'Less general monthly expense',
+            amount: Number((-reportSummaryTotals.totalGeneralExpense).toFixed(2)),
+          },
+        ],
+        sections: [
+          {
+            title: 'Recognized profit by project',
+            rows: recognizedProfitByOrderRows,
+            emptyText: 'No recognized profit rows found in this range.',
+          },
+          {
+            title: 'General monthly expense components',
+            rows: generalExpenseRows.map((row) => ({
+              ...row,
+              amount: Number((-row.amount).toFixed(2)),
+            })),
+            emptyText: 'No general expense components found in this range.',
+          },
+        ],
+      },
+    }
+  }, [
+    dateReportRows,
+    quickBooksProjectLookupById,
+    quickBooksQuery.data?.details?.bills,
+    reportDateRange,
+    reportGeneralExpenseRows,
+    reportSummaryTotals,
+  ])
+
+  const selectedReportSummaryBreakdown = activeReportSummaryBreakdown
+    ? reportSummaryBreakdowns[activeReportSummaryBreakdown]
+    : null
+  const canShowReportSummaryBillRows = Boolean(selectedReportSummaryBreakdown?.billRows)
+  const isReportSummaryBillsView = canShowReportSummaryBillRows
+    && reportSummaryBreakdownView === 'bills'
 
   const missingInfoDates = useMemo(() => {
     if (workers.length === 0) {
@@ -3825,30 +4804,10 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
           {isReportsView && reportsTab === 2 ? (
             <Stack spacing={2}>
               <Typography variant="subtitle1" fontWeight={700}>
-                Worker History
+                Worker Report
               </Typography>
 
               <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.2}>
-                <TextField
-                  select
-                  fullWidth
-                  label="Worker"
-                  value={workerViewWorkerId}
-                  onChange={(event) => setWorkerViewWorkerId(event.target.value)}
-                >
-                  {workers.length === 0 ? (
-                    <MenuItem disabled value="">
-                      Add workers first
-                    </MenuItem>
-                  ) : null}
-
-                  {workers.map((worker) => (
-                    <MenuItem key={worker.id} value={worker.id}>
-                      {(String(worker.workerNumber ?? '').trim() || '----')} - {worker.fullName}
-                    </MenuItem>
-                  ))}
-                </TextField>
-
                 <TextField
                   select
                   fullWidth
@@ -3859,7 +4818,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                   }
                 >
                   <MenuItem value="week">Last 7 days</MenuItem>
-                  <MenuItem value="month">Last 30 days</MenuItem>
+                  <MenuItem value="month">Last 30 days (default)</MenuItem>
                   <MenuItem value="year">Last 365 days</MenuItem>
                   <MenuItem value="custom">Custom range</MenuItem>
                 </TextField>
@@ -3887,15 +4846,94 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                 ) : null}
               </Stack>
 
+              <Typography variant="body2" color="text.secondary">
+                Range: {workerDateRange.start ?? 'Any'} to {workerDateRange.end ?? 'Any'}
+              </Typography>
+
+              <TableContainer sx={WORKSHEET_TABLE_CONTAINER_SX}>
+                <Table size="small" stickyHeader>
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Worker</TableCell>
+                      <TableCell>What was done (jobs)</TableCell>
+                      <TableCell align="right">Hours in range</TableCell>
+                      <TableCell align="right">Labor cost in range</TableCell>
+                      <TableCell align="right">Progress made</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {workerReportRows.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={5}>
+                          <Typography color="text.secondary">
+                            No worker activity in selected range.
+                          </Typography>
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      workerReportRows.map((row) => {
+                        const jobsPreview = [...row.jobNames]
+                          .sort((left, right) => left.localeCompare(right))
+                          .slice(0, 4)
+                        const hasMoreJobs = row.jobNames.size > jobsPreview.length
+
+                        return (
+                          <TableRow
+                            key={row.workerId}
+                            hover
+                            selected={row.workerId === workerViewWorkerId}
+                            onClick={() => setWorkerViewWorkerId(row.workerId)}
+                            sx={{ cursor: 'pointer' }}
+                          >
+                            <TableCell>{row.workerName}</TableCell>
+                            <TableCell>
+                              {jobsPreview.length > 0
+                                ? `${jobsPreview.join(', ')}${hasMoreJobs ? ', ...' : ''}`
+                                : '-'}
+                            </TableCell>
+                            <TableCell align="right">{formatHours(row.totalHours)}</TableCell>
+                            <TableCell align="right">{formatCurrency(row.totalCost)}</TableCell>
+                            <TableCell align="right">
+                              <Typography
+                                fontWeight={700}
+                                color={row.progressContributionPercent > 0 ? 'success.main' : 'text.secondary'}
+                              >
+                                {`${row.progressContributionPercent.toFixed(1)}%`}
+                              </Typography>
+                            </TableCell>
+                          </TableRow>
+                        )
+                      })
+                    )}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+
               <Stack
                 direction={{ xs: 'column', md: 'row' }}
                 justifyContent="space-between"
                 alignItems={{ xs: 'flex-start', md: 'center' }}
                 gap={1.2}
               >
-                <Typography variant="body2" color="text.secondary">
-                  Range: {workerDateRange.start ?? 'Any'} to {workerDateRange.end ?? 'Any'}
-                </Typography>
+                <TextField
+                  select
+                  fullWidth
+                  label="Selected worker details"
+                  value={workerViewWorkerId}
+                  onChange={(event) => setWorkerViewWorkerId(event.target.value)}
+                >
+                  {workerReportRows.length === 0 ? (
+                    <MenuItem disabled value="">
+                      No workers in selected range
+                    </MenuItem>
+                  ) : null}
+
+                  {workerReportRows.map((workerRow) => (
+                    <MenuItem key={workerRow.workerId} value={workerRow.workerId}>
+                      {workerRow.workerName}
+                    </MenuItem>
+                  ))}
+                </TextField>
 
                 <Stack direction="row" spacing={1}>
                   <Button
@@ -3923,7 +4961,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                     Hours in range
                   </Typography>
                   <Typography variant="h6" fontWeight={700}>
-                    {formatHours(workerTotals.totalHours)} h
+                    {formatHours(selectedWorkerReportRow?.totalHours ?? 0)} h
                   </Typography>
                 </Paper>
 
@@ -3932,7 +4970,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                     Cost in range
                   </Typography>
                   <Typography variant="h6" fontWeight={700}>
-                    {formatCurrency(workerTotals.totalCost)}
+                    {formatCurrency(selectedWorkerReportRow?.totalCost ?? 0)}
                   </Typography>
                 </Paper>
 
@@ -3942,6 +4980,21 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                   </Typography>
                   <Typography variant="h6" fontWeight={700}>
                     {workerFilteredEntries.length}
+                  </Typography>
+                </Paper>
+
+                <Paper variant="outlined" sx={{ p: 2, flex: 1 }}>
+                  <Typography variant="caption" color="text.secondary">
+                    Progress made
+                  </Typography>
+                  <Typography
+                    variant="h6"
+                    fontWeight={700}
+                    color={(selectedWorkerReportRow?.progressContributionPercent ?? 0) > 0
+                      ? 'success.main'
+                      : 'text.primary'}
+                  >
+                    {`${(selectedWorkerReportRow?.progressContributionPercent ?? 0).toFixed(1)}%`}
                   </Typography>
                 </Paper>
               </Stack>
@@ -4030,80 +5083,216 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                 gap={1.2}
               >
                 <Typography variant="subtitle1" fontWeight={700}>
-                  Monthly Job Financial Report
+                  Financial Report (Month Or Specific Dates)
                 </Typography>
 
                 <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
                   <TextField
                     select
-                    label="Month"
-                    value={monthReportMonth}
-                    onChange={(event) => setMonthReportMonth(event.target.value)}
-                    sx={{ maxWidth: 220 }}
+                    label="Report type"
+                    value={reportRangeMode}
+                    onChange={(event) => setReportRangeMode(event.target.value as ReportRangeMode)}
+                    sx={{ minWidth: 170 }}
                   >
-                    {reportMonthOptions.length === 0 ? (
-                      <MenuItem value="" disabled>
-                        No months available
-                      </MenuItem>
-                    ) : null}
-
-                    {reportMonthOptions.map((monthKey) => (
-                      <MenuItem key={monthKey} value={monthKey}>
-                        {formatMonthKeyLabel(monthKey)}
-                      </MenuItem>
-                    ))}
+                    <MenuItem value="month">By month</MenuItem>
+                    <MenuItem value="custom">Specific dates</MenuItem>
                   </TextField>
+
+                  {reportRangeMode === 'month' ? (
+                    <TextField
+                      select
+                      label="Month"
+                      value={monthReportMonth}
+                      onChange={(event) => setMonthReportMonth(event.target.value)}
+                      sx={{ maxWidth: 220 }}
+                    >
+                      {reportMonthOptions.length === 0 ? (
+                        <MenuItem value="" disabled>
+                          No months available
+                        </MenuItem>
+                      ) : null}
+
+                      {reportMonthOptions.map((monthKey) => (
+                        <MenuItem key={monthKey} value={monthKey}>
+                          {formatMonthKeyLabel(monthKey)}
+                        </MenuItem>
+                      ))}
+                    </TextField>
+                  ) : (
+                    <>
+                      <TextField
+                        type="date"
+                        label="Start date"
+                        value={customReportStartDate}
+                        onChange={(event) => setCustomReportStartDate(event.target.value)}
+                        InputLabelProps={{ shrink: true }}
+                        sx={{ minWidth: 180 }}
+                      />
+
+                      <TextField
+                        type="date"
+                        label="End date"
+                        value={customReportEndDate}
+                        onChange={(event) => setCustomReportEndDate(event.target.value)}
+                        InputLabelProps={{ shrink: true }}
+                        sx={{ minWidth: 180 }}
+                      />
+                    </>
+                  )}
                 </Stack>
               </Stack>
 
               <Typography variant="body2" color="text.secondary">
-                Month logic: earned percent is the progress delta for this month. Example: from 20% to 50% means 30% earned this month.
+                Selected range: {reportDateRangeLabel}
               </Typography>
 
-              <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5}>
-                {monthNonOrderSpendRows.map((row) => (
-                  <Paper key={row.category} variant="outlined" sx={{ p: 1.5, flex: 1 }}>
-                    <Typography variant="caption" color="text.secondary">
-                      {`${row.label} (monthly non-order)`}
-                    </Typography>
-                    <Typography variant="body1" fontWeight={700}>
-                      {`Billed ${formatCurrency(row.billedAmount)}`}
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary">
-                      {`Paid ${formatCurrency(row.paidAmount)}`}
-                    </Typography>
-                  </Paper>
-                ))}
-              </Stack>
+              <Typography variant="body2" color="text.secondary">
+                Monthly standing logic: recognized revenue and recognized project cost both use progress delta in this range, general expense stays as actual monthly expense, and cash stays separate.
+              </Typography>
+
+              <Box
+                sx={{
+                  display: 'grid',
+                  gridTemplateColumns: {
+                    xs: 'repeat(1, minmax(0, 1fr))',
+                    md: 'repeat(2, minmax(0, 1fr))',
+                    lg: 'repeat(4, minmax(0, 1fr))',
+                  },
+                  gap: 1.25,
+                }}
+              >
+                <Paper
+                  variant="outlined"
+                  onClick={() => handleOpenReportSummaryBreakdown('recognizedRevenue')}
+                  sx={{
+                    ...REPORT_SUMMARY_CARD_SX,
+                    borderLeft: '4px solid #0d47a1',
+                    cursor: 'pointer',
+                    transition: 'box-shadow 120ms ease, transform 120ms ease',
+                    '&:hover': {
+                      boxShadow: 3,
+                      transform: 'translateY(-1px)',
+                    },
+                  }}
+                >
+                  <Typography variant="body2" color="text.secondary">
+                    Recognized project revenue
+                  </Typography>
+                  <Typography variant="h5" fontWeight={800}>
+                    {formatCurrency(reportSummaryTotals.totalRecognizedRevenue)}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Cash gap: {formatCurrency(reportSummaryTotals.totalCashGapVsRecognizedRevenue)}
+                  </Typography>
+                </Paper>
+
+                <Paper
+                  variant="outlined"
+                  onClick={() => handleOpenReportSummaryBreakdown('recognizedCost')}
+                  sx={{
+                    ...REPORT_SUMMARY_CARD_SX,
+                    borderLeft: '4px solid #6d4c41',
+                    cursor: 'pointer',
+                    transition: 'box-shadow 120ms ease, transform 120ms ease',
+                    '&:hover': {
+                      boxShadow: 3,
+                      transform: 'translateY(-1px)',
+                    },
+                  }}
+                >
+                  <Typography variant="body2" color="text.secondary">
+                    Recognized project cost
+                  </Typography>
+                  <Typography variant="h5" fontWeight={800}>
+                    {formatCurrency(reportSummaryTotals.totalRecognizedCost)}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Project profit: {formatCurrency(reportSummaryTotals.totalRecognizedProfit)}
+                  </Typography>
+                </Paper>
+
+                <Paper
+                  variant="outlined"
+                  onClick={() => handleOpenReportSummaryBreakdown('generalExpense')}
+                  sx={{
+                    ...REPORT_SUMMARY_CARD_SX,
+                    borderLeft: '4px solid #2e7d32',
+                    cursor: 'pointer',
+                    transition: 'box-shadow 120ms ease, transform 120ms ease',
+                    '&:hover': {
+                      boxShadow: 3,
+                      transform: 'translateY(-1px)',
+                    },
+                  }}
+                >
+                  <Typography variant="body2" color="text.secondary">
+                    General monthly expense
+                  </Typography>
+                  <Typography variant="h5" fontWeight={800}>
+                    {formatCurrency(reportSummaryTotals.totalGeneralExpense)}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Includes job 0, unmapped website payroll, and QB payroll extra.
+                  </Typography>
+                </Paper>
+
+                <Paper
+                  variant="outlined"
+                  onClick={() => handleOpenReportSummaryBreakdown('netStanding')}
+                  sx={{
+                    ...REPORT_SUMMARY_CARD_SX,
+                    borderLeft: '4px solid #6a1b9a',
+                    cursor: 'pointer',
+                    transition: 'box-shadow 120ms ease, transform 120ms ease',
+                    '&:hover': {
+                      boxShadow: 3,
+                      transform: 'translateY(-1px)',
+                    },
+                  }}
+                >
+                  <Typography variant="body2" color="text.secondary">
+                    Net monthly standing
+                  </Typography>
+                  <Typography variant="h5" fontWeight={800}>
+                    {formatCurrency(reportSummaryTotals.totalNetStanding)}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Recognized project profit minus general monthly expense.
+                  </Typography>
+                </Paper>
+              </Box>
 
               <TableContainer sx={WORKSHEET_TABLE_CONTAINER_SX}>
-                <Table size="small" stickyHeader sx={{ minWidth: 1660 }}>
+                <Table size="small" stickyHeader sx={{ minWidth: 1860 }}>
                   <TableHead>
                     <TableRow>
-                      <TableCell>Order Number</TableCell>
-                      <TableCell align="right">Hours This Month</TableCell>
-                      <TableCell align="right">Labor Cost This Month</TableCell>
+                      <TableCell>Project / General</TableCell>
+                      <TableCell align="right">Hours in Range</TableCell>
+                      <TableCell align="right">Website Labor in Range</TableCell>
+                      <TableCell align="right">QB Bills to End</TableCell>
+                      <TableCell align="right">Cost Base to End</TableCell>
                       <TableCell align="right">Progress (Prev -&gt; End)</TableCell>
-                      <TableCell align="right">Progress Earned %</TableCell>
+                      <TableCell align="right">Progress Delta</TableCell>
                       <TableCell align="right">Contract Value</TableCell>
-                      <TableCell align="right">Should Earn This Month</TableCell>
-                      <TableCell align="right">Received Actual (Total)</TableCell>
-                      <TableCell align="right">Received This Month</TableCell>
-                      <TableCell align="right">Bills (Total)</TableCell>
-                      <TableCell align="right">Bills Paid (Total)</TableCell>
+                      <TableCell align="right">Recognized Revenue</TableCell>
+                      <TableCell align="right">Recognized Cost</TableCell>
+                      <TableCell align="right">Recognized Profit</TableCell>
+                      <TableCell align="right">Cash Received in Range</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
-                    {dateReportRows.length === 0 ? (
+                    {dateReportRows.length === 0
+                    && !reportGeneralExpenseRows.some((row) => row.amount > 0) ? (
                       <TableRow>
-                        <TableCell colSpan={11}>
+                        <TableCell colSpan={12}>
                           <Typography color="text.secondary">
-                            No jobs found for the selected month.
+                            No jobs found for the selected range.
                           </Typography>
                         </TableCell>
                       </TableRow>
                     ) : (
-                      dateReportRows.map((row) => {
+                      <>
+                        {dateReportRows.map((row) => {
                         const hasReadyHistory = row.readyRows.some(
                           (readyRow) => readyRow.readyPercent !== null,
                         )
@@ -4155,6 +5344,18 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                             </TableCell>
 
                             <TableCell align="right">
+                              <Typography fontWeight={700}>
+                                {formatCurrency(row.totalBillsToRangeEndAmount)}
+                              </Typography>
+                            </TableCell>
+
+                            <TableCell align="right">
+                              <Typography fontWeight={700}>
+                                {formatCurrency(row.costBaseToRangeEndAmount)}
+                              </Typography>
+                            </TableCell>
+
+                            <TableCell align="right">
                               {hasReadyHistory ? (
                                 <Button
                                   variant="text"
@@ -4182,7 +5383,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                             </TableCell>
 
                             <TableCell align="right">
-                              <Typography fontWeight={700} color={row.progressDeltaPercent > 0 ? 'success.main' : 'text.secondary'}>
+                              <Typography fontWeight={700} color={row.progressDeltaPercent >= 0 ? 'success.main' : 'error.main'}>
                                 {`${row.progressDeltaPercent.toFixed(1)}%`}
                               </Typography>
                             </TableCell>
@@ -4192,37 +5393,60 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                             </TableCell>
 
                             <TableCell align="right">
-                              <Typography fontWeight={700} color={row.expectedEarnedAmount > 0 ? 'success.main' : 'text.secondary'}>
-                                {formatCurrency(row.expectedEarnedAmount)}
+                              <Typography fontWeight={700} color={row.recognizedRevenueAmount >= 0 ? 'success.main' : 'error.main'}>
+                                {formatCurrency(row.recognizedRevenueAmount)}
                               </Typography>
                             </TableCell>
 
                             <TableCell align="right">
-                              <Typography fontWeight={700}>
-                                {formatCurrency(row.totalReceivedAmount)}
+                              <Typography fontWeight={700} color={row.recognizedCostAmount >= 0 ? 'text.primary' : 'error.main'}>
+                                {formatCurrency(row.recognizedCostAmount)}
                               </Typography>
                             </TableCell>
 
                             <TableCell align="right">
-                              <Typography fontWeight={700} color={row.receivedThisMonthAmount > 0 ? 'success.main' : 'text.secondary'}>
-                                {formatCurrency(row.receivedThisMonthAmount)}
+                              <Typography fontWeight={700} color={row.recognizedProfitAmount >= 0 ? 'success.main' : 'error.main'}>
+                                {formatCurrency(row.recognizedProfitAmount)}
                               </Typography>
                             </TableCell>
 
                             <TableCell align="right">
-                              <Typography fontWeight={700}>
-                                {formatCurrency(row.totalBillsAmount)}
-                              </Typography>
-                            </TableCell>
-
-                            <TableCell align="right">
-                              <Typography fontWeight={700}>
-                                {formatCurrency(row.totalBillsPaidAmount)}
+                              <Typography
+                                fontWeight={700}
+                                color={row.cashReceivedInRangeAmount >= 0
+                                  ? 'success.main'
+                                  : 'error.main'}
+                              >
+                                {formatCurrency(row.cashReceivedInRangeAmount)}
                               </Typography>
                             </TableCell>
                           </TableRow>
                         )
-                      })
+                        })}
+
+                        {reportGeneralExpenseRows
+                          .filter((row) => row.amount > 0)
+                          .map((row) => (
+                            <TableRow key={`general-expense-${row.id}`} sx={{ bgcolor: 'action.hover' }}>
+                              <TableCell sx={{ minWidth: 200 }}>{`${row.label} (general)`}</TableCell>
+                              <TableCell align="right">-</TableCell>
+                              <TableCell align="right">-</TableCell>
+                              <TableCell align="right">-</TableCell>
+                              <TableCell align="right">-</TableCell>
+                              <TableCell align="right">-</TableCell>
+                              <TableCell align="right">-</TableCell>
+                              <TableCell align="right">-</TableCell>
+                              <TableCell align="right">-</TableCell>
+                              <TableCell align="right">
+                                <Typography fontWeight={700}>{formatCurrency(row.amount)}</Typography>
+                              </TableCell>
+                              <TableCell align="right">
+                                <Typography fontWeight={700} color="error.main">{formatCurrency(-row.amount)}</Typography>
+                              </TableCell>
+                              <TableCell align="right">-</TableCell>
+                            </TableRow>
+                          ))}
+                      </>
                     )}
                   </TableBody>
                 </Table>
@@ -5079,6 +6303,161 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setJobDetailsOpen(false)}>Close</Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(selectedReportSummaryBreakdown)}
+        onClose={handleCloseReportSummaryBreakdown}
+        fullWidth
+        maxWidth="md"
+      >
+        <DialogTitle>
+          {selectedReportSummaryBreakdown?.title ?? 'Report Breakdown'}
+        </DialogTitle>
+        <DialogContent dividers>
+          {!selectedReportSummaryBreakdown ? null : (
+            <Stack spacing={2}>
+              <Typography variant="body2" color="text.secondary">
+                {selectedReportSummaryBreakdown.formula}
+              </Typography>
+
+              <TableContainer sx={{ border: 1, borderColor: 'divider', borderRadius: 1.5 }}>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Component</TableCell>
+                      <TableCell align="right">Amount</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {selectedReportSummaryBreakdown.components.map((row) => (
+                      <TableRow key={`component-${row.label}`} hover>
+                        <TableCell>{row.label}</TableCell>
+                        <TableCell align="right">{formatCurrency(row.amount)}</TableCell>
+                      </TableRow>
+                    ))}
+                    <TableRow sx={{ bgcolor: 'action.selected' }}>
+                      <TableCell>
+                        <Typography variant="body2" fontWeight={700}>
+                          {selectedReportSummaryBreakdown.totalLabel}
+                        </Typography>
+                      </TableCell>
+                      <TableCell align="right">
+                        <Typography fontWeight={700}>
+                          {formatCurrency(selectedReportSummaryBreakdown.totalAmount)}
+                        </Typography>
+                      </TableCell>
+                    </TableRow>
+                  </TableBody>
+                </Table>
+              </TableContainer>
+
+              {canShowReportSummaryBillRows ? (
+                <Tabs
+                  value={reportSummaryBreakdownView}
+                  onChange={(_event, nextValue) => {
+                    setReportSummaryBreakdownView(nextValue as ReportSummaryBreakdownView)
+                  }}
+                >
+                  <Tab value="byJob" label="By job" />
+                  <Tab value="bills" label="Bills list" />
+                </Tabs>
+              ) : null}
+
+              {isReportSummaryBillsView ? (
+                <Stack spacing={1.2}>
+                  <Typography variant="body2" color="text.secondary">
+                    {selectedReportSummaryBreakdown.billsScopeNote ?? 'Bill-by-bill list for this total.'}
+                  </Typography>
+
+                  {!selectedReportSummaryBreakdown.billRows
+                  || selectedReportSummaryBreakdown.billRows.length === 0 ? (
+                    <Typography variant="body2" color="text.secondary">
+                      {selectedReportSummaryBreakdown.billsEmptyText ?? 'No bill rows found.'}
+                    </Typography>
+                  ) : (
+                    <TableContainer sx={{ border: 1, borderColor: 'divider', borderRadius: 1.5, maxHeight: 420 }}>
+                      <Table size="small" stickyHeader>
+                        <TableHead>
+                          <TableRow>
+                            <TableCell>Date</TableCell>
+                            <TableCell>Bill</TableCell>
+                            <TableCell>Project</TableCell>
+                            <TableCell>Order/Category</TableCell>
+                            <TableCell align="right">Bill Amount</TableCell>
+                            <TableCell align="right">Paid</TableCell>
+                            <TableCell align="right">Unpaid</TableCell>
+                            <TableCell align="right">
+                              {selectedReportSummaryBreakdown.includedAmountLabel ?? 'Included'}
+                            </TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {selectedReportSummaryBreakdown.billRows.map((row) => (
+                            <TableRow key={row.id} hover>
+                              <TableCell>{row.date || '-'}</TableCell>
+                              <TableCell>{row.document}</TableCell>
+                              <TableCell>{row.project}</TableCell>
+                              <TableCell>{row.source}</TableCell>
+                              <TableCell align="right">{formatCurrency(row.totalAmount)}</TableCell>
+                              <TableCell align="right">{formatCurrency(row.paidAmount)}</TableCell>
+                              <TableCell align="right">{formatCurrency(row.unpaidAmount)}</TableCell>
+                              <TableCell align="right">
+                                <Typography fontWeight={700}>{formatCurrency(row.includedAmount)}</Typography>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  )}
+                </Stack>
+              ) : (
+                selectedReportSummaryBreakdown.sections.map((section) => (
+                  <Stack key={section.title} spacing={1}>
+                    <Typography variant="subtitle2" fontWeight={700}>
+                      {section.title}
+                    </Typography>
+
+                    {section.rows.length === 0 ? (
+                      <Typography variant="body2" color="text.secondary">
+                        {section.emptyText}
+                      </Typography>
+                    ) : (
+                      <TableContainer sx={{ border: 1, borderColor: 'divider', borderRadius: 1.5 }}>
+                        <Table size="small">
+                          <TableHead>
+                            <TableRow>
+                              <TableCell>Source</TableCell>
+                              <TableCell>Details</TableCell>
+                              <TableCell align="right">Amount</TableCell>
+                            </TableRow>
+                          </TableHead>
+                          <TableBody>
+                            {section.rows.map((row) => (
+                              <TableRow key={`${section.title}-${row.label}`} hover>
+                                <TableCell>{row.label}</TableCell>
+                                <TableCell>
+                                  <Typography variant="body2" color="text.secondary">
+                                    {row.note ?? '-'}
+                                  </Typography>
+                                </TableCell>
+                                <TableCell align="right">{formatCurrency(row.amount)}</TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </TableContainer>
+                    )}
+                  </Stack>
+                ))
+              )}
+            </Stack>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleCloseReportSummaryBreakdown}>Close</Button>
         </DialogActions>
       </Dialog>
 
