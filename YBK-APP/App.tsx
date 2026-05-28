@@ -961,8 +961,8 @@ export default function App() {
 
   const appVersionLabel = useMemo(() => {
     return installedNativeBuildLabel
-      ? `v${installedNativeVersion} (${installedNativeBuildLabel})`
-      : `v${installedNativeVersion}`
+      ? `Version ${installedNativeVersion}.${installedNativeBuildLabel}`
+      : `Version ${installedNativeVersion}`
   }, [installedNativeBuildLabel, installedNativeVersion])
 
   const settingsMenuItems = useMemo<Array<{ id: SettingsMenuId; title: string; subtitle: string; status: string }>>(
@@ -989,7 +989,7 @@ export default function App() {
         {
           id: 'updates',
           title: t('App Updates', 'Actualizaciones'),
-          subtitle: t('Check and install the latest build.', 'Busca e instala la compilacion mas reciente.'),
+          subtitle: t('Check and install the latest version.', 'Busca e instala la version mas reciente.'),
           status: appVersionLabel,
         },
       ]
@@ -2741,8 +2741,8 @@ export default function App() {
 
         setUpdateMessage(
           t(
-            `You already have the latest native build (${currentBuildText}).`,
-            `Ya tienes la compilacion nativa mas reciente (${currentBuildText}).`,
+            `You already have the latest version (${currentBuildText}).`,
+            `Ya tienes la version mas reciente (${currentBuildText}).`,
           ),
         )
         return
@@ -2752,8 +2752,8 @@ export default function App() {
       if (latestVersion && latestBuildNumber !== null) {
         setUpdateMessage(
           t(
-            `Native update found (v${latestVersion} build ${latestBuildNumber}). Tap Install Update.`,
-            `Se encontro actualizacion nativa (v${latestVersion} build ${latestBuildNumber}). Toca Instalar actualizacion.`,
+            `Native update found (Version ${latestVersion}.${latestBuildNumber}). Tap Install Update.`,
+            `Se encontro actualizacion nativa (Version ${latestVersion}.${latestBuildNumber}). Toca Instalar actualizacion.`,
           ),
         )
         return
