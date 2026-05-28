@@ -1148,6 +1148,7 @@ app.get('/api/dashboard/monday/cut-list/download', requireFirebaseAuth, async (r
   try {
     const orderId = String(req.query?.orderId ?? '').trim()
     const renderInline = String(req.query?.inline ?? '').trim() === '1'
+    const resolveOnly = String(req.query?.resolveOnly ?? '').trim() === '1'
 
     if (!orderId) {
       return res.status(400).json({ error: 'orderId is required.' })
@@ -1212,6 +1213,17 @@ app.get('/api/dashboard/monday/cut-list/download', requireFirebaseAuth, async (r
 
     if (!cachedCutListUrl) {
       return res.status(404).json({ error: 'No cut list source found for this order.' })
+    }
+
+    if (resolveOnly) {
+      return res.json({
+        orderId,
+        cachedUrl: cachedCutListUrl,
+        fileName: ensurePdfFileName(
+          orderDocument.cutListFileName,
+          `order-${orderId}-cut-list.pdf`,
+        ),
+      })
     }
 
     if (renderInline) {

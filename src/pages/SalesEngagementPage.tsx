@@ -31,8 +31,9 @@ import {
 } from '@mui/material'
 import { alpha } from '@mui/material/styles'
 import { useQuery } from '@tanstack/react-query'
-import { useEffect, useMemo, useState, type KeyboardEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { Mention, MentionsInput } from 'react-mentions'
+import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
 import { LoadingPanel } from '../components/LoadingPanel'
 import { StatusAlerts } from '../components/StatusAlerts'
@@ -602,6 +603,7 @@ function renderMessageWithMentionPills(message: string) {
 
 export default function SalesEngagementPage() {
   const { appUser, firebaseUser } = useAuth()
+  const [searchParams] = useSearchParams()
   const [statusFilter, setStatusFilter] = useState<EngagementFilter>('ready')
   const [accountType, setAccountType] = useState<AccountTypeBucket>('dealer')
   const [searchInput, setSearchInput] = useState('')
@@ -629,6 +631,10 @@ export default function SalesEngagementPage() {
   const [reminderDueDate, setReminderDueDate] = useState('')
   const [reminderRecipientUids, setReminderRecipientUids] = useState<string[]>([])
   const [reminderNote, setReminderNote] = useState('')
+  const [highlightedChatMessageId, setHighlightedChatMessageId] = useState('')
+  const lastDeepLinkOpenKeyRef = useRef('')
+  const highlightedChatTimeoutRef = useRef<number | null>(null)
+  const chatMessageElementByIdRef = useRef<Map<string, HTMLDivElement>>(new Map())
 
   const search = useDebounceValue(searchInput)
 
@@ -672,6 +678,7 @@ export default function SalesEngagementPage() {
     enabled: Boolean(quickViewDealerId),
     staleTime: 20 * 1000,
   })
+  const quickViewMessages = quickViewChatsQuery.data?.messages ?? []
 
   const chatUsersQuery = useQuery({
     queryKey: ['crm', 'engagement-chat-users'],
@@ -736,6 +743,70 @@ export default function SalesEngagementPage() {
     setReminderNote('')
   }
 
+  useEffect(() => {
+    const deepLinkDealerSourceId = String(searchParams.get('dealerSourceId') ?? '').trim()
+    const deepLinkQuickViewTab = String(searchParams.get('quickViewTab') ?? '').trim() === 'chat'
+      ? 'chat'
+      : 'info'
+
+    if (!deepLinkDealerSourceId) {
+      return
+    }
+
+    const deepLinkKey = `${deepLinkDealerSourceId}:${deepLinkQuickViewTab}`
+
+    if (lastDeepLinkOpenKeyRef.current === deepLinkKey) {
+      return
+    }
+
+    const matchingDealer = dealers.find((dealer) => dealer.sourceId === deepLinkDealerSourceId)
+    const fallbackDealer: CrmDealer = {
+      sourceId: deepLinkDealerSourceId,
+      name: deepLinkDealerSourceId,
+      email: null,
+      ownerEmail: null,
+      isArchived: false,
+      lastImportedAt: null,
+    }
+
+    handleOpenQuickView(matchingDealer ?? fallbackDealer, deepLinkQuickViewTab)
+    lastDeepLinkOpenKeyRef.current = deepLinkKey
+  }, [dealers, handleOpenQuickView, searchParams])
+
+  useEffect(() => {
+    const deepLinkChatMessageId = String(searchParams.get('chatMessageId') ?? '').trim()
+
+    if (!deepLinkChatMessageId || quickViewTab !== 'chat' || quickViewMessages.length === 0) {
+      return
+    }
+
+    const messageElement = chatMessageElementByIdRef.current.get(deepLinkChatMessageId)
+
+    if (!messageElement) {
+      return
+    }
+
+    messageElement.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    setHighlightedChatMessageId(deepLinkChatMessageId)
+
+    if (highlightedChatTimeoutRef.current !== null) {
+      window.clearTimeout(highlightedChatTimeoutRef.current)
+    }
+
+    highlightedChatTimeoutRef.current = window.setTimeout(() => {
+      setHighlightedChatMessageId('')
+      highlightedChatTimeoutRef.current = null
+    }, 2600)
+  }, [quickViewMessages, quickViewTab, searchParams])
+
+  useEffect(() => {
+    return () => {
+      if (highlightedChatTimeoutRef.current !== null) {
+        window.clearTimeout(highlightedChatTimeoutRef.current)
+      }
+    }
+  }, [])
+
   const handleCloseQuickView = () => {
     setQuickViewDealer(null)
     setQuickViewActionError(null)
@@ -756,7 +827,6 @@ export default function SalesEngagementPage() {
 
   const quickViewDealerRecord = quickViewDealerQuery.data?.dealer ?? quickViewDealer
   const quickViewContacts = quickViewDealerQuery.data?.contacts ?? []
-  const quickViewMessages = quickViewChatsQuery.data?.messages ?? []
   const quickViewChatTotal = quickViewChatsQuery.data?.total ?? Math.max(0, Number(quickViewDealerRecord?.chatMessageCount ?? 0) || 0)
   const quickViewContactTotal = quickViewDealerQuery.data?.contactsTotal ?? quickViewDealer?.contactCountSource ?? 0
   const quickViewName = quickViewDealerRecord ? resolveDealerName(quickViewDealerRecord) : 'Account details'
@@ -1722,7 +1792,26 @@ export default function SalesEngagementPage() {
                           }
 
                           return (
-                            <Paper key={message.id} variant="outlined" sx={{ p: 0.7 }}>
+                            <Paper
+                              key={message.id}
+                              variant="outlined"
+                              ref={(element) => {
+                                if (element) {
+                                  chatMessageElementByIdRef.current.set(message.id, element)
+                                  return
+                                }
+
+                                chatMessageElementByIdRef.current.delete(message.id)
+                              }}
+                              sx={{
+                                p: 0.7,
+                                borderColor: highlightedChatMessageId === message.id ? 'primary.main' : undefined,
+                                bgcolor: highlightedChatMessageId === message.id
+                                  ? (theme) => alpha(theme.palette.primary.main, 0.08)
+                                  : undefined,
+                                transition: 'background-color 180ms ease, border-color 180ms ease',
+                              }}
+                            >
                               <Stack spacing={0.45}>
                                 <Stack direction="row" spacing={0.8} justifyContent="space-between" alignItems="flex-start">
                                   <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>

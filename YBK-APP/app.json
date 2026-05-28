@@ -3,7 +3,7 @@
     "name": "Arnold",
     "slug": "YBK-APP",
     "scheme": "com.ybk.arnold",
-    "version": "3.11",
+    "version": "3.20",
     "runtimeVersion": {
       "policy": "appVersion"
     },
@@ -17,7 +17,7 @@
       }
     },
     "orientation": "portrait",
-    "icon": "./assets/arnold-logo-padded.png",
+    "icon": "./assets/arnold-logo-home-icon.png",
     "userInterfaceStyle": "light",
     "splash": {
       "image": "./assets/splash-icon.png",
@@ -27,7 +27,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.ybk.arnold",
-      "buildNumber": "22",
+      "buildNumber": "25",
       "usesAppleSignIn": true,
       "infoPlist": {
         "CFBundleDisplayName": "Arnold",
@@ -38,11 +38,11 @@
       "package": "com.ybk.arnold",
       "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
-        "foregroundImage": "./assets/arnold-logo-padded.png",
+        "foregroundImage": "./assets/adaptive-icon-home.png",
         "backgroundColor": "#ffffff"
       },
       "predictiveBackGestureEnabled": false,
-      "versionCode": 43
+      "versionCode": 54
     },
     "web": {
       "favicon": "./assets/favicon.png"

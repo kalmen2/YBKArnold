@@ -6,12 +6,16 @@ import {
   Box,
   Button,
   CircularProgress,
+  Divider,
   Paper,
   Stack,
+  TextField,
   Typography,
 } from '@mui/material'
 import { useState, type ReactNode } from 'react'
 import { useAuth } from './useAuth'
+
+type AuthMode = 'sign-in' | 'create-account'
 
 export default function AuthGate({ children }: { children: ReactNode }) {
   const {
@@ -22,11 +26,19 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     profileError,
     refreshProfile,
     signInWithGoogle,
+    signInWithPassword,
+    createAccountWithPassword,
     signOutFromApp,
   } = useAuth()
 
-  const [isSigningIn, setIsSigningIn] = useState(false)
+  const [authMode, setAuthMode] = useState<AuthMode>('sign-in')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [isSubmitting, setIsSubmitting] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
+
+  const isCreateMode = authMode === 'create-account'
 
   if (isInitializing) {
     return (
@@ -58,9 +70,9 @@ export default function AuthGate({ children }: { children: ReactNode }) {
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          bgcolor: '#f2f6ff',
+          bgcolor: '#ece8de',
           backgroundImage:
-            'radial-gradient(circle at 10% 10%, rgba(31,111,235,0.18), transparent 35%), radial-gradient(circle at 90% 85%, rgba(31,111,235,0.12), transparent 42%)',
+            'radial-gradient(circle at 16% 18%, rgba(20, 62, 99, 0.12), transparent 28%), radial-gradient(circle at 82% 80%, rgba(196, 145, 60, 0.16), transparent 30%), linear-gradient(180deg, #f7f3ea 0%, #ebe5d8 100%)',
           p: { xs: 2, md: 4 },
         }}
       >
@@ -68,77 +80,91 @@ export default function AuthGate({ children }: { children: ReactNode }) {
           elevation={0}
           sx={{
             width: '100%',
-            maxWidth: 760,
-            display: 'grid',
-            gridTemplateColumns: { xs: '1fr', md: '1.05fr 0.95fr' },
+            maxWidth: 460,
             overflow: 'hidden',
-            border: '1px solid',
-            borderColor: 'divider',
-            borderRadius: 3,
+            border: '1px solid rgba(23, 50, 77, 0.08)',
+            borderRadius: 4,
+            bgcolor: 'rgba(255,255,255,0.82)',
+            backdropFilter: 'blur(14px)',
+            boxShadow: '0 24px 70px rgba(35, 28, 18, 0.14)',
           }}
         >
-          <Box
-            sx={{
-              p: { xs: 3, sm: 4 },
-              bgcolor: '#0f2d66',
-              color: '#f3f7ff',
-              display: 'flex',
-              flexDirection: 'column',
-              justifyContent: 'center',
-              gap: 2,
-            }}
-          >
-            <Typography variant="overline" sx={{ letterSpacing: '0.14em', opacity: 0.9 }}>
-              YBK ARNOLD
-            </Typography>
+          <Box sx={{ p: { xs: 3, sm: 4 }, bgcolor: 'transparent' }}>
+            <Stack
+              component="form"
+              spacing={2.5}
+              onSubmit={(event) => {
+                event.preventDefault()
 
-            <Typography variant="h3" sx={{ fontWeight: 700, lineHeight: 1.1 }}>
-              Integrations Hub
-            </Typography>
+                if (!isFirebaseConfigured) {
+                  setActionError('Firebase auth config is missing.')
+                  return
+                }
 
-            <Typography sx={{ opacity: 0.9 }}>
-              Secure sign-in gives your team access to dashboard, support, timesheet,
-              and picture workflows in one place.
-            </Typography>
+                if (isCreateMode) {
+                  if (password.length < 6) {
+                    setActionError('Password must be at least 6 characters.')
+                    return
+                  }
 
-            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-              <Typography
-                component="span"
-                sx={{
-                  px: 1.25,
-                  py: 0.5,
-                  borderRadius: 999,
-                  fontSize: 12,
-                  bgcolor: 'rgba(255,255,255,0.14)',
-                }}
-              >
-                Google Auth
+                  if (password !== confirmPassword) {
+                    setActionError('Passwords do not match.')
+                    return
+                  }
+                }
+
+                setIsSubmitting(true)
+                setActionError(null)
+
+                const action = isCreateMode
+                  ? createAccountWithPassword(email.trim(), password)
+                  : signInWithPassword(email.trim(), password)
+
+                void action
+                  .catch((error: unknown) => {
+                    setActionError(
+                      error instanceof Error
+                        ? error.message
+                        : isCreateMode
+                          ? 'Account creation failed.'
+                          : 'Sign-in failed.',
+                    )
+                  })
+                  .finally(() => {
+                    setIsSubmitting(false)
+                  })
+              }}
+            >
+              <Typography variant="h5" fontWeight={700} textAlign="center">
+                {isCreateMode ? 'Create account' : 'Sign in'}
               </Typography>
-              <Typography
-                component="span"
-                sx={{
-                  px: 1.25,
-                  py: 0.5,
-                  borderRadius: 999,
-                  fontSize: 12,
-                  bgcolor: 'rgba(255,255,255,0.14)',
-                }}
-              >
-                Role-Based Access
-              </Typography>
-            </Stack>
-          </Box>
 
-          <Box sx={{ p: { xs: 3, sm: 4 }, bgcolor: '#ffffff' }}>
-            <Stack spacing={2.5}>
-              <Box>
-                <Typography variant="h5" fontWeight={700}>
-                  Sign in with Google
-                </Typography>
-                <Typography color="text.secondary">
-                  Continue to your YBK workspace.
-                </Typography>
-              </Box>
+              <Stack direction="row" spacing={1}>
+                <Button
+                  variant={isCreateMode ? 'outlined' : 'contained'}
+                  color="inherit"
+                  onClick={() => {
+                    setAuthMode('sign-in')
+                    setActionError(null)
+                  }}
+                  sx={{ flex: 1, borderRadius: 999 }}
+                >
+                  Sign in
+                </Button>
+                <Button
+                  variant={isCreateMode ? 'contained' : 'outlined'}
+                  color="inherit"
+                  onClick={() => {
+                    setAuthMode('create-account')
+                    setActionError(null)
+                  }}
+                  sx={{ flex: 1, borderRadius: 999 }}
+                >
+                  Create account
+                </Button>
+              </Stack>
+
+              <Divider />
 
               {!isFirebaseConfigured ? (
                 <Alert severity="warning">
@@ -151,34 +177,85 @@ export default function AuthGate({ children }: { children: ReactNode }) {
 
               {actionError ? <Alert severity="error">{actionError}</Alert> : null}
 
+              {!isCreateMode ? (
+                <Button
+                  variant="outlined"
+                  size="large"
+                  startIcon={<GoogleIcon />}
+                  disabled={isSubmitting || !isFirebaseConfigured}
+                  onClick={() => {
+                    setIsSubmitting(true)
+                    setActionError(null)
+
+                    void signInWithGoogle()
+                      .catch((error: unknown) => {
+                        setActionError(
+                          error instanceof Error
+                            ? error.message
+                            : 'Google sign-in failed.',
+                        )
+                      })
+                      .finally(() => {
+                        setIsSubmitting(false)
+                      })
+                  }}
+                  sx={{ minHeight: 48, borderRadius: 999 }}
+                >
+                  Continue with Google
+                </Button>
+              ) : null}
+
+              {!isCreateMode ? <Divider>or</Divider> : null}
+
+              <TextField
+                label="Email"
+                type="email"
+                autoComplete="email"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                disabled={isSubmitting}
+                fullWidth
+              />
+
+              <TextField
+                label="Password"
+                type="password"
+                autoComplete={isCreateMode ? 'new-password' : 'current-password'}
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                disabled={isSubmitting}
+                fullWidth
+              />
+
+              {isCreateMode ? (
+                <TextField
+                  label="Confirm password"
+                  type="password"
+                  autoComplete="new-password"
+                  value={confirmPassword}
+                  onChange={(event) => setConfirmPassword(event.target.value)}
+                  disabled={isSubmitting}
+                  fullWidth
+                />
+              ) : null}
+
               <Button
+                type="submit"
                 variant="contained"
                 size="large"
-                startIcon={<GoogleIcon />}
-                disabled={isSigningIn || !isFirebaseConfigured}
-                onClick={() => {
-                  setIsSigningIn(true)
-                  setActionError(null)
-
-                  void signInWithGoogle()
-                    .catch((error: unknown) => {
-                      setActionError(
-                        error instanceof Error
-                          ? error.message
-                          : 'Google sign-in failed.',
-                      )
-                    })
-                    .finally(() => {
-                      setIsSigningIn(false)
-                    })
-                }}
+                disabled={isSubmitting || !isFirebaseConfigured}
+                sx={{ minHeight: 48 }}
               >
-                {isSigningIn ? 'Signing in...' : 'Continue with Google'}
+                {isSubmitting
+                  ? (isCreateMode ? 'Creating account...' : 'Signing in...')
+                  : (isCreateMode ? 'Create account' : 'Sign in')}
               </Button>
 
-              <Typography variant="caption" color="text.secondary">
-                New users may need admin approval before full access is granted.
-              </Typography>
+              {isCreateMode ? (
+                <Typography variant="caption" color="text.secondary" textAlign="center">
+                  After account creation, access stays pending until approval is granted.
+                </Typography>
+              ) : null}
             </Stack>
           </Box>
         </Paper>
@@ -212,7 +289,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
                 Access pending
               </Typography>
               <Typography color="text.secondary">
-                Please contact admin.
+                Your account request has been received. Approval usually takes a few minutes.
               </Typography>
             </Box>
 

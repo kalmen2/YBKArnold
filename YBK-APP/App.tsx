@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
-import { type DateTimePickerEvent } from '@react-native-community/datetimepicker'
+import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker'
 import * as AppleAuthentication from 'expo-apple-authentication'
+import * as Application from 'expo-application'
 import * as Crypto from 'expo-crypto'
 import * as Google from 'expo-auth-session/providers/google'
 import Constants from 'expo-constants'
@@ -180,7 +181,7 @@ type AdminWorkspacePagePath = (typeof ADMIN_PORTAL_PAGES)[number]['path']
 type OrdersViewFilter = 'orders' | 'design' | 'shipped'
 type AdminAccessMode = 'web_and_app' | 'web_only' | 'app_only'
 type AdminUserRole = 'standard' | 'manager' | 'sales_rep' | 'admin'
-type AdminReportsView = 'menu' | 'worker' | 'month'
+type AdminReportsView = 'menu' | 'worker' | 'month' | 'job' | 'date'
 
 type AppUpdateStatusResponse = {
   url?: string | null
@@ -189,8 +190,28 @@ type AppUpdateStatusResponse = {
 }
 
 type AdminWorkspaceStat = {
+  id?: string
   label: string
   value: string
+}
+
+type AdminWorkspaceRowMetric = {
+  label: string
+  value: string
+}
+
+type AdminWorkspaceRowWorkerDateEntry = {
+  date: string
+  hours: number
+  laborCost: number
+}
+
+type AdminWorkspaceRowWorkerDetail = {
+  workerId: string
+  workerName: string
+  totalHours: number
+  totalLaborCost: number
+  dateEntries: AdminWorkspaceRowWorkerDateEntry[]
 }
 
 type AdminWorkspaceRow = {
@@ -199,6 +220,8 @@ type AdminWorkspaceRow = {
   subtitle: string
   meta?: string
   details?: string[]
+  metrics?: AdminWorkspaceRowMetric[]
+  workerDetails?: AdminWorkspaceRowWorkerDetail[]
 }
 
 type AdminWorkspaceSection = {
@@ -438,6 +461,17 @@ function shiftIsoDateByDays(value: string, deltaDays: number) {
   return formatDateInput(nextDate)
 }
 
+function resolveDateKeyFromReportRowId(rowId: string) {
+  const normalizedRowId = String(rowId ?? '').trim()
+  const match = /^date-(?:report|non-order)-(\d{4}-\d{2}-\d{2})-/.exec(normalizedRowId)
+
+  if (!match) {
+    return ''
+  }
+
+  return match[1]
+}
+
 function resolveLatestReadyPercentOnOrBefore(
   rows: Array<{ date: string; readyPercent: number | null }>,
   date: string,
@@ -512,6 +546,48 @@ function parseBuildNumberLike(value: unknown) {
   const trailingDigits = Number(digitGroups[digitGroups.length - 1])
 
   return Number.isFinite(trailingDigits) ? trailingDigits : null
+}
+
+function compareVersionLabels(leftValue: unknown, rightValue: unknown) {
+  const toNumericParts = (value: unknown) => {
+    const normalized = String(value ?? '').trim().replace(/^[vV]/, '')
+
+    if (!normalized) {
+      return []
+    }
+
+    const digitGroups = normalized.match(/\d+/g)
+
+    if (!digitGroups || digitGroups.length === 0) {
+      return []
+    }
+
+    return digitGroups
+      .map((group) => Number(group))
+      .filter((group) => Number.isFinite(group))
+  }
+
+  const leftParts = toNumericParts(leftValue)
+  const rightParts = toNumericParts(rightValue)
+
+  if (leftParts.length === 0 || rightParts.length === 0) {
+    return null
+  }
+
+  const length = Math.max(leftParts.length, rightParts.length)
+
+  for (let index = 0; index < length; index += 1) {
+    const leftPart = leftParts[index] ?? 0
+    const rightPart = rightParts[index] ?? 0
+
+    if (leftPart === rightPart) {
+      continue
+    }
+
+    return leftPart > rightPart ? 1 : -1
+  }
+
+  return 0
 }
 
 function normalizeTextValue(value: unknown) {
@@ -649,6 +725,7 @@ export default function App() {
   const [detailSelection, setDetailSelection] = useState<DetailSelection>(null)
   const [dashboardMetricZoomOrderId, setDashboardMetricZoomOrderId] = useState<string | null>(null)
   const dashboardMetricZoomTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const screenScrollRef = useRef<ScrollView | null>(null)
   const [adminPortalRoutePath, setAdminPortalRoutePath] = useState<AdminWorkspacePagePath | null>(null)
 
   const [selectedPictureOrderId, setSelectedPictureOrderId] = useState<string | null>(null)
@@ -716,6 +793,27 @@ export default function App() {
   const [adminUserSavingUid, setAdminUserSavingUid] = useState<string | null>(null)
   const [adminAccessMenuUserUid, setAdminAccessMenuUserUid] = useState<string | null>(null)
   const [adminReportsView, setAdminReportsView] = useState<AdminReportsView>('menu')
+  const [adminReportWorkerSearch, setAdminReportWorkerSearch] = useState('')
+  const [adminSelectedWorkerReportRowId, setAdminSelectedWorkerReportRowId] = useState<string | null>(null)
+  const [adminReportMonthStatId, setAdminReportMonthStatId] = useState<string>('summary')
+  const [adminSelectedMonthProjectRowId, setAdminSelectedMonthProjectRowId] = useState<string | null>(null)
+  const [adminReportJobSearch, setAdminReportJobSearch] = useState('')
+  const [adminReportDateRangeStart, setAdminReportDateRangeStart] = useState(() => formatDateInput(new Date()))
+  const [adminReportDateRangeEnd, setAdminReportDateRangeEnd] = useState(() => formatDateInput(new Date()))
+  const [adminDatePickerTarget, setAdminDatePickerTarget] = useState<'start' | 'end' | null>(null)
+  const [adminReportMonthListModalState, setAdminReportMonthListModalState] = useState<{
+    statId: string
+    title: string
+    section: AdminWorkspaceSection
+  } | null>(null)
+  const [adminReportDetailsModalState, setAdminReportDetailsModalState] = useState<{
+    sectionTitle: string
+    row: AdminWorkspaceRow
+  } | null>(null)
+  const [adminReportWorkerDrilldownModalState, setAdminReportWorkerDrilldownModalState] = useState<{
+    parentRowTitle: string
+    worker: AdminWorkspaceRowWorkerDetail
+  } | null>(null)
   const [adminExpandedWorkspaceRowId, setAdminExpandedWorkspaceRowId] = useState<string | null>(null)
   const [adminCashAccountModalRow, setAdminCashAccountModalRow] = useState<AdminWorkspaceRow | null>(null)
   const [activeSettingsMenuId, setActiveSettingsMenuId] = useState<SettingsMenuId | null>(null)
@@ -822,29 +920,31 @@ export default function App() {
 
   const installedNativeVersion = useMemo(() => {
     const nativeVersion = String(Constants.nativeAppVersion ?? '').trim()
+    const applicationVersion = String(Application.nativeApplicationVersion ?? '').trim()
 
     if (nativeVersion) {
       return nativeVersion
     }
 
-    if (!isExpoGo) {
-      return 'unknown'
+    if (applicationVersion) {
+      return applicationVersion
     }
 
     const fallbackVersion = String(Constants.expoConfig?.version ?? '').trim()
 
     return fallbackVersion || 'unknown'
-  }, [isExpoGo])
+  }, [])
 
   const installedNativeBuildLabel = useMemo(() => {
     const nativeBuild = String(Constants.nativeBuildVersion ?? '').trim()
+    const applicationBuild = String(Application.nativeBuildVersion ?? '').trim()
 
     if (nativeBuild) {
       return nativeBuild
     }
 
-    if (!isExpoGo) {
-      return ''
+    if (applicationBuild) {
+      return applicationBuild
     }
 
     const fallbackBuild =
@@ -853,7 +953,7 @@ export default function App() {
         : Constants.expoConfig?.ios?.buildNumber
 
     return String(fallbackBuild ?? '').trim()
-  }, [isExpoGo])
+  }, [])
 
   const installedNativeBuildNumber = useMemo(() => {
     return parseBuildNumberLike(installedNativeBuildLabel)
@@ -1040,11 +1140,14 @@ export default function App() {
 
         switch (routePath) {
           case '/admin/cash': {
+            const overviewPath = forceReload
+              ? '/api/quickbooks/overview?refresh=1'
+              : '/api/quickbooks/overview'
             const payload = await requestWithSession<{
               generatedAt?: string
               totals?: Record<string, unknown>
               loanSummaries?: Array<Record<string, unknown>>
-            }>('/api/quickbooks/overview')
+            }>(overviewPath)
 
             const loanSummaries = Array.isArray(payload.loanSummaries)
               ? payload.loanSummaries.map((summary, index) => {
@@ -1150,6 +1253,9 @@ export default function App() {
           }
 
           case '/admin/reports': {
+            const quickBooksOverviewPath = forceReload
+              ? '/api/quickbooks/overview?full=1&refresh=1'
+              : '/api/quickbooks/overview?full=1'
             const [timesheetPayload, quickBooksPayload] = await Promise.all([
               requestWithSession<{
                 workers?: Array<Record<string, unknown>>
@@ -1160,7 +1266,7 @@ export default function App() {
                 generatedAt?: string
                 projects?: Array<Record<string, unknown>>
                 details?: Record<string, unknown>
-              }>('/api/quickbooks/overview?full=1'),
+              }>(quickBooksOverviewPath),
             ])
 
             const workers = Array.isArray(timesheetPayload.workers) ? timesheetPayload.workers : []
@@ -1195,16 +1301,35 @@ export default function App() {
               workerRateById.set(workerId, Number.isFinite(hourlyRate) && hourlyRate > 0 ? hourlyRate : 0)
             })
 
-            const workerTotals = new Map<string, { label: string; hours: number; entryCount: number }>()
+            const workerTotals = new Map<string, {
+              label: string
+              hours: number
+              entryCount: number
+              laborCost: number
+            }>()
             const monthJobs = new Map<string, Map<string, {
               jobName: string
               totalHours: number
               totalLaborCost: number
             }>>()
+            const allTimeJobsByKey = new Map<string, {
+              jobName: string
+              totalHours: number
+              totalLaborCost: number
+            }>()
+            const allTimeJobWorkersByJobKey = new Map<string, Map<string, {
+              workerName: string
+              totalHours: number
+              totalLaborCost: number
+              dateTotals: Map<string, { hours: number; laborCost: number }>
+            }>>()
+            const workerJobKeysByMonth = new Map<string, Map<string, Set<string>>>()
+            const workerJobSummariesByMonth = new Map<string, Map<string, Map<string, {
+              jobName: string
+              totalHours: number
+              totalLaborCost: number
+            }>>>()
             const monthKeysSet = new Set<string>()
-
-            let totalHours = 0
-            let totalLaborCost = 0
 
             entries.forEach((entry, index) => {
               const workerId = normalizeTextValue(entry.workerId)
@@ -1225,9 +1350,6 @@ export default function App() {
                 : fallbackRate
               const laborCost = (safeRegularHours * resolvedRate) + (safeOvertimeHours * resolvedRate * 1.5)
 
-              totalHours += combinedHours
-              totalLaborCost += laborCost
-
               const fallbackWorkerLabel = t('Unlinked worker', 'Trabajador sin enlace')
               const workerLabel = workerNameById.get(workerId) || fallbackWorkerLabel
               const workerKey = workerId || `worker-fallback-${index + 1}`
@@ -1235,9 +1357,11 @@ export default function App() {
                 label: workerLabel,
                 hours: 0,
                 entryCount: 0,
+                laborCost: 0,
               }
               workerCurrent.hours += combinedHours
               workerCurrent.entryCount += 1
+              workerCurrent.laborCost += laborCost
               workerTotals.set(workerKey, workerCurrent)
 
               const normalizedDate = normalizeIsoDate(normalizeTextValue(entry.date))
@@ -1251,6 +1375,68 @@ export default function App() {
 
               const jobName = normalizeTextValue(entry.jobName) || t('Unnamed job', 'Trabajo sin nombre')
               const jobKey = normalizeJobName(jobName) || `job-${index + 1}`
+
+              const allTimeJob = allTimeJobsByKey.get(jobKey) ?? {
+                jobName,
+                totalHours: 0,
+                totalLaborCost: 0,
+              }
+              allTimeJob.totalHours += combinedHours
+              allTimeJob.totalLaborCost += laborCost
+              allTimeJobsByKey.set(jobKey, allTimeJob)
+
+              const allTimeWorkersForJob = allTimeJobWorkersByJobKey.get(jobKey) ?? new Map<string, {
+                workerName: string
+                totalHours: number
+                totalLaborCost: number
+                dateTotals: Map<string, { hours: number; laborCost: number }>
+              }>()
+              const allTimeWorker = allTimeWorkersForJob.get(workerKey) ?? {
+                workerName: workerLabel,
+                totalHours: 0,
+                totalLaborCost: 0,
+                dateTotals: new Map<string, { hours: number; laborCost: number }>(),
+              }
+              allTimeWorker.totalHours += combinedHours
+              allTimeWorker.totalLaborCost += laborCost
+
+              if (normalizedDate) {
+                const dateTotals = allTimeWorker.dateTotals.get(normalizedDate) ?? { hours: 0, laborCost: 0 }
+                dateTotals.hours += combinedHours
+                dateTotals.laborCost += laborCost
+                allTimeWorker.dateTotals.set(normalizedDate, dateTotals)
+              }
+
+              allTimeWorkersForJob.set(workerKey, allTimeWorker)
+              allTimeJobWorkersByJobKey.set(jobKey, allTimeWorkersForJob)
+
+              const monthWorkerJobs = workerJobKeysByMonth.get(monthKey) ?? new Map<string, Set<string>>()
+              const workerJobKeys = monthWorkerJobs.get(workerKey) ?? new Set<string>()
+              workerJobKeys.add(jobKey)
+              monthWorkerJobs.set(workerKey, workerJobKeys)
+              workerJobKeysByMonth.set(monthKey, monthWorkerJobs)
+
+              const monthWorkerSummaries = workerJobSummariesByMonth.get(monthKey) ?? new Map<string, Map<string, {
+                jobName: string
+                totalHours: number
+                totalLaborCost: number
+              }>>()
+              const workerJobSummaries = monthWorkerSummaries.get(workerKey) ?? new Map<string, {
+                jobName: string
+                totalHours: number
+                totalLaborCost: number
+              }>()
+              const workerJobSummary = workerJobSummaries.get(jobKey) ?? {
+                jobName,
+                totalHours: 0,
+                totalLaborCost: 0,
+              }
+              workerJobSummary.totalHours += combinedHours
+              workerJobSummary.totalLaborCost += laborCost
+              workerJobSummaries.set(jobKey, workerJobSummary)
+              monthWorkerSummaries.set(workerKey, workerJobSummaries)
+              workerJobSummariesByMonth.set(monthKey, monthWorkerSummaries)
+
               const jobsByKey = monthJobs.get(monthKey) ?? new Map<string, {
                 jobName: string
                 totalHours: number
@@ -1360,17 +1546,30 @@ export default function App() {
               financialTotalsByJobKey.set(jobKey, current)
             })
 
-            const billsPaidByJobKey = new Map<string, number>()
             const paymentsByMonthJobKey = new Map<string, number>()
+            const paymentsByDateJobKey = new Map<string, number>()
+            const billsByDateJobKey = new Map<string, number>()
+            const billsPaidByDateJobKey = new Map<string, number>()
             const nonOrderByMonthCategory = new Map<string, Map<MobileNonOrderCategory, {
               billedAmount: number
               paidAmount: number
             }>>()
+            const nonOrderByDateCategory = new Map<string, Map<MobileNonOrderCategory, {
+              billedAmount: number
+              paidAmount: number
+            }>>()
+            const billRowsByMonth = new Map<string, AdminWorkspaceRow[]>()
+            const overheadBillRowsByMonth = new Map<string, AdminWorkspaceRow[]>()
 
             quickBooksBills.forEach((bill) => {
               const projectId = normalizeTextValue((bill as Record<string, unknown>).projectId)
               const projectName = normalizeTextValue((bill as Record<string, unknown>).projectName)
               const txnDate = normalizeIsoDate(normalizeTextValue((bill as Record<string, unknown>).txnDate))
+
+              if (!txnDate) {
+                return
+              }
+
               const fallbackProjectNumber = splitQuickBooksProjectLabel(projectName, projectId).projectNumber
               const projectLookup = projectLookupById.get(projectId)
               const jobKey = projectLookup?.jobKey || normalizeJobName(fallbackProjectNumber)
@@ -1389,37 +1588,82 @@ export default function App() {
               const balanceAmount = Number((bill as Record<string, unknown>).balanceAmount)
               const normalizedBalanceAmount = Number.isFinite(balanceAmount) ? Math.max(0, balanceAmount) : 0
               const paidAmount = Math.max(0, normalizedTotalAmount - normalizedBalanceAmount)
+              const monthKey = txnDate.slice(0, 7)
+              const projectLabel = projectName || fallbackProjectNumber || t('No project', 'Sin proyecto')
+              const billNumber = normalizeTextValue((bill as Record<string, unknown>).docNumber)
+              const vendorName = normalizeTextValue((bill as Record<string, unknown>).vendorDisplayName)
+                || normalizeTextValue((bill as Record<string, unknown>).vendorName)
+              const billMemo = normalizeTextValue((bill as Record<string, unknown>).privateNote)
+              const monthBillRows = billRowsByMonth.get(monthKey) ?? []
+              const billRowId = `month-bill-${monthKey}-${monthBillRows.length + 1}`
+              const billRow: AdminWorkspaceRow = {
+                id: billRowId,
+                title: `${formatDisplayDate(txnDate, locale)} • ${clipTextValue(projectLabel, 32)}`,
+                subtitle: `${t('Amount', 'Monto')}: ${formatCurrencyAmountPrecise(normalizedTotalAmount, locale)} - ${t('Paid', 'Pagado')}: ${formatCurrencyAmountPrecise(paidAmount, locale)}`,
+                meta: `${t('Balance', 'Balance')}: ${formatCurrencyAmountPrecise(normalizedBalanceAmount, locale)}`,
+                details: [
+                  `${t('Project', 'Proyecto')}: ${projectLabel}`,
+                  `${t('Amount', 'Monto')}: ${formatCurrencyAmountPrecise(normalizedTotalAmount, locale)}`,
+                  `${t('Paid', 'Pagado')}: ${formatCurrencyAmountPrecise(paidAmount, locale)}`,
+                  `${t('Balance', 'Balance')}: ${formatCurrencyAmountPrecise(normalizedBalanceAmount, locale)}`,
+                  ...(billNumber ? [`${t('Bill #', 'Factura #')}: ${billNumber}`] : []),
+                  ...(vendorName ? [`${t('Vendor', 'Proveedor')}: ${vendorName}`] : []),
+                  ...(billMemo ? [`${t('Memo', 'Nota')}: ${clipTextValue(billMemo, 120)}`] : []),
+                ],
+              }
+              monthBillRows.push(billRow)
+              billRowsByMonth.set(monthKey, monthBillRows)
 
-              billsPaidByJobKey.set(
-                jobKey,
-                Number(((billsPaidByJobKey.get(jobKey) ?? 0) + paidAmount).toFixed(2)),
+              billsByDateJobKey.set(
+                `${txnDate}:${jobKey}`,
+                Number(((billsByDateJobKey.get(`${txnDate}:${jobKey}`) ?? 0) + normalizedTotalAmount).toFixed(2)),
+              )
+              billsPaidByDateJobKey.set(
+                `${txnDate}:${jobKey}`,
+                Number(((billsPaidByDateJobKey.get(`${txnDate}:${jobKey}`) ?? 0) + paidAmount).toFixed(2)),
               )
 
-              if (!txnDate) {
-                return
-              }
-
-              const monthKey = txnDate.slice(0, 7)
               const nonOrderCategory = projectLookup?.nonOrderCategory
                 ?? resolveMobileNonOrderCategory(projectName, fallbackProjectNumber)
+
+              if (nonOrderCategory) {
+                const monthOverheadRows = overheadBillRowsByMonth.get(monthKey) ?? []
+                monthOverheadRows.push({
+                  ...billRow,
+                  id: `month-overhead-${monthKey}-${monthOverheadRows.length + 1}`,
+                })
+                overheadBillRowsByMonth.set(monthKey, monthOverheadRows)
+              }
 
               if (!nonOrderCategory) {
                 return
               }
 
-              const categoryTotals = nonOrderByMonthCategory.get(monthKey) ?? new Map<
+              const monthCategoryTotals = nonOrderByMonthCategory.get(monthKey) ?? new Map<
                 MobileNonOrderCategory,
                 { billedAmount: number; paidAmount: number }
               >()
-              const current = categoryTotals.get(nonOrderCategory) ?? {
+              const monthCurrent = monthCategoryTotals.get(nonOrderCategory) ?? {
                 billedAmount: 0,
                 paidAmount: 0,
               }
+              monthCurrent.billedAmount += normalizedTotalAmount
+              monthCurrent.paidAmount += paidAmount
+              monthCategoryTotals.set(nonOrderCategory, monthCurrent)
+              nonOrderByMonthCategory.set(monthKey, monthCategoryTotals)
 
-              current.billedAmount += normalizedTotalAmount
-              current.paidAmount += paidAmount
-              categoryTotals.set(nonOrderCategory, current)
-              nonOrderByMonthCategory.set(monthKey, categoryTotals)
+              const dateCategoryTotals = nonOrderByDateCategory.get(txnDate) ?? new Map<
+                MobileNonOrderCategory,
+                { billedAmount: number; paidAmount: number }
+              >()
+              const dateCurrent = dateCategoryTotals.get(nonOrderCategory) ?? {
+                billedAmount: 0,
+                paidAmount: 0,
+              }
+              dateCurrent.billedAmount += normalizedTotalAmount
+              dateCurrent.paidAmount += paidAmount
+              dateCategoryTotals.set(nonOrderCategory, dateCurrent)
+              nonOrderByDateCategory.set(txnDate, dateCategoryTotals)
             })
 
             quickBooksPayments.forEach((payment) => {
@@ -1446,28 +1690,187 @@ export default function App() {
                 return
               }
 
-              const aggregateKey = `${monthKey}:${jobKey}`
               paymentsByMonthJobKey.set(
-                aggregateKey,
-                Number(((paymentsByMonthJobKey.get(aggregateKey) ?? 0) + normalizedTotalAmount).toFixed(2)),
+                `${monthKey}:${jobKey}`,
+                Number(((paymentsByMonthJobKey.get(`${monthKey}:${jobKey}`) ?? 0) + normalizedTotalAmount).toFixed(2)),
+              )
+              paymentsByDateJobKey.set(
+                `${txnDate}:${jobKey}`,
+                Number(((paymentsByDateJobKey.get(`${txnDate}:${jobKey}`) ?? 0) + normalizedTotalAmount).toFixed(2)),
               )
             })
 
             const monthKeys = [...monthKeysSet].sort((left, right) => right.localeCompare(left))
+            const activeMonthKey = monthKeys[0] ?? ''
+            const activeMonthRange = activeMonthKey ? resolveMonthRange(activeMonthKey) : null
+            const activeMonthPreviousDate = activeMonthRange
+              ? (shiftIsoDateByDays(activeMonthRange.start, -1) ?? activeMonthRange.start)
+              : null
 
-            const workerRows = [...workerTotals.values()]
-              .sort((left, right) => right.hours - left.hours)
+            const activeMonthProgressByJobKey = new Map<string, number>()
+
+            if (activeMonthRange && activeMonthPreviousDate) {
+              const jobsByKey = monthJobs.get(activeMonthKey) ?? new Map<string, {
+                jobName: string
+                totalHours: number
+                totalLaborCost: number
+              }>()
+
+              jobsByKey.forEach((_jobData, jobKey) => {
+                const readyRows = progressRowsByJobKey.get(jobKey) ?? []
+                const previousReady = resolveLatestReadyPercentOnOrBefore(readyRows, activeMonthPreviousDate) ?? 0
+                const endReady = resolveLatestReadyPercentOnOrBefore(readyRows, activeMonthRange.end) ?? previousReady
+                const delta = Math.max(0, Number((endReady - previousReady).toFixed(1)))
+                activeMonthProgressByJobKey.set(jobKey, delta)
+              })
+            }
+
+            const workerRows = [...workerTotals.entries()]
+              .sort(([, left], [, right]) => right.hours - left.hours)
               .slice(0, 80)
-              .map((row, index) => ({
-                id: `worker-report-${index + 1}`,
-                title: row.label,
-                subtitle: `${t('Hours', 'Horas')}: ${row.hours.toFixed(1)}`,
-                meta: `${t('Entries', 'Entradas')}: ${row.entryCount}`,
-              }))
+              .map(([workerKey, row], index) => {
+                const workerJobs = workerJobKeysByMonth.get(activeMonthKey)?.get(workerKey) ?? new Set<string>()
+                const workerJobSummaries = workerJobSummariesByMonth.get(activeMonthKey)?.get(workerKey) ?? new Map<string, {
+                  jobName: string
+                  totalHours: number
+                  totalLaborCost: number
+                }>()
+                const progressMade = [...workerJobs].reduce(
+                  (sum, jobKey) => sum + (activeMonthProgressByJobKey.get(jobKey) ?? 0),
+                  0,
+                )
 
-            const monthRows = monthKeys
+                const workerJobDetails = [...workerJobSummaries.values()]
+                  .sort((left, right) => right.totalHours - left.totalHours)
+                  .slice(0, 20)
+                  .map((jobSummary) => (
+                    `${clipTextValue(jobSummary.jobName, 30)} - ${t('Hours', 'Horas')}: ${jobSummary.totalHours.toFixed(1)} - ${t('Labor', 'Mano de obra')}: ${formatCurrencyAmountPrecise(jobSummary.totalLaborCost, locale)}`
+                  ))
+
+                return {
+                  id: `worker-report-${workerKey || index + 1}`,
+                  title: row.label,
+                  subtitle: `${t('Hours', 'Horas')}: ${row.hours.toFixed(1)} - ${t('Entries', 'Entradas')}: ${row.entryCount}`,
+                  meta: `${t('Labor', 'Mano de obra')}: ${formatCurrencyAmountPrecise(row.laborCost, locale)}`,
+                  metrics: [
+                    {
+                      label: t('Jobs', 'Trabajos'),
+                      value: String(workerJobs.size),
+                    },
+                    {
+                      label: t('Progress', 'Progreso'),
+                      value: `${progressMade.toFixed(1)}%`,
+                    },
+                  ],
+                  details: workerJobDetails.length > 0
+                    ? workerJobDetails
+                    : [t('No rows found for this report.', 'No se encontraron filas para este reporte.')],
+                }
+              })
+
+            const buildWorkerDetailsForJob = (jobKey: string): AdminWorkspaceRowWorkerDetail[] => {
+              const workersById = allTimeJobWorkersByJobKey.get(jobKey)
+
+              if (!workersById) {
+                return []
+              }
+
+              return [...workersById.entries()]
+                .map(([workerId, worker]) => ({
+                  workerId,
+                  workerName: worker.workerName,
+                  totalHours: Number(worker.totalHours.toFixed(2)),
+                  totalLaborCost: Number(worker.totalLaborCost.toFixed(2)),
+                  dateEntries: [...worker.dateTotals.entries()]
+                    .sort((left, right) => right[0].localeCompare(left[0]))
+                    .map(([date, totals]) => ({
+                      date,
+                      hours: Number(totals.hours.toFixed(2)),
+                      laborCost: Number(totals.laborCost.toFixed(2)),
+                    })),
+                }))
+                .sort((left, right) => right.totalHours - left.totalHours || left.workerName.localeCompare(right.workerName))
+            }
+
+            const allTimeJobRows: AdminWorkspaceRow[] = [...allTimeJobsByKey.entries()]
+              .map(([jobKey, jobData], index) => {
+                const financialTotals = financialTotalsByJobKey.get(jobKey) ?? {
+                  purchaseOrderAmount: 0,
+                  billAmount: 0,
+                  invoiceAmount: 0,
+                  paymentAmount: 0,
+                }
+                const accountsAmount = financialTotals.paymentAmount > 0
+                  ? financialTotals.paymentAmount
+                  : Math.max(financialTotals.invoiceAmount, financialTotals.purchaseOrderAmount)
+                const billsAmount = financialTotals.billAmount
+                const totalCost = Number((jobData.totalLaborCost + billsAmount).toFixed(2))
+                const totalProfit = Number((accountsAmount - totalCost).toFixed(2))
+                const workerDetails = buildWorkerDetailsForJob(jobKey)
+                const numberMatch = /\b\d{5,8}\b/.exec(jobData.jobName)
+                const fallbackDigits = extractDigits(jobData.jobName)
+                const displayOrderNumber = numberMatch?.[0] || fallbackDigits || ''
+
+                return {
+                  sortProfit: totalProfit,
+                  row: {
+                    id: `job-report-${jobKey || index + 1}`,
+                    title: displayOrderNumber ? `#${displayOrderNumber}` : clipTextValue(jobData.jobName, 30),
+                    subtitle: `${t('Total profit', 'Ganancia total')}: ${formatCurrencyAmountPrecise(totalProfit, locale)}`,
+                    meta: `${t('Labor', 'Mano de obra')}: ${formatCurrencyAmountPrecise(jobData.totalLaborCost, locale)}`,
+                    metrics: [
+                      {
+                        label: t('Hours', 'Horas'),
+                        value: jobData.totalHours.toFixed(1),
+                      },
+                      {
+                        label: t('Labor', 'Mano de obra'),
+                        value: formatCurrencyAmountPrecise(jobData.totalLaborCost, locale),
+                      },
+                      {
+                        label: t('Total cost', 'Costo total'),
+                        value: formatCurrencyAmountPrecise(totalCost, locale),
+                      },
+                    ],
+                    details: [
+                      `${t('Job', 'Trabajo')}: ${jobData.jobName}`,
+                      `${t('Hours', 'Horas')}: ${jobData.totalHours.toFixed(1)}`,
+                      `${t('Labor', 'Mano de obra')}: ${formatCurrencyAmountPrecise(jobData.totalLaborCost, locale)}`,
+                      `${t('Bills', 'Facturas')}: ${formatCurrencyAmountPrecise(billsAmount, locale)}`,
+                      `${t('Total cost', 'Costo total')}: ${formatCurrencyAmountPrecise(totalCost, locale)}`,
+                      `${t('Accounts', 'Cuentas')}: ${formatCurrencyAmountPrecise(accountsAmount, locale)}`,
+                      `${t('Total profit', 'Ganancia total')}: ${formatCurrencyAmountPrecise(totalProfit, locale)}`,
+                    ],
+                    workerDetails,
+                  },
+                }
+              })
+              .sort((left, right) => right.sortProfit - left.sortProfit || left.row.title.localeCompare(right.row.title))
+              .map(({ row }) => row)
+
+            const monthSummaryByKey = new Map<string, {
+              totalAmountSpent: number
+              totalCostShould: number
+              totalEarned: number
+              totalShouldEarn: number
+            }>()
+            const monthJobDataByKey = new Map<string, Array<{
+              id: string
+              jobName: string
+              totalHours: number
+              totalLaborCost: number
+              previousReadyPercent: number
+              endReadyPercent: number
+              progressDeltaPercent: number
+              contractAmount: number
+              expectedEarnedAmount: number
+              billsAmount: number
+              receivedThisMonth: number
+            }>>()
+
+            const monthRows: AdminWorkspaceRow[] = monthKeys
               .slice(0, 24)
-              .map((monthKey, monthIndex) => {
+              .flatMap((monthKey) => {
                 const jobsByKey = monthJobs.get(monthKey) ?? new Map<string, {
                   jobName: string
                   totalHours: number
@@ -1476,6 +1879,7 @@ export default function App() {
                 const monthRange = resolveMonthRange(monthKey)
                 const monthStart = monthRange?.start ?? `${monthKey}-01`
                 const previousDate = shiftIsoDateByDays(monthStart, -1) ?? monthStart
+                const monthLabel = formatMonthBucketLabel(monthKey, locale)
 
                 const jobRows = [...jobsByKey.entries()]
                   .map(([jobKey, jobData], jobIndex) => {
@@ -1499,10 +1903,9 @@ export default function App() {
                       : Math.max(financialTotals.invoiceAmount, financialTotals.paymentAmount)
                     const expectedEarnedAmount = Number(((contractAmount * progressDeltaPercent) / 100).toFixed(2))
                     const receivedThisMonth = paymentsByMonthJobKey.get(`${monthKey}:${jobKey}`) ?? 0
-                    const billsPaidTotal = billsPaidByJobKey.get(jobKey) ?? 0
 
                     return {
-                      id: `month-job-${monthIndex + 1}-${jobIndex + 1}`,
+                      id: `month-job-${monthKey}-${jobIndex + 1}`,
                       jobName: jobData.jobName,
                       totalHours: jobData.totalHours,
                       totalLaborCost: jobData.totalLaborCost,
@@ -1512,8 +1915,6 @@ export default function App() {
                       contractAmount,
                       expectedEarnedAmount,
                       billsAmount: financialTotals.billAmount,
-                      billsPaidTotal,
-                      receivedTotal: financialTotals.paymentAmount,
                       receivedThisMonth,
                     }
                   })
@@ -1522,98 +1923,307 @@ export default function App() {
                       return right.expectedEarnedAmount - left.expectedEarnedAmount
                     }
 
-                    if (right.progressDeltaPercent !== left.progressDeltaPercent) {
-                      return right.progressDeltaPercent - left.progressDeltaPercent
-                    }
-
                     return left.jobName.localeCompare(right.jobName)
                   })
 
-                const monthHours = jobRows.reduce((sum, row) => sum + row.totalHours, 0)
-                const monthCost = jobRows.reduce((sum, row) => sum + row.totalLaborCost, 0)
-                const monthExpected = jobRows.reduce((sum, row) => sum + row.expectedEarnedAmount, 0)
-                const monthReceived = jobRows.reduce((sum, row) => sum + row.receivedThisMonth, 0)
-                const details = jobRows.length > 0
-                  ? jobRows.slice(0, 120).map((row) => (
-                    `${clipTextValue(row.jobName, 32)} - ${t('Hours', 'Horas')}: ${row.totalHours.toFixed(1)} - ${t('Labor', 'Mano de obra')}: ${formatCurrencyAmountPrecise(row.totalLaborCost, locale)} - ${t('Bills', 'Facturas')}: ${formatCurrencyAmountPrecise(row.billsAmount, locale)} - ${t('Bills paid', 'Facturas pagadas')}: ${formatCurrencyAmountPrecise(row.billsPaidTotal, locale)} - ${t('Received', 'Recibido')}: ${formatCurrencyAmountPrecise(row.receivedTotal, locale)} - ${t('Progress', 'Progreso')}: ${row.previousReadyPercent.toFixed(1)}% -> ${row.endReadyPercent.toFixed(1)}% (+${row.progressDeltaPercent.toFixed(1)}%) - ${t('Should earn', 'Debe ganar')}: ${formatCurrencyAmountPrecise(row.expectedEarnedAmount, locale)}`
-                  ))
-                  : [t('No jobs found for this month.', 'No se encontraron trabajos para este mes.')]
+                monthJobDataByKey.set(monthKey, jobRows)
 
-                return {
-                  id: `month-report-${monthIndex + 1}`,
-                  title: formatMonthBucketLabel(monthKey, locale),
-                  subtitle: `${t('Jobs', 'Trabajos')}: ${jobRows.length} - ${t('Hours', 'Horas')}: ${monthHours.toFixed(1)} - ${t('Labor', 'Mano de obra')}: ${formatCurrencyAmountPrecise(monthCost, locale)}`,
-                  meta: `${t('Should earn', 'Debe ganar')}: ${formatCurrencyAmountPrecise(monthExpected, locale)} - ${t('Received this month', 'Recibido este mes')}: ${formatCurrencyAmountPrecise(monthReceived, locale)}`,
-                  details,
-                }
-              })
+                const monthNonOrderCategories = nonOrderByMonthCategory.get(monthKey)
+                const totalNonOrderBilled = MOBILE_NON_ORDER_CATEGORY_CONFIG.reduce((sum, config) => {
+                  const totals = monthNonOrderCategories?.get(config.category)
+                  return sum + (totals?.billedAmount ?? 0)
+                }, 0)
+                const totalNonOrderPaid = MOBILE_NON_ORDER_CATEGORY_CONFIG.reduce((sum, config) => {
+                  const totals = monthNonOrderCategories?.get(config.category)
+                  return sum + (totals?.paidAmount ?? 0)
+                }, 0)
+                const monthLabor = jobRows.reduce((sum, row) => sum + row.totalLaborCost, 0)
+                const monthBills = jobRows.reduce((sum, row) => sum + row.billsAmount, 0)
+                const monthEarned = jobRows.reduce((sum, row) => sum + row.receivedThisMonth, 0)
+                const monthShouldEarn = jobRows.reduce((sum, row) => sum + row.expectedEarnedAmount, 0)
 
-            const nonOrderMonthRows = monthKeys
-              .slice(0, 24)
-              .map((monthKey, index) => {
-                const categoryTotals = nonOrderByMonthCategory.get(monthKey)
-                const details = MOBILE_NON_ORDER_CATEGORY_CONFIG.map((config) => {
-                  const totals = categoryTotals?.get(config.category) ?? {
+                monthSummaryByKey.set(monthKey, {
+                  totalAmountSpent: Number((monthLabor + totalNonOrderPaid).toFixed(2)),
+                  totalCostShould: Number((monthLabor + monthBills + totalNonOrderBilled).toFixed(2)),
+                  totalEarned: Number(monthEarned.toFixed(2)),
+                  totalShouldEarn: Number(monthShouldEarn.toFixed(2)),
+                })
+
+                const monthJobRows: AdminWorkspaceRow[] = jobRows.map((row) => {
+                  const totalCost = Number((row.totalLaborCost + row.billsAmount).toFixed(2))
+                  const projectProfit = Number((row.expectedEarnedAmount - totalCost).toFixed(2))
+                  const netProfit = Number((row.receivedThisMonth - totalCost).toFixed(2))
+
+                  return {
+                    id: row.id,
+                    title: `${monthLabel} • ${clipTextValue(row.jobName, 28)}`,
+                    subtitle: `${t('Hours', 'Horas')}: ${row.totalHours.toFixed(1)} - ${t('Project profit', 'Ganancia del proyecto')}: ${formatCurrencyAmountPrecise(projectProfit, locale)}`,
+                    meta: `${t('Net profit', 'Ganancia neta')}: ${formatCurrencyAmountPrecise(netProfit, locale)}`,
+                    metrics: [
+                      {
+                        label: t('Accounts', 'Cuentas'),
+                        value: formatCurrencyAmountPrecise(row.receivedThisMonth, locale),
+                      },
+                      {
+                        label: t('Labor', 'Mano de obra'),
+                        value: formatCurrencyAmountPrecise(row.totalLaborCost, locale),
+                      },
+                      {
+                        label: t('Bills', 'Facturas'),
+                        value: formatCurrencyAmountPrecise(row.billsAmount, locale),
+                      },
+                      {
+                        label: t('Total cost', 'Costo total'),
+                        value: formatCurrencyAmountPrecise(totalCost, locale),
+                      },
+                    ],
+                    details: [
+                      `${t('Accounts', 'Cuentas')}: ${formatCurrencyAmountPrecise(row.receivedThisMonth, locale)}`,
+                      `${t('Labor', 'Mano de obra')}: ${formatCurrencyAmountPrecise(row.totalLaborCost, locale)}`,
+                      `${t('Bills', 'Facturas')}: ${formatCurrencyAmountPrecise(row.billsAmount, locale)}`,
+                      `${t('Total cost', 'Costo total')}: ${formatCurrencyAmountPrecise(totalCost, locale)}`,
+                      `${t('Ready order amount', 'Monto de orden listo')}: ${formatCurrencyAmountPrecise(row.expectedEarnedAmount, locale)}`,
+                      `${t('Earned amount', 'Monto ganado')}: ${formatCurrencyAmountPrecise(row.receivedThisMonth, locale)}`,
+                      `${t('Project profit', 'Ganancia del proyecto')}: ${formatCurrencyAmountPrecise(projectProfit, locale)}`,
+                      `${t('Net profit', 'Ganancia neta')}: ${formatCurrencyAmountPrecise(netProfit, locale)}`,
+                    ],
+                  }
+                })
+
+                const monthNonOrderRows: AdminWorkspaceRow[] = MOBILE_NON_ORDER_CATEGORY_CONFIG.map((config, categoryIndex) => {
+                  const totals = monthNonOrderCategories?.get(config.category) ?? {
                     billedAmount: 0,
                     paidAmount: 0,
                   }
 
-                  return `${config.label} - ${t('Billed', 'Facturado')}: ${formatCurrencyAmountPrecise(totals.billedAmount, locale)} - ${t('Paid', 'Pagado')}: ${formatCurrencyAmountPrecise(totals.paidAmount, locale)}`
-                })
-                const billedTotal = details.reduce((sum, _detail, detailIndex) => {
-                  const config = MOBILE_NON_ORDER_CATEGORY_CONFIG[detailIndex]
-                  const totals = categoryTotals?.get(config.category)
-                  return sum + (totals?.billedAmount ?? 0)
-                }, 0)
-                const paidTotal = details.reduce((sum, _detail, detailIndex) => {
-                  const config = MOBILE_NON_ORDER_CATEGORY_CONFIG[detailIndex]
-                  const totals = categoryTotals?.get(config.category)
-                  return sum + (totals?.paidAmount ?? 0)
-                }, 0)
+                  return {
+                    id: `month-non-order-${monthKey}-${categoryIndex + 1}`,
+                    title: `${monthLabel} • ${config.label} (non-order)`,
+                    subtitle: `${t('Billed', 'Facturado')}: ${formatCurrencyAmountPrecise(totals.billedAmount, locale)} - ${t('Paid', 'Pagado')}: ${formatCurrencyAmountPrecise(totals.paidAmount, locale)}`,
+                    metrics: [
+                      {
+                        label: t('Category', 'Categoria'),
+                        value: config.label,
+                      },
+                    ],
+                  }
+                }).filter((row) => row.subtitle.includes('$'))
 
-                return {
-                  id: `month-non-order-${index + 1}`,
-                  title: formatMonthBucketLabel(monthKey, locale),
-                  subtitle: `${t('Billed', 'Facturado')}: ${formatCurrencyAmountPrecise(billedTotal, locale)}`,
-                  meta: `${t('Paid', 'Pagado')}: ${formatCurrencyAmountPrecise(paidTotal, locale)}`,
-                  details,
-                }
+                return [...monthJobRows, ...monthNonOrderRows]
               })
 
-            const uniqueJobCount = new Set(
-              [...monthJobs.values()].flatMap((jobsByKey) => [...jobsByKey.keys()]),
-            ).size
+            const dateJobs = new Map<string, Map<string, {
+              jobName: string
+              totalHours: number
+              totalLaborCost: number
+            }>>()
+
+            entries.forEach((entry, index) => {
+              const normalizedDate = normalizeIsoDate(normalizeTextValue(entry.date))
+
+              if (!normalizedDate) {
+                return
+              }
+
+              const regularHours = Number(entry.hours)
+              const overtimeHours = Number(entry.overtimeHours)
+              const safeRegularHours = Number.isFinite(regularHours) ? Math.max(0, regularHours) : 0
+              const safeOvertimeHours = Number.isFinite(overtimeHours) ? Math.max(0, overtimeHours) : 0
+              const combinedHours = safeRegularHours + safeOvertimeHours
+
+              if (combinedHours <= 0) {
+                return
+              }
+
+              const workerId = normalizeTextValue(entry.workerId)
+              const workerSnapshotRate = Number(entry.payRate)
+              const fallbackRate = workerRateById.get(workerId) ?? 0
+              const resolvedRate = Number.isFinite(workerSnapshotRate) && workerSnapshotRate > 0
+                ? workerSnapshotRate
+                : fallbackRate
+              const laborCost = (safeRegularHours * resolvedRate) + (safeOvertimeHours * resolvedRate * 1.5)
+              const jobName = normalizeTextValue(entry.jobName) || t('Unnamed job', 'Trabajo sin nombre')
+              const jobKey = normalizeJobName(jobName) || `date-job-${index + 1}`
+              const jobsByKey = dateJobs.get(normalizedDate) ?? new Map<string, {
+                jobName: string
+                totalHours: number
+                totalLaborCost: number
+              }>()
+              const current = jobsByKey.get(jobKey) ?? {
+                jobName,
+                totalHours: 0,
+                totalLaborCost: 0,
+              }
+              current.totalHours += combinedHours
+              current.totalLaborCost += laborCost
+              jobsByKey.set(jobKey, current)
+              dateJobs.set(normalizedDate, jobsByKey)
+            })
+
+            const dateRows: AdminWorkspaceRow[] = [...dateJobs.keys()]
+              .sort((left, right) => right.localeCompare(left))
+              .slice(0, 45)
+              .flatMap((dateKey) => {
+                const jobsByKey = dateJobs.get(dateKey) ?? new Map<string, {
+                  jobName: string
+                  totalHours: number
+                  totalLaborCost: number
+                }>()
+                const previousDate = shiftIsoDateByDays(dateKey, -1) ?? dateKey
+                const dateLabel = formatDisplayDate(dateKey, locale)
+
+                const jobRows: AdminWorkspaceRow[] = [...jobsByKey.entries()].map(([jobKey, jobData], jobIndex) => {
+                  const readyRows = progressRowsByJobKey.get(jobKey) ?? []
+                  const previousReadyPercent = resolveLatestReadyPercentOnOrBefore(readyRows, previousDate) ?? 0
+                  const endReadyPercent = resolveLatestReadyPercentOnOrBefore(readyRows, dateKey) ?? previousReadyPercent
+                  const progressDeltaPercent = Math.max(
+                    0,
+                    Number((endReadyPercent - previousReadyPercent).toFixed(1)),
+                  )
+
+                  return {
+                    id: `date-report-${dateKey}-${jobIndex + 1}`,
+                    title: `${dateLabel} • ${clipTextValue(jobData.jobName, 28)}`,
+                    subtitle: `${t('Hours', 'Horas')}: ${jobData.totalHours.toFixed(1)} - ${t('Labor', 'Mano de obra')}: ${formatCurrencyAmountPrecise(jobData.totalLaborCost, locale)}`,
+                    meta: `${t('Progress', 'Progreso')}: ${previousReadyPercent.toFixed(1)}% -> ${endReadyPercent.toFixed(1)}% (+${progressDeltaPercent.toFixed(1)}%)`,
+                    metrics: [
+                      {
+                        label: t('Bills', 'Facturas'),
+                        value: formatCurrencyAmountPrecise(billsByDateJobKey.get(`${dateKey}:${jobKey}`) ?? 0, locale),
+                      },
+                      {
+                        label: t('Bills paid', 'Facturas pagadas'),
+                        value: formatCurrencyAmountPrecise(billsPaidByDateJobKey.get(`${dateKey}:${jobKey}`) ?? 0, locale),
+                      },
+                      {
+                        label: t('Received', 'Recibido'),
+                        value: formatCurrencyAmountPrecise(paymentsByDateJobKey.get(`${dateKey}:${jobKey}`) ?? 0, locale),
+                      },
+                    ],
+                    details: [
+                      `${t('Bills', 'Facturas')}: ${formatCurrencyAmountPrecise(billsByDateJobKey.get(`${dateKey}:${jobKey}`) ?? 0, locale)}`,
+                      `${t('Bills paid', 'Facturas pagadas')}: ${formatCurrencyAmountPrecise(billsPaidByDateJobKey.get(`${dateKey}:${jobKey}`) ?? 0, locale)}`,
+                      `${t('Received', 'Recibido')}: ${formatCurrencyAmountPrecise(paymentsByDateJobKey.get(`${dateKey}:${jobKey}`) ?? 0, locale)}`,
+                    ],
+                  }
+                })
+
+                const dateNonOrderCategories = nonOrderByDateCategory.get(dateKey)
+                const nonOrderRows: AdminWorkspaceRow[] = MOBILE_NON_ORDER_CATEGORY_CONFIG.map((config, categoryIndex) => {
+                  const totals = dateNonOrderCategories?.get(config.category) ?? {
+                    billedAmount: 0,
+                    paidAmount: 0,
+                  }
+
+                  return {
+                    id: `date-non-order-${dateKey}-${categoryIndex + 1}`,
+                    title: `${dateLabel} • ${config.label} (non-order)`,
+                    subtitle: `${t('Billed', 'Facturado')}: ${formatCurrencyAmountPrecise(totals.billedAmount, locale)} - ${t('Paid', 'Pagado')}: ${formatCurrencyAmountPrecise(totals.paidAmount, locale)}`,
+                    details: [
+                      `${t('Category', 'Categoria')}: ${config.label}`,
+                      `${t('Billed', 'Facturado')}: ${formatCurrencyAmountPrecise(totals.billedAmount, locale)}`,
+                      `${t('Paid', 'Pagado')}: ${formatCurrencyAmountPrecise(totals.paidAmount, locale)}`,
+                    ],
+                  }
+                }).filter((row) => row.subtitle.includes('$'))
+
+                return [...jobRows, ...nonOrderRows]
+              })
+
+            const activeMonthSummary = monthSummaryByKey.get(activeMonthKey) ?? {
+              totalAmountSpent: 0,
+              totalCostShould: 0,
+              totalEarned: 0,
+              totalShouldEarn: 0,
+            }
+            const activeMonthNetProfit = Number((activeMonthSummary.totalEarned - activeMonthSummary.totalCostShould).toFixed(2))
+            const activeMonthProjectProfit = Number((activeMonthSummary.totalShouldEarn - activeMonthSummary.totalCostShould).toFixed(2))
+            const activeMonthLabel = activeMonthKey
+              ? formatMonthBucketLabel(activeMonthKey, locale)
+              : t('Current month', 'Mes actual')
+            const activeMonthTotalCostBillRows = billRowsByMonth.get(activeMonthKey) ?? []
+            const activeMonthOverheadBillRows = overheadBillRowsByMonth.get(activeMonthKey) ?? []
+            const activeMonthJobData = monthJobDataByKey.get(activeMonthKey) ?? []
+
+            const activeMonthNetProfitRows: AdminWorkspaceRow[] = [...activeMonthJobData]
+              .map((row, index) => {
+                const totalCost = Number((row.totalLaborCost + row.billsAmount).toFixed(2))
+                const netProfit = Number((row.receivedThisMonth - totalCost).toFixed(2))
+                const projectProfit = Number((row.expectedEarnedAmount - totalCost).toFixed(2))
+
+                return {
+                  id: `month-net-${activeMonthKey}-${index + 1}`,
+                  title: clipTextValue(row.jobName, 36),
+                  subtitle: `${t('Net profit', 'Ganancia neta')}: ${formatCurrencyAmountPrecise(netProfit, locale)}`,
+                  meta: `${t('Earned amount', 'Monto ganado')}: ${formatCurrencyAmountPrecise(row.receivedThisMonth, locale)} - ${t('Total cost', 'Costo total')}: ${formatCurrencyAmountPrecise(totalCost, locale)}`,
+                  details: [
+                    `${t('Accounts', 'Cuentas')}: ${formatCurrencyAmountPrecise(row.receivedThisMonth, locale)}`,
+                    `${t('Labor', 'Mano de obra')}: ${formatCurrencyAmountPrecise(row.totalLaborCost, locale)}`,
+                    `${t('Bills', 'Facturas')}: ${formatCurrencyAmountPrecise(row.billsAmount, locale)}`,
+                    `${t('Total cost', 'Costo total')}: ${formatCurrencyAmountPrecise(totalCost, locale)}`,
+                    `${t('Ready order amount', 'Monto de orden listo')}: ${formatCurrencyAmountPrecise(row.expectedEarnedAmount, locale)}`,
+                    `${t('Project profit', 'Ganancia del proyecto')}: ${formatCurrencyAmountPrecise(projectProfit, locale)}`,
+                    `${t('Net profit', 'Ganancia neta')}: ${formatCurrencyAmountPrecise(netProfit, locale)}`,
+                  ],
+                }
+              })
+              .sort((left, right) => {
+                return left.title.localeCompare(right.title)
+              })
+
+            const activeMonthProjectProfitRows: AdminWorkspaceRow[] = [...activeMonthJobData]
+              .map((row, index) => {
+                const totalCost = Number((row.totalLaborCost + row.billsAmount).toFixed(2))
+                const netProfit = Number((row.receivedThisMonth - totalCost).toFixed(2))
+                const projectProfit = Number((row.expectedEarnedAmount - totalCost).toFixed(2))
+
+                return {
+                  id: `month-project-${activeMonthKey}-${index + 1}`,
+                  title: clipTextValue(row.jobName, 36),
+                  subtitle: `${t('Project profit', 'Ganancia del proyecto')}: ${formatCurrencyAmountPrecise(projectProfit, locale)}`,
+                  meta: `${t('Ready order amount', 'Monto de orden listo')}: ${formatCurrencyAmountPrecise(row.expectedEarnedAmount, locale)}`,
+                  details: [
+                    `${t('Accounts', 'Cuentas')}: ${formatCurrencyAmountPrecise(row.receivedThisMonth, locale)}`,
+                    `${t('Labor', 'Mano de obra')}: ${formatCurrencyAmountPrecise(row.totalLaborCost, locale)}`,
+                    `${t('Bills', 'Facturas')}: ${formatCurrencyAmountPrecise(row.billsAmount, locale)}`,
+                    `${t('Total cost', 'Costo total')}: ${formatCurrencyAmountPrecise(totalCost, locale)}`,
+                    `${t('Ready order amount', 'Monto de orden listo')}: ${formatCurrencyAmountPrecise(row.expectedEarnedAmount, locale)}`,
+                    `${t('Earned amount', 'Monto ganado')}: ${formatCurrencyAmountPrecise(row.receivedThisMonth, locale)}`,
+                    `${t('Project profit', 'Ganancia del proyecto')}: ${formatCurrencyAmountPrecise(projectProfit, locale)}`,
+                    `${t('Net profit', 'Ganancia neta')}: ${formatCurrencyAmountPrecise(netProfit, locale)}`,
+                  ],
+                }
+              })
+              .sort((left, right) => {
+                return left.title.localeCompare(right.title)
+              })
 
             panelData = {
               updatedAt: normalizeTextValue(quickBooksPayload.generatedAt) || new Date().toISOString(),
               note: t(
-                'Reports are grouped by worker and month. Monthly rows include job-level bills, paid bills, actual received, and progress-based expected earnings.',
-                'Los reportes se agrupan por trabajador y mes. Las filas mensuales incluyen facturas por trabajo, facturas pagadas, cobros reales y ganancia esperada por progreso.',
+                'Reports are organized with worker, month, and date cards. Non-order categories are included inside each month/date breakdown.',
+                'Los reportes estan organizados con tarjetas por trabajador, mes y fecha. Las categorias no relacionadas a ordenes estan incluidas dentro de cada desglose por mes/fecha.',
               ),
               stats: [
                 {
-                  label: t('Workers', 'Trabajadores'),
-                  value: String(workers.length),
+                  id: 'general_overhead',
+                  label: `${t('General overhead', 'Gasto general')} (${activeMonthLabel})`,
+                  value: formatCurrencyAmountPrecise(activeMonthSummary.totalAmountSpent, locale),
                 },
                 {
-                  label: t('Entries', 'Entradas'),
-                  value: String(entries.length),
+                  id: 'total_cost',
+                  label: t('Total cost', 'Costo total'),
+                  value: formatCurrencyAmountPrecise(activeMonthSummary.totalCostShould, locale),
                 },
                 {
-                  label: t('Hours', 'Horas'),
-                  value: totalHours.toFixed(1),
+                  id: 'net_profit',
+                  label: t('Net profit', 'Ganancia neta'),
+                  value: formatCurrencyAmountPrecise(activeMonthNetProfit, locale),
                 },
                 {
-                  label: t('Labor cost', 'Costo de mano de obra'),
-                  value: formatCurrencyAmountPrecise(totalLaborCost, locale),
-                },
-                {
-                  label: t('Jobs', 'Trabajos'),
-                  value: String(uniqueJobCount),
-                },
-                {
-                  label: t('Months', 'Meses'),
-                  value: String(monthKeys.length),
+                  id: 'project_profit',
+                  label: t('Project profit', 'Ganancia del proyecto'),
+                  value: formatCurrencyAmountPrecise(activeMonthProjectProfit, locale),
                 },
               ],
               sections: [
@@ -1625,15 +2235,45 @@ export default function App() {
                 },
                 {
                   id: 'report_month',
-                  title: t('Monthly jobs and earnings', 'Trabajos y ganancias por mes'),
+                  title: t('Report by month', 'Reporte por mes'),
                   emptyText: t('No month report rows.', 'No hay filas por mes.'),
                   rows: monthRows,
                 },
                 {
-                  id: 'report_month_non_order',
-                  title: t('Monthly non-order spending', 'Gasto mensual no relacionado a ordenes'),
-                  emptyText: t('No monthly non-order spending found.', 'No se encontro gasto no relacionado a ordenes.'),
-                  rows: nonOrderMonthRows,
+                  id: 'report_job',
+                  title: t('Report by job', 'Reporte por trabajo'),
+                  emptyText: t('No rows found for this report.', 'No se encontraron filas para este reporte.'),
+                  rows: allTimeJobRows,
+                },
+                {
+                  id: 'report_date',
+                  title: t('Report by date', 'Reporte por fecha'),
+                  emptyText: t('No date report rows.', 'No hay filas por fecha.'),
+                  rows: dateRows,
+                },
+                {
+                  id: 'report_month_total_cost_bills',
+                  title: `${t('Bill list', 'Lista de facturas')} - ${t('Total cost', 'Costo total')}`,
+                  emptyText: t('No rows found for this report.', 'No se encontraron filas para este reporte.'),
+                  rows: activeMonthTotalCostBillRows,
+                },
+                {
+                  id: 'report_month_overhead_bills',
+                  title: `${t('Bill list', 'Lista de facturas')} - ${t('General overhead', 'Gasto general')}`,
+                  emptyText: t('No rows found for this report.', 'No se encontraron filas para este reporte.'),
+                  rows: activeMonthOverheadBillRows,
+                },
+                {
+                  id: 'report_month_net_profit_orders',
+                  title: t('Net profit by order', 'Ganancia neta por orden'),
+                  emptyText: t('No rows found for this report.', 'No se encontraron filas para este reporte.'),
+                  rows: activeMonthNetProfitRows,
+                },
+                {
+                  id: 'report_month_project_profit_orders',
+                  title: t('Project profit by order', 'Ganancia del proyecto por orden'),
+                  emptyText: t('No rows found for this report.', 'No se encontraron filas para este reporte.'),
+                  rows: activeMonthProjectProfitRows,
                 },
               ],
             }
@@ -2075,10 +2715,14 @@ export default function App() {
       const latestBuildNumber = parseBuildNumberLike(payload?.build)
       const candidateUpdateUrl = withBuildQuery(backendUpdateUrl, latestBuildNumber ?? Number.NaN)
       const latestVersion = String(payload?.version ?? '').trim()
+      const versionComparison = compareVersionLabels(latestVersion, installedNativeVersion)
       const hasComparableBuilds = latestBuildNumber !== null && installedNativeBuildNumber !== null
+      const hasComparableVersions = versionComparison !== null
       const hasNewNativeBuild = hasComparableBuilds
         ? latestBuildNumber > installedNativeBuildNumber
-        : Boolean(candidateUpdateUrl)
+        : hasComparableVersions
+          ? versionComparison > 0
+          : false
 
       if (!candidateUpdateUrl) {
         setUpdateMessage(
@@ -2090,8 +2734,10 @@ export default function App() {
         return
       }
 
-      if (hasComparableBuilds && !hasNewNativeBuild) {
-        const currentBuildText = installedNativeBuildLabel || String(installedNativeBuildNumber)
+      if (!hasNewNativeBuild) {
+        const currentBuildText =
+          installedNativeBuildLabel
+          || (installedNativeBuildNumber !== null ? String(installedNativeBuildNumber) : installedNativeVersion)
 
         setUpdateMessage(
           t(
@@ -2130,7 +2776,14 @@ export default function App() {
     } finally {
       setIsCheckingForUpdates(false)
     }
-  }, [getErrorMessage, installedNativeBuildLabel, installedNativeBuildNumber, requestWithSession, t])
+  }, [
+    getErrorMessage,
+    installedNativeBuildLabel,
+    installedNativeBuildNumber,
+    installedNativeVersion,
+    requestWithSession,
+    t,
+  ])
 
   const handleInstallUpdate = useCallback(async () => {
     if (!resolvedUpdateUrl) {
@@ -2537,6 +3190,16 @@ export default function App() {
   }, [activeScreen, isAdminUser])
 
   useEffect(() => {
+    const frameHandle = requestAnimationFrame(() => {
+      screenScrollRef.current?.scrollTo({ y: 0, animated: false })
+    })
+
+    return () => {
+      cancelAnimationFrame(frameHandle)
+    }
+  }, [activeScreen])
+
+  useEffect(() => {
     if (activeScreen !== 'admin' || !isAdminUser) {
       return
     }
@@ -2563,6 +3226,12 @@ export default function App() {
   }, [activeScreen])
 
   useEffect(() => {
+    if (activeScreen !== 'admin') {
+      setAdminDatePickerTarget(null)
+    }
+  }, [activeScreen])
+
+  useEffect(() => {
     if (activeSettingsMenuId !== 'admin') {
       setAdminPortalMessage(null)
     }
@@ -2572,6 +3241,17 @@ export default function App() {
     setAdminExpandedWorkspaceRowId(null)
     setAdminAccessMenuUserUid(null)
     setAdminReportsView('menu')
+    setAdminReportWorkerSearch('')
+    setAdminSelectedWorkerReportRowId(null)
+    setAdminReportMonthStatId('summary')
+    setAdminSelectedMonthProjectRowId(null)
+    setAdminReportJobSearch('')
+    setAdminReportDateRangeStart('')
+    setAdminReportDateRangeEnd('')
+    setAdminDatePickerTarget(null)
+    setAdminReportMonthListModalState(null)
+    setAdminReportDetailsModalState(null)
+    setAdminReportWorkerDrilldownModalState(null)
   }, [adminPortalRoutePath])
 
   useEffect(() => {
@@ -3539,44 +4219,82 @@ export default function App() {
   )
 
   const latestSyncText = useMemo(() => {
-    const candidates = [
-      mondaySnapshot?.generatedAt,
-      zendeskSnapshot?.generatedAt,
-      supportTicketsSnapshot?.generatedAt,
-    ].filter((value): value is string => Boolean(value))
+    const pickNewestSyncValue = (values: Array<string | null | undefined>) => {
+      const candidates = values
+        .map((value) => String(value ?? '').trim())
+        .filter((value): value is string => Boolean(value))
 
-    if (!candidates.length) {
+      if (!candidates.length) {
+        return null
+      }
+
+      return candidates.reduce((latest, current) => {
+        const latestTime = Date.parse(latest)
+        const currentTime = Date.parse(current)
+
+        if (Number.isNaN(latestTime)) {
+          return current
+        }
+
+        if (Number.isNaN(currentTime)) {
+          return latest
+        }
+
+        return currentTime > latestTime ? current : latest
+      })
+    }
+
+    const formatSyncValue = (value: string) => {
+      const parsed = new Date(value)
+
+      if (Number.isNaN(parsed.getTime())) {
+        return value
+      }
+
+      return new Intl.DateTimeFormat(locale, {
+        month: 'short',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+      }).format(parsed)
+    }
+
+    const adminSyncValue = adminPortalRoutePath
+      ? adminWorkspaceDataByPath[adminPortalRoutePath]?.updatedAt
+      : null
+
+    const contextualCandidates =
+      activeScreen === 'admin'
+        ? [adminSyncValue]
+        : activeScreen === 'orders' || activeScreen === 'pictures'
+          ? [mondaySnapshot?.generatedAt]
+          : activeScreen === 'alerts'
+            ? [zendeskSnapshot?.generatedAt, supportTicketsSnapshot?.generatedAt]
+            : [mondaySnapshot?.generatedAt, zendeskSnapshot?.generatedAt, supportTicketsSnapshot?.generatedAt, adminSyncValue]
+
+    const newestRaw = pickNewestSyncValue(contextualCandidates)
+      ?? pickNewestSyncValue([
+        mondaySnapshot?.generatedAt,
+        zendeskSnapshot?.generatedAt,
+        supportTicketsSnapshot?.generatedAt,
+        adminSyncValue,
+      ])
+
+    if (!newestRaw) {
       return t('Unknown', 'Desconocido')
     }
 
-    const newestRaw = candidates.reduce((latest, current) => {
-      const latestTime = Date.parse(latest)
-      const currentTime = Date.parse(current)
-
-      if (Number.isNaN(latestTime)) {
-        return current
-      }
-
-      if (Number.isNaN(currentTime)) {
-        return latest
-      }
-
-      return currentTime > latestTime ? current : latest
-    })
-
-    const parsedNewest = new Date(newestRaw)
-
-    if (Number.isNaN(parsedNewest.getTime())) {
-      return newestRaw
-    }
-
-    return new Intl.DateTimeFormat(locale, {
-      month: 'short',
-      day: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-    }).format(parsedNewest)
-  }, [locale, mondaySnapshot, supportTicketsSnapshot, t, zendeskSnapshot])
+    return formatSyncValue(newestRaw)
+  }, [
+    activeScreen,
+    adminPortalRoutePath,
+    adminWorkspaceDataByPath,
+    locale,
+    mondaySnapshot?.generatedAt,
+    supportTicketsSnapshot?.generatedAt,
+    t,
+    zendeskSnapshot?.generatedAt,
+  ])
 
   const detailOrders = useMemo(() => {
     if (!mondaySnapshot || !detailSelection || detailSelection.type !== 'order') {
@@ -3747,6 +4465,27 @@ export default function App() {
     return filteredOrdersForList.slice(start, start + ORDERS_PAGE_SIZE)
   }, [filteredOrdersForList, ordersPage, ordersTotalPages])
 
+  const safeOrdersPage = useMemo(
+    () => Math.min(Math.max(ordersPage, 1), ordersTotalPages),
+    [ordersPage, ordersTotalPages],
+  )
+
+  const ordersRangeStart = useMemo(() => {
+    if (filteredOrdersForList.length === 0) {
+      return 0
+    }
+
+    return (safeOrdersPage - 1) * ORDERS_PAGE_SIZE + 1
+  }, [filteredOrdersForList.length, safeOrdersPage])
+
+  const ordersRangeEnd = useMemo(() => {
+    if (filteredOrdersForList.length === 0) {
+      return 0
+    }
+
+    return ordersRangeStart + paginatedOrdersForList.length - 1
+  }, [filteredOrdersForList.length, ordersRangeStart, paginatedOrdersForList.length])
+
   useEffect(() => {
     setOrdersPage(1)
   }, [ordersSearchQuery, ordersViewFilter])
@@ -3766,7 +4505,7 @@ export default function App() {
   )
 
   const ordersCardHeight = useMemo(
-    () => Math.max(400, windowHeight - 300),
+    () => Math.max(390, windowHeight - 240),
     [windowHeight],
   )
 
@@ -3823,6 +4562,12 @@ export default function App() {
       return {
         worker: null,
         month: null,
+        job: null,
+        date: null,
+        monthTotalCostBills: null,
+        monthOverheadBills: null,
+        monthNetProfitOrders: null,
+        monthProjectProfitOrders: null,
       }
     }
 
@@ -3831,8 +4576,169 @@ export default function App() {
     return {
       worker: sections.find((section) => section.id === 'report_worker') ?? null,
       month: sections.find((section) => section.id === 'report_month') ?? null,
+      job: sections.find((section) => section.id === 'report_job') ?? null,
+      date: sections.find((section) => section.id === 'report_date') ?? null,
+      monthTotalCostBills: sections.find((section) => section.id === 'report_month_total_cost_bills') ?? null,
+      monthOverheadBills: sections.find((section) => section.id === 'report_month_overhead_bills') ?? null,
+      monthNetProfitOrders: sections.find((section) => section.id === 'report_month_net_profit_orders') ?? null,
+      monthProjectProfitOrders: sections.find((section) => section.id === 'report_month_project_profit_orders') ?? null,
     }
   }, [selectedAdminPortalPage.path, selectedAdminWorkspaceData])
+
+  const adminReportWorkerRows = useMemo(
+    () => selectedAdminReportSections.worker?.rows ?? [],
+    [selectedAdminReportSections.worker],
+  )
+
+  const filteredAdminReportWorkerRows = useMemo(() => {
+    const normalizedQuery = adminReportWorkerSearch.trim().toLowerCase()
+
+    if (!normalizedQuery) {
+      return adminReportWorkerRows
+    }
+
+    return adminReportWorkerRows.filter((row) => (
+      row.title.toLowerCase().includes(normalizedQuery)
+      || row.subtitle.toLowerCase().includes(normalizedQuery)
+    ))
+  }, [adminReportWorkerSearch, adminReportWorkerRows])
+
+  const selectedAdminWorkerReportRow = useMemo(() => {
+    if (!adminSelectedWorkerReportRowId) {
+      return null
+    }
+
+    return adminReportWorkerRows.find((row) => row.id === adminSelectedWorkerReportRowId) ?? null
+  }, [adminReportWorkerRows, adminSelectedWorkerReportRowId])
+
+  const adminReportMonthTotalCostBillRows = useMemo(
+    () => selectedAdminReportSections.monthTotalCostBills?.rows ?? [],
+    [selectedAdminReportSections.monthTotalCostBills],
+  )
+
+  const adminReportMonthOverheadBillRows = useMemo(
+    () => selectedAdminReportSections.monthOverheadBills?.rows ?? [],
+    [selectedAdminReportSections.monthOverheadBills],
+  )
+
+  const adminReportMonthNetProfitRows = useMemo(
+    () => selectedAdminReportSections.monthNetProfitOrders?.rows ?? [],
+    [selectedAdminReportSections.monthNetProfitOrders],
+  )
+
+  const adminReportMonthProjectProfitRows = useMemo(
+    () => selectedAdminReportSections.monthProjectProfitOrders?.rows ?? [],
+    [selectedAdminReportSections.monthProjectProfitOrders],
+  )
+
+  const selectedAdminMonthProjectProfitRow = useMemo(
+    () => adminReportMonthProjectProfitRows.find((row) => row.id === adminSelectedMonthProjectRowId) ?? null,
+    [adminReportMonthProjectProfitRows, adminSelectedMonthProjectRowId],
+  )
+
+  const adminReportMonthSummaryCards = useMemo(() => {
+    if (selectedAdminPortalPage.path !== '/admin/reports') {
+      return []
+    }
+
+    const statsById = new Map<string, AdminWorkspaceStat>()
+
+    ;(selectedAdminWorkspaceData?.stats ?? []).forEach((stat) => {
+      const statId = normalizeTextValue(stat.id)
+
+      if (!statId) {
+        return
+      }
+
+      statsById.set(statId, stat)
+    })
+
+    return [
+      {
+        id: 'general_overhead',
+        label: t('General overhead', 'Gasto general'),
+        value: statsById.get('general_overhead')?.value ?? '$0.00',
+      },
+      {
+        id: 'total_cost',
+        label: t('Total cost', 'Costo total'),
+        value: statsById.get('total_cost')?.value ?? '$0.00',
+      },
+      {
+        id: 'net_profit',
+        label: t('Net profit', 'Ganancia neta'),
+        value: statsById.get('net_profit')?.value ?? '$0.00',
+      },
+      {
+        id: 'project_profit',
+        label: t('Project profit', 'Ganancia del proyecto'),
+        value: statsById.get('project_profit')?.value ?? '$0.00',
+      },
+    ]
+  }, [selectedAdminPortalPage.path, selectedAdminWorkspaceData?.stats, t])
+
+  const adminReportJobRows = useMemo(
+    () => selectedAdminReportSections.job?.rows ?? [],
+    [selectedAdminReportSections.job],
+  )
+
+  const filteredAdminReportJobRows = useMemo(() => {
+    const normalizedQuery = adminReportJobSearch.trim().toLowerCase()
+
+    if (!normalizedQuery) {
+      return adminReportJobRows
+    }
+
+    return adminReportJobRows.filter((row) => (
+      row.title.toLowerCase().includes(normalizedQuery)
+      || row.subtitle.toLowerCase().includes(normalizedQuery)
+      || String(row.meta ?? '').toLowerCase().includes(normalizedQuery)
+    ))
+  }, [adminReportJobRows, adminReportJobSearch])
+
+  const adminReportDateRows = useMemo(
+    () => selectedAdminReportSections.date?.rows ?? [],
+    [selectedAdminReportSections.date],
+  )
+
+  const adminReportMonthSectionsByCardId = useMemo<Record<string, AdminWorkspaceSection | null>>(
+    () => ({
+      general_overhead: selectedAdminReportSections.monthOverheadBills
+        ? {
+          ...selectedAdminReportSections.monthOverheadBills,
+          rows: adminReportMonthOverheadBillRows,
+        }
+        : null,
+      total_cost: selectedAdminReportSections.monthTotalCostBills
+        ? {
+          ...selectedAdminReportSections.monthTotalCostBills,
+          rows: adminReportMonthTotalCostBillRows,
+        }
+        : null,
+      net_profit: selectedAdminReportSections.monthNetProfitOrders
+        ? {
+          ...selectedAdminReportSections.monthNetProfitOrders,
+          rows: adminReportMonthNetProfitRows,
+        }
+        : null,
+      project_profit: selectedAdminReportSections.monthProjectProfitOrders
+        ? {
+          ...selectedAdminReportSections.monthProjectProfitOrders,
+          rows: adminReportMonthProjectProfitRows,
+        }
+        : null,
+    }),
+    [
+      adminReportMonthNetProfitRows,
+      adminReportMonthOverheadBillRows,
+      adminReportMonthProjectProfitRows,
+      adminReportMonthTotalCostBillRows,
+      selectedAdminReportSections.monthNetProfitOrders,
+      selectedAdminReportSections.monthOverheadBills,
+      selectedAdminReportSections.monthProjectProfitOrders,
+      selectedAdminReportSections.monthTotalCostBills,
+    ],
+  )
 
   const visibleAdminSections = useMemo(() => {
     const sections = selectedAdminWorkspaceData?.sections ?? []
@@ -3846,13 +4752,195 @@ export default function App() {
     }
 
     if (adminReportsView === 'worker') {
-      return sections.filter((section) => section.id === 'report_worker')
+      return selectedAdminReportSections.worker
+        ? [{ ...selectedAdminReportSections.worker, rows: filteredAdminReportWorkerRows }]
+        : []
     }
 
-    return sections.filter(
-      (section) => section.id === 'report_month' || section.id === 'report_month_non_order',
-    )
-  }, [adminReportsView, selectedAdminPortalPage.path, selectedAdminWorkspaceData])
+    if (adminReportsView === 'month') {
+      return []
+    }
+
+    if (adminReportsView === 'job') {
+      return selectedAdminReportSections.job
+        ? [{
+          ...selectedAdminReportSections.job,
+          title: t('Job reports', 'Reportes por trabajo'),
+          rows: filteredAdminReportJobRows,
+          emptyText: t('No rows found for this report.', 'No se encontraron filas para este reporte.'),
+        }]
+        : []
+    }
+
+    const normalizedRangeStart = normalizeIsoDate(adminReportDateRangeStart)
+    const normalizedRangeEnd = normalizeIsoDate(adminReportDateRangeEnd)
+    const rangeLowerBound = normalizedRangeStart && normalizedRangeEnd
+      ? (normalizedRangeStart <= normalizedRangeEnd ? normalizedRangeStart : normalizedRangeEnd)
+      : (normalizedRangeStart ?? normalizedRangeEnd)
+    const rangeUpperBound = normalizedRangeStart && normalizedRangeEnd
+      ? (normalizedRangeStart <= normalizedRangeEnd ? normalizedRangeEnd : normalizedRangeStart)
+      : (normalizedRangeEnd ?? normalizedRangeStart)
+
+    const rowsForDate = adminReportDateRows.filter((row) => {
+      const rowDateKey = resolveDateKeyFromReportRowId(row.id)
+
+      if (!rowDateKey) {
+        return false
+      }
+
+      if (rangeLowerBound && rowDateKey < rangeLowerBound) {
+        return false
+      }
+
+      if (rangeUpperBound && rowDateKey > rangeUpperBound) {
+        return false
+      }
+
+      return true
+    })
+
+    return selectedAdminReportSections.date
+      ? [{ ...selectedAdminReportSections.date, rows: rowsForDate }]
+      : []
+  }, [
+    adminReportDateRangeEnd,
+    adminReportDateRangeStart,
+    adminReportDateRows,
+    adminReportsView,
+    filteredAdminReportJobRows,
+    filteredAdminReportWorkerRows,
+    selectedAdminPortalPage.path,
+    selectedAdminReportSections.date,
+    selectedAdminReportSections.job,
+    selectedAdminReportSections.worker,
+    selectedAdminWorkspaceData?.sections,
+    t,
+  ])
+
+  useEffect(() => {
+    if (selectedAdminPortalPage.path !== '/admin/reports') {
+      return
+    }
+
+    const dateKeys = [...new Set(
+      adminReportDateRows
+        .map((row) => resolveDateKeyFromReportRowId(row.id))
+        .filter((dateKey) => Boolean(dateKey)),
+    )].sort((left, right) => left.localeCompare(right))
+
+    if (dateKeys.length === 0) {
+      return
+    }
+
+    const normalizedStart = normalizeIsoDate(adminReportDateRangeStart)
+    const normalizedEnd = normalizeIsoDate(adminReportDateRangeEnd)
+
+    if (normalizedStart && normalizedEnd) {
+      return
+    }
+
+    const fallbackStart = dateKeys[0]
+    const fallbackEnd = dateKeys[dateKeys.length - 1]
+
+    if (!normalizedStart && fallbackStart) {
+      setAdminReportDateRangeStart(fallbackStart)
+    }
+
+    if (!normalizedEnd && fallbackEnd) {
+      setAdminReportDateRangeEnd(fallbackEnd)
+    }
+  }, [
+    adminReportDateRangeEnd,
+    adminReportDateRangeStart,
+    adminReportDateRows,
+    selectedAdminPortalPage.path,
+  ])
+
+  useEffect(() => {
+    if (adminReportDetailsModalState) {
+      return
+    }
+
+    if (adminReportWorkerDrilldownModalState) {
+      setAdminReportWorkerDrilldownModalState(null)
+    }
+  }, [adminReportDetailsModalState, adminReportWorkerDrilldownModalState])
+
+  useEffect(() => {
+    if (!adminSelectedWorkerReportRowId) {
+      return
+    }
+
+    const stillVisible = filteredAdminReportWorkerRows.some((row) => row.id === adminSelectedWorkerReportRowId)
+
+    if (!stillVisible) {
+      setAdminSelectedWorkerReportRowId(null)
+    }
+  }, [adminSelectedWorkerReportRowId, filteredAdminReportWorkerRows])
+
+  useEffect(() => {
+    if (adminReportsView !== 'month' || adminReportMonthStatId !== 'project_profit') {
+      if (adminSelectedMonthProjectRowId) {
+        setAdminSelectedMonthProjectRowId(null)
+      }
+      return
+    }
+
+    if (!adminSelectedMonthProjectRowId) {
+      return
+    }
+
+    const stillExists = adminReportMonthProjectProfitRows.some((row) => row.id === adminSelectedMonthProjectRowId)
+
+    if (!stillExists) {
+      setAdminSelectedMonthProjectRowId(null)
+    }
+  }, [
+    adminReportMonthProjectProfitRows,
+    adminReportMonthStatId,
+    adminReportsView,
+    adminSelectedMonthProjectRowId,
+  ])
+
+  useEffect(() => {
+    if (adminReportsView === 'month') {
+      return
+    }
+
+    if (!adminReportMonthListModalState) {
+      return
+    }
+
+    setAdminReportMonthListModalState(null)
+    setAdminReportMonthStatId('summary')
+  }, [adminReportMonthListModalState, adminReportsView])
+
+  useEffect(() => {
+    if (!adminReportMonthListModalState) {
+      return
+    }
+
+    const refreshedSection = adminReportMonthSectionsByCardId[adminReportMonthListModalState.statId]
+
+    if (!refreshedSection) {
+      setAdminReportMonthListModalState(null)
+      setAdminReportMonthStatId('summary')
+      return
+    }
+
+    if (refreshedSection !== adminReportMonthListModalState.section) {
+      setAdminReportMonthListModalState((current) => {
+        if (!current || current.statId !== adminReportMonthListModalState.statId) {
+          return current
+        }
+
+        return {
+          ...current,
+          section: refreshedSection,
+        }
+      })
+    }
+  }, [adminReportMonthListModalState, adminReportMonthSectionsByCardId])
 
   useEffect(() => {
     if (selectedAdminPortalPage.path !== '/admin/cash') {
@@ -3861,6 +4949,7 @@ export default function App() {
   }, [selectedAdminPortalPage.path])
 
   const isAdminWorkspaceLoading = adminWorkspaceLoadingPath === selectedAdminPortalPage.path
+  const isAdminReportsDetailModalOpen = selectedAdminPortalPage.path === '/admin/reports' && adminReportsView !== 'menu'
 
   const selectedOrderPhotos = useMemo(() => {
     if (!selectedPictureOrder) {
@@ -4565,6 +5654,57 @@ export default function App() {
     setManagerMessage(null)
   }, [])
 
+  const selectedAdminReportRangeStartDate = useMemo(() => {
+    const normalized = normalizeIsoDate(adminReportDateRangeStart)
+    const parsed = normalized ? new Date(`${normalized}T12:00:00`) : new Date()
+
+    if (Number.isNaN(parsed.getTime())) {
+      return new Date()
+    }
+
+    return parsed
+  }, [adminReportDateRangeStart])
+
+  const selectedAdminReportRangeEndDate = useMemo(() => {
+    const normalized = normalizeIsoDate(adminReportDateRangeEnd)
+    const parsed = normalized ? new Date(`${normalized}T12:00:00`) : new Date()
+
+    if (Number.isNaN(parsed.getTime())) {
+      return new Date()
+    }
+
+    return parsed
+  }, [adminReportDateRangeEnd])
+
+  const isAdminReportDateRangeAscending = selectedAdminReportRangeStartDate.getTime()
+    <= selectedAdminReportRangeEndDate.getTime()
+
+  const handleAdminReportDateRangeChange = useCallback((
+    target: 'start' | 'end',
+    event: DateTimePickerEvent,
+    value?: Date,
+  ) => {
+    if (Platform.OS === 'android') {
+      setAdminDatePickerTarget(null)
+    }
+
+    if (event.type !== 'set' || !value) {
+      return
+    }
+
+    const formatted = formatDateInput(value)
+
+    if (target === 'start') {
+      setAdminReportDateRangeStart(formatted)
+    } else {
+      setAdminReportDateRangeEnd(formatted)
+    }
+
+    if (Platform.OS !== 'android') {
+      setAdminDatePickerTarget(null)
+    }
+  }, [])
+
   useEffect(() => {
     if (activeScreen !== 'manager') {
       return
@@ -4727,8 +5867,13 @@ export default function App() {
     const detailsOrder = detailsSnapshot?.order ?? null
     const cachedUrl = String(detailsOrder?.cutListCachedUrl ?? '').trim()
     const sourceUrl = String(detailsOrder?.cutListUrl ?? '').trim()
+    const orderId = String(
+      detailsOrder?.mondayItemId
+      ?? detailsSnapshot?.job?.mondayItemId
+      ?? '',
+    ).trim()
 
-    if (!cachedUrl && !sourceUrl) {
+    if (!cachedUrl && !sourceUrl && !orderId) {
       setOrdersDetailMessage(
         t(
           'Cut list is not available for this order yet.',
@@ -4741,7 +5886,38 @@ export default function App() {
     setOrdersDetailMessage(null)
 
     try {
-      await WebBrowser.openBrowserAsync(cachedUrl || sourceUrl)
+      if (cachedUrl) {
+        await WebBrowser.openBrowserAsync(cachedUrl)
+        return
+      }
+
+      if (orderId) {
+        const query = new URLSearchParams({
+          orderId,
+          resolveOnly: '1',
+        })
+        const payload = await requestWithSession<{ cachedUrl?: string }>(
+          `/api/dashboard/monday/cut-list/download?${query.toString()}`,
+        )
+        const resolvedUrl = String(payload?.cachedUrl ?? '').trim()
+
+        if (resolvedUrl) {
+          await WebBrowser.openBrowserAsync(resolvedUrl)
+          return
+        }
+      }
+
+      if (sourceUrl) {
+        await WebBrowser.openBrowserAsync(sourceUrl)
+        return
+      }
+
+      setOrdersDetailMessage(
+        t(
+          'Cut list is not available for this order yet.',
+          'La lista de corte aun no esta disponible para esta orden.',
+        ),
+      )
     } catch (error) {
       setOrdersDetailMessage(
         getErrorMessage(
@@ -4751,7 +5927,7 @@ export default function App() {
         ),
       )
     }
-  }, [getErrorMessage, t])
+  }, [getErrorMessage, requestWithSession, t])
 
   const handleSaveManagerProgress = useCallback(async () => {
     if (!hasManagerSheetAccess) {
@@ -5317,6 +6493,7 @@ export default function App() {
         <View style={styles.shell}>
         <View style={styles.contentPane}>
           <ScrollView
+            ref={screenScrollRef}
             style={usesNestedListScroll ? styles.picturesScreenScroll : undefined}
             contentContainerStyle={[
               styles.scrollContent,
@@ -5362,7 +6539,7 @@ export default function App() {
                   onPress={() => setIsAccountMenuOpen((current) => !current)}
                 >
                   {profilePhotoUrl ? (
-                    <Image source={{ uri: profilePhotoUrl }} style={styles.profileAvatarImage} />
+                    <Image source={{ uri: profilePhotoUrl }} style={styles.profileAvatarImage} resizeMode="contain" />
                   ) : (
                     <View style={styles.profileAvatarFallback}>
                       <Text style={styles.profileAvatarFallbackText}>{profileInitial}</Text>
@@ -5426,6 +6603,9 @@ export default function App() {
                 locale={locale}
                 allOrders={allOrdersForPictures}
                 filteredOrders={paginatedOrdersForList}
+                totalMatchingOrders={filteredOrdersForList.length}
+                ordersRangeStart={ordersRangeStart}
+                ordersRangeEnd={ordersRangeEnd}
                 orderSearchQuery={ordersSearchQuery}
                 onOrderSearchQueryChange={setOrdersSearchQuery}
                 orderViewFilter={ordersViewFilter}
@@ -5595,20 +6775,23 @@ export default function App() {
                       contentContainerStyle={styles.adminWorkspaceBodyContent}
                       showsVerticalScrollIndicator={false}
                     >
-                      {selectedAdminPortalPage.path !== '/admin/cash' && selectedAdminWorkspaceData.note ? (
+                      {selectedAdminPortalPage.path !== '/admin/cash' && selectedAdminPortalPage.path !== '/admin/reports' && selectedAdminWorkspaceData.note ? (
                         <Text style={styles.adminWorkspaceBodyNote}>{selectedAdminWorkspaceData.note}</Text>
                       ) : null}
 
-                      {selectedAdminPortalPage.path !== '/admin/cash' && selectedAdminWorkspaceData.updatedAt ? (
+                      {selectedAdminPortalPage.path !== '/admin/cash' && selectedAdminPortalPage.path !== '/admin/reports' && selectedAdminWorkspaceData.updatedAt ? (
                         <Text style={styles.adminWorkspaceBodyUpdatedAt}>
                           {t('Updated', 'Actualizado')}: {formatSyncTimestamp(selectedAdminWorkspaceData.updatedAt, locale)}
                         </Text>
                       ) : null}
 
-                      {selectedAdminPortalPage.path !== '/admin/cash' && selectedAdminWorkspaceData.stats.length > 0 ? (
+                      {selectedAdminPortalPage.path !== '/admin/cash' && selectedAdminPortalPage.path !== '/admin/reports' && selectedAdminWorkspaceData.stats.length > 0 ? (
                         <View style={styles.adminWorkspaceStatsWrap}>
                           {selectedAdminWorkspaceData.stats.map((stat) => (
-                            <View key={`${stat.label}-${stat.value}`} style={styles.adminWorkspaceStatChip}>
+                            <View
+                              key={`${stat.id || stat.label}-${stat.value}`}
+                              style={styles.adminWorkspaceStatChip}
+                            >
                               <Text style={styles.adminWorkspaceStatLabel}>{stat.label}</Text>
                               <Text style={styles.adminWorkspaceStatValue}>{stat.value}</Text>
                             </View>
@@ -5686,47 +6869,85 @@ export default function App() {
 
                       {selectedAdminPortalPage.path === '/admin/reports' ? (
                         <View style={styles.adminWorkspaceSectionCard}>
-                          {adminReportsView === 'menu' ? (
-                            <>
-                              <Text style={styles.adminWorkspaceSectionTitle}>{t('Report options', 'Opciones de reportes')}</Text>
+                          <View style={styles.adminWorkspaceReportsWarningBox}>
+                            <Text style={styles.adminWorkspaceReportsWarningText}>The reports are not yet accurate.</Text>
+                          </View>
 
-                              <Pressable
-                                style={[
-                                  styles.adminWorkspaceReportOptionButton,
-                                  !selectedAdminReportSections.worker ? styles.buttonDisabled : null,
-                                ]}
-                                disabled={!selectedAdminReportSections.worker}
-                                onPress={() => setAdminReportsView('worker')}
-                              >
-                                <Text style={styles.adminWorkspaceReportOptionTitle}>{t('Report by worker', 'Reporte por trabajador')}</Text>
-                                <Text style={styles.adminWorkspaceReportOptionSubtitle}>{t('Open worker report', 'Abrir reporte de trabajador')}</Text>
-                              </Pressable>
-
-                              <Pressable
-                                style={[
-                                  styles.adminWorkspaceReportOptionButton,
-                                  !selectedAdminReportSections.month ? styles.buttonDisabled : null,
-                                ]}
-                                disabled={!selectedAdminReportSections.month}
-                                onPress={() => setAdminReportsView('month')}
-                              >
-                                <Text style={styles.adminWorkspaceReportOptionTitle}>{t('Report by month', 'Reporte por mes')}</Text>
-                                <Text style={styles.adminWorkspaceReportOptionSubtitle}>{t('Open month report', 'Abrir reporte por mes')}</Text>
-                              </Pressable>
-                            </>
-                          ) : (
+                          <View style={styles.adminWorkspaceReportOptionGrid}>
                             <Pressable
-                              style={styles.adminWorkspaceBackButton}
-                              onPress={() => setAdminReportsView('menu')}
+                              style={[
+                                styles.adminWorkspaceReportOptionButton,
+                                styles.adminWorkspaceReportOptionTile,
+                                { backgroundColor: '#fbfefc' },
+                              ]}
+                              onPress={() => {
+                                setAdminReportMonthStatId('summary')
+                                setAdminSelectedMonthProjectRowId(null)
+                                setAdminExpandedWorkspaceRowId(null)
+                                setAdminReportMonthListModalState(null)
+                                setAdminReportDetailsModalState(null)
+                                setAdminReportWorkerDrilldownModalState(null)
+                                setAdminReportsView('month')
+                              }}
                             >
-                              <Ionicons name="chevron-back" size={16} color="#24467c" />
-                              <Text style={styles.adminWorkspaceBackButtonText}>{t('Back to report options', 'Volver a opciones de reportes')}</Text>
+                              <Text style={styles.adminWorkspaceReportOptionTitle}>{t('Report by month', 'Reporte por mes')}</Text>
                             </Pressable>
-                          )}
+
+                            <Pressable
+                              style={[
+                                styles.adminWorkspaceReportOptionButton,
+                                styles.adminWorkspaceReportOptionTile,
+                                { backgroundColor: '#fcfbff' },
+                              ]}
+                              onPress={() => {
+                                setAdminExpandedWorkspaceRowId(null)
+                                setAdminReportMonthListModalState(null)
+                                setAdminReportDetailsModalState(null)
+                                setAdminReportWorkerDrilldownModalState(null)
+                                setAdminReportsView('job')
+                              }}
+                            >
+                              <Text style={styles.adminWorkspaceReportOptionTitle}>{t('Report by job', 'Reporte por trabajo')}</Text>
+                            </Pressable>
+
+                            <Pressable
+                              style={[
+                                styles.adminWorkspaceReportOptionButton,
+                                styles.adminWorkspaceReportOptionTile,
+                                { backgroundColor: '#f9fcff' },
+                              ]}
+                              onPress={() => {
+                                setAdminExpandedWorkspaceRowId(null)
+                                setAdminReportMonthListModalState(null)
+                                setAdminReportDetailsModalState(null)
+                                setAdminReportWorkerDrilldownModalState(null)
+                                setAdminReportsView('worker')
+                              }}
+                            >
+                              <Text style={styles.adminWorkspaceReportOptionTitle}>{t('Report by worker', 'Reporte por trabajador')}</Text>
+                            </Pressable>
+
+                            <Pressable
+                              style={[
+                                styles.adminWorkspaceReportOptionButton,
+                                styles.adminWorkspaceReportOptionTile,
+                                { backgroundColor: '#fffef9' },
+                              ]}
+                              onPress={() => {
+                                setAdminExpandedWorkspaceRowId(null)
+                                setAdminReportMonthListModalState(null)
+                                setAdminReportDetailsModalState(null)
+                                setAdminReportWorkerDrilldownModalState(null)
+                                setAdminReportsView('date')
+                              }}
+                            >
+                              <Text style={styles.adminWorkspaceReportOptionTitle}>{t('Report by date', 'Reporte por fecha')}</Text>
+                            </Pressable>
+                          </View>
                         </View>
                       ) : null}
 
-                      {visibleAdminSections.map((section) => (
+                      {selectedAdminPortalPage.path !== '/admin/reports' ? visibleAdminSections.map((section) => (
                         <View key={section.id} style={styles.adminWorkspaceSectionCard}>
                           <Text style={styles.adminWorkspaceSectionTitle}>{section.title}</Text>
 
@@ -5758,6 +6979,17 @@ export default function App() {
                                 <Text style={styles.adminWorkspaceRowSubtitle}>{row.subtitle}</Text>
                                 {row.meta ? <Text style={styles.adminWorkspaceRowMeta}>{row.meta}</Text> : null}
 
+                                {Array.isArray(row.metrics) && row.metrics.length > 0 ? (
+                                  <View style={styles.adminWorkspaceRowMetricsWrap}>
+                                    {row.metrics.map((metric) => (
+                                      <View key={`${row.id}-${metric.label}`} style={styles.adminWorkspaceRowMetricChip}>
+                                        <Text style={styles.adminWorkspaceRowMetricLabel}>{metric.label}</Text>
+                                        <Text style={styles.adminWorkspaceRowMetricValue}>{metric.value}</Text>
+                                      </View>
+                                    ))}
+                                  </View>
+                                ) : null}
+
                                 {Array.isArray(row.details) && row.details.length > 0 ? (
                                   <>
                                     <Text style={styles.adminWorkspaceRowExpandHint}>
@@ -5782,7 +7014,7 @@ export default function App() {
                             ))
                           )}
                         </View>
-                      ))}
+                      )) : null}
                     </ScrollView>
                   ) : (
                     <View style={styles.adminWorkspaceEmptyWrap}>
@@ -5916,6 +7148,589 @@ export default function App() {
                 ) : (
                     <Text style={styles.emptyDetailText}>{t('No tickets in this section.', 'No hay tickets en esta seccion.')}</Text>
                 )}
+              </ScrollView>
+            </View>
+          </View>
+        </Modal>
+
+        <Modal
+          visible={isAdminReportsDetailModalOpen}
+          transparent={false}
+          animationType="slide"
+          onRequestClose={() => {
+            if (adminReportWorkerDrilldownModalState) {
+              setAdminReportWorkerDrilldownModalState(null)
+              return
+            }
+
+            if (adminReportDetailsModalState) {
+              setAdminReportDetailsModalState(null)
+              setAdminReportWorkerDrilldownModalState(null)
+              return
+            }
+
+            if (adminReportsView === 'month' && adminSelectedMonthProjectRowId) {
+              setAdminSelectedMonthProjectRowId(null)
+              setAdminExpandedWorkspaceRowId(null)
+              setAdminReportMonthListModalState(null)
+              setAdminReportDetailsModalState(null)
+              setAdminReportWorkerDrilldownModalState(null)
+              return
+            }
+
+            if (adminReportsView === 'month' && adminReportMonthListModalState) {
+              setAdminReportMonthListModalState(null)
+              setAdminReportMonthStatId('summary')
+              setAdminExpandedWorkspaceRowId(null)
+              setAdminReportDetailsModalState(null)
+              setAdminReportWorkerDrilldownModalState(null)
+              return
+            }
+
+            if (adminReportsView === 'month' && adminReportMonthStatId !== 'summary') {
+              setAdminReportMonthStatId('summary')
+              setAdminExpandedWorkspaceRowId(null)
+              setAdminReportMonthListModalState(null)
+              setAdminReportDetailsModalState(null)
+              setAdminReportWorkerDrilldownModalState(null)
+              return
+            }
+
+            setAdminReportMonthListModalState(null)
+            setAdminReportDetailsModalState(null)
+            setAdminReportWorkerDrilldownModalState(null)
+            setAdminReportsView('menu')
+          }}
+        >
+          <SafeAreaView style={styles.orderDetailScreen} edges={['top']}>
+            <View style={styles.orderDetailScreenHeader}>
+              <Pressable
+                style={styles.orderDetailScreenBackButton}
+                onPress={() => {
+                  if (adminReportWorkerDrilldownModalState) {
+                    setAdminReportWorkerDrilldownModalState(null)
+                    return
+                  }
+
+                  if (adminReportDetailsModalState) {
+                    setAdminReportDetailsModalState(null)
+                    setAdminReportWorkerDrilldownModalState(null)
+                    return
+                  }
+
+                  if (adminReportsView === 'month' && adminSelectedMonthProjectRowId) {
+                    setAdminSelectedMonthProjectRowId(null)
+                    setAdminExpandedWorkspaceRowId(null)
+                    setAdminReportMonthListModalState(null)
+                    setAdminReportDetailsModalState(null)
+                    setAdminReportWorkerDrilldownModalState(null)
+                    return
+                  }
+
+                  if (adminReportsView === 'month' && adminReportMonthListModalState) {
+                    setAdminReportMonthListModalState(null)
+                    setAdminReportMonthStatId('summary')
+                    setAdminExpandedWorkspaceRowId(null)
+                    setAdminReportDetailsModalState(null)
+                    setAdminReportWorkerDrilldownModalState(null)
+                    return
+                  }
+
+                  if (adminReportsView === 'month' && adminReportMonthStatId !== 'summary') {
+                    setAdminReportMonthStatId('summary')
+                    setAdminExpandedWorkspaceRowId(null)
+                    setAdminReportMonthListModalState(null)
+                    setAdminReportDetailsModalState(null)
+                    setAdminReportWorkerDrilldownModalState(null)
+                    return
+                  }
+
+                  setAdminReportMonthListModalState(null)
+                  setAdminReportDetailsModalState(null)
+                  setAdminReportWorkerDrilldownModalState(null)
+                  setAdminReportsView('menu')
+                }}
+              >
+                <Ionicons name="chevron-back" size={20} color="#1f3567" />
+              </Pressable>
+
+              <View style={styles.orderDetailScreenHeaderTextWrap}>
+                <Text style={styles.orderDetailScreenHeaderTitle} numberOfLines={1}>
+                  {adminReportsView === 'month' && adminSelectedMonthProjectRowId
+                    ? (selectedAdminMonthProjectProfitRow?.title || t('Project order details', 'Detalles de orden del proyecto'))
+                    : adminReportsView === 'worker'
+                    ? t('Report by worker', 'Reporte por trabajador')
+                    : adminReportsView === 'month'
+                      ? t('Report by month', 'Reporte por mes')
+                      : adminReportsView === 'job'
+                        ? t('Report by job', 'Reporte por trabajo')
+                        : t('Report by date', 'Reporte por fecha')}
+                </Text>
+                <Text style={styles.orderDetailScreenHeaderMeta} numberOfLines={1}>
+                  {adminReportsView === 'month' && adminSelectedMonthProjectRowId
+                    ? t('Project profit details', 'Detalles de ganancia del proyecto')
+                    : t('Full report page', 'Pagina completa de reporte')}
+                </Text>
+              </View>
+            </View>
+
+            <ScrollView
+              style={styles.orderDetailScreenScroll}
+              contentContainerStyle={styles.orderDetailScreenContent}
+            >
+              {adminReportsView === 'month' ? (
+                <>
+                  <View
+                    style={[
+                      styles.adminWorkspaceMonthViewWrap,
+                      { minHeight: Math.max(260, adminWorkspaceHeight - 176) },
+                    ]}
+                  >
+                    <View style={styles.adminWorkspaceMonthSummaryGrid}>
+                      {adminReportMonthSummaryCards.map((card) => (
+                        <Pressable
+                          key={card.id}
+                          style={[
+                            styles.adminWorkspaceMonthSummaryCard,
+                            adminReportMonthStatId === card.id ? styles.adminWorkspaceMonthSummaryCardActive : null,
+                          ]}
+                          onPress={() => {
+                            const sectionForCard = adminReportMonthSectionsByCardId[card.id]
+
+                            if (!sectionForCard) {
+                              return
+                            }
+
+                            setAdminReportMonthStatId(card.id)
+                            setAdminSelectedMonthProjectRowId(null)
+                            setAdminExpandedWorkspaceRowId(null)
+                            setAdminReportDetailsModalState(null)
+                            setAdminReportWorkerDrilldownModalState(null)
+                            setAdminReportMonthListModalState({
+                              statId: card.id,
+                              title: card.label,
+                              section: sectionForCard,
+                            })
+                          }}
+                        >
+                          <Text style={styles.adminWorkspaceMonthSummaryLabel}>{card.label}</Text>
+                          <Text style={styles.adminWorkspaceMonthSummaryValue}>{card.value}</Text>
+                        </Pressable>
+                      ))}
+                    </View>
+
+                    {adminReportMonthStatId === 'summary' ? (
+                      <Text style={styles.adminWorkspaceSectionEmpty}>
+                        {t('Select one of the month summary cards to open its report list.', 'Selecciona una tarjeta del resumen mensual para abrir su lista de reporte.')}
+                      </Text>
+                    ) : null}
+                  </View>
+                </>
+              ) : null}
+
+              {adminReportsView === 'worker' ? (
+                <>
+                  <TextInput
+                    value={adminReportWorkerSearch}
+                    onChangeText={setAdminReportWorkerSearch}
+                    placeholder={t('Search worker or select overall.', 'Buscar trabajador o ver resumen.')}
+                    placeholderTextColor="#6a7ea8"
+                    style={styles.adminWorkspaceFilterInput}
+                  />
+
+                  <View style={styles.adminWorkspaceMiniStatCard}>
+                    <Text style={styles.adminWorkspaceMiniStatTitle}>{t('Overall workers', 'Resumen de trabajadores')}</Text>
+                    <Text style={styles.adminWorkspaceMiniStatText}>
+                      {`${t('Workers', 'Trabajadores')}: ${adminReportWorkerRows.length}`}
+                    </Text>
+                  </View>
+
+                  {selectedAdminWorkerReportRow ? (
+                    <View style={styles.adminWorkspaceMiniStatCard}>
+                      <Text style={styles.adminWorkspaceMiniStatTitle}>{selectedAdminWorkerReportRow.title}</Text>
+                      <Text style={styles.adminWorkspaceMiniStatText}>{selectedAdminWorkerReportRow.subtitle}</Text>
+                      {selectedAdminWorkerReportRow.meta ? (
+                        <Text style={styles.adminWorkspaceMiniStatText}>{selectedAdminWorkerReportRow.meta}</Text>
+                      ) : null}
+                    </View>
+                  ) : null}
+                </>
+              ) : null}
+
+              {adminReportsView === 'job' ? (
+                <TextInput
+                  value={adminReportJobSearch}
+                  onChangeText={setAdminReportJobSearch}
+                  placeholder={t('Search by job #, profit, or labor.', 'Buscar por trabajo #, ganancia o labor.')}
+                  placeholderTextColor="#6a7ea8"
+                  style={styles.adminWorkspaceFilterInput}
+                />
+              ) : null}
+
+              {adminReportsView === 'date' ? (
+                <View style={styles.adminWorkspaceDateRangeWrap}>
+                  <View style={styles.adminWorkspaceDateRangeRow}>
+                    <View style={styles.adminWorkspaceDateRangeField}>
+                      <Text style={styles.adminWorkspaceDateRangeLabel}>{t('From', 'Desde')}</Text>
+                      <Pressable
+                        style={styles.adminWorkspaceDateFilterInput}
+                        onPress={() => setAdminDatePickerTarget('start')}
+                      >
+                        <Text style={styles.adminWorkspaceDateFilterValue}>
+                          {adminReportDateRangeStart || 'YYYY-MM-DD'}
+                        </Text>
+                        <Ionicons name="calendar-outline" size={16} color="#315489" />
+                      </Pressable>
+                    </View>
+
+                    <View style={styles.adminWorkspaceDateRangeField}>
+                      <Text style={styles.adminWorkspaceDateRangeLabel}>{t('To', 'Hasta')}</Text>
+                      <Pressable
+                        style={styles.adminWorkspaceDateFilterInput}
+                        onPress={() => setAdminDatePickerTarget('end')}
+                      >
+                        <Text style={styles.adminWorkspaceDateFilterValue}>
+                          {adminReportDateRangeEnd || 'YYYY-MM-DD'}
+                        </Text>
+                        <Ionicons name="calendar-outline" size={16} color="#315489" />
+                      </Pressable>
+                    </View>
+                  </View>
+
+                  {adminDatePickerTarget === 'start' ? (
+                    <DateTimePicker
+                      value={selectedAdminReportRangeStartDate}
+                      mode="date"
+                      display={Platform.OS === 'ios' ? 'inline' : 'calendar'}
+                      maximumDate={isAdminReportDateRangeAscending ? selectedAdminReportRangeEndDate : undefined}
+                      onChange={(event, value) => {
+                        handleAdminReportDateRangeChange('start', event, value)
+                      }}
+                    />
+                  ) : null}
+
+                  {adminDatePickerTarget === 'end' ? (
+                    <DateTimePicker
+                      value={selectedAdminReportRangeEndDate}
+                      mode="date"
+                      display={Platform.OS === 'ios' ? 'inline' : 'calendar'}
+                      minimumDate={isAdminReportDateRangeAscending ? selectedAdminReportRangeStartDate : undefined}
+                      onChange={(event, value) => {
+                        handleAdminReportDateRangeChange('end', event, value)
+                      }}
+                    />
+                  ) : null}
+
+                  <Text style={styles.adminWorkspaceDateRangeHint}>
+                    {t('Filter reports by custom date range.', 'Filtra reportes por rango de fechas personalizado.')}
+                  </Text>
+                </View>
+              ) : null}
+
+              {visibleAdminSections.map((section) => (
+                <View key={`report-modal-${section.id}`} style={styles.adminWorkspaceSectionCard}>
+                  <Text style={styles.adminWorkspaceSectionTitle}>{section.title}</Text>
+
+                  {section.rows.length === 0 ? (
+                    <Text style={styles.adminWorkspaceSectionEmpty}>{section.emptyText}</Text>
+                  ) : (
+                    section.rows.map((row) => (
+                      <Pressable
+                        key={`report-modal-${section.id}-${row.id}`}
+                        style={styles.adminWorkspaceRowCard}
+                        onPress={() => {
+                          const canOpenDetails = (Array.isArray(row.details) && row.details.length > 0)
+                            || (Array.isArray(row.workerDetails) && row.workerDetails.length > 0)
+                          const isWorkerReportRow = section.id === 'report_worker'
+
+                          if (isWorkerReportRow) {
+                            setAdminSelectedWorkerReportRowId(row.id)
+                          }
+
+                          if (!canOpenDetails) {
+                            return
+                          }
+
+                          setAdminReportDetailsModalState({
+                            sectionTitle: section.title,
+                            row,
+                          })
+                          setAdminReportWorkerDrilldownModalState(null)
+                        }}
+                      >
+                        <Text
+                          style={[
+                            styles.adminWorkspaceRowTitle,
+                            section.id === 'report_job' ? styles.adminWorkspaceRowTitleLarge : null,
+                          ]}
+                        >
+                          {row.title}
+                        </Text>
+                        <Text style={styles.adminWorkspaceRowSubtitle}>{row.subtitle}</Text>
+                        {row.meta ? <Text style={styles.adminWorkspaceRowMeta}>{row.meta}</Text> : null}
+
+                        {Array.isArray(row.metrics) && row.metrics.length > 0 ? (
+                          <View style={styles.adminWorkspaceRowMetricsWrap}>
+                            {row.metrics.map((metric) => (
+                              <View key={`report-modal-${row.id}-${metric.label}`} style={styles.adminWorkspaceRowMetricChip}>
+                                <Text style={styles.adminWorkspaceRowMetricLabel}>{metric.label}</Text>
+                                <Text style={styles.adminWorkspaceRowMetricValue}>{metric.value}</Text>
+                              </View>
+                            ))}
+                          </View>
+                        ) : null}
+
+                        {(Array.isArray(row.details) && row.details.length > 0)
+                          || (Array.isArray(row.workerDetails) && row.workerDetails.length > 0)
+                          ? (
+                            <Text style={styles.adminWorkspaceRowExpandHint}>
+                              {t('Open details', 'Abrir detalles')}
+                            </Text>
+                          )
+                          : null}
+                      </Pressable>
+                    ))
+                  )}
+                </View>
+              ))}
+            </ScrollView>
+          </SafeAreaView>
+        </Modal>
+
+        <Modal
+          visible={Boolean(adminReportMonthListModalState)}
+          transparent
+          animationType="fade"
+          onRequestClose={() => {
+            setAdminReportMonthListModalState(null)
+            setAdminReportMonthStatId('summary')
+          }}
+        >
+          <View style={styles.modalBackdrop}>
+            <View style={[styles.modalCard, styles.adminReportDetailsModalCard]}>
+              <View style={styles.detailHeader}>
+                <Text style={styles.detailTitle}>
+                  {adminReportMonthListModalState?.title || t('Month report details', 'Detalles del reporte mensual')}
+                </Text>
+                <Pressable
+                  style={styles.detailCloseButton}
+                  onPress={() => {
+                    setAdminReportMonthListModalState(null)
+                    setAdminReportMonthStatId('summary')
+                  }}
+                >
+                  <Text style={styles.detailCloseButtonText}>{t('Close', 'Cerrar')}</Text>
+                </Pressable>
+              </View>
+
+              {adminReportMonthListModalState ? (
+                <Text style={styles.adminReportDetailsSectionText}>{adminReportMonthListModalState.section.title}</Text>
+              ) : null}
+
+              <ScrollView contentContainerStyle={styles.modalBodyContent}>
+                {adminReportMonthListModalState ? (
+                  adminReportMonthListModalState.section.rows.length === 0 ? (
+                    <Text style={styles.adminWorkspaceSectionEmpty}>{adminReportMonthListModalState.section.emptyText}</Text>
+                  ) : (
+                    adminReportMonthListModalState.section.rows.map((row) => (
+                      <Pressable
+                        key={`report-month-modal-${adminReportMonthListModalState.statId}-${row.id}`}
+                        style={styles.adminWorkspaceRowCard}
+                        onPress={() => {
+                          const canOpenDetails = (Array.isArray(row.details) && row.details.length > 0)
+                            || (Array.isArray(row.workerDetails) && row.workerDetails.length > 0)
+
+                          if (!canOpenDetails) {
+                            return
+                          }
+
+                          setAdminSelectedMonthProjectRowId(null)
+                          setAdminExpandedWorkspaceRowId(null)
+                          setAdminReportDetailsModalState({
+                            sectionTitle: adminReportMonthListModalState.section.title,
+                            row,
+                          })
+                          setAdminReportWorkerDrilldownModalState(null)
+                        }}
+                      >
+                        <Text style={styles.adminWorkspaceRowTitle}>{row.title}</Text>
+                        <Text style={styles.adminWorkspaceRowSubtitle}>{row.subtitle}</Text>
+                        {row.meta ? <Text style={styles.adminWorkspaceRowMeta}>{row.meta}</Text> : null}
+
+                        {Array.isArray(row.metrics) && row.metrics.length > 0 ? (
+                          <View style={styles.adminWorkspaceRowMetricsWrap}>
+                            {row.metrics.map((metric) => (
+                              <View key={`report-month-modal-${row.id}-${metric.label}`} style={styles.adminWorkspaceRowMetricChip}>
+                                <Text style={styles.adminWorkspaceRowMetricLabel}>{metric.label}</Text>
+                                <Text style={styles.adminWorkspaceRowMetricValue}>{metric.value}</Text>
+                              </View>
+                            ))}
+                          </View>
+                        ) : null}
+
+                        {(Array.isArray(row.details) && row.details.length > 0)
+                          || (Array.isArray(row.workerDetails) && row.workerDetails.length > 0)
+                          ? (
+                            <Text style={styles.adminWorkspaceRowExpandHint}>
+                              {t('Open details', 'Abrir detalles')}
+                            </Text>
+                          )
+                          : null}
+                      </Pressable>
+                    ))
+                  )
+                ) : null}
+              </ScrollView>
+            </View>
+          </View>
+        </Modal>
+
+        <Modal
+          visible={Boolean(adminReportDetailsModalState)}
+          transparent
+          animationType="fade"
+          onRequestClose={() => {
+            setAdminReportDetailsModalState(null)
+            setAdminReportWorkerDrilldownModalState(null)
+          }}
+        >
+          <View style={styles.modalBackdrop}>
+            <View style={[styles.modalCard, styles.adminReportDetailsModalCard]}>
+              <View style={styles.detailHeader}>
+                <Text style={styles.detailTitle}>
+                  {adminReportDetailsModalState?.row.title || t('Details', 'Detalles')}
+                </Text>
+                <Pressable
+                  style={styles.detailCloseButton}
+                  onPress={() => {
+                    setAdminReportDetailsModalState(null)
+                    setAdminReportWorkerDrilldownModalState(null)
+                  }}
+                >
+                  <Text style={styles.detailCloseButtonText}>{t('Close', 'Cerrar')}</Text>
+                </Pressable>
+              </View>
+
+              {adminReportDetailsModalState?.sectionTitle ? (
+                <Text style={styles.adminReportDetailsSectionText}>{adminReportDetailsModalState.sectionTitle}</Text>
+              ) : null}
+
+              <ScrollView contentContainerStyle={styles.modalBodyContent}>
+                {adminReportDetailsModalState ? (
+                  <>
+                    <View style={styles.adminWorkspaceMiniStatCard}>
+                      <Text style={styles.adminWorkspaceMiniStatTitle}>{adminReportDetailsModalState.row.title}</Text>
+                      <Text style={styles.adminWorkspaceMiniStatText}>{adminReportDetailsModalState.row.subtitle}</Text>
+                      {adminReportDetailsModalState.row.meta ? (
+                        <Text style={styles.adminWorkspaceMiniStatText}>{adminReportDetailsModalState.row.meta}</Text>
+                      ) : null}
+                    </View>
+
+                    {Array.isArray(adminReportDetailsModalState.row.metrics)
+                      && adminReportDetailsModalState.row.metrics.length > 0 ? (
+                        <View style={styles.adminWorkspaceRowMetricsWrap}>
+                          {adminReportDetailsModalState.row.metrics.map((metric) => (
+                            <View key={`report-detail-${adminReportDetailsModalState.row.id}-${metric.label}`} style={styles.adminWorkspaceRowMetricChip}>
+                              <Text style={styles.adminWorkspaceRowMetricLabel}>{metric.label}</Text>
+                              <Text style={styles.adminWorkspaceRowMetricValue}>{metric.value}</Text>
+                            </View>
+                          ))}
+                        </View>
+                      ) : null}
+
+                    {Array.isArray(adminReportDetailsModalState.row.details)
+                      && adminReportDetailsModalState.row.details.length > 0
+                      ? adminReportDetailsModalState.row.details.map((detailLine, detailIndex) => (
+                        <Text key={`report-detail-line-${adminReportDetailsModalState.row.id}-${detailIndex}`} style={styles.adminWorkspaceRowDetailLine}>
+                          {detailLine}
+                        </Text>
+                      ))
+                      : null}
+
+                    {Array.isArray(adminReportDetailsModalState.row.workerDetails)
+                      && adminReportDetailsModalState.row.workerDetails.length > 0 ? (
+                        <View style={styles.adminReportWorkerDetailsWrap}>
+                          <Text style={styles.adminWorkspaceMiniStatTitle}>{t('Workers', 'Trabajadores')}</Text>
+
+                          {adminReportDetailsModalState.row.workerDetails.map((workerRow) => (
+                            <Pressable
+                              key={`report-worker-${adminReportDetailsModalState.row.id}-${workerRow.workerId}`}
+                              style={styles.adminReportWorkerDetailsButton}
+                              onPress={() => {
+                                setAdminReportWorkerDrilldownModalState({
+                                  parentRowTitle: adminReportDetailsModalState.row.title,
+                                  worker: workerRow,
+                                })
+                              }}
+                            >
+                              <Text style={styles.adminReportWorkerDetailsTitle}>{workerRow.workerName}</Text>
+                              <Text style={styles.adminReportWorkerDetailsMeta}>
+                                {`${t('Hours', 'Horas')}: ${workerRow.totalHours.toFixed(2)} - ${t('Labor', 'Mano de obra')}: ${formatCurrencyAmountPrecise(workerRow.totalLaborCost, locale)}`}
+                              </Text>
+                              <Text style={styles.adminWorkspaceRowExpandHint}>{t('Open details', 'Abrir detalles')}</Text>
+                            </Pressable>
+                          ))}
+                        </View>
+                      ) : null}
+                  </>
+                ) : null}
+              </ScrollView>
+            </View>
+          </View>
+        </Modal>
+
+        <Modal
+          visible={Boolean(adminReportWorkerDrilldownModalState)}
+          transparent
+          animationType="fade"
+          onRequestClose={() => {
+            setAdminReportWorkerDrilldownModalState(null)
+          }}
+        >
+          <View style={styles.modalBackdrop}>
+            <View style={[styles.modalCard, styles.adminReportDetailsModalCard]}>
+              <View style={styles.detailHeader}>
+                <Text style={styles.detailTitle}>
+                  {adminReportWorkerDrilldownModalState?.worker.workerName || t('Worker details', 'Detalles del trabajador')}
+                </Text>
+                <Pressable
+                  style={styles.detailCloseButton}
+                  onPress={() => {
+                    setAdminReportWorkerDrilldownModalState(null)
+                  }}
+                >
+                  <Text style={styles.detailCloseButtonText}>{t('Close', 'Cerrar')}</Text>
+                </Pressable>
+              </View>
+
+              <ScrollView contentContainerStyle={styles.modalBodyContent}>
+                {adminReportWorkerDrilldownModalState ? (
+                  <>
+                    <View style={styles.adminWorkspaceMiniStatCard}>
+                      <Text style={styles.adminWorkspaceMiniStatTitle}>{adminReportWorkerDrilldownModalState.parentRowTitle}</Text>
+                      <Text style={styles.adminWorkspaceMiniStatText}>
+                        {`${t('Hours', 'Horas')}: ${adminReportWorkerDrilldownModalState.worker.totalHours.toFixed(2)}`}
+                      </Text>
+                      <Text style={styles.adminWorkspaceMiniStatText}>
+                        {`${t('Labor', 'Mano de obra')}: ${formatCurrencyAmountPrecise(adminReportWorkerDrilldownModalState.worker.totalLaborCost, locale)}`}
+                      </Text>
+                    </View>
+
+                    {adminReportWorkerDrilldownModalState.worker.dateEntries.length === 0 ? (
+                      <Text style={styles.emptyDetailText}>{t('No rows found for this report.', 'No se encontraron filas para este reporte.')}</Text>
+                    ) : (
+                      adminReportWorkerDrilldownModalState.worker.dateEntries.map((dateEntry) => (
+                        <View key={`worker-date-${adminReportWorkerDrilldownModalState.worker.workerId}-${dateEntry.date}`} style={styles.detailRow}>
+                          <Text style={styles.detailPrimary}>{formatDisplayDate(dateEntry.date, locale)}</Text>
+                          <Text style={styles.detailSecondary}>{`${t('Hours', 'Horas')}: ${dateEntry.hours.toFixed(2)}`}</Text>
+                          <Text style={styles.detailSecondary}>
+                            {`${t('Labor', 'Mano de obra')}: ${formatCurrencyAmountPrecise(dateEntry.laborCost, locale)}`}
+                          </Text>
+                        </View>
+                      ))
+                    )}
+                  </>
+                ) : null}
               </ScrollView>
             </View>
           </View>
@@ -6473,44 +8288,57 @@ export default function App() {
         >
           <View style={styles.modalBackdrop}>
             <View style={[styles.modalCard, styles.adminCashDetailsModalCard]}>
-              <View style={styles.detailHeader}>
-                <Text style={styles.detailTitle}>{adminCashAccountModalRow?.title || t('Cash account', 'Cuenta de caja')}</Text>
-                <Pressable
-                  style={styles.detailCloseButton}
-                  onPress={() => setAdminCashAccountModalRow(null)}
-                >
-                  <Text style={styles.detailCloseButtonText}>{t('Close', 'Cerrar')}</Text>
-                </Pressable>
+              <View style={styles.adminCashDetailsSummaryCard}>
+                <View style={styles.detailHeader}>
+                  <Text style={styles.detailTitle}>{adminCashAccountModalRow?.title || t('Cash account', 'Cuenta de caja')}</Text>
+                  <Pressable
+                    style={styles.detailCloseButton}
+                    onPress={() => setAdminCashAccountModalRow(null)}
+                  >
+                    <Text style={styles.detailCloseButtonText}>{t('Close', 'Cerrar')}</Text>
+                  </Pressable>
+                </View>
+
+                {adminCashAccountModalRow?.subtitle ? (
+                  <Text style={styles.adminCashDetailsModalSubtitle}>{adminCashAccountModalRow.subtitle}</Text>
+                ) : null}
+
+                {adminCashAccountModalRow?.meta ? (
+                  <Text style={styles.adminCashDetailsModalMeta}>{adminCashAccountModalRow.meta}</Text>
+                ) : null}
               </View>
 
-              {adminCashAccountModalRow?.subtitle ? (
-                <Text style={styles.adminCashDetailsModalSubtitle}>{adminCashAccountModalRow.subtitle}</Text>
-              ) : null}
+              <View style={styles.adminCashDetailsHistoryCard}>
+                <View style={styles.adminCashDetailsHistoryHeader}>
+                  <Text style={styles.adminCashDetailsHistoryTitle}>{t('History', 'Historial')}</Text>
+                  <Text style={styles.adminCashDetailsHistoryHint}>
+                    {t('Scroll to view all movements.', 'Desliza para ver todos los movimientos.')}
+                  </Text>
+                </View>
 
-              {adminCashAccountModalRow?.meta ? (
-                <Text style={styles.adminCashDetailsModalMeta}>{adminCashAccountModalRow.meta}</Text>
-              ) : null}
-
-              <ScrollView
-                style={styles.adminCashDetailsModalScroll}
-                contentContainerStyle={styles.adminCashDetailsModalContent}
-                nestedScrollEnabled
-              >
-                {Array.isArray(adminCashAccountModalRow?.details) && adminCashAccountModalRow.details.length > 0
-                  ? adminCashAccountModalRow.details.map((detailLine, detailIndex) => (
-                    <Text
-                      key={`cash-detail-${detailIndex}`}
-                      style={styles.adminCashDetailsModalLine}
-                    >
-                      {detailLine}
-                    </Text>
-                  ))
-                  : (
-                    <Text style={styles.emptyDetailText}>
-                      {t('No transaction details found.', 'No se encontraron detalles de movimientos.')}
-                    </Text>
-                  )}
-              </ScrollView>
+                <ScrollView
+                  style={styles.adminCashDetailsModalScroll}
+                  contentContainerStyle={styles.adminCashDetailsModalContent}
+                  nestedScrollEnabled
+                  showsVerticalScrollIndicator
+                  persistentScrollbar
+                >
+                  {Array.isArray(adminCashAccountModalRow?.details) && adminCashAccountModalRow.details.length > 0
+                    ? adminCashAccountModalRow.details.map((detailLine, detailIndex) => (
+                      <Text
+                        key={`cash-detail-${detailIndex}`}
+                        style={styles.adminCashDetailsModalLine}
+                      >
+                        {detailLine}
+                      </Text>
+                    ))
+                    : (
+                      <Text style={styles.emptyDetailText}>
+                        {t('No transaction details found.', 'No se encontraron detalles de movimientos.')}
+                      </Text>
+                    )}
+                </ScrollView>
+              </View>
             </View>
           </View>
         </Modal>

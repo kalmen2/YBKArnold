@@ -99,6 +99,8 @@ export type QuickBooksProjectSummary = {
   transactionCount: number
   purchaseOrderCount: number
   purchaseOrderAmount: number
+  estimateCount: number
+  estimateAmount: number
   billCount: number
   billAmount: number
   invoiceCount: number
@@ -119,7 +121,7 @@ export type QuickBooksUnlinkedTransaction = {
 }
 
 export type QuickBooksDetailRow = {
-  type: 'purchaseOrderLine' | 'bill' | 'invoice' | 'payment'
+  type: 'purchaseOrderLine' | 'estimate' | 'bill' | 'invoice' | 'payment' | 'directExpense'
   id: string | null
   docNumber: string | null
   txnDate: string | null
@@ -131,13 +133,16 @@ export type QuickBooksDetailRow = {
   lineDescription: string | null
   reason: string | null
   candidateProjectRefs: string[]
+  linkedPurchaseOrderIds: string[]
 }
 
 export type QuickBooksOverviewDetails = {
   purchaseOrderLines: QuickBooksDetailRow[]
+  estimates: QuickBooksDetailRow[]
   bills: QuickBooksDetailRow[]
   invoices: QuickBooksDetailRow[]
   payments: QuickBooksDetailRow[]
+  directExpenses: QuickBooksDetailRow[]
   unlinkedPurchaseOrderLines: QuickBooksDetailRow[]
 }
 
@@ -154,6 +159,7 @@ export type QuickBooksHistoryMeta = {
     bills: QuickBooksHistoryMetaBucket
     invoices: QuickBooksHistoryMetaBucket
     payments: QuickBooksHistoryMetaBucket
+    directExpenses: QuickBooksHistoryMetaBucket
     unlinkedPurchaseOrderLines: QuickBooksHistoryMetaBucket
   }
   outstandingInvoices: QuickBooksHistoryMetaBucket

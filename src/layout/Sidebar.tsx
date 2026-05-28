@@ -41,7 +41,7 @@ function SidebarContent({ showText, onNavigate }: SidebarContentProps) {
 
   const canAccessNavItem = (item: NavItem) => {
     if (appUser?.isSalesRep) {
-      return item.path === '/sales'
+      return item.path === '/sales' || item.path === '/admin/alerts'
     }
 
     if (item.adminOnly && !appUser?.isAdmin) {

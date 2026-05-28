@@ -11,7 +11,21 @@
       "Bash(awk 'NR==389' /Users/kalmankamionka/Desktop/Arnold-api/functions/src/routes/dashboard-support-routes.mjs)",
       "Bash(node --check /Users/kalmankamionka/Desktop/Arnold-api/functions/src/routes/orders-routes.mjs)",
       "Bash(awk '$1 > 1')",
-      "Bash(awk '{print $2}')"
+      "Bash(awk '{print $2}')",
+      "Bash(grep -v \":0$\")",
+      "Bash(sort -t: -k2 -rn)",
+      "Bash(sed -n '435,560p' functions/src/routes/purchasing-routes.mjs)",
+      "Bash(sed -n '573,680p' functions/src/routes/quickbooks-routes.mjs)",
+      "Bash(sed -n '142,180p' functions/src/routes/dashboard-support-routes.mjs)",
+      "Bash(sed -n '1182,1220p' functions/src/routes/purchasing-routes.mjs)",
+      "Bash(sed -n '95,135p' functions/src/services/monday-order-persistence-service.mjs)",
+      "Bash(sed -n '99,140p' functions/src/services/order-photo-service.mjs)",
+      "Bash(sed -n '79,95p' functions/src/routes/quickbooks-routes.mjs)",
+      "Bash(sed -n '20,35p' functions/src/routes/purchasing-routes.mjs)",
+      "Bash(sed -n '4,16p' functions/src/services/orders-merge-helpers.mjs)",
+      "Bash(sed -n '19,32p' functions/src/services/quickbooks-projects-service.mjs)",
+      "Bash(sed -n '89,105p' functions/src/services/mongo-domain-config.mjs)",
+      "Bash(node -e ' *)"
     ]
   }
 }

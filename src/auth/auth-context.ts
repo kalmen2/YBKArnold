@@ -11,6 +11,8 @@ export type AuthContextValue = {
   ownerEmail: string
   isFirebaseConfigured: boolean
   signInWithGoogle: () => Promise<void>
+  signInWithPassword: (email: string, password: string) => Promise<void>
+  createAccountWithPassword: (email: string, password: string) => Promise<void>
   signOutFromApp: () => Promise<void>
   refreshProfile: () => Promise<void>
   getIdToken: () => Promise<string>

@@ -7,8 +7,10 @@ import {
   type ReactNode,
 } from 'react'
 import {
+  createUserWithEmailAndPassword,
   onAuthStateChanged,
   signInWithPopup,
+  signInWithEmailAndPassword,
   signOut,
   type User,
 } from 'firebase/auth'
@@ -333,6 +335,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await signInWithPopup(firebaseAuth, googleAuthProvider)
   }, [])
 
+  const signInWithPassword = useCallback(async (email: string, password: string) => {
+    if (!isFirebaseAuthConfigured) {
+      throw new Error('Firebase Auth configuration is missing.')
+    }
+
+    const normalizedEmail = String(email ?? '').trim()
+
+    if (!normalizedEmail || !password) {
+      throw new Error('Email and password are required.')
+    }
+
+    setProfileError(null)
+    await signInWithEmailAndPassword(firebaseAuth, normalizedEmail, password)
+  }, [])
+
+  const createAccountWithPassword = useCallback(async (email: string, password: string) => {
+    if (!isFirebaseAuthConfigured) {
+      throw new Error('Firebase Auth configuration is missing.')
+    }
+
+    const normalizedEmail = String(email ?? '').trim()
+
+    if (!normalizedEmail || !password) {
+      throw new Error('Email and password are required.')
+    }
+
+    setProfileError(null)
+    await createUserWithEmailAndPassword(firebaseAuth, normalizedEmail, password)
+  }, [])
+
   const signOutFromApp = useCallback(async () => {
     setProfileError(null)
     clearCachedToken()
@@ -372,6 +404,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       ownerEmail: ownerEmailValue,
       isFirebaseConfigured: isFirebaseAuthConfigured,
       signInWithGoogle,
+      signInWithPassword,
+      createAccountWithPassword,
       signOutFromApp,
       refreshProfile,
       getIdToken,
@@ -388,6 +422,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     refreshProfile,
     logActivity,
     signInWithGoogle,
+    signInWithPassword,
+    createAccountWithPassword,
     signOutFromApp,
   ])
 

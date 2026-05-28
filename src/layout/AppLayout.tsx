@@ -97,8 +97,11 @@ export default function AppLayout() {
     }
 
     const isSalesRoute = location.pathname === '/sales' || location.pathname.startsWith('/sales/')
+    const isSalesRepNotificationsRoute =
+      location.pathname === '/admin/alerts'
+      || location.pathname.startsWith('/admin/alerts/')
 
-    if (!isSalesRoute) {
+    if (!isSalesRoute && !isSalesRepNotificationsRoute) {
       navigate('/sales?tab=dealers', { replace: true })
     }
   }, [appUser?.isSalesRep, location.pathname, navigate])

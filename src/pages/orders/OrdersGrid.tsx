@@ -1162,7 +1162,7 @@ export function OrdersGrid({
               : days <= 7
                 ? `Due in ${dayLabel} (next 7 days)`
                 : days <= 14
-                  ? `Due in ${dayLabel} (next 14 days)`
+                  ? `Due in ${dayLabel} (next 8 to 14 days)`
                   : `Due in ${dayLabel}`
         const textColor =
           days < 0

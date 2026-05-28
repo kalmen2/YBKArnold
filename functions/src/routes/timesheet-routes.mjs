@@ -778,6 +778,7 @@ app.put('/api/timesheet/order-progress', requireFirebaseAuth, requireManagerOrAd
     const date = String(req.body?.date ?? '').trim()
     const jobName = String(req.body?.jobName ?? '').trim()
     const readyPercent = Number(req.body?.readyPercent)
+    const isWarranty = req.body?.isWarranty === true
 
     if (!date) {
       return res.status(400).json({ error: 'date is required.' })
@@ -810,6 +811,7 @@ app.put('/api/timesheet/order-progress', requireFirebaseAuth, requireManagerOrAd
           jobName,
           normalizedJobName,
           readyPercent: roundedReadyPercent,
+          isWarranty,
           updatedAt: now,
         },
         $setOnInsert: {

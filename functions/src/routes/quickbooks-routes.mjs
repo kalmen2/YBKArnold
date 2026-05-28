@@ -61,9 +61,9 @@ const quickBooksExcludedLoanLabelMatchers = [
 // The overview fires up to ~80 live QB API calls (10 entity types × up to 8 pages
 // each). The cached payload is persisted to MongoDB so it survives Firebase
 // Functions cold starts — without this, every cold-start user pays the full
-// 15–25s rebuild cost. forceRefresh=1 bypasses the read but still seeds cache.
+// 15–25s rebuild cost. Normal reads use the snapshot only; refresh=1 rebuilds
+// from QuickBooks and updates the snapshot.
 const QB_OVERVIEW_CACHE_KEY = 'quickbooks_overview'
-const QB_OVERVIEW_CACHE_TTL_MS = 5 * 60 * 1000  // 5 minutes
 
 const txnTypeConfigByKey = {
   purchaseOrder: {
@@ -71,6 +71,12 @@ const txnTypeConfigByKey = {
     countField: 'purchaseOrderCount',
     amountField: 'purchaseOrderAmount',
     label: 'Purchase order',
+  },
+  estimate: {
+    entityName: 'Estimate',
+    countField: 'estimateCount',
+    amountField: 'estimateAmount',
+    label: 'Estimate',
   },
   bill: {
     entityName: 'Bill',
@@ -90,6 +96,112 @@ const txnTypeConfigByKey = {
     amountField: 'paymentAmount',
     label: 'Payment',
   },
+}
+
+function extractLinkedPurchaseOrderIds(txn) {
+  const linkedTxns = Array.isArray(txn?.LinkedTxn) ? txn.LinkedTxn : []
+  const ids = []
+
+  for (const link of linkedTxns) {
+    if (link?.TxnType !== 'PurchaseOrder') {
+      continue
+    }
+
+    const id = normalizeText(link?.TxnId, 160)
+
+    if (id) {
+      ids.push(id)
+    }
+  }
+
+  return ids
+}
+
+function collectLinkedTxnRefsDeep(input, refsSet, depth = 0) {
+  if (!input || depth > 8) {
+    return
+  }
+
+  if (Array.isArray(input)) {
+    input.forEach((item) => {
+      collectLinkedTxnRefsDeep(item, refsSet, depth + 1)
+    })
+
+    return
+  }
+
+  if (typeof input !== 'object') {
+    return
+  }
+
+  Object.entries(input).forEach(([key, value]) => {
+    if (key === 'LinkedTxn' && Array.isArray(value)) {
+      value.forEach((link) => {
+        const txnType = normalizeText(link?.TxnType, 80)
+        const txnId = normalizeText(link?.TxnId, 160)
+
+        if (!txnType && !txnId) {
+          return
+        }
+
+        refsSet.add(`${txnType || ''}:${txnId || ''}`)
+      })
+    }
+
+    if (value && typeof value === 'object') {
+      collectLinkedTxnRefsDeep(value, refsSet, depth + 1)
+    }
+  })
+}
+
+function extractLinkedTxnRefsFromQuickBooksTxn(txn) {
+  const refsSet = new Set()
+
+  collectLinkedTxnRefsDeep(txn, refsSet)
+
+  return [...refsSet].map((token) => {
+    const [txnType = '', txnId = ''] = String(token).split(':')
+
+    return {
+      txnType: txnType || null,
+      txnId: txnId || null,
+    }
+  })
+}
+
+function normalizeQuickBooksTxnTypeToken(value) {
+  return String(value ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '')
+    .trim()
+}
+
+function normalizeQuickBooksDocLookupToken(value) {
+  const normalized = String(value ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '')
+    .trim()
+
+  return normalized || null
+}
+
+function buildQuickBooksAmountDateToken(txnDate, amount) {
+  const normalizedTxnDate = normalizeText(txnDate, 40)
+  const normalizedAmount = normalizeMoney(amount)
+
+  if (!normalizedTxnDate || normalizedAmount <= 0) {
+    return null
+  }
+
+  return `${normalizedTxnDate}:${normalizedAmount.toFixed(2)}`
+}
+
+function hasBillSettlementLinkedTxn(txn) {
+  return extractLinkedTxnRefsFromQuickBooksTxn(txn).some((ref) => {
+    const txnTypeToken = normalizeQuickBooksTxnTypeToken(ref.txnType)
+
+    return txnTypeToken === 'bill' || txnTypeToken.includes('billpayment')
+  })
 }
 
 function normalizeLookupToken(value) {
@@ -272,6 +384,9 @@ function buildQuickBooksOverviewPreview(cachedOverview) {
   const payments = Array.isArray(details.payments)
     ? details.payments
     : []
+  const directExpenses = Array.isArray(details.directExpenses)
+    ? details.directExpenses
+    : []
   const unlinkedPurchaseOrderLines = Array.isArray(details.unlinkedPurchaseOrderLines)
     ? details.unlinkedPurchaseOrderLines
     : []
@@ -286,6 +401,7 @@ function buildQuickBooksOverviewPreview(cachedOverview) {
       bills: bills.slice(0, pageSize),
       invoices: invoices.slice(0, pageSize),
       payments: payments.slice(0, pageSize),
+      directExpenses: directExpenses.slice(0, pageSize),
       unlinkedPurchaseOrderLines: unlinkedPurchaseOrderLines.slice(0, pageSize),
     },
     historyMeta: {
@@ -311,6 +427,10 @@ function buildQuickBooksOverviewPreview(cachedOverview) {
           total: payments.length,
           loaded: Math.min(pageSize, payments.length),
         },
+        directExpenses: {
+          total: directExpenses.length,
+          loaded: Math.min(pageSize, directExpenses.length),
+        },
         unlinkedPurchaseOrderLines: {
           total: unlinkedPurchaseOrderLines.length,
           loaded: Math.min(pageSize, unlinkedPurchaseOrderLines.length),
@@ -321,6 +441,57 @@ function buildQuickBooksOverviewPreview(cachedOverview) {
         loaded: Math.min(pageSize, outstandingInvoices.length),
       },
     },
+  }
+}
+
+function buildEmptyQuickBooksOverview(warnings = []) {
+  const normalizedWarnings = Array.isArray(warnings)
+    ? warnings
+      .map((warning) => normalizeText(warning, 300))
+      .filter(Boolean)
+    : []
+
+  return {
+    generatedAt: nowIso(),
+    realmId: '',
+    companyInfo: null,
+    bankAccountSnapshot: null,
+    bankAccountTransactions: [],
+    totals: {
+      projectCount: 0,
+      purchaseOrderCount: 0,
+      purchaseOrderAmount: 0,
+      purchaseOrderLineCount: 0,
+      purchaseOrderLineAmount: 0,
+      purchaseOrderLineWithoutProjectCount: 0,
+      purchaseOrderLineWithoutProjectAmount: 0,
+      billCount: 0,
+      billAmount: 0,
+      invoiceCount: 0,
+      invoiceAmount: 0,
+      paymentCount: 0,
+      paymentAmount: 0,
+      unlinkedTransactionCount: 0,
+      unlinkedAmount: 0,
+      outstandingAmount: 0,
+      loanSummaryCount: 0,
+      loanTotalAmount: 0,
+      loanInvestedAmount: 0,
+      loanTakenOutAmount: 0,
+    },
+    projects: [],
+    loanSummaries: [],
+    unlinkedTransactions: [],
+    details: {
+      purchaseOrderLines: [],
+      estimates: [],
+      bills: [],
+      invoices: [],
+      payments: [],
+      directExpenses: [],
+      unlinkedPurchaseOrderLines: [],
+    },
+    warnings: normalizedWarnings,
   }
 }
 
@@ -715,6 +886,7 @@ function toQuickBooksDetailRow({
   lineDescription = null,
   reason = null,
   candidateProjectRefs = [],
+  linkedPurchaseOrderIds = [],
 }) {
   return {
     type,
@@ -731,6 +903,9 @@ function toQuickBooksDetailRow({
     candidateProjectRefs: Array.isArray(candidateProjectRefs)
       ? candidateProjectRefs.map((value) => normalizeText(value, 160)).filter(Boolean)
       : [],
+    linkedPurchaseOrderIds: Array.isArray(linkedPurchaseOrderIds)
+      ? linkedPurchaseOrderIds.map((value) => normalizeText(value, 160)).filter(Boolean)
+      : [],
   }
 }
 
@@ -742,6 +917,8 @@ function createEmptyProjectSummary(projectId, projectName, active) {
     transactionCount: 0,
     purchaseOrderCount: 0,
     purchaseOrderAmount: 0,
+    estimateCount: 0,
+    estimateAmount: 0,
     billCount: 0,
     billAmount: 0,
     invoiceCount: 0,
@@ -946,7 +1123,7 @@ export function registerQuickBooksRoutes(app, deps) {
       { projection: { _id: 0, snapshot: 1, expiresAt: 1 } },
     )
 
-    if (!document?.snapshot || isExpiredAt(document.expiresAt)) {
+    if (!document?.snapshot) {
       return null
     }
 
@@ -956,7 +1133,6 @@ export function registerQuickBooksRoutes(app, deps) {
   async function saveCachedQuickBooksOverview(snapshot) {
     const { dashboardSnapshotsCollection } = await getCollections()
     const now = nowIso()
-    const expiresAt = new Date(Date.now() + QB_OVERVIEW_CACHE_TTL_MS).toISOString()
 
     await dashboardSnapshotsCollection.updateOne(
       { snapshotKey: QB_OVERVIEW_CACHE_KEY },
@@ -964,7 +1140,7 @@ export function registerQuickBooksRoutes(app, deps) {
         $set: {
           snapshotKey: QB_OVERVIEW_CACHE_KEY,
           snapshot,
-          expiresAt,
+          expiresAt: null,
           updatedAt: now,
         },
       },
@@ -1251,20 +1427,25 @@ export function registerQuickBooksRoutes(app, deps) {
 
   app.get('/api/quickbooks/overview', requireFirebaseAuth, requireManagerOrAdminRole, async (req, res, next) => {
     try {
-      const quickBooksConfig = getQuickBooksConfig(req)
-      const { quickBooksTokensCollection } = await getQuickBooksCollections()
       const forceRefresh = String(req.query?.refresh ?? '').trim() === '1'
       const includeFullOverview = String(req.query?.full ?? '').trim() === '1'
 
-      // Return cached result when available and no refresh is requested.
-      // forceRefresh still writes the fresh result into cache so the next
-      // visitor benefits immediately.
       if (!forceRefresh) {
         const cached = await loadCachedQuickBooksOverview()
+
         if (cached) {
           return res.json(includeFullOverview ? cached : buildQuickBooksOverviewPreview(cached))
         }
+
+        const emptyOverview = buildEmptyQuickBooksOverview([
+          'No cached QuickBooks data yet. Click Refresh to sync from QuickBooks.',
+        ])
+
+        return res.json(includeFullOverview ? emptyOverview : buildQuickBooksOverviewPreview(emptyOverview))
       }
+
+      const quickBooksConfig = getQuickBooksConfig(req)
+      const { quickBooksTokensCollection } = await getQuickBooksCollections()
 
       let tokenDoc = await resolveQuickBooksAccessToken({
         quickBooksTokensCollection,
@@ -1342,9 +1523,11 @@ export function registerQuickBooksRoutes(app, deps) {
       const [
         customersResult,
         purchaseOrdersResult,
+        estimatesResult,
         billsResult,
         invoicesResult,
         paymentsResult,
+        billPaymentsResult,
         accountsResult,
         journalEntriesResult,
         transfersResult,
@@ -1352,10 +1535,24 @@ export function registerQuickBooksRoutes(app, deps) {
         checksResult,
       ] = await Promise.all([
         queryAllQuickBooksRows(queryFn, 'Customer'),
-        queryAllQuickBooksRows(queryFn, 'PurchaseOrder'),
-        queryAllQuickBooksRows(queryFn, 'Bill'),
-        queryAllQuickBooksRows(queryFn, 'Invoice'),
-        queryAllQuickBooksRows(queryFn, 'Payment'),
+        queryAllQuickBooksRows(queryFn, 'PurchaseOrder', {
+          maxPages: quickBooksMaxQueryPagesBankTransactions,
+        }),
+        queryAllQuickBooksRows(queryFn, 'Estimate', {
+          maxPages: quickBooksMaxQueryPagesBankTransactions,
+        }),
+        queryAllQuickBooksRows(queryFn, 'Bill', {
+          maxPages: quickBooksMaxQueryPagesBankTransactions,
+        }),
+        queryAllQuickBooksRows(queryFn, 'Invoice', {
+          maxPages: quickBooksMaxQueryPagesBankTransactions,
+        }),
+        queryAllQuickBooksRows(queryFn, 'Payment', {
+          maxPages: quickBooksMaxQueryPagesBankTransactions,
+        }),
+        queryAllQuickBooksRows(queryFn, 'BillPayment', {
+          maxPages: quickBooksMaxQueryPagesBankTransactions,
+        }),
         queryAllQuickBooksRows(queryFn, 'Account'),
         queryAllQuickBooksRows(queryFn, 'JournalEntry', {
           maxPages: quickBooksMaxQueryPagesBankTransactions,
@@ -1403,6 +1600,8 @@ export function registerQuickBooksRoutes(app, deps) {
         purchaseOrderLineAmount: 0,
         purchaseOrderLineWithoutProjectCount: 0,
         purchaseOrderLineWithoutProjectAmount: 0,
+        estimateCount: 0,
+        estimateAmount: 0,
         billCount: 0,
         billAmount: 0,
         invoiceCount: 0,
@@ -1419,9 +1618,11 @@ export function registerQuickBooksRoutes(app, deps) {
       }
       const unlinkedTransactions = []
       const purchaseOrderLineDetails = []
+      const estimateDetails = []
       const billDetails = []
       const invoiceDetails = []
       const paymentDetails = []
+      const directExpenseDetails = []
       const unlinkedPurchaseOrderLines = []
 
       purchaseOrdersResult.rows.forEach((purchaseOrder) => {
@@ -1538,37 +1739,183 @@ export function registerQuickBooksRoutes(app, deps) {
                 ? normalizeMoney(txn?.Balance)
                 : null,
             candidateProjectRefs: refs,
+            linkedPurchaseOrderIds:
+              txnTypeKey === 'bill' ? extractLinkedPurchaseOrderIds(txn) : [],
           }
 
-          const pushUnlinkedTransaction = (reason) => {
+          const pushUnlinkedTransaction = ({
+            reason,
+            amountOverride = amount,
+            candidateProjectRefs = refs,
+            detailOverrides = {},
+          }) => {
+            const normalizedAmount = normalizeMoney(amountOverride)
+
+            if (normalizedAmount === 0) {
+              return
+            }
+
+            const normalizedCandidateRefs = Array.isArray(candidateProjectRefs)
+              ? candidateProjectRefs
+              : refs
+
             totals.unlinkedTransactionCount += 1
-            totals.unlinkedAmount = normalizeMoney(totals.unlinkedAmount + amount)
+            totals.unlinkedAmount = normalizeMoney(totals.unlinkedAmount + normalizedAmount)
 
             unlinkedTransactions.push({
               type: txnTypeKey,
               id: detailBase.id,
               docNumber: detailBase.docNumber,
               txnDate: detailBase.txnDate,
-              totalAmount: amount,
-              candidateProjectRefs: refs,
+              totalAmount: normalizedAmount,
+              candidateProjectRefs: normalizedCandidateRefs,
               reason,
             })
 
             detailRows.push(
               toQuickBooksDetailRow({
                 ...detailBase,
+                ...detailOverrides,
+                totalAmount: normalizedAmount,
+                candidateProjectRefs: normalizedCandidateRefs,
                 reason,
               }),
             )
           }
 
+          if (txnTypeKey === 'bill' && refs.length === 1) {
+            const projectRefId = refs[0]
+            const projectRow = projectsById.get(projectRefId)
+
+            if (!projectRow) {
+              pushUnlinkedTransaction({
+                reason: 'Referenced customer is not a QuickBooks Project (Job=true) or no longer exists.',
+              })
+              return
+            }
+
+            const lines = Array.isArray(txn?.Line) && txn.Line.length > 0
+              ? txn.Line
+              : [
+                  {
+                    Amount: amount,
+                    Description: 'Bill total (no line items found).',
+                  },
+                ]
+            let projectMatchedAmount = 0
+            let unassignedLineAmount = 0
+            let ambiguousLineAmount = 0
+            let projectMatchedLineCount = 0
+            let unassignedLineCount = 0
+            let ambiguousLineCount = 0
+
+            lines.forEach((line) => {
+              const lineAmount = normalizeMoney(line?.Amount)
+              const lineRefs = extractProjectRefsFromQuickBooksTxn(line)
+
+              if (lineRefs.includes(projectRefId)) {
+                projectMatchedAmount = normalizeMoney(projectMatchedAmount + lineAmount)
+                projectMatchedLineCount += 1
+                return
+              }
+
+              if (lineRefs.length === 0) {
+                unassignedLineAmount = normalizeMoney(unassignedLineAmount + lineAmount)
+                unassignedLineCount += 1
+                return
+              }
+
+              ambiguousLineAmount = normalizeMoney(ambiguousLineAmount + lineAmount)
+              ambiguousLineCount += 1
+            })
+
+            const attributedTotalAmount = normalizeMoney(
+              projectMatchedAmount + unassignedLineAmount + ambiguousLineAmount,
+            )
+            const residualAmount = normalizeMoney(amount - attributedTotalAmount)
+
+            if (Math.abs(residualAmount) > 0.004) {
+              ambiguousLineAmount = normalizeMoney(ambiguousLineAmount + residualAmount)
+              ambiguousLineCount += 1
+            }
+
+            const totalBalanceAmount = normalizeMoney(txn?.Balance)
+            let projectMatchedBalanceAmount = 0
+            let unassignedLineBalanceAmount = 0
+            let ambiguousLineBalanceAmount = 0
+
+            if (amount !== 0) {
+              projectMatchedBalanceAmount = normalizeMoney(
+                (projectMatchedAmount / amount) * totalBalanceAmount,
+              )
+              unassignedLineBalanceAmount = normalizeMoney(
+                (unassignedLineAmount / amount) * totalBalanceAmount,
+              )
+              ambiguousLineBalanceAmount = normalizeMoney(
+                totalBalanceAmount - projectMatchedBalanceAmount - unassignedLineBalanceAmount,
+              )
+            }
+
+            if (projectMatchedAmount !== 0) {
+              applyTransactionToProject(projectRow, txnTypeKey, projectMatchedAmount)
+              detailRows.push(
+                toQuickBooksDetailRow({
+                  ...detailBase,
+                  totalAmount: projectMatchedAmount,
+                  balanceAmount: projectMatchedBalanceAmount,
+                  projectId: projectRefId,
+                  projectName: projectRow.projectName,
+                  reason: unassignedLineAmount !== 0 || ambiguousLineAmount !== 0
+                    ? `Attributed using ${projectMatchedLineCount} bill line(s) that match this project reference.`
+                    : null,
+                }),
+              )
+            }
+
+            if (unassignedLineAmount !== 0) {
+              pushUnlinkedTransaction({
+                reason: 'Missing project reference on bill line(s). Added to general overhead as unassigned bill cost.',
+                amountOverride: unassignedLineAmount,
+                candidateProjectRefs: [],
+                detailOverrides: {
+                  balanceAmount: unassignedLineBalanceAmount,
+                  projectId: null,
+                  projectName: null,
+                  linkedPurchaseOrderIds: [],
+                  lineDescription: unassignedLineCount > 0
+                    ? `${unassignedLineCount} bill line(s) had no CustomerRef.`
+                    : 'Bill amount without project reference.',
+                },
+              })
+            }
+
+            if (ambiguousLineAmount !== 0) {
+              pushUnlinkedTransaction({
+                reason: 'Bill line project reference does not match the resolved project. Added to general overhead as unassigned bill cost.',
+                amountOverride: ambiguousLineAmount,
+                candidateProjectRefs: refs,
+                detailOverrides: {
+                  balanceAmount: ambiguousLineBalanceAmount,
+                  projectId: null,
+                  projectName: null,
+                  linkedPurchaseOrderIds: [],
+                  lineDescription: ambiguousLineCount > 0
+                    ? `${ambiguousLineCount} bill line(s) had a different or ambiguous CustomerRef.`
+                    : null,
+                },
+              })
+            }
+
+            return
+          }
+
           if (refs.length === 0) {
-            pushUnlinkedTransaction('Missing project reference.')
+            pushUnlinkedTransaction({ reason: 'Missing project reference.' })
             return
           }
 
           if (refs.length > 1) {
-            pushUnlinkedTransaction('Multiple project references found in one transaction.')
+            pushUnlinkedTransaction({ reason: 'Multiple project references found in one transaction.' })
             return
           }
 
@@ -1576,9 +1923,9 @@ export function registerQuickBooksRoutes(app, deps) {
           const projectRow = projectsById.get(projectRefId)
 
           if (!projectRow) {
-            pushUnlinkedTransaction(
-              'Referenced customer is not a QuickBooks Project (Job=true) or no longer exists.',
-            )
+            pushUnlinkedTransaction({
+              reason: 'Referenced customer is not a QuickBooks Project (Job=true) or no longer exists.',
+            })
             return
           }
 
@@ -1593,9 +1940,144 @@ export function registerQuickBooksRoutes(app, deps) {
         })
       }
 
+      processTransactionRows('estimate', estimatesResult.rows, estimateDetails)
       processTransactionRows('bill', billsResult.rows, billDetails)
       processTransactionRows('invoice', invoicesResult.rows, invoiceDetails)
       processTransactionRows('payment', paymentsResult.rows, paymentDetails)
+
+      const billPaymentLinkedTxnIdSet = new Set()
+      const billPaymentDocTokenSet = new Set()
+      const billPaymentAmountDateTokenSet = new Set()
+
+      billPaymentsResult.rows.forEach((billPaymentTxn) => {
+        const paymentId = normalizeText(billPaymentTxn?.Id, 160)
+
+        if (paymentId) {
+          billPaymentLinkedTxnIdSet.add(paymentId)
+        }
+
+        const paymentDocToken = normalizeQuickBooksDocLookupToken(
+          normalizeQuickBooksDocNumber(billPaymentTxn),
+        )
+
+        if (paymentDocToken) {
+          billPaymentDocTokenSet.add(paymentDocToken)
+        }
+
+        const paymentAmountDateToken = buildQuickBooksAmountDateToken(
+          billPaymentTxn?.TxnDate,
+          billPaymentTxn?.TotalAmt,
+        )
+
+        if (paymentAmountDateToken) {
+          billPaymentAmountDateTokenSet.add(paymentAmountDateToken)
+        }
+
+        extractLinkedTxnRefsFromQuickBooksTxn(billPaymentTxn).forEach((ref) => {
+          const linkedTxnId = normalizeText(ref?.txnId, 160)
+
+          if (linkedTxnId) {
+            billPaymentLinkedTxnIdSet.add(linkedTxnId)
+          }
+        })
+
+        const paymentLines = Array.isArray(billPaymentTxn?.Line) ? billPaymentTxn.Line : []
+
+        paymentLines.forEach((line) => {
+          const lineAmountDateToken = buildQuickBooksAmountDateToken(
+            billPaymentTxn?.TxnDate,
+            line?.Amount,
+          )
+
+          if (lineAmountDateToken) {
+            billPaymentAmountDateTokenSet.add(lineAmountDateToken)
+          }
+        })
+      })
+
+      checksResult.rows.forEach((purchaseTxn) => {
+        const txnAmount = normalizeMoney(purchaseTxn?.TotalAmt)
+        const txnId = normalizeText(purchaseTxn?.Id, 160) || null
+        const txnDocNumber = normalizeQuickBooksDocNumber(purchaseTxn)
+        const txnDate = normalizeText(purchaseTxn?.TxnDate, 40) || null
+        const headerRefs = extractProjectRefsFromQuickBooksTxn(purchaseTxn)
+        const headerHasBillSettlementLink = hasBillSettlementLinkedTxn(purchaseTxn)
+        const headerDocToken = normalizeQuickBooksDocLookupToken(txnDocNumber)
+        const headerAmountDateToken = buildQuickBooksAmountDateToken(txnDate, txnAmount)
+        const headerMatchesBillPaymentIndex = Boolean(
+          (txnId && billPaymentLinkedTxnIdSet.has(txnId))
+            || (headerDocToken && billPaymentDocTokenSet.has(headerDocToken))
+            || (headerAmountDateToken && billPaymentAmountDateTokenSet.has(headerAmountDateToken)),
+        )
+        const lines = Array.isArray(purchaseTxn?.Line) && purchaseTxn.Line.length > 0
+          ? purchaseTxn.Line
+          : [
+              {
+                Amount: txnAmount,
+                Description: 'Direct expense total (no line items found).',
+              },
+            ]
+
+        lines.forEach((line, lineIndex) => {
+          const lineAmount = normalizeMoney(line?.Amount)
+
+          if (lineAmount === 0) {
+            return
+          }
+
+          const lineAmountDateToken = buildQuickBooksAmountDateToken(txnDate, lineAmount)
+          const lineMatchesBillPaymentIndex = extractLinkedTxnRefsFromQuickBooksTxn(line).some(
+            (ref) => {
+              const linkedTxnId = normalizeText(ref?.txnId, 160)
+
+              return Boolean(linkedTxnId && billPaymentLinkedTxnIdSet.has(linkedTxnId))
+            },
+          ) || Boolean(
+            lineAmountDateToken && billPaymentAmountDateTokenSet.has(lineAmountDateToken),
+          )
+
+          if (
+            headerHasBillSettlementLink
+            || hasBillSettlementLinkedTxn(line)
+            || headerMatchesBillPaymentIndex
+            || lineMatchesBillPaymentIndex
+          ) {
+            return
+          }
+
+          let lineRefs = extractProjectRefsFromQuickBooksTxn(line)
+
+          if (lineRefs.length === 0 && headerRefs.length === 1) {
+            lineRefs = headerRefs
+          }
+
+          if (lineRefs.length !== 1) {
+            return
+          }
+
+          const projectRefId = lineRefs[0]
+          const projectRow = projectsById.get(projectRefId)
+
+          if (!projectRow) {
+            return
+          }
+
+          directExpenseDetails.push(
+            toQuickBooksDetailRow({
+              type: 'directExpense',
+              id: txnId,
+              docNumber: txnDocNumber,
+              txnDate,
+              totalAmount: lineAmount,
+              projectId: projectRefId,
+              projectName: projectRow.projectName,
+              lineNumber: lineIndex + 1,
+              lineDescription: normalizeQuickBooksLineDescription(line),
+              candidateProjectRefs: lineRefs,
+            }),
+          )
+        })
+      })
 
       const accountsById = new Map()
 
@@ -2163,7 +2645,14 @@ export function registerQuickBooksRoutes(app, deps) {
         warnings.push('Customer/project query was truncated. Increase pagination limits if needed.')
       }
 
-      if (purchaseOrdersResult.truncated || billsResult.truncated || invoicesResult.truncated || paymentsResult.truncated) {
+      if (
+        purchaseOrdersResult.truncated
+        || estimatesResult.truncated
+        || billsResult.truncated
+        || invoicesResult.truncated
+        || paymentsResult.truncated
+        || billPaymentsResult.truncated
+      ) {
         warnings.push('One or more QuickBooks transaction queries were truncated. Results may be partial.')
       }
 
@@ -2184,6 +2673,10 @@ export function registerQuickBooksRoutes(app, deps) {
         || checksResult.truncated
       ) {
         warnings.push('Bank account transactions were truncated by QuickBooks pagination limits. Older rows may be missing.')
+      }
+
+      if (warnings.length > 0) {
+        console.warn('[quickbooks/overview] QuickBooks fetch truncated; results may be partial:', warnings)
       }
 
       if (sortedLoanSummaries.length > loanSummaries.length) {
@@ -2213,9 +2706,11 @@ export function registerQuickBooksRoutes(app, deps) {
       }
 
       const visiblePurchaseOrderLineDetails = capDetails(purchaseOrderLineDetails, 'Purchase-order line')
+      const visibleEstimateDetails = capDetails(estimateDetails, 'Estimate')
       const visibleBillDetails = capDetails(billDetails, 'Bill')
       const visibleInvoiceDetails = capDetails(invoiceDetails, 'Invoice')
       const visiblePaymentDetails = capDetails(paymentDetails, 'Payment')
+      const visibleDirectExpenseDetails = capDetails(directExpenseDetails, 'Direct expense')
       const visibleBankAccountTransactions = capDetails(
         sortedBankAccountTransactions,
         'Bank account transaction',
@@ -2260,9 +2755,11 @@ export function registerQuickBooksRoutes(app, deps) {
         unlinkedTransactions: visibleUnlinkedTransactions,
         details: {
           purchaseOrderLines: visiblePurchaseOrderLineDetails,
+          estimates: visibleEstimateDetails,
           bills: visibleBillDetails,
           invoices: visibleInvoiceDetails,
           payments: visiblePaymentDetails,
+          directExpenses: visibleDirectExpenseDetails,
           unlinkedPurchaseOrderLines: visibleUnlinkedPurchaseOrderLines,
         },
         warnings,

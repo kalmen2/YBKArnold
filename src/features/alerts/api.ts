@@ -9,6 +9,12 @@ export type AppAlert = {
   createdByEmail: string | null
   isRead: boolean
   readAt: string | null
+  metadata?: {
+    source?: string | null
+    dealerSourceId?: string | null
+    dealerName?: string | null
+    chatMessageId?: string | null
+  }
 }
 
 export function fetchMyAlerts(limit = 30) {

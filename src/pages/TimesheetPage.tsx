@@ -3,11 +3,13 @@ import CategoryRoundedIcon from '@mui/icons-material/CategoryRounded'
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
 import FileDownloadRoundedIcon from '@mui/icons-material/FileDownloadRounded'
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded'
+import PrintRoundedIcon from '@mui/icons-material/PrintRounded'
 import VisibilityRoundedIcon from '@mui/icons-material/VisibilityRounded'
 import {
   Alert,
   Box,
   Button,
+  Checkbox,
   CircularProgress,
   Dialog,
   DialogActions,
@@ -117,18 +119,26 @@ type DateReportOrderRow = {
   jobName: string
   totalHours: number
   totalLaborCost: number
+  warrantyLaborCostInRangeAmount: number
   totalLaborCostToRangeEnd: number
   totalBillsToRangeEndAmount: number
+  totalDirectExpensesToRangeEndAmount: number
+  pendingPurchaseOrderToRangeEndAmount: number
   costBaseToRangeEndAmount: number
   workerRows: DateReportWorkerRow[]
   readyRows: DateReportReadyRow[]
   latestReadyPercent: number
   previousReadyPercent: number
   progressDeltaPercent: number
+  invoiceCount: number
   contractAmount: number
+  orderAmountDisplay: number
   recognizedRevenueAmount: number
   recognizedLaborCostAmount: number
+  recognizedWarrantyLaborCostAmount: number
   recognizedBillsCostAmount: number
+  recognizedDirectExpenseCostAmount: number
+  recognizedPendingPOCostAmount: number
   recognizedCostAmount: number
   recognizedProfitAmount: number
   cashReceivedInRangeAmount: number
@@ -159,6 +169,7 @@ type GeneralExpenseComponentRow = {
 type ReportSummaryBreakdownKey =
   | 'recognizedRevenue'
   | 'recognizedCost'
+  | 'projectProfit'
   | 'generalExpense'
   | 'netStanding'
 
@@ -220,6 +231,8 @@ type ManagerProgressRow = {
   currentReadyMissingDate: string | null
   savedReadyPercent: number
   editReadyPercent: number
+  savedIsWarranty: boolean
+  editIsWarranty: boolean
   mondayOrderId: string | null
   mondayItemName: string | null
   shopDrawingUrl: string | null
@@ -261,7 +274,10 @@ type TimesheetPageProps = {
 
 type QuickBooksJobMetrics = {
   purchaseOrderAmount: number
+  estimateCount: number
+  estimateAmount: number
   billAmount: number
+  invoiceCount: number
   invoiceAmount: number
   paymentAmount: number
 }
@@ -426,7 +442,10 @@ function isGeneralJobReference(value: string | null | undefined) {
 
 export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPageProps) {
   const { appUser, getIdToken } = useAuth()
-  const canAccessManagerSheet = appUser?.isManager === true || appUser?.isAdmin === true
+  const canAccessManagerSheet =
+    appUser?.isManager === true
+    || appUser?.isAdmin === true
+    || appUser?.isOwner === true
   const isReportsView = initialView === 'reports'
   const [worksheetTab, setWorksheetTab] = useState(0)
   const [reportsTab, setReportsTab] = useState(0)
@@ -462,6 +481,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
   const [customReportStartDate, setCustomReportStartDate] = useState(todayIsoDate())
   const [customReportEndDate, setCustomReportEndDate] = useState(todayIsoDate())
   const [dateReportLaborRow, setDateReportLaborRow] = useState<DateReportOrderRow | null>(null)
+  const [dateReportBillsCostsRow, setDateReportBillsCostsRow] = useState<DateReportOrderRow | null>(null)
   const [dateReportReadyRow, setDateReportReadyRow] = useState<DateReportOrderRow | null>(null)
   const [activeReportSummaryBreakdown, setActiveReportSummaryBreakdown] =
     useState<ReportSummaryBreakdownKey | null>(null)
@@ -474,6 +494,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     useState<'entries' | 'stage'>('entries')
   const [orderProgress, setOrderProgress] = useState<TimesheetOrderProgress[]>([])
   const [managerProgressByJob, setManagerProgressByJob] = useState<Record<string, string>>({})
+  const [managerWarrantyByJob, setManagerWarrantyByJob] = useState<Record<string, boolean>>({})
   const [isSavingManagerProgress, setIsSavingManagerProgress] = useState(false)
   const [mondayOrders, setMondayOrders] = useState<DashboardOrder[]>([])
   const [unifiedOrders, setUnifiedOrders] = useState<TimesheetUnifiedOrder[]>([])
@@ -540,6 +561,10 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
 
   const handleCloseDateReportLaborPopup = useCallback(() => {
     setDateReportLaborRow(null)
+  }, [])
+
+  const handleCloseDateReportBillsCostsPopup = useCallback(() => {
+    setDateReportBillsCostsRow(null)
   }, [])
 
   const handleCloseDateReportReadyPopup = useCallback(() => {
@@ -718,14 +743,26 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
       }
 
       const purchaseOrderAmount = Number(project.purchaseOrderAmount)
+      const estimateCount = Number(project.estimateCount)
+      const estimateAmount = Number(project.estimateAmount)
       const billAmount = Number(project.billAmount)
+      const invoiceCount = Number(project.invoiceCount)
       const invoiceAmount = Number(project.invoiceAmount)
       const paymentAmount = Number(project.paymentAmount)
       const normalizedPurchaseOrderAmount = Number.isFinite(purchaseOrderAmount)
         ? purchaseOrderAmount
         : 0
+      const normalizedEstimateCount = Number.isFinite(estimateCount)
+        ? estimateCount
+        : 0
+      const normalizedEstimateAmount = Number.isFinite(estimateAmount)
+        ? estimateAmount
+        : 0
       const normalizedBillAmount = Number.isFinite(billAmount)
         ? billAmount
+        : 0
+      const normalizedInvoiceCount = Number.isFinite(invoiceCount)
+        ? invoiceCount
         : 0
       const normalizedInvoiceAmount = Number.isFinite(invoiceAmount)
         ? invoiceAmount
@@ -735,19 +772,28 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
         : 0
       const existing = map.get(jobKey) ?? {
         purchaseOrderAmount: 0,
+        estimateCount: 0,
+        estimateAmount: 0,
         billAmount: 0,
+        invoiceCount: 0,
         invoiceAmount: 0,
         paymentAmount: 0,
       }
 
       const nextPurchaseOrderAmount = existing.purchaseOrderAmount + normalizedPurchaseOrderAmount
+      const nextEstimateCount = existing.estimateCount + normalizedEstimateCount
+      const nextEstimateAmount = existing.estimateAmount + normalizedEstimateAmount
       const nextBillAmount = existing.billAmount + normalizedBillAmount
+      const nextInvoiceCount = existing.invoiceCount + normalizedInvoiceCount
       const nextInvoiceAmount = existing.invoiceAmount + normalizedInvoiceAmount
       const nextPaymentAmount = existing.paymentAmount + normalizedPaymentAmount
 
       map.set(jobKey, {
         purchaseOrderAmount: Number(nextPurchaseOrderAmount.toFixed(2)),
+        estimateCount: nextEstimateCount,
+        estimateAmount: Number(nextEstimateAmount.toFixed(2)),
         billAmount: Number(nextBillAmount.toFixed(2)),
+        invoiceCount: nextInvoiceCount,
         invoiceAmount: Number(nextInvoiceAmount.toFixed(2)),
         paymentAmount: Number(nextPaymentAmount.toFixed(2)),
       })
@@ -1394,29 +1440,45 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     }
   }, [reportDateRange, reportSpecificJobKeys, sortedEntries, workersById])
 
-  const laborCostToReportEndByJobKey = useMemo(() => {
+  const warrantyDateJobKeySet = useMemo(() => {
+    const set = new Set<string>()
+
+    orderProgress.forEach((progress) => {
+      if (progress.isWarranty !== true) {
+        return
+      }
+
+      const jobKey = normalizeJobName(progress.jobName)
+      const date = String(progress.date ?? '').trim()
+
+      if (!jobKey || !date) {
+        return
+      }
+
+      set.add(`${date}:${jobKey}`)
+    })
+
+    return set
+  }, [orderProgress])
+
+  const warrantyLaborCostInReportRangeByJobKey = useMemo(() => {
     const map = new Map<string, number>()
 
     if (!reportDateRange) {
       return map
     }
 
-    sortedEntries.forEach((entry) => {
+    reportRangeEntries.forEach((entry) => {
       const date = String(entry.date ?? '').trim()
-
-      if (!date || date > reportDateRange.end) {
-        return
-      }
-
       const jobName = String(entry.jobName ?? '').trim()
 
-      if (!jobName || isGeneralJobReference(jobName)) {
+      if (!date || !jobName || isGeneralJobReference(jobName)) {
         return
       }
 
       const jobKey = normalizeJobName(jobName) || jobName
 
-      if (!reportSpecificJobKeys.has(jobKey)) {
+      if (!reportSpecificJobKeys.has(jobKey) || !warrantyDateJobKeySet.has(`${date}:${jobKey}`)) {
         return
       }
 
@@ -1427,7 +1489,37 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     })
 
     return map
-  }, [reportDateRange, reportSpecificJobKeys, sortedEntries, workersById])
+  }, [reportDateRange, reportRangeEntries, reportSpecificJobKeys, warrantyDateJobKeySet, workersById])
+
+  const laborCostAllProjectByJobKey = useMemo(() => {
+    const map = new Map<string, number>()
+
+    sortedEntries.forEach((entry) => {
+      const date = String(entry.date ?? '').trim()
+      const jobName = String(entry.jobName ?? '').trim()
+
+      if (!date || !jobName || isGeneralJobReference(jobName)) {
+        return
+      }
+
+      const jobKey = normalizeJobName(jobName) || jobName
+
+      if (!reportSpecificJobKeys.has(jobKey)) {
+        return
+      }
+
+      if (warrantyDateJobKeySet.has(`${date}:${jobKey}`)) {
+        return
+      }
+
+      const currentAmount = map.get(jobKey) ?? 0
+      const nextAmount = currentAmount + getEntryCost(entry, workersById)
+
+      map.set(jobKey, Number(nextAmount.toFixed(2)))
+    })
+
+    return map
+  }, [reportSpecificJobKeys, sortedEntries, warrantyDateJobKeySet, workersById])
 
   const quickBooksPaymentsByReportRangeJobKey = useMemo(() => {
     const map = new Map<string, number>()
@@ -1498,7 +1590,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
       const totalAmount = Number(billRow.totalAmount)
       const normalizedTotalAmount = Number.isFinite(totalAmount) ? totalAmount : 0
 
-      if (normalizedTotalAmount <= 0) {
+      if (normalizedTotalAmount === 0) {
         return
       }
 
@@ -1509,22 +1601,12 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     return map
   }, [quickBooksProjectLookupById, quickBooksQuery.data?.details?.bills, reportDateRange, reportSpecificJobKeys])
 
-  const quickBooksBillsToReportEndByJobKey = useMemo(() => {
+  const quickBooksBillsAllProjectByJobKey = useMemo(() => {
     const map = new Map<string, number>()
-
-    if (!reportDateRange) {
-      return map
-    }
 
     const billRows = quickBooksQuery.data?.details?.bills ?? []
 
     billRows.forEach((billRow) => {
-      const billDate = String(billRow.txnDate ?? '').trim()
-
-      if (!billDate || billDate > reportDateRange.end) {
-        return
-      }
-
       const jobKey = resolveQuickBooksJobKeyFromDetailRow(
         {
           projectId: billRow.projectId,
@@ -1540,7 +1622,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
       const totalAmount = Number(billRow.totalAmount)
       const normalizedTotalAmount = Number.isFinite(totalAmount) ? totalAmount : 0
 
-      if (normalizedTotalAmount <= 0) {
+      if (normalizedTotalAmount === 0) {
         return
       }
 
@@ -1549,7 +1631,155 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     })
 
     return map
-  }, [quickBooksProjectLookupById, quickBooksQuery.data?.details?.bills, reportDateRange, reportSpecificJobKeys])
+  }, [quickBooksProjectLookupById, quickBooksQuery.data?.details?.bills, reportSpecificJobKeys])
+
+  const quickBooksDirectExpensesInReportRangeByJobKey = useMemo(() => {
+    const map = new Map<string, number>()
+
+    if (!reportDateRange) {
+      return map
+    }
+
+    const directExpenseRows = quickBooksQuery.data?.details?.directExpenses ?? []
+
+    directExpenseRows.forEach((directExpenseRow) => {
+      if (!isDateInRange(String(directExpenseRow.txnDate ?? ''), reportDateRange.start, reportDateRange.end)) {
+        return
+      }
+
+      const jobKey = resolveQuickBooksJobKeyFromDetailRow(
+        {
+          projectId: directExpenseRow.projectId,
+          projectName: directExpenseRow.projectName,
+        },
+        quickBooksProjectLookupById,
+      )
+
+      if (!jobKey || !reportSpecificJobKeys.has(jobKey)) {
+        return
+      }
+
+      const totalAmount = Number(directExpenseRow.totalAmount)
+      const normalizedTotalAmount = Number.isFinite(totalAmount) ? totalAmount : 0
+
+      if (normalizedTotalAmount === 0) {
+        return
+      }
+
+      const currentAmount = map.get(jobKey) ?? 0
+      map.set(jobKey, Number((currentAmount + normalizedTotalAmount).toFixed(2)))
+    })
+
+    return map
+  }, [quickBooksProjectLookupById, quickBooksQuery.data?.details?.directExpenses, reportDateRange, reportSpecificJobKeys])
+
+  const quickBooksDirectExpensesAllProjectByJobKey = useMemo(() => {
+    const map = new Map<string, number>()
+
+    const directExpenseRows = quickBooksQuery.data?.details?.directExpenses ?? []
+
+    directExpenseRows.forEach((directExpenseRow) => {
+      const jobKey = resolveQuickBooksJobKeyFromDetailRow(
+        {
+          projectId: directExpenseRow.projectId,
+          projectName: directExpenseRow.projectName,
+        },
+        quickBooksProjectLookupById,
+      )
+
+      if (!jobKey || !reportSpecificJobKeys.has(jobKey)) {
+        return
+      }
+
+      const totalAmount = Number(directExpenseRow.totalAmount)
+      const normalizedTotalAmount = Number.isFinite(totalAmount) ? totalAmount : 0
+
+      if (normalizedTotalAmount === 0) {
+        return
+      }
+
+      const currentAmount = map.get(jobKey) ?? 0
+      map.set(jobKey, Number((currentAmount + normalizedTotalAmount).toFixed(2)))
+    })
+
+    return map
+  }, [quickBooksProjectLookupById, quickBooksQuery.data?.details?.directExpenses, reportSpecificJobKeys])
+
+  const quickBooksBilledPurchaseOrderIdsAllProjectByJobKey = useMemo(() => {
+    const map = new Map<string, Set<string>>()
+
+    const billRows = quickBooksQuery.data?.details?.bills ?? []
+
+    billRows.forEach((billRow) => {
+      const jobKey = resolveQuickBooksJobKeyFromDetailRow(
+        {
+          projectId: billRow.projectId,
+          projectName: billRow.projectName,
+        },
+        quickBooksProjectLookupById,
+      )
+
+      if (!jobKey || !reportSpecificJobKeys.has(jobKey)) {
+        return
+      }
+
+      const linkedIds = Array.isArray(billRow.linkedPurchaseOrderIds)
+        ? billRow.linkedPurchaseOrderIds
+        : []
+
+      if (linkedIds.length === 0) {
+        return
+      }
+
+      const existing = map.get(jobKey) ?? new Set<string>()
+      linkedIds.forEach((id) => existing.add(id))
+      map.set(jobKey, existing)
+    })
+
+    return map
+  }, [quickBooksProjectLookupById, quickBooksQuery.data?.details?.bills, reportSpecificJobKeys])
+
+  const quickBooksPendingPurchaseOrdersAllProjectByJobKey = useMemo(() => {
+    const map = new Map<string, number>()
+
+    const poLines = quickBooksQuery.data?.details?.purchaseOrderLines ?? []
+
+    poLines.forEach((poLine) => {
+      const jobKey = resolveQuickBooksJobKeyFromDetailRow(
+        {
+          projectId: poLine.projectId,
+          projectName: poLine.projectName,
+        },
+        quickBooksProjectLookupById,
+      )
+
+      if (!jobKey || !reportSpecificJobKeys.has(jobKey)) {
+        return
+      }
+
+      const poId = poLine.id
+
+      if (poId && quickBooksBilledPurchaseOrderIdsAllProjectByJobKey.get(jobKey)?.has(poId)) {
+        return
+      }
+
+      const amount = Number(poLine.totalAmount)
+
+      if (!Number.isFinite(amount) || amount === 0) {
+        return
+      }
+
+      const current = map.get(jobKey) ?? 0
+      map.set(jobKey, Number((current + amount).toFixed(2)))
+    })
+
+    return map
+  }, [
+    quickBooksBilledPurchaseOrderIdsAllProjectByJobKey,
+    quickBooksProjectLookupById,
+    quickBooksQuery.data?.details?.purchaseOrderLines,
+    reportSpecificJobKeys,
+  ])
 
   const reportNonOrderSpendRows = useMemo<NonOrderSpendRow[]>(() => {
     const rollupByCategory = new Map<NonOrderSpendCategory, { billedAmount: number }>()
@@ -1649,9 +1879,9 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
       }
 
       const totalAmountValue = Number(billRow.totalAmount)
-      const normalizedTotalAmount = Number.isFinite(totalAmountValue) ? Math.max(0, totalAmountValue) : 0
+      const normalizedTotalAmount = Number.isFinite(totalAmountValue) ? totalAmountValue : 0
 
-      if (normalizedTotalAmount <= 0) {
+      if (normalizedTotalAmount === 0) {
         return
       }
 
@@ -2090,6 +2320,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
       const progressKey = `${managerSelectedDate}:${jobKey}`
       const savedProgress = orderProgressByDateJobKey.get(progressKey)
       const savedReadyPercent = savedProgress ? Number(savedProgress.readyPercent) : 0
+      const savedIsWarranty = savedProgress?.isWarranty === true
       const latestWorkedDate = latestWorkedDateBeforeSelectedByJobKey.get(jobKey) ?? null
       const latestWorkedProgress = latestWorkedDate
         ? orderProgressByDateJobKey.get(`${latestWorkedDate}:${jobKey}`)
@@ -2110,11 +2341,17 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
           hours,
         }))
         .sort((left, right) => right.hours - left.hours || left.workerName.localeCompare(right.workerName))
+      const draftWarranty = managerWarrantyByJob[jobName]
       const editReadyPercent = readyPercentLocked
         ? 0
         : rawDraft === '' || !Number.isFinite(parsedDraft)
           ? savedReadyPercent
           : Math.min(100, Math.max(0, parsedDraft))
+      const editIsWarranty = readyPercentLocked
+        ? false
+        : draftWarranty === undefined
+          ? savedIsWarranty
+          : draftWarranty
 
       return {
         jobName,
@@ -2131,6 +2368,8 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
         currentReadyMissingDate,
         savedReadyPercent,
         editReadyPercent,
+        savedIsWarranty,
+        editIsWarranty,
         mondayOrderId: orderMatch.mondayOrderId,
         mondayItemName: orderMatch.mondayItemName,
         shopDrawingUrl: orderMatch.shopDrawingUrl,
@@ -2143,6 +2382,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     managerDayJobs,
     latestWorkedDateBeforeSelectedByJobKey,
     managerProgressByJob,
+    managerWarrantyByJob,
     managerSelectedDate,
     orderProgressByDateJobKey,
     resolveManagerOrderMatch,
@@ -2406,6 +2646,12 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
       }
     })
 
+    quickBooksDirectExpensesInReportRangeByJobKey.forEach((_amount, jobKey) => {
+      if (reportSpecificJobKeys.has(jobKey)) {
+        ensureGroupedByJobRow(jobKey)
+      }
+    })
+
     quickBooksPaymentsByReportRangeJobKey.forEach((_amount, jobKey) => {
       if (reportSpecificJobKeys.has(jobKey)) {
         ensureGroupedByJobRow(jobKey)
@@ -2424,18 +2670,28 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
         const cashReceivedInRangeAmount = Number(
           (quickBooksPaymentsByReportRangeJobKey.get(normalizedJobKey) ?? 0).toFixed(2),
         )
-        const totalBillsToRangeEndFromDetailRows = quickBooksBillsToReportEndByJobKey.get(normalizedJobKey) ?? 0
-        const fallbackTotalBillsAmount = Number(metrics?.billAmount ?? 0)
         const totalBillsToRangeEndAmount = Number(
-          (totalBillsToRangeEndFromDetailRows > 0
-            ? totalBillsToRangeEndFromDetailRows
-            : fallbackTotalBillsAmount).toFixed(2),
+          (quickBooksBillsAllProjectByJobKey.get(normalizedJobKey) ?? 0).toFixed(2),
+        )
+        const totalDirectExpensesToRangeEndAmount = Number(
+          (quickBooksDirectExpensesAllProjectByJobKey.get(normalizedJobKey) ?? 0).toFixed(2),
         )
         const totalLaborCostToRangeEnd = Number(
-          (laborCostToReportEndByJobKey.get(normalizedJobKey) ?? 0).toFixed(2),
+          (laborCostAllProjectByJobKey.get(normalizedJobKey) ?? 0).toFixed(2),
+        )
+        const warrantyLaborCostInRangeAmount = Number(
+          (warrantyLaborCostInReportRangeByJobKey.get(normalizedJobKey) ?? 0).toFixed(2),
+        )
+        const pendingPurchaseOrderToRangeEndAmount = Number(
+          (quickBooksPendingPurchaseOrdersAllProjectByJobKey.get(normalizedJobKey) ?? 0).toFixed(2),
         )
         const costBaseToRangeEndAmount = Number(
-          (totalLaborCostToRangeEnd + totalBillsToRangeEndAmount).toFixed(2),
+          (
+            totalLaborCostToRangeEnd
+            + totalBillsToRangeEndAmount
+            + totalDirectExpensesToRangeEndAmount
+            + pendingPurchaseOrderToRangeEndAmount
+          ).toFixed(2),
         )
         const readyRows = orderProgress
           .filter((progress) => {
@@ -2471,23 +2727,38 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
           (latestReadyPercent - previousReadyPercent).toFixed(1),
         )
 
-        const purchaseOrderAmount = Number(metrics?.purchaseOrderAmount ?? 0)
+        const invoiceCount = Number(metrics?.invoiceCount ?? 0)
         const invoiceAmount = Number(metrics?.invoiceAmount ?? 0)
-        const paymentAmount = Number(metrics?.paymentAmount ?? 0)
-        const contractAmount = purchaseOrderAmount > 0
-          ? purchaseOrderAmount
-          : Math.max(invoiceAmount, paymentAmount)
+        const estimateAmount = Number(metrics?.estimateAmount ?? 0)
+        const contractAmount =
+          invoiceCount > 0 ? invoiceAmount : estimateAmount
+        const orderAmountDisplay = invoiceCount > 0 ? invoiceAmount : estimateAmount
         const recognizedRevenueAmount = Number(
           ((contractAmount * progressDeltaPercent) / 100).toFixed(2),
         )
         const recognizedLaborCostAmount = Number(
           ((totalLaborCostToRangeEnd * progressDeltaPercent) / 100).toFixed(2),
         )
+        const recognizedWarrantyLaborCostAmount = Number(
+          warrantyLaborCostInRangeAmount.toFixed(2),
+        )
         const recognizedBillsCostAmount = Number(
           ((totalBillsToRangeEndAmount * progressDeltaPercent) / 100).toFixed(2),
         )
+        const recognizedDirectExpenseCostAmount = Number(
+          ((totalDirectExpensesToRangeEndAmount * progressDeltaPercent) / 100).toFixed(2),
+        )
+        const recognizedPendingPOCostAmount = Number(
+          ((pendingPurchaseOrderToRangeEndAmount * progressDeltaPercent) / 100).toFixed(2),
+        )
         const recognizedCostAmount = Number(
-          (recognizedLaborCostAmount + recognizedBillsCostAmount).toFixed(2),
+          (
+            recognizedLaborCostAmount
+            + recognizedWarrantyLaborCostAmount
+            + recognizedBillsCostAmount
+            + recognizedDirectExpenseCostAmount
+            + recognizedPendingPOCostAmount
+          ).toFixed(2),
         )
         const recognizedProfitAmount = Number(
           (recognizedRevenueAmount - recognizedCostAmount).toFixed(2),
@@ -2507,25 +2778,33 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
           jobName: jobRow.jobName,
           totalHours: jobRow.totalHours,
           totalLaborCost: jobRow.totalLaborCost,
+          warrantyLaborCostInRangeAmount,
           totalLaborCostToRangeEnd,
           workerRows,
           readyRows,
           latestReadyPercent,
           previousReadyPercent,
           progressDeltaPercent,
+          invoiceCount,
           contractAmount,
+          orderAmountDisplay,
           totalBillsToRangeEndAmount,
+          totalDirectExpensesToRangeEndAmount,
+          pendingPurchaseOrderToRangeEndAmount,
           costBaseToRangeEndAmount,
           recognizedRevenueAmount,
           recognizedLaborCostAmount,
+          recognizedWarrantyLaborCostAmount,
           recognizedBillsCostAmount,
+          recognizedDirectExpenseCostAmount,
+          recognizedPendingPOCostAmount,
           recognizedCostAmount,
           recognizedProfitAmount,
           cashReceivedInRangeAmount,
           cashGapVsRecognizedRevenueAmount,
         }
       })
-      .filter((row): row is DateReportOrderRow => Boolean(row))
+      .filter((row): row is DateReportOrderRow => row !== null && row.totalHours > 0)
       .sort((left, right) => {
         const absoluteRevenueDiff = Math.abs(right.recognizedRevenueAmount) - Math.abs(left.recognizedRevenueAmount)
 
@@ -2542,18 +2821,72 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
         return left.jobName.localeCompare(right.jobName)
       })
   }, [
-    laborCostToReportEndByJobKey,
+    laborCostAllProjectByJobKey,
     monthReportMonth,
     orderProgress,
     quickBooksBillsInReportRangeByJobKey,
-    quickBooksBillsToReportEndByJobKey,
+    quickBooksBillsAllProjectByJobKey,
+    quickBooksDirectExpensesInReportRangeByJobKey,
+    quickBooksDirectExpensesAllProjectByJobKey,
     quickBooksMetricsByJobKey,
     quickBooksPaymentsByReportRangeJobKey,
+    quickBooksPendingPurchaseOrdersAllProjectByJobKey,
     reportJobDisplayNameByJobKey,
     reportDateRange,
     reportRangeEntries,
     reportSpecificJobKeys,
+    warrantyLaborCostInReportRangeByJobKey,
     workersById,
+  ])
+
+  useEffect(() => {
+    if (!isReportsView || reportsTab !== 3) {
+      return
+    }
+
+    const sampleRow = dateReportRows[0] ?? null
+
+    console.log('[MonthReportDebug] quickBooks overview state', {
+      canAccessManagerSheet,
+      appUserRole: appUser?.role ?? null,
+      appUserApproved: appUser?.isApproved ?? false,
+      appUserOwner: appUser?.isOwner ?? false,
+      queryEnabled: canAccessManagerSheet && isReportsView,
+      queryStatus: quickBooksQuery.status,
+      queryFetchStatus: quickBooksQuery.fetchStatus,
+      queryIsFetching: quickBooksQuery.isFetching,
+      queryIsLoading: quickBooksQuery.isLoading,
+      queryIsError: quickBooksQuery.isError,
+      quickBooksProjectsCount: quickBooksProjects.length,
+      dateReportRowsCount: dateReportRows.length,
+      sampleRow: sampleRow
+        ? {
+            jobName: sampleRow.jobName,
+            orderAmountDisplay: sampleRow.orderAmountDisplay,
+            contractAmount: sampleRow.contractAmount,
+            progressDeltaPercent: sampleRow.progressDeltaPercent,
+          }
+        : null,
+    })
+
+    if (quickBooksQuery.error) {
+      console.log('[MonthReportDebug] quickBooks overview error', quickBooksQuery.error)
+    }
+  }, [
+    appUser?.isApproved,
+    appUser?.isOwner,
+    appUser?.role,
+    canAccessManagerSheet,
+    dateReportRows,
+    isReportsView,
+    quickBooksProjects.length,
+    quickBooksQuery.error,
+    quickBooksQuery.fetchStatus,
+    quickBooksQuery.isError,
+    quickBooksQuery.isFetching,
+    quickBooksQuery.isLoading,
+    quickBooksQuery.status,
+    reportsTab,
   ])
 
   const reportSummaryTotals = useMemo(() => {
@@ -2565,12 +2898,28 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
       (sum, row) => sum + row.recognizedLaborCostAmount,
       0,
     )
+    const totalRecognizedWarrantyLaborCost = dateReportRows.reduce(
+      (sum, row) => sum + row.recognizedWarrantyLaborCostAmount,
+      0,
+    )
     const totalRecognizedBillsCost = dateReportRows.reduce(
       (sum, row) => sum + row.recognizedBillsCostAmount,
       0,
     )
+    const totalRecognizedDirectExpenseCost = dateReportRows.reduce(
+      (sum, row) => sum + row.recognizedDirectExpenseCostAmount,
+      0,
+    )
+    const totalRecognizedPendingPOCost = dateReportRows.reduce(
+      (sum, row) => sum + row.recognizedPendingPOCostAmount,
+      0,
+    )
     const totalRecognizedCost = dateReportRows.reduce(
       (sum, row) => sum + row.recognizedCostAmount,
+      0,
+    )
+    const totalOrderCostBase = dateReportRows.reduce(
+      (sum, row) => sum + row.costBaseToRangeEndAmount,
       0,
     )
     const totalRecognizedProfit = dateReportRows.reduce(
@@ -2591,8 +2940,12 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     return {
       totalRecognizedRevenue: Number(totalRecognizedRevenue.toFixed(2)),
       totalRecognizedLaborCost: Number(totalRecognizedLaborCost.toFixed(2)),
+      totalRecognizedWarrantyLaborCost: Number(totalRecognizedWarrantyLaborCost.toFixed(2)),
       totalRecognizedBillsCost: Number(totalRecognizedBillsCost.toFixed(2)),
+      totalRecognizedDirectExpenseCost: Number(totalRecognizedDirectExpenseCost.toFixed(2)),
+      totalRecognizedPendingPOCost: Number(totalRecognizedPendingPOCost.toFixed(2)),
       totalRecognizedCost: Number(totalRecognizedCost.toFixed(2)),
+      totalOrderCostBase: Number(totalOrderCostBase.toFixed(2)),
       totalRecognizedProfit: Number(totalRecognizedProfit.toFixed(2)),
       totalGeneralExpense: Number(totalGeneralExpense.toFixed(2)),
       totalNetStanding: Number(totalNetStanding.toFixed(2)),
@@ -2629,7 +2982,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
       .map((row) => ({
         label: row.jobName,
         amount: Number(row.recognizedCostAmount.toFixed(2)),
-        note: `${row.progressDeltaPercent.toFixed(1)}% of ${formatCurrency(row.costBaseToRangeEndAmount)} (labor ${formatCurrency(row.totalLaborCostToRangeEnd)} + bills ${formatCurrency(row.totalBillsToRangeEndAmount)})`,
+        note: `${row.progressDeltaPercent.toFixed(1)}% of project-wide non-warranty cost base ${formatCurrency(row.costBaseToRangeEndAmount)} (labor ${formatCurrency(row.totalLaborCostToRangeEnd)} + bills ${formatCurrency(row.totalBillsToRangeEndAmount)} + direct expenses ${formatCurrency(row.totalDirectExpensesToRangeEndAmount)} + pending POs ${formatCurrency(row.pendingPurchaseOrderToRangeEndAmount)}) + warranty labor in selected range ${formatCurrency(row.recognizedWarrantyLaborCostAmount)}`,
       }))
       .sort(compareBreakdownRows)
 
@@ -2670,15 +3023,27 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     )
 
     const billRows = quickBooksQuery.data?.details?.bills ?? []
+    const directExpenseRows = quickBooksQuery.data?.details?.directExpenses ?? []
 
-    const baseBreakdownBillRows = billRows
-      .map((billRow, index) => {
+    type BaseBreakdownBillRow = {
+      id: string
+      date: string
+      document: string
+      source: string
+      project: string
+      totalAmount: number
+      paidAmount: number
+      unpaidAmount: number
+      includeInRecognizedCostAmount: number
+      includeInGeneralExpenseAmount: number
+    }
+
+    const baseBreakdownBillRows: BaseBreakdownBillRow[] = [
+      ...billRows.map((billRow, index) => {
         const totalAmount = Number(billRow.totalAmount)
-        const normalizedTotalAmount = Number.isFinite(totalAmount)
-          ? Math.max(0, totalAmount)
-          : 0
+        const normalizedTotalAmount = Number.isFinite(totalAmount) ? totalAmount : 0
 
-        if (normalizedTotalAmount <= 0) {
+        if (normalizedTotalAmount === 0) {
           return null
         }
 
@@ -2711,16 +3076,11 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
           && date
           && isDateInRange(date, reportDateRange.start, reportDateRange.end),
         )
-        const isOnOrBeforeEnd = Boolean(
-          reportDateRange
-          && date
-          && date <= reportDateRange.end,
-        )
         const isSpecificProjectBill = Boolean(jobKey && reportSpecificJobKeys.has(jobKey))
         const isUnassignedBillInRange = isInRange
           && !isSpecificProjectBill
           && !nonOrderCategory
-        const includeInRecognizedCostAmount = orderJobName && isOnOrBeforeEnd
+        const includeInRecognizedCostAmount = orderJobName
           ? Number(((normalizedTotalAmount * progressDeltaPercent) / 100).toFixed(2))
           : 0
         const includeInGeneralExpenseAmount = isInRange
@@ -2740,7 +3100,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
           ? orderJobName
           : isUnassignedBillInRange
             ? 'Unassigned (missing project)'
-          : `${nonOrderLabelByCategory.get(nonOrderCategory as NonOrderSpendCategory) ?? 'Non-order'} (non-order)`
+            : `${nonOrderLabelByCategory.get(nonOrderCategory as NonOrderSpendCategory) ?? 'Non-order'} (non-order)`
         const documentLabel = String(billRow.docNumber ?? billRow.id ?? '').trim() || '-'
 
         return {
@@ -2755,19 +3115,57 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
           includeInRecognizedCostAmount,
           includeInGeneralExpenseAmount,
         }
-      })
-      .filter((row): row is {
-        id: string
-        date: string
-        document: string
-        source: string
-        project: string
-        totalAmount: number
-        paidAmount: number
-        unpaidAmount: number
-        includeInRecognizedCostAmount: number
-        includeInGeneralExpenseAmount: number
-      } => Boolean(row))
+      }),
+      ...directExpenseRows.map((directExpenseRow, index) => {
+        const totalAmount = Number(directExpenseRow.totalAmount)
+        const normalizedTotalAmount = Number.isFinite(totalAmount) ? totalAmount : 0
+
+        if (normalizedTotalAmount === 0) {
+          return null
+        }
+
+        const date = String(directExpenseRow.txnDate ?? '').trim()
+        const projectLabel = splitQuickBooksProjectLabel(
+          directExpenseRow.projectName ?? '',
+          directExpenseRow.projectId ?? '',
+          { fallbackProjectNumber: directExpenseRow.projectId ?? '' },
+        ).projectNumber
+          || String(directExpenseRow.projectName ?? '').trim()
+          || String(directExpenseRow.projectId ?? '').trim()
+          || '-'
+        const jobKey = resolveQuickBooksJobKeyFromDetailRow(
+          {
+            projectId: directExpenseRow.projectId,
+            projectName: directExpenseRow.projectName,
+          },
+          quickBooksProjectLookupById,
+        )
+        const orderJobName = jobKey ? orderJobNameByKey.get(jobKey) : null
+        const progressDeltaPercent = jobKey ? (progressDeltaByJobKey.get(jobKey) ?? 0) : 0
+          const includeInRecognizedCostAmount = orderJobName
+          ? Number(((normalizedTotalAmount * progressDeltaPercent) / 100).toFixed(2))
+          : 0
+
+        if (includeInRecognizedCostAmount === 0) {
+          return null
+        }
+
+        const documentLabel = String(directExpenseRow.docNumber ?? directExpenseRow.id ?? '').trim() || '-'
+
+        return {
+          id: `direct-expense:${directExpenseRow.id ?? 'no-id'}:${documentLabel}:${date || 'no-date'}:${index}`,
+          date,
+          document: documentLabel,
+          source: 'Direct expense',
+          project: projectLabel,
+          totalAmount: Number(normalizedTotalAmount.toFixed(2)),
+          paidAmount: Number(normalizedTotalAmount.toFixed(2)),
+          unpaidAmount: 0,
+          includeInRecognizedCostAmount,
+          includeInGeneralExpenseAmount: 0,
+        }
+      }),
+    ].filter((row): row is BaseBreakdownBillRow => Boolean(row))
 
     const sortBreakdownBillRows = (
       left: ReportSummaryBreakdownBillRow,
@@ -2821,13 +3219,13 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
 
     return {
       recognizedRevenue: {
-        title: 'Recognized project revenue breakdown',
-        totalLabel: 'Recognized project revenue',
+        title: 'Gross earned breakdown',
+        totalLabel: 'Gross earned',
         totalAmount: reportSummaryTotals.totalRecognizedRevenue,
-        formula: 'Formula: sum of (progress delta in range x contract value) by project.',
+        formula: 'Formula: sum of (progress delta in range x order amount) by project.',
         components: [
           {
-            label: 'Recognized project revenue',
+            label: 'Gross earned',
             amount: reportSummaryTotals.totalRecognizedRevenue,
           },
           {
@@ -2843,46 +3241,85 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
         ],
         sections: [
           {
-            title: 'Recognized revenue by project',
+            title: 'Gross earned by order',
             rows: recognizedRevenueByOrderRows,
             emptyText: 'No recognized revenue rows found in this range.',
           },
         ],
       },
       recognizedCost: {
-        title: 'Recognized project cost breakdown',
-        totalLabel: 'Recognized project cost',
+        title: 'Total cost breakdown',
+        totalLabel: 'Total cost',
         totalAmount: reportSummaryTotals.totalRecognizedCost,
-        formula: 'Formula: sum of (progress delta in range x project cost base to range end).',
+        formula: 'Formula: progress-based labor + progress-based bills + progress-based direct expenses + progress-based pending POs + warranty labor (cost-only in selected range).',
         components: [
           {
-            label: 'Recognized labor cost',
+            label: 'Labor (progress-based)',
             amount: reportSummaryTotals.totalRecognizedLaborCost,
           },
           {
-            label: 'Recognized bills cost',
+            label: 'Warranty labor (cost-only)',
+            amount: reportSummaryTotals.totalRecognizedWarrantyLaborCost,
+          },
+          {
+            label: 'Bills',
             amount: reportSummaryTotals.totalRecognizedBillsCost,
           },
           {
-            label: 'Total recognized project cost',
+            label: 'Direct expenses',
+            amount: reportSummaryTotals.totalRecognizedDirectExpenseCost,
+          },
+          {
+            label: 'Pending POs',
+            amount: reportSummaryTotals.totalRecognizedPendingPOCost,
+          },
+          {
+            label: 'Total cost',
             amount: reportSummaryTotals.totalRecognizedCost,
           },
         ],
         sections: [
           {
-            title: 'Recognized cost by project',
+            title: 'Total cost by order',
             rows: recognizedCostByOrderRows,
             emptyText: 'No recognized cost rows found in this range.',
           },
         ],
         billRows: recognizedCostBillRows,
-        billsEmptyText: 'No bill rows contributed to recognized project cost.',
-        includedAmountLabel: 'Included in recognized cost',
-        billsScopeNote: 'Included amount is bill amount x progress delta for each project in this range.',
+        billsEmptyText: 'No bill or direct-expense rows contributed to total cost.',
+        includedAmountLabel: 'Included in total cost',
+        billsScopeNote: 'Included amount is project bill/direct-expense amount x progress delta for each project. Posting date is not limited to the selected range.',
+      },
+      projectProfit: {
+        title: 'Project profit breakdown',
+        totalLabel: 'Project profit',
+        totalAmount: reportSummaryTotals.totalRecognizedProfit,
+        formula: 'Formula: gross earned - total cost.',
+        components: [
+          {
+            label: 'Gross earned',
+            amount: reportSummaryTotals.totalRecognizedRevenue,
+          },
+          {
+            label: 'Total cost',
+            amount: Number((-reportSummaryTotals.totalRecognizedCost).toFixed(2)),
+          },
+          {
+            label: 'Project profit',
+            amount: reportSummaryTotals.totalRecognizedProfit,
+          },
+        ],
+        sections: [
+          {
+            title: 'Project profit by order',
+            rows: recognizedProfitByOrderRows,
+            emptyText: 'No project profit rows found in this range.',
+          },
+        ],
       },
       generalExpense: {
-        title: 'General monthly expense breakdown',
-        totalLabel: 'General monthly expense',
+        title: 'General overhead breakdown',
+        totalLabel: 'General overhead',
         totalAmount: reportSummaryTotals.totalGeneralExpense,
         formula: 'Formula: QB general/company purchase bills + QB bills missing project assignment + website payroll (job 0 and unmapped) + QB payroll extra over website payroll.',
         components: [
@@ -2890,39 +3327,39 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
         ],
         sections: [
           {
-            title: 'General expense components',
+            title: 'General overhead components',
             rows: generalExpenseRows,
             emptyText: 'No general expense components found in this range.',
           },
         ],
         billRows: generalExpenseBillRows,
         billsEmptyText: 'No QuickBooks general/company-purchase/unassigned bill rows found in this range.',
-        includedAmountLabel: 'Included in general expense',
+        includedAmountLabel: 'Included in general overhead',
         billsScopeNote: 'This bill list covers QuickBooks general, company purchase, and missing-project bill rows. Payroll extra is shown in components.',
       },
       netStanding: {
-        title: 'Net monthly standing breakdown',
-        totalLabel: 'Net monthly standing',
+        title: 'Net profit breakdown',
+        totalLabel: 'Net profit',
         totalAmount: reportSummaryTotals.totalNetStanding,
-        formula: 'Formula: recognized project profit - general monthly expense.',
+        formula: 'Formula: project profit - general overhead.',
         components: [
           {
-            label: 'Recognized project profit',
+            label: 'Project profit',
             amount: reportSummaryTotals.totalRecognizedProfit,
           },
           {
-            label: 'Less general monthly expense',
+            label: 'Less general overhead',
             amount: Number((-reportSummaryTotals.totalGeneralExpense).toFixed(2)),
           },
         ],
         sections: [
           {
-            title: 'Recognized profit by project',
+            title: 'Project profit by order',
             rows: recognizedProfitByOrderRows,
             emptyText: 'No recognized profit rows found in this range.',
           },
           {
-            title: 'General monthly expense components',
+            title: 'General overhead components',
             rows: generalExpenseRows.map((row) => ({
               ...row,
               amount: Number((-row.amount).toFixed(2)),
@@ -2936,6 +3373,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     dateReportRows,
     quickBooksProjectLookupById,
     quickBooksQuery.data?.details?.bills,
+    quickBooksQuery.data?.details?.directExpenses,
     reportDateRange,
     reportGeneralExpenseRows,
     reportSpecificJobKeys,
@@ -2948,6 +3386,76 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
   const canShowReportSummaryBillRows = Boolean(selectedReportSummaryBreakdown?.billRows)
   const isReportSummaryBillsView = canShowReportSummaryBillRows
     && reportSummaryBreakdownView === 'bills'
+  const dateReportReadyRowsInSelectedRange = useMemo(() => {
+    if (!dateReportReadyRow || !reportDateRange) {
+      return []
+    }
+
+    return dateReportReadyRow.readyRows.filter((readyRow) =>
+      isDateInRange(readyRow.date, reportDateRange.start, reportDateRange.end),
+    )
+  }, [dateReportReadyRow, reportDateRange])
+
+  const monthReportExportRows = useMemo(() => {
+    if (!reportDateRange) {
+      return []
+    }
+
+    const projectRows = dateReportRows.map((row) => ({
+      rowType: 'Project',
+      range: reportDateRangeLabel,
+      project: row.jobName,
+      hoursInRange: Number(row.totalHours.toFixed(2)),
+      websiteLaborInRange: row.totalLaborCost,
+      warrantyLaborInRange: row.warrantyLaborCostInRangeAmount,
+      qbBillsToEnd: row.totalBillsToRangeEndAmount,
+      qbDirectExpensesToEnd: row.totalDirectExpensesToRangeEndAmount,
+      pendingPOsToEnd: row.pendingPurchaseOrderToRangeEndAmount,
+      projectWideCostBase: row.costBaseToRangeEndAmount,
+      progressPrevPercent: row.previousReadyPercent,
+      progressEndPercent: row.latestReadyPercent,
+      progressDeltaPercent: row.progressDeltaPercent,
+      contractValue: row.contractAmount,
+      recognizedRevenue: row.recognizedRevenueAmount,
+      recognizedLaborCost: row.recognizedLaborCostAmount,
+      recognizedWarrantyLaborCost: row.recognizedWarrantyLaborCostAmount,
+      recognizedBillsCost: row.recognizedBillsCostAmount,
+      recognizedDirectExpenseCost: row.recognizedDirectExpenseCostAmount,
+      recognizedPendingPOCost: row.recognizedPendingPOCostAmount,
+      recognizedCost: row.recognizedCostAmount,
+      recognizedProfit: row.recognizedProfitAmount,
+      cashReceivedInRange: row.cashReceivedInRangeAmount,
+    }))
+
+    const generalRows = reportGeneralExpenseRows
+      .filter((row) => row.amount > 0)
+      .map((row) => ({
+        rowType: 'General expense',
+        range: reportDateRangeLabel,
+        project: row.label,
+        generalExpenseAmount: row.amount,
+        netMonthlyStandingImpact: Number((-row.amount).toFixed(2)),
+      }))
+
+    const summaryRow = {
+      rowType: 'Summary',
+      range: reportDateRangeLabel,
+      recognizedProjectRevenueTotal: reportSummaryTotals.totalRecognizedRevenue,
+      recognizedProjectCostTotal: reportSummaryTotals.totalRecognizedCost,
+      recognizedProjectProfitTotal: reportSummaryTotals.totalRecognizedProfit,
+      generalMonthlyExpenseTotal: reportSummaryTotals.totalGeneralExpense,
+      netMonthlyStandingTotal: reportSummaryTotals.totalNetStanding,
+      cashGapVsRecognizedRevenueTotal: reportSummaryTotals.totalCashGapVsRecognizedRevenue,
+    }
+
+    return [...projectRows, ...generalRows, summaryRow]
+  }, [
+    dateReportRows,
+    reportDateRange,
+    reportDateRangeLabel,
+    reportGeneralExpenseRows,
+    reportSummaryTotals,
+  ])
 
   const missingInfoDates = useMemo(() => {
     if (workers.length === 0) {
@@ -3185,6 +3693,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
 
   useEffect(() => {
     const nextDraftByJob: Record<string, string> = {}
+    const nextWarrantyByJob: Record<string, boolean> = {}
 
     managerDayJobs.forEach((jobName) => {
       const key = `${managerSelectedDate}:${normalizeJobName(jobName)}`
@@ -3196,9 +3705,13 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
         : progress
           ? String(progress.readyPercent)
           : '0'
+      nextWarrantyByJob[jobName] = readyPercentLocked
+        ? false
+        : progress?.isWarranty === true
     })
 
     setManagerProgressByJob(nextDraftByJob)
+    setManagerWarrantyByJob(nextWarrantyByJob)
   }, [managerDayJobs, managerSelectedDate, orderProgressByDateJobKey])
 
   const handleBulkRowChange = (
@@ -3619,6 +4132,13 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     }))
   }
 
+  const handleManagerWarrantyChange = (jobName: string, isWarranty: boolean) => {
+    setManagerWarrantyByJob((current) => ({
+      ...current,
+      [jobName]: isWarranty,
+    }))
+  }
+
   const handleSaveManagerProgress = async () => {
     setError('')
     setSuccess('')
@@ -3666,6 +4186,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
             date: managerSelectedDate,
             jobName: row.jobName,
             readyPercent: Number(String(managerProgressByJob[row.jobName] ?? '').trim()),
+            isWarranty: row.editIsWarranty,
           }),
         ),
       )
@@ -3754,6 +4275,8 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
       currentReadyMissingDate: null,
       savedReadyPercent: 0,
       editReadyPercent: 0,
+      savedIsWarranty: false,
+      editIsWarranty: false,
       mondayOrderId: row.mondayOrderId,
       mondayItemName: row.mondayItemName,
       shopDrawingUrl: row.shopDrawingUrl,
@@ -4017,6 +4540,46 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
         ? 'View By Stage exported to CSV.'
         : 'View By Job exported to CSV.',
     )
+  }
+
+  const exportMonthReportToXlsx = () => {
+    if (monthReportExportRows.length === 0) {
+      setError('No monthly report rows to export for this range.')
+      return
+    }
+
+    const scopeToken = reportRangeMode === 'month'
+      ? fileNamePart(monthReportMonth)
+      : fileNamePart(reportDateRangeLabel)
+    const fileBaseName = `view-by-month-${scopeToken}-${todayIsoDate()}`
+
+    exportRowsToXlsx(fileBaseName, monthReportExportRows)
+    setSuccess('View By Month exported to Excel.')
+  }
+
+  const exportMonthReportToCsv = () => {
+    if (monthReportExportRows.length === 0) {
+      setError('No monthly report rows to export for this range.')
+      return
+    }
+
+    const scopeToken = reportRangeMode === 'month'
+      ? fileNamePart(monthReportMonth)
+      : fileNamePart(reportDateRangeLabel)
+    const fileBaseName = `view-by-month-${scopeToken}-${todayIsoDate()}`
+
+    exportRowsToCsv(fileBaseName, monthReportExportRows)
+    setSuccess('View By Month exported to CSV.')
+  }
+
+  const printMonthReport = () => {
+    if (typeof window === 'undefined' || typeof window.print !== 'function') {
+      setError('Print is not available in this environment.')
+      return
+    }
+
+    window.print()
+    setSuccess('Print dialog opened for View By Month.')
   }
 
   return (
@@ -4395,6 +4958,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                               <TableCell align="right">Workers</TableCell>
                               <TableCell align="right">Current ready %</TableCell>
                               <TableCell align="right">Set ready %</TableCell>
+                              <TableCell align="center">Warranty</TableCell>
                             </TableRow>
                           </TableHead>
                           <TableBody>
@@ -4531,6 +5095,21 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                                         handleManagerProgressChange(row.jobName, event.target.value)
                                       }
                                       inputProps={{ min: 0, max: 100, step: 1 }}
+                                    />
+                                  )}
+                                </TableCell>
+
+                                <TableCell align="center" sx={{ width: 120 }}>
+                                  {row.readyPercentLocked ? (
+                                    <Typography variant="body2" color="text.secondary">
+                                      N/A
+                                    </Typography>
+                                  ) : (
+                                    <Checkbox
+                                      checked={row.editIsWarranty}
+                                      onChange={(event) =>
+                                        handleManagerWarrantyChange(row.jobName, event.target.checked)
+                                      }
                                     />
                                   )}
                                 </TableCell>
@@ -5165,59 +5744,89 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                   Financial Report (Month Or Specific Dates)
                 </Typography>
 
-                <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
-                  <TextField
-                    select
-                    label="Report type"
-                    value={reportRangeMode}
-                    onChange={(event) => setReportRangeMode(event.target.value as ReportRangeMode)}
-                    sx={{ minWidth: 170 }}
-                  >
-                    <MenuItem value="month">By month</MenuItem>
-                    <MenuItem value="custom">Specific dates</MenuItem>
-                  </TextField>
-
-                  {reportRangeMode === 'month' ? (
+                <Stack spacing={1} sx={{ width: { xs: '100%', md: 'auto' } }}>
+                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
                     <TextField
                       select
-                      label="Month"
-                      value={monthReportMonth}
-                      onChange={(event) => setMonthReportMonth(event.target.value)}
-                      sx={{ maxWidth: 220 }}
+                      label="Report type"
+                      value={reportRangeMode}
+                      onChange={(event) => setReportRangeMode(event.target.value as ReportRangeMode)}
+                      sx={{ minWidth: 170 }}
                     >
-                      {reportMonthOptions.length === 0 ? (
-                        <MenuItem value="" disabled>
-                          No months available
-                        </MenuItem>
-                      ) : null}
-
-                      {reportMonthOptions.map((monthKey) => (
-                        <MenuItem key={monthKey} value={monthKey}>
-                          {formatMonthKeyLabel(monthKey)}
-                        </MenuItem>
-                      ))}
+                      <MenuItem value="month">By month</MenuItem>
+                      <MenuItem value="custom">Specific dates</MenuItem>
                     </TextField>
-                  ) : (
-                    <>
-                      <TextField
-                        type="date"
-                        label="Start date"
-                        value={customReportStartDate}
-                        onChange={(event) => setCustomReportStartDate(event.target.value)}
-                        InputLabelProps={{ shrink: true }}
-                        sx={{ minWidth: 180 }}
-                      />
 
+                    {reportRangeMode === 'month' ? (
                       <TextField
-                        type="date"
-                        label="End date"
-                        value={customReportEndDate}
-                        onChange={(event) => setCustomReportEndDate(event.target.value)}
-                        InputLabelProps={{ shrink: true }}
-                        sx={{ minWidth: 180 }}
-                      />
-                    </>
-                  )}
+                        select
+                        label="Month"
+                        value={monthReportMonth}
+                        onChange={(event) => setMonthReportMonth(event.target.value)}
+                        sx={{ maxWidth: 220 }}
+                      >
+                        {reportMonthOptions.length === 0 ? (
+                          <MenuItem value="" disabled>
+                            No months available
+                          </MenuItem>
+                        ) : null}
+
+                        {reportMonthOptions.map((monthKey) => (
+                          <MenuItem key={monthKey} value={monthKey}>
+                            {formatMonthKeyLabel(monthKey)}
+                          </MenuItem>
+                        ))}
+                      </TextField>
+                    ) : (
+                      <>
+                        <TextField
+                          type="date"
+                          label="Start date"
+                          value={customReportStartDate}
+                          onChange={(event) => setCustomReportStartDate(event.target.value)}
+                          InputLabelProps={{ shrink: true }}
+                          sx={{ minWidth: 180 }}
+                        />
+
+                        <TextField
+                          type="date"
+                          label="End date"
+                          value={customReportEndDate}
+                          onChange={(event) => setCustomReportEndDate(event.target.value)}
+                          InputLabelProps={{ shrink: true }}
+                          sx={{ minWidth: 180 }}
+                        />
+                      </>
+                    )}
+                  </Stack>
+
+                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="flex-end">
+                    <Button
+                      variant="outlined"
+                      startIcon={<FileDownloadRoundedIcon />}
+                      onClick={exportMonthReportToXlsx}
+                      disabled={monthReportExportRows.length === 0}
+                    >
+                      Download XL
+                    </Button>
+
+                    <Button
+                      variant="outlined"
+                      startIcon={<FileDownloadRoundedIcon />}
+                      onClick={exportMonthReportToCsv}
+                      disabled={monthReportExportRows.length === 0}
+                    >
+                      Download CSV
+                    </Button>
+
+                    <Button
+                      variant="outlined"
+                      startIcon={<PrintRoundedIcon />}
+                      onClick={printMonthReport}
+                    >
+                      Print
+                    </Button>
+                  </Stack>
                 </Stack>
               </Stack>
 
@@ -5226,7 +5835,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
               </Typography>
 
               <Typography variant="body2" color="text.secondary">
-                Monthly standing logic: recognized revenue and recognized project cost both use progress delta in this range, general expense stays as actual monthly expense, and cash stays separate.
+                Gross earned is progress-based. Cost uses project-wide posted costs plus warranty labor marked in the selected range.
               </Typography>
 
               <Box
@@ -5235,11 +5844,36 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                   gridTemplateColumns: {
                     xs: 'repeat(1, minmax(0, 1fr))',
                     md: 'repeat(2, minmax(0, 1fr))',
-                    lg: 'repeat(4, minmax(0, 1fr))',
+                    lg: 'repeat(5, minmax(0, 1fr))',
                   },
                   gap: 1.25,
                 }}
               >
+                <Paper
+                  variant="outlined"
+                  onClick={() => handleOpenReportSummaryBreakdown('generalExpense')}
+                  sx={{
+                    ...REPORT_SUMMARY_CARD_SX,
+                    borderLeft: '4px solid #2e7d32',
+                    cursor: 'pointer',
+                    transition: 'box-shadow 120ms ease, transform 120ms ease',
+                    '&:hover': {
+                      boxShadow: 3,
+                      transform: 'translateY(-1px)',
+                    },
+                  }}
+                >
+                  <Typography variant="body2" color="text.secondary">
+                    General Overhead
+                  </Typography>
+                  <Typography variant="h5" fontWeight={800}>
+                    {formatCurrency(reportSummaryTotals.totalGeneralExpense)}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Includes QB general/company purchase/unassigned + payroll adjustments.
+                  </Typography>
+                </Paper>
+
                 <Paper
                   variant="outlined"
                   onClick={() => handleOpenReportSummaryBreakdown('recognizedRevenue')}
@@ -5255,13 +5889,13 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                   }}
                 >
                   <Typography variant="body2" color="text.secondary">
-                    Recognized project revenue
+                    Gross Earned
                   </Typography>
                   <Typography variant="h5" fontWeight={800}>
                     {formatCurrency(reportSummaryTotals.totalRecognizedRevenue)}
                   </Typography>
                   <Typography variant="caption" color="text.secondary">
-                    Cash gap: {formatCurrency(reportSummaryTotals.totalCashGapVsRecognizedRevenue)}
+                    Order amount x progress delta across all orders.
                   </Typography>
                 </Paper>
 
@@ -5280,22 +5914,22 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                   }}
                 >
                   <Typography variant="body2" color="text.secondary">
-                    Recognized project cost
+                    Total Cost
                   </Typography>
                   <Typography variant="h5" fontWeight={800}>
                     {formatCurrency(reportSummaryTotals.totalRecognizedCost)}
                   </Typography>
                   <Typography variant="caption" color="text.secondary">
-                    Project profit: {formatCurrency(reportSummaryTotals.totalRecognizedProfit)}
+                    Progress-based cost base plus warranty labor marked for this range.
                   </Typography>
                 </Paper>
 
                 <Paper
                   variant="outlined"
-                  onClick={() => handleOpenReportSummaryBreakdown('generalExpense')}
+                  onClick={() => handleOpenReportSummaryBreakdown('projectProfit')}
                   sx={{
                     ...REPORT_SUMMARY_CARD_SX,
-                    borderLeft: '4px solid #2e7d32',
+                    borderLeft: '4px solid #1b5e20',
                     cursor: 'pointer',
                     transition: 'box-shadow 120ms ease, transform 120ms ease',
                     '&:hover': {
@@ -5305,13 +5939,13 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                   }}
                 >
                   <Typography variant="body2" color="text.secondary">
-                    General monthly expense
+                    Project Profit
                   </Typography>
                   <Typography variant="h5" fontWeight={800}>
-                    {formatCurrency(reportSummaryTotals.totalGeneralExpense)}
+                    {formatCurrency(reportSummaryTotals.totalRecognizedProfit)}
                   </Typography>
                   <Typography variant="caption" color="text.secondary">
-                    Includes job 0, unmapped website payroll, unassigned QB bills, and QB payroll extra.
+                    Gross earned minus total cost.
                   </Typography>
                 </Paper>
 
@@ -5320,7 +5954,9 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                   onClick={() => handleOpenReportSummaryBreakdown('netStanding')}
                   sx={{
                     ...REPORT_SUMMARY_CARD_SX,
-                    borderLeft: '4px solid #6a1b9a',
+                    borderLeft: reportSummaryTotals.totalNetStanding >= 0
+                      ? '4px solid #2e7d32'
+                      : '4px solid #c62828',
                     cursor: 'pointer',
                     transition: 'box-shadow 120ms ease, transform 120ms ease',
                     '&:hover': {
@@ -5330,51 +5966,80 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                   }}
                 >
                   <Typography variant="body2" color="text.secondary">
-                    Net monthly standing
+                    Net Profit
                   </Typography>
-                  <Typography variant="h5" fontWeight={800}>
+                  <Typography
+                    variant="h5"
+                    fontWeight={800}
+                    color={reportSummaryTotals.totalNetStanding >= 0 ? 'success.main' : 'error.main'}
+                  >
                     {formatCurrency(reportSummaryTotals.totalNetStanding)}
                   </Typography>
                   <Typography variant="caption" color="text.secondary">
-                    Recognized project profit minus general monthly expense.
+                    Project profit minus general overhead.
                   </Typography>
                 </Paper>
               </Box>
 
               <TableContainer sx={WORKSHEET_TABLE_CONTAINER_SX}>
-                <Table size="small" stickyHeader sx={{ minWidth: 1860 }}>
+                <Table
+                  size="small"
+                  stickyHeader
+                  sx={{
+                    minWidth: 1320,
+                    '& .MuiTableCell-root': {
+                      py: 0.8,
+                    },
+                  }}
+                >
                   <TableHead>
                     <TableRow>
-                      <TableCell>Project / General</TableCell>
-                      <TableCell align="right">Hours in Range</TableCell>
-                      <TableCell align="right">Website Labor in Range</TableCell>
-                      <TableCell align="right">QB Bills to End</TableCell>
-                      <TableCell align="right">Cost Base to End</TableCell>
-                      <TableCell align="right">Progress (Prev -&gt; End)</TableCell>
-                      <TableCell align="right">Progress Delta</TableCell>
-                      <TableCell align="right">Contract Value</TableCell>
-                      <TableCell align="right">Recognized Revenue</TableCell>
-                      <TableCell align="right">Recognized Cost</TableCell>
-                      <TableCell align="right">Recognized Profit</TableCell>
-                      <TableCell align="right">Cash Received in Range</TableCell>
+                      <TableCell>Order</TableCell>
+                      <TableCell align="right">Labor</TableCell>
+                      <TableCell align="right">Bills &amp; Costs</TableCell>
+                      <TableCell align="right">Ready %</TableCell>
+                      <TableCell align="right">Order Amount</TableCell>
+                      <TableCell align="right">Earned</TableCell>
+                      <TableCell align="right">Cost</TableCell>
+                      <TableCell align="right">Profit</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
-                    {dateReportRows.length === 0
-                    && !reportGeneralExpenseRows.some((row) => row.amount > 0) ? (
+                    {dateReportRows.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={12}>
+                        <TableCell colSpan={8}>
                           <Typography color="text.secondary">
-                            No jobs found for the selected range.
+                            No orders found for the selected range.
                           </Typography>
                         </TableCell>
                       </TableRow>
                     ) : (
-                      <>
-                        {dateReportRows.map((row) => {
-                        const hasReadyHistory = row.readyRows.some(
-                          (readyRow) => readyRow.readyPercent !== null,
-                        )
+                      dateReportRows.map((row) => {
+                        const fullBillsAmount = Number(row.totalBillsToRangeEndAmount.toFixed(2))
+                        const projectedLaborAmount = row.progressDeltaPercent > 0
+                          ? Number((row.totalLaborCost / (row.progressDeltaPercent / 100)).toFixed(2))
+                          : null
+                        const displayCostAmount = projectedLaborAmount === null
+                          ? null
+                          : Number((fullBillsAmount + projectedLaborAmount).toFixed(2))
+
+                        const laborDisplayValue = projectedLaborAmount === null
+                          ? 'No Projection'
+                          : formatCurrency(projectedLaborAmount)
+                        const costDisplayValue = displayCostAmount === null
+                          ? 'No Projection'
+                          : formatCurrency(displayCostAmount)
+
+                        const laborDisplayColor = projectedLaborAmount === null
+                          ? 'error.main'
+                          : row.progressDeltaPercent !== 100
+                            ? 'warning.main'
+                            : 'primary.main'
+                        const costDisplayColor = displayCostAmount === null
+                          ? 'error.main'
+                          : 'text.primary'
+
+                        const billsAndCostsAmount = Number(fullBillsAmount.toFixed(2))
 
                         return (
                           <TableRow key={row.jobName} hover>
@@ -5386,7 +6051,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                                 size="small"
                                 onClick={() => setDateReportLaborRow(row)}
                                 sx={{
-                                  color: 'primary.main',
+                                  color: laborDisplayColor,
                                   fontWeight: 700,
                                   minWidth: 0,
                                   p: 0,
@@ -5397,7 +6062,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                                   },
                                 }}
                               >
-                                {formatHours(row.totalHours)} h
+                                {laborDisplayValue}
                               </Button>
                             </TableCell>
 
@@ -5405,7 +6070,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                               <Button
                                 variant="text"
                                 size="small"
-                                onClick={() => setDateReportLaborRow(row)}
+                                onClick={() => setDateReportBillsCostsRow(row)}
                                 sx={{
                                   color: 'primary.main',
                                   fontWeight: 700,
@@ -5418,57 +6083,42 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                                   },
                                 }}
                               >
-                                {formatCurrency(row.totalLaborCost)}
+                                {formatCurrency(billsAndCostsAmount)}
+                              </Button>
+                            </TableCell>
+
+                            <TableCell align="right">
+                              <Button
+                                variant="text"
+                                size="small"
+                                onClick={() => setDateReportReadyRow(row)}
+                                sx={{
+                                  color:
+                                    row.progressDeltaPercent > 0
+                                      ? 'success.main'
+                                      : row.progressDeltaPercent < 0
+                                        ? 'error.main'
+                                        : 'text.secondary',
+                                  fontWeight: 700,
+                                  minWidth: 0,
+                                  p: 0,
+                                  textDecoration: 'underline',
+                                  '&:hover': {
+                                    textDecoration: 'underline',
+                                    backgroundColor: 'transparent',
+                                  },
+                                }}
+                              >
+                                {`${row.progressDeltaPercent.toFixed(1)}%`}
                               </Button>
                             </TableCell>
 
                             <TableCell align="right">
                               <Typography fontWeight={700}>
-                                {formatCurrency(row.totalBillsToRangeEndAmount)}
+                                {row.invoiceCount <= 0 && row.orderAmountDisplay === 0
+                                  ? '-'
+                                  : formatCurrency(row.orderAmountDisplay)}
                               </Typography>
-                            </TableCell>
-
-                            <TableCell align="right">
-                              <Typography fontWeight={700}>
-                                {formatCurrency(row.costBaseToRangeEndAmount)}
-                              </Typography>
-                            </TableCell>
-
-                            <TableCell align="right">
-                              {hasReadyHistory ? (
-                                <Button
-                                  variant="text"
-                                  size="small"
-                                  onClick={() => setDateReportReadyRow(row)}
-                                  sx={{
-                                    color: 'primary.main',
-                                    fontWeight: 700,
-                                    minWidth: 0,
-                                    p: 0,
-                                    textDecoration: 'underline',
-                                    '&:hover': {
-                                      textDecoration: 'underline',
-                                      backgroundColor: 'transparent',
-                                    },
-                                  }}
-                                >
-                                  {`${row.previousReadyPercent.toFixed(1)}% -> ${row.latestReadyPercent.toFixed(1)}%`}
-                                </Button>
-                              ) : (
-                                <Typography variant="body2" color="text.secondary">
-                                  -
-                                </Typography>
-                              )}
-                            </TableCell>
-
-                            <TableCell align="right">
-                              <Typography fontWeight={700} color={row.progressDeltaPercent >= 0 ? 'success.main' : 'error.main'}>
-                                {`${row.progressDeltaPercent.toFixed(1)}%`}
-                              </Typography>
-                            </TableCell>
-
-                            <TableCell align="right">
-                              <Typography fontWeight={700}>{formatCurrency(row.contractAmount)}</Typography>
                             </TableCell>
 
                             <TableCell align="right">
@@ -5478,8 +6128,8 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                             </TableCell>
 
                             <TableCell align="right">
-                              <Typography fontWeight={700} color={row.recognizedCostAmount >= 0 ? 'text.primary' : 'error.main'}>
-                                {formatCurrency(row.recognizedCostAmount)}
+                              <Typography fontWeight={700} color={costDisplayColor}>
+                                {costDisplayValue}
                               </Typography>
                             </TableCell>
 
@@ -5488,44 +6138,9 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                                 {formatCurrency(row.recognizedProfitAmount)}
                               </Typography>
                             </TableCell>
-
-                            <TableCell align="right">
-                              <Typography
-                                fontWeight={700}
-                                color={row.cashReceivedInRangeAmount >= 0
-                                  ? 'success.main'
-                                  : 'error.main'}
-                              >
-                                {formatCurrency(row.cashReceivedInRangeAmount)}
-                              </Typography>
-                            </TableCell>
                           </TableRow>
                         )
-                        })}
-
-                        {reportGeneralExpenseRows
-                          .filter((row) => row.amount > 0)
-                          .map((row) => (
-                            <TableRow key={`general-expense-${row.id}`} sx={{ bgcolor: 'action.hover' }}>
-                              <TableCell sx={{ minWidth: 200 }}>{`${row.label} (general)`}</TableCell>
-                              <TableCell align="right">-</TableCell>
-                              <TableCell align="right">-</TableCell>
-                              <TableCell align="right">-</TableCell>
-                              <TableCell align="right">-</TableCell>
-                              <TableCell align="right">-</TableCell>
-                              <TableCell align="right">-</TableCell>
-                              <TableCell align="right">-</TableCell>
-                              <TableCell align="right">-</TableCell>
-                              <TableCell align="right">
-                                <Typography fontWeight={700}>{formatCurrency(row.amount)}</Typography>
-                              </TableCell>
-                              <TableCell align="right">
-                                <Typography fontWeight={700} color="error.main">{formatCurrency(-row.amount)}</Typography>
-                              </TableCell>
-                              <TableCell align="right">-</TableCell>
-                            </TableRow>
-                          ))}
-                      </>
+                      })
                     )}
                   </TableBody>
                 </Table>
@@ -6598,6 +7213,84 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
         </Dialog>
 
         <Dialog
+          open={Boolean(dateReportBillsCostsRow)}
+          onClose={handleCloseDateReportBillsCostsPopup}
+          fullWidth
+          maxWidth="sm"
+        >
+          <DialogTitle>
+            {dateReportBillsCostsRow
+              ? `Bills & Costs Breakdown - ${dateReportBillsCostsRow.jobName}`
+              : 'Bills & Costs Breakdown'}
+          </DialogTitle>
+          <DialogContent dividers>
+            {!dateReportBillsCostsRow ? (
+              <Typography color="text.secondary">No cost rows found for this order.</Typography>
+            ) : (
+              <Stack spacing={1.5}>
+                <Typography variant="body2" color="text.secondary">
+                  Itemized recognized non-labor costs for this order using project-wide posted costs.
+                </Typography>
+
+                <TableContainer sx={{ border: 1, borderColor: 'divider', borderRadius: 1.5 }}>
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>Component</TableCell>
+                        <TableCell align="right">Amount</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      <TableRow hover>
+                        <TableCell>Bills</TableCell>
+                        <TableCell align="right">
+                          {formatCurrency(dateReportBillsCostsRow.recognizedBillsCostAmount)}
+                        </TableCell>
+                      </TableRow>
+                      <TableRow hover>
+                        <TableCell>Direct expenses</TableCell>
+                        <TableCell align="right">
+                          {formatCurrency(dateReportBillsCostsRow.recognizedDirectExpenseCostAmount)}
+                        </TableCell>
+                      </TableRow>
+                      <TableRow hover>
+                        <TableCell>Pending POs</TableCell>
+                        <TableCell align="right">
+                          {formatCurrency(dateReportBillsCostsRow.recognizedPendingPOCostAmount)}
+                        </TableCell>
+                      </TableRow>
+                      <TableRow sx={{ bgcolor: 'action.selected' }}>
+                        <TableCell>
+                          <Typography variant="body2" fontWeight={700}>
+                            Total bills & costs
+                          </Typography>
+                        </TableCell>
+                        <TableCell align="right">
+                          <Typography fontWeight={700}>
+                            {formatCurrency(
+                              Number(
+                                (
+                                  dateReportBillsCostsRow.recognizedBillsCostAmount
+                                  + dateReportBillsCostsRow.recognizedDirectExpenseCostAmount
+                                  + dateReportBillsCostsRow.recognizedPendingPOCostAmount
+                                ).toFixed(2),
+                              ),
+                            )}
+                          </Typography>
+                        </TableCell>
+                      </TableRow>
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              </Stack>
+            )}
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={handleCloseDateReportBillsCostsPopup}>Close</Button>
+          </DialogActions>
+        </Dialog>
+
+        <Dialog
           open={Boolean(dateReportReadyRow)}
           onClose={handleCloseDateReportReadyPopup}
           fullWidth
@@ -6605,13 +7298,12 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
         >
           <DialogTitle>
             {dateReportReadyRow
-              ? `Ready % Timeline - ${dateReportReadyRow.jobName}`
-              : 'Ready % Timeline'}
+              ? `Ready % Entries In Range - ${dateReportReadyRow.jobName}`
+              : 'Ready % Entries In Range'}
           </DialogTitle>
           <DialogContent dividers>
-            {!dateReportReadyRow
-            || !dateReportReadyRow.readyRows.some((row) => row.readyPercent !== null) ? (
-              <Typography color="text.secondary">No ready % history found for this order.</Typography>
+            {!dateReportReadyRow || dateReportReadyRowsInSelectedRange.length === 0 ? (
+              <Typography color="text.secondary">No manager ready % entries found in the selected range.</Typography>
             ) : (
               <Table size="small">
                 <TableHead>
@@ -6621,7 +7313,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {dateReportReadyRow.readyRows.map((readyRow) => (
+                  {dateReportReadyRowsInSelectedRange.map((readyRow) => (
                     <TableRow key={`${dateReportReadyRow.jobName}:${readyRow.date}`} hover>
                       <TableCell>{readyRow.date}</TableCell>
                       <TableCell align="right">

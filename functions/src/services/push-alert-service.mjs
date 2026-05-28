@@ -128,6 +128,9 @@ export function createPushAlertService({
       ? document.targetUserUids.map((value) => String(value ?? '').trim()).filter(Boolean)
       : []
     const delivery = document?.delivery ?? {}
+    const metadata = document?.metadata && typeof document.metadata === 'object'
+      ? document.metadata
+      : {}
 
     return {
       id: String(document?.id ?? '').trim(),
@@ -142,6 +145,12 @@ export function createPushAlertService({
       createdAt: String(document?.createdAt ?? '').trim() || null,
       createdByUid: String(document?.createdByUid ?? '').trim() || null,
       createdByEmail: String(document?.createdByEmail ?? '').trim() || null,
+      metadata: {
+        source: String(metadata?.source ?? '').trim() || null,
+        dealerSourceId: String(metadata?.dealerSourceId ?? '').trim() || null,
+        dealerName: String(metadata?.dealerName ?? '').trim() || null,
+        chatMessageId: String(metadata?.chatMessageId ?? '').trim() || null,
+      },
     }
   }
 

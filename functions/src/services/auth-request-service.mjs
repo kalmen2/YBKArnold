@@ -432,7 +432,7 @@ export function createAuthRequestService({
     const publicUser = toPublicAuthUser(req.authUser)
     const hasAccess = Boolean(
       publicUser?.isApproved
-      && (publicUser?.isAdmin || publicUser?.isManager),
+      && (publicUser?.isOwner || publicUser?.isAdmin || publicUser?.isManager),
     )
 
     if (!hasAccess) {

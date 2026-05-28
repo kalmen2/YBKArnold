@@ -269,6 +269,9 @@ export function OrdersSection({
   locale,
   allOrders,
   filteredOrders,
+  totalMatchingOrders,
+  ordersRangeStart,
+  ordersRangeEnd,
   orderSearchQuery,
   onOrderSearchQueryChange,
   orderViewFilter,
@@ -287,6 +290,9 @@ export function OrdersSection({
   locale: string
   allOrders: DashboardOrder[]
   filteredOrders: DashboardOrder[]
+  totalMatchingOrders: number
+  ordersRangeStart: number
+  ordersRangeEnd: number
   orderSearchQuery: string
   onOrderSearchQueryChange: (value: string) => void
   orderViewFilter: 'orders' | 'shipped' | 'design'
@@ -306,6 +312,9 @@ export function OrdersSection({
   onNextOrdersPage: () => void
   onOpenOrderDetails: (order: DashboardOrder) => void
 }) {
+  const summaryRangeStart = totalMatchingOrders > 0 ? Math.max(1, ordersRangeStart) : 0
+  const summaryRangeEnd = totalMatchingOrders > 0 ? Math.max(summaryRangeStart, ordersRangeEnd) : 0
+
   return (
     <>
       <Text style={styles.sectionTitle}>{t('Orders', 'Ordenes')}</Text>
@@ -318,36 +327,89 @@ export function OrdersSection({
         </View>
       ) : (
         <View style={[styles.ordersListCard, { height: ordersCardHeight }]}>
-          <View style={styles.ordersFilterRow}>
-            <Text style={styles.ordersFilterLabel}>{t('Order view', 'Vista de ordenes')}</Text>
-            <View style={styles.ordersViewPickerShell}>
-              <Picker
-                selectedValue={orderViewFilter}
-                onValueChange={(value) => {
-                  const normalizedValue = String(value)
+          <View style={styles.ordersTopControlsRow}>
+            <Pressable
+              style={[styles.ordersTopNavButton, ordersPage <= 1 ? styles.buttonDisabled : null]}
+              disabled={ordersPage <= 1}
+              onPress={onPreviousOrdersPage}
+            >
+              <Text style={styles.ordersTopNavButtonText} numberOfLines={1}>{t('Previous', 'Anterior')}</Text>
+            </Pressable>
 
-                  if (normalizedValue === 'orders' || normalizedValue === 'shipped' || normalizedValue === 'design') {
-                    onOrderViewFilterChange(normalizedValue)
-                  }
-                }}
-                style={styles.ordersViewPicker}
-                itemStyle={styles.ordersViewPickerItem}
-                dropdownIconColor="#24467c"
+            <View style={styles.ordersTopTabsRow}>
+              <Pressable
+                style={styles.ordersTopTabButton}
+                onPress={() => onOrderViewFilterChange('design')}
               >
-                <Picker.Item label={t('Orders', 'Ordenes')} value="orders" />
-                <Picker.Item label={t('Shipped', 'Enviadas')} value="shipped" />
-                <Picker.Item label={t('Design', 'Diseno')} value="design" />
-              </Picker>
+                <Text
+                  style={[
+                    styles.ordersTopTabButtonText,
+                    orderViewFilter === 'design' ? styles.ordersTopTabButtonTextActive : null,
+                  ]}
+                  numberOfLines={1}
+                >
+                  {t('Design', 'Diseno')}
+                </Text>
+              </Pressable>
+
+              <Pressable
+                style={styles.ordersTopTabButton}
+                onPress={() => onOrderViewFilterChange('orders')}
+              >
+                <Text
+                  style={[
+                    styles.ordersTopTabButtonText,
+                    orderViewFilter === 'orders' ? styles.ordersTopTabButtonTextActive : null,
+                  ]}
+                  numberOfLines={1}
+                >
+                  {t('Orders', 'Ordenes')}
+                </Text>
+              </Pressable>
+
+              <Pressable
+                style={styles.ordersTopTabButton}
+                onPress={() => onOrderViewFilterChange('shipped')}
+              >
+                <Text
+                  style={[
+                    styles.ordersTopTabButtonText,
+                    orderViewFilter === 'shipped' ? styles.ordersTopTabButtonTextActive : null,
+                  ]}
+                  numberOfLines={1}
+                >
+                  {t('Ship', 'Envio')}
+                </Text>
+              </Pressable>
             </View>
+
+            <Pressable
+              style={[styles.ordersTopNavButton, ordersPage >= ordersTotalPages ? styles.buttonDisabled : null]}
+              disabled={ordersPage >= ordersTotalPages}
+              onPress={onNextOrdersPage}
+            >
+              <Text style={styles.ordersTopNavButtonText} numberOfLines={1}>{t('Next', 'Siguiente')}</Text>
+            </Pressable>
           </View>
 
-          <TextInput
-            value={orderSearchQuery}
-            onChangeText={onOrderSearchQueryChange}
-            placeholder={t('Search by order # or name', 'Buscar por orden # o nombre')}
-            placeholderTextColor="#6a7ea8"
-            style={styles.orderSearchInput}
-          />
+          <View style={styles.ordersSearchSummaryRow}>
+            <TextInput
+              value={orderSearchQuery}
+              onChangeText={onOrderSearchQueryChange}
+              placeholder={t('Search by order # or name', 'Buscar por orden # o nombre')}
+              placeholderTextColor="#6a7ea8"
+              style={[styles.orderSearchInput, styles.ordersSearchInputShort]}
+            />
+
+            <View style={styles.ordersSearchSummaryBox}>
+              <Text style={styles.ordersSearchSummaryText} numberOfLines={2}>
+                {t(
+                  `${summaryRangeStart}-${summaryRangeEnd} out of ${totalMatchingOrders}`,
+                  `${summaryRangeStart}-${summaryRangeEnd} de ${totalMatchingOrders}`,
+                )}
+              </Text>
+            </View>
+          </View>
 
           {filteredOrders.length === 0 ? (
             <Text style={styles.emptyDetailText}>{t('No orders match your search.', 'No hay ordenes que coincidan con tu busqueda.')}</Text>
@@ -434,30 +496,6 @@ export function OrdersSection({
               ))}
             </ScrollView>
           )}
-
-          {ordersTotalPages > 1 ? (
-            <View style={styles.ordersPaginationRow}>
-              <Pressable
-                style={[styles.ordersPaginationButton, ordersPage <= 1 ? styles.buttonDisabled : null]}
-                disabled={ordersPage <= 1}
-                onPress={onPreviousOrdersPage}
-              >
-                <Text style={styles.ordersPaginationButtonText}>{t('Previous', 'Anterior')}</Text>
-              </Pressable>
-
-              <Text style={styles.ordersPaginationMeta}>
-                {t(`Page ${ordersPage} of ${ordersTotalPages}`, `Pagina ${ordersPage} de ${ordersTotalPages}`)}
-              </Text>
-
-              <Pressable
-                style={[styles.ordersPaginationButton, ordersPage >= ordersTotalPages ? styles.buttonDisabled : null]}
-                disabled={ordersPage >= ordersTotalPages}
-                onPress={onNextOrdersPage}
-              >
-                <Text style={styles.ordersPaginationButtonText}>{t('Next', 'Siguiente')}</Text>
-              </Pressable>
-            </View>
-          ) : null}
         </View>
       )}
     </>

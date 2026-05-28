@@ -109,9 +109,9 @@ export default function SalesPage() {
           ? <CrmContactsPage />
           : activeTab === 'engagement'
             ? <SalesEngagementPage />
-          : activeTab === 'opportunities'
-            ? <SalesOpportunitiesPage />
-            : <SalesRepsPage />}
+            : activeTab === 'opportunities'
+              ? <SalesOpportunitiesPage />
+              : <SalesRepsPage />}
     </Box>
   )
 }

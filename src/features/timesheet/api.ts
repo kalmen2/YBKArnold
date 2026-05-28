@@ -47,6 +47,7 @@ export type TimesheetOrderProgress = {
   date: string
   jobName: string
   readyPercent: number
+  isWarranty?: boolean
   createdAt: string
   updatedAt: string
 }
@@ -179,6 +180,7 @@ type UpsertOrderProgressInput = {
   date: string
   jobName: string
   readyPercent: number
+  isWarranty?: boolean
 }
 
 type ReportTimesheetOrderMismatchInput = {

@@ -32,6 +32,7 @@ import { DataGrid, GridToolbar, type GridColDef } from '@mui/x-data-grid'
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { formatCurrency, formatDateTime, formatInteger } from '../lib/formatters'
+import { QUERY_KEYS } from '../lib/queryKeys'
 import {
   createQuickBooksAuthorizeUrl,
   fetchQuickBooksHistory,
@@ -287,6 +288,10 @@ function roundMoney(value: number) {
 function quickBooksDetailTypeLabel(value: QuickBooksDetailRow['type']) {
   if (value === 'purchaseOrderLine') {
     return 'PO Line'
+  }
+
+  if (value === 'directExpense') {
+    return 'Direct expense'
   }
 
   if (value === 'bill') {
@@ -1156,16 +1161,16 @@ export default function QuickBooksPage() {
   // ---------------------------------------------------------------------------
   // Status & overview queries
   // Overview is only enabled when QB is configured + connected.
-  // staleTime: 4 min frontend < 5 min backend TTL — always has room in backend cache.
+  // Normal reads use the latest Mongo snapshot; refresh=1 rebuilds from QuickBooks.
   // ---------------------------------------------------------------------------
   const statusQuery = useQuery({
-    queryKey: ['quickbooks', 'status'],
+    queryKey: QUERY_KEYS.quickbooksStatus,
     queryFn: () => fetchQuickBooksStatus(),
     staleTime: 5 * 60 * 1000,
   })
 
   const overviewQuery = useQuery({
-    queryKey: ['quickbooks', 'overview'],
+    queryKey: QUERY_KEYS.quickbooksOverview,
     queryFn: () => fetchQuickBooksOverview({ refresh: false }),
     enabled: Boolean(statusQuery.data?.isConfigured && statusQuery.data?.connected),
     staleTime: 4 * 60 * 1000,
@@ -1560,15 +1565,16 @@ export default function QuickBooksPage() {
     ].filter((group) => group.cards.length > 0)
   }, [summaryCards])
 
-  // Force-refresh bypasses the 5-min backend cache by sending refresh=true,
-  // then seeds the React Query cache so the next navigation is instant.
+  // Force-refresh rebuilds from QuickBooks and persists a fresh Mongo snapshot.
+  // We also invalidate the full overview query used by Reports calculations.
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true)
     setErrorMessage(null)
 
     try {
       const freshOverview = await fetchQuickBooksOverview({ refresh: true })
-      queryClient.setQueryData(['quickbooks', 'overview'], freshOverview)
+      queryClient.setQueryData(QUERY_KEYS.quickbooksOverview, freshOverview)
+      await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.quickbooksOverviewFull })
     } catch (error) {
       setErrorMessage(toErrorMessage(error, 'Failed to refresh QuickBooks data.'))
     } finally {

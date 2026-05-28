@@ -35,6 +35,7 @@ import {
   fetchDashboardBootstrap,
   type DashboardOrder,
 } from '../features/dashboard/api'
+import { postOrdersRefresh } from '../features/orders/api'
 import { formatDateTime, formatDisplayDate } from '../lib/formatters'
 import { QUERY_KEYS } from '../lib/queryKeys'
 
@@ -57,7 +58,7 @@ type SummaryCard<K extends string = string> = {
 const drilldownTitles: Record<DrilldownKey, string> = {
   lateOrders: 'Late Orders',
   dueSoonOrders: 'Due In Next 7 Days',
-  dueInTwoWeeksOrders: 'Due In Next 14 Days',
+  dueInTwoWeeksOrders: 'Due In Days 8 to 14',
   activeOrders: 'Active Orders',
   missingDueDateOrders: 'Missing Due Date',
 }
@@ -129,11 +130,19 @@ export default function DashboardPage() {
   const errorMessage = bootstrapQuery.error instanceof Error ? bootstrapQuery.error.message : null
 
   const handleRefresh = useCallback(() => {
-    void queryClient.fetchQuery({
-      queryKey: QUERY_KEYS.dashboardBootstrap,
-      queryFn: () => fetchDashboardBootstrap({ refresh: true }),
-      staleTime: 0,
-    })
+    void (async () => {
+      await postOrdersRefresh()
+
+      await queryClient.invalidateQueries({
+        queryKey: QUERY_KEYS.ordersOverview,
+      })
+
+      await queryClient.fetchQuery({
+        queryKey: QUERY_KEYS.dashboardBootstrap,
+        queryFn: () => fetchDashboardBootstrap({ refresh: true }),
+        staleTime: 0,
+      })
+    })()
   }, [queryClient])
 
   const clearShopDrawingPreviewObjectUrl = useCallback(() => {
@@ -218,7 +227,7 @@ export default function DashboardPage() {
     () => (snapshot?.orders ?? []).filter(
       (order) => !order.isDone
         && typeof order.daysUntilDue === 'number'
-        && order.daysUntilDue >= 0
+        && order.daysUntilDue >= 8
         && order.daysUntilDue <= 14,
     ),
     [snapshot],
@@ -250,7 +259,7 @@ export default function DashboardPage() {
         key: 'dueInTwoWeeksOrders',
         label: 'Due In 2 Weeks',
         value: dueInTwoWeeksOrders.length,
-        helper: 'Upcoming within 14 days',
+        helper: 'Upcoming in 8 to 14 days',
         icon: <TaskAltRoundedIcon />,
         color: '#00897b',
       },
