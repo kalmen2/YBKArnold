@@ -526,6 +526,7 @@ export type CrmQuote = {
   id: string
   dealerSourceId: string
   dealerName: string
+  companyName?: string | null
   salesRep?: string | null
   opportunityDate?: string | null
   opportunityStage?: CrmOpportunityStage | null
@@ -541,6 +542,7 @@ export type CrmQuote = {
   leadTime?: string | null
   subtotal?: number | null
   freight?: number | null
+  freightDescription?: string | null
   lineItems?: CrmQuoteLineItem[] | null
   title: string
   description: string | null
@@ -571,6 +573,7 @@ export type CrmQuotesResponse = {
 export type CrmQuoteUpsertInput = {
   dealerSourceId?: string | null
   title: string
+  companyName?: string | null
   salesRep?: string | null
   opportunityDate?: string | null
   opportunityStage?: CrmOpportunityStage | null
@@ -586,6 +589,7 @@ export type CrmQuoteUpsertInput = {
   leadTime?: string | null
   subtotal?: number | null
   freight?: number | null
+  freightDescription?: string | null
   lineItems?: CrmQuoteLineItem[] | null
   description?: string | null
   conceptImageUrl?: string | null

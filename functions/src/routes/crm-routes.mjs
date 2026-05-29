@@ -4835,6 +4835,7 @@ export function registerCrmRoutes(app, deps) {
         id: randomUUID(),
         dealerSourceId: dealer ? dealer.sourceId : null,
         dealerName: dealer ? (dealer.name || dealer.sourceId) : null,
+        companyName: toTrimmedText(body.companyName, 200) || null,
         salesRep: toTrimmedText(body.salesRep, 200) || null,
         opportunityDate: toIsoDateOrNull(body.opportunityDate),
         opportunityStage,
@@ -4850,6 +4851,7 @@ export function registerCrmRoutes(app, deps) {
         leadTime: toTrimmedText(body.leadTime, 240) || null,
         subtotal: toNonNegativeNumberOrNull(body.subtotal),
         freight: toNonNegativeNumberOrNull(body.freight),
+        freightDescription: toTrimmedText(body.freightDescription, 1200) || null,
         lineItems,
         title,
         description: toTrimmedText(body.description, 2000) || null,
@@ -4989,12 +4991,20 @@ export function registerCrmRoutes(app, deps) {
         updates.freight = toNonNegativeNumberOrNull(body.freight)
       }
 
+      if (Object.prototype.hasOwnProperty.call(body, 'freightDescription')) {
+        updates.freightDescription = toTrimmedText(body.freightDescription, 1200) || null
+      }
+
       if (Object.prototype.hasOwnProperty.call(body, 'contactEmail')) {
         updates.contactEmail = toTrimmedText(body.contactEmail, 200) || null
       }
 
       if (Object.prototype.hasOwnProperty.call(body, 'contactPhone')) {
         updates.contactPhone = toTrimmedText(body.contactPhone, 80) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'companyName')) {
+        updates.companyName = toTrimmedText(body.companyName, 200) || null
       }
 
       if (Object.prototype.hasOwnProperty.call(body, 'lineItems')) {
@@ -5341,6 +5351,10 @@ export function registerCrmRoutes(app, deps) {
         updates.title = title
       }
 
+      if (body.companyName !== undefined) {
+        updates.companyName = toTrimmedText(body.companyName, 200) || null
+      }
+
       if (body.salesRep !== undefined) {
         updates.salesRep = toTrimmedText(body.salesRep, 200) || null
       }
@@ -5375,6 +5389,10 @@ export function registerCrmRoutes(app, deps) {
 
       if (body.freight !== undefined) {
         updates.freight = toNonNegativeNumberOrNull(body.freight)
+      }
+
+      if (body.freightDescription !== undefined) {
+        updates.freightDescription = toTrimmedText(body.freightDescription, 1200) || null
       }
 
       if (body.totalAmount !== undefined) {
