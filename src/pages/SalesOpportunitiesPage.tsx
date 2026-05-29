@@ -111,7 +111,6 @@ type OpportunityCardProps = {
   onMoveBack: (quote: CrmQuote) => void
   onAdvanceStage: (quote: CrmQuote) => void
   onMarkNeedsRevision: (quote: CrmQuote) => void
-  onMarkWaitingResponse: (quote: CrmQuote) => void
   onSendRevision: (quote: CrmQuote) => void
   onMarkApproved: (quote: CrmQuote) => void
   onDeleteQuote: (quote: CrmQuote) => void
@@ -127,7 +126,6 @@ type StageColumnProps = {
   onMoveBack: (quote: CrmQuote) => void
   onAdvanceStage: (quote: CrmQuote) => void
   onMarkNeedsRevision: (quote: CrmQuote) => void
-  onMarkWaitingResponse: (quote: CrmQuote) => void
   onSendRevision: (quote: CrmQuote) => void
   onMarkApproved: (quote: CrmQuote) => void
   onDeleteQuote: (quote: CrmQuote) => void
@@ -173,16 +171,8 @@ const stageDefinitions: StageDefinition[] = [
     panelColor: '#eef3fb',
   },
   {
-    id: 'waiting_response',
-    label: '4. Waiting Response',
-    probability: 35,
-    description: 'Quote is out; waiting on customer decision.',
-    headerColor: '#3f6597',
-    panelColor: '#eef1f8',
-  },
-  {
     id: 'order_placement',
-    label: '5. Order Placement',
+    label: '4. Order Placement',
     probability: 95,
     description: 'Approved and converted to order workflow.',
     headerColor: '#2f7b57',
@@ -308,7 +298,7 @@ function resolveOpportunityStage(quote: CrmQuote): CrmOpportunityStage {
   }
 
   if (quote.status === 'sent') {
-    return 'waiting_response'
+    return 'proposal_submission'
   }
 
   return 'concept'
@@ -336,7 +326,6 @@ function OpportunityCard({
   onMoveBack,
   onAdvanceStage,
   onMarkNeedsRevision,
-  onMarkWaitingResponse,
   onSendRevision,
   onMarkApproved,
   onDeleteQuote,
@@ -472,36 +461,6 @@ function OpportunityCard({
                 <Button
                   size="small"
                   variant="contained"
-                  disabled={isBusy}
-                  onClick={() => {
-                    onMarkWaitingResponse(quote)
-                  }}
-                  sx={{ minHeight: 24, px: 0.8, fontSize: 11, textTransform: 'none' }}
-                >
-                  Waiting Response
-                </Button>
-              </>
-            ) : null}
-
-            {stage === 'revision' ? (
-              <Button
-                size="small"
-                variant="contained"
-                disabled={isBusy}
-                onClick={() => {
-                  onSendRevision(quote)
-                }}
-                sx={{ minHeight: 24, px: 0.8, fontSize: 11, textTransform: 'none' }}
-              >
-                Send Revision
-              </Button>
-            ) : null}
-
-            {stage === 'waiting_response' ? (
-              <>
-                <Button
-                  size="small"
-                  variant="contained"
                   color="success"
                   startIcon={<CheckCircleRoundedIcon sx={{ fontSize: 12 }} />}
                   disabled={isBusy}
@@ -526,6 +485,20 @@ function OpportunityCard({
                 </Button>
               </>
             ) : null}
+
+            {stage === 'revision' ? (
+              <Button
+                size="small"
+                variant="contained"
+                disabled={isBusy}
+                onClick={() => {
+                  onSendRevision(quote)
+                }}
+                sx={{ minHeight: 24, px: 0.8, fontSize: 11, textTransform: 'none' }}
+              >
+                Send Revision
+              </Button>
+            ) : null}
           </Stack>
         ) : null}
       </Stack>
@@ -542,7 +515,6 @@ function StageColumn({
   onMoveBack,
   onAdvanceStage,
   onMarkNeedsRevision,
-  onMarkWaitingResponse,
   onSendRevision,
   onMarkApproved,
   onDeleteQuote,
@@ -938,7 +910,6 @@ function StageColumn({
                 onMoveBack={onMoveBack}
                 onAdvanceStage={onAdvanceStage}
                 onMarkNeedsRevision={onMarkNeedsRevision}
-                onMarkWaitingResponse={onMarkWaitingResponse}
                 onSendRevision={onSendRevision}
                 onMarkApproved={onMarkApproved}
                 onDeleteQuote={onDeleteQuote}
@@ -1143,6 +1114,7 @@ export default function SalesOpportunitiesPage() {
   const queryClient = useQueryClient()
 
   const [isDialogOpen, setIsDialogOpen] = useState(false)
+  const [showAddDetails, setShowAddDetails] = useState(false)
   const [formState, setFormState] = useState<OpportunityFormState>(createEmptyOpportunityForm)
   const [isSavingOpportunity, setIsSavingOpportunity] = useState(false)
   const [isUploadingQuoteDocument, setIsUploadingQuoteDocument] = useState(false)
@@ -1299,7 +1271,6 @@ export default function SalesOpportunitiesPage() {
       concept: [],
       proposal_submission: [],
       revision: [],
-      waiting_response: [],
       order_placement: [],
     }
 
@@ -1548,6 +1519,7 @@ export default function SalesOpportunitiesPage() {
     setErrorMessage(null)
     setSuccessMessage(null)
     setFormState(createEmptyOpportunityForm())
+    setShowAddDetails(false)
     setIsDialogOpen(true)
   }, [])
 
@@ -1579,37 +1551,44 @@ export default function SalesOpportunitiesPage() {
     const quoteNumber = formState.quoteNumber.trim()
     const salesRep = formState.salesRep.trim()
     const opportunityDateInput = formState.opportunityDateInput.trim()
-    const amount = parseNonNegativeAmount(formState.amountInput)
+    const amountInput = formState.amountInput.trim()
 
-    if (!formState.dealerSourceId) {
-      setErrorMessage('Dealer is required.')
-      return
-    }
-
+    // A concept now only needs a quote number; the rest is filled in later from
+    // the Excel quote sync. Optional details are validated only when provided.
     if (!quoteNumber) {
       setErrorMessage('Quote number is required.')
       return
     }
 
-    if (!salesRep) {
-      setErrorMessage('Sales rep is required.')
+    const isDuplicateQuoteNumber = quotes.some(
+      (entry) => normalizeMatchValue(entry.quoteNumber) === normalizeMatchValue(quoteNumber),
+    )
+
+    if (isDuplicateQuoteNumber) {
+      setErrorMessage(`Quote number ${quoteNumber} already exists. Open that opportunity instead.`)
       return
     }
 
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(opportunityDateInput)) {
-      setErrorMessage('Opportunity date is required.')
-      return
+    let amount = 0
+
+    if (amountInput) {
+      const parsedAmount = parseNonNegativeAmount(amountInput)
+
+      if (parsedAmount === null) {
+        setErrorMessage('Amount must be a non-negative number.')
+        return
+      }
+
+      amount = parsedAmount
     }
 
-    const isKnownSalesRep = salesReps.some((entry) => entry.name === salesRep)
-
-    if (!isKnownSalesRep) {
+    if (salesRep && !salesReps.some((entry) => entry.name === salesRep)) {
       setErrorMessage('Select a sales rep from the list.')
       return
     }
 
-    if (amount === null) {
-      setErrorMessage('Amount must be a non-negative number.')
+    if (opportunityDateInput && !/^\d{4}-\d{2}-\d{2}$/.test(opportunityDateInput)) {
+      setErrorMessage('Opportunity date must be a valid date.')
       return
     }
 
@@ -1623,17 +1602,17 @@ export default function SalesOpportunitiesPage() {
 
     try {
       await createCrmQuote({
-        dealerSourceId: formState.dealerSourceId,
+        dealerSourceId: formState.dealerSourceId || null,
         contactSourceId: formState.contactSourceId || null,
         contactName: fallbackContactName,
-        salesRep,
+        salesRep: salesRep || null,
         quoteNumber,
         poNumber: formState.poNumber.trim() || null,
         acknowledgmentNumber: formState.acknowledgmentNumber.trim() || null,
         title,
         status: 'draft',
         opportunityStage: 'concept',
-        opportunityDate: opportunityDateInput,
+        opportunityDate: opportunityDateInput || null,
         totalAmount: amount,
         notes: formState.notes.trim() || null,
         documentUrl: formState.quoteDocumentUrl || null,
@@ -1668,6 +1647,7 @@ export default function SalesOpportunitiesPage() {
     formState.salesRep,
     formState.title,
     invalidateOpportunityData,
+    quotes,
     salesReps,
     selectedContact,
   ])
@@ -1702,11 +1682,6 @@ export default function SalesOpportunitiesPage() {
 
     if (stage === 'revision') {
       await updateStage(quote, 'proposal_submission', { status: 'draft' })
-      return
-    }
-
-    if (stage === 'waiting_response') {
-      await updateStage(quote, 'revision', { status: 'draft' })
     }
   }, [updateStage])
 
@@ -1730,17 +1705,10 @@ export default function SalesOpportunitiesPage() {
     await updateStage(quote, 'revision', { status: 'draft' })
   }, [updateStage])
 
-  const handleMarkWaitingResponse = useCallback(async (quote: CrmQuote) => {
-    await updateStage(quote, 'waiting_response', {
-      status: 'sent',
-      sentAt: new Date().toISOString(),
-    })
-  }, [updateStage])
-
   const handleSendRevision = useCallback(async (quote: CrmQuote) => {
     const nextRevisionCount = Math.max(0, Number(quote.revisionCount || 0)) + 1
 
-    await updateStage(quote, 'waiting_response', {
+    await updateStage(quote, 'proposal_submission', {
       status: 'sent',
       sentAt: new Date().toISOString(),
       revisionCount: nextRevisionCount,
@@ -1925,7 +1893,7 @@ export default function SalesOpportunitiesPage() {
               </Typography>
             </Stack>
             <Typography variant="body2" color="text.secondary">
-              Concept - Proposal - Revision - Waiting Response - Order Placement.
+              Concept - Proposal - Revision - Order Placement.
             </Typography>
           </Stack>
 
@@ -1972,7 +1940,7 @@ export default function SalesOpportunitiesPage() {
       </Paper>
 
       <Box sx={{ overflowX: 'auto', pb: 0.5 }}>
-        <Stack direction="row" spacing={1} sx={{ minWidth: 1620 }}>
+        <Stack direction="row" spacing={1} sx={{ minWidth: 1304 }}>
           {stageDefinitions.map((stage) => (
             <StageColumn
               key={stage.id}
@@ -1984,7 +1952,6 @@ export default function SalesOpportunitiesPage() {
               onMoveBack={handleMoveBack}
               onAdvanceStage={handleAdvanceStage}
               onMarkNeedsRevision={handleMarkNeedsRevision}
-              onMarkWaitingResponse={handleMarkWaitingResponse}
               onSendRevision={handleSendRevision}
               onMarkApproved={handleMarkApproved}
               onDeleteQuote={handleDeleteQuote}
@@ -1998,6 +1965,33 @@ export default function SalesOpportunitiesPage() {
         <DialogTitle>Add Opportunity</DialogTitle>
         <DialogContent>
           <Stack spacing={1.3} sx={{ mt: 0.5 }}>
+            <TextField
+              label="Quote Number"
+              required
+              autoFocus
+              value={formState.quoteNumber}
+              onChange={(event) => {
+                setFormState((current) => ({
+                  ...current,
+                  quoteNumber: event.target.value,
+                }))
+              }}
+              helperText="Enter the quote number to start a Concept. The rest fills in automatically when you sync from the Excel quote."
+            />
+
+            <Button
+              variant="text"
+              size="small"
+              onClick={() => {
+                setShowAddDetails((current) => !current)
+              }}
+              sx={{ alignSelf: 'flex-start', textTransform: 'none' }}
+            >
+              {showAddDetails ? 'Hide extra details' : 'Add more details (optional)'}
+            </Button>
+
+            {showAddDetails ? (
+            <Stack spacing={1.3}>
             <Autocomplete
               options={dealers}
               value={selectedDealer}
@@ -2090,19 +2084,6 @@ export default function SalesOpportunitiesPage() {
                     required
                   />
                 )}
-                sx={{ flex: 1 }}
-              />
-
-              <TextField
-                label="Quote Number"
-                required
-                value={formState.quoteNumber}
-                onChange={(event) => {
-                  setFormState((current) => ({
-                    ...current,
-                    quoteNumber: event.target.value,
-                  }))
-                }}
                 sx={{ flex: 1 }}
               />
 
@@ -2258,6 +2239,8 @@ export default function SalesOpportunitiesPage() {
                 </Stack>
               </Stack>
             </Paper>
+            </Stack>
+            ) : null}
           </Stack>
         </DialogContent>
 

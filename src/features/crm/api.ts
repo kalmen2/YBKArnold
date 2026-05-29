@@ -507,12 +507,19 @@ export type CrmOpportunityStage =
   | 'concept'
   | 'proposal_submission'
   | 'revision'
-  | 'waiting_response'
   | 'order_placement'
 
 export type CrmQuoteDocument = {
   url: string
   name: string | null
+}
+
+export type CrmQuoteLineItem = {
+  itemNumber: number
+  description: string | null
+  qty: number | null
+  unitPrice: number | null
+  extPrice: number | null
 }
 
 export type CrmQuote = {
@@ -524,10 +531,17 @@ export type CrmQuote = {
   opportunityStage?: CrmOpportunityStage | null
   contactSourceId?: string | null
   contactName?: string | null
+  contactEmail?: string | null
+  contactPhone?: string | null
   quoteNumber: string | null
   poNumber?: string | null
   acknowledgmentNumber?: string | null
   orderNumber?: string | null
+  paymentTerms?: string | null
+  leadTime?: string | null
+  subtotal?: number | null
+  freight?: number | null
+  lineItems?: CrmQuoteLineItem[] | null
   title: string
   description: string | null
   conceptImageUrl?: string | null
@@ -555,17 +569,24 @@ export type CrmQuotesResponse = {
 }
 
 export type CrmQuoteUpsertInput = {
-  dealerSourceId: string
+  dealerSourceId?: string | null
   title: string
   salesRep?: string | null
   opportunityDate?: string | null
   opportunityStage?: CrmOpportunityStage | null
   contactSourceId?: string | null
   contactName?: string | null
+  contactEmail?: string | null
+  contactPhone?: string | null
   quoteNumber?: string | null
   poNumber?: string | null
   acknowledgmentNumber?: string | null
   orderNumber?: string | null
+  paymentTerms?: string | null
+  leadTime?: string | null
+  subtotal?: number | null
+  freight?: number | null
+  lineItems?: CrmQuoteLineItem[] | null
   description?: string | null
   conceptImageUrl?: string | null
   conceptImageName?: string | null
@@ -894,12 +915,13 @@ export function fetchCrmEngagementReadiness(options: {
   )
 }
 
-export function fetchCrmQuotes(options: { limit?: number; status?: string; dealerSourceId?: string } = {}) {
+export function fetchCrmQuotes(options: { limit?: number; status?: string; dealerSourceId?: string; quoteNumber?: string } = {}) {
   return apiRequest<CrmQuotesResponse>(
     withQuery('/api/crm/quotes', {
       limit: options.limit ?? 150,
       status: options.status ?? undefined,
       dealerSourceId: options.dealerSourceId ?? undefined,
+      quoteNumber: options.quoteNumber ?? undefined,
     }),
   )
 }
