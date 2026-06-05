@@ -4,6 +4,16 @@ body,
   min-height: 100%;
 }
 
+* {
+  box-sizing: border-box;
+}
+
 body {
   margin: 0;
+  color: #10243d;
+}
+
+::selection {
+  background: rgba(31, 111, 235, 0.2);
+  color: #0b4cae;
 }

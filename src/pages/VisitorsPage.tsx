@@ -142,17 +142,19 @@ export default function VisitorsPage() {
     }))
   }, [savedVisitorsQuery.data])
 
-  const sortedLogs = useMemo(() => {
+  const insideLogs = useMemo(() => {
     const entries = Array.isArray(recentLogsQuery.data?.entries)
       ? recentLogsQuery.data.entries
       : []
 
-    return [...entries].sort((left, right) => {
+    return [...entries]
+      .filter((entry) => Date.parse(String(entry.expiresAt ?? '')) > Date.now())
+      .sort((left, right) => {
       const rightTime = Date.parse(String(right.createdAt ?? ''))
       const leftTime = Date.parse(String(left.createdAt ?? ''))
 
       return rightTime - leftTime
-    })
+      })
   }, [recentLogsQuery.data])
 
   const combinedErrorMessage = errorMessage
@@ -240,6 +242,12 @@ export default function VisitorsPage() {
   }
 
   const handleDeleteSavedVisitor = (id: string) => {
+    const confirmed = window.confirm('Are you sure?')
+
+    if (!confirmed) {
+      return
+    }
+
     setErrorMessage(null)
     setSuccessMessage(null)
 
@@ -441,16 +449,16 @@ export default function VisitorsPage() {
                   <Typography color="text.secondary">Loading recent visitors...</Typography>
                 </TableCell>
               </TableRow>
-            ) : sortedLogs.length === 0 ? (
+            ) : insideLogs.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={7}>
                   <Typography color="text.secondary">
-                    No visitor entries yet.
+                    No visitors currently inside.
                   </Typography>
                 </TableCell>
               </TableRow>
             ) : (
-              sortedLogs.map((entry) => {
+              insideLogs.map((entry) => {
                 const isActive = Date.parse(String(entry.expiresAt ?? '')) > Date.now()
 
                 return (

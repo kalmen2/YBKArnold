@@ -1,19 +1,21 @@
-Attribute VB_Name = "Arnold"
+' Module: Arnold
 '==============================================================================
 ' Arnold Quote Sync  (universal: macOS + Windows)
 '------------------------------------------------------------------------------
 ' Extracts quote data from the active quote sheet and pushes it to the Arnold
 ' web app CRM, driving the Concept -> Proposal -> Revision pipeline from Excel.
 '
-' No API key. The macro talks to two dedicated public backend endpoints:
+' No API key. The macro talks to dedicated public backend endpoints:
 '     GET  /api/crm/excel/quote?quoteNumber=...   (look up current stage)
 '     POST /api/crm/excel/quote/sync              (advance + update the quote)
 '
 ' SETUP (one time):
 '   1. Excel > Developer > Visual Basic > File > Import File... and pick this
 '      file (Arnold.bas). It appears under "Modules".
-'   2. (Optional) Confirm API_BASE_URL below matches your environment.
-'   3. Add a button to the quote sheet: Developer > Insert > Button (Form
+'   2. Ensure UserForm "ArnoldSyncQuoteForm" already exists in PERSONAL.XLSB
+'      (stored component, not generated at runtime).
+'   3. (Optional) Confirm API_BASE_URL below matches your environment.
+'   4. Add a button to the quote sheet: Developer > Insert > Button (Form
 '      Control). Draw it, then assign macro "SyncQuoteToConcept".
 '
 ' Cross-platform: HTTP uses WinHttp on Windows and curl on macOS, selected at
@@ -67,6 +69,40 @@ Private mJson As String
 Private mPos As Long
 Private mLen As Long
 
+' ---- Unified confirmation form state --------------------------------------
+Private Const SYNC_FORM_COMPONENT_NAME As String = "ArnoldSyncQuoteForm"
+
+Private mSyncDialogQuoteNumber As String
+Private mSyncDialogProjectName As String
+Private mSyncDialogCompanyName As String
+Private mSyncDialogContactName As String
+Private mSyncDialogContactEmail As String
+Private mSyncDialogContactPhone As String
+Private mSyncDialogQuoteDateDisplay As String
+Private mSyncDialogLeadTime As String
+Private mSyncDialogPaymentTerm As String
+Private mSyncDialogSubtotal As Double
+Private mSyncDialogHasSubtotal As Boolean
+Private mSyncDialogFreight As Double
+Private mSyncDialogHasFreight As Boolean
+Private mSyncDialogFreightDesc As String
+Private mSyncDialogLineItemCount As Long
+Private mSyncDialogPromptText As String
+
+Private mSyncDialogStateOptions As Collection
+Private mSyncDialogSalesRepOptions As Collection
+Private mSyncDialogProjectTypeOptions As Collection
+
+Private mSyncDialogDefaultStateOption As String
+Private mSyncDialogDefaultSalesRep As String
+Private mSyncDialogDefaultProjectType As String
+
+Private mSyncDialogSelectedDealerState As String
+Private mSyncDialogSelectedSalesRep As String
+Private mSyncDialogSelectedProjectType As String
+Private mSyncDialogAccepted As Boolean
+Private mSyncDialogFilterBusy As Boolean
+
 '==============================================================================
 ' Button entry point
 '==============================================================================
@@ -84,6 +120,7 @@ Public Sub SyncQuoteToConcept()
 
     quoteNumber = CellText(ws, ROW_QUOTE_NUMBER, COL_QUOTE_NUMBER)
     If Len(quoteNumber) = 0 Then quoteNumber = CellText(ws, ROW_QUOTE_NUMBER_FALLBACK, COL_QUOTE_NUMBER)
+    quoteNumber = NormalizeQuoteNumberForSync(quoteNumber)
 
     projectName = CellText(ws, ROW_PROJECT_NAME, COL_PROJECT_NAME)
     If Len(projectName) = 0 Then projectName = CellText(ws, ROW_PROJECT_NAME, COL_PROJECT_NAME_FALLBACK)
@@ -152,40 +189,9 @@ Public Sub SyncQuoteToConcept()
     stage = LCase$(NzStr(JsonGet(lookup, "opportunityStage")))
     If Len(stage) = 0 Then stage = "concept"
 
-    ' ---- Confirm the appropriate transition based on current stage ----
-    Dim proceed As Boolean
-
     Select Case stage
-
-        Case "concept"
-            Dim summary As String
-            summary = "Quote Number:   " & quoteNumber & vbCrLf & _
-                      "Project Name:   " & projectName & vbCrLf & _
-                      "Company Name:   " & companyName & vbCrLf & _
-                      "Contact Name:   " & contactName & vbCrLf & _
-                      "Email:          " & contactEmail & vbCrLf & _
-                      "Contact No.:    " & contactPhone & vbCrLf & _
-                      "Sales Rep:      " & salesRep & vbCrLf & _
-                      "Date:           " & quoteDateDisplay & vbCrLf & _
-                      "Lead Time:      " & leadTime & vbCrLf & _
-                      "Payment Term:   " & paymentTerms & vbCrLf & _
-                      "Sub Net Total:  " & FormatMoney(subtotal, hasSubtotal) & vbCrLf & _
-                      "Freight:        " & FormatMoney(freight, hasFreight) & vbCrLf & _
-                      "Freight Desc.:  " & IIf(Len(freightDescription) > 0, freightDescription, "(none)") & vbCrLf & _
-                      "Line Items:     " & lineItemCount & vbCrLf & vbCrLf & _
-                      "Move this quote to Proposal Submitted?"
-            proceed = (MsgBox(summary, vbQuestion + vbYesNo, "Arnold Quote Sync") = vbYes)
-
-        Case "proposal_submission"
-            proceed = (MsgBox("Quote " & quoteNumber & " is already in Proposal Submitted. " & _
-                              "Would you like to move it to Revision?", _
-                              vbQuestion + vbYesNo, "Arnold Quote Sync") = vbYes)
-
-        Case "revision"
-            proceed = (MsgBox("Quote " & quoteNumber & " is already in Revision. " & _
-                              "Would you like to update it with the latest data?", _
-                              vbQuestion + vbYesNo, "Arnold Quote Sync") = vbYes)
-
+        Case "concept", "proposal_submission", "revision"
+            ' Supported by this macro.
         Case Else
             MsgBox "Quote " & quoteNumber & " is in stage '" & stage & "', which this " & _
                    "tool does not manage. No changes were made.", _
@@ -193,11 +199,51 @@ Public Sub SyncQuoteToConcept()
             Exit Sub
     End Select
 
+    ' ---- Single-screen confirmation options ----
+    Dim stateOptions As Collection
+    Dim salesRepOptions As Collection
+    Dim projectTypeOptions As Collection
+
+    Set stateOptions = BuildDealerStateOptions()
+    Set salesRepOptions = BuildSalesRepOptions()
+    Set projectTypeOptions = BuildProjectTypeOptions()
+
+    Dim dealerState As String
+    Dim projectType As String
+    Dim defaultStateOption As String
+    Dim defaultSalesRep As String
+    Dim defaultProjectType As String
+    Dim proceed As Boolean
+
+    defaultStateOption = ResolveDefaultOption(NzStr(JsonGet(lookup, "dealerState")), stateOptions)
+
+    defaultSalesRep = ResolveDefaultOption(salesRep, salesRepOptions)
+    If Len(defaultSalesRep) = 0 Then defaultSalesRep = "House"
+
+    defaultProjectType = ResolveDefaultOption(NzStr(JsonGet(lookup, "projectType")), projectTypeOptions)
+    If Len(defaultProjectType) = 0 Then
+        defaultProjectType = ResolveDefaultOption(InferProjectTypeFromProjectName(projectName), projectTypeOptions)
+    End If
+    If Len(defaultProjectType) = 0 Then
+        defaultProjectType = ResolveDefaultOption(projectName, projectTypeOptions)
+    End If
+    If Len(defaultProjectType) = 0 Then defaultProjectType = "Conference"
+
+    proceed = ShowUnifiedSyncDialog( _
+        stage, quoteNumber, projectName, companyName, _
+        contactName, contactEmail, contactPhone, _
+        quoteDateDisplay, leadTime, paymentTerms, _
+        subtotal, hasSubtotal, freight, hasFreight, freightDescription, lineItemCount, _
+        stateOptions, salesRepOptions, projectTypeOptions, _
+        defaultStateOption, defaultSalesRep, defaultProjectType, _
+        dealerState, salesRep, projectType _
+    )
+
     If Not proceed Then Exit Sub
 
     ' ---- Build the sync payload and send it ----
     Dim syncBody As String
-    syncBody = BuildSyncBody(quoteNumber, projectName, companyName, salesRep, quoteDateIso, _
+    syncBody = BuildSyncBody(quoteNumber, projectName, companyName, salesRep, dealerState, projectType, quoteDateIso, _
                              contactName, contactEmail, contactPhone, _
                              paymentTerms, leadTime, _
                              subtotal, hasSubtotal, freight, hasFreight, _
@@ -228,6 +274,507 @@ Fail:
     MsgBox "Unexpected error: " & Err.Number & " - " & Err.Description, _
            vbCritical, "Arnold Quote Sync"
 End Sub
+
+'==============================================================================
+' Unified confirmation form
+'==============================================================================
+Private Function ShowUnifiedSyncDialog( _
+    ByVal stage As String, _
+    ByVal quoteNumber As String, ByVal projectName As String, ByVal companyName As String, _
+    ByVal contactName As String, ByVal contactEmail As String, ByVal contactPhone As String, _
+    ByVal quoteDateDisplay As String, ByVal leadTime As String, ByVal paymentTerm As String, _
+    ByVal subtotal As Double, ByVal hasSubtotal As Boolean, _
+    ByVal freight As Double, ByVal hasFreight As Boolean, ByVal freightDesc As String, _
+    ByVal lineItemCount As Long, _
+    ByVal stateOptions As Collection, ByVal salesRepOptions As Collection, ByVal projectTypeOptions As Collection, _
+    ByVal defaultStateOption As String, ByVal defaultSalesRep As String, ByVal defaultProjectType As String, _
+    ByRef dealerStateOut As String, ByRef salesRepOut As String, ByRef projectTypeOut As String) As Boolean
+
+    On Error GoTo Fail
+
+    dealerStateOut = ""
+    salesRepOut = ""
+    projectTypeOut = ""
+
+    mSyncDialogQuoteNumber = quoteNumber
+    mSyncDialogProjectName = projectName
+    mSyncDialogCompanyName = companyName
+    mSyncDialogContactName = contactName
+    mSyncDialogContactEmail = contactEmail
+    mSyncDialogContactPhone = contactPhone
+    mSyncDialogQuoteDateDisplay = quoteDateDisplay
+    mSyncDialogLeadTime = leadTime
+    mSyncDialogPaymentTerm = paymentTerm
+    mSyncDialogSubtotal = subtotal
+    mSyncDialogHasSubtotal = hasSubtotal
+    mSyncDialogFreight = freight
+    mSyncDialogHasFreight = hasFreight
+    mSyncDialogFreightDesc = freightDesc
+    mSyncDialogLineItemCount = lineItemCount
+    mSyncDialogPromptText = BuildTransitionPrompt(stage)
+
+    Set mSyncDialogStateOptions = CloneStringCollection(stateOptions)
+    Set mSyncDialogSalesRepOptions = CloneStringCollection(salesRepOptions)
+    Set mSyncDialogProjectTypeOptions = CloneStringCollection(projectTypeOptions)
+
+    If Len(defaultStateOption) = 0 And mSyncDialogStateOptions.count > 0 Then
+        defaultStateOption = CStr(mSyncDialogStateOptions.Item(1))
+    End If
+    If Len(defaultSalesRep) = 0 And mSyncDialogSalesRepOptions.count > 0 Then
+        defaultSalesRep = CStr(mSyncDialogSalesRepOptions.Item(1))
+    End If
+    If Len(defaultProjectType) = 0 And mSyncDialogProjectTypeOptions.count > 0 Then
+        defaultProjectType = CStr(mSyncDialogProjectTypeOptions.Item(1))
+    End If
+
+    mSyncDialogDefaultStateOption = defaultStateOption
+    mSyncDialogDefaultSalesRep = defaultSalesRep
+    mSyncDialogDefaultProjectType = defaultProjectType
+
+    mSyncDialogSelectedDealerState = ""
+    mSyncDialogSelectedSalesRep = ""
+    mSyncDialogSelectedProjectType = ""
+    mSyncDialogAccepted = False
+    mSyncDialogFilterBusy = False
+
+    Dim frm As Object
+    Set frm = TryCreateSyncDialogForm()
+    If frm Is Nothing Then
+        Err.Raise 424, "ShowUnifiedSyncDialog", "Could not load form component '" & SYNC_FORM_COMPONENT_NAME & "'."
+    End If
+    frm.Show vbModal
+
+    If Not mSyncDialogAccepted Then Exit Function
+
+    dealerStateOut = mSyncDialogSelectedDealerState
+    salesRepOut = mSyncDialogSelectedSalesRep
+    projectTypeOut = mSyncDialogSelectedProjectType
+    ShowUnifiedSyncDialog = True
+    Exit Function
+
+Fail:
+    MsgBox "Could not open the prebuilt ArnoldSyncQuoteForm." & vbCrLf & vbCrLf & _
+           "The macro will continue with the classic prompt flow for this run." & vbCrLf & vbCrLf & _
+           "Details: " & Err.Description, vbExclamation, "Arnold Quote Sync"
+    ShowUnifiedSyncDialog = ShowUnifiedSyncDialogFallback(stage, dealerStateOut, salesRepOut, projectTypeOut)
+End Function
+
+Private Function TryCreateSyncDialogForm() As Object
+    Dim formNames As Variant
+    formNames = Array( _
+        SYNC_FORM_COMPONENT_NAME, _
+        "VBAProject." & SYNC_FORM_COMPONENT_NAME, _
+        "PERSONAL." & SYNC_FORM_COMPONENT_NAME, _
+        "PERSONAL.XLSB." & SYNC_FORM_COMPONENT_NAME _
+    )
+
+    Dim i As Long
+    For i = LBound(formNames) To UBound(formNames)
+        On Error Resume Next
+        Set TryCreateSyncDialogForm = UserForms.Add(CStr(formNames(i)))
+        If Err.Number = 0 Then
+            If Not TryCreateSyncDialogForm Is Nothing Then Exit Function
+        End If
+        Err.Clear
+        Set TryCreateSyncDialogForm = Nothing
+        On Error GoTo 0
+    Next i
+End Function
+
+Private Function BuildTransitionPrompt(ByVal stage As String) As String
+    BuildTransitionPrompt = "Move to Proposal Submitted?"
+End Function
+
+Private Function ShowUnifiedSyncDialogFallback(ByVal stage As String, _
+        ByRef dealerStateOut As String, ByRef salesRepOut As String, ByRef projectTypeOut As String) As Boolean
+
+    Dim selectedStateOption As String
+    Dim proceed As Boolean
+
+    dealerStateOut = ""
+    salesRepOut = ""
+    projectTypeOut = ""
+
+    selectedStateOption = PromptRequiredChoice("Dealer State", mSyncDialogStateOptions, mSyncDialogDefaultStateOption)
+    If Len(selectedStateOption) = 0 Then Exit Function
+
+    dealerStateOut = ExtractStateCode(selectedStateOption)
+    If Len(dealerStateOut) <> 2 Then
+        MsgBox "A valid 2-letter state code is required.", vbExclamation, "Arnold Quote Sync"
+        Exit Function
+    End If
+
+    salesRepOut = PromptRequiredChoice("Sales Rep", mSyncDialogSalesRepOptions, mSyncDialogDefaultSalesRep)
+    If Len(salesRepOut) = 0 Then Exit Function
+
+    projectTypeOut = PromptRequiredChoice("Project Type", mSyncDialogProjectTypeOptions, mSyncDialogDefaultProjectType)
+    If Len(projectTypeOut) = 0 Then Exit Function
+
+    Select Case LCase$(Trim$(stage))
+        Case "proposal_submission"
+            proceed = (MsgBox("Quote " & mSyncDialogQuoteNumber & " is already in Proposal Submitted." & vbCrLf & _
+                              "Move to Revision with:" & vbCrLf & _
+                              "State: " & dealerStateOut & vbCrLf & _
+                              "Sales Rep: " & salesRepOut & vbCrLf & _
+                              "Project Type: " & projectTypeOut, _
+                              vbQuestion + vbYesNo, "Arnold Quote Sync") = vbYes)
+        Case "revision"
+            proceed = (MsgBox("Quote " & mSyncDialogQuoteNumber & " is already in Revision." & vbCrLf & _
+                              "Update with:" & vbCrLf & _
+                              "State: " & dealerStateOut & vbCrLf & _
+                              "Sales Rep: " & salesRepOut & vbCrLf & _
+                              "Project Type: " & projectTypeOut, _
+                              vbQuestion + vbYesNo, "Arnold Quote Sync") = vbYes)
+        Case Else
+            Dim summary As String
+            summary = "Quote Number:   " & mSyncDialogQuoteNumber & vbCrLf & _
+                      "Project Name:   " & mSyncDialogProjectName & vbCrLf & _
+                      "Company Name:   " & mSyncDialogCompanyName & vbCrLf & _
+                      "Contact Name:   " & mSyncDialogContactName & vbCrLf & _
+                      "Email:          " & mSyncDialogContactEmail & vbCrLf & _
+                      "Contact No.:    " & mSyncDialogContactPhone & vbCrLf & _
+                      "State:          " & dealerStateOut & vbCrLf & _
+                      "Sales Rep:      " & salesRepOut & vbCrLf & _
+                      "Project Type:   " & projectTypeOut & vbCrLf & _
+                      "Date:           " & mSyncDialogQuoteDateDisplay & vbCrLf & _
+                      "Lead Time:      " & mSyncDialogLeadTime & vbCrLf & _
+                      "Payment Term:   " & mSyncDialogPaymentTerm & vbCrLf & _
+                      "Sub Net Total:  " & FormatMoney(mSyncDialogSubtotal, mSyncDialogHasSubtotal) & vbCrLf & _
+                      "Freight:        " & FormatMoney(mSyncDialogFreight, mSyncDialogHasFreight) & vbCrLf & _
+                      "Freight Desc.:  " & IIf(Len(mSyncDialogFreightDesc) > 0, mSyncDialogFreightDesc, "(none)") & vbCrLf & _
+                      "Line Items:     " & mSyncDialogLineItemCount & vbCrLf & vbCrLf & _
+                      "Move to Proposal Submitted?"
+            proceed = (MsgBox(summary, vbQuestion + vbYesNo, "Arnold Quote Sync") = vbYes)
+    End Select
+
+    ShowUnifiedSyncDialogFallback = proceed
+End Function
+
+Public Sub SyncDialogInitForm(ByVal frm As Object)
+    On Error GoTo Fail
+
+    mSyncDialogFilterBusy = True
+
+    SyncDialogSetSummaryLabel frm, "valQuoteNumber", mSyncDialogQuoteNumber
+    SyncDialogSetSummaryLabel frm, "valProjectName", mSyncDialogProjectName
+    SyncDialogSetSummaryLabel frm, "valCompanyName", mSyncDialogCompanyName
+    SyncDialogSetSummaryLabel frm, "valContactName", mSyncDialogContactName
+    SyncDialogSetSummaryLabel frm, "valEmail", mSyncDialogContactEmail
+    SyncDialogSetSummaryLabel frm, "valContactNo", mSyncDialogContactPhone
+    SyncDialogSetSummaryLabel frm, "valDate", mSyncDialogQuoteDateDisplay
+    SyncDialogSetSummaryLabel frm, "valLeadTime", mSyncDialogLeadTime
+    SyncDialogSetSummaryLabel frm, "valPaymentTerm", mSyncDialogPaymentTerm
+    SyncDialogSetSummaryLabel frm, "valSubtotal", FormatMoney(mSyncDialogSubtotal, mSyncDialogHasSubtotal)
+    SyncDialogSetSummaryLabel frm, "valFreight", FormatMoney(mSyncDialogFreight, mSyncDialogHasFreight)
+    SyncDialogSetSummaryLabel frm, "valFreightDesc", IIf(Len(mSyncDialogFreightDesc) > 0, mSyncDialogFreightDesc, "(none)"))
+    SyncDialogSetSummaryLabel frm, "valLineItems", CStr(mSyncDialogLineItemCount)
+
+    frm.Controls("lblTransitionPrompt").Caption = mSyncDialogPromptText
+
+    PopulateComboFromCollection frm.Controls("cboDealerState"), mSyncDialogStateOptions
+    PopulateComboFromCollection frm.Controls("cboSalesRep"), mSyncDialogSalesRepOptions
+    PopulateComboFromCollection frm.Controls("cboProjectType"), mSyncDialogProjectTypeOptions
+
+    If Len(mSyncDialogDefaultStateOption) > 0 Then
+        frm.Controls("cboDealerState").Value = mSyncDialogDefaultStateOption
+    End If
+    If Len(mSyncDialogDefaultSalesRep) > 0 Then
+        frm.Controls("cboSalesRep").Value = mSyncDialogDefaultSalesRep
+    End If
+    If Len(mSyncDialogDefaultProjectType) > 0 Then
+        frm.Controls("cboProjectType").Value = mSyncDialogDefaultProjectType
+    End If
+
+    mSyncDialogFilterBusy = False
+    SyncDialogRefreshSelectedSummaries frm
+    Exit Sub
+
+Fail:
+    mSyncDialogFilterBusy = False
+    MsgBox "Could not initialize the sync form: " & Err.Description, vbCritical, "Arnold Quote Sync"
+End Sub
+
+Public Sub SyncDialogOnDealerStateChange(ByVal frm As Object)
+    If mSyncDialogFilterBusy Then
+        SyncDialogRefreshSelectedSummaries frm
+        Exit Sub
+    End If
+
+    SyncDialogApplyStateFilter frm, CStr(frm.Controls("cboDealerState").Text)
+End Sub
+
+Public Sub SyncDialogOnSalesRepChange(ByVal frm As Object)
+    If mSyncDialogFilterBusy Then Exit Sub
+    SyncDialogRefreshSelectedSummaries frm
+End Sub
+
+Public Sub SyncDialogOnProjectTypeChange(ByVal frm As Object)
+    If mSyncDialogFilterBusy Then Exit Sub
+    SyncDialogRefreshSelectedSummaries frm
+End Sub
+
+Public Sub SyncDialogHandleYes(ByVal frm As Object)
+    Dim dealerStateInput As String
+    dealerStateInput = Trim$(CStr(frm.Controls("cboDealerState").Text))
+
+    Dim resolvedStateOption As String
+    resolvedStateOption = ResolveStateOptionInput(dealerStateInput, mSyncDialogStateOptions)
+    If Len(resolvedStateOption) = 0 Then
+        MsgBox "Dealer State is required. Please choose a valid US state.", _
+               vbExclamation, "Arnold Quote Sync"
+        Exit Sub
+    End If
+
+    Dim dealerStateCode As String
+    dealerStateCode = ExtractStateCode(resolvedStateOption)
+    If Len(dealerStateCode) <> 2 Then
+        MsgBox "Dealer State must resolve to a 2-letter state code.", _
+               vbExclamation, "Arnold Quote Sync"
+        Exit Sub
+    End If
+
+    Dim salesRepInput As String
+    salesRepInput = Trim$(CStr(frm.Controls("cboSalesRep").Text))
+
+    Dim resolvedSalesRep As String
+    resolvedSalesRep = ResolveChoiceInput(salesRepInput, mSyncDialogSalesRepOptions)
+    If Len(resolvedSalesRep) = 0 Then
+        MsgBox "Sales Rep is required.", vbExclamation, "Arnold Quote Sync"
+        Exit Sub
+    End If
+
+    Dim projectTypeInput As String
+    projectTypeInput = Trim$(CStr(frm.Controls("cboProjectType").Text))
+
+    Dim resolvedProjectType As String
+    resolvedProjectType = ResolveChoiceInput(projectTypeInput, mSyncDialogProjectTypeOptions)
+    If Len(resolvedProjectType) = 0 Then
+        MsgBox "Project Type is required.", vbExclamation, "Arnold Quote Sync"
+        Exit Sub
+    End If
+
+    mSyncDialogSelectedDealerState = dealerStateCode
+    mSyncDialogSelectedSalesRep = resolvedSalesRep
+    mSyncDialogSelectedProjectType = resolvedProjectType
+    mSyncDialogAccepted = True
+    Unload frm
+End Sub
+
+Public Sub SyncDialogHandleNo(ByVal frm As Object)
+    SyncDialogMarkCancelled
+    Unload frm
+End Sub
+
+Public Sub SyncDialogMarkCancelled()
+    mSyncDialogAccepted = False
+End Sub
+
+Private Sub SyncDialogApplyStateFilter(ByVal frm As Object, ByVal filterText As String)
+    On Error GoTo CleanFail
+
+    Dim cbo As Object
+    Set cbo = frm.Controls("cboDealerState")
+
+    mSyncDialogFilterBusy = True
+    cbo.Clear
+
+    Dim i As Long
+    Dim optionText As String
+    For i = 1 To mSyncDialogStateOptions.count
+        optionText = CStr(mSyncDialogStateOptions.Item(i))
+        If StateOptionMatchesFilter(optionText, filterText) Then
+            cbo.AddItem optionText
+        End If
+    Next i
+
+    cbo.Text = filterText
+
+    If Len(Trim$(filterText)) > 0 And cbo.ListCount > 0 Then
+        On Error Resume Next
+        cbo.DropDown
+        On Error GoTo CleanFail
+    End If
+
+CleanExit:
+    mSyncDialogFilterBusy = False
+    SyncDialogRefreshSelectedSummaries frm
+    Exit Sub
+
+CleanFail:
+    Resume CleanExit
+End Sub
+
+Private Sub SyncDialogRefreshSelectedSummaries(ByVal frm As Object)
+    Dim stateInput As String
+    stateInput = Trim$(CStr(frm.Controls("cboDealerState").Text))
+
+    Dim resolvedStateOption As String
+    resolvedStateOption = ResolveStateOptionInput(stateInput, mSyncDialogStateOptions)
+
+    Dim stateDisplay As String
+    If Len(resolvedStateOption) > 0 Then
+        stateDisplay = ExtractStateCode(resolvedStateOption)
+    Else
+        stateDisplay = ExtractStateCode(stateInput)
+    End If
+    If Len(stateDisplay) = 0 Then stateDisplay = stateInput
+
+    SyncDialogSetSummaryLabel frm, "valState", stateDisplay
+    SyncDialogSetSummaryLabel frm, "valSalesRep", Trim$(CStr(frm.Controls("cboSalesRep").Text))
+    SyncDialogSetSummaryLabel frm, "valProjectType", Trim$(CStr(frm.Controls("cboProjectType").Text))
+End Sub
+
+Private Sub PopulateComboFromCollection(ByVal cbo As Object, ByVal options As Collection)
+    Dim itemValue As Variant
+    cbo.Clear
+    If options Is Nothing Then Exit Sub
+
+    For Each itemValue In options
+        cbo.AddItem CStr(itemValue)
+    Next itemValue
+End Sub
+
+Private Sub SyncDialogSetSummaryLabel(ByVal frm As Object, ByVal controlName As String, ByVal valueText As String)
+    On Error Resume Next
+    frm.Controls(controlName).Caption = valueText
+    On Error GoTo 0
+End Sub
+
+Private Function StateOptionMatchesFilter(ByVal optionText As String, ByVal filterText As String) As Boolean
+    Dim needle As String
+    needle = LCase$(Trim$(filterText))
+
+    If Len(needle) = 0 Then
+        StateOptionMatchesFilter = True
+        Exit Function
+    End If
+
+    If InStr(1, LCase$(optionText), needle, vbTextCompare) > 0 Then
+        StateOptionMatchesFilter = True
+        Exit Function
+    End If
+
+    If InStr(1, LCase$(ExtractStateCode(optionText)), needle, vbTextCompare) > 0 Then
+        StateOptionMatchesFilter = True
+        Exit Function
+    End If
+
+    StateOptionMatchesFilter = False
+End Function
+
+Private Function ResolveStateOptionInput(ByVal rawInput As String, ByVal options As Collection) As String
+    Dim trimmedInput As String
+    trimmedInput = Trim$(rawInput)
+    If Len(trimmedInput) = 0 Then Exit Function
+
+    ResolveStateOptionInput = ResolveChoiceInput(trimmedInput, options)
+    If Len(ResolveStateOptionInput) > 0 Then Exit Function
+
+    Dim needle As String
+    needle = LCase$(trimmedInput)
+
+    Dim i As Long
+    Dim optionText As String
+    For i = 1 To options.count
+        optionText = CStr(options.Item(i))
+        If InStr(1, LCase$(optionText), needle, vbTextCompare) > 0 Then
+            ResolveStateOptionInput = optionText
+            Exit Function
+        End If
+    Next i
+End Function
+
+Private Function CloneStringCollection(ByVal source As Collection) As Collection
+    Dim result As New Collection
+    Dim itemValue As Variant
+
+    If source Is Nothing Then
+        Set CloneStringCollection = result
+        Exit Function
+    End If
+
+    For Each itemValue In source
+        result.Add CStr(itemValue)
+    Next itemValue
+
+    Set CloneStringCollection = result
+End Function
+
+Private Function BuildDealerStateOptions() As Collection
+    Dim result As New Collection
+
+    result.Add "AL - Alabama"
+    result.Add "AK - Alaska"
+    result.Add "AZ - Arizona"
+    result.Add "AR - Arkansas"
+    result.Add "CA - California"
+    result.Add "CO - Colorado"
+    result.Add "CT - Connecticut"
+    result.Add "DE - Delaware"
+    result.Add "FL - Florida"
+    result.Add "GA - Georgia"
+    result.Add "HI - Hawaii"
+    result.Add "ID - Idaho"
+    result.Add "IL - Illinois"
+    result.Add "IN - Indiana"
+    result.Add "IA - Iowa"
+    result.Add "KS - Kansas"
+    result.Add "KY - Kentucky"
+    result.Add "LA - Louisiana"
+    result.Add "ME - Maine"
+    result.Add "MD - Maryland"
+    result.Add "MA - Massachusetts"
+    result.Add "MI - Michigan"
+    result.Add "MN - Minnesota"
+    result.Add "MS - Mississippi"
+    result.Add "MO - Missouri"
+    result.Add "MT - Montana"
+    result.Add "NE - Nebraska"
+    result.Add "NV - Nevada"
+    result.Add "NH - New Hampshire"
+    result.Add "NJ - New Jersey"
+    result.Add "NM - New Mexico"
+    result.Add "NY - New York"
+    result.Add "NC - North Carolina"
+    result.Add "ND - North Dakota"
+    result.Add "OH - Ohio"
+    result.Add "OK - Oklahoma"
+    result.Add "OR - Oregon"
+    result.Add "PA - Pennsylvania"
+    result.Add "RI - Rhode Island"
+    result.Add "SC - South Carolina"
+    result.Add "SD - South Dakota"
+    result.Add "TN - Tennessee"
+    result.Add "TX - Texas"
+    result.Add "UT - Utah"
+    result.Add "VT - Vermont"
+    result.Add "VA - Virginia"
+    result.Add "WA - Washington"
+    result.Add "WV - West Virginia"
+    result.Add "WI - Wisconsin"
+    result.Add "WY - Wyoming"
+
+    Set BuildDealerStateOptions = result
+End Function
+
+Private Function BuildSalesRepOptions() As Collection
+    Dim result As New Collection
+    result.Add "House"
+    result.Add "Brad Baldwin"
+    result.Add "Eric Arnold"
+    result.Add "Heather Huddleston"
+    result.Add "John web"
+    Set BuildSalesRepOptions = result
+End Function
+
+Private Function BuildProjectTypeOptions() As Collection
+    Dim result As New Collection
+    result.Add "Conference"
+    result.Add "Table"
+    result.Add "Reception Desk"
+    result.Add "Courtroom"
+    Set BuildProjectTypeOptions = result
+End Function
 
 '==============================================================================
 ' Extraction helpers
@@ -274,7 +821,7 @@ End Function
 
 ' Builds the full JSON object body sent to the sync endpoint.
 Private Function BuildSyncBody(quoteNumber As String, projectName As String, _
-        companyName As String, salesRep As String, quoteDateIso As String, _
+    companyName As String, salesRep As String, dealerState As String, projectType As String, quoteDateIso As String, _
         contactName As String, contactEmail As String, contactPhone As String, _
         paymentTerms As String, leadTime As String, _
         subtotal As Double, hasSubtotal As Boolean, _
@@ -287,7 +834,9 @@ Private Function BuildSyncBody(quoteNumber As String, projectName As String, _
 
     If Len(projectName) > 0 Then parts = parts & ",""title"":" & JsonStr(projectName)
     If Len(companyName) > 0 Then parts = parts & ",""companyName"":" & JsonStr(companyName)
+    parts = parts & ",""dealerState"":" & JsonStr(dealerState)
     parts = parts & ",""salesRep"":" & JsonStr(salesRep)
+    parts = parts & ",""projectType"":" & JsonStr(projectType)
     If Len(quoteDateIso) > 0 Then parts = parts & ",""opportunityDate"":" & JsonStr(quoteDateIso)
     parts = parts & ",""contactName"":" & JsonStr(contactName)
     parts = parts & ",""contactEmail"":" & JsonStr(contactEmail)
@@ -486,6 +1035,169 @@ Private Function StageLabel(ByVal stage As String) As String
         Case "order_placement": StageLabel = "Order Placement"
         Case Else: StageLabel = stage
     End Select
+End Function
+
+Private Function ResolveDefaultOption(ByVal preferredValue As String, ByVal options As Collection) As String
+    ResolveDefaultOption = ResolveChoiceInput(preferredValue, options)
+End Function
+
+Private Function PromptRequiredChoice(ByVal fieldLabel As String, ByVal options As Collection, ByVal defaultValue As String) As String
+    Dim prompt As String
+    Dim entered As String
+    Dim resolved As String
+
+    If options Is Nothing Or options.count = 0 Then
+        PromptRequiredChoice = ""
+        Exit Function
+    End If
+
+    Do
+        prompt = "Select " & fieldLabel & " (required)." & vbCrLf & _
+                 "Type an option number or exact value." & vbCrLf & vbCrLf & _
+                 BuildChoiceList(options)
+
+        entered = InputBox(prompt, "Arnold Quote Sync", defaultValue)
+
+        If Len(Trim$(entered)) = 0 Then
+            If MsgBox(fieldLabel & " is required. Cancel this sync?", vbQuestion + vbYesNo, "Arnold Quote Sync") = vbYes Then
+                PromptRequiredChoice = ""
+                Exit Function
+            End If
+        Else
+            resolved = ResolveChoiceInput(entered, options)
+            If Len(resolved) > 0 Then
+                PromptRequiredChoice = resolved
+                Exit Function
+            End If
+
+            MsgBox "Invalid " & fieldLabel & ". Please choose one of the listed options.", _
+                   vbExclamation, "Arnold Quote Sync"
+        End If
+    Loop
+End Function
+
+Private Function ResolveChoiceInput(ByVal rawInput As String, ByVal options As Collection) As String
+    Dim inputText As String
+    inputText = Trim$(rawInput)
+    If Len(inputText) = 0 Then Exit Function
+
+    If IsNumeric(inputText) Then
+        Dim indexValue As Long
+        indexValue = CLng(Val(inputText))
+        If indexValue >= 1 And indexValue <= options.count Then
+            ResolveChoiceInput = Trim$(CStr(options.Item(indexValue)))
+            Exit Function
+        End If
+    End If
+
+    Dim normalizedInput As String
+    normalizedInput = LCase$(inputText)
+
+    Dim i As Long
+    For i = 1 To options.count
+        Dim optionText As String
+        optionText = Trim$(CStr(options.Item(i)))
+
+        If LCase$(optionText) = normalizedInput Then
+            ResolveChoiceInput = optionText
+            Exit Function
+        End If
+
+        If LCase$(ExtractStateCode(optionText)) = normalizedInput Then
+            ResolveChoiceInput = optionText
+            Exit Function
+        End If
+    Next i
+End Function
+
+Private Function BuildChoiceList(ByVal options As Collection) As String
+    Const MAX_LINES As Long = 35
+    Dim lines As String
+    Dim i As Long
+    Dim lineCount As Long
+
+    For i = 1 To options.count
+        If lineCount >= MAX_LINES Then Exit For
+        lines = lines & Format$(i, "00") & ". " & CStr(options.Item(i)) & vbCrLf
+        lineCount = lineCount + 1
+    Next i
+
+    If options.count > MAX_LINES Then
+        lines = lines & "... and " & CStr(options.count - MAX_LINES) & " more. Type exact value if needed."
+    ElseIf Len(lines) > 0 Then
+        lines = Left$(lines, Len(lines) - Len(vbCrLf))
+    End If
+
+    BuildChoiceList = lines
+End Function
+
+Private Function ExtractStateCode(ByVal stateOption As String) As String
+    Dim normalized As String
+    normalized = UCase$(Trim$(stateOption))
+
+    If Len(normalized) = 2 Then
+        ExtractStateCode = normalized
+        Exit Function
+    End If
+
+    Dim dashPos As Long
+    dashPos = InStr(1, normalized, "-")
+    If dashPos > 0 Then
+        normalized = Trim$(Left$(normalized, dashPos - 1))
+    ElseIf InStr(1, normalized, " ") > 0 Then
+        normalized = Trim$(Split(normalized, " ")(0))
+    End If
+
+    If Len(normalized) = 2 Then
+        ExtractStateCode = normalized
+    Else
+        ExtractStateCode = ""
+    End If
+End Function
+
+Private Function InferProjectTypeFromProjectName(ByVal projectName As String) As String
+    Dim normalized As String
+    normalized = LCase$(Trim$(projectName))
+
+    If Len(normalized) = 0 Then
+        InferProjectTypeFromProjectName = ""
+        Exit Function
+    End If
+
+    normalized = Replace(normalized, "-", " ")
+    normalized = Replace(normalized, "_", " ")
+    Do While InStr(1, normalized, "  ") > 0
+        normalized = Replace(normalized, "  ", " ")
+    Loop
+
+    If InStr(1, normalized, "reception desk", vbTextCompare) > 0 Or _
+       InStr(1, normalized, "reception", vbTextCompare) > 0 Then
+        InferProjectTypeFromProjectName = "Reception Desk"
+        Exit Function
+    End If
+
+    If InStr(1, normalized, "courtroom", vbTextCompare) > 0 Or _
+       InStr(1, normalized, "court room", vbTextCompare) > 0 Then
+        InferProjectTypeFromProjectName = "Courtroom"
+        Exit Function
+    End If
+
+    If InStr(1, normalized, "conference table", vbTextCompare) > 0 Or _
+       InStr(1, normalized, "conference", vbTextCompare) > 0 Then
+        InferProjectTypeFromProjectName = "Conference"
+        Exit Function
+    End If
+
+    If InStr(1, normalized, "table", vbTextCompare) > 0 Then
+        InferProjectTypeFromProjectName = "Table"
+        Exit Function
+    End If
+
+    InferProjectTypeFromProjectName = ""
+End Function
+
+Private Function NormalizeQuoteNumberForSync(ByVal quoteNumber As String) As String
+    NormalizeQuoteNumberForSync = Trim$(quoteNumber)
 End Function
 
 '==============================================================================

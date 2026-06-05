@@ -282,6 +282,7 @@ export function OrdersSection({
   managerInsightsByOrderId,
   ordersPage,
   ordersTotalPages,
+  showOrderViewTabs,
   onPreviousOrdersPage,
   onNextOrdersPage,
   onOpenOrderDetails,
@@ -308,6 +309,7 @@ export function OrdersSection({
   }>
   ordersPage: number
   ordersTotalPages: number
+  showOrderViewTabs: boolean
   onPreviousOrdersPage: () => void
   onNextOrdersPage: () => void
   onOpenOrderDetails: (order: DashboardOrder) => void
@@ -337,20 +339,22 @@ export function OrdersSection({
             </Pressable>
 
             <View style={styles.ordersTopTabsRow}>
-              <Pressable
-                style={styles.ordersTopTabButton}
-                onPress={() => onOrderViewFilterChange('design')}
-              >
-                <Text
-                  style={[
-                    styles.ordersTopTabButtonText,
-                    orderViewFilter === 'design' ? styles.ordersTopTabButtonTextActive : null,
-                  ]}
-                  numberOfLines={1}
+              {showOrderViewTabs ? (
+                <Pressable
+                  style={styles.ordersTopTabButton}
+                  onPress={() => onOrderViewFilterChange('design')}
                 >
-                  {t('Design', 'Diseno')}
-                </Text>
-              </Pressable>
+                  <Text
+                    style={[
+                      styles.ordersTopTabButtonText,
+                      orderViewFilter === 'design' ? styles.ordersTopTabButtonTextActive : null,
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {t('Design', 'Diseno')}
+                  </Text>
+                </Pressable>
+              ) : null}
 
               <Pressable
                 style={styles.ordersTopTabButton}
@@ -367,20 +371,22 @@ export function OrdersSection({
                 </Text>
               </Pressable>
 
-              <Pressable
-                style={styles.ordersTopTabButton}
-                onPress={() => onOrderViewFilterChange('shipped')}
-              >
-                <Text
-                  style={[
-                    styles.ordersTopTabButtonText,
-                    orderViewFilter === 'shipped' ? styles.ordersTopTabButtonTextActive : null,
-                  ]}
-                  numberOfLines={1}
+              {showOrderViewTabs ? (
+                <Pressable
+                  style={styles.ordersTopTabButton}
+                  onPress={() => onOrderViewFilterChange('shipped')}
                 >
-                  {t('Ship', 'Envio')}
-                </Text>
-              </Pressable>
+                  <Text
+                    style={[
+                      styles.ordersTopTabButtonText,
+                      orderViewFilter === 'shipped' ? styles.ordersTopTabButtonTextActive : null,
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {t('Ship', 'Envio')}
+                  </Text>
+                </Pressable>
+              ) : null}
             </View>
 
             <Pressable
@@ -507,6 +513,7 @@ export function TimesheetSection({
   locale,
   timesheetWorker,
   timesheetDate,
+  isTimesheetDateEditable,
   onOpenDatePicker,
   isTimesheetDatePickerOpen,
   selectedTimesheetDate,
@@ -531,6 +538,7 @@ export function TimesheetSection({
   locale: string
   timesheetWorker: MobileTimesheetWorker | null
   timesheetDate: string
+  isTimesheetDateEditable: boolean
   onOpenDatePicker: () => void
   isTimesheetDatePickerOpen: boolean
   selectedTimesheetDate: Date
@@ -551,6 +559,13 @@ export function TimesheetSection({
   timesheetEntriesForSelectedDate: MobileTimesheetEntry[]
   timesheetStageNamesById: Record<string, string>
 }) {
+  const isSaveDisabled =
+    isTimesheetSaving
+    || !timesheetWorker
+    || !timesheetStageId
+    || timesheetStages.length === 0
+    || !isTimesheetDateEditable
+
   return (
     <>
       <Text style={styles.sectionTitle}>{t('My Daily Timesheet', 'Mi hoja diaria de horas')}</Text>
@@ -585,7 +600,7 @@ export function TimesheetSection({
           <Picker
             selectedValue={timesheetStageId}
             onValueChange={(value) => onTimesheetStageIdChange(String(value ?? ''))}
-            enabled={timesheetStages.length > 0}
+            enabled={timesheetStages.length > 0 && isTimesheetDateEditable}
             style={styles.timesheetStagePicker}
           >
             <Picker.Item
@@ -610,6 +625,7 @@ export function TimesheetSection({
           placeholder={t('Job number', 'Numero de trabajo')}
           placeholderTextColor="#6a7ea8"
           style={styles.orderSearchInput}
+          editable={isTimesheetDateEditable}
         />
 
         <TextInput
@@ -619,6 +635,7 @@ export function TimesheetSection({
           placeholderTextColor="#6a7ea8"
           style={styles.orderSearchInput}
           keyboardType="decimal-pad"
+          editable={isTimesheetDateEditable}
         />
 
         <TextInput
@@ -628,12 +645,22 @@ export function TimesheetSection({
           placeholderTextColor="#6a7ea8"
           style={[styles.orderSearchInput, styles.timesheetNotesInput]}
           multiline
+          editable={isTimesheetDateEditable}
         />
+
+        {!isTimesheetDateEditable ? (
+          <Text style={styles.timesheetInlineHint}>
+            {t(
+              'You can view other dates, but you can only add entries for today.',
+              'Puedes ver otras fechas, pero solo puedes agregar entradas para hoy.',
+            )}
+          </Text>
+        ) : null}
 
         <AuthButton
           label={isTimesheetSaving ? t('Saving...', 'Guardando...') : t('Save Daily Entry', 'Guardar entrada diaria')}
           onPress={onSaveTimesheetEntry}
-          disabled={isTimesheetSaving || !timesheetWorker || !timesheetStageId || timesheetStages.length === 0}
+          disabled={isSaveDisabled}
         />
 
         {timesheetMessage ? <Text style={styles.timesheetMessage}>{timesheetMessage}</Text> : null}

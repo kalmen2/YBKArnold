@@ -168,6 +168,70 @@ export type PurchasingItemDetailResponse = {
   transactions: PurchasingTransaction[]
 }
 
+export type PurchasingPoContextVendor = {
+  id: string
+  name: string
+  active: boolean
+}
+
+export type PurchasingPoContextProject = {
+  id: string
+  name: string
+  projectNumber: string
+  customerName: string
+  active: boolean
+}
+
+export type PurchasingPoContextResponse = {
+  generatedAt: string
+  vendors: PurchasingPoContextVendor[]
+  projects: PurchasingPoContextProject[]
+  truncated?: {
+    vendors?: boolean
+    projects?: boolean
+  }
+}
+
+export type PurchasingPoCreateLineInput = {
+  lineId?: string
+  itemName?: string
+  productNumber: string
+  vendorId: string
+  vendorName?: string
+  projectNumber?: string
+  projectId?: string
+  description?: string | null
+  quantity: number
+  unitPrice?: number | null
+}
+
+export type PurchasingPoCreateRequest = {
+  projectNumber?: string
+  projectId?: string
+  poDate?: string
+  memo?: string
+  lines: PurchasingPoCreateLineInput[]
+}
+
+export type PurchasingPoCreatedOrder = {
+  quickBooksId: string | null
+  docNumber: string
+  vendorId: string
+  vendorName: string
+  lineCount: number
+  totalAmount: number
+}
+
+export type PurchasingPoCreateResponse = {
+  generatedAt: string
+  project: PurchasingPoContextProject
+  createdProject: PurchasingPoContextProject | null
+  startingPoNumber: string
+  poCount: number
+  lineCount: number
+  purchaseOrders: PurchasingPoCreatedOrder[]
+}
+
 export function fetchPurchasingItems(
   options: { search?: string; page?: number; pageSize?: number; aiAssist?: boolean } = {},
 ) {
@@ -260,5 +324,34 @@ export function runPurchasingAiSearch(payload: {
       }),
     },
     { timeoutMs: 120000 },
+  )
+}
+
+export function fetchPurchasingPoContext(options: { refresh?: boolean; includeProjects?: boolean } = {}) {
+  const params = new URLSearchParams()
+
+  if (options.refresh) {
+    params.set('refresh', '1')
+  }
+
+  if (options.includeProjects) {
+    params.set('includeProjects', '1')
+  }
+
+  const query = params.toString()
+
+  return apiRequest<PurchasingPoContextResponse>(
+    query ? `/api/purchasing/po/context?${query}` : '/api/purchasing/po/context',
+  )
+}
+
+export function createPurchasingPurchaseOrders(payload: PurchasingPoCreateRequest) {
+  return apiRequest<PurchasingPoCreateResponse>(
+    '/api/purchasing/po/create',
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+    { timeoutMs: 180000 },
   )
 }

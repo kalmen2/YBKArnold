@@ -18,6 +18,8 @@ const quickBooksTokenDocId = 'primary'
 const quickBooksAccessTokenRefreshSkewMs = 2 * 60 * 1000
 const quickBooksBillPageSize = 200
 const quickBooksMaxBillPages = 30
+const quickBooksLookupPageSize = 500
+const quickBooksLookupMaxPages = 12
 const purchasingSyncSnapshotKey = 'purchasing_qbo_sync'
 const purchasingPhotosPrefix = 'purchasing-item-photos'
 const maxPurchasingPhotoBytes = 8 * 1024 * 1024
@@ -29,6 +31,204 @@ const createHttpError = (message, status = 500) => new AppError(message, status)
 
 function normKey(value) {
   return String(value ?? '').trim().toLowerCase().replace(/\s+/g, ' ')
+}
+
+function stripTrailingEllipsis(value) {
+  const raw = String(value ?? '').trim()
+
+  if (!raw) {
+    return ''
+  }
+
+  if (!/(?:\.\.\.|…)\s*$/.test(raw)) {
+    return raw
+  }
+
+  return raw.replace(/(?:\.\.\.|…)\s*$/, '').trim()
+}
+
+function buildPoItemSearchSources(values) {
+  const sources = []
+  const seen = new Set()
+
+  for (const value of Array.isArray(values) ? values : []) {
+    const source = normalizeText(value, 260)
+
+    if (!source) {
+      continue
+    }
+
+    const normalized = normKey(source)
+
+    if (normalized && !seen.has(normalized)) {
+      seen.add(normalized)
+      sources.push(normalized)
+    }
+
+    const stripped = stripTrailingEllipsis(source)
+    const strippedToken = normKey(stripped)
+
+    if (strippedToken && !seen.has(strippedToken)) {
+      seen.add(strippedToken)
+      sources.push(strippedToken)
+    }
+  }
+
+  return sources
+}
+
+function collectPoItemCandidatesByPrefix({ prefixToken, itemSearchIndex }) {
+  if (!prefixToken) {
+    return []
+  }
+
+  const matches = []
+
+  ;(Array.isArray(itemSearchIndex) ? itemSearchIndex : []).forEach((entry) => {
+    if (!entry?.item) {
+      return
+    }
+
+    if (
+      (entry.productToken && entry.productToken.startsWith(prefixToken))
+      || (entry.nameToken && entry.nameToken.startsWith(prefixToken))
+    ) {
+      matches.push(entry.item)
+    }
+  })
+
+  return matches
+}
+
+function resolvePoBestPrefixCandidates({ searchToken, itemSearchIndex }) {
+  const normalizedSearchToken = normKey(searchToken)
+
+  if (!normalizedSearchToken) {
+    return {
+      matchedPrefix: '',
+      matches: [],
+    }
+  }
+
+  const fullMatches = collectPoItemCandidatesByPrefix({
+    prefixToken: normalizedSearchToken,
+    itemSearchIndex,
+  })
+
+  if (fullMatches.length > 0) {
+    return {
+      matchedPrefix: normalizedSearchToken,
+      matches: fullMatches,
+    }
+  }
+
+  let low = 1
+  let high = normalizedSearchToken.length
+  let bestPrefix = ''
+  let bestMatches = []
+
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2)
+    const prefixToken = normalizedSearchToken.slice(0, mid).trim()
+
+    if (!prefixToken) {
+      low = mid + 1
+      continue
+    }
+
+    const matches = collectPoItemCandidatesByPrefix({
+      prefixToken,
+      itemSearchIndex,
+    })
+
+    if (matches.length > 0) {
+      bestPrefix = prefixToken
+      bestMatches = matches
+      low = mid + 1
+    } else {
+      high = mid - 1
+    }
+  }
+
+  return {
+    matchedPrefix: bestPrefix,
+    matches: bestMatches,
+  }
+}
+
+function createPoItemAmbiguityError({ line, vendor, candidates }) {
+  const options = (Array.isArray(candidates) ? candidates : [])
+    .slice(0, 20)
+    .map((candidate) => ({
+      id: candidate.id,
+      name: candidate.name,
+      productNumber: candidate.productNumber || candidate.name,
+      description: candidate.description || '',
+    }))
+  const error = new Error(`Line ${line.index + 1}: multiple QuickBooks items match "${line.productNumber}".`)
+
+  error.status = 409
+  error.code = 'PO_ITEM_AMBIGUOUS'
+  error.ambiguities = [
+    {
+      lineId: line.lineId,
+      lineIndex: line.index,
+      vendorId: line.vendorId,
+      vendorName: vendor.name,
+      itemName: line.itemName,
+      productNumber: line.productNumber,
+      quantity: line.quantity,
+      options,
+    },
+  ]
+
+  return error
+}
+
+function collectPoItemMatchCandidates({ line, itemSearchIndex }) {
+  const searchSources = buildPoItemSearchSources([line.productNumber, line.itemName])
+  let bestMatch = null
+
+  searchSources.forEach((searchSource, sourceIndex) => {
+    const resolved = resolvePoBestPrefixCandidates({
+      searchToken: searchSource,
+      itemSearchIndex,
+    })
+
+    if (!resolved.matches.length) {
+      return
+    }
+
+    const candidate = {
+      sourceIndex,
+      matchedPrefixLength: resolved.matchedPrefix.length,
+      matches: resolved.matches,
+    }
+
+    if (!bestMatch) {
+      bestMatch = candidate
+      return
+    }
+
+    if (candidate.matchedPrefixLength > bestMatch.matchedPrefixLength) {
+      bestMatch = candidate
+      return
+    }
+
+    if (
+      candidate.matchedPrefixLength === bestMatch.matchedPrefixLength
+      && candidate.matches.length < bestMatch.matches.length
+    ) {
+      bestMatch = candidate
+    }
+  })
+
+  if (!bestMatch) {
+    return []
+  }
+
+  return [...bestMatch.matches]
+    .sort((left, right) => String(left?.name ?? '').localeCompare(String(right?.name ?? '')))
 }
 
 function toNumber(value) {
@@ -427,6 +627,11 @@ export function registerPurchasingRoutes(app, deps) {
     firstPurchaseDate: 1,
     lastPurchaseDate: 1,
   }
+  const poVendorContextTtlMs = 2 * 60_000
+  const poContextCacheByScope = {
+    basic: null,
+    withProjects: null,
+  }
 
   async function getQuickBooksCollections() {
     const { quickBooksTokensCollection } = await getCollections()
@@ -579,6 +784,410 @@ export function registerPurchasingRoutes(app, deps) {
     }
 
     return payload
+  }
+
+  async function quickBooksCreateEntity({
+    apiBaseUrl,
+    realmId,
+    accessToken,
+    entityPath,
+    payload,
+  }) {
+    const endpoint = `${normalizeQuickBooksApiBaseUrl(apiBaseUrl)}/v3/company/${encodeURIComponent(realmId)}/${entityPath}?minorversion=75`
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload ?? {}),
+    })
+
+    const responseText = await response.text().catch(() => '')
+    let parsedPayload = {}
+
+    if (responseText) {
+      try {
+        parsedPayload = JSON.parse(responseText)
+      } catch {
+        parsedPayload = {}
+      }
+    }
+
+    if (response.status === 401) {
+      throw createHttpError('QuickBooks access token is no longer valid.', 401)
+    }
+
+    if (!response.ok) {
+      const bodySummary = normalizeText(String(responseText || '').replace(/\s+/g, ' '), 300)
+      const fallbackMessage = bodySummary
+        ? `status ${response.status} (${bodySummary})`
+        : `status ${response.status}`
+      throw createHttpError(
+        `QuickBooks write failed: ${resolveQuickBooksErrorMessage(parsedPayload, fallbackMessage)}`,
+        response.status,
+      )
+    }
+
+    return parsedPayload
+  }
+
+  async function createQuickBooksExecutor() {
+    const quickBooksConfig = getQuickBooksConfig()
+    const { quickBooksTokensCollection } = await getQuickBooksCollections()
+    let tokenDoc = await resolveQuickBooksAccessToken({
+      quickBooksTokensCollection,
+      clientId: quickBooksConfig.clientId,
+      clientSecret: quickBooksConfig.clientSecret,
+      forceRefresh: false,
+    })
+    const realmId = normalizeText(tokenDoc?.realmId, 160)
+
+    if (!realmId) {
+      throw createHttpError('QuickBooks connection is missing realm ID. Reconnect QuickBooks.', 409)
+    }
+
+    const resolveQuery = (queryText) => quickBooksQuery({
+      apiBaseUrl: quickBooksConfig.apiBaseUrl,
+      realmId,
+      accessToken: tokenDoc.accessToken,
+      query: queryText,
+    })
+    const resolveCreate = (entityPath, payload) => quickBooksCreateEntity({
+      apiBaseUrl: quickBooksConfig.apiBaseUrl,
+      realmId,
+      accessToken: tokenDoc.accessToken,
+      entityPath,
+      payload,
+    })
+
+    const queryFn = async (queryText) => {
+      try {
+        return await resolveQuery(queryText)
+      } catch (error) {
+        if (Number(error?.status) !== 401) {
+          throw error
+        }
+
+        tokenDoc = await resolveQuickBooksAccessToken({
+          quickBooksTokensCollection,
+          clientId: quickBooksConfig.clientId,
+          clientSecret: quickBooksConfig.clientSecret,
+          forceRefresh: true,
+        })
+
+        return resolveQuery(queryText)
+      }
+    }
+
+    const createFn = async (entityPath, payload) => {
+      try {
+        return await resolveCreate(entityPath, payload)
+      } catch (error) {
+        if (Number(error?.status) !== 401) {
+          throw error
+        }
+
+        tokenDoc = await resolveQuickBooksAccessToken({
+          quickBooksTokensCollection,
+          clientId: quickBooksConfig.clientId,
+          clientSecret: quickBooksConfig.clientSecret,
+          forceRefresh: true,
+        })
+
+        return resolveCreate(entityPath, payload)
+      }
+    }
+
+    return {
+      queryFn,
+      createFn,
+    }
+  }
+
+  async function queryAllQuickBooksRows({
+    queryFn,
+    entityName,
+    fields = '*',
+    whereClause = '',
+    orderBy = '',
+    pageSize = quickBooksLookupPageSize,
+    maxPages = quickBooksLookupMaxPages,
+  }) {
+    const rows = []
+    let startPosition = 1
+    let truncated = false
+
+    for (let page = 0; page < maxPages; page += 1) {
+      const whereSegment = whereClause ? ` WHERE ${whereClause}` : ''
+      const orderSegment = orderBy ? ` ORDERBY ${orderBy}` : ''
+      const query = `SELECT ${fields} FROM ${entityName}${whereSegment}${orderSegment} STARTPOSITION ${startPosition} MAXRESULTS ${pageSize}`
+      const payload = await queryFn(query)
+      const batchRows = Array.isArray(payload?.QueryResponse?.[entityName])
+        ? payload.QueryResponse[entityName]
+        : []
+
+      rows.push(...batchRows)
+
+      if (batchRows.length < pageSize) {
+        return {
+          rows,
+          truncated,
+        }
+      }
+
+      startPosition += pageSize
+    }
+
+    truncated = true
+
+    return {
+      rows,
+      truncated,
+    }
+  }
+
+  function splitQuickBooksProjectLabel(projectName, fallbackProjectId = '') {
+    const normalizedName = normalizeText(projectName, 260)
+
+    if (!normalizedName) {
+      return {
+        customerName: '',
+        projectNumber: normalizeText(fallbackProjectId, 160) || '',
+      }
+    }
+
+    const hasColonSeparator = normalizedName.includes(':')
+    const hasHyphenSeparator = normalizedName.includes(' - ')
+    const segments = hasColonSeparator
+      ? normalizedName.split(':').map((segment) => segment.trim()).filter(Boolean)
+      : hasHyphenSeparator
+        ? normalizedName.split(' - ').map((segment) => segment.trim()).filter(Boolean)
+        : [normalizedName]
+
+    if (segments.length <= 1) {
+      return {
+        customerName: '',
+        projectNumber: segments[0] || normalizeText(fallbackProjectId, 160) || '',
+      }
+    }
+
+    return {
+      customerName: segments.slice(0, -1).join(' : '),
+      projectNumber: segments[segments.length - 1] || normalizeText(fallbackProjectId, 160) || '',
+    }
+  }
+
+  function normalizePoDocNumberForSorting(value) {
+    const raw = normalizeText(value, 120)
+
+    if (!raw) {
+      return null
+    }
+
+    if (/^\d+$/.test(raw)) {
+      const parsed = Number(raw)
+      return Number.isFinite(parsed) && parsed >= 0 ? parsed : null
+    }
+
+    const trailingDigits = raw.match(/(\d+)(?!.*\d)/)
+
+    if (!trailingDigits?.[1]) {
+      return null
+    }
+
+    const parsed = Number(trailingDigits[1])
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : null
+  }
+
+  function resolveNextSequentialPoNumber(purchaseOrders) {
+    const maxDocNumber = (Array.isArray(purchaseOrders) ? purchaseOrders : []).reduce((currentMax, po) => {
+      const parsed = normalizePoDocNumberForSorting(po?.DocNumber)
+      return parsed != null && parsed > currentMax ? parsed : currentMax
+    }, 0)
+
+    return String(maxDocNumber + 1)
+  }
+
+  function parseRequestDateOnly(value) {
+    const parsed = parseDateOnly(value)
+
+    if (parsed) {
+      return parsed
+    }
+
+    return new Date().toISOString().slice(0, 10)
+  }
+
+  function buildQuickBooksPoContext({
+    items,
+    vendors,
+    customers,
+    purchaseOrders,
+  }) {
+    const mappedItems = (Array.isArray(items) ? items : [])
+      .map((item) => {
+        const id = normalizeText(item?.Id, 160)
+        const itemName =
+          normalizeText(item?.FullyQualifiedName, 260)
+          || normalizeText(item?.Name, 260)
+          || id
+        const description =
+          normalizeText(item?.Description, 800)
+          || normalizeText(item?.PurchaseDesc, 800)
+          || normalizeText(item?.SalesDesc, 800)
+          || ''
+        const productNumber =
+          normalizeText(item?.Sku, 160)
+          || normalizeText(item?.Name, 260)
+          || ''
+
+        if (!id || !itemName) {
+          return null
+        }
+
+        return {
+          id,
+          name: itemName,
+          productNumber,
+          description,
+          active: item?.Active !== false,
+        }
+      })
+      .filter(Boolean)
+      .sort((left, right) => left.name.localeCompare(right.name))
+
+    const mappedVendors = (Array.isArray(vendors) ? vendors : [])
+      .map((vendor) => {
+        const id = normalizeText(vendor?.Id, 160)
+        const name =
+          normalizeText(vendor?.DisplayName, 260)
+          || normalizeText(vendor?.CompanyName, 260)
+          || normalizeText(vendor?.PrintOnCheckName, 260)
+          || id
+
+        if (!id || !name) {
+          return null
+        }
+
+        return {
+          id,
+          name,
+          active: vendor?.Active !== false,
+        }
+      })
+      .filter(Boolean)
+      .sort((left, right) => left.name.localeCompare(right.name))
+
+    const mappedProjects = (Array.isArray(customers) ? customers : [])
+      .filter((customer) => customer?.Job === true)
+      .map((customer) => {
+        const id = normalizeText(customer?.Id, 160)
+        const projectName =
+          normalizeText(customer?.FullyQualifiedName, 260)
+          || normalizeText(customer?.DisplayName, 260)
+          || id
+
+        if (!id || !projectName) {
+          return null
+        }
+
+        const projectLabel = splitQuickBooksProjectLabel(projectName, id)
+
+        return {
+          id,
+          name: projectName,
+          projectNumber: normalizeText(projectLabel.projectNumber, 160) || id,
+          customerName: normalizeText(projectLabel.customerName, 260) || '',
+          active: customer?.Active !== false,
+        }
+      })
+      .filter(Boolean)
+      .sort((left, right) => left.name.localeCompare(right.name))
+
+    return {
+      items: mappedItems,
+      vendors: mappedVendors,
+      projects: mappedProjects,
+      nextPoNumber: resolveNextSequentialPoNumber(purchaseOrders),
+    }
+  }
+
+  async function fetchQuickBooksPoContext({
+    queryFn,
+    includeItems = false,
+    includeProjects = false,
+    includePurchaseOrders = false,
+  }) {
+    const tasks = []
+
+    if (includeItems) {
+      tasks.push(
+        queryAllQuickBooksRows({
+          queryFn,
+          entityName: 'Item',
+          orderBy: 'Name',
+        }),
+      )
+    }
+
+    tasks.push(
+      queryAllQuickBooksRows({
+        queryFn,
+        entityName: 'Vendor',
+        orderBy: 'DisplayName',
+      }),
+    )
+
+    if (includeProjects) {
+      tasks.push(
+        queryAllQuickBooksRows({
+          queryFn,
+          entityName: 'Customer',
+          orderBy: 'DisplayName',
+        }),
+      )
+    }
+
+    if (includePurchaseOrders) {
+      tasks.push(
+        queryAllQuickBooksRows({
+          queryFn,
+          entityName: 'PurchaseOrder',
+          fields: 'Id, DocNumber, TxnDate',
+          orderBy: 'MetaData.LastUpdatedTime',
+        }),
+      )
+    }
+
+    const results = await Promise.all(tasks)
+    let pointer = 0
+    const itemResult = includeItems
+      ? results[pointer++]
+      : { rows: [], truncated: false }
+    const vendorResult = results[pointer++]
+    const customerResult = includeProjects
+      ? results[pointer++]
+      : { rows: [], truncated: false }
+    const purchaseOrderResult = includePurchaseOrders
+      ? results[pointer++]
+      : { rows: [], truncated: false }
+
+    return {
+      ...buildQuickBooksPoContext({
+        items: itemResult.rows,
+        vendors: vendorResult.rows,
+        customers: customerResult.rows,
+        purchaseOrders: purchaseOrderResult.rows,
+      }),
+      truncated: {
+        items: Boolean(itemResult.truncated),
+        vendors: Boolean(vendorResult.truncated),
+        projects: Boolean(customerResult.truncated),
+        purchaseOrders: Boolean(purchaseOrderResult.truncated),
+      },
+    }
   }
 
   async function queryIncrementalQuickBooksBills({ queryFn, lastUpdatedCursor }) {
@@ -1514,6 +2123,317 @@ export function registerPurchasingRoutes(app, deps) {
 
     return merged
   }
+
+  app.get('/api/purchasing/po/context', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const forceRefresh = req.query?.refresh === '1' || req.query?.refresh === 'true'
+      const includeProjects = req.query?.includeProjects === '1' || req.query?.includeProjects === 'true'
+      const cacheKey = includeProjects ? 'withProjects' : 'basic'
+      const now = Date.now()
+      const scopedCache = poContextCacheByScope[cacheKey]
+
+      if (!forceRefresh && scopedCache && (now - scopedCache.fetchedAt) < poVendorContextTtlMs) {
+        return res.json(scopedCache.payload)
+      }
+
+      const { queryFn } = await createQuickBooksExecutor()
+      const context = await fetchQuickBooksPoContext({
+        queryFn,
+        includeProjects,
+      })
+
+      const payload = {
+        generatedAt: new Date().toISOString(),
+        vendors: context.vendors,
+        projects: includeProjects ? context.projects : [],
+        truncated: {
+          vendors: context.truncated.vendors,
+          ...(includeProjects ? { projects: context.truncated.projects } : {}),
+        },
+      }
+
+      poContextCacheByScope[cacheKey] = {
+        fetchedAt: now,
+        payload,
+      }
+
+      return res.json(payload)
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.post('/api/purchasing/po/create', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const requestedLines = Array.isArray(req.body?.lines) ? req.body.lines : []
+
+      if (requestedLines.length === 0) {
+        return res.status(400).json({ error: 'At least one PO line is required.' })
+      }
+
+      const requestedProjectNumber = normalizeText(req.body?.projectNumber, 160)
+      const requestedProjectId = normalizeText(req.body?.projectId, 160)
+      const poDate = parseRequestDateOnly(req.body?.poDate)
+      const memo = normalizeText(req.body?.memo, 900) || null
+
+      const normalizedLines = requestedLines.map((line, index) => {
+        const lineId = normalizeText(line?.lineId, 160) || `line-${index + 1}`
+        const itemName = normalizeText(line?.itemName, 260)
+        const productNumber = normalizeText(line?.productNumber, 260)
+        const vendorId = normalizeText(line?.vendorId, 160)
+        const vendorName = normalizeText(line?.vendorName, 260)
+        const lineProjectNumber = normalizeText(line?.projectNumber, 160)
+        const lineProjectId = normalizeText(line?.projectId, 160)
+        const description = normalizeText(line?.description, 900) || null
+        const quantityRaw = Number(line?.quantity)
+        const quantity = Number.isFinite(quantityRaw) && quantityRaw > 0
+          ? Number(quantityRaw.toFixed(4))
+          : null
+        const unitPriceRaw = Number(line?.unitPrice)
+        const unitPrice = Number.isFinite(unitPriceRaw) && unitPriceRaw >= 0
+          ? Number(unitPriceRaw.toFixed(4))
+          : null
+
+        if (!vendorId) {
+          throw createHttpError(`Line ${index + 1}: vendor is required.`, 400)
+        }
+
+        if (!productNumber) {
+          throw createHttpError(`Line ${index + 1}: product number is required.`, 400)
+        }
+
+        if (quantity == null) {
+          throw createHttpError(`Line ${index + 1}: quantity must be greater than 0.`, 400)
+        }
+
+        return {
+          lineId,
+          index,
+          itemName: itemName || productNumber,
+          productNumber,
+          vendorId,
+          vendorName: vendorName || vendorId,
+          projectNumber: lineProjectNumber,
+          projectId: lineProjectId,
+          description,
+          quantity,
+          unitPrice,
+        }
+      })
+
+      const { queryFn, createFn } = await createQuickBooksExecutor()
+      const poContext = await fetchQuickBooksPoContext({
+        queryFn,
+        includeItems: true,
+        includeProjects: true,
+        includePurchaseOrders: true,
+      })
+      const vendorById = new Map(
+        poContext.vendors.map((vendor) => [vendor.id, vendor]),
+      )
+      const projectById = new Map(
+        poContext.projects.map((project) => [project.id, project]),
+      )
+      const projectByNumber = new Map(
+        poContext.projects
+          .map((project) => [normKey(project.projectNumber), project])
+          .filter(([projectNumber]) => Boolean(projectNumber)),
+      )
+      const itemSearchIndex = poContext.items
+        .map((item) => ({
+          item,
+          productToken: normKey(item.productNumber),
+          nameToken: normKey(item.name),
+        }))
+        .filter((entry) => Boolean(entry.productToken || entry.nameToken))
+
+      let resolvedDefaultProject = null
+
+      if (requestedProjectId) {
+        resolvedDefaultProject = projectById.get(requestedProjectId) ?? null
+      }
+
+      if (!resolvedDefaultProject && requestedProjectNumber) {
+        resolvedDefaultProject = projectByNumber.get(normKey(requestedProjectNumber)) ?? null
+      }
+
+      if ((requestedProjectId || requestedProjectNumber) && !resolvedDefaultProject) {
+        throw createHttpError(
+          `Project number "${requestedProjectNumber || requestedProjectId}" was not found in QuickBooks.`,
+          409,
+        )
+      }
+
+      const linesByVendorId = new Map()
+
+      normalizedLines.forEach((line) => {
+        const vendor = vendorById.get(line.vendorId)
+        const matchedCandidates = collectPoItemMatchCandidates({
+          line,
+          itemSearchIndex,
+        })
+        const matchedItem = matchedCandidates.length === 1
+          ? matchedCandidates[0]
+          : null
+
+        if (!vendor) {
+          throw createHttpError(`Line ${line.index + 1}: vendor is not recognized in QuickBooks.`, 400)
+        }
+
+        if (matchedCandidates.length > 1) {
+          throw createPoItemAmbiguityError({
+            line,
+            vendor,
+            candidates: matchedCandidates,
+          })
+        }
+
+        if (!matchedItem) {
+          throw createHttpError(
+            `Line ${line.index + 1}: QuickBooks item match failed for product "${line.productNumber}".`,
+            409,
+          )
+        }
+
+        let resolvedLineProject = null
+
+        if (line.projectId || line.projectNumber) {
+          if (line.projectId) {
+            resolvedLineProject = projectById.get(line.projectId) ?? null
+          }
+
+          if (!resolvedLineProject && line.projectNumber) {
+            resolvedLineProject = projectByNumber.get(normKey(line.projectNumber)) ?? null
+          }
+
+          if (!resolvedLineProject) {
+            throw createHttpError(
+              `Line ${line.index + 1}: project "${line.projectNumber || line.projectId}" was not found in QuickBooks.`,
+              409,
+            )
+          }
+        } else if (resolvedDefaultProject) {
+          resolvedLineProject = resolvedDefaultProject
+        } else {
+          throw createHttpError(`Line ${line.index + 1}: project is required.`, 400)
+        }
+
+        const existing = linesByVendorId.get(line.vendorId) ?? []
+        existing.push({
+          ...line,
+          itemId: matchedItem.id,
+          itemName: matchedItem.name || line.itemName,
+          vendorName: vendor.name,
+          projectId: resolvedLineProject.id,
+          projectName: resolvedLineProject.name,
+          projectNumber: resolvedLineProject.projectNumber,
+          projectCustomerName: resolvedLineProject.customerName,
+        })
+        linesByVendorId.set(line.vendorId, existing)
+      })
+
+      const vendorGroups = [...linesByVendorId.entries()]
+        .map(([vendorId, lines]) => ({
+          vendorId,
+          vendorName: lines[0]?.vendorName || vendorId,
+          lines,
+        }))
+        .sort((left, right) => left.vendorName.localeCompare(right.vendorName))
+      const startingPoNumber = Number(poContext.nextPoNumber)
+      const safeStartingPoNumber = Number.isFinite(startingPoNumber) && startingPoNumber > 0
+        ? startingPoNumber
+        : 1
+      const createdPurchaseOrders = []
+
+      for (let index = 0; index < vendorGroups.length; index += 1) {
+        const vendorGroup = vendorGroups[index]
+        const nextDocNumber = String(safeStartingPoNumber + index)
+        const linePayload = vendorGroup.lines.map((line) => {
+          const hasUnitPrice = line.unitPrice != null && Number.isFinite(line.unitPrice)
+          const amount = hasUnitPrice
+            ? Number((line.quantity * Number(line.unitPrice)).toFixed(2))
+            : 0
+
+          return {
+            Amount: amount,
+            Description: line.description || line.itemName || line.productNumber,
+            DetailType: 'ItemBasedExpenseLineDetail',
+            ItemBasedExpenseLineDetail: {
+              ItemRef: {
+                value: line.itemId,
+                name: line.itemName,
+              },
+              Qty: line.quantity,
+              ...(hasUnitPrice ? { UnitPrice: line.unitPrice } : {}),
+              CustomerRef: {
+                value: line.projectId,
+                name: line.projectName,
+              },
+            },
+          }
+        })
+        const poPayload = {
+          DocNumber: nextDocNumber,
+          TxnDate: poDate,
+          VendorRef: {
+            value: vendorGroup.vendorId,
+            name: vendorGroup.vendorName,
+          },
+          ...(memo ? { PrivateNote: memo } : {}),
+          Line: linePayload,
+        }
+
+        const created = await createFn('purchaseorder', poPayload)
+        const createdPurchaseOrder = created?.PurchaseOrder ?? null
+        const docNumber = normalizeText(createdPurchaseOrder?.DocNumber, 160) || nextDocNumber
+        const totalAmount = toMoney(createdPurchaseOrder?.TotalAmt)
+
+        createdPurchaseOrders.push({
+          quickBooksId: normalizeText(createdPurchaseOrder?.Id, 160) || null,
+          docNumber,
+          vendorId: vendorGroup.vendorId,
+          vendorName: vendorGroup.vendorName,
+          lineCount: vendorGroup.lines.length,
+          totalAmount,
+        })
+      }
+
+      const firstResolvedProjectLine = vendorGroups[0]?.lines?.[0] ?? null
+      const responseProject = resolvedDefaultProject || (firstResolvedProjectLine
+        ? {
+            id: firstResolvedProjectLine.projectId,
+            name: firstResolvedProjectLine.projectName,
+            projectNumber: firstResolvedProjectLine.projectNumber,
+            customerName: firstResolvedProjectLine.projectCustomerName,
+            active: true,
+          }
+        : null)
+
+      if (!responseProject) {
+        throw createHttpError('Could not resolve project for purchase order lines.', 500)
+      }
+
+      return res.status(201).json({
+        generatedAt: new Date().toISOString(),
+        project: responseProject,
+        createdProject: null,
+        startingPoNumber: String(safeStartingPoNumber),
+        poCount: createdPurchaseOrders.length,
+        lineCount: normalizedLines.length,
+        purchaseOrders: createdPurchaseOrders,
+      })
+    } catch (error) {
+      if (error?.code === 'PO_ITEM_AMBIGUOUS') {
+        return res.status(Number(error?.status || 409)).json({
+          error: error?.message || 'Multiple QuickBooks item matches found. Select one option.',
+          code: 'PO_ITEM_AMBIGUOUS',
+          ambiguities: Array.isArray(error?.ambiguities) ? error.ambiguities : [],
+        })
+      }
+
+      next(error)
+    }
+  })
 
   app.post('/api/purchasing/items/ai-search', requireFirebaseAuth, async (req, res, next) => {
     try {

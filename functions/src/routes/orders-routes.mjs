@@ -2,7 +2,18 @@
 // trigger does live Monday + QuickBooks pulls), and job-details (DB only,
 // Mongo-side prefilter on jobName).
 
-import { toMoneyOrZero as toMoney } from '../utils/value-utils.mjs'
+import {
+  QUICKBOOKS_API_BASE_URL_DEFAULT as quickBooksApiBaseUrlDefault,
+  QUICKBOOKS_TOKEN_URL as quickBooksTokenUrl,
+  normalizeQuickBooksApiBaseUrl,
+  resolveQuickBooksErrorMessage,
+  toIsoTimeFromNow,
+} from '../utils/quickbooks-utils.mjs'
+import {
+  buildFirebaseStorageDownloadUrl,
+  isExpiredAt,
+  toMoneyOrZero as toMoney,
+} from '../utils/value-utils.mjs'
 
 export function registerOrdersRoutes(app, deps) {
   const {
@@ -11,6 +22,7 @@ export function registerOrdersRoutes(app, deps) {
     fetchMondayBoardItemsByIds,
     fetchMondayStatusColumnOptions,
     getCollections,
+    getOrderPhotosBucket,
     mobileAlertTargetModeSelected,
     normalizeEmail,
     normalizeOptionalShortText,
@@ -25,10 +37,264 @@ export function registerOrdersRoutes(app, deps) {
     updateMondayItemTextColumn,
   } = deps
   const laborLookupsCacheTtlMs = 30 * 1000
+  const quickBooksTokenDocId = 'primary'
+  const quickBooksAccessTokenRefreshSkewMs = 2 * 60 * 1000
   let cachedLaborLookups = null
   let cachedLaborLookupsExpiresAt = 0
+  let ordersChatsIndexesPromise
   const linkedOrderNumberChangeMessage =
     'Sorry, this cannot be done because of its linked. If it needs to be done, contact admin.'
+
+  function sanitizeQuickBooksTokenText(value, maxLength = 8000) {
+    return String(value ?? '').trim().slice(0, maxLength)
+  }
+
+  function sanitizeStorageSegment(value, fallback = 'unknown') {
+    const normalized = String(value ?? '').trim().replace(/[^a-zA-Z0-9_-]+/g, '_')
+
+    if (!normalized) {
+      return fallback
+    }
+
+    return normalized.slice(0, 120)
+  }
+
+  function sanitizeDownloadFileName(value, fallbackFileName = 'invoice.pdf') {
+    const normalized = String(value ?? '').trim().replace(/[\\/:*?"<>|]+/g, '-')
+
+    if (!normalized) {
+      return fallbackFileName
+    }
+
+    return normalized
+  }
+
+  function ensurePdfFileName(value, fallbackFileName = 'invoice.pdf') {
+    const safeFileName = sanitizeDownloadFileName(value, fallbackFileName)
+
+    if (/\.pdf$/i.test(safeFileName)) {
+      return safeFileName
+    }
+
+    return `${safeFileName}.pdf`
+  }
+
+  async function exchangeQuickBooksRefreshToken({
+    clientId,
+    clientSecret,
+    refreshToken,
+  }) {
+    const encodedAuthToken = Buffer
+      .from(`${clientId}:${clientSecret}`)
+      .toString('base64')
+    const formData = new URLSearchParams()
+
+    formData.set('grant_type', 'refresh_token')
+    formData.set('refresh_token', sanitizeQuickBooksTokenText(refreshToken, 8000))
+
+    const response = await fetch(quickBooksTokenUrl, {
+      method: 'POST',
+      headers: {
+        Authorization: `Basic ${encodedAuthToken}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Accept: 'application/json',
+      },
+      body: formData.toString(),
+    })
+
+    const payload = await response.json().catch(() => ({}))
+
+    if (!response.ok) {
+      throw new Error(
+        `QuickBooks token request failed: ${resolveQuickBooksErrorMessage(payload, `status ${response.status}`)}`,
+      )
+    }
+
+    return payload
+  }
+
+  function mapQuickBooksRefreshPayload(payload, existingTokenDoc) {
+    const accessToken = sanitizeQuickBooksTokenText(payload?.access_token, 8000)
+    const refreshToken = sanitizeQuickBooksTokenText(payload?.refresh_token, 8000)
+
+    if (!accessToken || !refreshToken) {
+      throw new Error('QuickBooks token response is missing required token fields.')
+    }
+
+    return {
+      accessToken,
+      refreshToken,
+      tokenType: sanitizeQuickBooksTokenText(payload?.token_type, 40) || 'bearer',
+      accessTokenExpiresAt: toIsoTimeFromNow(payload?.expires_in),
+      refreshTokenExpiresAt:
+        toIsoTimeFromNow(payload?.x_refresh_token_expires_in)
+        ?? existingTokenDoc?.refreshTokenExpiresAt
+        ?? null,
+    }
+  }
+
+  async function refreshQuickBooksAccessToken({
+    quickBooksTokensCollection,
+    tokenDoc,
+    clientId,
+    clientSecret,
+  }) {
+    if (!tokenDoc?.refreshToken) {
+      throw new Error('QuickBooks is not connected yet. Connect QuickBooks first.')
+    }
+
+    if (isExpiredAt(tokenDoc.refreshTokenExpiresAt)) {
+      throw new Error('QuickBooks refresh token expired. Reconnect QuickBooks.')
+    }
+
+    const refreshPayload = await exchangeQuickBooksRefreshToken({
+      clientId,
+      clientSecret,
+      refreshToken: tokenDoc.refreshToken,
+    })
+    const normalizedToken = mapQuickBooksRefreshPayload(refreshPayload, tokenDoc)
+    const now = new Date().toISOString()
+
+    await quickBooksTokensCollection.updateOne(
+      { id: quickBooksTokenDocId },
+      {
+        $set: {
+          accessToken: normalizedToken.accessToken,
+          refreshToken: normalizedToken.refreshToken,
+          tokenType: normalizedToken.tokenType,
+          accessTokenExpiresAt: normalizedToken.accessTokenExpiresAt,
+          refreshTokenExpiresAt: normalizedToken.refreshTokenExpiresAt,
+          updatedAt: now,
+          lastRefreshAt: now,
+        },
+      },
+      { upsert: true },
+    )
+
+    return {
+      ...tokenDoc,
+      ...normalizedToken,
+      updatedAt: now,
+      lastRefreshAt: now,
+    }
+  }
+
+  async function resolveQuickBooksAccessToken({
+    quickBooksTokensCollection,
+    clientId,
+    clientSecret,
+    forceRefresh = false,
+  }) {
+    const tokenDoc = await quickBooksTokensCollection.findOne({
+      id: quickBooksTokenDocId,
+    })
+
+    if (!tokenDoc) {
+      throw new Error('QuickBooks is not connected yet. Connect QuickBooks first.')
+    }
+
+    const shouldRefresh = forceRefresh
+      || isExpiredAt(tokenDoc.accessTokenExpiresAt, quickBooksAccessTokenRefreshSkewMs)
+
+    if (!shouldRefresh && tokenDoc.accessToken) {
+      return tokenDoc
+    }
+
+    return refreshQuickBooksAccessToken({
+      quickBooksTokensCollection,
+      tokenDoc,
+      clientId,
+      clientSecret,
+    })
+  }
+
+  async function quickBooksQuery({
+    apiBaseUrl,
+    realmId,
+    accessToken,
+    query,
+  }) {
+    const endpoint = `${normalizeQuickBooksApiBaseUrl(apiBaseUrl)}/v3/company/${encodeURIComponent(realmId)}/query?minorversion=75&query=${encodeURIComponent(query)}`
+    const response = await fetch(endpoint, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json',
+      },
+    })
+
+    const responseText = await response.text().catch(() => '')
+    let payload = {}
+
+    if (responseText) {
+      try {
+        payload = JSON.parse(responseText)
+      } catch {
+        payload = {}
+      }
+    }
+
+    if (response.status === 401) {
+      throw Object.assign(new Error('QuickBooks access token is no longer valid.'), { status: 401 })
+    }
+
+    if (!response.ok) {
+      const bodySummary = sanitizeQuickBooksTokenText(String(responseText || '').replace(/\s+/g, ' '), 300)
+      const fallbackMessage = bodySummary
+        ? `status ${response.status} (${bodySummary})`
+        : `status ${response.status}`
+
+      throw Object.assign(
+        new Error(`QuickBooks query failed: ${resolveQuickBooksErrorMessage(payload, fallbackMessage)}`),
+        { status: response.status },
+      )
+    }
+
+    return payload
+  }
+
+  async function quickBooksDownloadInvoicePdf({
+    apiBaseUrl,
+    realmId,
+    accessToken,
+    invoiceId,
+  }) {
+    const endpoint = `${normalizeQuickBooksApiBaseUrl(apiBaseUrl)}/v3/company/${encodeURIComponent(realmId)}/invoice/${encodeURIComponent(invoiceId)}/pdf?minorversion=75`
+    const response = await fetch(endpoint, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/pdf',
+      },
+    })
+
+    if (response.status === 401) {
+      throw Object.assign(new Error('QuickBooks access token is no longer valid.'), { status: 401 })
+    }
+
+    if (!response.ok) {
+      const responseText = await response.text().catch(() => '')
+      const fallbackMessage = sanitizeQuickBooksTokenText(responseText || '', 240)
+      throw Object.assign(
+        new Error(
+          `QuickBooks invoice PDF download failed: ${fallbackMessage || `status ${response.status}`}`,
+        ),
+        { status: response.status },
+      )
+    }
+
+    const contentType = String(response.headers.get('content-type') ?? '').trim() || 'application/pdf'
+    const buffer = Buffer.from(await response.arrayBuffer())
+
+    return {
+      contentType,
+      buffer,
+    }
+  }
+
+  function escapeQuickBooksString(value) {
+    return String(value ?? '').replace(/'/g, "\\'")
+  }
 
   // ---- Helpers ----------------------------------------------------------
 
@@ -315,6 +581,184 @@ export function registerOrdersRoutes(app, deps) {
 
   function normalizeOrderNumberInput(value) {
     return normalizeOptionalShortText(value, 120)
+  }
+
+  function normalizeOrderChatUidList(input, maxItems = 25) {
+    const sourceItems = Array.isArray(input)
+      ? input
+      : [input]
+    const seen = new Set()
+    const normalized = []
+
+    for (const rawValue of sourceItems) {
+      const value = normalizeOptionalShortText(rawValue, 200)
+
+      if (!value || seen.has(value)) {
+        continue
+      }
+
+      seen.add(value)
+      normalized.push(value)
+
+      if (normalized.length >= maxItems) {
+        break
+      }
+    }
+
+    return normalized
+  }
+
+  function normalizeOrderChatReminderDate(value) {
+    const normalized = String(normalizeOptionalShortText(value, 16) ?? '').trim()
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+      return ''
+    }
+
+    const parsed = new Date(`${normalized}T00:00:00.000Z`)
+
+    if (Number.isNaN(parsed.getTime())) {
+      return ''
+    }
+
+    return normalized
+  }
+
+  function normalizeOrderChatReminderInput(input) {
+    const source = input && typeof input === 'object'
+      ? input
+      : {}
+    const dueDate = normalizeOrderChatReminderDate(source.dueDate)
+
+    if (!dueDate) {
+      return null
+    }
+
+    return {
+      dueDate,
+      note: normalizeOptionalShortText(source.note, 500) || null,
+      targetUserUids: normalizeOrderChatUidList(source.targetUserUids, 25),
+    }
+  }
+
+  function normalizeOrderChatMessage(value) {
+    return String(value ?? '').trim().slice(0, 4000)
+  }
+
+  function normalizeOrderChatContext(input) {
+    const source = input && typeof input === 'object'
+      ? input
+      : {}
+
+    return {
+      orderNumber: normalizeOrderNumberInput(source.orderNumber) || null,
+      mondayItemId: normalizeOptionalShortText(source.mondayItemId, 120) || null,
+      orderName: normalizeOptionalShortText(source.orderName, 250) || null,
+    }
+  }
+
+  function normalizeOrderChatOffset(value) {
+    const parsed = Number(value)
+
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      return 0
+    }
+
+    return Math.floor(parsed)
+  }
+
+  function normalizeOrderChatLimit(value) {
+    const parsed = Number(value)
+
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      return 150
+    }
+
+    return Math.min(500, Math.max(1, Math.floor(parsed)))
+  }
+
+  async function getOrdersChatsCollection(collectionsFromCaller = null) {
+    const collections = collectionsFromCaller ?? await getCollections()
+    const ordersDatabase = collections?.databasesByDomain?.orders
+
+    if (!ordersDatabase) {
+      throw new Error('Orders database is unavailable.')
+    }
+
+    const ordersChatsCollection = ordersDatabase.collection('orders_chats')
+
+    if (!ordersChatsIndexesPromise) {
+      ordersChatsIndexesPromise = Promise.all([
+        ordersChatsCollection.createIndex({ id: 1 }, { unique: true }),
+        ordersChatsCollection.createIndex({ orderId: 1, createdAt: 1 }),
+        ordersChatsCollection.createIndex({ 'reminder.dueDate': 1, 'reminder.notifiedAt': 1 }),
+        ordersChatsCollection.createIndex({ createdAt: -1 }),
+      ])
+    }
+
+    try {
+      await ordersChatsIndexesPromise
+    } catch (error) {
+      ordersChatsIndexesPromise = undefined
+      throw error
+    }
+
+    return ordersChatsCollection
+  }
+
+  function canManageOrderChatMessage({ publicUser, authUser, chatMessage }) {
+    if (publicUser?.isApproved && publicUser?.isAdmin) {
+      return true
+    }
+
+    const requesterUid = normalizeOptionalShortText(authUser?.uid, 200)
+    const requesterEmail = normalizeEmail(authUser?.email)
+    const createdByUid = normalizeOptionalShortText(chatMessage?.createdByUid, 200)
+    const createdByEmail = normalizeEmail(chatMessage?.createdByEmail)
+
+    return Boolean(
+      (requesterUid && createdByUid && requesterUid === createdByUid)
+      || (requesterEmail && createdByEmail && requesterEmail === createdByEmail),
+    )
+  }
+
+  async function createOrderChatInAppAlert({
+    mobileAlertsCollection,
+    title,
+    message,
+    createdByUid,
+    createdByEmail,
+    recipientUids,
+    metadata,
+  }) {
+    if (!Array.isArray(recipientUids) || recipientUids.length === 0) {
+      return
+    }
+
+    const now = new Date().toISOString()
+
+    await mobileAlertsCollection.insertOne({
+      id: randomUUID(),
+      title,
+      message,
+      isUpdate: false,
+      targetMode: mobileAlertTargetModeSelected,
+      targetUserUids: recipientUids,
+      createdByUid: createdByUid || null,
+      createdByEmail: createdByEmail || null,
+      delivery: {
+        targetUserCount: recipientUids.length,
+        pushTokenCount: 0,
+        pushAcceptedCount: 0,
+        pushErrorCount: 0,
+        errorSamples: [],
+      },
+      metadata: metadata && typeof metadata === 'object'
+        ? metadata
+        : {},
+      createdAt: now,
+      updatedAt: now,
+    })
   }
 
   function hasLinkedOrderNumberBlockers(linkState) {
@@ -873,6 +1317,8 @@ export function registerOrdersRoutes(app, deps) {
           : null,
       invoiceAmount: Number.isFinite(Number(orderDocument?.invoiceAmount)) ? Number(orderDocument.invoiceAmount) : null,
       invoiceNumber: String(orderDocument?.invoiceNumber ?? '').trim() || null,
+      invoiceCachedUrl: String(orderDocument?.invoice_pdf_cached_url ?? '').trim() || null,
+      invoiceFileName: String(orderDocument?.invoice_pdf_file_name ?? '').trim() || null,
       paidInFull,
       amountOwed,
       billBalanceAmount,
@@ -979,6 +1425,8 @@ export function registerOrdersRoutes(app, deps) {
               billedAmount: 1,
               invoiceNumber: 1,
               invoiceAmount: 1,
+              invoice_pdf_cached_url: 1,
+              invoice_pdf_file_name: 1,
               paidInFull: 1,
               poAmount: 1,
               shipped_at: 1,
@@ -1041,6 +1489,308 @@ export function registerOrdersRoutes(app, deps) {
         },
         orders: rows,
       })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  // GET /api/orders/invoice/download — open cached invoice PDF when available;
+  // otherwise fetch once from QuickBooks, store in Firebase Storage + Mongo,
+  // and serve the saved version.
+  app.get('/api/orders/invoice/download', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const orderId = String(req.query?.orderId ?? '').trim()
+      const orderNumber = String(req.query?.orderNumber ?? '').trim()
+
+      if (!orderId && !orderNumber) {
+        return res.status(400).json({ error: 'orderId or orderNumber is required.' })
+      }
+
+      const {
+        ordersUnifiedCollection,
+        quickBooksTokensCollection,
+      } = await getCollections()
+      const bucket = typeof getOrderPhotosBucket === 'function' ? getOrderPhotosBucket() : null
+
+      if (!bucket) {
+        throw Object.assign(new Error('Order photo storage bucket is unavailable.'), { status: 500 })
+      }
+
+      const orderFilters = []
+
+      if (orderId) {
+        orderFilters.push({ monday_item_id: orderId })
+      }
+
+      if (orderNumber) {
+        orderFilters.push({ order_number: orderNumber })
+      }
+
+      const orderDocument = await ordersUnifiedCollection.findOne(
+        orderFilters.length <= 1
+          ? (orderFilters[0] ?? {})
+          : { $or: orderFilters },
+        {
+          projection: {
+            _id: 0,
+            orderKey: 1,
+            monday_item_id: 1,
+            order_number: 1,
+            invoiceNumber: 1,
+            invoice_pdf_cached_url: 1,
+            invoice_pdf_file_name: 1,
+            invoice_qb_id: 1,
+            invoice_qb_doc_number: 1,
+          },
+        },
+      )
+
+      if (!orderDocument) {
+        return res.status(404).json({ error: 'Order was not found.' })
+      }
+
+      let cachedInvoiceUrl = String(orderDocument?.invoice_pdf_cached_url ?? '').trim()
+      let cachedInvoiceFileName = ensurePdfFileName(
+        String(orderDocument?.invoice_pdf_file_name ?? '').trim(),
+        `${sanitizeStorageSegment(orderDocument?.order_number || orderDocument?.monday_item_id || orderId || orderNumber || 'order')}-invoice.pdf`,
+      )
+
+      if (!cachedInvoiceUrl) {
+        const invoiceNumberTokens = String(orderDocument?.invoiceNumber ?? '')
+          .split(',')
+          .map((value) => sanitizeQuickBooksTokenText(value, 180))
+          .filter(Boolean)
+
+        if (invoiceNumberTokens.length === 0) {
+          return res.status(404).json({ error: 'No invoice number is linked to this order.' })
+        }
+
+        const clientId = sanitizeQuickBooksTokenText(process.env.QUICKBOOKS_CLIENT_ID, 300)
+        const clientSecret = sanitizeQuickBooksTokenText(process.env.QUICKBOOKS_CLIENT_SECRET, 300)
+
+        if (!clientId || !clientSecret) {
+          return res.status(500).json({
+            error: 'QuickBooks is not configured. Set QUICKBOOKS_CLIENT_ID and QUICKBOOKS_CLIENT_SECRET.',
+          })
+        }
+
+        let tokenDoc = await resolveQuickBooksAccessToken({
+          quickBooksTokensCollection,
+          clientId,
+          clientSecret,
+        })
+        const realmId = sanitizeQuickBooksTokenText(tokenDoc?.realmId, 160)
+
+        if (!realmId) {
+          return res.status(409).json({
+            error: 'QuickBooks connection is missing realmId. Reconnect QuickBooks.',
+          })
+        }
+
+        let apiBaseUrl = normalizeQuickBooksApiBaseUrl(
+          sanitizeQuickBooksTokenText(tokenDoc?.apiBaseUrl, 400)
+          || sanitizeQuickBooksTokenText(process.env.QUICKBOOKS_API_BASE_URL, 400)
+          || quickBooksApiBaseUrlDefault,
+        )
+        let matchedInvoice = null
+        let matchedInvoiceNumber = ''
+
+        for (const invoiceNumberToken of invoiceNumberTokens) {
+          const invoiceQuery = `SELECT Id, DocNumber, TxnDate FROM Invoice WHERE DocNumber = '${escapeQuickBooksString(invoiceNumberToken)}' ORDER BY MetaData.LastUpdatedTime DESC STARTPOSITION 1 MAXRESULTS 10`
+          let queryPayload = null
+
+          try {
+            queryPayload = await quickBooksQuery({
+              apiBaseUrl,
+              realmId,
+              accessToken: tokenDoc.accessToken,
+              query: invoiceQuery,
+            })
+          } catch (error) {
+            if (Number(error?.status) !== 401) {
+              throw error
+            }
+
+            tokenDoc = await resolveQuickBooksAccessToken({
+              quickBooksTokensCollection,
+              clientId,
+              clientSecret,
+              forceRefresh: true,
+            })
+            apiBaseUrl = normalizeQuickBooksApiBaseUrl(
+              sanitizeQuickBooksTokenText(tokenDoc?.apiBaseUrl, 400)
+              || sanitizeQuickBooksTokenText(process.env.QUICKBOOKS_API_BASE_URL, 400)
+              || quickBooksApiBaseUrlDefault,
+            )
+            queryPayload = await quickBooksQuery({
+              apiBaseUrl,
+              realmId,
+              accessToken: tokenDoc.accessToken,
+              query: invoiceQuery,
+            })
+          }
+
+          const invoiceRows = Array.isArray(queryPayload?.QueryResponse?.Invoice)
+            ? queryPayload.QueryResponse.Invoice
+            : []
+
+          if (invoiceRows.length > 0) {
+            matchedInvoice = invoiceRows[0]
+            matchedInvoiceNumber = invoiceNumberToken
+            break
+          }
+        }
+
+        if (!matchedInvoice) {
+          return res.status(404).json({
+            error: 'Invoice PDF was not found in QuickBooks for this order.',
+          })
+        }
+
+        const resolvedInvoiceId = sanitizeQuickBooksTokenText(matchedInvoice?.Id, 160)
+        const resolvedInvoiceDocNumber = sanitizeQuickBooksTokenText(
+          matchedInvoice?.DocNumber,
+          160,
+        ) || matchedInvoiceNumber
+
+        if (!resolvedInvoiceId) {
+          return res.status(404).json({
+            error: 'Invoice PDF was not found in QuickBooks for this order.',
+          })
+        }
+
+        let invoicePdfResult = null
+
+        try {
+          invoicePdfResult = await quickBooksDownloadInvoicePdf({
+            apiBaseUrl,
+            realmId,
+            accessToken: tokenDoc.accessToken,
+            invoiceId: resolvedInvoiceId,
+          })
+        } catch (error) {
+          if (Number(error?.status) !== 401) {
+            throw error
+          }
+
+          tokenDoc = await resolveQuickBooksAccessToken({
+            quickBooksTokensCollection,
+            clientId,
+            clientSecret,
+            forceRefresh: true,
+          })
+          apiBaseUrl = normalizeQuickBooksApiBaseUrl(
+            sanitizeQuickBooksTokenText(tokenDoc?.apiBaseUrl, 400)
+            || sanitizeQuickBooksTokenText(process.env.QUICKBOOKS_API_BASE_URL, 400)
+            || quickBooksApiBaseUrlDefault,
+          )
+          invoicePdfResult = await quickBooksDownloadInvoicePdf({
+            apiBaseUrl,
+            realmId,
+            accessToken: tokenDoc.accessToken,
+            invoiceId: resolvedInvoiceId,
+          })
+        }
+
+        if (!invoicePdfResult?.buffer || invoicePdfResult.buffer.length <= 0) {
+          return res.status(404).json({
+            error: 'Invoice PDF was not found in QuickBooks for this order.',
+          })
+        }
+
+        const storageOrderId = sanitizeStorageSegment(
+          orderDocument?.monday_item_id
+          || orderDocument?.order_number
+          || orderId
+          || orderNumber,
+          'order',
+        )
+        const docSegment = sanitizeStorageSegment(resolvedInvoiceDocNumber || resolvedInvoiceId, 'invoice')
+        cachedInvoiceFileName = ensurePdfFileName(
+          `${storageOrderId}-invoice-${docSegment}.pdf`,
+          `${storageOrderId}-invoice.pdf`,
+        )
+        const storagePath = `quickbooks-invoices/${storageOrderId}/${sanitizeDownloadFileName(cachedInvoiceFileName, `${storageOrderId}-invoice.pdf`)}`
+        const downloadToken = typeof randomUUID === 'function'
+          ? randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`
+        const now = new Date().toISOString()
+
+        await bucket.file(storagePath).save(invoicePdfResult.buffer, {
+          resumable: false,
+          metadata: {
+            contentType: invoicePdfResult.contentType || 'application/pdf',
+            metadata: {
+              firebaseStorageDownloadTokens: downloadToken,
+              mondayItemId: sanitizeQuickBooksTokenText(orderDocument?.monday_item_id, 120) || null,
+              orderNumber: sanitizeQuickBooksTokenText(orderDocument?.order_number, 120) || null,
+              quickBooksInvoiceId: resolvedInvoiceId,
+              quickBooksInvoiceNumber: resolvedInvoiceDocNumber,
+              syncedAt: now,
+            },
+          },
+        })
+
+        cachedInvoiceUrl = buildFirebaseStorageDownloadUrl(bucket.name, storagePath, downloadToken)
+
+        const resolvedOrderKey = String(orderDocument?.orderKey ?? '').trim()
+        const resolvedMondayItemId = String(orderDocument?.monday_item_id ?? '').trim()
+        const resolvedOrderNumber = String(orderDocument?.order_number ?? '').trim()
+        const invoiceUpdateFilter = resolvedOrderKey
+          ? { orderKey: resolvedOrderKey }
+          : resolvedMondayItemId
+            ? { monday_item_id: resolvedMondayItemId }
+            : resolvedOrderNumber
+              ? { order_number: resolvedOrderNumber }
+              : null
+
+        if (invoiceUpdateFilter) {
+          await ordersUnifiedCollection.updateOne(
+            invoiceUpdateFilter,
+            {
+              $set: {
+                invoice_pdf_storage_path: storagePath,
+                invoice_pdf_cached_url: cachedInvoiceUrl,
+                invoice_pdf_cached_at: now,
+                invoice_pdf_file_name: cachedInvoiceFileName,
+                invoice_qb_id: resolvedInvoiceId,
+                invoice_qb_doc_number: resolvedInvoiceDocNumber,
+                invoice_pdf_cache_status: 'ready',
+                invoice_pdf_cache_error: null,
+                updatedAt: now,
+              },
+            },
+          )
+        }
+
+        res.setHeader('Content-Type', invoicePdfResult.contentType || 'application/pdf')
+        res.setHeader('Content-Disposition', `inline; filename="${cachedInvoiceFileName.replace(/"/g, '')}"`)
+        res.setHeader('Cache-Control', 'private, max-age=120')
+        return res.status(200).send(invoicePdfResult.buffer)
+      }
+
+      const upstreamResponse = await fetch(cachedInvoiceUrl)
+
+      if (!upstreamResponse.ok) {
+        return res.status(502).json({
+          error: 'Could not load the cached invoice right now.',
+        })
+      }
+
+      const contentType =
+        String(upstreamResponse.headers.get('content-type') ?? '').trim()
+        || 'application/pdf'
+      const contentLength = String(upstreamResponse.headers.get('content-length') ?? '').trim()
+      const buffer = Buffer.from(await upstreamResponse.arrayBuffer())
+
+      res.setHeader('Content-Type', contentType)
+      res.setHeader('Content-Disposition', `inline; filename="${cachedInvoiceFileName.replace(/"/g, '')}"`)
+      res.setHeader('Cache-Control', 'private, max-age=120')
+      if (contentLength) {
+        res.setHeader('Content-Length', contentLength)
+      }
+
+      return res.status(200).send(buffer)
     } catch (error) {
       next(error)
     }
@@ -1635,6 +2385,475 @@ export function registerOrdersRoutes(app, deps) {
       }
     },
   )
+
+  app.get('/api/orders/chat-users', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const publicUser = toPublicAuthUser(req.authUser)
+
+      if (!publicUser?.isApproved) {
+        return res.status(403).json({
+          error: 'Approved access is required.',
+        })
+      }
+
+      const { authUsersCollection } = await getCollections()
+      const userDocuments = await authUsersCollection
+        .find(
+          {
+            approvalStatus: authApprovalApproved,
+          },
+          {
+            projection: {
+              _id: 0,
+            },
+          },
+        )
+        .toArray()
+
+      const users = userDocuments
+        .map((document) => toPublicAuthUser(document))
+        .map((user) => {
+          const uid = normalizeOptionalShortText(user?.uid, 200)
+          const email = normalizeEmail(user?.email)
+
+          if (!uid || !email) {
+            return null
+          }
+
+          return {
+            uid,
+            email,
+            displayName: normalizeOptionalShortText(user?.displayName, 200) || null,
+            isAdmin: Boolean(user?.isAdmin),
+            isSalesRep: Boolean(user?.isSalesRep),
+            hasWebAccess: Boolean(user?.hasWebAccess),
+            hasAppAccess: Boolean(user?.hasAppAccess),
+            lastActivityAt: String(user?.lastActivityAt ?? '').trim() || null,
+          }
+        })
+        .filter(Boolean)
+        .sort((left, right) => {
+          const leftLabel = String(left.displayName ?? left.email).toLowerCase()
+          const rightLabel = String(right.displayName ?? right.email).toLowerCase()
+
+          if (leftLabel === rightLabel) {
+            return left.email.localeCompare(right.email)
+          }
+
+          return leftLabel.localeCompare(rightLabel)
+        })
+
+      return res.json({
+        users,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/orders/:orderId/chats', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const publicUser = toPublicAuthUser(req.authUser)
+
+      if (!publicUser?.isApproved) {
+        return res.status(403).json({
+          error: 'Approved access is required.',
+        })
+      }
+
+      const orderId = normalizeOptionalShortText(req.params.orderId, 220)
+      const offset = normalizeOrderChatOffset(req.query?.offset)
+      const limit = normalizeOrderChatLimit(req.query?.limit)
+
+      if (!orderId) {
+        return res.status(400).json({
+          error: 'orderId is required.',
+        })
+      }
+
+      const collections = await getCollections()
+      const ordersChatsCollection = await getOrdersChatsCollection(collections)
+      const filter = {
+        orderId,
+      }
+
+      const [total, messages] = await Promise.all([
+        ordersChatsCollection.countDocuments(filter),
+        ordersChatsCollection
+          .find(
+            filter,
+            {
+              projection: {
+                _id: 0,
+                id: 1,
+                orderId: 1,
+                orderNumber: 1,
+                mondayItemId: 1,
+                orderName: 1,
+                message: 1,
+                mentionUserUids: 1,
+                mentionUserEmails: 1,
+                reminder: 1,
+                createdAt: 1,
+                createdByUid: 1,
+                createdByEmail: 1,
+                createdByName: 1,
+                updatedAt: 1,
+                updatedByUid: 1,
+                updatedByEmail: 1,
+                updatedByName: 1,
+              },
+            },
+          )
+          .sort({ createdAt: 1, id: 1 })
+          .skip(offset)
+          .limit(limit)
+          .toArray(),
+      ])
+
+      return res.json({
+        messages,
+        total,
+        offset,
+        limit,
+        hasMore: offset + messages.length < total,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.post('/api/orders/:orderId/chats', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const publicUser = toPublicAuthUser(req.authUser)
+
+      if (!publicUser?.isApproved) {
+        return res.status(403).json({
+          error: 'Approved access is required.',
+        })
+      }
+
+      const orderId = normalizeOptionalShortText(req.params.orderId, 220)
+      const body = req.body && typeof req.body === 'object'
+        ? req.body
+        : {}
+      const messageText = normalizeOrderChatMessage(body.message)
+      const requestedMentionUserUids = normalizeOrderChatUidList(body.mentionUserUids, 25)
+      const requestedReminder = normalizeOrderChatReminderInput(body.reminder)
+      const orderContext = normalizeOrderChatContext(body)
+
+      if (!orderId) {
+        return res.status(400).json({
+          error: 'orderId is required.',
+        })
+      }
+
+      if (!messageText) {
+        return res.status(400).json({
+          error: 'message is required.',
+        })
+      }
+
+      if (body.reminder && !requestedReminder) {
+        return res.status(400).json({
+          error: 'reminder.dueDate must be a valid ISO date in YYYY-MM-DD format.',
+        })
+      }
+
+      const collections = await getCollections()
+      const { authUsersCollection, mobileAlertsCollection } = collections
+      const ordersChatsCollection = await getOrdersChatsCollection(collections)
+
+      const now = new Date().toISOString()
+      const requesterUid = normalizeOptionalShortText(req.authUser?.uid, 200)
+      const requesterEmail = normalizeEmail(req.authUser?.email) || null
+      const requestedRecipientUids = normalizeOrderChatUidList([
+        ...requestedMentionUserUids,
+        ...(requestedReminder?.targetUserUids ?? []),
+      ], 50)
+      const recipientUsers = requestedRecipientUids.length > 0
+        ? await authUsersCollection
+          .find(
+            {
+              uid: {
+                $in: requestedRecipientUids,
+              },
+              approvalStatus: authApprovalApproved,
+            },
+            {
+              projection: {
+                _id: 0,
+              },
+            },
+          )
+          .toArray()
+        : []
+      const recipientByUid = new Map(
+        recipientUsers
+          .map((document) => toPublicAuthUser(document))
+          .filter((user) => Boolean(user?.uid))
+          .map((user) => [user.uid, user]),
+      )
+      const mentionRecipientUids = requestedMentionUserUids
+        .filter((uid) => uid !== requesterUid)
+        .filter((uid) => recipientByUid.has(uid))
+      const mentionRecipientEmails = mentionRecipientUids
+        .map((uid) => normalizeEmail(recipientByUid.get(uid)?.email))
+        .filter(Boolean)
+      const reminderRecipientUids = (requestedReminder?.targetUserUids ?? [])
+        .filter((uid) => recipientByUid.has(uid))
+      const reminderRecipientEmails = reminderRecipientUids
+        .map((uid) => normalizeEmail(recipientByUid.get(uid)?.email))
+        .filter(Boolean)
+      const reminder = requestedReminder
+        ? {
+          id: randomUUID(),
+          dueDate: requestedReminder.dueDate,
+          note: requestedReminder.note || null,
+          targetUserUids: reminderRecipientUids,
+          targetUserEmails: reminderRecipientEmails,
+          notifiedAt: null,
+          createdAt: now,
+        }
+        : null
+
+      const message = {
+        id: randomUUID(),
+        orderId,
+        orderNumber: orderContext.orderNumber,
+        mondayItemId: orderContext.mondayItemId,
+        orderName: orderContext.orderName,
+        message: messageText,
+        mentionUserUids: mentionRecipientUids,
+        mentionUserEmails: mentionRecipientEmails,
+        reminder,
+        createdAt: now,
+        createdByUid: requesterUid || null,
+        createdByEmail: requesterEmail,
+        createdByName: normalizeOptionalShortText(publicUser?.displayName, 200) || null,
+      }
+
+      await ordersChatsCollection.insertOne(message)
+
+      if (mentionRecipientUids.length > 0) {
+        const orderLabel = orderContext.orderNumber || orderContext.orderName || orderId
+        await createOrderChatInAppAlert({
+          mobileAlertsCollection,
+          title: `Mentioned in order chat: ${orderLabel}`,
+          message: `${normalizeOptionalShortText(publicUser?.displayName || requesterEmail || 'A teammate', 120)} mentioned you: ${messageText.slice(0, 300)}`,
+          createdByUid: requesterUid,
+          createdByEmail: requesterEmail,
+          recipientUids: mentionRecipientUids,
+          metadata: {
+            source: 'orders_chat_mention',
+            orderId,
+            orderNumber: orderContext.orderNumber,
+            mondayItemId: orderContext.mondayItemId,
+            orderName: orderContext.orderName,
+            chatMessageId: message.id,
+          },
+        })
+      }
+
+      return res.status(201).json({
+        message,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.patch('/api/orders/:orderId/chats/:messageId', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const publicUser = toPublicAuthUser(req.authUser)
+
+      if (!publicUser?.isApproved) {
+        return res.status(403).json({
+          error: 'Approved access is required.',
+        })
+      }
+
+      const orderId = normalizeOptionalShortText(req.params.orderId, 220)
+      const messageId = normalizeOptionalShortText(req.params.messageId, 160)
+      const body = req.body && typeof req.body === 'object'
+        ? req.body
+        : {}
+      const messageText = normalizeOrderChatMessage(body.message)
+
+      if (!orderId) {
+        return res.status(400).json({
+          error: 'orderId is required.',
+        })
+      }
+
+      if (!messageId) {
+        return res.status(400).json({
+          error: 'messageId is required.',
+        })
+      }
+
+      if (!messageText) {
+        return res.status(400).json({
+          error: 'message is required.',
+        })
+      }
+
+      const collections = await getCollections()
+      const ordersChatsCollection = await getOrdersChatsCollection(collections)
+
+      const existingMessage = await ordersChatsCollection.findOne(
+        {
+          id: messageId,
+          orderId,
+        },
+        {
+          projection: {
+            _id: 0,
+            id: 1,
+            orderId: 1,
+            createdByUid: 1,
+            createdByEmail: 1,
+          },
+        },
+      )
+
+      if (!existingMessage) {
+        return res.status(404).json({
+          error: 'Chat message not found.',
+        })
+      }
+
+      if (!canManageOrderChatMessage({
+        publicUser,
+        authUser: req.authUser,
+        chatMessage: existingMessage,
+      })) {
+        return res.status(403).json({
+          error: 'You can only edit your own chat messages unless you are an admin.',
+        })
+      }
+
+      const now = new Date().toISOString()
+      const message = await ordersChatsCollection.findOneAndUpdate(
+        {
+          id: messageId,
+          orderId,
+        },
+        {
+          $set: {
+            message: messageText,
+            updatedAt: now,
+            updatedByUid: normalizeOptionalShortText(req.authUser?.uid, 200) || null,
+            updatedByEmail: normalizeEmail(req.authUser?.email) || null,
+            updatedByName: normalizeOptionalShortText(publicUser?.displayName, 200) || null,
+          },
+        },
+        {
+          returnDocument: 'after',
+          projection: {
+            _id: 0,
+            id: 1,
+            orderId: 1,
+            orderNumber: 1,
+            mondayItemId: 1,
+            orderName: 1,
+            message: 1,
+            mentionUserUids: 1,
+            mentionUserEmails: 1,
+            reminder: 1,
+            createdAt: 1,
+            createdByUid: 1,
+            createdByEmail: 1,
+            createdByName: 1,
+            updatedAt: 1,
+            updatedByUid: 1,
+            updatedByEmail: 1,
+            updatedByName: 1,
+          },
+        },
+      )
+
+      return res.json({
+        message,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.delete('/api/orders/:orderId/chats/:messageId', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const publicUser = toPublicAuthUser(req.authUser)
+
+      if (!publicUser?.isApproved) {
+        return res.status(403).json({
+          error: 'Approved access is required.',
+        })
+      }
+
+      const orderId = normalizeOptionalShortText(req.params.orderId, 220)
+      const messageId = normalizeOptionalShortText(req.params.messageId, 160)
+
+      if (!orderId) {
+        return res.status(400).json({
+          error: 'orderId is required.',
+        })
+      }
+
+      if (!messageId) {
+        return res.status(400).json({
+          error: 'messageId is required.',
+        })
+      }
+
+      const collections = await getCollections()
+      const ordersChatsCollection = await getOrdersChatsCollection(collections)
+
+      const existingMessage = await ordersChatsCollection.findOne(
+        {
+          id: messageId,
+          orderId,
+        },
+        {
+          projection: {
+            _id: 0,
+            id: 1,
+            orderId: 1,
+            createdByUid: 1,
+            createdByEmail: 1,
+          },
+        },
+      )
+
+      if (!existingMessage) {
+        return res.status(404).json({
+          error: 'Chat message not found.',
+        })
+      }
+
+      if (!canManageOrderChatMessage({
+        publicUser,
+        authUser: req.authUser,
+        chatMessage: existingMessage,
+      })) {
+        return res.status(403).json({
+          error: 'You can only delete your own chat messages unless you are an admin.',
+        })
+      }
+
+      await ordersChatsCollection.deleteOne({
+        id: messageId,
+        orderId,
+      })
+
+      return res.json({
+        ok: true,
+        messageId,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
 
   // GET /api/orders/job-details — DB only. Mongo-side prefilter on jobName
   // (digit-token + normalized regex) keeps this off the full-collection scan.

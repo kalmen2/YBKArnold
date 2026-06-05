@@ -526,8 +526,10 @@ export type CrmQuote = {
   id: string
   dealerSourceId: string
   dealerName: string
+  dealerState?: string | null
   companyName?: string | null
   salesRep?: string | null
+  projectType?: string | null
   opportunityDate?: string | null
   opportunityStage?: CrmOpportunityStage | null
   contactSourceId?: string | null
@@ -573,8 +575,10 @@ export type CrmQuotesResponse = {
 export type CrmQuoteUpsertInput = {
   dealerSourceId?: string | null
   title: string
+  dealerState?: string | null
   companyName?: string | null
   salesRep?: string | null
+  projectType?: string | null
   opportunityDate?: string | null
   opportunityStage?: CrmOpportunityStage | null
   contactSourceId?: string | null
@@ -605,6 +609,50 @@ export type CrmQuoteUpsertInput = {
   acceptedAt?: string | null
   rejectedAt?: string | null
   notes?: string | null
+}
+
+export type CrmExcelQuoteSyncInput = {
+  quoteNumber: string
+  title?: string | null
+  companyName?: string | null
+  salesRep?: string | null
+  dealerState?: string | null
+  projectType?: string | null
+  opportunityDate?: string | null
+  contactName?: string | null
+  contactEmail?: string | null
+  contactPhone?: string | null
+  paymentTerms?: string | null
+  leadTime?: string | null
+  subtotal?: number | null
+  freight?: number | null
+  freightDescription?: string | null
+  totalAmount?: number | null
+  lineItems?: CrmQuoteLineItem[]
+}
+
+export type CrmExcelQuoteSyncResponse = {
+  ok: boolean
+  found: boolean
+  fromStage: CrmOpportunityStage | string
+  toStage: CrmOpportunityStage | string
+  quoteNumber: string
+  quote: CrmQuote | null
+  message?: string
+}
+
+export type CrmExcelQuoteLookupResponse = {
+  found: boolean
+  id?: string
+  quoteNumber?: string | null
+  opportunityStage?: CrmOpportunityStage | string | null
+  status?: string | null
+  dealerName?: string | null
+  title?: string | null
+  salesRep?: string | null
+  dealerState?: string | null
+  projectType?: string | null
+  error?: string
 }
 
 export type CrmOrderStatus =
@@ -919,13 +967,28 @@ export function fetchCrmEngagementReadiness(options: {
   )
 }
 
-export function fetchCrmQuotes(options: { limit?: number; status?: string; dealerSourceId?: string; quoteNumber?: string } = {}) {
+export function fetchCrmQuotes(options: {
+  limit?: number
+  status?: string
+  dealerSourceId?: string
+  quoteNumber?: string
+  search?: string
+  salesRep?: string
+  dealerState?: string
+  projectType?: string
+  lifecycle?: string
+} = {}) {
   return apiRequest<CrmQuotesResponse>(
     withQuery('/api/crm/quotes', {
       limit: options.limit ?? 150,
       status: options.status ?? undefined,
       dealerSourceId: options.dealerSourceId ?? undefined,
       quoteNumber: options.quoteNumber ?? undefined,
+      search: options.search ?? undefined,
+      salesRep: options.salesRep ?? undefined,
+      dealerState: options.dealerState ?? undefined,
+      projectType: options.projectType ?? undefined,
+      lifecycle: options.lifecycle ?? undefined,
     }),
   )
 }
@@ -948,6 +1011,21 @@ export function removeCrmQuote(quoteId: string) {
   return apiRequest<{ ok: boolean; quote: CrmQuote }>(`/api/crm/quotes/${encodeURIComponent(quoteId)}`, {
     method: 'DELETE',
   })
+}
+
+export function syncCrmQuoteFromExcel(input: CrmExcelQuoteSyncInput) {
+  return apiRequest<CrmExcelQuoteSyncResponse>('/api/crm/quotes/excel-sync', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export function fetchCrmExcelQuoteLookup(quoteNumber: string) {
+  return apiRequest<CrmExcelQuoteLookupResponse>(
+    withQuery('/api/crm/quotes/excel-lookup', {
+      quoteNumber,
+    }),
+  )
 }
 
 export function fetchCrmOrders(options: { limit?: number; status?: string; dealerSourceId?: string } = {}) {

@@ -1,7 +1,7 @@
 module.exports = {
   project: {
     android: {
-      packageName: 'com.ybk.arnold',
+      packageName: 'com.arnold.app',
     },
   },
 }

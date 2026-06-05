@@ -1,9 +1,9 @@
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded'
 import HistoryRoundedIcon from '@mui/icons-material/HistoryRounded'
 import PictureAsPdfRoundedIcon from '@mui/icons-material/PictureAsPdfRounded'
-import FormatListBulletedRoundedIcon from '@mui/icons-material/FormatListBulletedRounded'
 import LocalShippingRoundedIcon from '@mui/icons-material/LocalShippingRounded'
 import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded'
+import ChatBubbleOutlineRoundedIcon from '@mui/icons-material/ChatBubbleOutlineRounded'
 import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded'
 import {
   Alert,
@@ -41,11 +41,9 @@ import {
 import { formatCurrency, formatDate } from '../../lib/formatters'
 import { QUERY_KEYS } from '../../lib/queryKeys'
 import type { JobDetailsMode } from './JobDetailsDialog'
-import { type CutListPreviewHandle } from './CutListPreview.tsx'
 import { type ShopDrawingPreviewHandle } from './ShopDrawingPreview'
 import type { OrdersListTab } from './useOrdersOverview'
 import { resolveBolUrl } from './bolUrl'
-import { resolveCutListUrl } from './cutListUrl.ts'
 import { resolveShopDrawingUrl } from './shopDrawingUrl'
 import { formatProgress, resolveOrderProjectIds } from './utils'
 
@@ -366,7 +364,6 @@ type OrdersGridProps = {
   lastRefreshedAt: string | null
   isLoading: boolean
   shopDrawingHandle: React.MutableRefObject<ShopDrawingPreviewHandle | null>
-  cutListHandle: React.MutableRefObject<CutListPreviewHandle | null>
   onOpenBolDocument: (order: OrdersOverviewOrder) => void
   onOpenJobDialog: (order: OrdersOverviewOrder, mode: JobDetailsMode) => void
   onOpenQuickBooksDialog: (
@@ -374,6 +371,7 @@ type OrdersGridProps = {
     metric: OrdersQuickBooksDrilldownMetric,
   ) => void
   onCopyOrderNumber: (orderNumber: string) => void
+  onOpenOrderChat: (order: OrdersOverviewOrder) => void
   onMissingMondayLink: () => void
 }
 
@@ -385,11 +383,11 @@ export function OrdersGrid({
   lastRefreshedAt,
   isLoading,
   shopDrawingHandle,
-  cutListHandle,
   onOpenBolDocument,
   onOpenJobDialog,
   onOpenQuickBooksDialog,
   onCopyOrderNumber,
+  onOpenOrderChat,
   onMissingMondayLink,
 }: OrdersGridProps) {
   const queryClient = useQueryClient()
@@ -693,21 +691,20 @@ export function OrdersGrid({
             aria-label="Copy order number"
             title="Copy order number"
             onClick={() => onCopyOrderNumber(row.orderNumber)}
+            sx={{ p: 0.05 }}
           >
-            <ContentCopyRoundedIcon fontSize="inherit" />
+            <ContentCopyRoundedIcon sx={{ fontSize: '0.19rem' }} />
           </IconButton>
-          {row.mondayItemUrl ? (
-            <IconButton
-              size="small"
-              aria-label="Open Monday item"
-              title="Open Monday item"
-              href={row.mondayItemUrl}
-              target="_blank"
-              rel="noreferrer"
-            >
-              <OpenInNewRoundedIcon fontSize="inherit" />
-            </IconButton>
-          ) : null}
+          <IconButton
+            size="small"
+            aria-label="Open order chat"
+            title="Open order chat"
+            onMouseEnter={() => prefetchJobDetails(row)}
+            onClick={() => onOpenOrderChat(row)}
+            sx={{ p: 0.2, color: 'primary.main' }}
+          >
+            <ChatBubbleOutlineRoundedIcon sx={{ fontSize: '1.18rem' }} />
+          </IconButton>
         </Stack>
       ),
     },
@@ -986,57 +983,6 @@ export function OrdersGrid({
             }}
           >
             <PictureAsPdfRoundedIcon fontSize="inherit" />
-          </IconButton>
-        )
-      },
-    },
-    {
-      field: 'cutListUrl',
-      headerName: 'Cut List',
-      width: 84,
-      align: 'center',
-      headerAlign: 'center',
-      sortable: false,
-      renderCell: ({ row }) => {
-        const url = resolveCutListUrl(row)
-        const canHoverPreview = Boolean(url && String(row.mondayItemId ?? '').trim())
-        if (!url) {
-          return <Typography variant="body2" color="text.secondary">—</Typography>
-        }
-        return (
-          <IconButton
-            size="small"
-            aria-label="Cut list preview"
-            title={canHoverPreview ? 'Hover for quick preview. Click to open full popup.' : 'Click to open cut list preview.'}
-            onMouseEnter={(event) => {
-              if (!canHoverPreview) {
-                return
-              }
-              cutListHandle.current?.openHover(event, row)
-            }}
-            onMouseLeave={() => {
-              if (!canHoverPreview) {
-                return
-              }
-              cutListHandle.current?.leaveHoverTrigger()
-            }}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' || event.key === ' ') {
-                event.preventDefault()
-                event.stopPropagation()
-              }
-            }}
-            onClick={(event) => {
-              if (event.detail === 0) {
-                return
-              }
-              event.preventDefault()
-              event.stopPropagation()
-              cutListHandle.current?.closeHover()
-              void cutListHandle.current?.openDialog(row)
-            }}
-          >
-            <FormatListBulletedRoundedIcon fontSize="inherit" />
           </IconButton>
         )
       },
@@ -1330,7 +1276,8 @@ export function OrdersGrid({
     {
       field: 'paidInFull',
       headerName: 'Paid',
-      minWidth: 120,
+      minWidth: 86,
+      width: 92,
       sortable: true,
       sortComparator: (left, right) => comparePaidStatus(
         left as boolean | null | undefined,
@@ -1350,16 +1297,45 @@ export function OrdersGrid({
         )
       },
     },
+    {
+      field: 'mondayLink',
+      headerName: 'Monday',
+      minWidth: 96,
+      width: 104,
+      sortable: false,
+      filterable: false,
+      disableColumnMenu: true,
+      align: 'center',
+      headerAlign: 'center',
+      renderCell: ({ row }) => {
+        if (!row.mondayItemUrl) {
+          return <Typography variant="body2" color="text.secondary">—</Typography>
+        }
+
+        return (
+          <IconButton
+            size="small"
+            aria-label="Open Monday item"
+            title="Open Monday item"
+            href={row.mondayItemUrl}
+            target="_blank"
+            rel="noreferrer"
+          >
+            <OpenInNewRoundedIcon fontSize="small" />
+          </IconButton>
+        )
+      },
+    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
   ], [
     statusColumnHeader,
     lastRefreshedAt,
     shopDrawingHandle,
-    cutListHandle,
     onOpenBolDocument,
     onOpenJobDialog,
     onOpenQuickBooksDialog,
     onCopyOrderNumber,
+    onOpenOrderChat,
     onMissingMondayLink,
     handleOpenStatusPopover,
   ])
@@ -1370,12 +1346,12 @@ export function OrdersGrid({
       { field: 'orderName', label: 'Order Name' },
       { field: 'poNumber', label: 'PO Number' },
       { field: 'shopDrawingUrl', label: 'Drawings' },
-      { field: 'cutListUrl', label: 'Cut List' },
       { field: 'rowStatus', label: statusColumnHeader },
       { field: 'managerReadyPercent', label: 'Status History' },
       { field: 'leadTimeDays', label: 'Lead Time' },
       { field: 'orderDate', label: 'Order Date' },
       { field: 'paidInFull', label: 'Paid' },
+      { field: 'mondayLink', label: 'Monday' },
     ] as const
 
     const adminColumnsByField = new Map(
@@ -1410,7 +1386,6 @@ export function OrdersGrid({
           { field: 'orderName' },
           { field: 'poNumber' },
           { field: 'shopDrawingUrl' },
-          { field: 'cutListUrl' },
           { field: 'rowStatus' },
           { field: 'managerReadyPercent' },
           { field: 'leadTimeDays' },
@@ -1438,6 +1413,13 @@ export function OrdersGrid({
           { field: 'totalHours' },
           { field: 'totalLaborCost' },
           { field: 'totalProfit' },
+        ],
+      },
+      {
+        groupId: 'links',
+        headerName: 'Links',
+        children: [
+          { field: 'mondayLink' },
         ],
       },
     ],

@@ -20,6 +20,11 @@ import {
   InputAdornment,
   Paper,
   Stack,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableRow,
   TextField,
   Typography,
 } from '@mui/material'
@@ -32,15 +37,30 @@ import { LoadingPanel } from '../components/LoadingPanel'
 import { StatusAlerts } from '../components/StatusAlerts'
 import {
   createCrmSalesRep,
+  fetchCrmQuotes,
   fetchCrmSalesReps,
   removeCrmSalesRep,
   updateCrmSalesRep,
+  type CrmQuote,
   type CrmSalesRep,
 } from '../features/crm/api'
 import { resolveImageFileExtension, sanitizeStoragePathSegment } from '../lib/fileUtils'
+import { formatCurrency, formatDate, formatStatusLabel } from '../lib/formatters'
 import { QUERY_KEYS } from '../lib/queryKeys'
 
 type SalesRepDialogMode = 'create' | 'edit' | null
+
+type DrilldownTarget =
+  | {
+    mode: 'rep'
+    salesRepId: string
+    salesRepName: string
+  }
+  | {
+    mode: 'state'
+    stateCode: string
+  }
+  | null
 
 type SalesRepFormState = {
   name: string
@@ -129,6 +149,48 @@ function toStateLabel(stateCode: string) {
   return label ? `${stateCode} - ${label}` : stateCode
 }
 
+const quoteStatusOrder = ['draft', 'sent', 'accepted', 'rejected', 'cancelled']
+const quoteStageOrder = ['concept', 'proposal_submission', 'revision', 'order_placement']
+
+function normalizeText(value: string | null | undefined) {
+  return String(value ?? '').trim().toLowerCase()
+}
+
+function normalizeStateCode(value: string | null | undefined) {
+  const normalized = String(value ?? '').trim().toUpperCase()
+
+  if (!normalized) {
+    return ''
+  }
+
+  if (/^[A-Z]{2}$/.test(normalized)) {
+    return normalized
+  }
+
+  const codeMatch = normalized.match(/\b([A-Z]{2})\b/)
+  return codeMatch?.[1] || normalized.slice(0, 2)
+}
+
+function resolveQuoteStageValue(quote: CrmQuote) {
+  const stage = normalizeText(quote.opportunityStage)
+
+  if (stage && quoteStageOrder.includes(stage)) {
+    return stage
+  }
+
+  const status = normalizeText(quote.status)
+
+  if (status === 'accepted') {
+    return 'order_placement'
+  }
+
+  if (status === 'sent') {
+    return 'proposal_submission'
+  }
+
+  return 'concept'
+}
+
 function resolveMapLabelTextColor(fillColor: string) {
   const rawHex = fillColor.replace('#', '')
   const normalizedHex = rawHex.length === 3
@@ -165,6 +227,7 @@ export default function SalesRepsPage() {
   const [salesRepDialogMode, setSalesRepDialogMode] = useState<SalesRepDialogMode>(null)
 
   const [lookupQuery, setLookupQuery] = useState('')
+  const [drilldownTarget, setDrilldownTarget] = useState<DrilldownTarget>(null)
 
   const [isSavingSalesRep, setIsSavingSalesRep] = useState(false)
   const [isUploadingSalesRepLogo, setIsUploadingSalesRepLogo] = useState(false)
@@ -184,8 +247,30 @@ export default function SalesRepsPage() {
     staleTime: 5 * 60 * 1000,
   })
 
+  const quotesQuery = useQuery({
+    queryKey: QUERY_KEYS.crmQuotes({
+      limit: 1500,
+      status: 'all',
+      dealerSourceId: '',
+      quoteNumber: '',
+      search: '',
+      salesRep: '',
+      dealerState: '',
+      projectType: '',
+      lifecycle: 'all',
+    }),
+    queryFn: () => fetchCrmQuotes({
+      limit: 1500,
+      status: 'all',
+      lifecycle: 'all',
+    }),
+    staleTime: 60 * 1000,
+  })
+
   const isLoading = salesRepsQuery.isLoading
   const isRefreshing = salesRepsQuery.isFetching && !salesRepsQuery.isLoading
+  const isQuotesLoading = quotesQuery.isLoading
+  const isQuotesRefreshing = quotesQuery.isFetching && !quotesQuery.isLoading
 
   useEffect(() => {
     const data = salesRepsQuery.data
@@ -205,6 +290,12 @@ export default function SalesRepsPage() {
       setErrorMessage(salesRepsQuery.error.message)
     }
   }, [salesRepsQuery.error])
+
+  useEffect(() => {
+    if (quotesQuery.error instanceof Error) {
+      setErrorMessage(quotesQuery.error.message)
+    }
+  }, [quotesQuery.error])
 
   const isSalesRepDialogOpen = Boolean(salesRepDialogMode)
 
@@ -304,6 +395,128 @@ export default function SalesRepsPage() {
 
   const hasLookupQuery = Boolean(normalizedLookupQuery)
 
+  const quotes = useMemo(
+    () => (Array.isArray(quotesQuery.data?.quotes) ? quotesQuery.data.quotes : []),
+    [quotesQuery.data?.quotes],
+  )
+
+  const drilldownRows = useMemo(() => {
+    if (!drilldownTarget) {
+      return []
+    }
+
+    let rows: CrmQuote[] = []
+
+    if (drilldownTarget.mode === 'rep') {
+      const normalizedRepName = normalizeText(drilldownTarget.salesRepName)
+      rows = quotes.filter((quote) => normalizeText(quote.salesRep) === normalizedRepName)
+    } else {
+      rows = quotes.filter((quote) => normalizeStateCode(quote.dealerState) === drilldownTarget.stateCode)
+    }
+
+    return [...rows].sort(
+      (left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime(),
+    )
+  }, [drilldownTarget, quotes])
+
+  const drilldownTitle = useMemo(() => {
+    if (!drilldownTarget) {
+      return 'Quote Drilldown'
+    }
+
+    if (drilldownTarget.mode === 'rep') {
+      return `Quotes for ${drilldownTarget.salesRepName}`
+    }
+
+    const stateName = stateNameByCode.get(drilldownTarget.stateCode)
+    return stateName
+      ? `Quotes in ${drilldownTarget.stateCode} - ${stateName}`
+      : `Quotes in ${drilldownTarget.stateCode}`
+  }, [drilldownTarget])
+
+  const drilldownTotalAmount = useMemo(
+    () => drilldownRows.reduce((sum, quote) => sum + Number(quote.totalAmount || 0), 0),
+    [drilldownRows],
+  )
+
+  const drilldownStatusBreakdown = useMemo(() => {
+    const counts = new Map<string, number>()
+
+    for (const quote of drilldownRows) {
+      const normalizedStatus = normalizeText(quote.status)
+      const nextCount = (counts.get(normalizedStatus) || 0) + 1
+      counts.set(normalizedStatus, nextCount)
+    }
+
+    const orderedEntries = quoteStatusOrder
+      .filter((status) => counts.has(status))
+      .map((status) => ({
+        key: status,
+        label: formatStatusLabel(status),
+        count: counts.get(status) || 0,
+      }))
+
+    const remainingEntries = [...counts.entries()]
+      .filter(([status]) => !quoteStatusOrder.includes(status))
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([status, count]) => ({
+        key: status,
+        label: formatStatusLabel(status),
+        count,
+      }))
+
+    return [...orderedEntries, ...remainingEntries]
+  }, [drilldownRows])
+
+  const drilldownStageBreakdown = useMemo(() => {
+    const counts = new Map<string, number>()
+
+    for (const quote of drilldownRows) {
+      const stage = resolveQuoteStageValue(quote)
+      counts.set(stage, (counts.get(stage) || 0) + 1)
+    }
+
+    const orderedEntries = quoteStageOrder
+      .filter((stage) => counts.has(stage))
+      .map((stage) => ({
+        key: stage,
+        label: formatStatusLabel(stage),
+        count: counts.get(stage) || 0,
+      }))
+
+    const remainingEntries = [...counts.entries()]
+      .filter(([stage]) => !quoteStageOrder.includes(stage))
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([stage, count]) => ({
+        key: stage,
+        label: formatStatusLabel(stage),
+        count,
+      }))
+
+    return [...orderedEntries, ...remainingEntries]
+  }, [drilldownRows])
+
+  const drilldownRepBreakdown = useMemo(() => {
+    if (drilldownTarget?.mode !== 'state') {
+      return []
+    }
+
+    const counts = new Map<string, number>()
+
+    for (const quote of drilldownRows) {
+      const repName = String(quote.salesRep ?? '').trim() || '(Unassigned)'
+      counts.set(repName, (counts.get(repName) || 0) + 1)
+    }
+
+    return [...counts.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([repName, count]) => ({
+        key: repName,
+        label: repName,
+        count,
+      }))
+  }, [drilldownRows, drilldownTarget?.mode])
+
   const isStateAssignedToDifferentRep = useCallback((stateCode: string) => {
     const owner = stateOwnerByCode.get(stateCode)
 
@@ -327,6 +540,27 @@ export default function SalesRepsPage() {
     setErrorMessage(null)
     setSuccessMessage(null)
   }, [setErrorMessage])
+
+  const openSalesRepQuoteDrilldown = useCallback((salesRep: CrmSalesRep) => {
+    setDrilldownTarget({
+      mode: 'rep',
+      salesRepId: salesRep.id,
+      salesRepName: salesRep.name,
+    })
+  }, [])
+
+  const openStateQuoteDrilldown = useCallback((stateCode: string) => {
+    const normalizedStateCode = normalizeStateCode(stateCode)
+
+    if (!normalizedStateCode) {
+      return
+    }
+
+    setDrilldownTarget({
+      mode: 'state',
+      stateCode: normalizedStateCode,
+    })
+  }, [])
 
   const resetSalesRepForm = useCallback(() => {
     setSelectedSalesRepId('')
@@ -478,6 +712,10 @@ export default function SalesRepsPage() {
         setSalesRepDialogMode(null)
       }
 
+      if (drilldownTarget?.mode === 'rep' && drilldownTarget.salesRepId === salesRep.id) {
+        setDrilldownTarget(null)
+      }
+
       await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.crmSalesReps })
       setSuccessMessage('Sales rep removed successfully.')
     } catch (error) {
@@ -485,7 +723,7 @@ export default function SalesRepsPage() {
     } finally {
       setDeletingSalesRepId('')
     }
-  }, [queryClient, selectedSalesRepId, setErrorMessage])
+  }, [drilldownTarget, queryClient, selectedSalesRepId, setErrorMessage])
 
   const measureMapLabelPositions = useCallback(() => {
     const svgElement = mapSvgRef.current
@@ -728,9 +966,24 @@ export default function SalesRepsPage() {
               variant="outlined"
               size="small"
               startIcon={<RefreshRoundedIcon />}
-              disabled={isLoading || isRefreshing || isSavingSalesRep}
+              disabled={isLoading || isRefreshing || isQuotesRefreshing || isSavingSalesRep}
               onClick={() => {
-                void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.crmSalesReps })
+                void Promise.all([
+                  queryClient.invalidateQueries({ queryKey: QUERY_KEYS.crmSalesReps }),
+                  queryClient.invalidateQueries({
+                    queryKey: QUERY_KEYS.crmQuotes({
+                      limit: 1500,
+                      status: 'all',
+                      dealerSourceId: '',
+                      quoteNumber: '',
+                      search: '',
+                      salesRep: '',
+                      dealerState: '',
+                      projectType: '',
+                      lifecycle: 'all',
+                    }),
+                  }),
+                ])
               }}
             >
               {isRefreshing ? 'Refreshing...' : 'Refresh'}
@@ -777,6 +1030,16 @@ export default function SalesRepsPage() {
                                 ? (entry.owner.companyName ? `${entry.owner.name} (${entry.owner.companyName})` : entry.owner.name)
                                 : 'Unassigned'}
                             </Typography>
+
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              onClick={() => {
+                                openStateQuoteDrilldown(entry.stateCode)
+                              }}
+                            >
+                              Quotes
+                            </Button>
 
                             {entry.owner ? (
                               <Button
@@ -832,15 +1095,26 @@ export default function SalesRepsPage() {
                               ) : null}
                             </Stack>
 
-                            <Button
-                              size="small"
-                              variant="outlined"
-                              onClick={() => {
-                                openSalesRepDialogForEdit(salesRep)
-                              }}
-                            >
-                              Open
-                            </Button>
+                            <Stack direction="row" spacing={0.6}>
+                              <Button
+                                size="small"
+                                variant="outlined"
+                                onClick={() => {
+                                  openSalesRepQuoteDrilldown(salesRep)
+                                }}
+                              >
+                                Quotes
+                              </Button>
+                              <Button
+                                size="small"
+                                variant="outlined"
+                                onClick={() => {
+                                  openSalesRepDialogForEdit(salesRep)
+                                }}
+                              >
+                                Open
+                              </Button>
+                            </Stack>
                           </Stack>
                         </Paper>
                       )
@@ -875,6 +1149,7 @@ export default function SalesRepsPage() {
                 >
                   {salesReps.map((salesRep) => {
                     const isSelected = salesRep.id === selectedSalesRepId
+                    const isDrilldownRep = drilldownTarget?.mode === 'rep' && drilldownTarget.salesRepId === salesRep.id
                     const color = repColorById.get(salesRep.id) ?? '#6f8296'
                     const visibleStates = salesRep.states.slice(0, 8)
                     const hiddenStatesCount = Math.max(0, salesRep.states.length - visibleStates.length)
@@ -893,8 +1168,10 @@ export default function SalesRepsPage() {
                         variant="outlined"
                         sx={{
                           p: 1,
-                          borderColor: isSelected ? 'primary.main' : 'divider',
-                          bgcolor: isSelected ? (theme) => alpha(theme.palette.primary.main, 0.06) : 'background.paper',
+                          borderColor: (isSelected || isDrilldownRep) ? 'primary.main' : 'divider',
+                          bgcolor: (isSelected || isDrilldownRep)
+                            ? (theme) => alpha(theme.palette.primary.main, 0.06)
+                            : 'background.paper',
                         }}
                       >
                         <Stack
@@ -950,6 +1227,16 @@ export default function SalesRepsPage() {
                           </Stack>
 
                           <Stack direction="row" spacing={0.5}>
+                            <Button
+                              size="small"
+                              variant={isDrilldownRep ? 'contained' : 'outlined'}
+                              color={isDrilldownRep ? 'primary' : 'inherit'}
+                              onClick={() => {
+                                openSalesRepQuoteDrilldown(salesRep)
+                              }}
+                            >
+                              Quotes
+                            </Button>
                             <Button
                               size="small"
                               variant={isSelected ? 'contained' : 'outlined'}
@@ -1024,7 +1311,7 @@ export default function SalesRepsPage() {
               </Stack>
 
               <Typography variant="body2" color="text.secondary">
-                White states are unassigned. Use Add/Edit sales rep to change territory assignments.
+                White states are unassigned. Click any state to drill into quotes by territory.
               </Typography>
 
               <Stack direction="row" flexWrap="wrap" gap={0.7}>
@@ -1093,6 +1380,7 @@ export default function SalesRepsPage() {
                         ? (repColorById.get(stateOwner.id) ?? '#6f8296')
                         : '#ffffff'
                       const isSelectedRepState = Boolean(selectedSalesRepId && stateOwner?.id === selectedSalesRepId)
+                      const isDrilldownState = drilldownTarget?.mode === 'state' && drilldownTarget.stateCode === stateCode
                       const labelPosition = stateLabelPositions[stateCode]
                       const labelOffset = stateLabelOffsetByCode[stateCode] || { dx: 0, dy: 0 }
                       const labelTextColor = resolveMapLabelTextColor(fillColor)
@@ -1109,10 +1397,13 @@ export default function SalesRepsPage() {
                             data-state-code={stateCode}
                             d={location.path}
                             fill={fillColor}
-                            stroke={isSelectedRepState ? '#18202b' : '#8a95a3'}
-                            strokeWidth={isSelectedRepState ? 1.8 : 1.1}
+                            stroke={isDrilldownState ? '#0b5f93' : (isSelectedRepState ? '#18202b' : '#8a95a3')}
+                            strokeWidth={isDrilldownState ? 2.4 : (isSelectedRepState ? 1.8 : 1.1)}
+                            onClick={() => {
+                              openStateQuoteDrilldown(stateCode)
+                            }}
                             style={{
-                              cursor: 'default',
+                              cursor: 'pointer',
                               transition: 'fill 150ms ease, stroke 150ms ease',
                             }}
                           >
@@ -1149,6 +1440,162 @@ export default function SalesRepsPage() {
                   </svg>
                 </Box>
               </Box>
+            </Stack>
+          </Paper>
+
+          <Paper variant="outlined" sx={{ p: 1.5 }}>
+            <Stack spacing={1}>
+              <Stack
+                direction={{ xs: 'column', sm: 'row' }}
+                spacing={0.8}
+                alignItems={{ xs: 'flex-start', sm: 'center' }}
+                justifyContent="space-between"
+              >
+                <Stack spacing={0.2}>
+                  <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+                    {drilldownTitle}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Click any rep card, rep search result, or map state to inspect related quotes.
+                  </Typography>
+                </Stack>
+
+                {drilldownTarget ? (
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    onClick={() => {
+                      setDrilldownTarget(null)
+                    }}
+                  >
+                    Clear
+                  </Button>
+                ) : null}
+              </Stack>
+
+              {!drilldownTarget ? (
+                <Typography variant="body2" color="text.secondary" sx={{ py: 1.5 }}>
+                  No drilldown selected yet.
+                </Typography>
+              ) : isQuotesLoading ? (
+                <Typography variant="body2" color="text.secondary" sx={{ py: 1.5 }}>
+                  Loading quote analytics...
+                </Typography>
+              ) : (
+                <>
+                  <Stack direction="row" flexWrap="wrap" gap={0.75}>
+                    <Chip
+                      size="small"
+                      color="primary"
+                      variant="outlined"
+                      label={`${drilldownRows.length} quotes`}
+                    />
+                    <Chip
+                      size="small"
+                      variant="outlined"
+                      label={`Value ${formatCurrency(drilldownTotalAmount, 2)}`}
+                    />
+                    {isQuotesRefreshing ? (
+                      <Chip
+                        size="small"
+                        variant="outlined"
+                        label="Refreshing quotes..."
+                      />
+                    ) : null}
+                  </Stack>
+
+                  <Stack direction="row" flexWrap="wrap" gap={0.6}>
+                    {drilldownStatusBreakdown.map((entry) => (
+                      <Chip
+                        key={`drilldown-status-${entry.key}`}
+                        size="small"
+                        variant="outlined"
+                        label={`${entry.label}: ${entry.count}`}
+                      />
+                    ))}
+                  </Stack>
+
+                  <Stack direction="row" flexWrap="wrap" gap={0.6}>
+                    {drilldownStageBreakdown.map((entry) => (
+                      <Chip
+                        key={`drilldown-stage-${entry.key}`}
+                        size="small"
+                        variant="outlined"
+                        label={`${entry.label}: ${entry.count}`}
+                      />
+                    ))}
+                  </Stack>
+
+                  {drilldownTarget.mode === 'state' ? (
+                    <Stack direction="row" flexWrap="wrap" gap={0.6}>
+                      {drilldownRepBreakdown.map((entry) => (
+                        <Chip
+                          key={`drilldown-rep-${entry.key}`}
+                          size="small"
+                          variant="outlined"
+                          label={`${entry.label}: ${entry.count}`}
+                        />
+                      ))}
+                    </Stack>
+                  ) : null}
+
+                  {drilldownRows.length === 0 ? (
+                    <Typography variant="body2" color="text.secondary" sx={{ py: 1.2 }}>
+                      No quotes found for this drilldown.
+                    </Typography>
+                  ) : (
+                    <Box
+                      sx={{
+                        border: 1,
+                        borderColor: 'divider',
+                        borderRadius: 1,
+                        maxHeight: '52vh',
+                        overflow: 'auto',
+                      }}
+                    >
+                      <Table size="small" stickyHeader>
+                        <TableHead>
+                          <TableRow>
+                            <TableCell sx={{ fontWeight: 700 }}>Quote</TableCell>
+                            <TableCell sx={{ fontWeight: 700 }}>Dealer</TableCell>
+                            <TableCell sx={{ fontWeight: 700 }}>Sales Rep</TableCell>
+                            <TableCell sx={{ fontWeight: 700 }}>State</TableCell>
+                            <TableCell sx={{ fontWeight: 700 }}>Stage</TableCell>
+                            <TableCell sx={{ fontWeight: 700 }}>Status</TableCell>
+                            <TableCell sx={{ fontWeight: 700 }} align="right">Amount</TableCell>
+                            <TableCell sx={{ fontWeight: 700 }}>Updated</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {drilldownRows.map((quote) => (
+                            <TableRow key={quote.id} hover>
+                              <TableCell>
+                                <Stack spacing={0.15}>
+                                  <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                                    {quote.quoteNumber || quote.id.slice(0, 8).toUpperCase()}
+                                  </Typography>
+                                  {quote.title ? (
+                                    <Typography variant="caption" color="text.secondary">
+                                      {quote.title}
+                                    </Typography>
+                                  ) : null}
+                                </Stack>
+                              </TableCell>
+                              <TableCell>{quote.dealerName || quote.companyName || '-'}</TableCell>
+                              <TableCell>{quote.salesRep || '-'}</TableCell>
+                              <TableCell>{normalizeStateCode(quote.dealerState) || '-'}</TableCell>
+                              <TableCell>{formatStatusLabel(resolveQuoteStageValue(quote))}</TableCell>
+                              <TableCell>{formatStatusLabel(String(quote.status || 'unknown'))}</TableCell>
+                              <TableCell align="right">{formatCurrency(Number(quote.totalAmount || 0), 2)}</TableCell>
+                              <TableCell>{formatDate(quote.updatedAt)}</TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </Box>
+                  )}
+                </>
+              )}
             </Stack>
           </Paper>
         </>

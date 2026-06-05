@@ -1,22 +1,43 @@
-import { lazy } from 'react'
+import { lazy, type ComponentType } from 'react'
 
-export const AppLayout = lazy(() => import('../layout/AppLayout'))
-export const DashboardPage = lazy(() => import('../pages/DashboardPage'))
-export const TimesheetPage = lazy(() => import('../pages/TimesheetPage'))
-export const SupportPage = lazy(() => import('../pages/SupportPage'))
-export const PicturesPage = lazy(() => import('../pages/PicturesPage.tsx'))
-export const OrdersPage = lazy(() => import('../pages/OrdersPage'))
-export const TemplatesPage = lazy(() => import('../pages/TemplatesPage'))
-export const VisitorsPage = lazy(() => import('../pages/VisitorsPage'))
-export const AdminUsersPage = lazy(() => import('../pages/AdminUsersPage'))
-export const AdminAlertsPage = lazy(() => import('../pages/AdminAlertsPage'))
-export const AdminApiPage = lazy(() => import('../pages/AdminApiPage'))
-export const AdminSalesReviewPage = lazy(() => import('../pages/AdminSalesReviewPage'))
-export const AdminLogsPage = lazy(() => import('../pages/AdminLogsPage'))
-export const CrmDealersPage = lazy(() => import('../pages/CrmDealersPage'))
-export const CrmContactsPage = lazy(() => import('../pages/CrmContactsPage'))
-export const AiConfigPage = lazy(() => import('../pages/AiConfigPage'))
-export const AdminSettingsPage = lazy(() => import('../pages/AdminSettingsPage'))
-export const SalesPage = lazy(() => import('../pages/SalesPage'))
-export const PurchasingPage = lazy(() => import('../pages/PurchasingPage'))
-export const OperatingCostsPage = lazy(() => import('../pages/OperatingCostsPage'))
+const RECOVERABLE_LAZY_IMPORT_MESSAGE = 'Lazy route module missing default export (likely stale chunk during deploy).'
+
+type LazyRouteModule<T extends ComponentType<any>> = {
+	default: T
+}
+
+function lazyRoute<T extends ComponentType<any>>(loader: () => Promise<LazyRouteModule<T>>) {
+	return lazy(async () => {
+		const module = await loader()
+
+		// During deploy rollovers, stale chunks can occasionally resolve without module data.
+		if (!module || !module.default) {
+			throw new Error(RECOVERABLE_LAZY_IMPORT_MESSAGE)
+		}
+
+		return module
+	})
+}
+
+export const AppLayout = lazyRoute(() => import('../layout/AppLayout'))
+export const DashboardPage = lazyRoute(() => import('../pages/DashboardPage'))
+export const TimesheetPage = lazyRoute(() => import('../pages/TimesheetPage'))
+export const SupportPage = lazyRoute(() => import('../pages/SupportPage'))
+export const PicturesPage = lazyRoute(() => import('../pages/PicturesPage'))
+export const OrdersPage = lazyRoute(() => import('../pages/OrdersPage'))
+export const ConfigPage = lazyRoute(() => import('../pages/ConfigPage'))
+export const SalesNotificationsPage = lazyRoute(() => import('../pages/SalesNotificationsPage'))
+export const TemplatesPage = lazyRoute(() => import('../pages/TemplatesPage'))
+export const VisitorsPage = lazyRoute(() => import('../pages/VisitorsPage'))
+export const AdminUsersPage = lazyRoute(() => import('../pages/AdminUsersPage'))
+export const AdminAlertsPage = lazyRoute(() => import('../pages/AdminAlertsPage'))
+export const AdminApiPage = lazyRoute(() => import('../pages/AdminApiPage'))
+export const AdminSalesReviewPage = lazyRoute(() => import('../pages/AdminSalesReviewPage'))
+export const AdminLogsPage = lazyRoute(() => import('../pages/AdminLogsPage'))
+export const CrmDealersPage = lazyRoute(() => import('../pages/CrmDealersPage'))
+export const CrmContactsPage = lazyRoute(() => import('../pages/CrmContactsPage'))
+export const AiConfigPage = lazyRoute(() => import('../pages/AiConfigPage'))
+export const AdminSettingsPage = lazyRoute(() => import('../pages/AdminSettingsPage'))
+export const SalesPage = lazyRoute(() => import('../pages/SalesPage'))
+export const PurchasingPage = lazyRoute(() => import('../pages/PurchasingPage'))
+export const OperatingCostsPage = lazyRoute(() => import('../pages/OperatingCostsPage'))

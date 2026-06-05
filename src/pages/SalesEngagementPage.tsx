@@ -57,8 +57,8 @@ import {
 import { useDebounceValue } from '../hooks/useDebounceValue'
 import { formatDateTime, formatOptional } from '../lib/formatters'
 
-type EngagementFilter = 'ready' | 'not_ready'
-type EngagementStatus = EngagementFilter | 'none'
+type EngagementFilter = 'ready' | 'not_ready' | 'none'
+type EngagementStatus = EngagementFilter
 type AccountTypeBucket = 'dealer' | 'designer' | 'none'
 type QuickViewTab = 'info' | 'contacts' | 'chat'
 
@@ -86,6 +86,7 @@ type ContactQuickEditState = {
 const engagementTabs: Array<{ value: EngagementFilter; label: string }> = [
   { value: 'ready', label: 'Ready' },
   { value: 'not_ready', label: 'Not Ready' },
+  { value: 'none', label: 'None' },
 ]
 
 const accountTypeOptions: Array<{ value: AccountTypeBucket; label: string }> = [
@@ -215,7 +216,7 @@ function formatEngagementStatusLabel(status: EngagementStatus) {
     return 'Not Ready'
   }
 
-  return 'Unknown'
+  return 'None'
 }
 
 function resolveStatusChipColor(status: EngagementStatus): 'success' | 'error' | 'default' {
@@ -650,7 +651,11 @@ export default function SalesEngagementPage() {
       search: search || undefined,
       accountType,
       // Keep legacy bucket values so filtering works even before functions are redeployed.
-      engagementBucket: statusFilter === 'ready' ? 'yes' : 'no',
+      engagementBucket: statusFilter === 'ready'
+        ? 'yes'
+        : statusFilter === 'not_ready'
+          ? 'no'
+          : 'none',
     }),
     placeholderData: (previousData) => previousData,
     staleTime: 60 * 1000,

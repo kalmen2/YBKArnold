@@ -2,6 +2,7 @@ import StoreRoundedIcon from '@mui/icons-material/StoreRounded'
 import ContactsRoundedIcon from '@mui/icons-material/ContactsRounded'
 import FactCheckRoundedIcon from '@mui/icons-material/FactCheckRounded'
 import MapRoundedIcon from '@mui/icons-material/MapRounded'
+import LocalOfferRoundedIcon from '@mui/icons-material/LocalOfferRounded'
 import WorkspacesRoundedIcon from '@mui/icons-material/WorkspacesRounded'
 import { Box, Tab, Tabs } from '@mui/material'
 import { useMemo } from 'react'
@@ -11,9 +12,10 @@ import CrmDealersPage from './CrmDealersPage'
 import CrmContactsPage from './CrmContactsPage'
 import SalesEngagementPage from './SalesEngagementPage'
 import SalesOpportunitiesPage from './SalesOpportunitiesPage'
+import SalesQuotesPage from './SalesQuotesPage'
 import SalesRepsPage from './SalesRepsPage'
 
-type SalesTab = 'dealers' | 'contacts' | 'engagement' | 'opportunities' | 'sales-reps'
+type SalesTab = 'dealers' | 'contacts' | 'engagement' | 'opportunities' | 'sales-reps' | 'quotes'
 
 function resolveTab(value: string | null, allowedTabs: SalesTab[]): SalesTab {
   const allowedTabSet = new Set(allowedTabs)
@@ -28,6 +30,10 @@ function resolveTab(value: string | null, allowedTabs: SalesTab[]): SalesTab {
 
   if (value === 'sales-reps') {
     return allowedTabSet.has('sales-reps') ? 'sales-reps' : 'dealers'
+  }
+
+  if (value === 'quotes') {
+    return allowedTabSet.has('quotes') ? 'quotes' : 'dealers'
   }
 
   if (value === 'engagement') {
@@ -45,7 +51,7 @@ export default function SalesPage() {
       return ['dealers', 'contacts', 'engagement']
     }
 
-    return ['dealers', 'contacts', 'engagement', 'opportunities', 'sales-reps']
+    return ['dealers', 'contacts', 'engagement', 'opportunities', 'sales-reps', 'quotes']
   }, [appUser?.isSalesRep])
   const activeTab = resolveTab(searchParams.get('tab'), allowedTabs)
 
@@ -100,6 +106,15 @@ export default function SalesPage() {
               sx={{ minHeight: 44, textTransform: 'none', fontWeight: 600, gap: 0.75 }}
             />
           ) : null}
+          {!appUser?.isSalesRep ? (
+            <Tab
+              value="quotes"
+              label="Quotes"
+              icon={<LocalOfferRoundedIcon fontSize="small" />}
+              iconPosition="start"
+              sx={{ minHeight: 44, textTransform: 'none', fontWeight: 600, gap: 0.75 }}
+            />
+          ) : null}
         </Tabs>
       </Box>
 
@@ -111,7 +126,9 @@ export default function SalesPage() {
             ? <SalesEngagementPage />
             : activeTab === 'opportunities'
               ? <SalesOpportunitiesPage />
-              : <SalesRepsPage />}
+                : activeTab === 'sales-reps'
+                  ? <SalesRepsPage />
+                  : <SalesQuotesPage />}
     </Box>
   )
 }

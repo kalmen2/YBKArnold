@@ -8,16 +8,19 @@ import CloseRoundedIcon from '@mui/icons-material/CloseRounded'
 import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded'
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded'
 import TravelExploreRoundedIcon from '@mui/icons-material/TravelExploreRounded'
+import AddShoppingCartRoundedIcon from '@mui/icons-material/AddShoppingCartRounded'
 import {
   Accordion,
   AccordionDetails,
   AccordionSummary,
   Alert,
+  Autocomplete,
   Box,
   Button,
   Chip,
   CircularProgress,
   Dialog,
+  DialogActions,
   DialogContent,
   DialogTitle,
   Divider,
@@ -37,14 +40,16 @@ import {
   Typography,
 } from '@mui/material'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useRef, useState, type ChangeEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
 import { useDebounceValue } from '../hooks/useDebounceValue'
 import { formatCurrency, formatDate, formatDateTime } from '../lib/formatters'
 import { QUERY_KEYS } from '../lib/queryKeys'
 import {
+  createPurchasingPurchaseOrders,
   deletePurchasingItemPhoto,
+  fetchPurchasingPoContext,
   fetchPurchasingItemDetail,
   fetchPurchasingItemPhotos,
   fetchPurchasingItems,
@@ -55,9 +60,99 @@ import {
   type PurchasingAiPriceStatus,
   type PurchasingAiSearchResponse,
   type PurchasingItemSummary,
+  type PurchasingPoContextProject,
+  type PurchasingPoContextVendor,
+  type PurchasingPoCreateResponse,
+  type PurchasingTransaction,
 } from '../features/purchasing/api'
 
 const PAGE_SIZE = 100
+
+type PurchasingDraftPoLine = {
+  id: string
+  itemKey: string
+  itemName: string
+  productNumber: string
+  description: string
+  vendorId: string
+  vendorName: string
+  projectId: string
+  projectNumber: string
+  projectName: string
+  quantity: string
+  unitPrice: string
+}
+
+type PurchasingPoProductOption = {
+  itemKey: string
+  itemName: string
+  productNumber: string
+  description: string
+}
+
+type PurchasingPoAmbiguousItemOption = {
+  id: string
+  name: string
+  productNumber: string
+  description: string
+}
+
+type PurchasingPoItemAmbiguity = {
+  lineId: string
+  lineIndex: number
+  vendorId: string
+  vendorName: string
+  itemName: string
+  productNumber: string
+  quantity: number
+  options: PurchasingPoAmbiguousItemOption[]
+}
+
+type PurchasingPoItemAmbiguityResponse = {
+  error: string
+  code: 'PO_ITEM_AMBIGUOUS'
+  ambiguities: PurchasingPoItemAmbiguity[]
+}
+
+function isPurchasingPoItemAmbiguityResponse(value: unknown): value is PurchasingPoItemAmbiguityResponse {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+
+  const candidate = value as { code?: unknown; ambiguities?: unknown }
+
+  return candidate.code === 'PO_ITEM_AMBIGUOUS' && Array.isArray(candidate.ambiguities)
+}
+
+function normalizePoSearchToken(value: string) {
+  return String(value ?? '').trim().toLowerCase().replace(/\s+/g, ' ')
+}
+
+function resolvePoProjectByNumber(
+  projects: PurchasingPoContextProject[],
+  projectNumber: string,
+) {
+  const normalizedTarget = normalizePoSearchToken(projectNumber)
+
+  if (!normalizedTarget) {
+    return null
+  }
+
+  return projects.find((project) => (
+    normalizePoSearchToken(project.projectNumber) === normalizedTarget
+  )) ?? null
+}
+
+function formatPoProjectLabel(project: PurchasingPoContextProject) {
+  const number = String(project.projectNumber ?? '').trim()
+  const name = String(project.name ?? '').trim()
+
+  if (number && name) {
+    return `${number} - ${name}`
+  }
+
+  return number || name || 'Unnamed project'
+}
 
 function fmtShipDays(value: number | null | undefined) {
   if (value == null || !Number.isFinite(value)) return '—'
@@ -73,6 +168,85 @@ function fmtQty(value: number | null | undefined) {
 function fmtPrice(value: number | null | undefined) {
   if (value == null || !Number.isFinite(value)) return '—'
   return formatCurrency(value, value < 1 ? 4 : 2)
+}
+
+function resolveLatestPriceSummary(transactions: PurchasingTransaction[]) {
+  const latestPricedTransaction = [...(Array.isArray(transactions) ? transactions : [])]
+    .filter((transaction) => Number.isFinite(Number(transaction.unitCost)) && Number(transaction.unitCost) > 0)
+    .sort((left, right) => {
+      const rightTime = Date.parse(String(right.date ?? right.poDate ?? ''))
+      const leftTime = Date.parse(String(left.date ?? left.poDate ?? ''))
+      const normalizedRightTime = Number.isFinite(rightTime) ? rightTime : -Infinity
+      const normalizedLeftTime = Number.isFinite(leftTime) ? leftTime : -Infinity
+
+      return normalizedRightTime - normalizedLeftTime
+    })[0]
+
+  if (!latestPricedTransaction) {
+    return {
+      price: null,
+      date: null,
+    }
+  }
+
+  const latestDate = String(
+    latestPricedTransaction.date
+    ?? latestPricedTransaction.poDate
+    ?? '',
+  ).trim() || null
+
+  return {
+    price: Number(latestPricedTransaction.unitCost),
+    date: latestDate,
+  }
+}
+
+function fmtLatestPrice(price: number | null, date: string | null) {
+  if (price == null || !Number.isFinite(price)) {
+    return '—'
+  }
+
+  const formattedPrice = fmtPrice(price)
+
+  if (!date) {
+    return formattedPrice
+  }
+
+  return `${formattedPrice} • ${formatDate(date)}`
+}
+
+function mapItemSummaryToPoOption(item: PurchasingItemSummary | null | undefined): PurchasingPoProductOption | null {
+  if (!item?.itemKey) {
+    return null
+  }
+
+  const itemName = String(item.itemRaw ?? '').trim() || item.itemKey
+  const descriptions = Array.isArray(item.descriptions) ? item.descriptions : []
+
+  return {
+    itemKey: item.itemKey,
+    itemName,
+    productNumber: itemName,
+    description: String(descriptions[0] ?? '').trim(),
+  }
+}
+
+function createPoDraftLineId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+function publishPurchasingPoMode(open: boolean) {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  window.dispatchEvent(new CustomEvent('purchasing:po-mode', {
+    detail: { open },
+  }))
 }
 
 function fileToBase64Payload(file: File): Promise<string> {
@@ -148,7 +322,28 @@ export default function PurchasingPage() {
   const [isAiSearchRunning, setIsAiSearchRunning] = useState(false)
   const [aiSearchError, setAiSearchError] = useState<string | null>(null)
   const [aiSearchResult, setAiSearchResult] = useState<PurchasingAiSearchResponse | null>(null)
+  const [isCreatePoDialogOpen, setIsCreatePoDialogOpen] = useState(false)
+  const [isAddToPoDialogOpen, setIsAddToPoDialogOpen] = useState(false)
+  const [poDraftLines, setPoDraftLines] = useState<PurchasingDraftPoLine[]>([])
+  const [poSelectedItem, setPoSelectedItem] = useState<PurchasingPoProductOption | null>(null)
+  const [poSelectedVendor, setPoSelectedVendor] = useState<PurchasingPoContextVendor | null>(null)
+  const [poSelectedProject, setPoSelectedProject] = useState<PurchasingPoContextProject | null>(null)
+  const [poDefaultProject, setPoDefaultProject] = useState<PurchasingPoContextProject | null>(null)
+  const [poDate, setPoDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const [poMemo, setPoMemo] = useState('')
+  const [poLineQuantity, setPoLineQuantity] = useState('1')
+  const [poLineUnitPrice, setPoLineUnitPrice] = useState('')
+  const [poLineProductNumber, setPoLineProductNumber] = useState('')
+  const [poLineDescription, setPoLineDescription] = useState('')
+  const [poItemAmbiguities, setPoItemAmbiguities] = useState<PurchasingPoItemAmbiguity[]>([])
+  const [poSelectedAmbiguousItemOption, setPoSelectedAmbiguousItemOption] = useState<PurchasingPoAmbiguousItemOption | null>(null)
+  const [poCreateError, setPoCreateError] = useState<string | null>(null)
+  const [poCreateResult, setPoCreateResult] = useState<PurchasingPoCreateResponse | null>(null)
+  const [isCreatingPo, setIsCreatingPo] = useState(false)
+  const [isRefreshingPoVendors, setIsRefreshingPoVendors] = useState(false)
+  const [poVendorLoadError, setPoVendorLoadError] = useState<string | null>(null)
   const photoUploadInputRef = useRef<HTMLInputElement | null>(null)
+  const lastPoLineAddRef = useRef<{ signature: string; at: number } | null>(null)
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const { appUser } = useAuth()
@@ -241,6 +436,13 @@ export default function PurchasingPage() {
     staleTime: 60_000,
   })
 
+  const poContextQuery = useQuery({
+    queryKey: QUERY_KEYS.purchasingPoContext,
+    queryFn: () => fetchPurchasingPoContext({ includeProjects: true }),
+    enabled: false,
+    staleTime: 5 * 60_000,
+  })
+
   const items = itemsQuery.data?.items ?? []
   const totalCount = itemsQuery.data?.totalCount ?? 0
   const totalPages = itemsQuery.data?.totalPages ?? 1
@@ -254,6 +456,143 @@ export default function PurchasingPage() {
   const refreshInProgress = isManualRefreshRunning
   const aiReferencePrice = detailQuery.data?.summary?.averagePrice ?? null
   const aiOptions = aiSearchResult?.options ?? []
+  const latestPriceSummary = resolveLatestPriceSummary(detailQuery.data?.transactions ?? [])
+  const poContextVendors = poContextQuery.data?.vendors ?? []
+  const poContextProjects = poContextQuery.data?.projects ?? []
+  const poVendorsLoadedAt = poContextQuery.data?.generatedAt
+    ? formatDateTime(poContextQuery.data.generatedAt)
+    : 'Not loaded'
+  const currentPoItemAmbiguity = poItemAmbiguities[0] ?? null
+  const poVendorGroups = useMemo(() => {
+    const groupsMap = new Map<string, { key: string; vendorId: string; vendorName: string; lines: PurchasingDraftPoLine[]; totalQty: number }>()
+
+    poDraftLines.forEach((line) => {
+      const vendorId = String(line.vendorId || '').trim()
+      const vendorName = String(line.vendorName || '').trim() || 'Vendor not set'
+      const groupKey = vendorId || `unassigned:${vendorName.toLowerCase()}`
+      const quantity = Number(line.quantity)
+      const normalizedQty = Number.isFinite(quantity) ? quantity : 0
+      const existing = groupsMap.get(groupKey)
+
+      if (existing) {
+        existing.lines.push(line)
+        existing.totalQty += normalizedQty
+        return
+      }
+
+      groupsMap.set(groupKey, {
+        key: groupKey,
+        vendorId,
+        vendorName,
+        lines: [line],
+        totalQty: normalizedQty,
+      })
+    })
+
+    return [...groupsMap.values()].sort((left, right) => left.vendorName.localeCompare(right.vendorName))
+  }, [poDraftLines])
+
+  useEffect(() => {
+    if (!poSelectedItem) {
+      return
+    }
+
+    if (!poLineProductNumber.trim()) {
+      setPoLineProductNumber(poSelectedItem.productNumber || poSelectedItem.itemName)
+    }
+
+    if (!poLineDescription.trim() && poSelectedItem.description) {
+      setPoLineDescription(poSelectedItem.description)
+    }
+  }, [poSelectedItem, poLineDescription, poLineProductNumber])
+
+  useEffect(() => {
+    if (!isCreatePoDialogOpen) {
+      return
+    }
+
+    const detailOption = mapItemSummaryToPoOption(detailQuery.data?.item)
+
+    if (!detailOption) {
+      return
+    }
+
+    if (!poSelectedItem || poSelectedItem.itemKey !== detailOption.itemKey) {
+      setPoSelectedItem(detailOption)
+      setPoLineProductNumber(detailOption.productNumber || detailOption.itemName)
+      setPoLineDescription(detailOption.description || '')
+    }
+  }, [
+    detailQuery.data?.item,
+    isCreatePoDialogOpen,
+    poSelectedItem,
+  ])
+
+  useEffect(() => {
+    if (!isAddToPoDialogOpen || poSelectedVendor || poContextVendors.length === 0) {
+      return
+    }
+
+    const preferredVendorName = detailQuery.data?.vendors?.[0]?.vendorRaw
+
+    if (!preferredVendorName) {
+      return
+    }
+
+    const matchedVendor = poContextVendors.find((vendor) => (
+      normalizePoSearchToken(vendor.name) === normalizePoSearchToken(preferredVendorName)
+    ))
+
+    if (matchedVendor) {
+      setPoSelectedVendor(matchedVendor)
+    }
+  }, [
+    detailQuery.data?.vendors,
+    isAddToPoDialogOpen,
+    poContextVendors,
+    poSelectedVendor,
+  ])
+
+  useEffect(() => {
+    if (!isAddToPoDialogOpen || poSelectedProject || poContextProjects.length === 0) {
+      return
+    }
+
+    if (poDefaultProject) {
+      setPoSelectedProject(poDefaultProject)
+    }
+  }, [
+    isAddToPoDialogOpen,
+    poDefaultProject,
+    poContextProjects,
+    poSelectedProject,
+  ])
+
+  useEffect(() => {
+    if (!poDefaultProject) {
+      return
+    }
+
+    const stillExists = poContextProjects.some((project) => project.id === poDefaultProject.id)
+
+    if (!stillExists) {
+      setPoDefaultProject(null)
+    }
+  }, [poContextProjects, poDefaultProject])
+
+  useEffect(() => {
+    if (!currentPoItemAmbiguity) {
+      setPoSelectedAmbiguousItemOption(null)
+      return
+    }
+
+    const [firstOption] = currentPoItemAmbiguity.options
+    setPoSelectedAmbiguousItemOption(firstOption ?? null)
+  }, [currentPoItemAmbiguity])
+
+  useEffect(() => () => {
+    publishPurchasingPoMode(false)
+  }, [])
 
   async function handleRefresh() {
     setRefreshMessage(null)
@@ -304,6 +643,322 @@ export default function PurchasingPage() {
 
     setIsManualAiAssistEnabled(true)
     setManualAiAssistNonce((current) => current + 1)
+  }
+
+  async function handleRefreshPoVendors(forceRefresh = true) {
+    setPoVendorLoadError(null)
+    setIsRefreshingPoVendors(true)
+
+    try {
+      const response = await fetchPurchasingPoContext({
+        refresh: forceRefresh,
+        includeProjects: true,
+      })
+      queryClient.setQueryData(QUERY_KEYS.purchasingPoContext, response)
+    } catch (error) {
+      const message = error instanceof Error && error.message
+        ? error.message
+        : 'Could not refresh QuickBooks vendor/project context.'
+      setPoVendorLoadError(message)
+    } finally {
+      setIsRefreshingPoVendors(false)
+    }
+  }
+
+  function openCreatePoDialog() {
+    setPoCreateError(null)
+    setPoCreateResult(null)
+    setPoVendorLoadError(null)
+    setIsCreatePoDialogOpen(true)
+    publishPurchasingPoMode(true)
+
+    if (
+      ((poContextQuery.data?.vendors?.length ?? 0) === 0
+      || (poContextQuery.data?.projects?.length ?? 0) === 0)
+      && !isRefreshingPoVendors
+    ) {
+      void handleRefreshPoVendors(false)
+    }
+  }
+
+  function closeCreatePoDialog() {
+    if (isCreatingPo) {
+      return
+    }
+
+    setPoItemAmbiguities([])
+    setPoSelectedAmbiguousItemOption(null)
+    setIsCreatePoDialogOpen(false)
+    setIsAddToPoDialogOpen(false)
+    publishPurchasingPoMode(false)
+  }
+
+  function openAddToPoDialog() {
+    const selectedItem = mapItemSummaryToPoOption(detailQuery.data?.item)
+
+    if (!selectedItem) {
+      setPoCreateError('Select an item on the left list first.')
+      return
+    }
+
+    if (!isCreatePoDialogOpen) {
+      openCreatePoDialog()
+    }
+
+    setPoCreateError(null)
+    setPoSelectedItem(selectedItem)
+    setPoSelectedVendor(null)
+    setPoSelectedProject(poDefaultProject)
+    setPoLineProductNumber(selectedItem.productNumber || selectedItem.itemName)
+    setPoLineDescription(selectedItem.description || '')
+    setPoLineQuantity('1')
+    setPoLineUnitPrice('')
+    setIsAddToPoDialogOpen(true)
+  }
+
+  function closeAddToPoDialog() {
+    setIsAddToPoDialogOpen(false)
+    setPoSelectedProject(null)
+  }
+
+  function closePoItemAmbiguityDialog() {
+    setPoItemAmbiguities([])
+    setPoSelectedAmbiguousItemOption(null)
+  }
+
+  function confirmPoItemAmbiguitySelection() {
+    if (!currentPoItemAmbiguity || !poSelectedAmbiguousItemOption) {
+      return
+    }
+
+    updatePoDraftLine(currentPoItemAmbiguity.lineId, {
+      itemName: poSelectedAmbiguousItemOption.name,
+      productNumber: poSelectedAmbiguousItemOption.productNumber || poSelectedAmbiguousItemOption.name,
+    })
+
+    setPoItemAmbiguities((current) => current.slice(1))
+
+    if (poItemAmbiguities.length <= 1) {
+      setPoCreateError('Item match updated. Click Create Purchase Order(s) again.')
+    }
+  }
+
+  function updatePoDraftLine(lineId: string, patch: Partial<PurchasingDraftPoLine>) {
+    setPoDraftLines((current) => current.map((line) => (
+      line.id === lineId
+        ? { ...line, ...patch }
+        : line
+    )))
+  }
+
+  function removePoDraftLine(lineId: string) {
+    setPoDraftLines((current) => current.filter((line) => line.id !== lineId))
+  }
+
+  function handleAddPoDraftLine() {
+    setPoCreateError(null)
+
+    if (!poSelectedItem) {
+      setPoCreateError('Select a product before adding a PO line.')
+      return
+    }
+
+    if (!poSelectedVendor) {
+      setPoCreateError('Select a vendor before adding this item to PO.')
+      return
+    }
+
+    if (!poSelectedProject) {
+      setPoCreateError('Select a project before adding this item to PO.')
+      return
+    }
+
+    const productNumber = poLineProductNumber.trim()
+
+    if (!productNumber) {
+      setPoCreateError('Product number is required before adding a PO line.')
+      return
+    }
+
+    const quantity = Number(poLineQuantity)
+
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      setPoCreateError('Quantity must be greater than 0.')
+      return
+    }
+
+    const unitPriceValue = poLineUnitPrice.trim()
+    const parsedUnitPrice = unitPriceValue ? Number(unitPriceValue) : null
+
+    if (unitPriceValue && (!Number.isFinite(parsedUnitPrice) || Number(parsedUnitPrice) < 0)) {
+      setPoCreateError('Unit price must be a valid positive number, or left blank.')
+      return
+    }
+
+    const lineSignature = [
+      poSelectedItem.itemKey,
+      poSelectedVendor.id,
+      poSelectedProject.id,
+      normalizePoSearchToken(productNumber),
+      normalizePoSearchToken(poLineDescription),
+      String(quantity),
+      unitPriceValue,
+    ].join('|')
+    const now = Date.now()
+
+    if (
+      lastPoLineAddRef.current
+      && lastPoLineAddRef.current.signature === lineSignature
+      && (now - lastPoLineAddRef.current.at) < 600
+    ) {
+      return
+    }
+
+    const draftLine: PurchasingDraftPoLine = {
+      id: createPoDraftLineId(),
+      itemKey: poSelectedItem.itemKey,
+      itemName: poSelectedItem.itemName,
+      productNumber,
+      description: poLineDescription.trim(),
+      vendorId: poSelectedVendor.id,
+      vendorName: poSelectedVendor.name,
+      projectId: poSelectedProject.id,
+      projectNumber: poSelectedProject.projectNumber,
+      projectName: poSelectedProject.name,
+      quantity: String(quantity),
+      unitPrice: unitPriceValue,
+    }
+
+    setPoDraftLines((current) => [...current, draftLine])
+    lastPoLineAddRef.current = {
+      signature: lineSignature,
+      at: now,
+    }
+    setIsAddToPoDialogOpen(false)
+    setPoSelectedVendor(null)
+    setPoSelectedProject(null)
+    setPoLineQuantity('1')
+    setPoLineUnitPrice('')
+  }
+
+  async function handleCreatePurchaseOrders() {
+    setPoCreateError(null)
+    setPoCreateResult(null)
+
+    if (poDraftLines.length === 0) {
+      setPoCreateError('Add at least one line before creating purchase orders.')
+      return
+    }
+
+    const resolvedDefaultProject = poDefaultProject
+
+    if (!resolvedDefaultProject) {
+      setPoCreateError('Select a default project number from QuickBooks before creating PO.')
+      return
+    }
+
+    const normalizedLines = poDraftLines.map((line, index) => {
+      const quantity = Number(line.quantity)
+
+      if (!Number.isFinite(quantity) || quantity <= 0) {
+        throw new Error(`Line ${index + 1}: quantity must be greater than 0.`)
+      }
+
+      if (!line.productNumber.trim()) {
+        throw new Error(`Line ${index + 1}: product number is required.`)
+      }
+
+      if (!line.vendorId) {
+        throw new Error(`Line ${index + 1}: vendor is required.`)
+      }
+
+      const unitPriceRaw = line.unitPrice.trim()
+      const parsedUnitPrice = unitPriceRaw ? Number(unitPriceRaw) : null
+
+      if (unitPriceRaw && (!Number.isFinite(parsedUnitPrice) || Number(parsedUnitPrice) < 0)) {
+        throw new Error(`Line ${index + 1}: unit price must be a valid positive number.`)
+      }
+
+      const lineProjectId = String(line.projectId ?? '').trim()
+      const lineProjectNumber = String(line.projectNumber ?? '').trim()
+      let resolvedProject = null
+
+      if (lineProjectId) {
+        resolvedProject = poContextProjects.find((project) => project.id === lineProjectId) ?? null
+      }
+
+      if (!resolvedProject && lineProjectNumber) {
+        resolvedProject = resolvePoProjectByNumber(poContextProjects, lineProjectNumber)
+      }
+
+      if ((lineProjectId || lineProjectNumber) && !resolvedProject) {
+        throw new Error(`Line ${index + 1}: selected project was not found in QuickBooks.`)
+      }
+
+      if (!resolvedProject && resolvedDefaultProject) {
+        resolvedProject = resolvedDefaultProject
+      }
+
+      if (!resolvedProject) {
+        throw new Error(`Line ${index + 1}: project is required.`)
+      }
+
+      return {
+        lineId: line.id,
+        itemName: line.itemName,
+        productNumber: line.productNumber.trim(),
+        vendorId: line.vendorId,
+        vendorName: line.vendorName,
+        projectId: resolvedProject.id,
+        projectNumber: resolvedProject.projectNumber,
+        description: line.description.trim() || null,
+        quantity,
+        unitPrice: parsedUnitPrice,
+      }
+    })
+
+    setIsCreatingPo(true)
+
+    try {
+      const response = await createPurchasingPurchaseOrders({
+        projectNumber: resolvedDefaultProject.projectNumber,
+        projectId: resolvedDefaultProject.id,
+        poDate,
+        memo: poMemo.trim() || undefined,
+        lines: normalizedLines,
+      })
+
+      setPoCreateResult(response)
+      setPoItemAmbiguities([])
+      setPoDraftLines([])
+      setPoLineDescription('')
+      setPoLineUnitPrice('')
+      setPoLineQuantity('1')
+      await queryClient.invalidateQueries({ queryKey: ['purchasing'] })
+    } catch (error) {
+      const maybePayload = (
+        error
+        && typeof error === 'object'
+        && 'payload' in error
+      )
+        ? (error as { payload?: unknown }).payload
+        : null
+
+      if (isPurchasingPoItemAmbiguityResponse(maybePayload)) {
+        setPoItemAmbiguities(maybePayload.ambiguities)
+        setPoCreateError(maybePayload.error || 'Multiple QuickBooks item matches were found. Select an option.')
+        return
+      }
+
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : 'Could not create purchase orders in QuickBooks.'
+
+      setPoCreateError(message)
+    } finally {
+      setIsCreatingPo(false)
+    }
   }
 
   function openPhotoPreview() {
@@ -455,7 +1110,12 @@ export default function PurchasingPage() {
         sx={{
           display: 'grid',
           gap: 2,
-          gridTemplateColumns: { xs: '1fr', md: 'minmax(320px, 380px) 1fr' },
+          gridTemplateColumns: {
+            xs: '1fr',
+            md: isCreatePoDialogOpen
+              ? 'minmax(280px, 340px) minmax(460px, 1fr) minmax(320px, 420px)'
+              : 'minmax(320px, 380px) 1fr',
+          },
           alignItems: 'stretch',
           height: { md: '100%' },
           minHeight: 0,
@@ -627,13 +1287,27 @@ export default function PurchasingPage() {
         </Box>
 
         {/* RIGHT — details panel */}
-        <Box sx={{ minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+        <Box
+          sx={{
+            minHeight: 0,
+            display: 'flex',
+            flexDirection: 'column',
+          }}
+        >
           <Stack
             direction="row"
             alignItems="center"
-            justifyContent="flex-end"
+            justifyContent="space-between"
             sx={{ mb: 1, flexShrink: 0 }}
           >
+            <Button
+              size="small"
+              variant="contained"
+              startIcon={<AddShoppingCartRoundedIcon fontSize="small" />}
+              onClick={openCreatePoDialog}
+            >
+              Create PO
+            </Button>
             <Stack direction="row" alignItems="center" spacing={0.75}>
               <Typography variant="caption" color="text.secondary">
                 Last refreshed: {lastRefreshedLabel}
@@ -701,16 +1375,36 @@ export default function PurchasingPage() {
                 <Typography color="error">Failed to load item details.</Typography>
               ) : (
                 <Stack spacing={2.5}>
-                  <Box>
-                    <Typography variant="h6" fontWeight={700} sx={{ fontFamily: 'monospace', wordBreak: 'break-all' }}>
-                      {detailQuery.data.item.itemRaw}
-                    </Typography>
-                    {detailQuery.data.item.descriptions?.[0] && (
-                      <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                        {detailQuery.data.item.descriptions[0]}
+                  <Stack
+                    direction={{ xs: 'column', md: 'row' }}
+                    spacing={1}
+                    justifyContent="space-between"
+                    alignItems={{ md: 'flex-start' }}
+                  >
+                    <Box>
+                      <Typography variant="h6" fontWeight={700} sx={{ fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                        {detailQuery.data.item.itemRaw}
                       </Typography>
+                      {detailQuery.data.item.descriptions?.[0] && (
+                        <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                          {detailQuery.data.item.descriptions[0]}
+                        </Typography>
+                      )}
+                    </Box>
+
+                    {isCreatePoDialogOpen && (
+                      <Button
+                        size="small"
+                        variant="contained"
+                        onClick={openAddToPoDialog}
+                        startIcon={<AddShoppingCartRoundedIcon fontSize="small" />}
+                        disabled={poContextVendors.length === 0 || poContextProjects.length === 0 || !poDefaultProject}
+                        sx={{ alignSelf: { xs: 'stretch', md: 'auto' } }}
+                      >
+                        Add to PO
+                      </Button>
                     )}
-                  </Box>
+                  </Stack>
 
                   <Box
                     sx={{
@@ -733,7 +1427,10 @@ export default function PurchasingPage() {
                       <Stat label="Lowest $" value={fmtPrice(detailQuery.data.summary.lowestPrice)} />
                       <Stat label="Avg $" value={fmtPrice(detailQuery.data.summary.averagePrice)} />
                       <Stat label="Highest $" value={fmtPrice(detailQuery.data.summary.highestPrice)} />
-                      <Stat label="Fast Ship" value={fmtShipDays(detailQuery.data.summary.fastestShipDays)} />
+                      <Stat
+                        label="Latest Price"
+                        value={fmtLatestPrice(latestPriceSummary.price, latestPriceSummary.date)}
+                      />
                       <Paper
                         variant="outlined"
                         role="button"
@@ -957,7 +1654,472 @@ export default function PurchasingPage() {
             </Box>
           </Paper>
         </Box>
+
+        {isCreatePoDialogOpen && (
+          <Box sx={{ minHeight: 0, display: 'flex' }}>
+            <Paper
+              variant="outlined"
+              sx={{
+                display: 'flex',
+                flexDirection: 'column',
+                minHeight: 0,
+                flex: 1,
+                overflow: 'hidden',
+              }}
+            >
+              <Stack
+                direction="row"
+                justifyContent="space-between"
+                alignItems="center"
+                sx={{ p: 1.5, borderBottom: '1px solid', borderColor: 'divider' }}
+              >
+                <Box sx={{ minWidth: 0 }}>
+                  <Typography variant="subtitle1" fontWeight={700}>Create Purchase Order(s)</Typography>
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                    Keep selecting items on the left, then add from the middle panel.
+                  </Typography>
+                </Box>
+                <IconButton onClick={closeCreatePoDialog} disabled={isCreatingPo}>
+                  <CloseRoundedIcon fontSize="small" />
+                </IconButton>
+              </Stack>
+
+              <Box sx={{ p: 1.5, flex: 1, minHeight: 0, overflow: 'auto' }}>
+                <Stack spacing={1.25}>
+                  <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} justifyContent="space-between" alignItems={{ md: 'center' }}>
+                    <Typography variant="subtitle2" fontWeight={700}>QuickBooks vendors and projects</Typography>
+                    <Stack direction="row" spacing={1} alignItems="center">
+                      <Typography variant="caption" color="text.secondary">Last loaded: {poVendorsLoadedAt}</Typography>
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        onClick={() => {
+                          void handleRefreshPoVendors(true)
+                        }}
+                        disabled={isRefreshingPoVendors}
+                        startIcon={isRefreshingPoVendors ? <CircularProgress size={14} /> : <RefreshRoundedIcon fontSize="small" />}
+                      >
+                        {isRefreshingPoVendors ? 'Refreshing...' : 'Refresh'}
+                      </Button>
+                    </Stack>
+                  </Stack>
+
+                  {poVendorLoadError && (
+                    <Alert severity="error">{poVendorLoadError}</Alert>
+                  )}
+
+                  {poContextQuery.data?.truncated?.vendors && (
+                    <Alert severity="warning">
+                      QuickBooks vendor list was truncated. Refresh again if a vendor is missing.
+                    </Alert>
+                  )}
+
+                  {poContextQuery.data?.truncated?.projects && (
+                    <Alert severity="warning">
+                      QuickBooks project list was truncated. Refresh again if a project is missing.
+                    </Alert>
+                  )}
+
+                  {poCreateResult && (
+                    <Alert severity="success">
+                      Created {poCreateResult.poCount} PO{poCreateResult.poCount === 1 ? '' : 's'}:
+                      {' '}
+                      {poCreateResult.purchaseOrders.map((order) => order.docNumber).join(', ')}
+                    </Alert>
+                  )}
+
+                  {poCreateError && (
+                    <Alert severity="error">{poCreateError}</Alert>
+                  )}
+
+                  <Box
+                    sx={{
+                      display: 'grid',
+                      gap: 1,
+                      gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' },
+                    }}
+                  >
+                    <Autocomplete
+                      size="small"
+                      options={poContextProjects}
+                      value={poDefaultProject}
+                      onChange={(_, value) => {
+                        setPoDefaultProject(value)
+                      }}
+                      getOptionLabel={(option) => formatPoProjectLabel(option)}
+                      isOptionEqualToValue={(option, value) => option.id === value.id}
+                      renderInput={(params) => (
+                        <TextField
+                          {...params}
+                          label="Default project number"
+                          required
+                          helperText="Choose an existing QuickBooks project. New lines default to this project, but each line can be changed."
+                        />
+                      )}
+                    />
+                    <TextField
+                      size="small"
+                      label="PO Date"
+                      type="date"
+                      value={poDate}
+                      onChange={(event) => setPoDate(event.target.value)}
+                      InputLabelProps={{ shrink: true }}
+                    />
+                  </Box>
+
+                  <TextField
+                    size="small"
+                    label="Memo (optional)"
+                    value={poMemo}
+                    onChange={(event) => setPoMemo(event.target.value)}
+                    placeholder="Shows on created POs"
+                  />
+
+                  {!poDefaultProject && (
+                    <Alert severity="warning">
+                      Select a default project number from QuickBooks before adding items.
+                    </Alert>
+                  )}
+
+                  <Divider />
+
+                  <Stack direction="row" justifyContent="space-between" alignItems="center">
+                    <Typography variant="subtitle2" fontWeight={700}>Vendor groups ({poVendorGroups.length})</Typography>
+                    <Typography variant="caption" color="text.secondary">{poDraftLines.length} line(s)</Typography>
+                  </Stack>
+
+                  {poContextVendors.length === 0 && (
+                    <Alert severity="info">
+                      Load vendors first, then click Add to PO in the middle details panel.
+                    </Alert>
+                  )}
+
+                  {poContextProjects.length === 0 && (
+                    <Alert severity="info">
+                      Load QuickBooks projects first, then select a project for each item.
+                    </Alert>
+                  )}
+
+                  {poDraftLines.length === 0 ? (
+                    <Alert severity="info">
+                      Click Add to PO in the middle details panel to add the selected item.
+                    </Alert>
+                  ) : (
+                    <Stack spacing={1}>
+                      {poVendorGroups.map((group) => (
+                        <Accordion key={group.key} disableGutters defaultExpanded>
+                          <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
+                            <Stack
+                              direction="row"
+                              justifyContent="space-between"
+                              alignItems="center"
+                              sx={{ width: '100%', minWidth: 0 }}
+                            >
+                              <Typography variant="subtitle2" fontWeight={700} sx={{ minWidth: 0, wordBreak: 'break-word' }}>
+                                {group.vendorName}
+                              </Typography>
+                              <Typography variant="caption" color="text.secondary">
+                                {group.lines.length} item{group.lines.length === 1 ? '' : 's'} • Qty {fmtQty(group.totalQty)}
+                              </Typography>
+                            </Stack>
+                          </AccordionSummary>
+                          <AccordionDetails>
+                            <Stack spacing={1}>
+                              {group.lines.map((line) => (
+                                <Paper key={line.id} variant="outlined" sx={{ p: 1 }}>
+                                  <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
+                                    <Typography variant="body2" fontWeight={700} sx={{ minWidth: 0, wordBreak: 'break-word' }}>
+                                      {line.itemName}
+                                    </Typography>
+                                    <IconButton size="small" onClick={() => removePoDraftLine(line.id)}>
+                                      <DeleteOutlineRoundedIcon fontSize="small" />
+                                    </IconButton>
+                                  </Stack>
+
+                                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+                                    Product #: {line.productNumber}
+                                  </Typography>
+                                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                                    Project: {line.projectNumber || line.projectName}
+                                  </Typography>
+                                  {!!line.description.trim() && (
+                                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                                      Details: {line.description}
+                                    </Typography>
+                                  )}
+
+                                  <Box sx={{ mt: 1 }}>
+                                    <Autocomplete
+                                      size="small"
+                                      options={poContextProjects}
+                                      value={
+                                        poContextProjects.find((project) => project.id === line.projectId)
+                                        ?? resolvePoProjectByNumber(poContextProjects, line.projectNumber)
+                                        ?? null
+                                      }
+                                      onChange={(_, value) => {
+                                        updatePoDraftLine(line.id, {
+                                          projectId: value?.id ?? '',
+                                          projectNumber: value?.projectNumber ?? '',
+                                          projectName: value?.name ?? '',
+                                        })
+                                      }}
+                                      getOptionLabel={(option) => formatPoProjectLabel(option)}
+                                      isOptionEqualToValue={(option, value) => option.id === value.id}
+                                      renderInput={(params) => (
+                                        <TextField
+                                          {...params}
+                                          label="Project"
+                                        />
+                                      )}
+                                    />
+                                  </Box>
+
+                                  <Box
+                                    sx={{
+                                      mt: 1,
+                                      display: 'grid',
+                                      gap: 1,
+                                      gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' },
+                                    }}
+                                  >
+                                    <TextField
+                                      size="small"
+                                      label="Qty"
+                                      value={line.quantity}
+                                      onChange={(event) => updatePoDraftLine(line.id, { quantity: event.target.value })}
+                                    />
+                                    <TextField
+                                      size="small"
+                                      label="Unit Price"
+                                      value={line.unitPrice}
+                                      onChange={(event) => updatePoDraftLine(line.id, { unitPrice: event.target.value })}
+                                      placeholder="Optional"
+                                    />
+                                  </Box>
+                                </Paper>
+                              ))}
+                            </Stack>
+                          </AccordionDetails>
+                        </Accordion>
+                      ))}
+                    </Stack>
+                  )}
+                </Stack>
+              </Box>
+
+              <Stack
+                direction="row"
+                spacing={1}
+                justifyContent="flex-end"
+                sx={{ p: 1.25, borderTop: '1px solid', borderColor: 'divider' }}
+              >
+                <Button onClick={closeCreatePoDialog} disabled={isCreatingPo}>Close</Button>
+                <Button
+                  onClick={() => {
+                    void handleCreatePurchaseOrders()
+                  }}
+                  variant="contained"
+                  disabled={
+                    isCreatingPo
+                    || poDraftLines.length === 0
+                    || !poDefaultProject
+                  }
+                  startIcon={isCreatingPo ? <CircularProgress size={14} /> : <AddShoppingCartRoundedIcon fontSize="small" />}
+                >
+                  {isCreatingPo ? 'Creating...' : 'Create Purchase Order(s)'}
+                </Button>
+              </Stack>
+            </Paper>
+          </Box>
+        )}
       </Box>
+
+      <Dialog
+        open={Boolean(currentPoItemAmbiguity)}
+        onClose={closePoItemAmbiguityDialog}
+        fullWidth
+        maxWidth="sm"
+      >
+        <DialogTitle>Select Matching QuickBooks Item</DialogTitle>
+        <DialogContent>
+          <Stack spacing={1.25} sx={{ pt: 0.5 }}>
+            <Alert severity="warning">
+              Multiple QuickBooks items matched this product. Choose the exact one to continue.
+            </Alert>
+
+            <TextField
+              size="small"
+              label="Vendor"
+              value={currentPoItemAmbiguity?.vendorName ?? ''}
+              InputProps={{ readOnly: true }}
+            />
+
+            <TextField
+              size="small"
+              label="Requested product"
+              value={currentPoItemAmbiguity?.productNumber ?? ''}
+              InputProps={{ readOnly: true }}
+            />
+
+            <TextField
+              size="small"
+              label="Requested item name"
+              value={currentPoItemAmbiguity?.itemName ?? ''}
+              InputProps={{ readOnly: true }}
+            />
+
+            <TextField
+              size="small"
+              label="Quantity"
+              value={fmtQty(currentPoItemAmbiguity?.quantity)}
+              InputProps={{ readOnly: true }}
+            />
+
+            <Autocomplete
+              size="small"
+              options={currentPoItemAmbiguity?.options ?? []}
+              value={poSelectedAmbiguousItemOption}
+              onChange={(_, value) => {
+                setPoSelectedAmbiguousItemOption(value)
+              }}
+              getOptionLabel={(option) => {
+                const number = String(option.productNumber ?? '').trim()
+                const name = String(option.name ?? '').trim()
+
+                if (number && name) {
+                  return `${number} - ${name}`
+                }
+
+                return number || name || 'Unnamed item'
+              }}
+              isOptionEqualToValue={(option, value) => option.id === value.id}
+              renderInput={(params) => (
+                <TextField
+                  {...params}
+                  label="QuickBooks item"
+                  required
+                />
+              )}
+            />
+
+            {!!poSelectedAmbiguousItemOption?.description?.trim() && (
+              <Typography variant="caption" color="text.secondary">
+                {poSelectedAmbiguousItemOption.description}
+              </Typography>
+            )}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={closePoItemAmbiguityDialog}>Cancel</Button>
+          <Button
+            variant="contained"
+            onClick={confirmPoItemAmbiguitySelection}
+            disabled={!poSelectedAmbiguousItemOption}
+          >
+            Use Selected Item
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={isAddToPoDialogOpen}
+        onClose={closeAddToPoDialog}
+        fullWidth
+        maxWidth="sm"
+      >
+        <DialogTitle>Add Item To Purchase Order</DialogTitle>
+        <DialogContent>
+          <Stack spacing={1.25} sx={{ pt: 0.5 }}>
+            <TextField
+              size="small"
+              label="Item"
+              value={poSelectedItem?.itemName ?? ''}
+              InputProps={{ readOnly: true }}
+            />
+
+            <Autocomplete
+              size="small"
+              options={poContextVendors}
+              value={poSelectedVendor}
+              onChange={(_, value) => {
+                setPoSelectedVendor(value)
+              }}
+              getOptionLabel={(option) => option.name}
+              isOptionEqualToValue={(option, value) => option.id === value.id}
+              renderInput={(params) => (
+                <TextField
+                  {...params}
+                  label="Vendor"
+                  required
+                />
+              )}
+            />
+
+            <Autocomplete
+              size="small"
+              options={poContextProjects}
+              value={poSelectedProject}
+              onChange={(_, value) => {
+                setPoSelectedProject(value)
+              }}
+              getOptionLabel={(option) => formatPoProjectLabel(option)}
+              isOptionEqualToValue={(option, value) => option.id === value.id}
+              renderInput={(params) => (
+                <TextField
+                  {...params}
+                  label="Project"
+                  required
+                />
+              )}
+            />
+
+            <Box sx={{ display: 'grid', gap: 1, gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' } }}>
+              <TextField
+                size="small"
+                label="Qty"
+                value={poLineQuantity}
+                onChange={(event) => setPoLineQuantity(event.target.value)}
+                required
+              />
+              <TextField
+                size="small"
+                label="Unit Price"
+                value={poLineUnitPrice}
+                onChange={(event) => setPoLineUnitPrice(event.target.value)}
+                placeholder="Optional"
+              />
+            </Box>
+
+            <TextField
+              size="small"
+              label="Product # / SKU"
+              value={poLineProductNumber}
+              onChange={(event) => setPoLineProductNumber(event.target.value)}
+              required
+            />
+
+            <TextField
+              size="small"
+              label="Details (optional)"
+              value={poLineDescription}
+              onChange={(event) => setPoLineDescription(event.target.value)}
+              multiline
+              minRows={2}
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={closeAddToPoDialog}>Cancel</Button>
+          <Button
+            variant="contained"
+            onClick={handleAddPoDraftLine}
+            disabled={!poSelectedItem || !poSelectedVendor || !poSelectedProject}
+          >
+            Add to PO
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <Dialog
         open={isAiSearchDialogOpen}

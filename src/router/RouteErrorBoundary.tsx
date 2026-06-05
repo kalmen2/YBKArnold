@@ -25,7 +25,7 @@ function toErrorMessage(error: unknown) {
 }
 
 function isDynamicImportFailure(message: string) {
-  return /(Failed to fetch dynamically imported module|Importing a module script failed|ChunkLoadError|Loading chunk \d+ failed)/i.test(
+  return /(Failed to fetch dynamically imported module|Importing a module script failed|ChunkLoadError|Loading chunk \d+ failed|Lazy route module missing default export|Cannot read properties of undefined \(reading ['"]default['"]\)|Cannot read property ['"]default['"] of undefined)/i.test(
     message,
   )
 }

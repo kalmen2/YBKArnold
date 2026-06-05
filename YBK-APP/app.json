@@ -2,8 +2,12 @@
   "expo": {
     "name": "Arnold",
     "slug": "YBK-APP",
-    "scheme": "com.ybk.arnold",
-    "version": "3.22",
+    "scheme": [
+      "com.arnold.app",
+      "com.googleusercontent.apps.304964900278-hbvsdpihhnbnrgkq7i7ncdibki9p5e7v",
+      "com.googleusercontent.apps.304964900278-70krkc9nf553bcb0vo5s1reajgqs2j8q"
+    ],
+    "version": "3.24",
     "runtimeVersion": {
       "policy": "appVersion"
     },
@@ -27,7 +31,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.ybk.arnold",
-      "buildNumber": "27",
+      "buildNumber": "30",
       "usesAppleSignIn": true,
       "infoPlist": {
         "CFBundleDisplayName": "Arnold",
@@ -35,14 +39,14 @@
       }
     },
     "android": {
-      "package": "com.ybk.arnold",
+      "package": "com.arnold.app",
       "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon-home.png",
         "backgroundColor": "#ffffff"
       },
       "predictiveBackGestureEnabled": false,
-      "versionCode": 56
+      "versionCode": 68
     },
     "web": {
       "favicon": "./assets/favicon.png"

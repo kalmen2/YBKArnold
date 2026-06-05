@@ -10,7 +10,9 @@ import {
   ListItemText,
   Toolbar,
   Typography,
+  useTheme,
 } from '@mui/material'
+import { alpha } from '@mui/material/styles'
 import AdminPanelSettingsRoundedIcon from '@mui/icons-material/AdminPanelSettingsRounded'
 import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded'
 import KeyboardArrowRightRoundedIcon from '@mui/icons-material/KeyboardArrowRightRounded'
@@ -35,13 +37,14 @@ type SidebarContentProps = {
 }
 
 function SidebarContent({ showText, onNavigate }: SidebarContentProps) {
+  const theme = useTheme()
   const location = useLocation()
   const navigate = useNavigate()
   const { appUser } = useAuth()
 
   const canAccessNavItem = (item: NavItem) => {
     if (appUser?.isSalesRep) {
-      return item.path === '/sales' || item.path === '/admin/alerts'
+      return item.path === '/sales' || item.path === '/notifications' || item.path === '/config'
     }
 
     if (item.adminOnly && !appUser?.isAdmin) {
@@ -98,10 +101,29 @@ function SidebarContent({ showText, onNavigate }: SidebarContentProps) {
           }}
           sx={{
             minHeight: 44,
-            borderRadius: 1.5,
+            borderRadius: 2,
             justifyContent: showText ? 'flex-start' : 'center',
             px: showText ? 1.5 : 1.25,
             pl: showText && nested ? 3 : undefined,
+            border: '1px solid transparent',
+            color: isSelected ? 'primary.dark' : 'text.primary',
+            transition: theme.transitions.create(
+              ['background-color', 'transform', 'border-color', 'box-shadow'],
+              { duration: theme.transitions.duration.shorter },
+            ),
+            '&:hover': {
+              bgcolor: alpha(theme.palette.primary.main, 0.1),
+              borderColor: alpha(theme.palette.primary.main, 0.2),
+              transform: showText ? 'translateX(2px)' : 'none',
+            },
+            '&.Mui-selected': {
+              bgcolor: alpha(theme.palette.primary.main, 0.16),
+              borderColor: alpha(theme.palette.primary.main, 0.32),
+              boxShadow: `0 10px 20px ${alpha(theme.palette.primary.main, 0.15)}`,
+            },
+            '&.Mui-selected:hover': {
+              bgcolor: alpha(theme.palette.primary.main, 0.2),
+            },
           }}
         >
           <ListItemIcon
@@ -109,6 +131,7 @@ function SidebarContent({ showText, onNavigate }: SidebarContentProps) {
               minWidth: 0,
               justifyContent: 'center',
               mr: showText ? 1.5 : 0,
+              color: isSelected ? 'primary.main' : 'text.secondary',
             }}
           >
             <Icon fontSize="small" />
@@ -149,8 +172,15 @@ function SidebarContent({ showText, onNavigate }: SidebarContentProps) {
             onClick={onToggle}
             sx={{
               minHeight: 44,
-              borderRadius: 1.5,
+              borderRadius: 2,
               px: 1.5,
+              border: '1px solid transparent',
+              color: active ? 'secondary.dark' : 'text.primary',
+              bgcolor: active ? alpha(theme.palette.secondary.main, 0.14) : 'transparent',
+              '&:hover': {
+                bgcolor: alpha(theme.palette.secondary.main, 0.1),
+                borderColor: alpha(theme.palette.secondary.main, 0.24),
+              },
             }}
           >
             <ListItemIcon
@@ -158,6 +188,7 @@ function SidebarContent({ showText, onNavigate }: SidebarContentProps) {
                 minWidth: 0,
                 justifyContent: 'center',
                 mr: 1.5,
+                color: active ? 'secondary.main' : 'text.secondary',
               }}
             >
               <Icon fontSize="small" />
@@ -191,8 +222,15 @@ function SidebarContent({ showText, onNavigate }: SidebarContentProps) {
   }
 
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <Toolbar sx={{ px: 2 }}>
+    <Box
+      sx={{
+        display: 'flex',
+        flexDirection: 'column',
+        height: '100%',
+        background: `linear-gradient(180deg, ${alpha(theme.palette.background.paper, 0.95)} 0%, ${alpha(theme.palette.primary.light, 0.08)} 100%)`,
+      }}
+    >
+      <Toolbar sx={{ px: 2, py: 0.75 }}>
         <Typography
           variant="subtitle1"
           sx={{
@@ -200,6 +238,8 @@ function SidebarContent({ showText, onNavigate }: SidebarContentProps) {
             whiteSpace: 'nowrap',
             opacity: showText ? 1 : 0,
             transition: 'opacity 160ms ease',
+            color: 'primary.dark',
+            letterSpacing: '0.03em',
           }}
         >
           YBK Arnold
@@ -255,6 +295,7 @@ export default function Sidebar({
   expandedWidth,
   collapsedWidth,
 }: SidebarProps) {
+  const theme = useTheme()
   const desktopWidth = collapsed ? collapsedWidth : expandedWidth
 
   return (
@@ -270,7 +311,9 @@ export default function Sidebar({
             width: expandedWidth,
             boxSizing: 'border-box',
             borderRight: 1,
-            borderColor: 'divider',
+            borderColor: alpha(theme.palette.primary.main, 0.16),
+            bgcolor: alpha(theme.palette.background.paper, 0.88),
+            backdropFilter: 'blur(12px)',
           },
         }}
       >
@@ -289,7 +332,9 @@ export default function Sidebar({
             boxSizing: 'border-box',
             overflowX: 'hidden',
             borderRight: 1,
-            borderColor: 'divider',
+            borderColor: alpha(theme.palette.primary.main, 0.16),
+            bgcolor: alpha(theme.palette.background.paper, 0.9),
+            backdropFilter: 'blur(12px)',
             transition: (theme) =>
               theme.transitions.create('width', {
                 easing: theme.transitions.easing.sharp,

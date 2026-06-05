@@ -5,8 +5,7 @@ type ContactNameLike = {
 }
 
 type QuoteTimestampLike = {
-  createdAt?: string | null
-  updatedAt?: string | null
+  opportunityDate?: string | null
 }
 
 export function displayContactName(contact: ContactNameLike) {
@@ -31,11 +30,34 @@ export function parseNonNegativeAmount(input: string) {
   return Number(parsed.toFixed(2))
 }
 
-export function resolveQuoteAgeDays(quote: QuoteTimestampLike) {
-  const rawTimestamp = String(quote.createdAt || quote.updatedAt || '')
-  const timestamp = new Date(rawTimestamp)
+function parseOpportunityDate(rawValue: string) {
+  const normalized = rawValue.trim()
 
-  if (Number.isNaN(timestamp.getTime())) {
+  if (!normalized) {
+    return null
+  }
+
+  const isoDateMatch = normalized.match(/^(\d{4})-(\d{2})-(\d{2})/)
+
+  if (isoDateMatch) {
+    const year = Number(isoDateMatch[1])
+    const month = Number(isoDateMatch[2])
+    const day = Number(isoDateMatch[3])
+    const parsedDate = new Date(year, month - 1, day)
+
+    return Number.isNaN(parsedDate.getTime()) ? null : parsedDate
+  }
+
+  const parsedDate = new Date(normalized)
+
+  return Number.isNaN(parsedDate.getTime()) ? null : parsedDate
+}
+
+export function resolveQuoteAgeDays(quote: QuoteTimestampLike) {
+  const rawQuoteDate = String(quote.opportunityDate || '')
+  const timestamp = parseOpportunityDate(rawQuoteDate)
+
+  if (!timestamp) {
     return 0
   }
 

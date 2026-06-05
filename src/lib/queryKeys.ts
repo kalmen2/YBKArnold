@@ -23,6 +23,29 @@ export const QUERY_KEYS = {
   crmOpportunitiesDealers: ['crm', 'opportunities', 'dealers'] as const,
   crmOpportunitiesQuotes: ['crm', 'opportunities', 'quotes'] as const,
   crmOpportunitiesOrders: ['crm', 'opportunities', 'orders'] as const,
+  crmQuotes: (opts: {
+    limit: number
+    status: string
+    dealerSourceId: string
+    quoteNumber: string
+    search: string
+    salesRep: string
+    dealerState: string
+    projectType: string
+    lifecycle: string
+  }) => [
+    'crm',
+    'quotes',
+    opts.limit,
+    opts.status,
+    opts.dealerSourceId,
+    opts.quoteNumber,
+    opts.search,
+    opts.salesRep,
+    opts.dealerState,
+    opts.projectType,
+    opts.lifecycle,
+  ] as const,
   crmOpportunityContacts: (dealerSourceId: string) =>
     ['crm', 'opportunities', 'contacts', dealerSourceId] as const,
   crmContacts: (opts: { limit: number; offset: number; search: string; dealerSourceId: string }) =>
@@ -74,6 +97,7 @@ export const QUERY_KEYS = {
   // Purchasing
   purchasingItems: (search: string, page: number, pageSize: number, aiAssistKey = 0) =>
     ['purchasing', 'items', search, page, pageSize, aiAssistKey] as const,
+  purchasingPoContext: ['purchasing', 'po-context'] as const,
   purchasingItemDetail: (itemKey: string) => ['purchasing', 'item', itemKey] as const,
   purchasingItemPhotos: (itemKey: string) => ['purchasing', 'item-photos', itemKey] as const,
 } as const

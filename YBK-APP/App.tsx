@@ -1,9 +1,9 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker'
+import { GoogleSignin, isErrorWithCode, isSuccessResponse, statusCodes } from '@react-native-google-signin/google-signin'
 import * as AppleAuthentication from 'expo-apple-authentication'
 import * as Application from 'expo-application'
 import * as Crypto from 'expo-crypto'
-import * as Google from 'expo-auth-session/providers/google'
 import Constants from 'expo-constants'
 import { Ionicons } from '@expo/vector-icons'
 import { StatusBar } from 'expo-status-bar'
@@ -78,8 +78,6 @@ import {
   TimesheetSection,
 } from './appSections'
 
-WebBrowser.maybeCompleteAuthSession()
-
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldPlaySound: true,
@@ -92,13 +90,8 @@ Notifications.setNotificationHandler({
 const MOBILE_BIOMETRIC_ENABLED_KEY = 'ybk.mobile.biometric.enabled'
 const MOBILE_LANGUAGE_KEY = 'ybk.mobile.language'
 const MOBILE_NOTIFICATIONS_ENABLED_KEY = 'ybk.mobile.notifications.enabled'
-const MOBILE_ANDROID_PACKAGE = 'com.ybk.arnold'
 const GOOGLE_WEB_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID ?? ''
 const GOOGLE_IOS_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID ?? ''
-const GOOGLE_ANDROID_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID ?? ''
-const GOOGLE_EXPO_IOS_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_EXPO_IOS_CLIENT_ID ?? ''
-const GOOGLE_EXPO_ANDROID_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_EXPO_ANDROID_CLIENT_ID ?? ''
-const GOOGLE_ANDROID_REDIRECT_URI = `${MOBILE_ANDROID_PACKAGE}:/oauthredirect`
 const ORDERS_PAGE_SIZE = 30
 const ADMIN_PORTAL_PAGES = [
   { path: '/admin/cash', labelEn: 'Cash Accounts', labelEs: 'Cuentas de caja', icon: 'cash-outline' as const },
@@ -678,12 +671,6 @@ function isDesignDashboardOrder(order: DashboardOrder) {
 export default function App() {
   const { height: windowHeight } = useWindowDimensions()
   const isExpoGo = Constants.appOwnership === 'expo'
-  const resolvedIosClientId = isExpoGo
-    ? GOOGLE_EXPO_IOS_CLIENT_ID || 'missing-expo-ios-client-id'
-    : GOOGLE_IOS_CLIENT_ID || GOOGLE_WEB_CLIENT_ID || 'missing-ios-client-id'
-  const resolvedAndroidClientId = isExpoGo
-    ? GOOGLE_EXPO_ANDROID_CLIENT_ID || 'missing-expo-android-client-id'
-    : GOOGLE_ANDROID_CLIENT_ID || GOOGLE_WEB_CLIENT_ID || 'missing-android-client-id'
 
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null)
   const [authProfile, setAuthProfile] = useState<MobileAuthUser | null>(null)
@@ -703,13 +690,6 @@ export default function App() {
   const [hasBiometricSessionAuth, setHasBiometricSessionAuth] = useState(false)
   const [isDisableBiometricConfirmOpen, setIsDisableBiometricConfirmOpen] = useState(false)
   const [lastAutoBiometricAttemptAt, setLastAutoBiometricAttemptAt] = useState(0)
-
-  const [googleRequest, googleResponse, promptGoogleSignIn] = Google.useIdTokenAuthRequest({
-    webClientId: GOOGLE_WEB_CLIENT_ID || undefined,
-    iosClientId: resolvedIosClientId,
-    androidClientId: resolvedAndroidClientId,
-    redirectUri: Platform.OS === 'android' ? GOOGLE_ANDROID_REDIRECT_URI : undefined,
-  })
 
   const [activeScreen, setActiveScreen] = useState<AppScreen>('dashboard')
   const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false)
@@ -844,6 +824,7 @@ export default function App() {
   const isBiometricLocked = isBiometricEnabled && !hasBiometricSessionAuth
   const hasApprovedSessionAccess = Boolean(authProfile?.isApproved) && !isBiometricLocked
   const isAdminUser = Boolean(authProfile?.isAdmin)
+  const isStandardUser = authProfile?.role === 'standard'
   const hasManagerSheetAccess = !isAdminUser && Boolean(authProfile?.isManager)
   const hasAdminOrderDetailsAccess = Boolean(authProfile?.isAdmin)
   const profileDisplayName = useMemo(
@@ -960,10 +941,8 @@ export default function App() {
   }, [installedNativeBuildLabel])
 
   const appVersionLabel = useMemo(() => {
-    return installedNativeBuildLabel
-      ? `Version ${installedNativeVersion}.${installedNativeBuildLabel}`
-      : `Version ${installedNativeVersion}`
-  }, [installedNativeBuildLabel, installedNativeVersion])
+    return `Version ${installedNativeVersion}`
+  }, [installedNativeVersion])
 
   const settingsMenuItems = useMemo<Array<{ id: SettingsMenuId; title: string; subtitle: string; status: string }>>(
     () => {
@@ -2735,25 +2714,23 @@ export default function App() {
       }
 
       if (!hasNewNativeBuild) {
-        const currentBuildText =
-          installedNativeBuildLabel
-          || (installedNativeBuildNumber !== null ? String(installedNativeBuildNumber) : installedNativeVersion)
+        const currentVersionText = installedNativeVersion || 'unknown'
 
         setUpdateMessage(
           t(
-            `You already have the latest version (${currentBuildText}).`,
-            `Ya tienes la version mas reciente (${currentBuildText}).`,
+            `You already have the latest version (${currentVersionText}).`,
+            `Ya tienes la version mas reciente (${currentVersionText}).`,
           ),
         )
         return
       }
 
       setResolvedUpdateUrl(candidateUpdateUrl)
-      if (latestVersion && latestBuildNumber !== null) {
+      if (latestVersion) {
         setUpdateMessage(
           t(
-            `Native update found (Version ${latestVersion}.${latestBuildNumber}). Tap Install Update.`,
-            `Se encontro actualizacion nativa (Version ${latestVersion}.${latestBuildNumber}). Toca Instalar actualizacion.`,
+            `Native update found (Version ${latestVersion}). Tap Install Update.`,
+            `Se encontro actualizacion nativa (Version ${latestVersion}). Toca Instalar actualizacion.`,
           ),
         )
         return
@@ -2778,7 +2755,6 @@ export default function App() {
     }
   }, [
     getErrorMessage,
-    installedNativeBuildLabel,
     installedNativeBuildNumber,
     installedNativeVersion,
     requestWithSession,
@@ -2857,7 +2833,17 @@ export default function App() {
   }, [closePicturesModal, closeSettingsMenu, firebaseUser, lockBiometricSession, registeredPushToken, requestWithSession])
 
   const handleStartGoogleLogin = useCallback(async () => {
-    if (!googleRequest) {
+    if (isExpoGo) {
+      setAuthMessage(
+        t(
+          'Google sign-in requires a development or production build. It is not available in Expo Go.',
+          'El inicio de sesion con Google requiere un build de desarrollo o produccion. No esta disponible en Expo Go.',
+        ),
+      )
+      return
+    }
+
+    if (!GOOGLE_WEB_CLIENT_ID) {
       setAuthMessage(t('Google sign-in is not configured yet for mobile.', 'El inicio de sesion con Google aun no esta configurado para movil.'))
       return
     }
@@ -2866,16 +2852,66 @@ export default function App() {
     setIsSigningIn(true)
 
     try {
-      const result = await promptGoogleSignIn()
+      GoogleSignin.configure({
+        webClientId: GOOGLE_WEB_CLIENT_ID,
+        iosClientId: GOOGLE_IOS_CLIENT_ID || undefined,
+      })
 
-      if (result.type !== 'success') {
-        setIsSigningIn(false)
+      if (Platform.OS === 'android') {
+        await GoogleSignin.hasPlayServices({
+          showPlayServicesUpdateDialog: true,
+        })
       }
+
+      const response = await GoogleSignin.signIn()
+
+      if (!isSuccessResponse(response)) {
+        return
+      }
+
+      const idToken = String(response.data.idToken ?? '').trim()
+
+      if (!idToken) {
+        setAuthMessage(t('Google sign-in did not return an ID token.', 'Google no devolvio un ID token al iniciar sesion.'))
+        return
+      }
+
+      const credential = GoogleAuthProvider.credential(idToken)
+      await signInWithCredential(mobileAuth, credential)
+      setAuthMessage(null)
     } catch (error) {
-      setIsSigningIn(false)
+      if (isErrorWithCode(error)) {
+        if (error.code === statusCodes.SIGN_IN_CANCELLED) {
+          setAuthMessage(null)
+          return
+        }
+
+        if (error.code === statusCodes.IN_PROGRESS) {
+          setAuthMessage(
+            t(
+              'Google sign-in is already in progress.',
+              'El inicio de sesion con Google ya esta en progreso.',
+            ),
+          )
+          return
+        }
+
+        if (error.code === statusCodes.PLAY_SERVICES_NOT_AVAILABLE) {
+          setAuthMessage(
+            t(
+              'Google Play Services are not available on this device.',
+              'Google Play Services no esta disponible en este dispositivo.',
+            ),
+          )
+          return
+        }
+      }
+
       setAuthMessage(getErrorMessage(error, 'Google sign-in failed.', 'Fallo el inicio de sesion con Google.'))
+    } finally {
+      setIsSigningIn(false)
     }
-  }, [getErrorMessage, googleRequest, promptGoogleSignIn, t])
+  }, [getErrorMessage, isExpoGo, t])
 
   const handleStartAppleLogin = useCallback(async () => {
     if (Platform.OS !== 'ios') {
@@ -3110,38 +3146,6 @@ export default function App() {
       isMounted = false
     }
   }, [])
-
-  useEffect(() => {
-    if (!googleResponse) {
-      return
-    }
-
-    if (googleResponse.type !== 'success') {
-      setIsSigningIn(false)
-      return
-    }
-
-    const idToken = String(googleResponse.params?.id_token ?? '').trim()
-
-    if (!idToken) {
-      setIsSigningIn(false)
-      setAuthMessage(t('Google sign-in did not return an ID token.', 'Google no devolvio un ID token al iniciar sesion.'))
-      return
-    }
-
-    const credential = GoogleAuthProvider.credential(idToken)
-
-    signInWithCredential(mobileAuth, credential)
-      .then(() => {
-        setAuthMessage(null)
-      })
-      .catch((error) => {
-        setAuthMessage(getErrorMessage(error, 'Google sign-in failed.', 'Fallo el inicio de sesion con Google.'))
-      })
-      .finally(() => {
-        setIsSigningIn(false)
-      })
-  }, [getErrorMessage, googleResponse, t])
 
   useEffect(() => {
     if (!firebaseUser) {
@@ -3388,7 +3392,25 @@ export default function App() {
         entries: MobileTimesheetEntry[]
         stages: MobileTimesheetStage[]
       }>('/api/timesheet/my-state')
-      const nextStages = Array.isArray(payload.stages) ? payload.stages : []
+      let nextStages = Array.isArray(payload.stages) ? payload.stages : []
+
+      if (nextStages.length === 0) {
+        try {
+          const todayIsoDate = formatDateInput(new Date())
+          const fallbackPayload = await requestWithSession<{ stages?: MobileTimesheetStage[] }>(
+            `/api/timesheet/state?from=${todayIsoDate}&to=${todayIsoDate}`,
+          )
+          const fallbackStages = Array.isArray(fallbackPayload.stages)
+            ? fallbackPayload.stages
+            : []
+
+          if (fallbackStages.length > 0) {
+            nextStages = fallbackStages
+          }
+        } catch {
+          // Keep default empty stage state if fallback fails.
+        }
+      }
 
       setTimesheetWorker(payload.worker ?? null)
       setTimesheetEntries(Array.isArray(payload.entries) ? payload.entries : [])
@@ -3859,12 +3881,23 @@ export default function App() {
 
   const handleSaveTimesheetEntry = useCallback(async () => {
     const normalizedDate = timesheetDate.trim()
+    const todayIsoDate = formatDateInput(new Date())
     const normalizedJobNumber = timesheetJobNumber.trim()
     const normalizedNotes = timesheetNotes.trim()
     const hours = Number(timesheetHours)
 
     if (!normalizedDate) {
       setTimesheetMessage(t('Date is required.', 'La fecha es obligatoria.'))
+      return
+    }
+
+    if (normalizedDate !== todayIsoDate) {
+      setTimesheetMessage(
+        t(
+          'You can only add entries for today.',
+          'Solo puedes agregar entradas para la fecha de hoy.',
+        ),
+      )
       return
     }
 
@@ -4301,21 +4334,39 @@ export default function App() {
       return []
     }
 
+    let selectedOrders: DashboardOrder[] = []
+
     switch (detailSelection.key) {
       case 'lateOrders':
-        return mondaySnapshot.details.lateOrders
+        selectedOrders = mondaySnapshot.details.lateOrders
+        break
       case 'dueThisWeekOrders':
-        return orderBuckets.dueThisWeekOrders
+        selectedOrders = orderBuckets.dueThisWeekOrders
+        break
       case 'dueInTwoWeeksOrders':
-        return orderBuckets.dueInTwoWeeksOrders
+        selectedOrders = orderBuckets.dueInTwoWeeksOrders
+        break
       case 'activeOrders':
-        return mondaySnapshot.details.activeOrders
+        selectedOrders = mondaySnapshot.details.activeOrders
+        break
       case 'missingDueDateOrders':
-        return mondaySnapshot.details.missingDueDateOrders
+        selectedOrders = mondaySnapshot.details.missingDueDateOrders
+        break
       default:
         return []
     }
-  }, [detailSelection, mondaySnapshot, orderBuckets])
+
+    if (!isStandardUser) {
+      return selectedOrders
+    }
+
+    return selectedOrders.filter((order) => {
+      const isShipped = isShippedDashboardOrder(order)
+      const isDesign = isDesignDashboardOrder(order)
+
+      return !isShipped && !isDesign
+    })
+  }, [detailSelection, isStandardUser, mondaySnapshot, orderBuckets])
 
   const detailTickets = useMemo(() => {
     if (!supportTicketsSnapshot || !detailSelection || detailSelection.type !== 'ticket') {
@@ -4400,7 +4451,20 @@ export default function App() {
     setDashboardMetricZoomOrderId(null)
   }, [clearDashboardMetricZoomTimeout])
 
-  const allOrdersForPictures = useMemo(() => mondaySnapshot?.orders ?? [], [mondaySnapshot])
+  const allOrdersForPictures = useMemo(() => {
+    const allOrders = mondaySnapshot?.orders ?? []
+
+    if (!isStandardUser) {
+      return allOrders
+    }
+
+    return allOrders.filter((order) => {
+      const isShipped = isShippedDashboardOrder(order)
+      const isDesign = isDesignDashboardOrder(order)
+
+      return !isShipped && !isDesign
+    })
+  }, [isStandardUser, mondaySnapshot])
 
   const filteredOrdersForPictures = useMemo(() => {
     const normalizedQuery = orderSearchQuery.trim().toLowerCase()
@@ -4452,6 +4516,16 @@ export default function App() {
         || orderName.includes(normalizedQuery)
     })
   }, [allOrdersForPictures, ordersSearchQuery, ordersViewFilter])
+
+  useEffect(() => {
+    if (!isStandardUser) {
+      return
+    }
+
+    if (ordersViewFilter !== 'orders') {
+      setOrdersViewFilter('orders')
+    }
+  }, [isStandardUser, ordersViewFilter])
 
   const ordersTotalPages = useMemo(
     () => Math.max(1, Math.ceil(filteredOrdersForList.length / ORDERS_PAGE_SIZE)),
@@ -5619,6 +5693,8 @@ export default function App() {
     return parsed
   }, [timesheetDate])
 
+  const isTimesheetDateEditable = timesheetDate.trim() === formatDateInput(new Date())
+
   const handleTimesheetDateChange = useCallback((event: DateTimePickerEvent, value?: Date) => {
     if (Platform.OS === 'android') {
       setIsTimesheetDatePickerOpen(false)
@@ -6243,41 +6319,16 @@ export default function App() {
     setIsAccountMenuOpen(false)
   }, [clearDashboardMetricZoomTimeout, closePicturesModal, closeSettingsMenu])
 
-  const hasGoogleClientId =
-    Platform.OS === 'ios'
-      ? isExpoGo
-        ? Boolean(GOOGLE_EXPO_IOS_CLIENT_ID)
-        : Boolean(GOOGLE_IOS_CLIENT_ID || GOOGLE_WEB_CLIENT_ID)
-      : Platform.OS === 'android'
-        ? isExpoGo
-          ? Boolean(GOOGLE_EXPO_ANDROID_CLIENT_ID)
-          : Boolean(GOOGLE_ANDROID_CLIENT_ID || GOOGLE_WEB_CLIENT_ID)
-        : Boolean(GOOGLE_WEB_CLIENT_ID)
-  const googleClientIdHint =
-    Platform.OS === 'ios'
-      ? isExpoGo
-        ? t(
-            'Expo Go on iOS uses bundle id host.exp.Exponent. Best path: run a development build and use EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID.',
-            'Expo Go en iOS usa el bundle id host.exp.Exponent. La mejor opcion es usar un build de desarrollo con EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID.',
-          )
-        : t(
-            'Missing EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID (or EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID fallback).',
-            'Falta EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID (o el respaldo EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID).',
-          )
-      : Platform.OS === 'android'
-        ? isExpoGo
-          ? t(
-              'Expo Go on Android uses package host.exp.exponent and Expo Go signing SHA-1. Best path: run a development build and use EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID.',
-              'Expo Go en Android usa el paquete host.exp.exponent y el SHA-1 de firma de Expo Go. La mejor opcion es usar un build de desarrollo con EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID.',
-            )
-          : t(
-              'Missing EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID (or EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID fallback).',
-              'Falta EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID (o el respaldo EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID).',
-            )
-        : t(
-            'Missing EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID.',
-            'Falta EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID.',
-          )
+  const hasGoogleClientId = !isExpoGo && Boolean(GOOGLE_WEB_CLIENT_ID)
+  const googleClientIdHint = isExpoGo
+    ? t(
+        'Google sign-in in this app uses the native SDK and is not available in Expo Go. Use a development or production build.',
+        'El inicio de sesion con Google en esta app usa el SDK nativo y no esta disponible en Expo Go. Usa un build de desarrollo o produccion.',
+      )
+    : t(
+        'Missing EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID.',
+        'Falta EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID.',
+      )
 
   if (!isAuthResolved) {
     return (
@@ -6610,6 +6661,7 @@ export default function App() {
                 onOrderSearchQueryChange={setOrdersSearchQuery}
                 orderViewFilter={ordersViewFilter}
                 onOrderViewFilterChange={setOrdersViewFilter}
+                showOrderViewTabs={!isStandardUser}
                 poNumberByOrderId={poNumberByOrderId}
                 ordersCardHeight={ordersCardHeight}
                 hasManagerInsights={hasManagerSheetAccess}
@@ -6637,6 +6689,7 @@ export default function App() {
                 locale={locale}
                 timesheetWorker={timesheetWorker}
                 timesheetDate={timesheetDate}
+                isTimesheetDateEditable={isTimesheetDateEditable}
                 onOpenDatePicker={() => setIsTimesheetDatePickerOpen(true)}
                 isTimesheetDatePickerOpen={isTimesheetDatePickerOpen}
                 selectedTimesheetDate={selectedTimesheetDate}
@@ -7902,18 +7955,12 @@ export default function App() {
                         <View style={styles.orderDetailInfoRow}>
                           <Text style={styles.orderDetailInfoLabel}>{t('Lead time', 'Lead time')}</Text>
                           <Text style={styles.orderDetailInfoValue}>
-                            {selectedOrderOverviewDetails.leadTimeDays !== null
-                              ? `${selectedOrderOverviewDetails.leadTimeDays} ${t('days', 'dias')}`
-                              : '-'}
+                            {formatDisplayDate(selectedOrderOverviewDetails.dueDate, locale)}
                           </Text>
                         </View>
                         <View style={styles.orderDetailInfoRow}>
                           <Text style={styles.orderDetailInfoLabel}>{t('Order date', 'Fecha de orden')}</Text>
                           <Text style={styles.orderDetailInfoValue}>{formatDisplayDate(selectedOrderOverviewDetails.orderDate, locale)}</Text>
-                        </View>
-                        <View style={styles.orderDetailInfoRow}>
-                          <Text style={styles.orderDetailInfoLabel}>{t('Due date', 'Fecha limite')}</Text>
-                          <Text style={styles.orderDetailInfoValue}>{formatDisplayDate(selectedOrderOverviewDetails.dueDate, locale)}</Text>
                         </View>
                       </View>
 
@@ -7924,37 +7971,11 @@ export default function App() {
                           <Text style={styles.orderDetailInfoValue}>{selectedOrderOverviewDetails.mondayStatus || '-'}</Text>
                         </View>
                         <View style={styles.orderDetailInfoRow}>
-                          <Text style={styles.orderDetailInfoLabel}>{t('Row status', 'Estado de fila')}</Text>
-                          <Text style={styles.orderDetailInfoValue}>{selectedOrderOverviewDetails.rowStatus || '-'}</Text>
-                        </View>
-                        <View style={styles.orderDetailInfoRow}>
-                          <Text style={styles.orderDetailInfoLabel}>{t('Progress', 'Progreso')}</Text>
-                          <Text style={styles.orderDetailInfoValue}>
-                            {selectedOrderOverviewDetails.progressPercent !== null
-                              ? `${selectedOrderOverviewDetails.progressPercent}%`
-                              : '-'}
-                          </Text>
-                        </View>
-                        <View style={styles.orderDetailInfoRow}>
-                          <Text style={styles.orderDetailInfoLabel}>{t('Manager ready', 'Avance gerente')}</Text>
+                          <Text style={styles.orderDetailInfoLabel}>{t('Manager status', 'Estado de gerente')}</Text>
                           <Text style={styles.orderDetailInfoValue}>
                             {selectedOrderOverviewDetails.managerReadyPercent !== null
                               ? `${selectedOrderOverviewDetails.managerReadyPercent}%`
                               : '-'}
-                          </Text>
-                        </View>
-                        <View style={styles.orderDetailInfoRow}>
-                          <Text style={styles.orderDetailInfoLabel}>{t('Source', 'Fuente')}</Text>
-                          <Text style={styles.orderDetailInfoValue}>{selectedOrderOverviewDetails.source || '-'}</Text>
-                        </View>
-                        <View style={styles.orderDetailInfoRow}>
-                          <Text style={styles.orderDetailInfoLabel}>{t('In design', 'En diseno')}</Text>
-                          <Text style={styles.orderDetailInfoValue}>
-                            {selectedOrderOverviewDetails.inDesign === null
-                              ? '-'
-                              : selectedOrderOverviewDetails.inDesign
-                                ? t('Yes', 'Si')
-                                : t('No', 'No')}
                           </Text>
                         </View>
                       </View>
@@ -8000,46 +8021,6 @@ export default function App() {
                           <View style={styles.orderDetailInfoRow}>
                             <Text style={styles.orderDetailInfoLabel}>{t('Shipping notes', 'Notas de envio')}</Text>
                             <Text style={styles.orderDetailInfoValue}>{selectedOrderOverviewDetails.shipNotes || '-'}</Text>
-                          </View>
-                        </View>
-                      ) : null}
-
-                      {(selectedOrderOverviewDetails.notes
-                        || selectedOrderOverviewDetails.description
-                        || selectedOrderOverviewDetails.hazardReason
-                        || selectedOrderOverviewDetails.invoiceNumber
-                        || selectedOrderOverviewDetails.managerReadyDate
-                        || selectedOrderOverviewDetails.managerReadyUpdatedAt
-                        || selectedOrderOverviewDetails.mondayUpdatedAt) ? (
-                        <View style={styles.orderDetailInfoCard}>
-                          <Text style={styles.orderDetailSectionTitle}>{t('Notes and timestamps', 'Notas y tiempos')}</Text>
-                          <View style={styles.orderDetailInfoRow}>
-                            <Text style={styles.orderDetailInfoLabel}>{t('Invoice #', 'Factura #')}</Text>
-                            <Text style={styles.orderDetailInfoValue}>{selectedOrderOverviewDetails.invoiceNumber || '-'}</Text>
-                          </View>
-                          <View style={styles.orderDetailInfoRow}>
-                            <Text style={styles.orderDetailInfoLabel}>{t('Manager ready date', 'Fecha avance gerente')}</Text>
-                            <Text style={styles.orderDetailInfoValue}>{formatDisplayDate(selectedOrderOverviewDetails.managerReadyDate, locale)}</Text>
-                          </View>
-                          <View style={styles.orderDetailInfoRow}>
-                            <Text style={styles.orderDetailInfoLabel}>{t('Manager ready updated', 'Actualizacion avance gerente')}</Text>
-                            <Text style={styles.orderDetailInfoValue}>{formatDisplayDate(selectedOrderOverviewDetails.managerReadyUpdatedAt, locale)}</Text>
-                          </View>
-                          <View style={styles.orderDetailInfoRow}>
-                            <Text style={styles.orderDetailInfoLabel}>{t('Monday updated', 'Monday actualizado')}</Text>
-                            <Text style={styles.orderDetailInfoValue}>{formatDisplayDate(selectedOrderOverviewDetails.mondayUpdatedAt, locale)}</Text>
-                          </View>
-                          <View style={styles.orderDetailInfoRow}>
-                            <Text style={styles.orderDetailInfoLabel}>{t('Hazard reason', 'Razon de riesgo')}</Text>
-                            <Text style={styles.orderDetailInfoValue}>{selectedOrderOverviewDetails.hazardReason || '-'}</Text>
-                          </View>
-                          <View style={styles.orderDetailInfoRow}>
-                            <Text style={styles.orderDetailInfoLabel}>{t('Notes', 'Notas')}</Text>
-                            <Text style={styles.orderDetailInfoValue}>{selectedOrderOverviewDetails.notes || '-'}</Text>
-                          </View>
-                          <View style={styles.orderDetailInfoRow}>
-                            <Text style={styles.orderDetailInfoLabel}>{t('Description', 'Descripcion')}</Text>
-                            <Text style={styles.orderDetailInfoValue}>{selectedOrderOverviewDetails.description || '-'}</Text>
                           </View>
                         </View>
                       ) : null}

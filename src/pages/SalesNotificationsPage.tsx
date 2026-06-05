@@ -7,6 +7,8 @@ import {
   Divider,
   Paper,
   Stack,
+  Tab,
+  Tabs,
   Typography,
 } from '@mui/material'
 import { useMemo, useState } from 'react'
@@ -18,10 +20,13 @@ import { StatusAlerts } from '../components/StatusAlerts'
 import { formatDateTime } from '../lib/formatters'
 import { QUERY_KEYS } from '../lib/queryKeys'
 
+type NotificationsTab = 'unread' | 'read'
+
 export default function SalesNotificationsPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const alertsLimit = 80
+  const [selectedTab, setSelectedTab] = useState<NotificationsTab>('unread')
   const [markingAlertIds, setMarkingAlertIds] = useState<string[]>([])
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
 
@@ -35,13 +40,27 @@ export default function SalesNotificationsPage() {
   const unreadCount = alertsQuery.data?.unreadCount ?? 0
   const isRefreshing = alertsQuery.isFetching && !alertsQuery.isLoading
 
+  const unreadAlerts = useMemo(
+    () => alerts.filter((entry) => !entry.isRead),
+    [alerts],
+  )
+  const readAlerts = useMemo(
+    () => alerts.filter((entry) => entry.isRead),
+    [alerts],
+  )
+  const filteredAlerts = selectedTab === 'unread' ? unreadAlerts : readAlerts
+
   const emptyStateMessage = useMemo(() => {
     if (alertsQuery.isLoading) {
       return ''
     }
 
-    return 'You have no notifications yet.'
-  }, [alertsQuery.isLoading])
+    if (selectedTab === 'unread') {
+      return 'No unread notifications.'
+    }
+
+    return 'No read notifications yet.'
+  }, [alertsQuery.isLoading, selectedTab])
 
   const resolveAlertLink = (alertId: string) => {
     const targetAlert = alerts.find((entry) => entry.id === alertId)
@@ -149,16 +168,36 @@ export default function SalesNotificationsPage() {
           </Stack>
         </Stack>
 
+        <Tabs
+          value={selectedTab}
+          variant="scrollable"
+          scrollButtons="auto"
+          onChange={(_event, nextValue) => {
+            setSelectedTab(nextValue as NotificationsTab)
+          }}
+          sx={{ mt: 1.25 }}
+        >
+          <Tab
+            value="unread"
+            label={`Unread (${unreadAlerts.length})`}
+            sx={{ '&.Mui-selected': { color: 'error.main' } }}
+          />
+          <Tab
+            value="read"
+            label={`Read (${readAlerts.length})`}
+          />
+        </Tabs>
+
         <StatusAlerts errorMessage={errorMessage || (alertsQuery.error instanceof Error ? alertsQuery.error.message : null)} />
 
         {alertsQuery.isLoading ? (
           <LoadingPanel loading message="Loading notifications..." contained={false} size={18} />
-        ) : alerts.length === 0 ? (
+        ) : filteredAlerts.length === 0 ? (
           <Typography color="text.secondary">{emptyStateMessage}</Typography>
         ) : (
           <Stack spacing={1.25}>
             <Stack spacing={1.1}>
-              {alerts.map((alertItem, index) => {
+              {filteredAlerts.map((alertItem, index) => {
                 const isMarking = markingAlertIds.includes(alertItem.id)
                 const alertLink = resolveAlertLink(alertItem.id)
 

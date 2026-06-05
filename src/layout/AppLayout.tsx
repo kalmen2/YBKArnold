@@ -22,6 +22,7 @@ import {
   useMediaQuery,
   useTheme,
 } from '@mui/material'
+import { alpha } from '@mui/material/styles'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
@@ -42,6 +43,7 @@ export default function AppLayout() {
   const navigate = useNavigate()
   const { appUser, signOutFromApp, logActivity } = useAuth()
   const [collapsed, setCollapsed] = useState(false)
+  const [isPurchasingPoMode, setIsPurchasingPoMode] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
   const [isSigningOut, setIsSigningOut] = useState(false)
   const [profileMenuAnchorEl, setProfileMenuAnchorEl] = useState<HTMLElement | null>(null)
@@ -53,7 +55,9 @@ export default function AppLayout() {
 
   const isSupportRoute =
     location.pathname === '/support' || location.pathname.startsWith('/support/')
-  const forceCollapsed = !isMobile && isSupportRoute
+  const isPurchasingRoute =
+    location.pathname === '/purchasing' || location.pathname.startsWith('/purchasing/')
+  const forceCollapsed = !isMobile && (isSupportRoute || (isPurchasingRoute && isPurchasingPoMode))
   const effectiveCollapsed = forceCollapsed || collapsed
 
   const drawerWidth = effectiveCollapsed ? COLLAPSED_DRAWER_WIDTH : EXPANDED_DRAWER_WIDTH
@@ -92,16 +96,36 @@ export default function AppLayout() {
   }, [location.pathname, logActivity])
 
   useEffect(() => {
+    const handlePurchasingPoMode = (event: Event) => {
+      const detail = (event as CustomEvent<{ open?: boolean }>).detail
+      setIsPurchasingPoMode(detail?.open === true)
+    }
+
+    window.addEventListener('purchasing:po-mode', handlePurchasingPoMode as EventListener)
+
+    return () => {
+      window.removeEventListener('purchasing:po-mode', handlePurchasingPoMode as EventListener)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!isPurchasingRoute && isPurchasingPoMode) {
+      setIsPurchasingPoMode(false)
+    }
+  }, [isPurchasingPoMode, isPurchasingRoute])
+
+  useEffect(() => {
     if (!appUser?.isSalesRep) {
       return
     }
 
     const isSalesRoute = location.pathname === '/sales' || location.pathname.startsWith('/sales/')
+    const isConfigRoute = location.pathname === '/config' || location.pathname.startsWith('/config/')
     const isSalesRepNotificationsRoute =
-      location.pathname === '/admin/alerts'
-      || location.pathname.startsWith('/admin/alerts/')
+      location.pathname === '/notifications'
+      || location.pathname.startsWith('/notifications/')
 
-    if (!isSalesRoute && !isSalesRepNotificationsRoute) {
+    if (!isSalesRoute && !isConfigRoute && !isSalesRepNotificationsRoute) {
       navigate('/sales?tab=dealers', { replace: true })
     }
   }, [appUser?.isSalesRep, location.pathname, navigate])
@@ -185,17 +209,39 @@ export default function AppLayout() {
   }
 
   return (
-    <Box sx={{ display: 'flex', minHeight: '100vh', bgcolor: 'background.default' }}>
+    <Box
+      sx={{
+        display: 'flex',
+        minHeight: '100vh',
+        bgcolor: 'transparent',
+        position: 'relative',
+        isolation: 'isolate',
+        '&::before': {
+          content: '""',
+          position: 'fixed',
+          inset: 0,
+          pointerEvents: 'none',
+          zIndex: 0,
+          background: [
+            `radial-gradient(780px circle at 8% -8%, ${alpha(theme.palette.primary.light, 0.24)} 0%, transparent 56%)`,
+            `radial-gradient(600px circle at 95% 0%, ${alpha(theme.palette.secondary.light, 0.2)} 0%, transparent 50%)`,
+          ].join(', '),
+        },
+      }}
+    >
       <AppBar
         position="fixed"
         color="inherit"
         elevation={0}
         sx={{
           borderBottom: 1,
-          borderColor: 'divider',
-          bgcolor: 'background.paper',
+          borderColor: alpha(theme.palette.primary.main, 0.14),
+          bgcolor: alpha(theme.palette.background.paper, 0.82),
+          backdropFilter: 'blur(14px)',
+          boxShadow: `0 10px 30px ${alpha(theme.palette.primary.dark, 0.08)}`,
           width: { md: `calc(100% - ${drawerWidth}px)` },
           ml: { md: `${drawerWidth}px` },
+          zIndex: theme.zIndex.drawer + 1,
           transition: (theme) =>
             theme.transitions.create(['width', 'margin'], {
               easing: theme.transitions.easing.sharp,
@@ -220,7 +266,7 @@ export default function AppLayout() {
             )}
           </IconButton>
 
-          <Typography variant="h6" sx={{ fontWeight: 700 }}>
+          <Typography variant="h6" sx={{ fontWeight: 700, color: 'primary.dark' }}>
             {headerTitle}
           </Typography>
 
@@ -403,7 +449,7 @@ export default function AppLayout() {
         collapsedWidth={COLLAPSED_DRAWER_WIDTH}
       />
 
-      <Box component="main" sx={{ flexGrow: 1, minWidth: 0, p: { xs: 2, md: 3 } }}>
+      <Box component="main" sx={{ flexGrow: 1, minWidth: 0, p: { xs: 2, md: 3 }, position: 'relative', zIndex: 1 }}>
         <Toolbar />
         <Outlet />
       </Box>

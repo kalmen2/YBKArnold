@@ -56,6 +56,11 @@ type ApiRequestOptions = {
   timeoutMs?: number
 }
 
+type ApiRequestError = Error & {
+  status?: number
+  payload?: unknown
+}
+
 export async function apiRequest<T>(
   path: string,
   options: RequestInit = {},
@@ -123,7 +128,11 @@ export async function apiRequest<T>(
     if (response.status === 401) {
       clearCachedToken()
     }
-    throw new Error(payload.error ?? 'Request failed.')
+
+    const requestError: ApiRequestError = new Error(payload.error ?? 'Request failed.')
+    requestError.status = response.status
+    requestError.payload = payload
+    throw requestError
   }
 
   return payload as T

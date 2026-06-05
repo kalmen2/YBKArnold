@@ -59,6 +59,71 @@ export type OrdersOrderNumberContactAdminResponse = {
   alert?: unknown
 }
 
+export type OrdersChatMessage = {
+  id: string
+  orderId: string
+  orderNumber: string | null
+  mondayItemId: string | null
+  orderName: string | null
+  message: string
+  mentionUserUids?: string[]
+  mentionUserEmails?: string[]
+  reminder?: {
+    id: string
+    dueDate: string
+    note: string | null
+    targetUserUids: string[]
+    targetUserEmails: string[]
+    notifiedAt?: string | null
+    notifiedRecipientUids?: string[]
+    createdAt: string
+  } | null
+  createdAt: string
+  createdByUid: string | null
+  createdByEmail: string | null
+  createdByName: string | null
+  updatedAt?: string | null
+  updatedByUid?: string | null
+  updatedByEmail?: string | null
+  updatedByName?: string | null
+}
+
+export type OrdersChatsResponse = {
+  messages: OrdersChatMessage[]
+  total: number
+  offset: number
+  limit: number
+  hasMore: boolean
+}
+
+export type OrdersChatUser = {
+  uid: string
+  email: string
+  displayName: string | null
+  isAdmin: boolean
+  isSalesRep: boolean
+  hasWebAccess: boolean
+  hasAppAccess: boolean
+  lastActivityAt: string | null
+}
+
+export type OrdersChatUsersResponse = {
+  users: OrdersChatUser[]
+}
+
+export type OrdersChatMessageCreateInput = {
+  message: string
+  orderNumber?: string | null
+  mondayItemId?: string | null
+  orderName?: string | null
+  mentionUserUids?: string[]
+  reminder?: {
+    dueDate: string
+    note?: string | null
+    targetUserUids?: string[]
+  } | null
+}
+
 export type OrdersOverviewOrder = {
   id: string
   mondayItemId: string
@@ -77,6 +142,8 @@ export type OrdersOverviewOrder = {
   billedAmount: number | null
   invoiceAmount: number | null
   invoiceNumber: string | null
+  invoiceCachedUrl: string | null
+  invoiceFileName: string | null
   paidInFull: boolean | null
   amountOwed: number | null
   billBalanceAmount: number | null
@@ -375,6 +442,91 @@ export function postOrdersOrderNumberContactAdmin(input: ContactAdminForOrderNum
         requestedOrderNumber,
         currentOrderNumber: currentOrderNumber || undefined,
       }),
+    },
+  )
+}
+
+function normalizeRequiredOrderChatId(orderId: string) {
+  const normalizedOrderId = String(orderId ?? '').trim()
+
+  if (!normalizedOrderId) {
+    throw new Error('orderId is required.')
+  }
+
+  return normalizedOrderId
+}
+
+export function ordersChatMessagesQueryKey(orderId: string) {
+  return ['orders', 'chat', normalizeRequiredOrderChatId(orderId)] as const
+}
+
+export function fetchOrdersChatUsers() {
+  return apiRequest<OrdersChatUsersResponse>('/api/orders/chat-users')
+}
+
+export function fetchOrderChats(
+  orderId: string,
+  options: { limit?: number; offset?: number } = {},
+) {
+  const normalizedOrderId = normalizeRequiredOrderChatId(orderId)
+
+  const params = new URLSearchParams({
+    limit: String(options.limit ?? 200),
+    offset: String(options.offset ?? 0),
+  })
+
+  return apiRequest<OrdersChatsResponse>(
+    `/api/orders/${encodeURIComponent(normalizedOrderId)}/chats?${params.toString()}`,
+  )
+}
+
+export function createOrderChatMessage(
+  orderId: string,
+  input: string | OrdersChatMessageCreateInput,
+) {
+  const normalizedOrderId = normalizeRequiredOrderChatId(orderId)
+  const payload = typeof input === 'string'
+    ? { message: input }
+    : input
+
+  return apiRequest<{ message: OrdersChatMessage }>(
+    `/api/orders/${encodeURIComponent(normalizedOrderId)}/chats`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  )
+}
+
+export function updateOrderChatMessage(orderId: string, messageId: string, message: string) {
+  const normalizedOrderId = normalizeRequiredOrderChatId(orderId)
+  const normalizedMessageId = String(messageId ?? '').trim()
+
+  if (!normalizedMessageId) {
+    throw new Error('messageId is required.')
+  }
+
+  return apiRequest<{ message: OrdersChatMessage }>(
+    `/api/orders/${encodeURIComponent(normalizedOrderId)}/chats/${encodeURIComponent(normalizedMessageId)}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify({ message }),
+    },
+  )
+}
+
+export function removeOrderChatMessage(orderId: string, messageId: string) {
+  const normalizedOrderId = normalizeRequiredOrderChatId(orderId)
+  const normalizedMessageId = String(messageId ?? '').trim()
+
+  if (!normalizedMessageId) {
+    throw new Error('messageId is required.')
+  }
+
+  return apiRequest<{ ok: boolean; messageId: string }>(
+    `/api/orders/${encodeURIComponent(normalizedOrderId)}/chats/${encodeURIComponent(normalizedMessageId)}`,
+    {
+      method: 'DELETE',
     },
   )
 }

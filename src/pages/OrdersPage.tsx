@@ -8,7 +8,11 @@ import { useAuth } from '../auth/useAuth'
 import {
   type OrdersOverviewOrder,
 } from '../features/orders/api'
-import { JobDetailsDialog, type JobDetailsMode } from './orders/JobDetailsDialog'
+import {
+  JobDetailsDialog,
+  type JobDetailsMode,
+  type JobDetailsTab,
+} from './orders/JobDetailsDialog'
 import {
   OrdersGrid,
   type OrdersQuickBooksDrilldownMetric,
@@ -20,6 +24,10 @@ import {
   CutListPreview,
   type CutListPreviewHandle,
 } from './orders/CutListPreview'
+import {
+  InvoicePreview,
+  type InvoicePreviewHandle,
+} from './orders/InvoicePreview'
 import {
   ShopDrawingPreview,
   type ShopDrawingPreviewHandle,
@@ -40,6 +48,7 @@ export default function OrdersPage() {
   const [warningMessage, setWarningMessage] = useState<string | null>(null)
   const [viewMode, setViewMode] = useState<OrdersViewMode>('standard')
   const [jobDialogMode, setJobDialogMode] = useState<JobDetailsMode | null>(null)
+  const [jobDialogInitialTab, setJobDialogInitialTab] = useState<JobDetailsTab>('info')
   const [selectedOrder, setSelectedOrder] = useState<OrdersOverviewOrder | null>(null)
   const [quickBooksDialogOrder, setQuickBooksDialogOrder] = useState<OrdersOverviewOrder | null>(null)
   const [quickBooksDialogMetric, setQuickBooksDialogMetric] =
@@ -47,11 +56,15 @@ export default function OrdersPage() {
 
   const shopDrawingHandle = useRef<ShopDrawingPreviewHandle | null>(null)
   const cutListHandle = useRef<CutListPreviewHandle | null>(null)
+  const invoiceHandle = useRef<InvoicePreviewHandle | null>(null)
   const bindShopDrawing = useCallback((handle: ShopDrawingPreviewHandle) => {
     shopDrawingHandle.current = handle
   }, [])
   const bindCutList = useCallback((handle: CutListPreviewHandle) => {
     cutListHandle.current = handle
+  }, [])
+  const bindInvoice = useCallback((handle: InvoicePreviewHandle) => {
+    invoiceHandle.current = handle
   }, [])
 
   const handleOpenBolDocument = useCallback(async (order: OrdersOverviewOrder) => {
@@ -162,11 +175,19 @@ export default function OrdersPage() {
       return
     }
     setJobDialogMode(mode)
+    setJobDialogInitialTab('info')
+    setSelectedOrder(order)
+  }, [])
+
+  const handleOpenOrderChat = useCallback((order: OrdersOverviewOrder) => {
+    setJobDialogMode('details')
+    setJobDialogInitialTab('chat')
     setSelectedOrder(order)
   }, [])
 
   const handleCloseJobDialog = useCallback(() => {
     setJobDialogMode(null)
+    setJobDialogInitialTab('info')
     setSelectedOrder(null)
   }, [])
 
@@ -220,6 +241,35 @@ export default function OrdersPage() {
   const handleCloseQuickBooksDialog = useCallback(() => {
     setQuickBooksDialogOrder(null)
     setQuickBooksDialogMetric(null)
+  }, [])
+
+  const handleOpenShopDrawingDocument = useCallback((order: OrdersOverviewOrder) => {
+    if (!shopDrawingHandle.current) {
+      setErrorMessage('Shop drawing preview is not ready yet. Please try again.')
+      return
+    }
+
+    shopDrawingHandle.current.closeHover()
+    void shopDrawingHandle.current.openDialog(order)
+  }, [])
+
+  const handleOpenCutListDocument = useCallback((order: OrdersOverviewOrder) => {
+    if (!cutListHandle.current) {
+      setErrorMessage('Cut list preview is not ready yet. Please try again.')
+      return
+    }
+
+    cutListHandle.current.closeHover()
+    void cutListHandle.current.openDialog(order)
+  }, [])
+
+  const handleOpenInvoiceDocument = useCallback((order: OrdersOverviewOrder) => {
+    if (!invoiceHandle.current) {
+      setErrorMessage('Invoice preview is not ready yet. Please try again.')
+      return
+    }
+
+    void invoiceHandle.current.openDialog(order)
   }, [])
 
   const handleExport = useCallback(() => {
@@ -305,22 +355,27 @@ export default function OrdersPage() {
         lastRefreshedAt={overview.lastRefreshedAt}
         isLoading={overview.isLoading || overview.isFetching || overview.isRefreshing}
         shopDrawingHandle={shopDrawingHandle}
-        cutListHandle={cutListHandle}
         onOpenBolDocument={handleOpenBolDocument}
         onOpenJobDialog={handleOpenJobDialog}
         onOpenQuickBooksDialog={handleOpenQuickBooksDialog}
         onCopyOrderNumber={handleCopyOrderNumber}
+        onOpenOrderChat={handleOpenOrderChat}
         onMissingMondayLink={handleMissingMondayLink}
       />
 
       <ShopDrawingPreview onError={setErrorMessage} bind={bindShopDrawing} />
       <CutListPreview onError={setErrorMessage} bind={bindCutList} />
+      <InvoicePreview onError={setErrorMessage} bind={bindInvoice} />
 
       <JobDetailsDialog
         open={Boolean(jobDialogMode && selectedOrder)}
         mode={jobDialogMode}
         order={selectedOrder}
+        initialTab={jobDialogInitialTab}
         onOpenBolDocument={handleOpenBolDocument}
+        onOpenShopDrawingDocument={handleOpenShopDrawingDocument}
+        onOpenCutListDocument={handleOpenCutListDocument}
+        onOpenInvoiceDocument={handleOpenInvoiceDocument}
         onClose={handleCloseJobDialog}
       />
 

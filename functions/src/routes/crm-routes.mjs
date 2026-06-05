@@ -41,6 +41,59 @@ const usStateCodes = [
   'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY',
 ]
 const usStateCodeSet = new Set(usStateCodes)
+const usStateNameByCode = {
+  AL: 'Alabama',
+  AK: 'Alaska',
+  AZ: 'Arizona',
+  AR: 'Arkansas',
+  CA: 'California',
+  CO: 'Colorado',
+  CT: 'Connecticut',
+  DE: 'Delaware',
+  FL: 'Florida',
+  GA: 'Georgia',
+  HI: 'Hawaii',
+  ID: 'Idaho',
+  IL: 'Illinois',
+  IN: 'Indiana',
+  IA: 'Iowa',
+  KS: 'Kansas',
+  KY: 'Kentucky',
+  LA: 'Louisiana',
+  ME: 'Maine',
+  MD: 'Maryland',
+  MA: 'Massachusetts',
+  MI: 'Michigan',
+  MN: 'Minnesota',
+  MS: 'Mississippi',
+  MO: 'Missouri',
+  MT: 'Montana',
+  NE: 'Nebraska',
+  NV: 'Nevada',
+  NH: 'New Hampshire',
+  NJ: 'New Jersey',
+  NM: 'New Mexico',
+  NY: 'New York',
+  NC: 'North Carolina',
+  ND: 'North Dakota',
+  OH: 'Ohio',
+  OK: 'Oklahoma',
+  OR: 'Oregon',
+  PA: 'Pennsylvania',
+  RI: 'Rhode Island',
+  SC: 'South Carolina',
+  SD: 'South Dakota',
+  TN: 'Tennessee',
+  TX: 'Texas',
+  UT: 'Utah',
+  VT: 'Vermont',
+  VA: 'Virginia',
+  WA: 'Washington',
+  WV: 'West Virginia',
+  WI: 'Wisconsin',
+  WY: 'Wyoming',
+}
+const quoteProjectTypes = ['Reception Desk', 'Courtroom', 'Conference Table', 'Other']
 const crmRecordStatusActive = 'active'
 const crmRecordStatusDeleted = 'deleted'
 const engagementReadinessReady = 'ready'
@@ -392,6 +445,72 @@ function normalizeUsStateList(input) {
   }
 
   return normalizedStates.sort((left, right) => left.localeCompare(right))
+}
+
+function normalizeProjectType(value) {
+  const normalized = toLowerText(value, 120)
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  if (!normalized) {
+    return null
+  }
+
+  if (
+    normalized === 'conference'
+    || normalized === 'table'
+    || normalized === 'conference table'
+    || normalized.startsWith('conference ')
+    || normalized.startsWith('table ')
+  ) {
+    return 'Conference Table'
+  }
+
+  if (
+    normalized === 'reception desk'
+    || normalized === 'reception'
+    || normalized.startsWith('reception desk ')
+  ) {
+    return 'Reception Desk'
+  }
+
+  if (normalized === 'courtroom' || normalized === 'court room' || normalized.startsWith('courtroom ')) {
+    return 'Courtroom'
+  }
+
+  if (normalized === 'other' || normalized.startsWith('other ')) {
+    return 'Other'
+  }
+
+  return null
+}
+
+function normalizeQuoteLifecycle(value) {
+  const normalized = toLowerText(value, 60)
+    .replace(/[\s-]+/g, '_')
+
+  if (!normalized || normalized === 'all') {
+    return 'all'
+  }
+
+  if (normalized === 'cancelled' || normalized === 'canceled') {
+    return 'cancelled'
+  }
+
+  if (normalized === 'converted' || normalized === 'accepted' || normalized === 'order_placement') {
+    return 'converted'
+  }
+
+  if (normalized === 'rejected') {
+    return 'rejected'
+  }
+
+  if (normalized === 'open' || normalized === 'active') {
+    return 'open'
+  }
+
+  return 'all'
 }
 
 function buildExactStateRegexes(states) {
@@ -4690,23 +4809,83 @@ export function registerCrmRoutes(app, deps) {
   app.get('/api/crm/quotes', requireFirebaseAuth, async (req, res, next) => {
     try {
       const status = toLowerText(req.query?.status, 60)
+      const lifecycle = normalizeQuoteLifecycle(req.query?.lifecycle)
       const dealerSourceId = toTrimmedText(req.query?.dealerSourceId, 160)
       const quoteNumber = toTrimmedText(req.query?.quoteNumber, 120)
+      const salesRep = toTrimmedText(req.query?.salesRep, 200)
+      const dealerState = normalizeUsStateCode(req.query?.dealerState)
+      const projectType = normalizeProjectType(req.query?.projectType)
+      const searchRegex = buildContainsRegex(req.query?.search, 220)
       const limit = Math.min(500, Math.max(1, toNonNegativeInteger(req.query?.limit, 120)))
       const { crmQuotesCollection } = await getCollections()
-      const filter = {}
+      const filterClauses = []
 
       if (status && status !== 'all') {
-        filter.status = status
+        filterClauses.push({ status })
+      }
+
+      if (lifecycle === 'cancelled') {
+        filterClauses.push({ status: 'cancelled' })
+      } else if (lifecycle === 'converted') {
+        filterClauses.push({
+          $or: [
+            { status: 'accepted' },
+            { opportunityStage: 'order_placement' },
+          ],
+        })
+      } else if (lifecycle === 'rejected') {
+        filterClauses.push({ status: 'rejected' })
+      } else if (lifecycle === 'open') {
+        filterClauses.push({
+          status: {
+            $in: ['draft', 'sent'],
+          },
+        })
       }
 
       if (dealerSourceId) {
-        filter.dealerSourceId = dealerSourceId
+        filterClauses.push({ dealerSourceId })
       }
 
       if (quoteNumber) {
-        filter.quoteNumber = new RegExp(`^${escapeRegex(quoteNumber)}$`, 'i')
+        filterClauses.push({
+          quoteNumber: new RegExp(`^${escapeRegex(quoteNumber)}$`, 'i'),
+        })
       }
+
+      if (salesRep) {
+        filterClauses.push({
+          salesRep: new RegExp(`^${escapeRegex(salesRep)}$`, 'i'),
+        })
+      }
+
+      if (dealerState) {
+        filterClauses.push({
+          dealerState: new RegExp(`^${escapeRegex(dealerState)}$`, 'i'),
+        })
+      }
+
+      if (projectType) {
+        filterClauses.push({ projectType })
+      }
+
+      if (searchRegex) {
+        filterClauses.push({
+          $or: [
+            { quoteNumber: searchRegex },
+            { title: searchRegex },
+            { companyName: searchRegex },
+            { dealerName: searchRegex },
+            { salesRep: searchRegex },
+            { dealerState: searchRegex },
+            { projectType: searchRegex },
+            { contactName: searchRegex },
+            { contactEmail: searchRegex },
+          ],
+        })
+      }
+
+      const filter = combineFilterClauses(filterClauses)
 
       const quotes = await crmQuotesCollection
         .find(
@@ -4835,8 +5014,10 @@ export function registerCrmRoutes(app, deps) {
         id: randomUUID(),
         dealerSourceId: dealer ? dealer.sourceId : null,
         dealerName: dealer ? (dealer.name || dealer.sourceId) : null,
+        dealerState: normalizeUsStateCode(body.dealerState) || normalizeUsStateCode(dealer?.state) || null,
         companyName: toTrimmedText(body.companyName, 200) || null,
         salesRep: toTrimmedText(body.salesRep, 200) || null,
+        projectType: normalizeProjectType(body.projectType),
         opportunityDate: toIsoDateOrNull(body.opportunityDate),
         opportunityStage,
         contactSourceId: nextContactSourceId,
@@ -5007,6 +5188,14 @@ export function registerCrmRoutes(app, deps) {
         updates.companyName = toTrimmedText(body.companyName, 200) || null
       }
 
+      if (Object.prototype.hasOwnProperty.call(body, 'dealerState')) {
+        updates.dealerState = normalizeUsStateCode(body.dealerState) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'projectType')) {
+        updates.projectType = normalizeProjectType(body.projectType)
+      }
+
       if (Object.prototype.hasOwnProperty.call(body, 'lineItems')) {
         updates.lineItems = normalizeQuoteLineItems(body.lineItems)
       }
@@ -5051,6 +5240,10 @@ export function registerCrmRoutes(app, deps) {
         const dealer = await resolveDealerOrThrow(crmAccountsCollection, body.dealerSourceId)
         updates.dealerSourceId = dealer.sourceId
         updates.dealerName = dealer.name || dealer.sourceId
+
+        if (!Object.prototype.hasOwnProperty.call(body, 'dealerState')) {
+          updates.dealerState = normalizeUsStateCode(dealer.state) || null
+        }
       }
 
       if (Object.prototype.hasOwnProperty.call(body, 'contactSourceId')) {
@@ -5243,10 +5436,85 @@ export function registerCrmRoutes(app, deps) {
   // unauthenticated and scoped to the single "find a quote by number and advance
   // it through the pipeline" workflow.
   // --------------------------------------------------------------------------
-  function findQuoteByNumberFilter(quoteNumber) {
-    return {
-      quoteNumber: new RegExp(`^${escapeRegex(quoteNumber)}$`, 'i'),
+  function parseExcelQuoteNumberParts(quoteNumber) {
+    const normalized = toTrimmedText(quoteNumber, 120)
+    const match = normalized.match(/^(.+?)(?:[-_\s]*)r(\d+)$/i)
+
+    if (!match) {
+      return {
+        normalized,
+        baseNumber: '',
+        hasRevisionSuffix: false,
+      }
     }
+
+    const baseNumber = toTrimmedText(match[1], 110)
+
+    if (!baseNumber) {
+      return {
+        normalized,
+        baseNumber: '',
+        hasRevisionSuffix: false,
+      }
+    }
+
+    return {
+      normalized,
+      baseNumber,
+      hasRevisionSuffix: true,
+    }
+  }
+
+  function buildFlexibleQuoteBasePattern(baseNumber) {
+    const baseParts = toTrimmedText(baseNumber, 110)
+      .split(/[-_\s]+/)
+      .filter(Boolean)
+
+    if (baseParts.length === 0) {
+      return ''
+    }
+
+    return baseParts
+      .map((part) => escapeRegex(part))
+      .join('[-_\\s]*')
+  }
+
+  function findQuoteByParsedNumberFilter(parsed) {
+    const quoteNumberText = toTrimmedText(parsed?.normalized, 120)
+
+    if (!parsed?.baseNumber || !parsed.hasRevisionSuffix) {
+      return {
+        quoteNumber: new RegExp(`^${escapeRegex(quoteNumberText)}$`, 'i'),
+      }
+    }
+
+    const basePattern = buildFlexibleQuoteBasePattern(parsed.baseNumber)
+
+    if (!basePattern) {
+      return {
+        quoteNumber: new RegExp(`^${escapeRegex(quoteNumberText)}$`, 'i'),
+      }
+    }
+
+    return {
+      quoteNumber: new RegExp(`^${basePattern}[-_\\s]*R\\d+$`, 'i'),
+    }
+  }
+
+  async function findLatestExcelQuoteMatch(crmQuotesCollection, quoteNumber, projection = { _id: 0 }) {
+    const parsed = parseExcelQuoteNumberParts(quoteNumber)
+    const findOptions = {
+      sort: {
+        updatedAt: -1,
+        createdAt: -1,
+      },
+      projection,
+    }
+
+    return crmQuotesCollection.findOne(
+      findQuoteByParsedNumberFilter(parsed),
+      findOptions,
+    )
   }
 
   // Standalone shared secret for the Excel macro — independent of the API-key
@@ -5275,38 +5543,48 @@ export function registerCrmRoutes(app, deps) {
     return next()
   }
 
-  app.get('/api/crm/excel/quote', requireExcelSyncToken, async (req, res, next) => {
-    try {
-      const quoteNumber = toTrimmedText(req.query?.quoteNumber, 120)
+  async function lookupExcelQuoteByNumber(quoteNumberInput) {
+    const quoteNumber = toTrimmedText(quoteNumberInput, 120)
 
-      if (!quoteNumber) {
-        return res.status(400).json({
+    if (!quoteNumber) {
+      return {
+        status: 400,
+        body: {
           error: 'quoteNumber is required.',
-        })
-      }
-
-      const { crmQuotesCollection } = await getCollections()
-      const quote = await crmQuotesCollection.findOne(
-        findQuoteByNumberFilter(quoteNumber),
-        {
-          projection: {
-            _id: 0,
-            id: 1,
-            quoteNumber: 1,
-            opportunityStage: 1,
-            status: 1,
-            dealerName: 1,
-            title: 1,
-            salesRep: 1,
-          },
         },
-      )
-
-      if (!quote) {
-        return res.json({ found: false })
       }
+    }
 
-      return res.json({
+    const { crmQuotesCollection } = await getCollections()
+    const quote = await findLatestExcelQuoteMatch(
+      crmQuotesCollection,
+      quoteNumber,
+      {
+        _id: 0,
+        id: 1,
+        quoteNumber: 1,
+        opportunityStage: 1,
+        status: 1,
+        dealerName: 1,
+        title: 1,
+        salesRep: 1,
+        dealerState: 1,
+        projectType: 1,
+      },
+    )
+
+    if (!quote) {
+      return {
+        status: 200,
+        body: {
+          found: false,
+        },
+      }
+    }
+
+    return {
+      status: 200,
+      body: {
         found: true,
         id: quote.id,
         quoteNumber: quote.quoteNumber || null,
@@ -5315,7 +5593,235 @@ export function registerCrmRoutes(app, deps) {
         dealerName: quote.dealerName || null,
         title: quote.title || null,
         salesRep: quote.salesRep || null,
+        dealerState: normalizeUsStateCode(quote.dealerState) || null,
+        projectType: normalizeProjectType(quote.projectType),
+      },
+    }
+  }
+
+  app.get('/api/crm/excel/quote', requireExcelSyncToken, async (req, res, next) => {
+    try {
+      const lookupResult = await lookupExcelQuoteByNumber(req.query?.quoteNumber)
+      return res.status(lookupResult.status).json(lookupResult.body)
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/crm/quotes/excel-lookup', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const lookupResult = await lookupExcelQuoteByNumber(req.query?.quoteNumber)
+      return res.status(lookupResult.status).json(lookupResult.body)
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/crm/excel/options', requireExcelSyncToken, async (_req, res, next) => {
+    try {
+      const { crmSalesRepsCollection } = await getCollections()
+
+      const salesRepRows = await crmSalesRepsCollection
+        .find(
+          {
+            isDeleted: {
+              $ne: true,
+            },
+          },
+          {
+            projection: {
+              _id: 0,
+              name: 1,
+            },
+          },
+        )
+        .sort({ companyNameLower: 1, nameLower: 1, name: 1, id: 1 })
+        .toArray()
+
+      const dynamicSalesRepNames = uniqueSorted(
+        salesRepRows
+          .map((row) => toTrimmedText(row?.name, 200))
+          .filter(Boolean),
+      )
+
+      const salesRepOptions = [
+        'House',
+        ...dynamicSalesRepNames.filter((name) => toLowerText(name, 200) !== 'house'),
+      ]
+
+      const stateOptions = usStateCodes.map((stateCode) => {
+        const stateName = usStateNameByCode[stateCode] || stateCode
+        return `${stateCode} - ${stateName}`
       })
+
+      return res.json({
+        stateOptions,
+        salesRepOptions,
+        projectTypeOptions: quoteProjectTypes,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  async function syncExcelQuotePayload(rawBody) {
+    const body = toOptionalObject(rawBody)
+    const quoteNumber = toTrimmedText(body.quoteNumber, 120)
+
+    if (!quoteNumber) {
+      return {
+        status: 400,
+        body: {
+          error: 'quoteNumber is required.',
+        },
+      }
+    }
+
+    const { crmQuotesCollection } = await getCollections()
+    const existingQuote = await findLatestExcelQuoteMatch(
+      crmQuotesCollection,
+      quoteNumber,
+      {
+        _id: 0,
+      },
+    )
+
+    if (!existingQuote) {
+      return {
+        status: 404,
+        body: {
+          found: false,
+          error: `Quote number ${quoteNumber} was not found in Concept. Please add it first, then sync again.`,
+        },
+      }
+    }
+
+    const fromStage = normalizeStatus(existingQuote.opportunityStage, opportunityStages, 'concept') || 'concept'
+    const now = nowIso()
+    const updates = {}
+
+    const title = toTrimmedText(body.title, 240)
+    if (title) {
+      updates.title = title
+    }
+
+    if (body.companyName !== undefined) {
+      updates.companyName = toTrimmedText(body.companyName, 200) || null
+    }
+
+    if (body.salesRep !== undefined) {
+      updates.salesRep = toTrimmedText(body.salesRep, 200) || null
+    }
+
+    if (body.dealerState !== undefined) {
+      updates.dealerState = normalizeUsStateCode(body.dealerState) || null
+    }
+
+    if (body.projectType !== undefined) {
+      updates.projectType = normalizeProjectType(body.projectType)
+    }
+
+    if (body.opportunityDate !== undefined) {
+      updates.opportunityDate = toIsoDateOrNull(body.opportunityDate)
+    }
+
+    if (body.contactName !== undefined) {
+      updates.contactName = toTrimmedText(body.contactName, 240) || null
+    }
+
+    if (body.contactEmail !== undefined) {
+      updates.contactEmail = toTrimmedText(body.contactEmail, 200) || null
+    }
+
+    if (body.contactPhone !== undefined) {
+      updates.contactPhone = toTrimmedText(body.contactPhone, 80) || null
+    }
+
+    if (body.paymentTerms !== undefined) {
+      updates.paymentTerms = toTrimmedText(body.paymentTerms, 240) || null
+    }
+
+    if (body.leadTime !== undefined) {
+      updates.leadTime = toTrimmedText(body.leadTime, 240) || null
+    }
+
+    if (body.subtotal !== undefined) {
+      updates.subtotal = toNonNegativeNumberOrNull(body.subtotal)
+    }
+
+    if (body.freight !== undefined) {
+      updates.freight = toNonNegativeNumberOrNull(body.freight)
+    }
+
+    if (body.freightDescription !== undefined) {
+      updates.freightDescription = toTrimmedText(body.freightDescription, 1200) || null
+    }
+
+    if (body.totalAmount !== undefined) {
+      const nextAmount = toNonNegativeNumberOrNull(body.totalAmount)
+      if (nextAmount !== null) {
+        updates.totalAmount = Number(nextAmount.toFixed(2))
+      }
+    }
+
+    if (body.lineItems !== undefined) {
+      updates.lineItems = normalizeQuoteLineItems(body.lineItems)
+    }
+
+    let toStage = fromStage
+
+    if (fromStage === 'concept') {
+      toStage = 'proposal_submission'
+      updates.opportunityStage = 'proposal_submission'
+      updates.status = 'sent'
+      updates.sentAt = now
+      updates.lastStatusChangedAt = now
+    } else if (fromStage === 'proposal_submission') {
+      toStage = 'revision'
+      updates.opportunityStage = 'revision'
+      updates.status = 'draft'
+      updates.lastStatusChangedAt = now
+    } else if (fromStage === 'revision') {
+      toStage = 'revision'
+    } else {
+      return {
+        status: 409,
+        body: {
+          found: true,
+          ok: false,
+          fromStage,
+          message: `Quote is in stage '${fromStage}', which the Excel sync does not manage.`,
+        },
+      }
+    }
+
+    updates.updatedAt = now
+
+    const updatedQuote = await crmQuotesCollection.findOneAndUpdate(
+      { id: existingQuote.id },
+      { $set: updates },
+      { returnDocument: 'after', projection: { _id: 0 } },
+    )
+
+    cacheDelete(OVERVIEW_CACHE_KEY)
+
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        found: true,
+        fromStage,
+        toStage,
+        quoteNumber: updatedQuote?.quoteNumber || quoteNumber,
+        quote: updatedQuote || null,
+      },
+    }
+  }
+
+  app.post('/api/crm/quotes/excel-sync', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const syncResult = await syncExcelQuotePayload(req.body)
+      return res.status(syncResult.status).json(syncResult.body)
     } catch (error) {
       next(error)
     }
@@ -5323,131 +5829,8 @@ export function registerCrmRoutes(app, deps) {
 
   app.post('/api/crm/excel/quote/sync', requireExcelSyncToken, async (req, res, next) => {
     try {
-      const body = toOptionalObject(req.body)
-      const quoteNumber = toTrimmedText(body.quoteNumber, 120)
-
-      if (!quoteNumber) {
-        return res.status(400).json({
-          error: 'quoteNumber is required.',
-        })
-      }
-
-      const { crmQuotesCollection } = await getCollections()
-      const existingQuote = await crmQuotesCollection.findOne(
-        findQuoteByNumberFilter(quoteNumber),
-        { projection: { _id: 0 } },
-      )
-
-      if (!existingQuote) {
-        return res.status(404).json({ found: false })
-      }
-
-      const fromStage = normalizeStatus(existingQuote.opportunityStage, opportunityStages, 'concept') || 'concept'
-      const now = nowIso()
-      const updates = {}
-
-      const title = toTrimmedText(body.title, 240)
-      if (title) {
-        updates.title = title
-      }
-
-      if (body.companyName !== undefined) {
-        updates.companyName = toTrimmedText(body.companyName, 200) || null
-      }
-
-      if (body.salesRep !== undefined) {
-        updates.salesRep = toTrimmedText(body.salesRep, 200) || null
-      }
-
-      if (body.opportunityDate !== undefined) {
-        updates.opportunityDate = toIsoDateOrNull(body.opportunityDate)
-      }
-
-      if (body.contactName !== undefined) {
-        updates.contactName = toTrimmedText(body.contactName, 240) || null
-      }
-
-      if (body.contactEmail !== undefined) {
-        updates.contactEmail = toTrimmedText(body.contactEmail, 200) || null
-      }
-
-      if (body.contactPhone !== undefined) {
-        updates.contactPhone = toTrimmedText(body.contactPhone, 80) || null
-      }
-
-      if (body.paymentTerms !== undefined) {
-        updates.paymentTerms = toTrimmedText(body.paymentTerms, 240) || null
-      }
-
-      if (body.leadTime !== undefined) {
-        updates.leadTime = toTrimmedText(body.leadTime, 240) || null
-      }
-
-      if (body.subtotal !== undefined) {
-        updates.subtotal = toNonNegativeNumberOrNull(body.subtotal)
-      }
-
-      if (body.freight !== undefined) {
-        updates.freight = toNonNegativeNumberOrNull(body.freight)
-      }
-
-      if (body.freightDescription !== undefined) {
-        updates.freightDescription = toTrimmedText(body.freightDescription, 1200) || null
-      }
-
-      if (body.totalAmount !== undefined) {
-        const nextAmount = toNonNegativeNumberOrNull(body.totalAmount)
-        if (nextAmount !== null) {
-          updates.totalAmount = Number(nextAmount.toFixed(2))
-        }
-      }
-
-      if (body.lineItems !== undefined) {
-        updates.lineItems = normalizeQuoteLineItems(body.lineItems)
-      }
-
-      // Server-side decision tree: advance based on the quote's current stage.
-      let toStage = fromStage
-
-      if (fromStage === 'concept') {
-        toStage = 'proposal_submission'
-        updates.opportunityStage = 'proposal_submission'
-        updates.status = 'sent'
-        updates.sentAt = now
-        updates.lastStatusChangedAt = now
-      } else if (fromStage === 'proposal_submission') {
-        toStage = 'revision'
-        updates.opportunityStage = 'revision'
-        updates.status = 'draft'
-        updates.lastStatusChangedAt = now
-      } else if (fromStage === 'revision') {
-        toStage = 'revision'
-      } else {
-        return res.status(409).json({
-          found: true,
-          ok: false,
-          fromStage,
-          message: `Quote is in stage '${fromStage}', which the Excel sync does not manage.`,
-        })
-      }
-
-      updates.updatedAt = now
-
-      const updatedQuote = await crmQuotesCollection.findOneAndUpdate(
-        { id: existingQuote.id },
-        { $set: updates },
-        { returnDocument: 'after', projection: { _id: 0 } },
-      )
-
-      cacheDelete(OVERVIEW_CACHE_KEY)
-
-      return res.json({
-        ok: true,
-        found: true,
-        fromStage,
-        toStage,
-        quoteNumber: updatedQuote?.quoteNumber || quoteNumber,
-      })
+      const syncResult = await syncExcelQuotePayload(req.body)
+      return res.status(syncResult.status).json(syncResult.body)
     } catch (error) {
       next(error)
     }

@@ -2,6 +2,7 @@ import AdminPanelSettingsRoundedIcon from '@mui/icons-material/AdminPanelSetting
 import FactCheckRoundedIcon from '@mui/icons-material/FactCheckRounded'
 import PeopleAltRoundedIcon from '@mui/icons-material/PeopleAltRounded'
 import ManageHistoryRoundedIcon from '@mui/icons-material/ManageHistoryRounded'
+import NotificationsActiveRoundedIcon from '@mui/icons-material/NotificationsActiveRounded'
 import SmartToyRoundedIcon from '@mui/icons-material/SmartToyRounded'
 import SupervisedUserCircleRoundedIcon from '@mui/icons-material/SupervisedUserCircleRounded'
 import { Box, Paper, Stack, Tab, Tabs, Typography } from '@mui/material'
@@ -10,11 +11,12 @@ import { useLocation, useNavigate } from 'react-router-dom'
 
 const AdminUsersPage = lazy(() => import('./AdminUsersPage'))
 const AdminLogsPage = lazy(() => import('./AdminLogsPage'))
+const AdminAlertsPage = lazy(() => import('./AdminAlertsPage'))
 const AdminVisitorsPage = lazy(() => import('./AdminVisitorsPage'))
 const AiConfigPage = lazy(() => import('./AiConfigPage'))
 const AdminSalesReviewPage = lazy(() => import('./AdminSalesReviewPage'))
 
-type AdminSettingsTab = 'users' | 'logs' | 'visitors' | 'ai' | 'sales-review'
+type AdminSettingsTab = 'users' | 'logs' | 'notifications' | 'visitors' | 'ai' | 'sales-review'
 
 const adminSettingsTabs: Array<{
   value: AdminSettingsTab
@@ -30,6 +32,11 @@ const adminSettingsTabs: Array<{
     value: 'logs',
     label: 'Logs',
     icon: ManageHistoryRoundedIcon,
+  },
+  {
+    value: 'notifications',
+    label: 'Notifications',
+    icon: NotificationsActiveRoundedIcon,
   },
   {
     value: 'visitors',
@@ -52,6 +59,7 @@ function getTabFromQuery(rawTab: string | null): AdminSettingsTab {
   if (
     rawTab === 'users'
     || rawTab === 'logs'
+    || rawTab === 'notifications'
     || rawTab === 'visitors'
     || rawTab === 'ai'
     || rawTab === 'sales-review'
@@ -69,6 +77,10 @@ function renderAdminSettingsTab(selectedTab: AdminSettingsTab) {
 
   if (selectedTab === 'logs') {
     return <AdminLogsPage />
+  }
+
+  if (selectedTab === 'notifications') {
+    return <AdminAlertsPage />
   }
 
   if (selectedTab === 'visitors') {
@@ -108,7 +120,7 @@ export default function AdminSettingsPage() {
                 Admin Settings
               </Typography>
               <Typography color="text.secondary">
-                Manage users, visitors, logs, and AI configuration in one place.
+                Manage users, notifications, visitors, logs, and AI configuration in one place.
               </Typography>
             </Box>
           </Stack>

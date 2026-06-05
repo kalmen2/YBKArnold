@@ -4,19 +4,18 @@ import {
 } from './RouteGuards'
 import {
   AdminApiPage,
-  AdminAlertsPage,
   AdminSettingsPage,
   AppLayout,
+  ConfigPage,
   DashboardPage,
   OperatingCostsPage,
   OrdersPage,
   PicturesPage,
   PurchasingPage,
-  TemplatesPage,
+  SalesNotificationsPage,
   SalesPage,
   SupportPage,
   TimesheetPage,
-  VisitorsPage,
 } from './RouteLazyPages'
 import RouteErrorBoundary from './RouteErrorBoundary'
 import { withRouteSuspense } from './withRouteSuspense'
@@ -49,11 +48,11 @@ export const router = createBrowserRouter([
       },
       {
         path: 'templates',
-        element: withRouteSuspense(<TemplatesPage />),
+        element: <Navigate to="/config?tab=templates" replace />,
       },
       {
         path: 'visitors',
-        element: withRouteSuspense(<VisitorsPage />),
+        element: <Navigate to="/config?tab=visitors" replace />,
       },
       {
         path: 'workers',
@@ -76,6 +75,10 @@ export const router = createBrowserRouter([
         element: withRouteSuspense(<SupportPage />),
       },
       {
+        path: 'notifications',
+        element: withRouteSuspense(<SalesNotificationsPage />),
+      },
+      {
         path: 'pictures',
         element: withRouteSuspense(<PicturesPage />),
       },
@@ -86,6 +89,10 @@ export const router = createBrowserRouter([
       {
         path: 'purchasing',
         element: withRouteSuspense(<PurchasingPage />),
+      },
+      {
+        path: 'config',
+        element: withRouteSuspense(<ConfigPage />),
       },
       {
         path: 'operating-costs',
@@ -106,7 +113,7 @@ export const router = createBrowserRouter([
       },
       {
         path: 'admin/alerts',
-        element: withRouteSuspense(<AdminAlertsPage />),
+        element: <Navigate to="/admin/settings?tab=notifications" replace />,
       },
       {
         path: 'admin/api',
@@ -126,7 +133,7 @@ export const router = createBrowserRouter([
       },
       {
         path: 'admin/issues',
-        element: <Navigate to="/admin/alerts" replace />,
+        element: <Navigate to="/admin/settings?tab=notifications" replace />,
       },
       {
         path: 'admin/logs',

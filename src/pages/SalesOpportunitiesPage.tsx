@@ -1,8 +1,6 @@
 import AddRoundedIcon from '@mui/icons-material/AddRounded'
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded'
-import ArrowBackRoundedIcon from '@mui/icons-material/ArrowBackRounded'
 import ArrowForwardRoundedIcon from '@mui/icons-material/ArrowForwardRounded'
-import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded'
 import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded'
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
 import FileUploadRoundedIcon from '@mui/icons-material/FileUploadRounded'
@@ -39,7 +37,7 @@ import {
 import { alpha } from '@mui/material/styles'
 import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useCallback, useMemo, useState, type ChangeEvent, type MouseEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type MouseEvent } from 'react'
 import { useAuth } from '../auth/useAuth'
 import { firebaseStorage } from '../auth/firebase'
 import { LoadingPanel } from '../components/LoadingPanel'
@@ -48,17 +46,22 @@ import {
   createCrmOrder,
   createCrmQuote,
   fetchCrmDealers,
+  fetchCrmExcelQuoteLookup,
   fetchCrmOrders,
   fetchCrmQuotes,
+  fetchCrmSalesReps,
   removeCrmQuote,
+  syncCrmQuoteFromExcel,
   updateCrmQuote,
   type CrmDealer,
+  type CrmExcelQuoteSyncInput,
   type CrmQuoteDocument,
   type CrmQuoteLineItem,
   type CrmOpportunityStage,
   type CrmOrder,
   type CrmQuote,
 } from '../features/crm/api'
+import { parseExcelQuoteForSync } from '../features/crm/excelQuoteParser'
 import { resolveQuoteAgeDays } from '../features/crm/utils'
 import { resolveFileExtension, sanitizeStoragePathSegment } from '../lib/fileUtils'
 import { formatCurrency } from '../lib/formatters'
@@ -129,11 +132,9 @@ type OpportunityCardProps = {
   stage: CrmOpportunityStage
   canManage: boolean
   isBusy: boolean
-  onMoveBack: (quote: CrmQuote) => void
   onAdvanceStage: (quote: CrmQuote) => void
-  onMarkNeedsRevision: (quote: CrmQuote) => void
-  onSendRevision: (quote: CrmQuote) => void
   onMarkApproved: (quote: CrmQuote) => void
+  onDeclineQuote: (quote: CrmQuote) => void
   onDeleteQuote: (quote: CrmQuote) => void
   onOpenDetails: (quote: CrmQuote) => void
 }
@@ -144,11 +145,9 @@ type StageColumnProps = {
   dealersBySourceId: Map<string, CrmDealer>
   canManage: boolean
   busyQuoteId: string | null
-  onMoveBack: (quote: CrmQuote) => void
   onAdvanceStage: (quote: CrmQuote) => void
-  onMarkNeedsRevision: (quote: CrmQuote) => void
-  onSendRevision: (quote: CrmQuote) => void
   onMarkApproved: (quote: CrmQuote) => void
+  onDeclineQuote: (quote: CrmQuote) => void
   onDeleteQuote: (quote: CrmQuote) => void
   onOpenDetails: (quote: CrmQuote) => void
 }
@@ -156,6 +155,13 @@ type StageColumnProps = {
 type StageSortMode = 'value_desc' | 'value_asc' | 'date_desc' | 'date_asc' | 'alpha_asc' | 'alpha_desc'
 
 type StageAmountCondition = 'any' | 'gt' | 'gte' | 'lt' | 'lte' | 'between'
+
+type ExcelSyncProjectTypeOption = 'Reception Desk' | 'Courtroom' | 'Conference Table' | 'Other'
+
+type UsStateOption = {
+  code: string
+  label: string
+}
 
 type StageColumnFilters = {
   selectedDealerNames: string[]
@@ -165,6 +171,8 @@ type StageColumnFilters = {
   amountValue: string
   amountValueMax: string
 }
+
+type OpportunityDetailsSaveMode = 'save' | 'decline' | 'convert_to_order'
 
 type LineItemsEditorProps = {
   lineItems: OpportunityLineItemFormState[]
@@ -199,17 +207,72 @@ const stageDefinitions: StageDefinition[] = [
     headerColor: '#1d6ea5',
     panelColor: '#eef3fb',
   },
-  {
-    id: 'order_placement',
-    label: '4. Order Placement',
-    probability: 95,
-    description: 'Approved and converted to order workflow.',
-    headerColor: '#2f7b57',
-    panelColor: '#edf8f2',
-  },
 ]
 
 const stageById = new Map(stageDefinitions.map((stage) => [stage.id, stage]))
+
+const excelSyncProjectTypeOptions: ExcelSyncProjectTypeOption[] = [
+  'Reception Desk',
+  'Courtroom',
+  'Conference Table',
+  'Other',
+]
+
+const usStateOptions: UsStateOption[] = [
+  { code: 'AL', label: 'AL - Alabama' },
+  { code: 'AK', label: 'AK - Alaska' },
+  { code: 'AZ', label: 'AZ - Arizona' },
+  { code: 'AR', label: 'AR - Arkansas' },
+  { code: 'CA', label: 'CA - California' },
+  { code: 'CO', label: 'CO - Colorado' },
+  { code: 'CT', label: 'CT - Connecticut' },
+  { code: 'DE', label: 'DE - Delaware' },
+  { code: 'FL', label: 'FL - Florida' },
+  { code: 'GA', label: 'GA - Georgia' },
+  { code: 'HI', label: 'HI - Hawaii' },
+  { code: 'ID', label: 'ID - Idaho' },
+  { code: 'IL', label: 'IL - Illinois' },
+  { code: 'IN', label: 'IN - Indiana' },
+  { code: 'IA', label: 'IA - Iowa' },
+  { code: 'KS', label: 'KS - Kansas' },
+  { code: 'KY', label: 'KY - Kentucky' },
+  { code: 'LA', label: 'LA - Louisiana' },
+  { code: 'ME', label: 'ME - Maine' },
+  { code: 'MD', label: 'MD - Maryland' },
+  { code: 'MA', label: 'MA - Massachusetts' },
+  { code: 'MI', label: 'MI - Michigan' },
+  { code: 'MN', label: 'MN - Minnesota' },
+  { code: 'MS', label: 'MS - Mississippi' },
+  { code: 'MO', label: 'MO - Missouri' },
+  { code: 'MT', label: 'MT - Montana' },
+  { code: 'NE', label: 'NE - Nebraska' },
+  { code: 'NV', label: 'NV - Nevada' },
+  { code: 'NH', label: 'NH - New Hampshire' },
+  { code: 'NJ', label: 'NJ - New Jersey' },
+  { code: 'NM', label: 'NM - New Mexico' },
+  { code: 'NY', label: 'NY - New York' },
+  { code: 'NC', label: 'NC - North Carolina' },
+  { code: 'ND', label: 'ND - North Dakota' },
+  { code: 'OH', label: 'OH - Ohio' },
+  { code: 'OK', label: 'OK - Oklahoma' },
+  { code: 'OR', label: 'OR - Oregon' },
+  { code: 'PA', label: 'PA - Pennsylvania' },
+  { code: 'RI', label: 'RI - Rhode Island' },
+  { code: 'SC', label: 'SC - South Carolina' },
+  { code: 'SD', label: 'SD - South Dakota' },
+  { code: 'TN', label: 'TN - Tennessee' },
+  { code: 'TX', label: 'TX - Texas' },
+  { code: 'UT', label: 'UT - Utah' },
+  { code: 'VT', label: 'VT - Vermont' },
+  { code: 'VA', label: 'VA - Virginia' },
+  { code: 'WA', label: 'WA - Washington' },
+  { code: 'WV', label: 'WV - West Virginia' },
+  { code: 'WI', label: 'WI - Wisconsin' },
+  { code: 'WY', label: 'WY - Wyoming' },
+]
+
+const usStateOptionByCode = new Map(usStateOptions.map((entry) => [entry.code, entry] as const))
+const usStateCodeSet = new Set(usStateOptions.map((entry) => entry.code))
 
 function getTodayEasternDateInputValue() {
   const parts = new Intl.DateTimeFormat('en-US', {
@@ -479,6 +542,51 @@ function normalizeMatchValue(value: string | null | undefined) {
   return String(value ?? '').trim().toLowerCase()
 }
 
+function resolveMatchingOption(preferredValue: string | null | undefined, options: string[]) {
+  const normalizedPreferred = normalizeMatchValue(preferredValue)
+
+  if (!normalizedPreferred) {
+    return ''
+  }
+
+  return options.find((option) => normalizeMatchValue(option) === normalizedPreferred) || ''
+}
+
+function resolveDefaultExcelProjectType(value: string | null | undefined): ExcelSyncProjectTypeOption | '' {
+  const normalized = normalizeMatchValue(value)
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  if (!normalized) {
+    return ''
+  }
+
+  if (normalized.includes('reception desk') || normalized.includes('reception')) {
+    return 'Reception Desk'
+  }
+
+  if (normalized.includes('courtroom') || normalized.includes('court room')) {
+    return 'Courtroom'
+  }
+
+  if (
+    normalized.includes('conference table')
+    || (normalized.includes('conference') && normalized.includes('table'))
+    || normalized === 'conference'
+    || normalized === 'table'
+  ) {
+    return 'Conference Table'
+  }
+
+  // "Other" is never auto-selected; it must be picked manually.
+  return ''
+}
+
+function isExcelSyncProjectTypeOption(value: string): value is ExcelSyncProjectTypeOption {
+  return excelSyncProjectTypeOptions.includes(value as ExcelSyncProjectTypeOption)
+}
+
 function resolveQuoteDocuments(quote: CrmQuote | null | undefined): CrmQuoteDocument[] {
   if (!quote) {
     return []
@@ -691,15 +799,21 @@ function OpportunityCard({
   stage,
   canManage,
   isBusy,
-  onMoveBack,
   onAdvanceStage,
-  onMarkNeedsRevision,
-  onSendRevision,
   onMarkApproved,
+  onDeclineQuote,
   onDeleteQuote,
   onOpenDetails,
 }: OpportunityCardProps) {
   const dealerInitial = String(dealerName).trim().charAt(0).toUpperCase() || 'D'
+  const [menuAnchorEl, setMenuAnchorEl] = useState<HTMLElement | null>(null)
+  const suppressCardOpenUntilRef = useRef(0)
+  const isMenuOpen = Boolean(menuAnchorEl)
+
+  const closeMenu = () => {
+    suppressCardOpenUntilRef.current = Date.now() + 280
+    setMenuAnchorEl(null)
+  }
 
   const preventCardClick = (event: MouseEvent) => {
     event.stopPropagation()
@@ -708,7 +822,17 @@ function OpportunityCard({
   return (
     <Paper
       variant="outlined"
-      onClick={() => {
+      onMouseDown={() => {
+        if (isMenuOpen) {
+          suppressCardOpenUntilRef.current = Date.now() + 280
+        }
+      }}
+      onClick={(event) => {
+        if (Date.now() < suppressCardOpenUntilRef.current) {
+          event.stopPropagation()
+          return
+        }
+
         onOpenDetails(quote)
       }}
       sx={{
@@ -764,45 +888,24 @@ function OpportunityCard({
               <Chip size="small" label={`${ageDays}d`} sx={{ height: 19, fontSize: 10 }} />
             )}
 
-            {canManage ? (
-              <Tooltip title="Delete quote">
-                <span>
-                  <IconButton
-                    size="small"
-                    color="error"
-                    disabled={isBusy}
-                    onClick={(event) => {
-                      preventCardClick(event)
-                      onDeleteQuote(quote)
-                    }}
-                    sx={{ p: 0.25 }}
-                  >
-                    <DeleteOutlineRoundedIcon sx={{ fontSize: 15 }} />
-                  </IconButton>
-                </span>
-              </Tooltip>
+            {canManage && stage === 'proposal_submission' ? (
+              <IconButton
+                size="medium"
+                disabled={isBusy}
+                onClick={(event) => {
+                  preventCardClick(event)
+                  setMenuAnchorEl(event.currentTarget)
+                }}
+                sx={{ p: 0.15 }}
+              >
+                <MoreVertRoundedIcon sx={{ fontSize: 20 }} />
+              </IconButton>
             ) : null}
           </Stack>
         </Stack>
 
         {canManage ? (
           <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap onClick={preventCardClick}>
-            {stage !== 'concept' && stage !== 'order_placement' ? (
-              <Button
-                size="small"
-                variant="outlined"
-                color="inherit"
-                startIcon={<ArrowBackRoundedIcon sx={{ fontSize: 12 }} />}
-                disabled={isBusy}
-                onClick={() => {
-                  onMoveBack(quote)
-                }}
-                sx={{ minHeight: 24, px: 0.8, fontSize: 11, textTransform: 'none' }}
-              >
-                Back
-              </Button>
-            ) : null}
-
             {stage === 'concept' ? (
               <Button
                 size="small"
@@ -817,63 +920,55 @@ function OpportunityCard({
                 Send Proposal
               </Button>
             ) : null}
+          </Stack>
+        ) : null}
 
-            {stage === 'proposal_submission' ? (
-              <>
-                <Button
+        {canManage ? (
+          <Stack direction="row" justifyContent="flex-end" onClick={preventCardClick}>
+            <Tooltip title="Delete quote">
+              <span>
+                <IconButton
                   size="small"
-                  variant="outlined"
-                  disabled={isBusy}
-                  onClick={() => {
-                    onMarkNeedsRevision(quote)
-                  }}
-                  sx={{ minHeight: 24, px: 0.8, fontSize: 11, textTransform: 'none' }}
-                >
-                  Needs Revision
-                </Button>
-                <Button
-                  size="small"
-                  variant="contained"
-                  color="success"
-                  startIcon={<CheckCircleRoundedIcon sx={{ fontSize: 12 }} />}
-                  disabled={isBusy}
-                  onClick={() => {
-                    onMarkApproved(quote)
-                  }}
-                  sx={{ minHeight: 24, px: 0.8, fontSize: 11, textTransform: 'none' }}
-                >
-                  Approved
-                </Button>
-                <Button
-                  size="small"
-                  variant="outlined"
                   color="error"
                   disabled={isBusy}
                   onClick={() => {
                     onDeleteQuote(quote)
                   }}
-                  sx={{ minHeight: 24, px: 0.8, fontSize: 11, textTransform: 'none' }}
+                  sx={{ p: 0.25 }}
                 >
-                  Not Approved
-                </Button>
-              </>
-            ) : null}
-
-            {stage === 'revision' ? (
-              <Button
-                size="small"
-                variant="contained"
-                disabled={isBusy}
-                onClick={() => {
-                  onSendRevision(quote)
-                }}
-                sx={{ minHeight: 24, px: 0.8, fontSize: 11, textTransform: 'none' }}
-              >
-                Send Revision
-              </Button>
-            ) : null}
+                  <DeleteOutlineRoundedIcon sx={{ fontSize: 15 }} />
+                </IconButton>
+              </span>
+            </Tooltip>
           </Stack>
         ) : null}
+
+        <Menu
+          anchorEl={menuAnchorEl}
+          open={isMenuOpen}
+          onClose={() => {
+            closeMenu()
+          }}
+          anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+          transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+        >
+          <MenuItem
+            onClick={() => {
+              closeMenu()
+              onDeclineQuote(quote)
+            }}
+          >
+            Declined
+          </MenuItem>
+          <MenuItem
+            onClick={() => {
+              closeMenu()
+              onMarkApproved(quote)
+            }}
+          >
+            Convert to order
+          </MenuItem>
+        </Menu>
       </Stack>
     </Paper>
   )
@@ -885,11 +980,9 @@ function StageColumn({
   dealersBySourceId,
   canManage,
   busyQuoteId,
-  onMoveBack,
   onAdvanceStage,
-  onMarkNeedsRevision,
-  onSendRevision,
   onMarkApproved,
+  onDeclineQuote,
   onDeleteQuote,
   onOpenDetails,
 }: StageColumnProps) {
@@ -1282,11 +1375,9 @@ function StageColumn({
                 stage={stage.id}
                 canManage={canManage}
                 isBusy={busyQuoteId === quote.id}
-                onMoveBack={onMoveBack}
                 onAdvanceStage={onAdvanceStage}
-                onMarkNeedsRevision={onMarkNeedsRevision}
-                onSendRevision={onSendRevision}
                 onMarkApproved={onMarkApproved}
+                onDeclineQuote={onDeclineQuote}
                 onDeleteQuote={onDeleteQuote}
                 onOpenDetails={onOpenDetails}
               />
@@ -1491,6 +1582,16 @@ export default function SalesOpportunitiesPage() {
   const [isDialogOpen, setIsDialogOpen] = useState(false)
   const [showAddDetails, setShowAddDetails] = useState(false)
   const [formState, setFormState] = useState<OpportunityFormState>(createEmptyOpportunityForm)
+  const [isSyncingExcelQuote, setIsSyncingExcelQuote] = useState(false)
+  const [isExcelSyncDialogOpen, setIsExcelSyncDialogOpen] = useState(false)
+  const [excelSyncDraft, setExcelSyncDraft] = useState<CrmExcelQuoteSyncInput | null>(null)
+  const [excelSyncSourceFileName, setExcelSyncSourceFileName] = useState('')
+  const [excelSyncQuoteNumberInput, setExcelSyncQuoteNumberInput] = useState('')
+  const [excelSyncSalesRepInput, setExcelSyncSalesRepInput] = useState('')
+  const [excelSyncRawSalesRep, setExcelSyncRawSalesRep] = useState('')
+  const [excelSyncDealerStateCode, setExcelSyncDealerStateCode] = useState('')
+  const [excelSyncProjectTypeInput, setExcelSyncProjectTypeInput] = useState('')
+  const [excelSyncDialogError, setExcelSyncDialogError] = useState<string | null>(null)
   const [isSavingOpportunity, setIsSavingOpportunity] = useState(false)
   const [isUploadingQuoteDocument, setIsUploadingQuoteDocument] = useState(false)
   const [isUploadingSelectedOpportunityDocument, setIsUploadingSelectedOpportunityDocument] = useState(false)
@@ -1498,6 +1599,7 @@ export default function SalesOpportunitiesPage() {
   const [busyQuoteId, setBusyQuoteId] = useState<string | null>(null)
   const [selectedOpportunity, setSelectedOpportunity] = useState<CrmQuote | null>(null)
   const [opportunityDetailsFormState, setOpportunityDetailsFormState] = useState<OpportunityDetailsFormState | null>(null)
+  const [detailsActionMenuAnchorEl, setDetailsActionMenuAnchorEl] = useState<HTMLElement | null>(null)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
   const [globalSearch, setGlobalSearch] = useState('')
@@ -1520,6 +1622,12 @@ export default function SalesOpportunitiesPage() {
     staleTime: 60 * 1000,
   })
 
+  const salesRepsQuery = useQuery({
+    queryKey: QUERY_KEYS.crmSalesReps,
+    queryFn: () => fetchCrmSalesReps(),
+    staleTime: 5 * 60 * 1000,
+  })
+
   const isLoading = dealersQuery.isLoading
     || quotesQuery.isLoading
     || ordersQuery.isLoading
@@ -1529,7 +1637,7 @@ export default function SalesOpportunitiesPage() {
     || ordersQuery.isFetching
   ) && !isLoading
 
-  const queryError = [dealersQuery.error, quotesQuery.error, ordersQuery.error]
+  const queryError = [dealersQuery.error, quotesQuery.error, ordersQuery.error, salesRepsQuery.error]
     .find((entry) => entry instanceof Error)
 
   const canManage = Boolean(appUser?.uid)
@@ -1550,13 +1658,54 @@ export default function SalesOpportunitiesPage() {
     [ordersQuery.data?.orders],
   )
 
+  const excelSyncSalesRepOptions = useMemo(() => {
+    const dynamicSalesReps = Array.isArray(salesRepsQuery.data?.salesReps)
+      ? salesRepsQuery.data.salesReps
+        .map((entry) => String(entry?.name ?? '').trim())
+        .filter(Boolean)
+      : []
+
+    const uniqueSalesReps = [...new Set([
+      'House',
+      ...dynamicSalesReps,
+    ])]
+
+    return uniqueSalesReps.sort((left, right) => {
+      const leftIsHouse = normalizeMatchValue(left) === 'house'
+      const rightIsHouse = normalizeMatchValue(right) === 'house'
+
+      if (leftIsHouse && !rightIsHouse) {
+        return -1
+      }
+
+      if (!leftIsHouse && rightIsHouse) {
+        return 1
+      }
+
+      return left.localeCompare(right)
+    })
+  }, [salesRepsQuery.data?.salesReps])
+
+  const unrecognizedExcelSalesRep = useMemo(() => {
+    const rawValue = excelSyncRawSalesRep.trim()
+
+    if (!rawValue) {
+      return ''
+    }
+
+    const matched = resolveMatchingOption(rawValue, excelSyncSalesRepOptions)
+    return matched ? '' : rawValue
+  }, [excelSyncRawSalesRep, excelSyncSalesRepOptions])
+
   const dealersBySourceId = useMemo(
     () => new Map(dealers.map((dealer) => [dealer.sourceId, dealer])),
     [dealers],
   )
 
   const activeQuotes = useMemo(
-    () => quotes.filter((quote) => quote.status !== 'rejected' && quote.status !== 'cancelled'),
+    () => quotes.filter(
+      (quote) => quote.status !== 'rejected' && quote.status !== 'cancelled' && quote.status !== 'accepted',
+    ),
     [quotes],
   )
 
@@ -1619,6 +1768,14 @@ export default function SalesOpportunitiesPage() {
     [selectedOpportunity],
   )
 
+  const isDetailsActionMenuOpen = Boolean(detailsActionMenuAnchorEl)
+  const canUseProposalDetailsActions = Boolean(
+    canManage
+    && selectedOpportunity
+    && opportunityDetailsFormState
+    && selectedOpportunityStage === 'proposal_submission',
+  )
+
   const selectedOpportunityDocuments = useMemo(
     () => resolveQuoteDocuments(selectedOpportunity),
     [selectedOpportunity],
@@ -1662,6 +1819,43 @@ export default function SalesOpportunitiesPage() {
     ])
   }, [queryClient])
 
+  const resetExcelSyncDialog = useCallback(() => {
+    setIsExcelSyncDialogOpen(false)
+    setExcelSyncDraft(null)
+    setExcelSyncSourceFileName('')
+    setExcelSyncQuoteNumberInput('')
+    setExcelSyncSalesRepInput('')
+    setExcelSyncRawSalesRep('')
+    setExcelSyncDealerStateCode('')
+    setExcelSyncProjectTypeInput('')
+    setExcelSyncDialogError(null)
+  }, [])
+
+  useEffect(() => {
+    if (!isExcelSyncDialogOpen) {
+      return
+    }
+
+    if (excelSyncSalesRepInput.trim()) {
+      return
+    }
+
+    if (!excelSyncRawSalesRep.trim()) {
+      return
+    }
+
+    const matchedSalesRep = resolveMatchingOption(excelSyncRawSalesRep, excelSyncSalesRepOptions)
+
+    if (matchedSalesRep) {
+      setExcelSyncSalesRepInput(matchedSalesRep)
+    }
+  }, [
+    excelSyncRawSalesRep,
+    excelSyncSalesRepInput,
+    excelSyncSalesRepOptions,
+    isExcelSyncDialogOpen,
+  ])
+
   const handleRefresh = useCallback(async () => {
     setErrorMessage(null)
 
@@ -1671,6 +1865,135 @@ export default function SalesOpportunitiesPage() {
       ordersQuery.refetch(),
     ])
   }, [dealersQuery, ordersQuery, quotesQuery])
+
+  const handleExcelQuoteSyncUpload = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+
+    if (!file) {
+      return
+    }
+
+    setErrorMessage(null)
+    setSuccessMessage(null)
+    setIsSyncingExcelQuote(true)
+
+    try {
+      const excelPayload = await parseExcelQuoteForSync(file)
+      const quoteNumberFromExcel = String(excelPayload.quoteNumber ?? '').trim()
+
+      const lookupResult = await fetchCrmExcelQuoteLookup(quoteNumberFromExcel)
+
+      if (!lookupResult.found) {
+        throw new Error(`Quote number ${quoteNumberFromExcel} was not found in Concept. Add it first, then sync again.`)
+      }
+
+      const salesRepFromExcel = String(excelPayload.salesRep ?? '').trim()
+      const defaultSalesRep = resolveMatchingOption(salesRepFromExcel, excelSyncSalesRepOptions)
+
+      setExcelSyncDraft(excelPayload)
+      setExcelSyncSourceFileName(file.name)
+      setExcelSyncQuoteNumberInput(quoteNumberFromExcel)
+      setExcelSyncRawSalesRep(salesRepFromExcel)
+      setExcelSyncSalesRepInput(defaultSalesRep)
+      setExcelSyncDealerStateCode('')
+      setExcelSyncProjectTypeInput(resolveDefaultExcelProjectType(excelPayload.projectType))
+      setExcelSyncDialogError(null)
+      setIsExcelSyncDialogOpen(true)
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to sync Excel quote.')
+    } finally {
+      setIsSyncingExcelQuote(false)
+    }
+  }, [excelSyncSalesRepOptions])
+
+  const handleCancelExcelSyncDialog = useCallback(() => {
+    if (isSyncingExcelQuote) {
+      return
+    }
+
+    resetExcelSyncDialog()
+  }, [isSyncingExcelQuote, resetExcelSyncDialog])
+
+  const handleConfirmExcelQuoteSync = useCallback(async () => {
+    if (!excelSyncDraft) {
+      return
+    }
+
+    const quoteNumber = excelSyncQuoteNumberInput.trim()
+
+    if (!quoteNumber) {
+      setExcelSyncDialogError('Quote number is required.')
+      return
+    }
+
+    const selectedSalesRep = resolveMatchingOption(excelSyncSalesRepInput, excelSyncSalesRepOptions)
+
+    if (!selectedSalesRep) {
+      setExcelSyncDialogError('Select a Sales Rep from the dropdown before syncing.')
+      return
+    }
+
+    const dealerStateCode = excelSyncDealerStateCode.trim().toUpperCase()
+
+    if (!usStateCodeSet.has(dealerStateCode)) {
+      setExcelSyncDialogError('Select a valid Dealer State from the dropdown before syncing.')
+      return
+    }
+
+    const projectTypeInput = excelSyncProjectTypeInput.trim()
+
+    if (!isExcelSyncProjectTypeOption(projectTypeInput)) {
+      setExcelSyncDialogError('Select a Project Type from the dropdown before syncing.')
+      return
+    }
+
+    setExcelSyncDialogError(null)
+    setErrorMessage(null)
+    setSuccessMessage(null)
+    setIsSyncingExcelQuote(true)
+
+    try {
+      const syncInput: CrmExcelQuoteSyncInput = {
+        ...excelSyncDraft,
+        quoteNumber,
+        salesRep: selectedSalesRep,
+        dealerState: dealerStateCode,
+        projectType: projectTypeInput,
+      }
+
+      const syncPayload = await syncCrmQuoteFromExcel(syncInput)
+
+      await invalidateOpportunityData()
+      resetExcelSyncDialog()
+
+      const nextStageLabel = stageById.get(syncPayload.toStage as CrmOpportunityStage)?.label
+        || String(syncPayload.toStage || '').trim()
+        || 'updated'
+
+      setSuccessMessage(
+        `Excel synced for ${syncPayload.quoteNumber || quoteNumber}. Stage: ${nextStageLabel}.`,
+      )
+
+      if (syncPayload.quote) {
+        setSelectedOpportunity(syncPayload.quote)
+        setOpportunityDetailsFormState(createOpportunityDetailsFormState(syncPayload.quote))
+      }
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to sync Excel quote.')
+    } finally {
+      setIsSyncingExcelQuote(false)
+    }
+  }, [
+    excelSyncDealerStateCode,
+    excelSyncDraft,
+    excelSyncProjectTypeInput,
+    excelSyncQuoteNumberInput,
+    excelSyncSalesRepInput,
+    excelSyncSalesRepOptions,
+    invalidateOpportunityData,
+    resetExcelSyncDialog,
+  ])
 
   const uploadQuoteDocumentFile = useCallback(async (file: File) => {
     const maxFileSize = 15 * 1024 * 1024
@@ -1833,6 +2156,7 @@ export default function SalesOpportunitiesPage() {
   const handleOpenOpportunityDetails = useCallback((quote: CrmQuote) => {
     setErrorMessage(null)
     setSuccessMessage(null)
+    setDetailsActionMenuAnchorEl(null)
     setSelectedOpportunity(quote)
     setOpportunityDetailsFormState(createOpportunityDetailsFormState(quote))
   }, [])
@@ -1850,6 +2174,7 @@ export default function SalesOpportunitiesPage() {
       return
     }
 
+    setDetailsActionMenuAnchorEl(null)
     setSelectedOpportunity(null)
     setOpportunityDetailsFormState(null)
   }, [isSavingOpportunityDetails, isUploadingSelectedOpportunityDocument])
@@ -2058,19 +2383,6 @@ export default function SalesOpportunitiesPage() {
     }
   }, [invalidateOpportunityData])
 
-  const handleMoveBack = useCallback(async (quote: CrmQuote) => {
-    const stage = resolveOpportunityStage(quote)
-
-    if (stage === 'proposal_submission') {
-      await updateStage(quote, 'concept', { status: 'draft' })
-      return
-    }
-
-    if (stage === 'revision') {
-      await updateStage(quote, 'proposal_submission', { status: 'draft' })
-    }
-  }, [updateStage])
-
   const handleAdvanceStage = useCallback(async (quote: CrmQuote) => {
     const stage = resolveOpportunityStage(quote)
 
@@ -2087,20 +2399,6 @@ export default function SalesOpportunitiesPage() {
         sentAt: new Date().toISOString(),
       })
     }
-  }, [updateStage])
-
-  const handleMarkNeedsRevision = useCallback(async (quote: CrmQuote) => {
-    await updateStage(quote, 'revision', { status: 'draft' })
-  }, [updateStage])
-
-  const handleSendRevision = useCallback(async (quote: CrmQuote) => {
-    const nextRevisionCount = Math.max(0, Number(quote.revisionCount || 0)) + 1
-
-    await updateStage(quote, 'proposal_submission', {
-      status: 'sent',
-      sentAt: new Date().toISOString(),
-      revisionCount: nextRevisionCount,
-    })
   }, [updateStage])
 
   const createOrderFromQuote = useCallback(async (quote: CrmQuote, existingOrders: CrmOrder[]) => {
@@ -2154,6 +2452,31 @@ export default function SalesOpportunitiesPage() {
     }
   }, [createOrderFromQuote, invalidateOpportunityData, orders])
 
+  const handleDeclineQuote = useCallback(async (quote: CrmQuote) => {
+    const confirmed = window.confirm(`Mark ${quote.quoteNumber || quote.title} as declined?`)
+
+    if (!confirmed) {
+      return
+    }
+
+    setErrorMessage(null)
+    setSuccessMessage(null)
+    setBusyQuoteId(quote.id)
+
+    try {
+      await updateCrmQuote(quote.id, {
+        status: 'rejected',
+        rejectedAt: new Date().toISOString(),
+      })
+      await invalidateOpportunityData()
+      setSuccessMessage('Opportunity marked as declined.')
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to mark opportunity as declined.')
+    } finally {
+      setBusyQuoteId(null)
+    }
+  }, [invalidateOpportunityData])
+
   const handleDeleteQuote = useCallback(async (quote: CrmQuote) => {
     const confirmed = window.confirm(`Delete ${quote.quoteNumber || quote.title}? This cannot be undone.`)
 
@@ -2176,7 +2499,7 @@ export default function SalesOpportunitiesPage() {
     }
   }, [invalidateOpportunityData])
 
-  const handleSaveOpportunityDetails = useCallback(async () => {
+  const handleSaveOpportunityDetails = useCallback(async (mode: OpportunityDetailsSaveMode = 'save') => {
     if (!selectedOpportunity || !opportunityDetailsFormState) {
       return
     }
@@ -2210,13 +2533,31 @@ export default function SalesOpportunitiesPage() {
       return
     }
 
+    const quoteLabel = quoteNumber || selectedOpportunity.quoteNumber || selectedOpportunity.title
+
+    if (mode === 'decline') {
+      const confirmedDecline = window.confirm(`Mark ${quoteLabel} as declined?`)
+
+      if (!confirmedDecline) {
+        return
+      }
+    }
+
+    if (mode === 'convert_to_order') {
+      const confirmedConvert = window.confirm(`Convert ${quoteLabel} to order placement?`)
+
+      if (!confirmedConvert) {
+        return
+      }
+    }
+
     setErrorMessage(null)
     setSuccessMessage(null)
     setIsSavingOpportunityDetails(true)
     setBusyQuoteId(selectedOpportunity.id)
 
     try {
-      await updateCrmQuote(selectedOpportunity.id, {
+      const detailsPayload = {
         quoteNumber: quoteNumber || null,
         title,
         companyName: opportunityDetailsFormState.companyName.trim() || null,
@@ -2233,10 +2574,44 @@ export default function SalesOpportunitiesPage() {
         lineItems,
         totalAmount,
         notes: opportunityDetailsFormState.notes.trim() || null,
-      })
+      }
+
+      if (mode === 'save') {
+        if (resolveOpportunityStage(selectedOpportunity) === 'proposal_submission') {
+          await updateCrmQuote(selectedOpportunity.id, {
+            ...detailsPayload,
+            opportunityStage: 'revision',
+            status: 'draft',
+          })
+          setSuccessMessage('Opportunity updated and moved to Revision.')
+        } else {
+          await updateCrmQuote(selectedOpportunity.id, detailsPayload)
+          setSuccessMessage('Opportunity updated.')
+        }
+      } else if (mode === 'decline') {
+        await updateCrmQuote(selectedOpportunity.id, {
+          ...detailsPayload,
+          status: 'rejected',
+          rejectedAt: new Date().toISOString(),
+        })
+        setSuccessMessage('Opportunity updated and marked as declined.')
+      } else {
+        await updateCrmQuote(selectedOpportunity.id, detailsPayload)
+
+        const quoteForOrder: CrmQuote = {
+          ...selectedOpportunity,
+          ...detailsPayload,
+          title,
+          totalAmount,
+          quoteNumber: quoteNumber || null,
+        }
+
+        await createOrderFromQuote(quoteForOrder, orders)
+        setSuccessMessage('Opportunity updated and converted to order placement.')
+      }
 
       await invalidateOpportunityData()
-      setSuccessMessage('Opportunity updated.')
+      setDetailsActionMenuAnchorEl(null)
       setSelectedOpportunity(null)
       setOpportunityDetailsFormState(null)
     } catch (error) {
@@ -2245,7 +2620,13 @@ export default function SalesOpportunitiesPage() {
       setIsSavingOpportunityDetails(false)
       setBusyQuoteId(null)
     }
-  }, [invalidateOpportunityData, opportunityDetailsFormState, selectedOpportunity])
+  }, [
+    createOrderFromQuote,
+    invalidateOpportunityData,
+    opportunityDetailsFormState,
+    orders,
+    selectedOpportunity,
+  ])
 
   if (isLoading) {
     return <LoadingPanel loading message="Fetching pipeline opportunities..." />
@@ -2257,6 +2638,125 @@ export default function SalesOpportunitiesPage() {
         errorMessage={errorMessage || (queryError instanceof Error ? queryError.message : null)}
         successMessage={successMessage}
       />
+
+      <Dialog
+        open={isExcelSyncDialogOpen}
+        onClose={() => {
+          if (isSyncingExcelQuote) {
+            return
+          }
+
+          handleCancelExcelSyncDialog()
+        }}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Review Excel Sync</DialogTitle>
+        <DialogContent>
+          <Stack spacing={1.2} sx={{ mt: 0.6 }}>
+            {excelSyncSourceFileName ? (
+              <Typography variant="caption" color="text.secondary">
+                File: {excelSyncSourceFileName}
+              </Typography>
+            ) : null}
+
+            <TextField
+              label="Quote Number"
+              required
+              autoFocus
+              value={excelSyncQuoteNumberInput}
+              onChange={(event) => {
+                setExcelSyncQuoteNumberInput(event.target.value)
+              }}
+              error={excelSyncDialogError === 'Quote number is required.'}
+              helperText="Loaded from Excel and editable before sync."
+            />
+
+            <Autocomplete
+              options={excelSyncSalesRepOptions}
+              value={excelSyncSalesRepInput || null}
+              onChange={(_event, value) => {
+                setExcelSyncSalesRepInput(value || '')
+              }}
+              renderInput={(params) => (
+                <TextField
+                  {...params}
+                  label="Sales Rep"
+                  required
+                  error={
+                    excelSyncDialogError === 'Select a Sales Rep from the dropdown before syncing.'
+                    || (Boolean(unrecognizedExcelSalesRep) && !excelSyncSalesRepInput.trim())
+                  }
+                  helperText={
+                    Boolean(unrecognizedExcelSalesRep) && !excelSyncSalesRepInput.trim()
+                      ? `Excel value "${unrecognizedExcelSalesRep}" was not recognized. Pick one from this dropdown.`
+                      : 'Choose one of your Sales Reps or House.'
+                  }
+                />
+              )}
+            />
+
+            <Autocomplete
+              options={usStateOptions}
+              value={usStateOptionByCode.get(excelSyncDealerStateCode) || null}
+              onChange={(_event, value) => {
+                setExcelSyncDealerStateCode(value?.code || '')
+              }}
+              isOptionEqualToValue={(option, value) => option.code === value.code}
+              getOptionLabel={(option) => option.label}
+              renderInput={(params) => (
+                <TextField
+                  {...params}
+                  label="Dealer State"
+                  required
+                  error={excelSyncDialogError === 'Select a valid Dealer State from the dropdown before syncing.'}
+                  helperText="Required every time. Type to filter states quickly."
+                />
+              )}
+            />
+
+            <Autocomplete
+              options={excelSyncProjectTypeOptions}
+              value={isExcelSyncProjectTypeOption(excelSyncProjectTypeInput) ? excelSyncProjectTypeInput : null}
+              onChange={(_event, value) => {
+                setExcelSyncProjectTypeInput(value || '')
+              }}
+              renderInput={(params) => (
+                <TextField
+                  {...params}
+                  label="Project Type"
+                  required
+                  error={excelSyncDialogError === 'Select a Project Type from the dropdown before syncing.'}
+                  helperText={'Auto-fills when Excel title clearly matches. "Other" is manual-only.'}
+                />
+              )}
+            />
+
+            {excelSyncDialogError ? (
+              <Typography variant="caption" color="error">
+                {excelSyncDialogError}
+              </Typography>
+            ) : null}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={handleCancelExcelSyncDialog}
+            disabled={isSyncingExcelQuote}
+          >
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            onClick={() => {
+              void handleConfirmExcelQuoteSync()
+            }}
+            disabled={!canManage || !excelSyncDraft || isSyncingExcelQuote}
+          >
+            {isSyncingExcelQuote ? 'Syncing Excel...' : 'Sync Now'}
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <Paper
         variant="outlined"
@@ -2275,7 +2775,7 @@ export default function SalesOpportunitiesPage() {
               </Typography>
             </Stack>
             <Typography variant="body2" color="text.secondary">
-              Concept - Proposal - Revision - Order Placement.
+              Concept - Proposal - Revision.
             </Typography>
           </Stack>
 
@@ -2296,6 +2796,21 @@ export default function SalesOpportunitiesPage() {
               }}
               sx={{ width: 260 }}
             />
+            <Button
+              component="label"
+              variant="outlined"
+              color="inherit"
+              startIcon={<FileUploadRoundedIcon fontSize="small" />}
+              disabled={!canManage || isSyncingExcelQuote}
+            >
+              {isSyncingExcelQuote ? 'Syncing Excel...' : 'Sync Excel Quote'}
+              <input
+                hidden
+                type="file"
+                accept=".xls,.xlsx,.xlsm"
+                onChange={handleExcelQuoteSyncUpload}
+              />
+            </Button>
             <Button
               variant="outlined"
               color="inherit"
@@ -2325,11 +2840,11 @@ export default function SalesOpportunitiesPage() {
         <Box
           sx={{
             display: 'grid',
-            gap: 1,
+            gap: 1.1,
             gridTemplateColumns: {
               xs: '1fr',
               md: 'repeat(2, minmax(0, 1fr))',
-              lg: 'repeat(4, minmax(0, 1fr))',
+              lg: 'repeat(3, minmax(0, 1fr))',
             },
             alignItems: 'start',
           }}
@@ -2342,11 +2857,9 @@ export default function SalesOpportunitiesPage() {
               dealersBySourceId={dealersBySourceId}
               canManage={canManage}
               busyQuoteId={busyQuoteId}
-              onMoveBack={handleMoveBack}
               onAdvanceStage={handleAdvanceStage}
-              onMarkNeedsRevision={handleMarkNeedsRevision}
-              onSendRevision={handleSendRevision}
               onMarkApproved={handleMarkApproved}
+              onDeclineQuote={handleDeclineQuote}
               onDeleteQuote={handleDeleteQuote}
               onOpenDetails={handleOpenOpportunityDetails}
             />
@@ -2710,7 +3223,64 @@ export default function SalesOpportunitiesPage() {
         maxWidth="md"
         fullWidth
       >
-        <DialogTitle>Opportunity Details</DialogTitle>
+        <DialogTitle
+          sx={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 1,
+          }}
+        >
+          Opportunity Details
+          {canUseProposalDetailsActions ? (
+            <IconButton
+              size="medium"
+              disabled={isSavingOpportunityDetails || isUploadingSelectedOpportunityDocument}
+              onClick={(event) => {
+                setDetailsActionMenuAnchorEl(event.currentTarget)
+              }}
+            >
+              <MoreVertRoundedIcon sx={{ fontSize: 20 }} />
+            </IconButton>
+          ) : null}
+        </DialogTitle>
+        <Menu
+          anchorEl={detailsActionMenuAnchorEl}
+          open={isDetailsActionMenuOpen}
+          onClose={() => {
+            setDetailsActionMenuAnchorEl(null)
+          }}
+          anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+          transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+        >
+          <MenuItem
+            disabled={!canUseProposalDetailsActions || isSavingOpportunityDetails || isUploadingSelectedOpportunityDocument}
+            onClick={() => {
+              setDetailsActionMenuAnchorEl(null)
+              void handleSaveOpportunityDetails('decline')
+            }}
+          >
+            Declined
+          </MenuItem>
+          <MenuItem
+            disabled={!canUseProposalDetailsActions || isSavingOpportunityDetails || isUploadingSelectedOpportunityDocument}
+            onClick={() => {
+              setDetailsActionMenuAnchorEl(null)
+              void handleSaveOpportunityDetails('convert_to_order')
+            }}
+          >
+            Convert to order
+          </MenuItem>
+          <MenuItem
+            disabled={!canUseProposalDetailsActions || isSavingOpportunityDetails || isUploadingSelectedOpportunityDocument}
+            onClick={() => {
+              setDetailsActionMenuAnchorEl(null)
+              void handleSaveOpportunityDetails('save')
+            }}
+          >
+            Save
+          </MenuItem>
+        </Menu>
         <DialogContent>
           {selectedOpportunity && opportunityDetailsFormState ? (
             <Stack spacing={1.3} sx={{ mt: 0.5 }}>
@@ -3138,7 +3708,7 @@ export default function SalesOpportunitiesPage() {
           <Button
             variant="contained"
             onClick={() => {
-              void handleSaveOpportunityDetails()
+              void handleSaveOpportunityDetails('save')
             }}
             disabled={
               !canManage

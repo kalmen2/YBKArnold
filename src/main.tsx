@@ -30,7 +30,7 @@ function shouldRecoverFromDynamicImportFailure(reason: unknown) {
     return ''
   })()
 
-  return /(Failed to fetch dynamically imported module|Importing a module script failed|ChunkLoadError|Loading chunk \d+ failed)/i.test(
+  return /(Failed to fetch dynamically imported module|Importing a module script failed|ChunkLoadError|Loading chunk \d+ failed|Lazy route module missing default export|Cannot read properties of undefined \(reading ['"]default['"]\)|Cannot read property ['"]default['"] of undefined)/i.test(
     message,
   )
 }
@@ -55,6 +55,17 @@ if (typeof window !== 'undefined') {
 
   window.addEventListener('unhandledrejection', (event) => {
     if (!shouldRecoverFromDynamicImportFailure(event.reason)) {
+      return
+    }
+
+    event.preventDefault()
+    reloadOnceForDynamicImportFailure()
+  })
+
+  window.addEventListener('error', (event) => {
+    const reason = event.error ?? event.message
+
+    if (!shouldRecoverFromDynamicImportFailure(reason)) {
       return
     }
 
