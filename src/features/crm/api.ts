@@ -613,6 +613,7 @@ export type CrmQuoteUpsertInput = {
 
 export type CrmExcelQuoteSyncInput = {
   quoteNumber: string
+  allowCreateWhenMissingConcept?: boolean
   title?: string | null
   companyName?: string | null
   salesRep?: string | null
@@ -634,6 +635,7 @@ export type CrmExcelQuoteSyncInput = {
 export type CrmExcelQuoteSyncResponse = {
   ok: boolean
   found: boolean
+  created?: boolean
   fromStage: CrmOpportunityStage | string
   toStage: CrmOpportunityStage | string
   quoteNumber: string

@@ -17,30 +17,42 @@ import SalesRepsPage from './SalesRepsPage'
 
 type SalesTab = 'dealers' | 'contacts' | 'engagement' | 'opportunities' | 'sales-reps' | 'quotes'
 
+function resolveFallbackTab(allowedTabs: SalesTab[]): SalesTab {
+  return allowedTabs.includes('opportunities')
+    ? 'opportunities'
+    : 'dealers'
+}
+
 function resolveTab(value: string | null, allowedTabs: SalesTab[]): SalesTab {
   const allowedTabSet = new Set(allowedTabs)
+  const fallbackTab = resolveFallbackTab(allowedTabs)
+
+  // Keep compatibility with both current (`dealers`) and legacy (`accounts`) query values.
+  if (value === 'dealers' || value === 'accounts') {
+    return allowedTabSet.has('dealers') ? 'dealers' : fallbackTab
+  }
 
   if (value === 'contacts') {
-    return allowedTabSet.has('contacts') ? 'contacts' : 'dealers'
+    return allowedTabSet.has('contacts') ? 'contacts' : fallbackTab
   }
 
   if (value === 'opportunities') {
-    return allowedTabSet.has('opportunities') ? 'opportunities' : 'dealers'
+    return allowedTabSet.has('opportunities') ? 'opportunities' : fallbackTab
   }
 
   if (value === 'sales-reps') {
-    return allowedTabSet.has('sales-reps') ? 'sales-reps' : 'dealers'
+    return allowedTabSet.has('sales-reps') ? 'sales-reps' : fallbackTab
   }
 
   if (value === 'quotes') {
-    return allowedTabSet.has('quotes') ? 'quotes' : 'dealers'
+    return allowedTabSet.has('quotes') ? 'quotes' : fallbackTab
   }
 
   if (value === 'engagement') {
-    return allowedTabSet.has('engagement') ? 'engagement' : 'dealers'
+    return allowedTabSet.has('engagement') ? 'engagement' : fallbackTab
   }
 
-  return 'dealers'
+  return fallbackTab
 }
 
 export default function SalesPage() {
@@ -67,27 +79,6 @@ export default function SalesPage() {
           onChange={handleTabChange}
           sx={{ minHeight: 44 }}
         >
-          <Tab
-            value="dealers"
-            label="Accounts"
-            icon={<StoreRoundedIcon fontSize="small" />}
-            iconPosition="start"
-            sx={{ minHeight: 44, textTransform: 'none', fontWeight: 600, gap: 0.75 }}
-          />
-          <Tab
-            value="contacts"
-            label="Contacts"
-            icon={<ContactsRoundedIcon fontSize="small" />}
-            iconPosition="start"
-            sx={{ minHeight: 44, textTransform: 'none', fontWeight: 600, gap: 0.75 }}
-          />
-          <Tab
-            value="engagement"
-            label="Engagement"
-            icon={<FactCheckRoundedIcon fontSize="small" />}
-            iconPosition="start"
-            sx={{ minHeight: 44, textTransform: 'none', fontWeight: 600, gap: 0.75 }}
-          />
           {!appUser?.isSalesRep ? (
             <Tab
               value="opportunities"
@@ -97,6 +88,20 @@ export default function SalesPage() {
               sx={{ minHeight: 44, textTransform: 'none', fontWeight: 600, gap: 0.75 }}
             />
           ) : null}
+          <Tab
+            value="engagement"
+            label="Engagement"
+            icon={<FactCheckRoundedIcon fontSize="small" />}
+            iconPosition="start"
+            sx={{ minHeight: 44, textTransform: 'none', fontWeight: 600, gap: 0.75 }}
+          />
+          <Tab
+            value="dealers"
+            label="Accounts"
+            icon={<StoreRoundedIcon fontSize="small" />}
+            iconPosition="start"
+            sx={{ minHeight: 44, textTransform: 'none', fontWeight: 600, gap: 0.75 }}
+          />
           {!appUser?.isSalesRep ? (
             <Tab
               value="sales-reps"
@@ -115,6 +120,13 @@ export default function SalesPage() {
               sx={{ minHeight: 44, textTransform: 'none', fontWeight: 600, gap: 0.75 }}
             />
           ) : null}
+          <Tab
+            value="contacts"
+            label="Contacts"
+            icon={<ContactsRoundedIcon fontSize="small" />}
+            iconPosition="start"
+            sx={{ minHeight: 44, textTransform: 'none', fontWeight: 600, gap: 0.75 }}
+          />
         </Tabs>
       </Box>
 

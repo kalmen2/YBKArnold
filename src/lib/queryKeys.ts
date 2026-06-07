@@ -90,6 +90,8 @@ export const QUERY_KEYS = {
   adminApiDocs: ['admin', 'api-docs'] as const,
   adminApiKeys: (limit: number) =>
     ['admin', 'api-keys', limit] as const,
+  adminEmailGoogleStatus: ['admin', 'email', 'google', 'status'] as const,
+  adminEmailMicrosoftStatus: ['admin', 'email', 'microsoft', 'status'] as const,
 
   // Pictures
   photosIndex: ['pictures', 'photos-index'] as const,

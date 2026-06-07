@@ -5687,6 +5687,80 @@ export function registerCrmRoutes(app, deps) {
     )
 
     if (!existingQuote) {
+      const allowCreateWhenMissingConcept = toBoolean(body.allowCreateWhenMissingConcept)
+
+      if (allowCreateWhenMissingConcept) {
+        const now = nowIso()
+        const subtotal = toNonNegativeNumberOrNull(body.subtotal)
+        const freight = toNonNegativeNumberOrNull(body.freight)
+        const explicitTotalAmount = toNonNegativeNumberOrNull(body.totalAmount)
+        const derivedTotalAmount = explicitTotalAmount !== null
+          ? explicitTotalAmount
+          : Number(((subtotal || 0) + (freight || 0)).toFixed(2))
+        const nextQuote = {
+          id: randomUUID(),
+          dealerSourceId: null,
+          dealerName: null,
+          dealerState: normalizeUsStateCode(body.dealerState) || null,
+          companyName: toTrimmedText(body.companyName, 200) || null,
+          salesRep: toTrimmedText(body.salesRep, 200) || null,
+          projectType: normalizeProjectType(body.projectType),
+          opportunityDate: toIsoDateOrNull(body.opportunityDate),
+          opportunityStage: 'proposal_submission',
+          contactSourceId: null,
+          contactName: toTrimmedText(body.contactName, 240) || null,
+          contactEmail: toTrimmedText(body.contactEmail, 200) || null,
+          contactPhone: toTrimmedText(body.contactPhone, 80) || null,
+          quoteNumber,
+          poNumber: null,
+          acknowledgmentNumber: null,
+          orderNumber: null,
+          paymentTerms: toTrimmedText(body.paymentTerms, 240) || null,
+          leadTime: toTrimmedText(body.leadTime, 240) || null,
+          subtotal,
+          freight,
+          freightDescription: toTrimmedText(body.freightDescription, 1200) || null,
+          lineItems: normalizeQuoteLineItems(body.lineItems),
+          title: toTrimmedText(body.title, 240) || `Opportunity ${quoteNumber}`,
+          description: null,
+          conceptImageUrl: null,
+          conceptImageName: null,
+          documentUrl: null,
+          documentName: null,
+          documents: [],
+          revisionCount: 0,
+          status: 'sent',
+          totalAmount: Number(derivedTotalAmount.toFixed(2)),
+          currency: 'USD',
+          sentAt: now,
+          acceptedAt: null,
+          rejectedAt: null,
+          notes: null,
+          lastStatusChangedAt: now,
+          createdByUid: null,
+          createdByEmail: null,
+          createdAt: now,
+          updatedAt: now,
+        }
+
+        await crmQuotesCollection.insertOne(nextQuote)
+        cacheDelete(OVERVIEW_CACHE_KEY)
+
+        return {
+          status: 200,
+          body: {
+            ok: true,
+            found: false,
+            created: true,
+            fromStage: 'not_found',
+            toStage: 'proposal_submission',
+            quoteNumber,
+            quote: nextQuote,
+            message: 'Quote was not found in Concept and was created directly from the uploaded file.',
+          },
+        }
+      }
+
       return {
         status: 404,
         body: {

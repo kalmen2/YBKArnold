@@ -157,11 +157,15 @@ export const router = createBrowserRouter([
       },
       {
         path: 'admin/crm',
-        element: <Navigate to="/sales?tab=dealers" replace />,
+        element: <Navigate to="/sales?tab=opportunities" replace />,
       },
       {
         path: 'admin/ai-config',
         element: <Navigate to="/admin/settings?tab=ai" replace />,
+      },
+      {
+        path: 'admin/email',
+        element: <Navigate to="/admin/settings?tab=email" replace />,
       },
     ],
   },

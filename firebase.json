@@ -46,6 +46,10 @@
     ],
     "rewrites": [
       {
+        "source": "/auth/google/callback",
+        "function": "apiV1"
+      },
+      {
         "source": "/api/**",
         "function": "apiV1"
       },

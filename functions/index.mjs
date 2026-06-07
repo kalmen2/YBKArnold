@@ -13,6 +13,7 @@ import { registerAlertsRoutes } from './src/routes/alerts-routes.mjs'
 import { registerAuthRoutes } from './src/routes/auth-routes.mjs'
 import { registerCrmRoutes } from './src/routes/crm-routes.mjs'
 import { registerDashboardSupportRoutes } from './src/routes/dashboard-support-routes.mjs'
+import { registerEmailRoutes } from './src/routes/email-routes.mjs'
 import { registerOrderPhotoRoutes } from './src/routes/order-photos-routes.mjs'
 import { registerOrdersRoutes } from './src/routes/orders-routes.mjs'
 import { registerPurchasingRoutes } from './src/routes/purchasing-routes.mjs'
@@ -688,6 +689,7 @@ function listRegisteredApiRoutes() {
     'src/routes/auth-routes.mjs',
     'src/routes/crm-routes.mjs',
     'src/routes/dashboard-support-routes.mjs',
+    'src/routes/email-routes.mjs',
     'src/routes/order-photos-routes.mjs',
     'src/routes/orders-routes.mjs',
     'src/routes/purchasing-routes.mjs',
@@ -2164,6 +2166,7 @@ registerAlertsRoutes(app, routeDeps)
 registerCrmRoutes(app, routeDeps)
 registerOrdersRoutes(app, routeDeps)
 registerDashboardSupportRoutes(app, routeDeps)
+registerEmailRoutes(app, routeDeps)
 registerOrderPhotoRoutes(app, routeDeps)
 registerPurchasingRoutes(app, routeDeps)
 registerQuickBooksRoutes(app, routeDeps)

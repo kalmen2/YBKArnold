@@ -1,6 +1,14 @@
 import * as XLSX from 'xlsx'
 import type { CrmQuoteLineItem, CrmExcelQuoteSyncInput } from './api'
 
+const supportedQuoteSyncExtensions = new Set([
+  'xls',
+  'xlsx',
+  'xlsm',
+  'ods',
+  'csv',
+])
+
 const ROW_QUOTE_NUMBER = 2
 const COL_QUOTE_NUMBER = 8
 const ROW_QUOTE_NUMBER_FALLBACK = 1
@@ -26,7 +34,27 @@ const COL_UNIT_PRICE = 8
 const COL_EXT_PRICE = 9
 const COL_TOTAL_LABEL = 7
 
+type LineItemLayout = {
+  lineItemsStartRow: number
+  colItem: number
+  colDescription: number
+  colQty: number
+  colUnitPrice: number
+  colExtPrice: number
+  colTotalLabel: number
+}
+
 const subtotalLabelSet = new Set(['sub net total', 'subnet total', 'sub total', 'subtotal'])
+
+const defaultLineItemLayout: LineItemLayout = {
+  lineItemsStartRow: ROW_LINE_ITEMS_START,
+  colItem: COL_ITEM,
+  colDescription: COL_DESCRIPTION,
+  colQty: COL_QTY,
+  colUnitPrice: COL_UNIT_PRICE,
+  colExtPrice: COL_EXT_PRICE,
+  colTotalLabel: COL_TOTAL_LABEL,
+}
 
 function getCell(rows: unknown[][], row: number, col: number): unknown {
   const rowValues = rows[row - 1]
@@ -60,6 +88,112 @@ function normalizeCellText(rows: unknown[][], row: number, col: number): string 
     .toLowerCase()
 }
 
+function normalizeHeaderText(value: unknown): string {
+  return toTrimmedText(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '')
+}
+
+function isAnyHeaderMatch(label: string, expectedLabels: string[]): boolean {
+  return expectedLabels.some((expected) => label === expected)
+}
+
+function findLineItemLayout(rows: unknown[][]): LineItemLayout {
+  let bestMatch: {
+    row: number
+    colItem?: number
+    colDescription?: number
+    colQty?: number
+    colUnitPrice?: number
+    colExtPrice?: number
+    score: number
+  } | null = null
+
+  const maxRowToScan = Math.min(rows.length, 80)
+
+  for (let row = 1; row <= maxRowToScan; row += 1) {
+    const rowValues = rows[row - 1]
+
+    if (!Array.isArray(rowValues) || rowValues.length === 0) {
+      continue
+    }
+
+    let colItem: number | undefined
+    let colDescription: number | undefined
+    let colQty: number | undefined
+    let colUnitPrice: number | undefined
+    let colExtPrice: number | undefined
+
+    for (let col = 1; col <= rowValues.length; col += 1) {
+      const label = normalizeHeaderText(getCell(rows, row, col))
+
+      if (!label) {
+        continue
+      }
+
+      if (!colItem && isAnyHeaderMatch(label, ['item', 'lineitem', 'lineno', 'number'])) {
+        colItem = col
+        continue
+      }
+
+      if (!colDescription && isAnyHeaderMatch(label, ['description', 'desc', 'itemdescription'])) {
+        colDescription = col
+        continue
+      }
+
+      if (!colQty && isAnyHeaderMatch(label, ['qty', 'quantity'])) {
+        colQty = col
+        continue
+      }
+
+      if (!colUnitPrice && isAnyHeaderMatch(label, ['unitprice', 'unitnetprice', 'netprice', 'price'])) {
+        colUnitPrice = col
+        continue
+      }
+
+      if (!colExtPrice && isAnyHeaderMatch(label, ['extprice', 'extnetprice', 'extendedprice', 'extendednetprice', 'totalprice', 'totalnetprice', 'linetotal'])) {
+        colExtPrice = col
+      }
+    }
+
+    const score = [colItem, colDescription, colQty, colUnitPrice, colExtPrice]
+      .filter((value) => typeof value === 'number').length
+
+    if (
+      colItem
+      && colDescription
+      && colQty
+      && colUnitPrice
+      && colExtPrice
+      && (!bestMatch || score > bestMatch.score)
+    ) {
+      bestMatch = {
+        row,
+        colItem,
+        colDescription,
+        colQty,
+        colUnitPrice,
+        colExtPrice,
+        score,
+      }
+    }
+  }
+
+  if (!bestMatch || !bestMatch.colItem || !bestMatch.colDescription || !bestMatch.colQty || !bestMatch.colUnitPrice || !bestMatch.colExtPrice) {
+    return defaultLineItemLayout
+  }
+
+  return {
+    lineItemsStartRow: bestMatch.row + 1,
+    colItem: bestMatch.colItem,
+    colDescription: bestMatch.colDescription,
+    colQty: bestMatch.colQty,
+    colUnitPrice: bestMatch.colUnitPrice,
+    colExtPrice: bestMatch.colExtPrice,
+    colTotalLabel: bestMatch.colQty,
+  }
+}
+
 function toNumberOrNull(value: unknown): number | null {
   if (typeof value === 'number') {
     return Number.isFinite(value) ? value : null
@@ -86,10 +220,6 @@ function isPlainInteger(value: unknown): boolean {
   const parsed = toNumberOrNull(value)
 
   return parsed !== null && parsed >= 0 && Math.floor(parsed) === parsed
-}
-
-function isFilledNumber(value: unknown): boolean {
-  return toTrimmedText(value).length > 0 && toNumberOrNull(value) !== null
 }
 
 function toIsoDateFromParts(year: number, month: number, day: number): string | null {
@@ -142,48 +272,64 @@ function toIsoDate(value: unknown): string | undefined {
   ) || undefined
 }
 
-function buildLineItems(rows: unknown[][]): CrmQuoteLineItem[] {
+function isSubtotalRow(rows: unknown[][], row: number, layout: LineItemLayout): boolean {
+  const totalLabel = normalizeCellText(rows, row, layout.colTotalLabel)
+
+  if (subtotalLabelSet.has(totalLabel)) {
+    return true
+  }
+
+  const itemLabel = normalizeCellText(rows, row, layout.colItem)
+
+  return subtotalLabelSet.has(itemLabel)
+}
+
+function buildLineItems(rows: unknown[][], layout: LineItemLayout): CrmQuoteLineItem[] {
   const lineItems: CrmQuoteLineItem[] = []
   const lastRow = rows.length
 
-  for (let row = ROW_LINE_ITEMS_START; row <= lastRow; row += 1) {
-    const itemCell = getCell(rows, row, COL_ITEM)
+  for (let row = layout.lineItemsStartRow; row <= lastRow; row += 1) {
+    if (isSubtotalRow(rows, row, layout)) {
+      break
+    }
 
-    if (!isPlainInteger(itemCell)) {
+    const itemCell = getCell(rows, row, layout.colItem)
+    const extPriceCell = getCell(rows, row, layout.colExtPrice)
+    const extPrice = toNumberOrNull(extPriceCell)
+
+    if (extPrice === null) {
       continue
     }
 
-    const qtyCell = getCell(rows, row, COL_QTY)
-    const unitPriceCell = getCell(rows, row, COL_UNIT_PRICE)
-    const extPriceCell = getCell(rows, row, COL_EXT_PRICE)
-
-    if (!isFilledNumber(qtyCell) || !isFilledNumber(unitPriceCell) || !isFilledNumber(extPriceCell)) {
-      continue
-    }
+    const qtyCell = getCell(rows, row, layout.colQty)
+    const unitPriceCell = getCell(rows, row, layout.colUnitPrice)
+    const itemNumber = isPlainInteger(itemCell)
+      ? Math.max(0, Math.trunc(toNumberOrNull(itemCell) || 0))
+      : lineItems.length + 1
 
     lineItems.push({
-      itemNumber: Math.max(0, Math.trunc(toNumberOrNull(itemCell) || 0)),
-      description: toOptionalText(getCell(rows, row, COL_DESCRIPTION)) || null,
+      itemNumber,
+      description: toOptionalText(getCell(rows, row, layout.colDescription)) || null,
       qty: toNumberOrNull(qtyCell),
       unitPrice: toNumberOrNull(unitPriceCell),
-      extPrice: toNumberOrNull(extPriceCell),
+      extPrice,
     })
   }
 
   return lineItems
 }
 
-function findSubtotal(rows: unknown[][]): { found: boolean; subtotal: number } {
+function findSubtotal(rows: unknown[][], layout: LineItemLayout): { found: boolean; subtotal: number } {
   const lastRow = rows.length
 
-  for (let row = ROW_LINE_ITEMS_START; row <= lastRow; row += 1) {
-    const labelText = normalizeCellText(rows, row, COL_TOTAL_LABEL)
+  for (let row = layout.lineItemsStartRow; row <= lastRow; row += 1) {
+    const labelText = normalizeCellText(rows, row, layout.colTotalLabel)
 
     if (!subtotalLabelSet.has(labelText)) {
       continue
     }
 
-    const extPrice = toNumberOrNull(getCell(rows, row, COL_EXT_PRICE))
+    const extPrice = toNumberOrNull(getCell(rows, row, layout.colExtPrice))
 
     if (extPrice !== null) {
       return {
@@ -193,14 +339,14 @@ function findSubtotal(rows: unknown[][]): { found: boolean; subtotal: number } {
     }
   }
 
-  for (let row = ROW_LINE_ITEMS_START; row <= lastRow; row += 1) {
-    const labelText = normalizeCellText(rows, row, COL_ITEM)
+  for (let row = layout.lineItemsStartRow; row <= lastRow; row += 1) {
+    const labelText = normalizeCellText(rows, row, layout.colItem)
 
     if (labelText !== 'sub net total') {
       continue
     }
 
-    for (let col = COL_EXT_PRICE; col >= COL_DESCRIPTION; col -= 1) {
+    for (let col = layout.colExtPrice; col >= layout.colDescription; col -= 1) {
       const value = toNumberOrNull(getCell(rows, row, col))
 
       if (value !== null) {
@@ -218,12 +364,12 @@ function findSubtotal(rows: unknown[][]): { found: boolean; subtotal: number } {
   }
 }
 
-function isFreightDescriptionRow(rows: unknown[][], row: number): boolean {
-  const descriptionText = normalizeCellText(rows, row, COL_DESCRIPTION)
+function isFreightDescriptionRow(rows: unknown[][], row: number, layout: LineItemLayout): boolean {
+  const descriptionText = normalizeCellText(rows, row, layout.colDescription)
   return descriptionText.includes('freight description')
 }
 
-function findFreightInfo(rows: unknown[][]): {
+function findFreightInfo(rows: unknown[][], layout: LineItemLayout): {
   found: boolean
   freight: number
   freightDescription: string | undefined
@@ -231,8 +377,8 @@ function findFreightInfo(rows: unknown[][]): {
   const lastRow = rows.length
   let freightSectionRow = 0
 
-  for (let row = ROW_LINE_ITEMS_START; row <= lastRow; row += 1) {
-    if (isFreightDescriptionRow(rows, row)) {
+  for (let row = layout.lineItemsStartRow; row <= lastRow; row += 1) {
+    if (isFreightDescriptionRow(rows, row, layout)) {
       freightSectionRow = row
       break
     }
@@ -240,24 +386,24 @@ function findFreightInfo(rows: unknown[][]): {
 
   const startRow = freightSectionRow > 0
     ? freightSectionRow + 1
-    : ROW_LINE_ITEMS_START
+    : layout.lineItemsStartRow
 
   for (let row = startRow; row <= lastRow; row += 1) {
-    const labelText = normalizeCellText(rows, row, COL_TOTAL_LABEL)
+    const labelText = normalizeCellText(rows, row, layout.colTotalLabel)
 
     if (labelText !== 'net') {
       continue
     }
 
-    const extPrice = toNumberOrNull(getCell(rows, row, COL_EXT_PRICE))
+    const extPrice = toNumberOrNull(getCell(rows, row, layout.colExtPrice))
 
     if (extPrice === null) {
       continue
     }
 
-    const inlineDescription = toOptionalText(getCell(rows, row, COL_DESCRIPTION))
+    const inlineDescription = toOptionalText(getCell(rows, row, layout.colDescription))
     const sectionDescription = freightSectionRow > 0
-      ? toOptionalText(getCell(rows, freightSectionRow, COL_DESCRIPTION))
+      ? toOptionalText(getCell(rows, freightSectionRow, layout.colDescription))
       : undefined
 
     return {
@@ -304,11 +450,26 @@ function inferProjectTypeFromTitle(title: string | undefined): string | undefine
 }
 
 export async function parseExcelQuoteForSync(file: File): Promise<CrmExcelQuoteSyncInput> {
+  const fileName = String(file.name ?? '').trim()
+  const extension = fileName.includes('.')
+    ? fileName.split('.').pop()?.toLowerCase() ?? ''
+    : ''
+
+  if (!supportedQuoteSyncExtensions.has(extension)) {
+    throw new Error('Unsupported file type. Upload .xls, .xlsx, .xlsm, .ods, or .csv.')
+  }
+
   const workbookBuffer = await file.arrayBuffer()
-  const workbook = XLSX.read(workbookBuffer, {
-    type: 'array',
-    cellDates: true,
-  })
+  let workbook: XLSX.WorkBook
+
+  try {
+    workbook = XLSX.read(workbookBuffer, {
+      type: 'array',
+      cellDates: true,
+    })
+  } catch {
+    throw new Error('Could not read the uploaded file. Ensure it is a valid .xls, .xlsx, .xlsm, .ods, or .csv file.')
+  }
 
   const firstSheetName = workbook.SheetNames[0]
 
@@ -347,10 +508,11 @@ export async function parseExcelQuoteForSync(file: File): Promise<CrmExcelQuoteS
   const paymentTerms = toOptionalText(getCell(rows, ROW_PAYMENT_TERMS, COL_LABEL_VALUE))
   const opportunityDate = toIsoDate(getCell(rows, ROW_DATE, COL_LABEL_VALUE))
   const inferredProjectType = inferProjectTypeFromTitle(title)
+  const lineItemLayout = findLineItemLayout(rows)
 
-  const lineItems = buildLineItems(rows)
-  const subtotalResult = findSubtotal(rows)
-  const freightInfo = findFreightInfo(rows)
+  const lineItems = buildLineItems(rows, lineItemLayout)
+  const subtotalResult = findSubtotal(rows, lineItemLayout)
+  const freightInfo = findFreightInfo(rows, lineItemLayout)
 
   const payload: CrmExcelQuoteSyncInput = {
     quoteNumber,

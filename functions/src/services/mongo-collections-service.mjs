@@ -227,6 +227,8 @@ export function createMongoCollectionsService({
         const purchasingTransactionsCollection = purchasingDatabase.collection('purchasing_transactions')
         const quickBooksTokensCollection = integrationsDatabase.collection('quickbooks_oauth_tokens')
         const quickBooksStatesCollection = integrationsDatabase.collection('quickbooks_oauth_states')
+        const emailConnectionsCollection = integrationsDatabase.collection('email_oauth_connections')
+        const emailOauthStatesCollection = integrationsDatabase.collection('email_oauth_states')
 
         const legacyDatabase = mongoDomainConfig.isSplitDeployment
           ? null
@@ -351,6 +353,12 @@ export function createMongoCollectionsService({
             quickBooksTokensCollection.createIndex({ updatedAt: -1 }),
             quickBooksStatesCollection.createIndex({ id: 1 }, { unique: true }),
             quickBooksStatesCollection.createIndex({ createdAt: 1 }),
+            emailConnectionsCollection.createIndex({ id: 1 }, { unique: true }),
+            emailConnectionsCollection.createIndex({ provider: 1, uid: 1 }, { unique: true }),
+            emailConnectionsCollection.createIndex({ provider: 1, connectedEmailLower: 1 }),
+            emailConnectionsCollection.createIndex({ updatedAt: -1 }),
+            emailOauthStatesCollection.createIndex({ id: 1 }, { unique: true }),
+            emailOauthStatesCollection.createIndex({ provider: 1, createdAt: 1 }),
           ]).then(async () => {
             await removeLegacyTimesheetEntryIndexes(entriesCollection)
             if (legacyDatabase) {
@@ -422,6 +430,8 @@ export function createMongoCollectionsService({
           purchasingTransactionsCollection,
           quickBooksTokensCollection,
           quickBooksStatesCollection,
+          emailConnectionsCollection,
+          emailOauthStatesCollection,
         }
       } catch (error) {
         lastError = error

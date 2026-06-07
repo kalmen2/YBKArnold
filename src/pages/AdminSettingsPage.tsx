@@ -1,4 +1,5 @@
 import AdminPanelSettingsRoundedIcon from '@mui/icons-material/AdminPanelSettingsRounded'
+import AlternateEmailRoundedIcon from '@mui/icons-material/AlternateEmailRounded'
 import FactCheckRoundedIcon from '@mui/icons-material/FactCheckRounded'
 import PeopleAltRoundedIcon from '@mui/icons-material/PeopleAltRounded'
 import ManageHistoryRoundedIcon from '@mui/icons-material/ManageHistoryRounded'
@@ -14,9 +15,10 @@ const AdminLogsPage = lazy(() => import('./AdminLogsPage'))
 const AdminAlertsPage = lazy(() => import('./AdminAlertsPage'))
 const AdminVisitorsPage = lazy(() => import('./AdminVisitorsPage'))
 const AiConfigPage = lazy(() => import('./AiConfigPage'))
+const AdminEmailSettingsPage = lazy(() => import('./AdminEmailSettingsPage'))
 const AdminSalesReviewPage = lazy(() => import('./AdminSalesReviewPage'))
 
-type AdminSettingsTab = 'users' | 'logs' | 'notifications' | 'visitors' | 'ai' | 'sales-review'
+type AdminSettingsTab = 'users' | 'logs' | 'notifications' | 'visitors' | 'ai' | 'email' | 'sales-review'
 
 const adminSettingsTabs: Array<{
   value: AdminSettingsTab
@@ -49,6 +51,11 @@ const adminSettingsTabs: Array<{
     icon: SmartToyRoundedIcon,
   },
   {
+    value: 'email',
+    label: 'Email',
+    icon: AlternateEmailRoundedIcon,
+  },
+  {
     value: 'sales-review',
     label: 'Sales Review',
     icon: FactCheckRoundedIcon,
@@ -62,6 +69,7 @@ function getTabFromQuery(rawTab: string | null): AdminSettingsTab {
     || rawTab === 'notifications'
     || rawTab === 'visitors'
     || rawTab === 'ai'
+    || rawTab === 'email'
     || rawTab === 'sales-review'
   ) {
     return rawTab
@@ -89,6 +97,10 @@ function renderAdminSettingsTab(selectedTab: AdminSettingsTab) {
 
   if (selectedTab === 'ai') {
     return <AiConfigPage />
+  }
+
+  if (selectedTab === 'email') {
+    return <AdminEmailSettingsPage />
   }
 
   return <AdminSalesReviewPage />
@@ -120,7 +132,7 @@ export default function AdminSettingsPage() {
                 Admin Settings
               </Typography>
               <Typography color="text.secondary">
-                Manage users, notifications, visitors, logs, and AI configuration in one place.
+                Manage users, notifications, visitors, logs, AI configuration, and email integrations in one place.
               </Typography>
             </Box>
           </Stack>
