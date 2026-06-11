@@ -167,6 +167,10 @@ export const router = createBrowserRouter([
         path: 'admin/email',
         element: <Navigate to="/admin/settings?tab=email" replace />,
       },
+      {
+        path: 'admin/sms-bridge',
+        element: <Navigate to="/admin/settings?tab=sms-bridge" replace />,
+      },
     ],
   },
 ])

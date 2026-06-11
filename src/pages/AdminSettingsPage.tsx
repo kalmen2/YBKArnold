@@ -1,9 +1,11 @@
 import AdminPanelSettingsRoundedIcon from '@mui/icons-material/AdminPanelSettingsRounded'
 import AlternateEmailRoundedIcon from '@mui/icons-material/AlternateEmailRounded'
 import FactCheckRoundedIcon from '@mui/icons-material/FactCheckRounded'
+import MarkEmailUnreadRoundedIcon from '@mui/icons-material/MarkEmailUnreadRounded'
 import PeopleAltRoundedIcon from '@mui/icons-material/PeopleAltRounded'
 import ManageHistoryRoundedIcon from '@mui/icons-material/ManageHistoryRounded'
 import NotificationsActiveRoundedIcon from '@mui/icons-material/NotificationsActiveRounded'
+import SmsRoundedIcon from '@mui/icons-material/SmsRounded'
 import SmartToyRoundedIcon from '@mui/icons-material/SmartToyRounded'
 import SupervisedUserCircleRoundedIcon from '@mui/icons-material/SupervisedUserCircleRounded'
 import { Box, Paper, Stack, Tab, Tabs, Typography } from '@mui/material'
@@ -16,9 +18,20 @@ const AdminAlertsPage = lazy(() => import('./AdminAlertsPage'))
 const AdminVisitorsPage = lazy(() => import('./AdminVisitorsPage'))
 const AiConfigPage = lazy(() => import('./AiConfigPage'))
 const AdminEmailSettingsPage = lazy(() => import('./AdminEmailSettingsPage'))
+const AdminEmailReviewPage = lazy(() => import('./AdminEmailReviewPage'))
+const AdminSmsBridgePage = lazy(() => import('./AdminSmsBridgePage'))
 const AdminSalesReviewPage = lazy(() => import('./AdminSalesReviewPage'))
 
-type AdminSettingsTab = 'users' | 'logs' | 'notifications' | 'visitors' | 'ai' | 'email' | 'sales-review'
+type AdminSettingsTab =
+  | 'users'
+  | 'logs'
+  | 'notifications'
+  | 'visitors'
+  | 'ai'
+  | 'email'
+  | 'email-review'
+  | 'sms-bridge'
+  | 'sales-review'
 
 const adminSettingsTabs: Array<{
   value: AdminSettingsTab
@@ -56,6 +69,16 @@ const adminSettingsTabs: Array<{
     icon: AlternateEmailRoundedIcon,
   },
   {
+    value: 'email-review',
+    label: 'Email Review',
+    icon: MarkEmailUnreadRoundedIcon,
+  },
+  {
+    value: 'sms-bridge',
+    label: 'SMS Bridge',
+    icon: SmsRoundedIcon,
+  },
+  {
     value: 'sales-review',
     label: 'Sales Review',
     icon: FactCheckRoundedIcon,
@@ -70,6 +93,8 @@ function getTabFromQuery(rawTab: string | null): AdminSettingsTab {
     || rawTab === 'visitors'
     || rawTab === 'ai'
     || rawTab === 'email'
+    || rawTab === 'email-review'
+    || rawTab === 'sms-bridge'
     || rawTab === 'sales-review'
   ) {
     return rawTab
@@ -103,6 +128,14 @@ function renderAdminSettingsTab(selectedTab: AdminSettingsTab) {
     return <AdminEmailSettingsPage />
   }
 
+  if (selectedTab === 'email-review') {
+    return <AdminEmailReviewPage />
+  }
+
+  if (selectedTab === 'sms-bridge') {
+    return <AdminSmsBridgePage />
+  }
+
   return <AdminSalesReviewPage />
 }
 
@@ -132,7 +165,7 @@ export default function AdminSettingsPage() {
                 Admin Settings
               </Typography>
               <Typography color="text.secondary">
-                Manage users, notifications, visitors, logs, AI configuration, and email integrations in one place.
+                Manage users, notifications, visitors, logs, AI configuration, email integrations, review queue routing, and SMS bridge activity in one place.
               </Typography>
             </Box>
           </Stack>

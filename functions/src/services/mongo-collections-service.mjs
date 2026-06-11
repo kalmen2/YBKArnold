@@ -229,6 +229,13 @@ export function createMongoCollectionsService({
         const quickBooksStatesCollection = integrationsDatabase.collection('quickbooks_oauth_states')
         const emailConnectionsCollection = integrationsDatabase.collection('email_oauth_connections')
         const emailOauthStatesCollection = integrationsDatabase.collection('email_oauth_states')
+        const emailSyncStatesCollection = integrationsDatabase.collection('email_sync_states')
+        const emailIntakeMessagesCollection = integrationsDatabase.collection('email_intake_messages')
+        const emailIntakeSuggestionsCollection = integrationsDatabase.collection('email_intake_suggestions')
+        const emailIntakeFeedbackCollection = integrationsDatabase.collection('email_intake_feedback')
+        const emailIntakeSyncRunsCollection = integrationsDatabase.collection('email_intake_sync_runs')
+        const smsBridgeLogsCollection = integrationsDatabase.collection('sms_telegram_bridge_logs')
+        const smsBridgePendingRepliesCollection = integrationsDatabase.collection('sms_telegram_bridge_pending_replies')
 
         const legacyDatabase = mongoDomainConfig.isSplitDeployment
           ? null
@@ -359,6 +366,33 @@ export function createMongoCollectionsService({
             emailConnectionsCollection.createIndex({ updatedAt: -1 }),
             emailOauthStatesCollection.createIndex({ id: 1 }, { unique: true }),
             emailOauthStatesCollection.createIndex({ provider: 1, createdAt: 1 }),
+            emailSyncStatesCollection.createIndex({ id: 1 }, { unique: true }),
+            emailSyncStatesCollection.createIndex({ provider: 1, uid: 1 }, { unique: true }),
+            emailSyncStatesCollection.createIndex({ autoSyncEnabled: 1, updatedAt: -1 }),
+            emailSyncStatesCollection.createIndex({ lastSyncCompletedAt: -1 }),
+            emailIntakeMessagesCollection.createIndex({ id: 1 }, { unique: true }),
+            emailIntakeMessagesCollection.createIndex({ provider: 1, uid: 1, externalMessageId: 1 }, { unique: true }),
+            emailIntakeMessagesCollection.createIndex({ provider: 1, uid: 1, internetMessageId: 1 }, { unique: true, sparse: true }),
+            emailIntakeMessagesCollection.createIndex({ uid: 1, messageDate: -1 }),
+            emailIntakeMessagesCollection.createIndex({ createdAt: -1 }),
+            emailIntakeSuggestionsCollection.createIndex({ id: 1 }, { unique: true }),
+            emailIntakeSuggestionsCollection.createIndex({ messageId: 1 }, { unique: true }),
+            emailIntakeSuggestionsCollection.createIndex({ status: 1, createdAt: -1 }),
+            emailIntakeSuggestionsCollection.createIndex({ uid: 1, status: 1, createdAt: -1 }),
+            emailIntakeSuggestionsCollection.createIndex({ isRead: 1, status: 1, createdAt: -1 }),
+            emailIntakeSuggestionsCollection.createIndex({ destinationType: 1, destinationId: 1, createdAt: -1 }),
+            emailIntakeFeedbackCollection.createIndex({ id: 1 }, { unique: true }),
+            emailIntakeFeedbackCollection.createIndex({ suggestionId: 1, createdAt: -1 }),
+            emailIntakeFeedbackCollection.createIndex({ createdAt: -1 }),
+            emailIntakeSyncRunsCollection.createIndex({ id: 1 }, { unique: true }),
+            emailIntakeSyncRunsCollection.createIndex({ status: 1, updatedAt: -1 }),
+            emailIntakeSyncRunsCollection.createIndex({ requestedByUid: 1, createdAt: -1 }),
+            smsBridgeLogsCollection.createIndex({ id: 1 }, { unique: true }),
+            smsBridgeLogsCollection.createIndex({ createdAt: -1 }),
+            smsBridgeLogsCollection.createIndex({ status: 1, updatedAt: -1 }),
+            smsBridgePendingRepliesCollection.createIndex({ id: 1 }, { unique: true }),
+            smsBridgePendingRepliesCollection.createIndex({ createdAt: -1 }),
+            smsBridgePendingRepliesCollection.createIndex({ telegramRequestMessageId: 1 }, { unique: true }),
           ]).then(async () => {
             await removeLegacyTimesheetEntryIndexes(entriesCollection)
             if (legacyDatabase) {
@@ -432,6 +466,13 @@ export function createMongoCollectionsService({
           quickBooksStatesCollection,
           emailConnectionsCollection,
           emailOauthStatesCollection,
+          emailSyncStatesCollection,
+          emailIntakeMessagesCollection,
+          emailIntakeSuggestionsCollection,
+          emailIntakeFeedbackCollection,
+          emailIntakeSyncRunsCollection,
+          smsBridgeLogsCollection,
+          smsBridgePendingRepliesCollection,
         }
       } catch (error) {
         lastError = error
@@ -473,7 +514,7 @@ export function createMongoCollectionsService({
 
   async function seedDefaultAiRules(aiRulesCollection) {
     const now = new Date().toISOString()
-    const categories = ['support', 'summaries', 'general', 'purchasing']
+    const categories = ['support', 'summaries', 'general', 'purchasing', 'email_intake']
 
     for (const category of categories) {
       await aiRulesCollection.updateOne(

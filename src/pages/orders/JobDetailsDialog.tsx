@@ -1,4 +1,5 @@
 import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded'
+import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
 import NotificationsActiveRoundedIcon from '@mui/icons-material/NotificationsActiveRounded'
 import {
   Accordion,
@@ -43,6 +44,7 @@ import {
   fetchOrderChats,
   fetchOrdersChatUsers,
   fetchOrdersJobDetails,
+  removeOrderChatMessage,
   postOrdersOrderNumberContactAdmin,
   postOrdersOrderNumberUpdate,
   type OrdersChatUser,
@@ -282,6 +284,7 @@ export function JobDetailsDialog({
   const [chatDraft, setChatDraft] = useState('')
   const [chatDraftMarkup, setChatDraftMarkup] = useState('')
   const [isSendingChat, setIsSendingChat] = useState(false)
+  const [deletingChatMessageId, setDeletingChatMessageId] = useState('')
   const [chatActionError, setChatActionError] = useState<string | null>(null)
   const [chatSuccessMessage, setChatSuccessMessage] = useState<string | null>(null)
   const [reminderEnabled, setReminderEnabled] = useState(false)
@@ -344,6 +347,7 @@ export function JobDetailsDialog({
     setCanContactAdminForOrderNumber(false)
     setChatDraft('')
     setChatDraftMarkup('')
+    setDeletingChatMessageId('')
     setChatActionError(null)
     setChatSuccessMessage(null)
     setReminderEnabled(false)
@@ -361,6 +365,8 @@ export function JobDetailsDialog({
     ? detailsQuery.data.entries
     : []
   const currentUserUid = String(appUser?.uid || firebaseUser?.uid || '').trim()
+  const currentUserEmail = String(appUser?.email || firebaseUser?.email || '').trim().toLowerCase()
+  const isCurrentUserAdmin = appUser?.isAdmin === true
   const chatUsers = chatUsersQuery.data?.users ?? []
   const chatMessages = chatMessagesQuery.data?.messages ?? []
   const combinedChatErrorMessage = chatActionError
@@ -498,6 +504,46 @@ export function JobDetailsDialog({
       setChatActionError(error instanceof Error ? error.message : 'Failed to send message.')
     } finally {
       setIsSendingChat(false)
+    }
+  }
+
+  const canManageOrderChatMessage = (message: {
+    createdByUid?: string | null
+    createdByEmail?: string | null
+  }) => {
+    if (isCurrentUserAdmin) {
+      return true
+    }
+
+    const createdByUid = String(message.createdByUid ?? '').trim()
+    const createdByEmail = String(message.createdByEmail ?? '').trim().toLowerCase()
+
+    return Boolean(
+      (currentUserUid && createdByUid && currentUserUid === createdByUid)
+      || (currentUserEmail && createdByEmail && currentUserEmail === createdByEmail),
+    )
+  }
+
+  const handleDeleteChatMessage = async (messageId: string) => {
+    if (!orderChatId || !messageId) {
+      return
+    }
+
+    if (!window.confirm('Delete this chat message?')) {
+      return
+    }
+
+    setChatActionError(null)
+    setChatSuccessMessage(null)
+    setDeletingChatMessageId(messageId)
+
+    try {
+      await removeOrderChatMessage(orderChatId, messageId)
+      await queryClient.invalidateQueries({ queryKey: ordersChatMessagesQueryKey(orderChatId) })
+    } catch (error) {
+      setChatActionError(error instanceof Error ? error.message : 'Could not delete chat message.')
+    } finally {
+      setDeletingChatMessageId('')
     }
   }
 
@@ -1339,6 +1385,8 @@ export function JobDetailsDialog({
                   ) : (
                     <Stack spacing={0.8}>
                       {chatMessages.map((message) => {
+                        const canDeleteMessage = canManageOrderChatMessage(message)
+                        const isDeletingMessage = deletingChatMessageId === message.id
                         const reminderTargetEmails = Array.isArray(message.reminder?.targetUserEmails)
                           ? message.reminder.targetUserEmails
                           : []
@@ -1346,10 +1394,27 @@ export function JobDetailsDialog({
                         return (
                           <Paper key={message.id} variant="outlined" sx={{ p: 0.8 }}>
                             <Stack spacing={0.45}>
-                              <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-                                {String(message.createdByName || message.createdByEmail || 'A teammate').trim()} · {formatDateTime(message.createdAt)}
-                                {message.updatedAt ? ` · Edited ${formatDateTime(message.updatedAt)}` : ''}
-                              </Typography>
+                              <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
+                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                                  {String(message.createdByName || message.createdByEmail || 'A teammate').trim()} · {formatDateTime(message.createdAt)}
+                                  {message.updatedAt ? ` · Edited ${formatDateTime(message.updatedAt)}` : ''}
+                                </Typography>
+
+                                {canDeleteMessage ? (
+                                  <Button
+                                    size="small"
+                                    color="error"
+                                    variant="text"
+                                    startIcon={<DeleteOutlineRoundedIcon fontSize="small" />}
+                                    disabled={isDeletingMessage}
+                                    onClick={() => {
+                                      void handleDeleteChatMessage(message.id)
+                                    }}
+                                  >
+                                    {isDeletingMessage ? 'Deleting...' : 'Delete'}
+                                  </Button>
+                                ) : null}
+                              </Stack>
 
                               <Box
                                 sx={{

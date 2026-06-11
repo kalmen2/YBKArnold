@@ -27,7 +27,9 @@ const googleRequiredScopes = [
   'email',
   'profile',
   'https://www.googleapis.com/auth/gmail.send',
+  'https://www.googleapis.com/auth/gmail.readonly',
   'https://www.googleapis.com/auth/gmail.settings.basic',
+  'https://www.googleapis.com/auth/contacts.readonly',
 ]
 const microsoftRequiredScopes = [
   'openid',
@@ -35,6 +37,7 @@ const microsoftRequiredScopes = [
   'profile',
   'offline_access',
   'User.Read',
+  'Mail.Read',
   'Mail.Send',
 ]
 const googleScopesDefault = googleRequiredScopes.join(' ')
@@ -455,16 +458,86 @@ function parseScopeSet(scopeValue) {
   )
 }
 
-function getMissingGoogleScopes(scopeValue) {
-  const grantedScopes = parseScopeSet(scopeValue)
+function normalizeGoogleScopeAlias(scope) {
+  const normalizedScope = String(scope ?? '').trim()
 
-  return googleRequiredScopes.filter((scope) => !grantedScopes.has(scope))
+  if (!normalizedScope) {
+    return ''
+  }
+
+  if (normalizedScope === 'https://www.googleapis.com/auth/userinfo.email') {
+    return 'email'
+  }
+
+  if (normalizedScope === 'https://www.googleapis.com/auth/userinfo.profile') {
+    return 'profile'
+  }
+
+  return normalizedScope
+}
+
+function normalizeMicrosoftScopeAlias(scope) {
+  const normalizedScope = String(scope ?? '').trim()
+
+  if (!normalizedScope) {
+    return ''
+  }
+
+  const lowerScope = normalizedScope.toLowerCase()
+
+  if (lowerScope === 'mail.read' || lowerScope.endsWith('/mail.read')) {
+    return 'Mail.Read'
+  }
+
+  if (lowerScope === 'mail.send' || lowerScope.endsWith('/mail.send')) {
+    return 'Mail.Send'
+  }
+
+  if (lowerScope === 'user.read' || lowerScope.endsWith('/user.read')) {
+    return 'User.Read'
+  }
+
+  if (lowerScope === 'openid') {
+    return 'openid'
+  }
+
+  if (lowerScope === 'email') {
+    return 'email'
+  }
+
+  if (lowerScope === 'profile') {
+    return 'profile'
+  }
+
+  if (lowerScope === 'offline_access') {
+    return 'offline_access'
+  }
+
+  return normalizedScope
+}
+
+function getMissingGoogleScopes(scopeValue) {
+  const grantedScopes = new Set(
+    [...parseScopeSet(scopeValue)]
+      .map((scope) => normalizeGoogleScopeAlias(scope))
+      .filter(Boolean),
+  )
+
+  return googleRequiredScopes
+    .map((scope) => normalizeGoogleScopeAlias(scope))
+    .filter((scope) => !grantedScopes.has(scope))
 }
 
 function getMissingMicrosoftScopes(scopeValue) {
-  const grantedScopes = parseScopeSet(scopeValue)
+  const grantedScopes = new Set(
+    [...parseScopeSet(scopeValue)]
+      .map((scope) => normalizeMicrosoftScopeAlias(scope))
+      .filter(Boolean),
+  )
 
-  return microsoftRequiredScopes.filter((scope) => !grantedScopes.has(scope))
+  return microsoftRequiredScopes
+    .map((scope) => normalizeMicrosoftScopeAlias(scope))
+    .filter((scope) => !grantedScopes.has(scope))
 }
 
 function normalizeSendAsAliasEntry(rawAlias, normalizeEmail) {

@@ -23,6 +23,7 @@ export const QUERY_KEYS = {
   crmOpportunitiesDealers: ['crm', 'opportunities', 'dealers'] as const,
   crmOpportunitiesQuotes: ['crm', 'opportunities', 'quotes'] as const,
   crmOpportunitiesOrders: ['crm', 'opportunities', 'orders'] as const,
+  crmQuoteChats: (quoteId: string) => ['crm', 'quote-chats', quoteId] as const,
   crmQuotes: (opts: {
     limit: number
     status: string
@@ -92,6 +93,15 @@ export const QUERY_KEYS = {
     ['admin', 'api-keys', limit] as const,
   adminEmailGoogleStatus: ['admin', 'email', 'google', 'status'] as const,
   adminEmailMicrosoftStatus: ['admin', 'email', 'microsoft', 'status'] as const,
+  adminEmailReviewSummary: ['admin', 'email', 'review', 'summary'] as const,
+  adminEmailReviewList: (
+    status: 'pending' | 'approved' | 'rejected' | 'all',
+    provider: 'google' | 'microsoft' | 'all',
+    limit: number,
+    offset: number,
+  ) => ['admin', 'email', 'review', 'list', status, provider, limit, offset] as const,
+  adminSmsBridgeLogs: (limit: number) =>
+    ['admin', 'sms-bridge', 'logs', limit] as const,
 
   // Pictures
   photosIndex: ['pictures', 'photos-index'] as const,

@@ -774,11 +774,205 @@ export function createOpenAiService({ openAiApiKey }) {
     }
   }
 
+  async function classifyEmailIntakeSuggestion({
+    email,
+    candidateDestinations,
+    rulesText,
+  }) {
+    const normalizedEmail = email && typeof email === 'object'
+      ? email
+      : {}
+    const direction = String(normalizedEmail?.direction ?? '').trim().toLowerCase() === 'outbound'
+      ? 'outbound'
+      : 'inbound'
+    const fromEmail = String(normalizedEmail?.fromEmail ?? '').trim().toLowerCase().slice(0, 320)
+    const toEmails = [...new Set(
+      (Array.isArray(normalizedEmail?.toEmails) ? normalizedEmail.toEmails : [])
+        .map((value) => String(value ?? '').trim().toLowerCase().slice(0, 320))
+        .filter(Boolean),
+    )].slice(0, 40)
+    const ccEmails = [...new Set(
+      (Array.isArray(normalizedEmail?.ccEmails) ? normalizedEmail.ccEmails : [])
+        .map((value) => String(value ?? '').trim().toLowerCase().slice(0, 320))
+        .filter(Boolean),
+    )].slice(0, 40)
+    const connectedEmail = String(normalizedEmail?.connectedEmail ?? '').trim().toLowerCase().slice(0, 320)
+    const subject = String(normalizedEmail?.subject ?? '').replace(/\s+/g, ' ').trim().slice(0, 500)
+    const snippet = String(normalizedEmail?.snippet ?? '').replace(/\s+/g, ' ').trim().slice(0, 1400)
+    const bodyPreview = String(normalizedEmail?.bodyPreview ?? '').replace(/\s+/g, ' ').trim().slice(0, 2200)
+    const attachmentNames = [...new Set(
+      (Array.isArray(normalizedEmail?.attachmentNames) ? normalizedEmail.attachmentNames : [])
+        .map((value) => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, 240))
+        .filter(Boolean),
+    )].slice(0, 20)
+    const normalizedDestinations = (Array.isArray(candidateDestinations) ? candidateDestinations : [])
+      .slice(0, 25)
+      .map((candidate) => {
+        const type = String(candidate?.type ?? '').trim().toLowerCase()
+        const id = String(candidate?.id ?? '').trim().slice(0, 220)
+
+        if (!id || (type !== 'quote' && type !== 'order' && type !== 'account')) {
+          return null
+        }
+
+        return {
+          type,
+          id,
+          label: String(candidate?.label ?? '').replace(/\s+/g, ' ').trim().slice(0, 280) || id,
+          reason: String(candidate?.reason ?? '').replace(/\s+/g, ' ').trim().slice(0, 320) || null,
+        }
+      })
+      .filter(Boolean)
+
+    const subjectLower = subject.toLowerCase()
+    const snippetLower = snippet.toLowerCase()
+    const mentionsQuote = /\bquote\b|\bq[-\s]?\d{3,}\b/i.test(subjectLower) || /\bquote\b/i.test(snippetLower)
+    const mentionsOrder = /\border\b|\bpo\b|\bjob\b/i.test(subjectLower) || /\border\b|\bpo\b/i.test(snippetLower)
+    const quoteCandidate = normalizedDestinations.find((candidate) => candidate.type === 'quote') || null
+    const orderCandidate = normalizedDestinations.find((candidate) => candidate.type === 'order') || null
+    const accountCandidate = normalizedDestinations.find((candidate) => candidate.type === 'account') || null
+    const fallbackDestination = mentionsQuote && quoteCandidate
+      ? quoteCandidate
+      : mentionsOrder && orderCandidate
+        ? orderCandidate
+        : accountCandidate || quoteCandidate || orderCandidate || null
+
+    function normalizeSingleLineText(value, maxLength, fallbackValue = '') {
+      const normalizedValue = String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, maxLength)
+
+      if (normalizedValue) {
+        return normalizedValue
+      }
+
+      return fallbackValue
+    }
+
+    const fallbackSummary = normalizeSingleLineText(
+      [subject, snippet || bodyPreview]
+        .filter(Boolean)
+        .join('. '),
+      900,
+      'Email summary unavailable.',
+    )
+
+    const fallbackChatDraft = normalizeSingleLineText(fallbackSummary, 1200, 'Email summary unavailable.')
+
+    if (!openAiApiKey) {
+      return {
+        destinationType: fallbackDestination?.type || 'none',
+        destinationId: fallbackDestination?.id || null,
+        destinationReason: fallbackDestination?.reason || 'No confident destination match was found.',
+        summary: fallbackSummary,
+        chatDraft: fallbackChatDraft,
+        confidence: fallbackDestination ? 0.55 : 0.3,
+        tags: [],
+        usedFallback: true,
+      }
+    }
+
+    const systemPrompt =
+      'You classify and summarize business emails into one destination for human review. ' +
+      'Return strict JSON only. Never invent destination IDs. If uncertain, set destinationType to "none". ' +
+      'Write concise, clean summaries for business users. '
+      + 'Prefer one combined conversation-level summary sentence unless a second sentence is required for critical context.'
+    const userPrompt =
+      `Rules:\n${String(rulesText ?? '').trim().slice(0, 7000) || '(none)'}\n\n`
+      + 'Email JSON:\n'
+      + JSON.stringify({
+        direction,
+        connectedEmail,
+        fromEmail,
+        toEmails,
+        ccEmails,
+        subject,
+        snippet,
+        bodyPreview,
+        attachmentNames,
+      })
+      + '\n\nCandidate destinations JSON:\n'
+      + JSON.stringify(normalizedDestinations)
+      + '\n\nReturn this exact JSON schema:\n'
+      + '{"destinationType":"quote|order|account|none","destinationId":"","destinationReason":"","summary":"","confidence":0.0,"tags":["string"]}'
+      + '\nRules: destinationId must be one of the provided candidate IDs for the selected type. '
+      + 'summary must be clean plain-English and should avoid raw header dumps like "From:" or "To:". '
+      + 'Use one sentence by default by combining timeline/context into one concise update; use two only when one sentence would lose important context. '
+      + 'For ACK/acknowledgment emails, lead with that acknowledgment was sent/received (do not over-focus on payment reminder text unless it changes the outcome). '
+      + 'confidence is 0..1.'
+
+    let parsed = null
+
+    try {
+      const raw = await callOpenAi(
+        [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        {
+          maxTokens: 1000,
+          temperature: 0.15,
+          jsonMode: true,
+          modelQuality: 'better',
+        },
+      )
+
+      try {
+        parsed = JSON.parse(raw)
+      } catch {
+        const looseJsonMatch = String(raw ?? '').match(/\{[\s\S]*\}/)
+
+        if (looseJsonMatch) {
+          try {
+            parsed = JSON.parse(looseJsonMatch[0])
+          } catch {
+            parsed = null
+          }
+        }
+      }
+    } catch {
+      parsed = null
+    }
+
+    const requestedDestinationType = String(parsed?.destinationType ?? '').trim().toLowerCase()
+    const requestedDestinationId = String(parsed?.destinationId ?? '').trim().slice(0, 220)
+    const validDestination = normalizedDestinations.find((candidate) => (
+      candidate.type === requestedDestinationType
+      && candidate.id === requestedDestinationId
+    ))
+    const resolvedDestination = validDestination || fallbackDestination
+    const summary = normalizeSingleLineText(parsed?.summary, 900, fallbackSummary)
+    const chatDraft = normalizeSingleLineText(summary, 1200, fallbackChatDraft)
+    const destinationReason = String(parsed?.destinationReason ?? '').replace(/\s+/g, ' ').trim().slice(0, 520)
+      || resolvedDestination?.reason
+      || 'No confident destination match was found.'
+    const confidenceRaw = Number(parsed?.confidence)
+    const confidence = Number.isFinite(confidenceRaw)
+      ? Number(Math.max(0, Math.min(1, confidenceRaw)).toFixed(2))
+      : resolvedDestination
+        ? 0.62
+        : 0.32
+    const tags = (Array.isArray(parsed?.tags) ? parsed.tags : [])
+      .map((tag) => String(tag ?? '').replace(/\s+/g, ' ').trim().toLowerCase())
+      .filter(Boolean)
+      .slice(0, 8)
+
+    return {
+      destinationType: resolvedDestination?.type || 'none',
+      destinationId: resolvedDestination?.id || null,
+      destinationReason,
+      summary,
+      chatDraft,
+      confidence,
+      tags,
+      usedFallback: !validDestination,
+    }
+  }
+
   return {
     generateSupportReply,
     batchSummarizeComments,
     chatForRules,
     findExactItemPurchaseOptions,
     resolvePurchasingItemSearchMatches,
+    classifyEmailIntakeSuggestion,
   }
 }

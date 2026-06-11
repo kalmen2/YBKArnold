@@ -4,6 +4,7 @@ import LinkOffRoundedIcon from '@mui/icons-material/LinkOffRounded'
 import OutboxRoundedIcon from '@mui/icons-material/OutboxRounded'
 import {
   Alert,
+  Autocomplete,
   Box,
   Button,
   CircularProgress,
@@ -25,8 +26,10 @@ import {
   disconnectGoogleEmailConnection,
   fetchMicrosoftEmailConnectionStatus,
   fetchGoogleEmailConnectionStatus,
+  searchGoogleEmailContacts,
   sendMicrosoftEmail,
   sendGoogleEmail,
+  type GoogleEmailContactSuggestion,
   type EmailProvider,
   type EmailSendAsAlias,
 } from '../features/email/api'
@@ -38,13 +41,34 @@ type OAuthNotice = {
   message: string
 }
 
-function parseEmailList(value: string, limit = 60) {
-  const values = value
-    .split(/[\n,;]+/)
-    .map((entry) => entry.trim().toLowerCase())
+function normalizeRecipientToken(value: string) {
+  const trimmedValue = String(value ?? '').trim()
+
+  if (!trimmedValue) {
+    return ''
+  }
+
+  const angleBracketMatch = trimmedValue.match(/<([^<>]+)>/)
+  const candidate = angleBracketMatch ? angleBracketMatch[1] : trimmedValue
+
+  return candidate.trim().toLowerCase()
+}
+
+function normalizeRecipientValues(values: string[], limit = 60) {
+  const normalizedValues = values
+    .flatMap((entry) => String(entry ?? '').split(/[\n,;]+/))
+    .map((entry) => normalizeRecipientToken(entry))
     .filter(Boolean)
 
-  return [...new Set(values)].slice(0, limit)
+  return [...new Set(normalizedValues)].slice(0, limit)
+}
+
+function resolveRecipientPayload(values: string[], inputValue: string, limit = 60) {
+  return normalizeRecipientValues([...values, inputValue], limit)
+}
+
+function resolveRecipientOptionLabel(value: string, labelsByEmail: Map<string, string>) {
+  return labelsByEmail.get(value) || value
 }
 
 function toErrorMessage(error: unknown, fallback: string) {
@@ -92,9 +116,16 @@ export default function AdminEmailSettingsPage() {
   const [oauthNotice, setOauthNotice] = useState<OAuthNotice | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [actionSuccess, setActionSuccess] = useState<string | null>(null)
-  const [toInput, setToInput] = useState('')
-  const [ccInput, setCcInput] = useState('')
-  const [bccInput, setBccInput] = useState('')
+  const [toRecipients, setToRecipients] = useState<string[]>([])
+  const [ccRecipients, setCcRecipients] = useState<string[]>([])
+  const [bccRecipients, setBccRecipients] = useState<string[]>([])
+  const [toInputValue, setToInputValue] = useState('')
+  const [ccInputValue, setCcInputValue] = useState('')
+  const [bccInputValue, setBccInputValue] = useState('')
+  const [googleContactLookupQuery, setGoogleContactLookupQuery] = useState('')
+  const [googleContactSuggestions, setGoogleContactSuggestions] = useState<GoogleEmailContactSuggestion[]>([])
+  const [isGoogleContactLookupLoading, setIsGoogleContactLookupLoading] = useState(false)
+  const [googleContactLookupError, setGoogleContactLookupError] = useState<string | null>(null)
   const [subjectInput, setSubjectInput] = useState('')
   const [messageInput, setMessageInput] = useState('')
   const [fromEmailInput, setFromEmailInput] = useState('')
@@ -130,11 +161,14 @@ export default function AdminEmailSettingsPage() {
 
   const sendMutation = useMutation({
     mutationFn: () => {
+      const to = resolveRecipientPayload(toRecipients, toInputValue, 60)
+      const cc = resolveRecipientPayload(ccRecipients, ccInputValue, 30)
+      const bcc = resolveRecipientPayload(bccRecipients, bccInputValue, 30)
       const payload = {
         fromEmail: fromEmailInput || undefined,
-        to: parseEmailList(toInput, 60),
-        cc: parseEmailList(ccInput, 30),
-        bcc: parseEmailList(bccInput, 30),
+        to,
+        cc,
+        bcc,
         subject: subjectInput.trim(),
         text: messageInput.trim(),
       }
@@ -274,7 +308,84 @@ export default function AdminEmailSettingsPage() {
     setFromEmailInput(defaultAlias?.sendAsEmail ?? '')
   }, [fromEmailInput, isConnected, sendAsAliases])
 
-  const canSend = isConnected && Boolean(fromEmailInput) && !sendMutation.isPending
+  useEffect(() => {
+    if (activeProvider === 'google' && isConnected) {
+      return
+    }
+
+    setGoogleContactLookupQuery('')
+    setGoogleContactSuggestions([])
+    setGoogleContactLookupError(null)
+    setIsGoogleContactLookupLoading(false)
+  }, [activeProvider, isConnected])
+
+  useEffect(() => {
+    if (activeProvider !== 'google' || !isConnected) {
+      return
+    }
+
+    const query = googleContactLookupQuery.trim()
+
+    if (query.length < 2) {
+      setGoogleContactSuggestions([])
+      setGoogleContactLookupError(null)
+      setIsGoogleContactLookupLoading(false)
+      return
+    }
+
+    let cancelled = false
+    const timerId = window.setTimeout(async () => {
+      setIsGoogleContactLookupLoading(true)
+
+      try {
+        const payload = await searchGoogleEmailContacts(query, 12)
+
+        if (cancelled) {
+          return
+        }
+
+        setGoogleContactSuggestions(Array.isArray(payload?.suggestions) ? payload.suggestions : [])
+        setGoogleContactLookupError(null)
+      } catch (error) {
+        if (cancelled) {
+          return
+        }
+
+        setGoogleContactSuggestions([])
+        setGoogleContactLookupError(toErrorMessage(error, 'Could not load Google contact suggestions.'))
+      } finally {
+        if (!cancelled) {
+          setIsGoogleContactLookupLoading(false)
+        }
+      }
+    }, 250)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timerId)
+    }
+  }, [activeProvider, googleContactLookupQuery, isConnected])
+
+  const googleContactLabelsByEmail = useMemo(
+    () => new Map(googleContactSuggestions.map((entry) => [entry.email, entry.label] as const)),
+    [googleContactSuggestions],
+  )
+
+  const googleContactOptionValues = useMemo(
+    () => googleContactSuggestions.map((entry) => entry.email),
+    [googleContactSuggestions],
+  )
+
+  const toRecipientsPayload = useMemo(
+    () => resolveRecipientPayload(toRecipients, toInputValue, 60),
+    [toInputValue, toRecipients],
+  )
+
+  const canSend = isConnected
+    && Boolean(fromEmailInput)
+    && toRecipientsPayload.length > 0
+    && Boolean(messageInput.trim())
+    && !sendMutation.isPending
 
   const statusLabel = useMemo(() => {
     if (statusQuery.isPending) {
@@ -348,6 +459,8 @@ export default function AdminEmailSettingsPage() {
           {status?.grantedMissingScopes && status.grantedMissingScopes.length > 0 ? (
             <Alert severity="warning">
               Required {providerLabel} permissions are missing for this connection. Reconnect to grant required scopes.
+              {' '}
+              Missing: {status.grantedMissingScopes.join(', ')}.
             </Alert>
           ) : null}
 
@@ -425,31 +538,132 @@ export default function AdminEmailSettingsPage() {
             </Select>
           </FormControl>
 
-          <TextField
-            label="To"
-            placeholder="name@example.com, second@example.com"
-            value={toInput}
-            onChange={(event) => setToInput(event.target.value)}
-            fullWidth
-            size="small"
+          {activeProvider === 'google' && googleContactLookupError ? (
+            <Alert severity="warning">{googleContactLookupError}</Alert>
+          ) : null}
+
+          <Autocomplete
+            multiple
+            freeSolo
+            filterSelectedOptions
+            disabled={!isConnected}
+            options={activeProvider === 'google' ? googleContactOptionValues : []}
+            loading={activeProvider === 'google' && isGoogleContactLookupLoading}
+            value={toRecipients}
+            inputValue={toInputValue}
+            onChange={(_event, value) => {
+              setToRecipients(normalizeRecipientValues(value, 60))
+            }}
+            onInputChange={(_event, value, reason) => {
+              setToInputValue(value)
+
+              if (reason === 'input' || reason === 'clear') {
+                setGoogleContactLookupQuery(value)
+              }
+            }}
+            getOptionLabel={(option) => resolveRecipientOptionLabel(option, googleContactLabelsByEmail)}
+            renderOption={(props, option) => (
+              <li {...props}>
+                {resolveRecipientOptionLabel(option, googleContactLabelsByEmail)}
+              </li>
+            )}
+            renderInput={(params) => (
+              <TextField
+                {...params}
+                label="To"
+                placeholder="Type name or email"
+                size="small"
+                helperText={activeProvider === 'google'
+                  ? 'Start typing to search Google contacts. You can still paste comma-separated emails.'
+                  : 'Enter one or more recipient emails (comma or semicolon separated).'}
+                InputProps={{
+                  ...params.InputProps,
+                  endAdornment: (
+                    <>
+                      {activeProvider === 'google' && isGoogleContactLookupLoading ? (
+                        <CircularProgress color="inherit" size={16} sx={{ mr: 0.8 }} />
+                      ) : null}
+                      {params.InputProps.endAdornment}
+                    </>
+                  ),
+                }}
+              />
+            )}
           />
 
           <Stack direction={{ xs: 'column', md: 'row' }} spacing={1}>
-            <TextField
-              label="Cc"
-              placeholder="optional"
-              value={ccInput}
-              onChange={(event) => setCcInput(event.target.value)}
-              fullWidth
-              size="small"
+            <Autocomplete
+              multiple
+              freeSolo
+              filterSelectedOptions
+              disabled={!isConnected}
+              options={activeProvider === 'google' ? googleContactOptionValues : []}
+              loading={activeProvider === 'google' && isGoogleContactLookupLoading}
+              value={ccRecipients}
+              inputValue={ccInputValue}
+              onChange={(_event, value) => {
+                setCcRecipients(normalizeRecipientValues(value, 30))
+              }}
+              onInputChange={(_event, value, reason) => {
+                setCcInputValue(value)
+
+                if (reason === 'input' || reason === 'clear') {
+                  setGoogleContactLookupQuery(value)
+                }
+              }}
+              getOptionLabel={(option) => resolveRecipientOptionLabel(option, googleContactLabelsByEmail)}
+              renderOption={(props, option) => (
+                <li {...props}>
+                  {resolveRecipientOptionLabel(option, googleContactLabelsByEmail)}
+                </li>
+              )}
+              renderInput={(params) => (
+                <TextField
+                  {...params}
+                  label="Cc"
+                  placeholder="optional"
+                  size="small"
+                  helperText={activeProvider === 'google'
+                    ? 'Google contact suggestions are available while typing.'
+                    : 'Optional recipients.'}
+                />
+              )}
             />
-            <TextField
-              label="Bcc"
-              placeholder="optional"
-              value={bccInput}
-              onChange={(event) => setBccInput(event.target.value)}
-              fullWidth
-              size="small"
+
+            <Autocomplete
+              multiple
+              freeSolo
+              filterSelectedOptions
+              disabled={!isConnected}
+              options={activeProvider === 'google' ? googleContactOptionValues : []}
+              loading={activeProvider === 'google' && isGoogleContactLookupLoading}
+              value={bccRecipients}
+              inputValue={bccInputValue}
+              onChange={(_event, value) => {
+                setBccRecipients(normalizeRecipientValues(value, 30))
+              }}
+              onInputChange={(_event, value, reason) => {
+                setBccInputValue(value)
+
+                if (reason === 'input' || reason === 'clear') {
+                  setGoogleContactLookupQuery(value)
+                }
+              }}
+              getOptionLabel={(option) => resolveRecipientOptionLabel(option, googleContactLabelsByEmail)}
+              renderOption={(props, option) => (
+                <li {...props}>
+                  {resolveRecipientOptionLabel(option, googleContactLabelsByEmail)}
+                </li>
+              )}
+              renderInput={(params) => (
+                <TextField
+                  {...params}
+                  label="Bcc"
+                  placeholder="optional"
+                  size="small"
+                  helperText="Optional hidden recipients."
+                />
+              )}
             />
           </Stack>
 
@@ -477,7 +691,7 @@ export default function AdminEmailSettingsPage() {
               onClick={() => {
                 void sendMutation.mutateAsync()
               }}
-              disabled={!canSend || !toInput.trim() || !messageInput.trim()}
+              disabled={!canSend}
               startIcon={sendMutation.isPending ? <CircularProgress size={16} color="inherit" /> : null}
             >
               Send From Selected Address

@@ -308,6 +308,42 @@ export type CrmDealerChatsResponse = {
   hasMore: boolean
 }
 
+export type CrmQuoteChatMessage = {
+  id: string
+  quoteId: string
+  dealerSourceId?: string | null
+  quoteNumber?: string | null
+  message: string
+  mentionUserUids?: string[]
+  mentionUserEmails?: string[]
+  reminder?: {
+    id: string
+    dueDate: string
+    note: string | null
+    targetUserUids: string[]
+    targetUserEmails: string[]
+    notifiedAt?: string | null
+    notifiedRecipientUids?: string[]
+    createdAt: string
+  } | null
+  createdAt: string
+  createdByUid: string | null
+  createdByEmail: string | null
+  createdByName: string | null
+  updatedAt?: string | null
+  updatedByUid?: string | null
+  updatedByEmail?: string | null
+  updatedByName?: string | null
+}
+
+export type CrmQuoteChatsResponse = {
+  messages: CrmQuoteChatMessage[]
+  total: number
+  offset: number
+  limit: number
+  hasMore: boolean
+}
+
 export type CrmChatUser = {
   uid: string
   email: string
@@ -324,6 +360,16 @@ export type CrmChatUsersResponse = {
 }
 
 export type CrmDealerChatMessageCreateInput = {
+  message: string
+  mentionUserUids?: string[]
+  reminder?: {
+    dueDate: string
+    note?: string | null
+    targetUserUids?: string[]
+  } | null
+}
+
+export type CrmQuoteChatMessageCreateInput = {
   message: string
   mentionUserUids?: string[]
   reminder?: {
@@ -359,6 +405,37 @@ export type CrmDealerContactsQueryOptions = {
   contactSearch?: string
   contactOffset?: number
   contactLimit?: number
+}
+
+export type CrmDealerCreateInput = {
+  sourceId?: string | null
+  name: string
+  phone?: string | null
+  phone2?: string | null
+  emails?: string[]
+  email?: string | null
+  email2?: string | null
+  address?: string | null
+  city?: string | null
+  state?: string | null
+  zip?: string | null
+  country?: string | null
+  industry?: string | null
+  accountClass?: string | null
+  accountType?: string | null
+  salesRep?: string | null
+  website?: string | null
+  accountText?: string | null
+  owner?: string | null
+  ownerEmail?: string | null
+  pictureUrl?: string | null
+  pictureUrlSource?: string | null
+  socialMedia?: string | null
+  socialMediaLinks?: Record<string, string> | null
+  engagementReadinessStatus?: 'ready' | 'not_ready' | null
+  engagementReadinessNote?: string | null
+  createdDateSource?: string | null
+  modifiedDateSource?: string | null
 }
 
 export type CrmDealerUpdateInput = Partial<{
@@ -526,6 +603,7 @@ export type CrmQuote = {
   id: string
   dealerSourceId: string
   dealerName: string
+  chatMessageCount?: number
   dealerState?: string | null
   companyName?: string | null
   salesRep?: string | null
@@ -814,6 +892,13 @@ export function fetchCrmDealerDetail(
   )
 }
 
+export function createCrmDealer(input: CrmDealerCreateInput) {
+  return apiRequest<{ dealer: CrmDealerDetail }>('/api/crm/dealers', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
 export function fetchCrmDealerChats(
   dealerSourceId: string,
   options: { limit?: number; offset?: number } = {},
@@ -857,6 +942,51 @@ export function updateCrmDealerChatMessage(dealerSourceId: string, messageId: st
 export function removeCrmDealerChatMessage(dealerSourceId: string, messageId: string) {
   return apiRequest<{ ok: boolean; messageId: string }>(
     `/api/crm/dealers/${encodeURIComponent(dealerSourceId)}/chats/${encodeURIComponent(messageId)}`,
+    {
+      method: 'DELETE',
+    },
+  )
+}
+
+export function fetchCrmQuoteChats(
+  quoteId: string,
+  options: { limit?: number; offset?: number } = {},
+) {
+  return apiRequest<CrmQuoteChatsResponse>(
+    withQuery(`/api/crm/quotes/${encodeURIComponent(quoteId)}/chats`, {
+      limit: options.limit ?? 150,
+      offset: options.offset ?? 0,
+    }),
+  )
+}
+
+export function createCrmQuoteChatMessage(
+  quoteId: string,
+  input: string | CrmQuoteChatMessageCreateInput,
+) {
+  const payload = typeof input === 'string'
+    ? { message: input }
+    : input
+
+  return apiRequest<{ message: CrmQuoteChatMessage }>(`/api/crm/quotes/${encodeURIComponent(quoteId)}/chats`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function updateCrmQuoteChatMessage(quoteId: string, messageId: string, message: string) {
+  return apiRequest<{ message: CrmQuoteChatMessage }>(
+    `/api/crm/quotes/${encodeURIComponent(quoteId)}/chats/${encodeURIComponent(messageId)}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify({ message }),
+    },
+  )
+}
+
+export function removeCrmQuoteChatMessage(quoteId: string, messageId: string) {
+  return apiRequest<{ ok: boolean; messageId: string }>(
+    `/api/crm/quotes/${encodeURIComponent(quoteId)}/chats/${encodeURIComponent(messageId)}`,
     {
       method: 'DELETE',
     },

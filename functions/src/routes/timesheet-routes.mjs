@@ -51,6 +51,89 @@ export function registerTimesheetRoutes(app, deps) {
     return String(value ?? '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '')
   }
 
+  function toIsoDateOnly(value) {
+    const normalized = String(value ?? '').trim()
+
+    if (!normalized) {
+      return null
+    }
+
+    if (isoDatePattern.test(normalized)) {
+      return normalized
+    }
+
+    const parsedMs = Date.parse(normalized)
+
+    if (!Number.isFinite(parsedMs)) {
+      return null
+    }
+
+    return new Date(parsedMs).toISOString().slice(0, 10)
+  }
+
+  async function shouldForceShippedReadyPercent({ ordersUnifiedCollection, date, jobName }) {
+    const normalizedJobName = String(jobName ?? '').trim()
+
+    if (!normalizedJobName || !isoDatePattern.test(date)) {
+      return false
+    }
+
+    const orderDigits = extractOrderDigits(normalizedJobName)
+    const orderNumberCandidates = [...new Set([
+      normalizedJobName,
+      orderDigits,
+    ].filter(Boolean))]
+
+    let shippedOrder = null
+
+    if (orderNumberCandidates.length > 0) {
+      shippedOrder = await ordersUnifiedCollection.findOne(
+        {
+          is_shipped: true,
+          order_number: {
+            $in: orderNumberCandidates,
+          },
+        },
+        {
+          projection: {
+            _id: 0,
+            shipped_at: 1,
+          },
+        },
+      )
+    }
+
+    if (!shippedOrder && orderDigits) {
+      shippedOrder = await ordersUnifiedCollection.findOne(
+        {
+          is_shipped: true,
+          order_name: {
+            $regex: orderDigits,
+            $options: 'i',
+          },
+        },
+        {
+          projection: {
+            _id: 0,
+            shipped_at: 1,
+          },
+        },
+      )
+    }
+
+    if (!shippedOrder) {
+      return false
+    }
+
+    const shippedDate = toIsoDateOnly(shippedOrder?.shipped_at)
+
+    if (!shippedDate) {
+      return true
+    }
+
+    return date >= shippedDate
+  }
+
   function isGeneralOrderJobName(jobName) {
     const digits = extractOrderDigits(jobName)
 
@@ -774,7 +857,7 @@ app.put('/api/timesheet/missing-worker-reviews', requireFirebaseAuth, async (req
 
 app.put('/api/timesheet/order-progress', requireFirebaseAuth, requireManagerOrAdminRole, async (req, res, next) => {
   try {
-    const { orderProgressCollection } = await getCollections()
+    const { orderProgressCollection, ordersUnifiedCollection } = await getCollections()
     const date = String(req.body?.date ?? '').trim()
     const jobName = String(req.body?.jobName ?? '').trim()
     const readyPercent = Number(req.body?.readyPercent)
@@ -798,6 +881,12 @@ app.put('/api/timesheet/order-progress', requireFirebaseAuth, requireManagerOrAd
 
     const normalizedJobName = normalizeJobName(jobName)
     const roundedReadyPercent = Number(readyPercent.toFixed(2))
+    const shouldForceToComplete = await shouldForceShippedReadyPercent({
+      ordersUnifiedCollection,
+      date,
+      jobName,
+    })
+    const resolvedReadyPercent = shouldForceToComplete ? 100 : roundedReadyPercent
     const now = new Date().toISOString()
 
     await orderProgressCollection.updateOne(
@@ -810,7 +899,7 @@ app.put('/api/timesheet/order-progress', requireFirebaseAuth, requireManagerOrAd
           date,
           jobName,
           normalizedJobName,
-          readyPercent: roundedReadyPercent,
+          readyPercent: resolvedReadyPercent,
           isWarranty,
           updatedAt: now,
         },

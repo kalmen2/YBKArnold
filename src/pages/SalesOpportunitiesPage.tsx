@@ -1,6 +1,7 @@
 import AddRoundedIcon from '@mui/icons-material/AddRounded'
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded'
 import ArrowForwardRoundedIcon from '@mui/icons-material/ArrowForwardRounded'
+import ChatBubbleOutlineRoundedIcon from '@mui/icons-material/ChatBubbleOutlineRounded'
 import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded'
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
 import FileUploadRoundedIcon from '@mui/icons-material/FileUploadRounded'
@@ -10,6 +11,7 @@ import WorkspacesRoundedIcon from '@mui/icons-material/WorkspacesRounded'
 import {
   Autocomplete,
   Avatar,
+  Badge,
   Box,
   Button,
   Checkbox,
@@ -25,11 +27,13 @@ import {
   MenuItem,
   Paper,
   Stack,
+  Tab,
   Table,
   TableBody,
   TableCell,
   TableHead,
   TableRow,
+  Tabs,
   TextField,
   Tooltip,
   Typography,
@@ -43,13 +47,17 @@ import { firebaseStorage } from '../auth/firebase'
 import { LoadingPanel } from '../components/LoadingPanel'
 import { StatusAlerts } from '../components/StatusAlerts'
 import {
+  createCrmDealer,
   createCrmOrder,
   createCrmQuote,
+  createCrmQuoteChatMessage,
   fetchCrmDealers,
   fetchCrmExcelQuoteLookup,
   fetchCrmOrders,
+  fetchCrmQuoteChats,
   fetchCrmQuotes,
   fetchCrmSalesReps,
+  removeCrmQuoteChatMessage,
   removeCrmQuote,
   updateCrmQuote,
   type CrmDealer,
@@ -60,6 +68,7 @@ import {
   type CrmOpportunityStage,
   type CrmOrder,
   type CrmQuote,
+  type CrmQuoteChatMessage,
 } from '../features/crm/api'
 import { parseExcelQuoteForSync } from '../features/crm/excelQuoteParser'
 import { resolveQuoteAgeDays } from '../features/crm/utils'
@@ -78,6 +87,7 @@ type OpportunityLineItemFormState = {
 }
 
 type OpportunityFormState = {
+  dealerSourceId: string
   quoteNumber: string
   title: string
   opportunityDateInput: string
@@ -98,6 +108,7 @@ type OpportunityFormState = {
 }
 
 type OpportunityDetailsFormState = {
+  dealerSourceId: string
   quoteNumber: string
   title: string
   opportunityDateInput: string
@@ -129,6 +140,7 @@ type OpportunityCardProps = {
   quote: CrmQuote
   dealerName: string
   dealerPictureUrl: string | null
+  chatMessageCount: number
   ageDays: number
   stage: CrmOpportunityStage
   canManage: boolean
@@ -138,6 +150,7 @@ type OpportunityCardProps = {
   onDeclineQuote: (quote: CrmQuote) => void
   onDeleteQuote: (quote: CrmQuote) => void
   onOpenDetails: (quote: CrmQuote) => void
+  onOpenChat: (quote: CrmQuote) => void
 }
 
 type StageColumnProps = {
@@ -151,6 +164,7 @@ type StageColumnProps = {
   onDeclineQuote: (quote: CrmQuote) => void
   onDeleteQuote: (quote: CrmQuote) => void
   onOpenDetails: (quote: CrmQuote) => void
+  onOpenChat: (quote: CrmQuote) => void
 }
 
 type StageSortMode = 'value_desc' | 'value_asc' | 'date_desc' | 'date_asc' | 'alpha_asc' | 'alpha_desc'
@@ -158,6 +172,7 @@ type StageSortMode = 'value_desc' | 'value_asc' | 'date_desc' | 'date_asc' | 'al
 type StageAmountCondition = 'any' | 'gt' | 'gte' | 'lt' | 'lte' | 'between'
 
 type ExcelSyncProjectTypeOption = 'Reception Desk' | 'Courtroom' | 'Conference Table' | 'Other'
+type ExcelSyncAccountMode = 'existing' | 'create'
 
 type UsStateOption = {
   code: string
@@ -174,6 +189,7 @@ type StageColumnFilters = {
 }
 
 type OpportunityDetailsSaveMode = 'save' | 'decline' | 'convert_to_order'
+type OpportunityDetailsTab = 'details' | 'chat'
 
 type LineItemsEditorProps = {
   lineItems: OpportunityLineItemFormState[]
@@ -274,6 +290,66 @@ const usStateOptions: UsStateOption[] = [
 
 const usStateOptionByCode = new Map(usStateOptions.map((entry) => [entry.code, entry] as const))
 const usStateCodeSet = new Set(usStateOptions.map((entry) => entry.code))
+const usStateCodeByNormalizedName = new Map(
+  usStateOptions
+    .map((entry) => {
+      const stateName = entry.label.includes(' - ')
+        ? entry.label.split(' - ').slice(1).join(' - ').trim()
+        : entry.label.trim()
+      const normalizedStateName = stateName
+        .toLowerCase()
+        .replace(/[^a-z]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+
+      return [normalizedStateName, entry.code] as const
+    })
+    .filter(([stateName]) => Boolean(stateName)),
+)
+const usStateCodeByCompactName = new Map(
+  [...usStateCodeByNormalizedName.entries()].map(([stateName, code]) => [stateName.replace(/\s+/g, ''), code] as const),
+)
+
+function resolveUsStateCodeFromInput(value: string | null | undefined) {
+  const rawValue = String(value ?? '').trim()
+
+  if (!rawValue) {
+    return ''
+  }
+
+  const uppercaseValue = rawValue.toUpperCase()
+  const compactLetters = uppercaseValue.replace(/[^A-Z]/g, '')
+
+  if (compactLetters.length === 2 && usStateCodeSet.has(compactLetters)) {
+    return compactLetters
+  }
+
+  const codeTokenMatches = uppercaseValue.match(/\b[A-Z]{2}\b/g) ?? []
+
+  for (const token of codeTokenMatches) {
+    if (usStateCodeSet.has(token)) {
+      return token
+    }
+  }
+
+  const normalizedName = rawValue
+    .toLowerCase()
+    .replace(/[^a-z]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  if (!normalizedName) {
+    return ''
+  }
+
+  const directNameCode = usStateCodeByNormalizedName.get(normalizedName)
+
+  if (directNameCode) {
+    return directNameCode
+  }
+
+  return usStateCodeByCompactName.get(normalizedName.replace(/\s+/g, '')) || ''
+}
 
 function getTodayEasternDateInputValue() {
   const parts = new Intl.DateTimeFormat('en-US', {
@@ -488,6 +564,7 @@ function getMissingSendProposalFields(quote: CrmQuote) {
 
 function createEmptyOpportunityForm(): OpportunityFormState {
   return {
+    dealerSourceId: '',
     quoteNumber: '',
     title: '',
     opportunityDateInput: getTodayEasternDateInputValue(),
@@ -521,6 +598,7 @@ function resolveDateInputFromIso(value: string | null | undefined) {
 
 function createOpportunityDetailsFormState(quote: CrmQuote): OpportunityDetailsFormState {
   return {
+    dealerSourceId: String(quote.dealerSourceId || ''),
     quoteNumber: String(quote.quoteNumber || ''),
     title: String(quote.title || ''),
     opportunityDateInput: resolveDateInputFromIso(quote.opportunityDate),
@@ -543,6 +621,10 @@ function createOpportunityDetailsFormState(quote: CrmQuote): OpportunityDetailsF
 function mergeExcelSyncIntoDetailsFormState(
   baseState: OpportunityDetailsFormState,
   syncInput: CrmExcelQuoteSyncInput,
+  options: {
+    dealerSourceId?: string
+    companyName?: string
+  } = {},
 ): OpportunityDetailsFormState {
   const nextQuoteNumber = String(syncInput.quoteNumber ?? '').trim()
   const nextTitle = String(syncInput.title ?? '').trim()
@@ -564,10 +646,11 @@ function mergeExcelSyncIntoDetailsFormState(
 
   return {
     ...baseState,
+    dealerSourceId: String(options.dealerSourceId ?? '').trim() || baseState.dealerSourceId,
     quoteNumber: nextQuoteNumber || baseState.quoteNumber,
     title: nextTitle || baseState.title,
     opportunityDateInput: nextDateInput,
-    companyName: nextCompanyName || baseState.companyName,
+    companyName: String(options.companyName ?? '').trim() || nextCompanyName || baseState.companyName,
     contactName: nextContactName || baseState.contactName,
     contactEmail: nextContactEmail || baseState.contactEmail,
     contactPhone: nextContactPhone || baseState.contactPhone,
@@ -601,8 +684,250 @@ function serializeOpportunityFormState(state: OpportunityFormState | null): stri
   return JSON.stringify(state)
 }
 
+function formatQuoteChatTimestamp(value: string | null | undefined) {
+  const parsed = new Date(String(value || '').trim())
+
+  if (Number.isNaN(parsed.getTime())) {
+    return 'Unknown time'
+  }
+
+  return parsed.toLocaleString()
+}
+
+function resolveQuoteChatAuthorLabel(message: CrmQuoteChatMessage) {
+  return String(
+    message.createdByName
+    || message.createdByEmail
+    || message.createdByUid
+    || 'Unknown sender',
+  ).trim()
+}
+
 function normalizeMatchValue(value: string | null | undefined) {
   return String(value ?? '').trim().toLowerCase()
+}
+
+function normalizeDealerLookupKey(value: string | null | undefined) {
+  return normalizeMatchValue(value)
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function normalizeDealerLookupCompact(value: string | null | undefined) {
+  return normalizeDealerLookupKey(value).replace(/\s+/g, '')
+}
+
+const dealerNameStopWords = new Set([
+  'and',
+  'the',
+  'inc',
+  'incorporated',
+  'llc',
+  'ltd',
+  'co',
+  'company',
+  'corp',
+  'corporation',
+  'group',
+  'lp',
+  'plc',
+  'pc',
+])
+
+function toDealerMatchTokens(value: string | null | undefined) {
+  return normalizeDealerLookupKey(value)
+    .split(' ')
+    .map((token) => token.trim())
+    .filter((token) => token.length > 0)
+}
+
+function normalizeDealerMatchCore(value: string | null | undefined) {
+  const tokens = toDealerMatchTokens(value)
+    .filter((token) => token.length > 1 && !dealerNameStopWords.has(token))
+
+  return tokens.join(' ')
+}
+
+function resolveDealerNameMatchScore(candidateName: string, dealerName: string) {
+  const candidateKey = normalizeDealerLookupKey(candidateName)
+  const dealerKey = normalizeDealerLookupKey(dealerName)
+  const candidateCompact = normalizeDealerLookupCompact(candidateName)
+  const dealerCompact = normalizeDealerLookupCompact(dealerName)
+
+  if (!candidateKey || !dealerKey) {
+    return 0
+  }
+
+  if (candidateKey === dealerKey) {
+    return 120
+  }
+
+  const candidateCore = normalizeDealerMatchCore(candidateName)
+  const dealerCore = normalizeDealerMatchCore(dealerName)
+  const candidateCoreCompact = normalizeDealerLookupCompact(candidateCore)
+  const dealerCoreCompact = normalizeDealerLookupCompact(dealerCore)
+
+  if (candidateCompact && dealerCompact && candidateCompact === dealerCompact) {
+    return 118
+  }
+
+  if (candidateCore && dealerCore && candidateCore === dealerCore) {
+    return 115
+  }
+
+  if (
+    candidateCoreCompact
+    && dealerCoreCompact
+    && candidateCoreCompact === dealerCoreCompact
+  ) {
+    return 112
+  }
+
+  if (
+    (candidateCompact.length >= 4 && dealerCompact.includes(candidateCompact))
+    || (dealerCompact.length >= 4 && candidateCompact.includes(dealerCompact))
+  ) {
+    return 108
+  }
+
+  if (
+    (candidateCoreCompact.length >= 4 && dealerCoreCompact.includes(candidateCoreCompact))
+    || (dealerCoreCompact.length >= 4 && candidateCoreCompact.includes(dealerCoreCompact))
+  ) {
+    return 100
+  }
+
+  if (
+    (candidateKey.length >= 4 && dealerKey.includes(candidateKey))
+    || (dealerKey.length >= 4 && candidateKey.includes(dealerKey))
+  ) {
+    return 105
+  }
+
+  if (
+    candidateCore
+    && dealerCore
+    && ((candidateCore.length >= 4 && dealerCore.includes(candidateCore))
+      || (dealerCore.length >= 4 && candidateCore.includes(dealerCore)))
+  ) {
+    return 95
+  }
+
+  const candidateTokens = [...new Set(toDealerMatchTokens(candidateCore || candidateName))]
+  const dealerTokens = [...new Set(toDealerMatchTokens(dealerCore || dealerName))]
+
+  if (candidateTokens.length === 0 || dealerTokens.length === 0) {
+    return 0
+  }
+
+  let overlapCount = 0
+
+  for (const token of candidateTokens) {
+    if (dealerTokens.includes(token)) {
+      overlapCount += 1
+    }
+  }
+
+  if (overlapCount > 0) {
+    const minTokenCount = Math.min(candidateTokens.length, dealerTokens.length)
+    const overlapRatio = overlapCount / minTokenCount
+
+    if (overlapCount >= 2 && overlapRatio >= 0.6) {
+      return 70 + overlapCount
+    }
+
+    if (overlapCount === 1 && (candidateTokens.length === 1 || dealerTokens.length === 1)) {
+      const matchedToken = candidateTokens.find((token) => dealerTokens.includes(token)) || ''
+
+      if (matchedToken.length >= 5) {
+        return 58
+      }
+    }
+  }
+
+  let fuzzyOverlapCount = 0
+
+  for (const token of candidateTokens) {
+    if (token.length < 3) {
+      continue
+    }
+
+    const hasFuzzyTokenMatch = dealerTokens.some((dealerToken) => {
+      if (dealerToken.length < 3) {
+        return false
+      }
+
+      return dealerToken.includes(token) || token.includes(dealerToken)
+    })
+
+    if (hasFuzzyTokenMatch) {
+      fuzzyOverlapCount += 1
+    }
+  }
+
+  if (fuzzyOverlapCount === 0) {
+    return 0
+  }
+
+  const fuzzyMinTokenCount = Math.min(candidateTokens.length, dealerTokens.length)
+  const fuzzyOverlapRatio = fuzzyOverlapCount / fuzzyMinTokenCount
+
+  if (fuzzyOverlapCount >= 2 && fuzzyOverlapRatio >= 0.6) {
+    return 66 + fuzzyOverlapCount
+  }
+
+  if (fuzzyOverlapCount === 1 && (candidateTokens.length === 1 || dealerTokens.length === 1)) {
+    const fuzzyToken = candidateTokens.find((token) => token.length >= 4 && dealerTokens.some((dealerToken) => dealerToken.includes(token) || token.includes(dealerToken))) || ''
+
+    if (fuzzyToken.length >= 4) {
+      return 56
+    }
+  }
+
+  return 0
+}
+
+function findMatchingDealersByName(dealers: CrmDealer[], candidateName: string) {
+  const matchRows = dealers
+    .map((dealer) => ({
+      dealer,
+      score: resolveDealerNameMatchScore(candidateName, String(dealer.name || dealer.sourceId || '')),
+    }))
+    .filter((entry) => entry.score > 0)
+
+  matchRows.sort((left, right) => {
+    if (right.score !== left.score) {
+      return right.score - left.score
+    }
+
+    return resolveDealerSelectionLabel(left.dealer).localeCompare(resolveDealerSelectionLabel(right.dealer))
+  })
+
+  return matchRows.map((entry) => entry.dealer)
+}
+
+function resolveDealerSelectionLabel(dealer: CrmDealer) {
+  const name = String(dealer.name || dealer.sourceId || '').trim() || dealer.sourceId
+  const city = String(dealer.city || '').trim()
+  const state = String(dealer.state || '').trim().toUpperCase()
+  const location = [city, state].filter(Boolean).join(', ')
+  const sourceId = String(dealer.sourceId || '').trim()
+
+  if (location && sourceId) {
+    return `${name} - ${location} - ${sourceId}`
+  }
+
+  if (location) {
+    return `${name} - ${location}`
+  }
+
+  if (sourceId) {
+    return `${name} - ${sourceId}`
+  }
+
+  return name
 }
 
 function resolveMatchingOption(preferredValue: string | null | undefined, options: string[]) {
@@ -858,6 +1183,7 @@ function OpportunityCard({
   quote,
   dealerName,
   dealerPictureUrl,
+  chatMessageCount,
   ageDays,
   stage,
   canManage,
@@ -867,8 +1193,12 @@ function OpportunityCard({
   onDeclineQuote,
   onDeleteQuote,
   onOpenDetails,
+  onOpenChat,
 }: OpportunityCardProps) {
   const dealerInitial = String(dealerName).trim().charAt(0).toUpperCase() || 'D'
+  const normalizedChatMessageCount = Number.isFinite(Number(chatMessageCount))
+    ? Math.max(0, Number(chatMessageCount))
+    : 0
   const [menuAnchorEl, setMenuAnchorEl] = useState<HTMLElement | null>(null)
   const suppressCardOpenUntilRef = useRef(0)
   const isMenuOpen = Boolean(menuAnchorEl)
@@ -950,6 +1280,26 @@ function OpportunityCard({
             ) : (
               <Chip size="small" label={`${ageDays}d`} sx={{ height: 19, fontSize: 10 }} />
             )}
+
+            <IconButton
+              size="small"
+              disabled={isBusy}
+              onClick={(event) => {
+                preventCardClick(event)
+                onOpenChat(quote)
+              }}
+              sx={{ p: 0.15, color: '#0f4c81' }}
+              title="Open quote chat"
+              aria-label="Open quote chat"
+            >
+              <Badge
+                color="primary"
+                badgeContent={normalizedChatMessageCount > 0 ? normalizedChatMessageCount : undefined}
+                max={99}
+              >
+                <ChatBubbleOutlineRoundedIcon sx={{ fontSize: 20 }} />
+              </Badge>
+            </IconButton>
 
             {canManage && stage === 'proposal_submission' ? (
               <IconButton
@@ -1048,6 +1398,7 @@ function StageColumn({
   onDeclineQuote,
   onDeleteQuote,
   onOpenDetails,
+  onOpenChat,
 }: StageColumnProps) {
   const [menuAnchorEl, setMenuAnchorEl] = useState<HTMLElement | null>(null)
   const [sortSubmenuAnchorEl, setSortSubmenuAnchorEl] = useState<HTMLElement | null>(null)
@@ -1434,6 +1785,7 @@ function StageColumn({
                 quote={quote}
                 dealerName={dealerName}
                 dealerPictureUrl={dealerPictureUrl}
+                chatMessageCount={Math.max(0, Number(quote.chatMessageCount || 0))}
                 ageDays={ageDays}
                 stage={stage.id}
                 canManage={canManage}
@@ -1443,6 +1795,7 @@ function StageColumn({
                 onDeclineQuote={onDeclineQuote}
                 onDeleteQuote={onDeleteQuote}
                 onOpenDetails={onOpenDetails}
+                onOpenChat={onOpenChat}
               />
             )
           })
@@ -1648,6 +2001,7 @@ export default function SalesOpportunitiesPage() {
   const [isAddDialogDraftFromExcelSync, setIsAddDialogDraftFromExcelSync] = useState(false)
   const [addDialogInitialSnapshot, setAddDialogInitialSnapshot] = useState(() => serializeOpportunityFormState(createEmptyOpportunityForm()))
   const [isSyncingExcelQuote, setIsSyncingExcelQuote] = useState(false)
+  const [isExcelAccountDialogOpen, setIsExcelAccountDialogOpen] = useState(false)
   const [isExcelSyncDialogOpen, setIsExcelSyncDialogOpen] = useState(false)
   const [isExcelMissingConceptDialogOpen, setIsExcelMissingConceptDialogOpen] = useState(false)
   const [excelSyncAllowCreateWhenMissingConcept, setExcelSyncAllowCreateWhenMissingConcept] = useState(false)
@@ -1659,6 +2013,11 @@ export default function SalesOpportunitiesPage() {
   const [excelSyncRawSalesRep, setExcelSyncRawSalesRep] = useState('')
   const [excelSyncDealerStateCode, setExcelSyncDealerStateCode] = useState('')
   const [excelSyncProjectTypeInput, setExcelSyncProjectTypeInput] = useState('')
+  const [excelSyncAccountMode, setExcelSyncAccountMode] = useState<ExcelSyncAccountMode>('existing')
+  const [excelSyncDealerSourceIdInput, setExcelSyncDealerSourceIdInput] = useState('')
+  const [excelSyncNewDealerNameInput, setExcelSyncNewDealerNameInput] = useState('')
+  const [excelSyncResolvedDealerSourceId, setExcelSyncResolvedDealerSourceId] = useState('')
+  const [excelSyncResolvedDealerName, setExcelSyncResolvedDealerName] = useState('')
   const [excelSyncDialogError, setExcelSyncDialogError] = useState<string | null>(null)
   const [isSavingOpportunity, setIsSavingOpportunity] = useState(false)
   const [isUploadingQuoteDocument, setIsUploadingQuoteDocument] = useState(false)
@@ -1666,13 +2025,18 @@ export default function SalesOpportunitiesPage() {
   const [isSavingOpportunityDetails, setIsSavingOpportunityDetails] = useState(false)
   const [busyQuoteId, setBusyQuoteId] = useState<string | null>(null)
   const [selectedOpportunity, setSelectedOpportunity] = useState<CrmQuote | null>(null)
+  const [selectedOpportunityDetailsTab, setSelectedOpportunityDetailsTab] = useState<OpportunityDetailsTab>('details')
   const [opportunityDetailsFormState, setOpportunityDetailsFormState] = useState<OpportunityDetailsFormState | null>(null)
   const [opportunityDetailsInitialSnapshot, setOpportunityDetailsInitialSnapshot] = useState('')
+  const [selectedOpportunityChatDraft, setSelectedOpportunityChatDraft] = useState('')
+  const [isSendingSelectedOpportunityChat, setIsSendingSelectedOpportunityChat] = useState(false)
+  const [deletingSelectedOpportunityChatMessageId, setDeletingSelectedOpportunityChatMessageId] = useState('')
   const [pendingExcelSyncPromotionQuoteId, setPendingExcelSyncPromotionQuoteId] = useState<string | null>(null)
   const [detailsActionMenuAnchorEl, setDetailsActionMenuAnchorEl] = useState<HTMLElement | null>(null)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
   const [globalSearch, setGlobalSearch] = useState('')
+  const selectedOpportunityId = selectedOpportunity?.id ?? ''
 
   const dealersQuery = useQuery({
     queryKey: QUERY_KEYS.crmOpportunitiesDealers,
@@ -1698,6 +2062,16 @@ export default function SalesOpportunitiesPage() {
     staleTime: 5 * 60 * 1000,
   })
 
+  const selectedOpportunityChatsQuery = useQuery({
+    queryKey: QUERY_KEYS.crmQuoteChats(selectedOpportunityId),
+    queryFn: () => fetchCrmQuoteChats(selectedOpportunityId, {
+      limit: 250,
+      offset: 0,
+    }),
+    enabled: Boolean(selectedOpportunityId),
+    staleTime: 20 * 1000,
+  })
+
   const isLoading = dealersQuery.isLoading
     || quotesQuery.isLoading
     || ordersQuery.isLoading
@@ -1710,6 +2084,9 @@ export default function SalesOpportunitiesPage() {
   const queryError = [dealersQuery.error, quotesQuery.error, ordersQuery.error, salesRepsQuery.error]
     .find((entry) => entry instanceof Error)
 
+  const currentUserUid = String(appUser?.uid ?? '').trim()
+  const currentUserEmail = String(appUser?.email ?? '').trim().toLowerCase()
+  const isCurrentUserAdmin = appUser?.isAdmin === true
   const canManage = Boolean(appUser?.uid)
 
   const dealers = useMemo(
@@ -1772,6 +2149,43 @@ export default function SalesOpportunitiesPage() {
     [dealers],
   )
 
+  const excelSyncAccountCandidateName = useMemo(
+    () => String(excelSyncDraft?.companyName ?? '').trim(),
+    [excelSyncDraft?.companyName],
+  )
+
+  const excelSyncDetectedAccountMatches = useMemo(() => {
+    if (!excelSyncAccountCandidateName) {
+      return []
+    }
+
+    return findMatchingDealersByName(dealers, excelSyncAccountCandidateName)
+  }, [dealers, excelSyncAccountCandidateName])
+
+  const excelSyncDealerOptions = useMemo(() => {
+    const matchedSourceIdSet = new Set(excelSyncDetectedAccountMatches.map((dealer) => dealer.sourceId))
+
+    return [...dealers].sort((left, right) => {
+      const leftIsMatched = matchedSourceIdSet.has(left.sourceId)
+      const rightIsMatched = matchedSourceIdSet.has(right.sourceId)
+
+      if (leftIsMatched && !rightIsMatched) {
+        return -1
+      }
+
+      if (!leftIsMatched && rightIsMatched) {
+        return 1
+      }
+
+      return resolveDealerSelectionLabel(left).localeCompare(resolveDealerSelectionLabel(right))
+    })
+  }, [dealers, excelSyncDetectedAccountMatches])
+
+  const selectedExcelSyncDealer = useMemo(
+    () => dealersBySourceId.get(excelSyncDealerSourceIdInput) ?? null,
+    [dealersBySourceId, excelSyncDealerSourceIdInput],
+  )
+
   const activeQuotes = useMemo(
     () => quotes.filter(
       (quote) => quote.status !== 'rejected' && quote.status !== 'cancelled' && quote.status !== 'accepted',
@@ -1826,12 +2240,23 @@ export default function SalesOpportunitiesPage() {
       return ''
     }
 
+    const stagedDealerSourceId = String(opportunityDetailsFormState?.dealerSourceId || '').trim()
+    const stagedDealerName = stagedDealerSourceId
+      ? dealersBySourceId.get(stagedDealerSourceId)?.name
+      : ''
+
+    if (stagedDealerName) {
+      return stagedDealerName
+    }
+
     return dealersBySourceId.get(selectedOpportunity.dealerSourceId)?.name
+      || String(opportunityDetailsFormState?.companyName || '').trim()
       || selectedOpportunity.companyName
       || selectedOpportunity.dealerName
+      || stagedDealerSourceId
       || selectedOpportunity.dealerSourceId
       || ''
-  }, [dealersBySourceId, selectedOpportunity])
+  }, [dealersBySourceId, opportunityDetailsFormState?.companyName, opportunityDetailsFormState?.dealerSourceId, selectedOpportunity])
 
   const selectedOpportunityStage = useMemo(
     () => (selectedOpportunity ? resolveOpportunityStage(selectedOpportunity) : null),
@@ -1855,6 +2280,19 @@ export default function SalesOpportunitiesPage() {
     () => (opportunityDetailsFormState?.documents ?? []),
     [opportunityDetailsFormState],
   )
+
+  const selectedOpportunityChatMessages = useMemo(
+    () => (Array.isArray(selectedOpportunityChatsQuery.data?.messages)
+      ? selectedOpportunityChatsQuery.data.messages
+      : []),
+    [selectedOpportunityChatsQuery.data?.messages],
+  )
+
+  const selectedOpportunityChatCount = selectedOpportunityChatMessages.length
+
+  const selectedOpportunityChatErrorMessage = selectedOpportunityChatsQuery.error instanceof Error
+    ? selectedOpportunityChatsQuery.error.message
+    : null
 
   const isAddDialogDirty = useMemo(
     () => serializeOpportunityFormState(formState) !== addDialogInitialSnapshot,
@@ -1901,6 +2339,7 @@ export default function SalesOpportunitiesPage() {
 
   const resetExcelSyncDialog = useCallback(() => {
     setIsExcelMissingConceptDialogOpen(false)
+    setIsExcelAccountDialogOpen(false)
     setIsExcelSyncDialogOpen(false)
     setExcelSyncAllowCreateWhenMissingConcept(false)
     setExcelSyncDraft(null)
@@ -1911,6 +2350,11 @@ export default function SalesOpportunitiesPage() {
     setExcelSyncRawSalesRep('')
     setExcelSyncDealerStateCode('')
     setExcelSyncProjectTypeInput('')
+    setExcelSyncAccountMode('existing')
+    setExcelSyncDealerSourceIdInput('')
+    setExcelSyncNewDealerNameInput('')
+    setExcelSyncResolvedDealerSourceId('')
+    setExcelSyncResolvedDealerName('')
     setExcelSyncDialogError(null)
   }, [])
 
@@ -1937,6 +2381,48 @@ export default function SalesOpportunitiesPage() {
     excelSyncSalesRepInput,
     excelSyncSalesRepOptions,
     isExcelSyncDialogOpen,
+  ])
+
+  useEffect(() => {
+    if (!isExcelAccountDialogOpen || excelSyncAccountMode !== 'existing') {
+      return
+    }
+
+    if (excelSyncDealerSourceIdInput.trim()) {
+      return
+    }
+
+    if (excelSyncDetectedAccountMatches.length !== 1) {
+      return
+    }
+
+    setExcelSyncDealerSourceIdInput(excelSyncDetectedAccountMatches[0].sourceId)
+  }, [
+    excelSyncAccountMode,
+    excelSyncDealerSourceIdInput,
+    excelSyncDetectedAccountMatches,
+    isExcelAccountDialogOpen,
+  ])
+
+  useEffect(() => {
+    if (!isExcelAccountDialogOpen || excelSyncAccountMode !== 'create') {
+      return
+    }
+
+    if (excelSyncNewDealerNameInput.trim()) {
+      return
+    }
+
+    if (!excelSyncAccountCandidateName) {
+      return
+    }
+
+    setExcelSyncNewDealerNameInput(excelSyncAccountCandidateName)
+  }, [
+    excelSyncAccountCandidateName,
+    excelSyncAccountMode,
+    excelSyncNewDealerNameInput,
+    isExcelAccountDialogOpen,
   ])
 
   const handleRefresh = useCallback(async () => {
@@ -1971,6 +2457,10 @@ export default function SalesOpportunitiesPage() {
 
       const salesRepFromExcel = String(excelPayload.salesRep ?? '').trim()
       const defaultSalesRep = resolveMatchingOption(salesRepFromExcel, excelSyncSalesRepOptions)
+      const accountNameFromExcel = String(excelPayload.companyName ?? '').trim()
+      const matchedDealers = accountNameFromExcel
+        ? findMatchingDealersByName(dealers, accountNameFromExcel)
+        : []
 
       setExcelSyncDraft(excelPayload)
       setExcelSyncSourceFileName(file.name)
@@ -1979,6 +2469,24 @@ export default function SalesOpportunitiesPage() {
       setExcelSyncSalesRepInput(defaultSalesRep)
       setExcelSyncDealerStateCode('')
       setExcelSyncProjectTypeInput(resolveDefaultExcelProjectType(excelPayload.projectType))
+      setExcelSyncNewDealerNameInput(accountNameFromExcel)
+      setExcelSyncResolvedDealerSourceId('')
+      setExcelSyncResolvedDealerName('')
+
+      if (matchedDealers.length === 1) {
+        setExcelSyncAccountMode('existing')
+        setExcelSyncDealerSourceIdInput(matchedDealers[0].sourceId)
+      } else if (matchedDealers.length > 1) {
+        setExcelSyncAccountMode('existing')
+        setExcelSyncDealerSourceIdInput('')
+      } else if (accountNameFromExcel) {
+        setExcelSyncAccountMode('create')
+        setExcelSyncDealerSourceIdInput('')
+      } else {
+        setExcelSyncAccountMode('existing')
+        setExcelSyncDealerSourceIdInput('')
+      }
+
       setExcelSyncDialogError(null)
 
       if (isMissingFromConcept) {
@@ -1986,14 +2494,14 @@ export default function SalesOpportunitiesPage() {
         setIsExcelMissingConceptDialogOpen(true)
       } else {
         setExcelSyncAllowCreateWhenMissingConcept(false)
-        setIsExcelSyncDialogOpen(true)
+        setIsExcelAccountDialogOpen(true)
       }
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Failed to sync quote file.')
     } finally {
       setIsSyncingExcelQuote(false)
     }
-  }, [excelSyncSalesRepOptions])
+  }, [dealers, excelSyncSalesRepOptions])
 
   const handleCancelExcelSyncDialog = useCallback(() => {
     if (isSyncingExcelQuote) {
@@ -2016,6 +2524,93 @@ export default function SalesOpportunitiesPage() {
 
     resetExcelSyncDialog()
   }, [isSyncingExcelQuote, resetExcelSyncDialog])
+
+  const handleConfirmExcelAccountDialog = useCallback(async () => {
+    if (!excelSyncDraft) {
+      return
+    }
+
+    const selectedDealerSourceId = excelSyncDealerSourceIdInput.trim()
+    const newDealerName = excelSyncNewDealerNameInput.trim()
+
+    if (excelSyncAccountMode === 'existing') {
+      if (!selectedDealerSourceId) {
+        setExcelSyncDialogError('Select an Account from the detected matches or search results before continuing.')
+        return
+      }
+
+      const selectedDealer = dealersBySourceId.get(selectedDealerSourceId)
+      const selectedDealerStateCode = resolveUsStateCodeFromInput(selectedDealer?.state)
+
+      setExcelSyncResolvedDealerSourceId(selectedDealerSourceId)
+      setExcelSyncResolvedDealerName(String(selectedDealer?.name || selectedDealerSourceId).trim())
+      setExcelSyncDealerStateCode(selectedDealerStateCode)
+      setExcelSyncDialogError(null)
+      setIsExcelAccountDialogOpen(false)
+      setIsExcelSyncDialogOpen(true)
+      return
+    }
+
+    if (!newDealerName) {
+      setExcelSyncDialogError('Enter a new Account Name before continuing.')
+      return
+    }
+
+    setExcelSyncDialogError(null)
+    setErrorMessage(null)
+    setSuccessMessage(null)
+    setIsSyncingExcelQuote(true)
+
+    try {
+      const createdDealerResponse = await createCrmDealer({
+        name: newDealerName,
+        accountType: 'dealer',
+      })
+      const createdDealer = createdDealerResponse?.dealer
+      const createdDealerSourceId = String(createdDealer?.sourceId ?? '').trim()
+      const createdDealerName = String(createdDealer?.name ?? '').trim() || newDealerName
+      const createdDealerStateCode = resolveUsStateCodeFromInput(createdDealer?.state)
+
+      if (!createdDealerSourceId) {
+        throw new Error('Created account did not return a source id.')
+      }
+
+      setExcelSyncDealerSourceIdInput(createdDealerSourceId)
+      setExcelSyncResolvedDealerSourceId(createdDealerSourceId)
+      setExcelSyncResolvedDealerName(createdDealerName)
+      setExcelSyncDealerStateCode(createdDealerStateCode)
+
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: QUERY_KEYS.crmOpportunitiesDealers }),
+        queryClient.invalidateQueries({ queryKey: QUERY_KEYS.crmDealers }),
+        queryClient.invalidateQueries({ queryKey: QUERY_KEYS.crmPageBootstrap }),
+      ])
+
+      setIsExcelAccountDialogOpen(false)
+      setIsExcelSyncDialogOpen(true)
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to create account.')
+    } finally {
+      setIsSyncingExcelQuote(false)
+    }
+  }, [
+    dealersBySourceId,
+    excelSyncAccountMode,
+    excelSyncDealerSourceIdInput,
+    excelSyncDraft,
+    excelSyncNewDealerNameInput,
+    queryClient,
+  ])
+
+  const handleBackToExcelAccountDialog = useCallback(() => {
+    if (isSyncingExcelQuote) {
+      return
+    }
+
+    setExcelSyncDialogError(null)
+    setIsExcelSyncDialogOpen(false)
+    setIsExcelAccountDialogOpen(true)
+  }, [isSyncingExcelQuote])
 
   const handleConfirmExcelQuoteSync = useCallback(async () => {
     if (!excelSyncDraft) {
@@ -2050,12 +2645,27 @@ export default function SalesOpportunitiesPage() {
       return
     }
 
+    const resolvedDealerSourceId = excelSyncResolvedDealerSourceId.trim()
+
+    if (!resolvedDealerSourceId) {
+      setExcelSyncDialogError('Select an Account in step 1 before syncing.')
+      return
+    }
+
     setExcelSyncDialogError(null)
     setErrorMessage(null)
     setSuccessMessage(null)
     setIsSyncingExcelQuote(true)
 
     try {
+      const dealerFromMap = dealersBySourceId.get(resolvedDealerSourceId)
+      const resolvedCompanyName = String(
+        excelSyncResolvedDealerName
+        || dealerFromMap?.name
+        || excelSyncDraft.companyName
+        || '',
+      ).trim()
+
       const syncInput: CrmExcelQuoteSyncInput = {
         ...excelSyncDraft,
         allowCreateWhenMissingConcept: excelSyncAllowCreateWhenMissingConcept,
@@ -2063,6 +2673,10 @@ export default function SalesOpportunitiesPage() {
         salesRep: selectedSalesRep,
         dealerState: dealerStateCode,
         projectType: projectTypeInput,
+      }
+
+      if (resolvedCompanyName) {
+        syncInput.companyName = resolvedCompanyName
       }
 
       const lookupQuoteId = String(excelSyncLookupResult?.id || '').trim()
@@ -2076,7 +2690,10 @@ export default function SalesOpportunitiesPage() {
 
       if (targetQuote) {
         const baseFormState = createOpportunityDetailsFormState(targetQuote)
-        const stagedFormState = mergeExcelSyncIntoDetailsFormState(baseFormState, syncInput)
+        const stagedFormState = mergeExcelSyncIntoDetailsFormState(baseFormState, syncInput, {
+          dealerSourceId: resolvedDealerSourceId,
+          companyName: resolvedCompanyName,
+        })
         const targetStage = resolveOpportunityStage(targetQuote)
 
         setSelectedOpportunity(targetQuote)
@@ -2100,12 +2717,13 @@ export default function SalesOpportunitiesPage() {
 
         setFormState({
           ...baseFormState,
+          dealerSourceId: resolvedDealerSourceId,
           quoteNumber,
           title: String(syncInput.title ?? '').trim(),
           opportunityDateInput: syncInput.opportunityDate
             ? resolveDateInputFromIso(syncInput.opportunityDate)
             : baseFormState.opportunityDateInput,
-          companyName: String(syncInput.companyName ?? '').trim(),
+          companyName: resolvedCompanyName || String(syncInput.companyName ?? '').trim(),
           contactName: String(syncInput.contactName ?? '').trim(),
           contactEmail: String(syncInput.contactEmail ?? '').trim(),
           contactPhone: String(syncInput.contactPhone ?? '').trim(),
@@ -2140,12 +2758,15 @@ export default function SalesOpportunitiesPage() {
       setIsSyncingExcelQuote(false)
     }
   }, [
+    dealersBySourceId,
     excelSyncDealerStateCode,
     excelSyncDraft,
     excelSyncLookupResult,
     excelSyncAllowCreateWhenMissingConcept,
     excelSyncProjectTypeInput,
     excelSyncQuoteNumberInput,
+    excelSyncResolvedDealerName,
+    excelSyncResolvedDealerSourceId,
     excelSyncSalesRepInput,
     excelSyncSalesRepOptions,
     quotes,
@@ -2289,6 +2910,75 @@ export default function SalesOpportunitiesPage() {
     })
   }, [])
 
+  const handleSendSelectedOpportunityChat = useCallback(async () => {
+    const nextMessage = selectedOpportunityChatDraft.trim()
+
+    if (!selectedOpportunityId || !nextMessage) {
+      return
+    }
+
+    if (!canManage) {
+      setErrorMessage('You do not have permission to post quote chat messages.')
+      return
+    }
+
+    setErrorMessage(null)
+    setSuccessMessage(null)
+    setIsSendingSelectedOpportunityChat(true)
+
+    try {
+      await createCrmQuoteChatMessage(selectedOpportunityId, nextMessage)
+      setSelectedOpportunityChatDraft('')
+      await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.crmQuoteChats(selectedOpportunityId) })
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to send quote chat message.')
+    } finally {
+      setIsSendingSelectedOpportunityChat(false)
+    }
+  }, [
+    canManage,
+    queryClient,
+    selectedOpportunityChatDraft,
+    selectedOpportunityId,
+  ])
+
+  const canManageSelectedOpportunityChatMessage = useCallback((message: CrmQuoteChatMessage) => {
+    if (isCurrentUserAdmin) {
+      return true
+    }
+
+    const createdByUid = String(message.createdByUid ?? '').trim()
+    const createdByEmail = String(message.createdByEmail ?? '').trim().toLowerCase()
+
+    return Boolean(
+      (currentUserUid && createdByUid && currentUserUid === createdByUid)
+      || (currentUserEmail && createdByEmail && currentUserEmail === createdByEmail),
+    )
+  }, [currentUserEmail, currentUserUid, isCurrentUserAdmin])
+
+  const handleDeleteSelectedOpportunityChatMessage = useCallback(async (messageId: string) => {
+    if (!selectedOpportunityId || !messageId) {
+      return
+    }
+
+    if (!window.confirm('Delete this chat message?')) {
+      return
+    }
+
+    setErrorMessage(null)
+    setSuccessMessage(null)
+    setDeletingSelectedOpportunityChatMessageId(messageId)
+
+    try {
+      await removeCrmQuoteChatMessage(selectedOpportunityId, messageId)
+      await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.crmQuoteChats(selectedOpportunityId) })
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to delete quote chat message.')
+    } finally {
+      setDeletingSelectedOpportunityChatMessageId('')
+    }
+  }, [queryClient, selectedOpportunityId])
+
   const handleOpenDialog = useCallback(() => {
     const emptyFormState = createEmptyOpportunityForm()
 
@@ -2302,16 +2992,23 @@ export default function SalesOpportunitiesPage() {
     setIsDialogOpen(true)
   }, [])
 
-  const handleOpenOpportunityDetails = useCallback((quote: CrmQuote) => {
+  const handleOpenOpportunityDetails = useCallback((quote: CrmQuote, initialTab: OpportunityDetailsTab = 'details') => {
     setErrorMessage(null)
     setSuccessMessage(null)
     setDetailsActionMenuAnchorEl(null)
     const nextFormState = createOpportunityDetailsFormState(quote)
+    setSelectedOpportunityChatDraft('')
+    setDeletingSelectedOpportunityChatMessageId('')
+    setSelectedOpportunityDetailsTab(initialTab)
     setSelectedOpportunity(quote)
     setOpportunityDetailsFormState(nextFormState)
     setOpportunityDetailsInitialSnapshot(serializeOpportunityDetailsFormState(nextFormState))
     setPendingExcelSyncPromotionQuoteId(null)
   }, [])
+
+  const handleOpenOpportunityChat = useCallback((quote: CrmQuote) => {
+    handleOpenOpportunityDetails(quote, 'chat')
+  }, [handleOpenOpportunityDetails])
 
   const handleCloseDialog = useCallback(() => {
     if (isSavingOpportunity || isUploadingQuoteDocument) {
@@ -2336,7 +3033,7 @@ export default function SalesOpportunitiesPage() {
   }, [isAddDialogDirty, isSavingOpportunity, isUploadingQuoteDocument])
 
   const handleCloseOpportunityDetails = useCallback(() => {
-    if (isSavingOpportunityDetails || isUploadingSelectedOpportunityDocument) {
+    if (isSavingOpportunityDetails || isUploadingSelectedOpportunityDocument || isSendingSelectedOpportunityChat) {
       return
     }
 
@@ -2352,8 +3049,11 @@ export default function SalesOpportunitiesPage() {
     setSelectedOpportunity(null)
     setOpportunityDetailsFormState(null)
     setOpportunityDetailsInitialSnapshot('')
+    setSelectedOpportunityDetailsTab('details')
+    setSelectedOpportunityChatDraft('')
     setPendingExcelSyncPromotionQuoteId(null)
   }, [
+    isSendingSelectedOpportunityChat,
     isOpportunityDetailsDirty,
     isSavingOpportunityDetails,
     isUploadingSelectedOpportunityDocument,
@@ -2487,6 +3187,7 @@ export default function SalesOpportunitiesPage() {
       const quoteDocumentName = formState.quoteDocumentName.trim()
 
       await createCrmQuote({
+        dealerSourceId: formState.dealerSourceId.trim() || null,
         quoteNumber,
         title,
         companyName: formState.companyName.trim() || null,
@@ -2540,6 +3241,7 @@ export default function SalesOpportunitiesPage() {
     formState.contactEmail,
     formState.contactName,
     formState.contactPhone,
+    formState.dealerSourceId,
     formState.freight,
     formState.freightDescription,
     formState.leadTime,
@@ -2752,7 +3454,9 @@ export default function SalesOpportunitiesPage() {
     setBusyQuoteId(selectedOpportunity.id)
 
     try {
+      const selectedDealerSourceId = opportunityDetailsFormState.dealerSourceId.trim()
       const detailsPayload = {
+        ...(selectedDealerSourceId ? { dealerSourceId: selectedDealerSourceId } : {}),
         quoteNumber: quoteNumber || null,
         title,
         companyName: opportunityDetailsFormState.companyName.trim() || null,
@@ -2880,11 +3584,139 @@ export default function SalesOpportunitiesPage() {
             variant="contained"
             onClick={() => {
               setIsExcelMissingConceptDialogOpen(false)
-              setIsExcelSyncDialogOpen(true)
+              setIsExcelAccountDialogOpen(true)
             }}
             disabled={isSyncingExcelQuote}
           >
             Yes, Continue
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={isExcelAccountDialogOpen}
+        onClose={handleRequestCloseExcelSyncDialog}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Step 1: Match Account</DialogTitle>
+        <DialogContent>
+          <Stack spacing={1.2} sx={{ mt: 0.6 }}>
+            <Typography variant="body2">
+              Detected account from Excel: <strong>{excelSyncAccountCandidateName || 'No company name detected'}</strong>
+            </Typography>
+
+            {excelSyncDetectedAccountMatches.length > 0 ? (
+              <Stack spacing={0.5}>
+                <Typography variant="caption" color="text.secondary">
+                  Matching accounts detected. Click the correct one.
+                </Typography>
+                <Stack direction="row" spacing={0.6} flexWrap="wrap" useFlexGap>
+                  {excelSyncDetectedAccountMatches.map((dealer) => {
+                    const isSelected = excelSyncDealerSourceIdInput === dealer.sourceId
+
+                    return (
+                      <Chip
+                        key={dealer.sourceId}
+                        clickable
+                        color={isSelected ? 'primary' : 'default'}
+                        variant={isSelected ? 'filled' : 'outlined'}
+                        label={resolveDealerSelectionLabel(dealer)}
+                        onClick={() => {
+                          setExcelSyncAccountMode('existing')
+                          setExcelSyncDealerSourceIdInput(dealer.sourceId)
+                        }}
+                        sx={{ maxWidth: '100%' }}
+                      />
+                    )
+                  })}
+                </Stack>
+              </Stack>
+            ) : (
+              <Typography variant="caption" color="text.secondary">
+                No direct account name match found. Select one manually or create a new account.
+              </Typography>
+            )}
+
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.75}>
+              <Chip
+                clickable
+                color={excelSyncAccountMode === 'existing' ? 'primary' : 'default'}
+                variant={excelSyncAccountMode === 'existing' ? 'filled' : 'outlined'}
+                label="Select Existing Account"
+                onClick={() => {
+                  setExcelSyncAccountMode('existing')
+                }}
+              />
+              <Chip
+                clickable
+                color={excelSyncAccountMode === 'create' ? 'primary' : 'default'}
+                variant={excelSyncAccountMode === 'create' ? 'filled' : 'outlined'}
+                label="Create New Account"
+                onClick={() => {
+                  setExcelSyncAccountMode('create')
+
+                  if (!excelSyncNewDealerNameInput.trim()) {
+                    setExcelSyncNewDealerNameInput(excelSyncAccountCandidateName)
+                  }
+                }}
+              />
+            </Stack>
+
+            {excelSyncAccountMode === 'existing' ? (
+              <Autocomplete
+                options={excelSyncDealerOptions}
+                value={selectedExcelSyncDealer}
+                onChange={(_event, value) => {
+                  setExcelSyncDealerSourceIdInput(value?.sourceId || '')
+                }}
+                isOptionEqualToValue={(option, value) => option.sourceId === value.sourceId}
+                getOptionLabel={(option) => resolveDealerSelectionLabel(option)}
+                renderInput={(params) => (
+                  <TextField
+                    {...params}
+                    label="Account"
+                    required
+                    error={excelSyncDialogError === 'Select an Account from the detected matches or search results before continuing.'}
+                    helperText="Choose from detected matches above or search all accounts."
+                  />
+                )}
+              />
+            ) : (
+              <TextField
+                label="New Account Name"
+                required
+                value={excelSyncNewDealerNameInput}
+                onChange={(event) => {
+                  setExcelSyncNewDealerNameInput(event.target.value)
+                }}
+                error={excelSyncDialogError === 'Enter a new Account Name before continuing.'}
+                helperText="Creates a new account now with just the account name."
+              />
+            )}
+
+            {excelSyncDialogError ? (
+              <Typography variant="caption" color="error">
+                {excelSyncDialogError}
+              </Typography>
+            ) : null}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={handleCancelExcelSyncDialog}
+            disabled={isSyncingExcelQuote}
+          >
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            onClick={() => {
+              void handleConfirmExcelAccountDialog()
+            }}
+            disabled={!canManage || !excelSyncDraft || isSyncingExcelQuote}
+          >
+            {isSyncingExcelQuote ? 'Saving Account...' : 'Continue'}
           </Button>
         </DialogActions>
       </Dialog>
@@ -2895,7 +3727,7 @@ export default function SalesOpportunitiesPage() {
         maxWidth="sm"
         fullWidth
       >
-        <DialogTitle>Review Quote Sync</DialogTitle>
+        <DialogTitle>Step 2: Review Quote Sync</DialogTitle>
         <DialogContent>
           <Stack spacing={1.2} sx={{ mt: 0.6 }}>
             {excelSyncAllowCreateWhenMissingConcept ? (
@@ -2909,6 +3741,23 @@ export default function SalesOpportunitiesPage() {
                 File: {excelSyncSourceFileName}
               </Typography>
             ) : null}
+
+            <Stack spacing={0.55}>
+              <TextField
+                label="Linked Account"
+                value={excelSyncResolvedDealerName || excelSyncResolvedDealerSourceId}
+                InputProps={{ readOnly: true }}
+                helperText="Selected in step 1."
+              />
+              <Button
+                size="small"
+                onClick={handleBackToExcelAccountDialog}
+                disabled={isSyncingExcelQuote}
+                sx={{ alignSelf: 'flex-start', textTransform: 'none' }}
+              >
+                Change account
+              </Button>
+            </Stack>
 
             <TextField
               label="Quote Number"
@@ -2960,7 +3809,7 @@ export default function SalesOpportunitiesPage() {
                   label="Dealer State"
                   required
                   error={excelSyncDialogError === 'Select a valid Dealer State from the dropdown before syncing.'}
-                  helperText="Required every time. Type to filter states quickly."
+                  helperText="Defaults from linked account when available. You can change it here."
                 />
               )}
             />
@@ -3112,6 +3961,7 @@ export default function SalesOpportunitiesPage() {
               onDeclineQuote={handleDeclineQuote}
               onDeleteQuote={handleDeleteQuote}
               onOpenDetails={handleOpenOpportunityDetails}
+              onOpenChat={handleOpenOpportunityChat}
             />
           ))}
         </Box>
@@ -3510,7 +4360,7 @@ export default function SalesOpportunitiesPage() {
           {canUseProposalDetailsActions ? (
             <IconButton
               size="medium"
-              disabled={isSavingOpportunityDetails || isUploadingSelectedOpportunityDocument}
+              disabled={isSavingOpportunityDetails || isUploadingSelectedOpportunityDocument || isSendingSelectedOpportunityChat}
               onClick={(event) => {
                 setDetailsActionMenuAnchorEl(event.currentTarget)
               }}
@@ -3529,7 +4379,7 @@ export default function SalesOpportunitiesPage() {
           transformOrigin={{ vertical: 'top', horizontal: 'right' }}
         >
           <MenuItem
-            disabled={!canUseProposalDetailsActions || isSavingOpportunityDetails || isUploadingSelectedOpportunityDocument}
+            disabled={!canUseProposalDetailsActions || isSavingOpportunityDetails || isUploadingSelectedOpportunityDocument || isSendingSelectedOpportunityChat}
             onClick={() => {
               setDetailsActionMenuAnchorEl(null)
               void handleSaveOpportunityDetails('decline')
@@ -3538,7 +4388,7 @@ export default function SalesOpportunitiesPage() {
             Declined
           </MenuItem>
           <MenuItem
-            disabled={!canUseProposalDetailsActions || isSavingOpportunityDetails || isUploadingSelectedOpportunityDocument}
+            disabled={!canUseProposalDetailsActions || isSavingOpportunityDetails || isUploadingSelectedOpportunityDocument || isSendingSelectedOpportunityChat}
             onClick={() => {
               setDetailsActionMenuAnchorEl(null)
               void handleSaveOpportunityDetails('convert_to_order')
@@ -3547,7 +4397,7 @@ export default function SalesOpportunitiesPage() {
             Convert to order
           </MenuItem>
           <MenuItem
-            disabled={!canUseProposalDetailsActions || isSavingOpportunityDetails || isUploadingSelectedOpportunityDocument}
+            disabled={!canUseProposalDetailsActions || isSavingOpportunityDetails || isUploadingSelectedOpportunityDocument || isSendingSelectedOpportunityChat}
             onClick={() => {
               setDetailsActionMenuAnchorEl(null)
               void handleSaveOpportunityDetails('save')
@@ -3566,6 +4416,30 @@ export default function SalesOpportunitiesPage() {
         >
           {selectedOpportunity && opportunityDetailsFormState ? (
             <Stack spacing={2} sx={{ mt: 0.2 }}>
+              <Tabs
+                value={selectedOpportunityDetailsTab}
+                onChange={(_event, nextValue: OpportunityDetailsTab) => {
+                  setSelectedOpportunityDetailsTab(nextValue)
+                }}
+                variant="fullWidth"
+                sx={{
+                  minHeight: 40,
+                  '& .MuiTab-root': {
+                    minHeight: 40,
+                    textTransform: 'none',
+                    fontWeight: 700,
+                  },
+                }}
+              >
+                <Tab value="details" label="Details" />
+                <Tab
+                  value="chat"
+                  label={selectedOpportunityChatCount > 0 ? `Chat (${selectedOpportunityChatCount})` : 'Chat'}
+                />
+              </Tabs>
+
+              {selectedOpportunityDetailsTab === 'details' ? (
+                <>
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.1}>
                 <TextField
                   label="Dealer"
@@ -3955,32 +4829,148 @@ export default function SalesOpportunitiesPage() {
                 )}
               </Stack>
 
-              <TextField
-                label="Notes"
-                value={opportunityDetailsFormState.notes}
-                onChange={(event) => {
-                  setOpportunityDetailsFormState((current) => {
-                    if (!current) {
-                      return current
-                    }
+                </>
+              ) : null}
 
-                    return {
-                      ...current,
-                      notes: event.target.value,
+              {selectedOpportunityDetailsTab === 'chat' ? (
+
+              <Stack spacing={0.8}>
+                <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                  Quote Chat
+                </Typography>
+
+                <Paper
+                  variant="outlined"
+                  sx={{
+                    p: 1,
+                    borderRadius: 1,
+                    borderColor: alpha('#0f4c81', 0.22),
+                    backgroundColor: '#ffffff',
+                    maxHeight: 260,
+                    overflowY: 'auto',
+                  }}
+                >
+                  {selectedOpportunityChatsQuery.isLoading ? (
+                    <Typography variant="caption" color="text.secondary">
+                      Loading chat...
+                    </Typography>
+                  ) : selectedOpportunityChatMessages.length === 0 ? (
+                    <Typography variant="caption" color="text.secondary">
+                      No messages yet.
+                    </Typography>
+                  ) : (
+                    <Stack spacing={0.7}>
+                      {selectedOpportunityChatMessages.map((message) => {
+                        const canDeleteMessage = canManageSelectedOpportunityChatMessage(message)
+                        const isDeletingMessage = deletingSelectedOpportunityChatMessageId === message.id
+
+                        return (
+                          <Box
+                            key={message.id}
+                            sx={{
+                              px: 0.8,
+                              py: 0.65,
+                              borderRadius: 0.9,
+                              border: `1px solid ${alpha('#0f4c81', 0.16)}`,
+                              backgroundColor: alpha('#0f4c81', 0.03),
+                            }}
+                          >
+                            <Stack direction="row" spacing={0.8} alignItems="center" justifyContent="space-between">
+                              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.2 }}>
+                                {resolveQuoteChatAuthorLabel(message)} • {formatQuoteChatTimestamp(message.createdAt)}
+                              </Typography>
+
+                              {canDeleteMessage ? (
+                                <Button
+                                  size="small"
+                                  color="error"
+                                  variant="text"
+                                  startIcon={<DeleteOutlineRoundedIcon fontSize="small" />}
+                                  disabled={isDeletingMessage}
+                                  onClick={() => {
+                                    void handleDeleteSelectedOpportunityChatMessage(message.id)
+                                  }}
+                                >
+                                  {isDeletingMessage ? 'Deleting...' : 'Delete'}
+                                </Button>
+                              ) : null}
+                            </Stack>
+
+                            <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
+                              {String(message.message || '').trim()}
+                            </Typography>
+                          </Box>
+                        )
+                      })}
+                    </Stack>
+                  )}
+                </Paper>
+
+                {selectedOpportunityChatErrorMessage ? (
+                  <Typography variant="caption" color="error">
+                    {selectedOpportunityChatErrorMessage}
+                  </Typography>
+                ) : null}
+
+                <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.8} alignItems={{ xs: 'stretch', sm: 'flex-end' }}>
+                  <TextField
+                    label="New message"
+                    value={selectedOpportunityChatDraft}
+                    onChange={(event) => {
+                      setSelectedOpportunityChatDraft(event.target.value)
+                    }}
+                    disabled={!canManage || isSendingSelectedOpportunityChat}
+                    multiline
+                    minRows={2}
+                    placeholder="Add a note that stays with this quote"
+                    sx={{ flex: 1 }}
+                  />
+                  <Button
+                    variant="contained"
+                    onClick={() => {
+                      void handleSendSelectedOpportunityChat()
+                    }}
+                    disabled={
+                      !canManage
+                      || isSendingSelectedOpportunityChat
+                      || selectedOpportunityChatDraft.trim().length === 0
                     }
-                  })
-                }}
-                disabled={!canManage}
-                multiline
-                minRows={3}
-              />
+                  >
+                    {isSendingSelectedOpportunityChat ? 'Sending...' : 'Send'}
+                  </Button>
+                </Stack>
+              </Stack>
+
+              ) : null}
+
+              {selectedOpportunityDetailsTab === 'details' ? (
+                <TextField
+                  label="Notes"
+                  value={opportunityDetailsFormState.notes}
+                  onChange={(event) => {
+                    setOpportunityDetailsFormState((current) => {
+                      if (!current) {
+                        return current
+                      }
+
+                      return {
+                        ...current,
+                        notes: event.target.value,
+                      }
+                    })
+                  }}
+                  disabled={!canManage}
+                  multiline
+                  minRows={3}
+                />
+              ) : null}
             </Stack>
           ) : null}
         </DialogContent>
         <DialogActions>
           <Button
             onClick={handleCloseOpportunityDetails}
-            disabled={isSavingOpportunityDetails || isUploadingSelectedOpportunityDocument}
+            disabled={isSavingOpportunityDetails || isUploadingSelectedOpportunityDocument || isSendingSelectedOpportunityChat}
           >
             Close Without Saving
           </Button>
@@ -3993,6 +4983,7 @@ export default function SalesOpportunitiesPage() {
               !canManage
               || isSavingOpportunityDetails
               || isUploadingSelectedOpportunityDocument
+              || isSendingSelectedOpportunityChat
               || !opportunityDetailsFormState
             }
           >

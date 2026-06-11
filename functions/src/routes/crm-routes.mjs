@@ -1418,6 +1418,52 @@ export function registerCrmRoutes(app, deps) {
     }
   }
 
+  async function resolveQuoteOrThrow(crmQuotesCollection, quoteId) {
+    const normalizedQuoteId = toTrimmedText(quoteId, 160)
+
+    if (!normalizedQuoteId) {
+      throw {
+        status: 400,
+        message: 'quoteId is required.',
+      }
+    }
+
+    const quote = await crmQuotesCollection.findOne(
+      {
+        id: normalizedQuoteId,
+      },
+      {
+        projection: {
+          _id: 0,
+          id: 1,
+          quoteNumber: 1,
+          title: 1,
+          dealerSourceId: 1,
+          dealerName: 1,
+          status: 1,
+          opportunityStage: 1,
+        },
+      },
+    )
+
+    if (!quote) {
+      throw {
+        status: 404,
+        message: 'Quote not found.',
+      }
+    }
+
+    return {
+      id: toTrimmedText(quote.id, 160),
+      quoteNumber: toTrimmedText(quote.quoteNumber, 120) || null,
+      title: toTrimmedText(quote.title, 240) || null,
+      dealerSourceId: toTrimmedText(quote.dealerSourceId, 160) || null,
+      dealerName: toTrimmedText(quote.dealerName, 240) || null,
+      status: toTrimmedText(quote.status, 60) || null,
+      opportunityStage: toTrimmedText(quote.opportunityStage, 80) || null,
+    }
+  }
+
   let crmAccountChatsIndexesPromise
 
   async function getCrmAccountChatsCollection(collectionsFromCaller = null) {
@@ -1446,6 +1492,37 @@ export function registerCrmRoutes(app, deps) {
     }
 
     return crmAccountChatsCollection
+  }
+
+  let crmQuoteChatsIndexesPromise
+
+  async function getCrmQuoteChatsCollection(collectionsFromCaller = null) {
+    const collections = collectionsFromCaller ?? await getCollections()
+    const crmDatabase = collections?.databasesByDomain?.crm
+
+    if (!crmDatabase) {
+      throw new Error('CRM database is unavailable.')
+    }
+
+    const crmQuoteChatsCollection = crmDatabase.collection('crm_quote_chats')
+
+    if (!crmQuoteChatsIndexesPromise) {
+      crmQuoteChatsIndexesPromise = Promise.all([
+        crmQuoteChatsCollection.createIndex({ id: 1 }, { unique: true }),
+        crmQuoteChatsCollection.createIndex({ quoteId: 1, createdAt: 1 }),
+        crmQuoteChatsCollection.createIndex({ dealerSourceId: 1, createdAt: 1 }),
+        crmQuoteChatsCollection.createIndex({ createdAt: -1 }),
+      ])
+    }
+
+    try {
+      await crmQuoteChatsIndexesPromise
+    } catch (error) {
+      crmQuoteChatsIndexesPromise = undefined
+      throw error
+    }
+
+    return crmQuoteChatsCollection
   }
 
   function canManageCrmAccountChatMessage({ publicUser, authUser, chatMessage }) {
@@ -2176,6 +2253,146 @@ export function registerCrmRoutes(app, deps) {
     }
   })
 
+  app.post('/api/crm/dealers', requireFirebaseAuth, requireSalesManagerOrAdminRole, async (req, res, next) => {
+    try {
+      const { isSalesRep, territoryStates } = resolveCrmAccessScope(req)
+      const body = toOptionalObject(req.body)
+      const name = toTrimmedText(body.name, 240)
+
+      if (!name) {
+        return res.status(400).json({
+          error: 'name is required.',
+        })
+      }
+
+      if (isSalesRep && territoryStates.length === 0) {
+        return res.status(403).json({
+          error: 'No sales territories are assigned to this user.',
+        })
+      }
+
+      const accountTypeInput = toLowerText(body.accountType, 40)
+      const accountType = accountTypeInput || 'dealer'
+
+      if (accountType !== 'dealer' && accountType !== 'designer') {
+        return res.status(400).json({
+          error: "accountType must be 'dealer' or 'designer'.",
+        })
+      }
+
+      const state = normalizeUsStateCode(body.state) || null
+
+      if (isSalesRep && state && !isDealerInTerritory(state, territoryStates)) {
+        return res.status(403).json({
+          error: 'State must be within your assigned sales territories.',
+        })
+      }
+
+      const requestedSourceId = toTrimmedText(body.sourceId, 160)
+      const sourceId = requestedSourceId || `manual-${randomUUID()}`
+      const normalizedEmails = normalizeEmailList([
+        body.email,
+        body.email2,
+        ...toOptionalArray(body.emails),
+      ])
+      const primaryEmail = normalizedEmails[0] || ''
+      const secondaryEmail = normalizedEmails[1] || ''
+      const ownerEmail = toTrimmedText(body.ownerEmail, 200)
+      const ownerEmailLower = toLowerText(ownerEmail, 200)
+      const socialMediaLinks = normalizeSocialMediaLinks(body.socialMediaLinks)
+      const hasSocialMediaLinks = Object.keys(socialMediaLinks).length > 0
+      const socialMedia = Object.prototype.hasOwnProperty.call(body, 'socialMedia')
+        ? (toTrimmedText(body.socialMedia, 2000) || null)
+        : (hasSocialMediaLinks ? toCompactSocialMediaText(socialMediaLinks) : null)
+      const engagementReadinessStatusInput = toLowerText(body.engagementReadinessStatus, 60)
+      const engagementReadinessStatus = engagementReadinessStatusInput || null
+      const engagementReadinessNote = toTrimmedText(body.engagementReadinessNote, 2000) || null
+
+      if (
+        engagementReadinessStatusInput
+        && engagementReadinessStatusInput !== engagementReadinessReady
+        && engagementReadinessStatusInput !== engagementReadinessNotReady
+      ) {
+        return res.status(400).json({
+          error: `engagementReadinessStatus must be '${engagementReadinessReady}', '${engagementReadinessNotReady}', or empty.`,
+        })
+      }
+
+      if (engagementReadinessStatus === engagementReadinessNotReady && !engagementReadinessNote) {
+        return res.status(400).json({
+          error: 'A note is required when engagementReadinessStatus is not_ready.',
+        })
+      }
+
+      const now = nowIso()
+      const { crmAccountsCollection } = await getCollections()
+
+      const dealer = {
+        id: sourceId,
+        sourceId,
+        name,
+        nameLower: toLowerText(name, 240),
+        phone: toTrimmedText(body.phone, 80) || null,
+        phone2: toTrimmedText(body.phone2, 80) || null,
+        email: primaryEmail || null,
+        emailLower: toLowerText(primaryEmail, 200) || null,
+        email2: secondaryEmail || null,
+        emails: normalizedEmails,
+        address: toTrimmedText(body.address, 400) || null,
+        city: toTrimmedText(body.city, 160) || null,
+        state,
+        zip: toTrimmedText(body.zip, 40) || null,
+        country: toTrimmedText(body.country, 120) || null,
+        industry: toTrimmedText(body.industry, 160) || null,
+        accountClass: toTrimmedText(body.accountClass, 160) || accountType,
+        accountType,
+        salesRep: toTrimmedText(body.salesRep, 200) || null,
+        website: toTrimmedText(body.website, 240) || null,
+        accountText: toTrimmedText(body.accountText, 4000) || null,
+        createdDateSource: toIsoDateOrNull(body.createdDateSource) || now,
+        modifiedDateSource: toIsoDateOrNull(body.modifiedDateSource) || now,
+        owner: toTrimmedText(body.owner, 200) || null,
+        ownerEmail: ownerEmail || null,
+        ownerEmailLower: ownerEmailLower || null,
+        pictureUrl: toTrimmedText(body.pictureUrl, 500) || null,
+        pictureUrlSource: toTrimmedText(body.pictureUrlSource, 500) || null,
+        socialMedia,
+        socialMediaLinks: hasSocialMediaLinks ? socialMediaLinks : null,
+        recordStatus: crmRecordStatusActive,
+        engagementReadinessStatus: normalizeEngagementReadinessStatus(engagementReadinessStatus),
+        engagementReadinessNote,
+        isArchived: false,
+        isFavorite: false,
+        contactCountSource: 0,
+        lastImportRunId: null,
+        lastImportedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      }
+
+      try {
+        await crmAccountsCollection.insertOne(dealer)
+      } catch (error) {
+        if (Number(error?.code) === 11000) {
+          return res.status(409).json({
+            error: 'sourceId already exists. Use a unique sourceId or omit it for auto-generation.',
+          })
+        }
+
+        throw error
+      }
+
+      cacheDeleteByPrefix(DEALERS_CACHE_PREFIX)
+      cacheDelete(OVERVIEW_CACHE_KEY)
+
+      return res.status(201).json({
+        dealer,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
   app.get('/api/crm/dealers/:dealerSourceId', requireFirebaseAuth, async (req, res, next) => {
     try {
       const { isSalesRep, territoryStates } = resolveCrmAccessScope(req)
@@ -2859,6 +3076,383 @@ export function registerCrmRoutes(app, deps) {
       })
 
       cacheDeleteByPrefix(DEALERS_CACHE_PREFIX)
+
+      return res.json({
+        ok: true,
+        messageId,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/crm/quotes/:quoteId/chats', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const quoteId = toTrimmedText(req.params.quoteId, 160)
+
+      if (!quoteId) {
+        return res.status(400).json({
+          error: 'quoteId is required.',
+        })
+      }
+
+      const offset = toNonNegativeInteger(req.query?.offset, 0)
+      const limit = Math.min(500, Math.max(1, toNonNegativeInteger(req.query?.limit, 150)))
+      const collections = await getCollections()
+      const { crmQuotesCollection } = collections
+      const crmQuoteChatsCollection = await getCrmQuoteChatsCollection(collections)
+      const quote = await resolveQuoteOrThrow(crmQuotesCollection, quoteId)
+      const filter = {
+        quoteId: quote.id,
+      }
+
+      const [total, messages] = await Promise.all([
+        crmQuoteChatsCollection.countDocuments(filter),
+        crmQuoteChatsCollection
+          .find(
+            filter,
+            {
+              projection: {
+                _id: 0,
+                id: 1,
+                quoteId: 1,
+                dealerSourceId: 1,
+                quoteNumber: 1,
+                message: 1,
+                mentionUserUids: 1,
+                mentionUserEmails: 1,
+                reminder: 1,
+                createdAt: 1,
+                createdByUid: 1,
+                createdByEmail: 1,
+                createdByName: 1,
+                updatedAt: 1,
+                updatedByUid: 1,
+                updatedByEmail: 1,
+                updatedByName: 1,
+              },
+            },
+          )
+          .sort({ createdAt: 1, id: 1 })
+          .skip(offset)
+          .limit(limit)
+          .toArray(),
+      ])
+
+      return res.json({
+        messages,
+        total,
+        offset,
+        limit,
+        hasMore: offset + messages.length < total,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.post('/api/crm/quotes/:quoteId/chats', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const { publicUser } = resolveCrmAccessScope(req)
+      const quoteId = toTrimmedText(req.params.quoteId, 160)
+      const body = toOptionalObject(req.body)
+      const messageText = toTrimmedText(body.message, 4000)
+      const requestedMentionUserUids = normalizeUidList(body.mentionUserUids, 25)
+      const requestedReminder = normalizeChatReminderInput(body.reminder)
+
+      if (!quoteId) {
+        return res.status(400).json({
+          error: 'quoteId is required.',
+        })
+      }
+
+      if (!messageText) {
+        return res.status(400).json({
+          error: 'message is required.',
+        })
+      }
+
+      if (body.reminder && !requestedReminder) {
+        return res.status(400).json({
+          error: 'reminder.dueDate must be a valid ISO date in YYYY-MM-DD format.',
+        })
+      }
+
+      const collections = await getCollections()
+      const {
+        crmQuotesCollection,
+        authUsersCollection,
+        mobileAlertsCollection,
+      } = collections
+      const crmQuoteChatsCollection = await getCrmQuoteChatsCollection(collections)
+      const quote = await resolveQuoteOrThrow(crmQuotesCollection, quoteId)
+      const now = nowIso()
+      const requesterUid = toTrimmedText(req.authUser?.uid, 200)
+      const requesterEmail = toTrimmedText(req.authUser?.email, 200) || null
+      const requestedRecipientUids = normalizeUidList([
+        ...requestedMentionUserUids,
+        ...(requestedReminder?.targetUserUids ?? []),
+      ], 50)
+      const recipientUsers = requestedRecipientUids.length > 0
+        ? await authUsersCollection
+          .find(
+            {
+              uid: {
+                $in: requestedRecipientUids,
+              },
+              approvalStatus: 'approved',
+            },
+            {
+              projection: {
+                _id: 0,
+              },
+            },
+          )
+          .toArray()
+        : []
+      const recipientByUid = new Map(
+        recipientUsers
+          .map((document) => toPublicAuthUser(document))
+          .filter((user) => Boolean(user?.uid))
+          .map((user) => [user.uid, user]),
+      )
+      const mentionRecipientUids = requestedMentionUserUids
+        .filter((uid) => uid !== requesterUid)
+        .filter((uid) => recipientByUid.has(uid))
+      const mentionRecipientEmails = mentionRecipientUids
+        .map((uid) => toTrimmedText(recipientByUid.get(uid)?.email, 200))
+        .filter(Boolean)
+      const reminderRecipientUids = (requestedReminder?.targetUserUids ?? [])
+        .filter((uid) => recipientByUid.has(uid))
+      const reminderRecipientEmails = reminderRecipientUids
+        .map((uid) => toTrimmedText(recipientByUid.get(uid)?.email, 200))
+        .filter(Boolean)
+      const reminder = requestedReminder
+        ? {
+          id: randomUUID(),
+          dueDate: requestedReminder.dueDate,
+          note: requestedReminder.note || null,
+          targetUserUids: reminderRecipientUids,
+          targetUserEmails: reminderRecipientEmails,
+          notifiedAt: null,
+          createdAt: now,
+        }
+        : null
+
+      const message = {
+        id: randomUUID(),
+        quoteId: quote.id,
+        dealerSourceId: quote.dealerSourceId,
+        quoteNumber: quote.quoteNumber,
+        message: messageText,
+        mentionUserUids: mentionRecipientUids,
+        mentionUserEmails: mentionRecipientEmails,
+        reminder,
+        createdAt: now,
+        createdByUid: requesterUid || null,
+        createdByEmail: requesterEmail,
+        createdByName: toTrimmedText(publicUser?.displayName, 200) || null,
+      }
+
+      await crmQuoteChatsCollection.insertOne(message)
+
+      if (mentionRecipientUids.length > 0) {
+        const quoteLabel = quote.quoteNumber || quote.title || quote.id
+
+        await createCrmChatInAppAlert({
+          mobileAlertsCollection,
+          randomUUID,
+          title: `Mentioned in quote chat: ${quoteLabel}`,
+          message: `${toTrimmedText(publicUser?.displayName || requesterEmail || 'A teammate', 120)} mentioned you: ${messageText.slice(0, 300)}`,
+          createdByUid: requesterUid,
+          createdByEmail: requesterEmail,
+          recipientUids: mentionRecipientUids,
+          metadata: {
+            source: 'crm_quote_chat_mention',
+            quoteId: quote.id,
+            quoteNumber: quote.quoteNumber,
+            dealerSourceId: quote.dealerSourceId,
+            dealerName: quote.dealerName,
+            chatMessageId: message.id,
+          },
+        })
+      }
+
+      return res.status(201).json({
+        message,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.patch('/api/crm/quotes/:quoteId/chats/:messageId', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const { publicUser } = resolveCrmAccessScope(req)
+      const quoteId = toTrimmedText(req.params.quoteId, 160)
+      const messageId = toTrimmedText(req.params.messageId, 160)
+      const body = toOptionalObject(req.body)
+      const messageText = toTrimmedText(body.message, 4000)
+
+      if (!quoteId) {
+        return res.status(400).json({
+          error: 'quoteId is required.',
+        })
+      }
+
+      if (!messageId) {
+        return res.status(400).json({
+          error: 'messageId is required.',
+        })
+      }
+
+      if (!messageText) {
+        return res.status(400).json({
+          error: 'message is required.',
+        })
+      }
+
+      const collections = await getCollections()
+      const { crmQuotesCollection } = collections
+      const crmQuoteChatsCollection = await getCrmQuoteChatsCollection(collections)
+      const quote = await resolveQuoteOrThrow(crmQuotesCollection, quoteId)
+      const existingMessage = await crmQuoteChatsCollection.findOne(
+        {
+          id: messageId,
+          quoteId: quote.id,
+        },
+        {
+          projection: {
+            _id: 0,
+            id: 1,
+            quoteId: 1,
+            createdByUid: 1,
+            createdByEmail: 1,
+          },
+        },
+      )
+
+      if (!existingMessage) {
+        return res.status(404).json({
+          error: 'Chat message not found.',
+        })
+      }
+
+      if (!canManageCrmAccountChatMessage({
+        publicUser,
+        authUser: req.authUser,
+        chatMessage: existingMessage,
+      })) {
+        return res.status(403).json({
+          error: 'You can only edit your own chat messages unless you are an admin.',
+        })
+      }
+
+      const now = nowIso()
+      const message = await crmQuoteChatsCollection.findOneAndUpdate(
+        {
+          id: messageId,
+          quoteId: quote.id,
+        },
+        {
+          $set: {
+            message: messageText,
+            updatedAt: now,
+            updatedByUid: toTrimmedText(req.authUser?.uid, 200) || null,
+            updatedByEmail: toTrimmedText(req.authUser?.email, 200) || null,
+            updatedByName: toTrimmedText(publicUser?.displayName, 200) || null,
+          },
+        },
+        {
+          returnDocument: 'after',
+          projection: {
+            _id: 0,
+            id: 1,
+            quoteId: 1,
+            dealerSourceId: 1,
+            quoteNumber: 1,
+            message: 1,
+            mentionUserUids: 1,
+            mentionUserEmails: 1,
+            reminder: 1,
+            createdAt: 1,
+            createdByUid: 1,
+            createdByEmail: 1,
+            createdByName: 1,
+            updatedAt: 1,
+            updatedByUid: 1,
+            updatedByEmail: 1,
+            updatedByName: 1,
+          },
+        },
+      )
+
+      return res.json({
+        message,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.delete('/api/crm/quotes/:quoteId/chats/:messageId', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const { publicUser } = resolveCrmAccessScope(req)
+      const quoteId = toTrimmedText(req.params.quoteId, 160)
+      const messageId = toTrimmedText(req.params.messageId, 160)
+
+      if (!quoteId) {
+        return res.status(400).json({
+          error: 'quoteId is required.',
+        })
+      }
+
+      if (!messageId) {
+        return res.status(400).json({
+          error: 'messageId is required.',
+        })
+      }
+
+      const collections = await getCollections()
+      const { crmQuotesCollection } = collections
+      const crmQuoteChatsCollection = await getCrmQuoteChatsCollection(collections)
+      const quote = await resolveQuoteOrThrow(crmQuotesCollection, quoteId)
+      const existingMessage = await crmQuoteChatsCollection.findOne(
+        {
+          id: messageId,
+          quoteId: quote.id,
+        },
+        {
+          projection: {
+            _id: 0,
+            id: 1,
+            quoteId: 1,
+            createdByUid: 1,
+            createdByEmail: 1,
+          },
+        },
+      )
+
+      if (!existingMessage) {
+        return res.status(404).json({
+          error: 'Chat message not found.',
+        })
+      }
+
+      if (!canManageCrmAccountChatMessage({
+        publicUser,
+        authUser: req.authUser,
+        chatMessage: existingMessage,
+      })) {
+        return res.status(403).json({
+          error: 'You can only delete your own chat messages unless you are an admin.',
+        })
+      }
+
+      await crmQuoteChatsCollection.deleteOne({
+        id: messageId,
+        quoteId: quote.id,
+      })
 
       return res.json({
         ok: true,
@@ -4817,7 +5411,8 @@ export function registerCrmRoutes(app, deps) {
       const projectType = normalizeProjectType(req.query?.projectType)
       const searchRegex = buildContainsRegex(req.query?.search, 220)
       const limit = Math.min(500, Math.max(1, toNonNegativeInteger(req.query?.limit, 120)))
-      const { crmQuotesCollection } = await getCollections()
+      const collections = await getCollections()
+      const { crmQuotesCollection } = collections
       const filterClauses = []
 
       if (status && status !== 'all') {
@@ -4900,8 +5495,57 @@ export function registerCrmRoutes(app, deps) {
         .limit(limit)
         .toArray()
 
+      const quoteIds = quotes
+        .map((quote) => toTrimmedText(quote?.id, 160))
+        .filter(Boolean)
+      const chatMessageCountByQuoteId = new Map()
+
+      if (quoteIds.length > 0) {
+        const crmQuoteChatsCollection = await getCrmQuoteChatsCollection(collections)
+        const groupedCounts = await crmQuoteChatsCollection
+          .aggregate([
+            {
+              $match: {
+                quoteId: {
+                  $in: quoteIds,
+                },
+              },
+            },
+            {
+              $group: {
+                _id: '$quoteId',
+                total: {
+                  $sum: 1,
+                },
+              },
+            },
+          ])
+          .toArray()
+
+        groupedCounts.forEach((entry) => {
+          const quoteId = toTrimmedText(entry?._id, 160)
+
+          if (!quoteId) {
+            return
+          }
+
+          chatMessageCountByQuoteId.set(quoteId, Number(entry?.total ?? 0))
+        })
+      }
+
+      const quotesWithChatCounts = quotes.map((quote) => {
+        const quoteId = toTrimmedText(quote?.id, 160)
+
+        return {
+          ...quote,
+          chatMessageCount: quoteId
+            ? Number(chatMessageCountByQuoteId.get(quoteId) ?? 0)
+            : 0,
+        }
+      })
+
       return res.json({
-        quotes,
+        quotes: quotesWithChatCounts,
       })
     } catch (error) {
       next(error)

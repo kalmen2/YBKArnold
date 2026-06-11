@@ -12,12 +12,14 @@ import { registerAdminApiRoutes } from './src/routes/admin-api-routes.mjs'
 import { registerAlertsRoutes } from './src/routes/alerts-routes.mjs'
 import { registerAuthRoutes } from './src/routes/auth-routes.mjs'
 import { registerCrmRoutes } from './src/routes/crm-routes.mjs'
+import { registerEmailIntakeRoutes } from './src/routes/email-intake-routes.mjs'
 import { registerDashboardSupportRoutes } from './src/routes/dashboard-support-routes.mjs'
 import { registerEmailRoutes } from './src/routes/email-routes.mjs'
 import { registerOrderPhotoRoutes } from './src/routes/order-photos-routes.mjs'
 import { registerOrdersRoutes } from './src/routes/orders-routes.mjs'
 import { registerPurchasingRoutes } from './src/routes/purchasing-routes.mjs'
 import { registerQuickBooksRoutes } from './src/routes/quickbooks-routes.mjs'
+import { registerSmsBridgeRoutes } from './src/routes/sms-bridge-routes.mjs'
 import { registerTimesheetRoutes } from './src/routes/timesheet-routes.mjs'
 import { registerVisitorsRoutes } from './src/routes/visitors-routes.mjs'
 import { createAuthUtils } from './src/services/auth-utils.mjs'
@@ -60,6 +62,7 @@ import {
 } from './src/utils/value-utils.mjs'
 
 export const app = express()
+app.set('trust proxy', 1)
 
 const allowedOrigins = String(process.env.ALLOWED_ORIGINS ?? '').trim()
   ? String(process.env.ALLOWED_ORIGINS).split(',').map((o) => o.trim()).filter(Boolean)
@@ -221,6 +224,13 @@ const crmReminderDispatchCron = String(process.env.CRM_REMINDER_DISPATCH_CRON ??
 const crmReminderDispatchTimeZone =
   String(process.env.CRM_REMINDER_DISPATCH_TIMEZONE ?? authAccessTimeZoneNewJersey).trim()
   || authAccessTimeZoneNewJersey
+const emailIntakeSyncCron = String(process.env.EMAIL_INTAKE_SYNC_CRON ?? '*/10 * * * *').trim() || '*/10 * * * *'
+const emailIntakeSyncTimeZone =
+  String(process.env.EMAIL_INTAKE_SYNC_TIMEZONE ?? authAccessTimeZoneNewJersey).trim()
+  || authAccessTimeZoneNewJersey
+const emailIntakeScheduledSyncEnabled = /^(1|true|yes|on)$/i.test(
+  String(process.env.EMAIL_INTAKE_SCHEDULED_SYNC_ENABLED ?? '').trim(),
+)
 const shipTransitionRecentWindowHours = Number(process.env.MONDAY_SHIP_TRANSITION_WINDOW_HOURS ?? 72)
 const systemRunLogsSnapshotKey = 'system_run_logs'
 const maxSystemRunLogs = 300
@@ -411,6 +421,7 @@ const {
 
 const {
   generateSupportReply,
+  classifyEmailIntakeSuggestion,
   batchSummarizeComments,
   chatForRules,
   findExactItemPurchaseOptions,
@@ -690,10 +701,12 @@ function listRegisteredApiRoutes() {
     'src/routes/crm-routes.mjs',
     'src/routes/dashboard-support-routes.mjs',
     'src/routes/email-routes.mjs',
+    'src/routes/email-intake-routes.mjs',
     'src/routes/order-photos-routes.mjs',
     'src/routes/orders-routes.mjs',
     'src/routes/purchasing-routes.mjs',
     'src/routes/quickbooks-routes.mjs',
+    'src/routes/sms-bridge-routes.mjs',
     'src/routes/timesheet-routes.mjs',
     'src/routes/visitors-routes.mjs',
   ]
@@ -1575,6 +1588,7 @@ function listRegisteredApiRoutes() {
 
 const routeDeps = {
   batchSummarizeComments,
+  classifyEmailIntakeSuggestion,
   buildApiKeyPreview,
   chatForRules,
   findExactItemPurchaseOptions,
@@ -2167,9 +2181,11 @@ registerCrmRoutes(app, routeDeps)
 registerOrdersRoutes(app, routeDeps)
 registerDashboardSupportRoutes(app, routeDeps)
 registerEmailRoutes(app, routeDeps)
+const { runEmailIntakeSyncCycle } = registerEmailIntakeRoutes(app, routeDeps)
 registerOrderPhotoRoutes(app, routeDeps)
 registerPurchasingRoutes(app, routeDeps)
 registerQuickBooksRoutes(app, routeDeps)
+registerSmsBridgeRoutes(app, routeDeps)
 registerTimesheetRoutes(app, routeDeps)
 registerVisitorsRoutes(app, routeDeps)
 app.use((error, _req, res, _next) => {
@@ -2271,6 +2287,36 @@ export const dispatchCrmReminderNotifications = functions
       asOfDate,
       ...summary,
     }
+  })
+
+export const scheduledEmailIntakeSync = functions
+  .region('us-central1')
+  .runWith({
+    timeoutSeconds: 540,
+    memory: '512MB',
+  })
+  .pubsub.schedule(emailIntakeSyncCron)
+  .timeZone(emailIntakeSyncTimeZone)
+  .onRun(async () => {
+    if (!emailIntakeScheduledSyncEnabled) {
+      const summary = {
+        skipped: true,
+        reason: 'Scheduled email intake sync is disabled. Use manual Sync from Admin Email Review.',
+        completedAt: new Date().toISOString(),
+      }
+
+      console.info('scheduledEmailIntakeSync skipped.', summary)
+
+      return summary
+    }
+
+    const summary = await runEmailIntakeSyncCycle({
+      maxConnections: 80,
+    })
+
+    console.info('scheduledEmailIntakeSync completed.', summary)
+
+    return summary
   })
 
 export const apiV1 = functions

@@ -110,6 +110,43 @@ function normalizeProgressStatusDetails(details) {
   }))
 }
 
+function normalizeOrderProgressJobName(value) {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+}
+
+function toIsoDateOnly(value) {
+  const normalized = normalizeText(value, 80)
+
+  if (!normalized) {
+    return null
+  }
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+    return normalized
+  }
+
+  const parsedMs = Date.parse(normalized)
+
+  if (!Number.isFinite(parsedMs)) {
+    return null
+  }
+
+  return new Date(parsedMs).toISOString().slice(0, 10)
+}
+
+function buildShippedProgressRecordId(normalizedJobName, date) {
+  const normalizedKey = String(normalizedJobName ?? '')
+    .trim()
+    .replace(/[^a-z0-9]+/gi, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 120)
+
+  return `auto_shipped_${normalizedKey || 'unknown'}_${date}`
+}
+
 export function createOrdersUnifiedService(deps) {
   const {
     fetchMondayBoardItemNames,
@@ -589,6 +626,118 @@ export function createOrdersUnifiedService(deps) {
     }
   }
 
+  async function enforceShippedOrderProgressFloor({
+    mergedRows,
+    orderProgressCollection,
+    refreshedAt,
+    warnings,
+  }) {
+    const shippedRowsByJob = new Map()
+
+    ;(Array.isArray(mergedRows) ? mergedRows : []).forEach((row) => {
+      if (!row?.is_shipped) {
+        return
+      }
+
+      const orderNumber = normalizeText(row?.order_number, 120)
+
+      if (!orderNumber) {
+        return
+      }
+
+      const normalizedJobName = normalizeOrderProgressJobName(orderNumber)
+
+      if (!normalizedJobName) {
+        return
+      }
+
+      const shippedDate = toIsoDateOnly(row?.shipped_at) || toIsoDateOnly(refreshedAt)
+
+      if (!shippedDate) {
+        return
+      }
+
+      const existing = shippedRowsByJob.get(normalizedJobName)
+
+      if (!existing || shippedDate < existing.shippedDate) {
+        shippedRowsByJob.set(normalizedJobName, {
+          normalizedJobName,
+          orderNumber,
+          shippedDate,
+        })
+      }
+    })
+
+    if (shippedRowsByJob.size === 0) {
+      return {
+        shippedProgressTrackedOrderCount: 0,
+        shippedProgressUpsertedCount: 0,
+        shippedProgressCorrectedCount: 0,
+      }
+    }
+
+    try {
+      const upsertOperations = [...shippedRowsByJob.values()].map((row) => ({
+        updateOne: {
+          filter: {
+            date: row.shippedDate,
+            normalizedJobName: row.normalizedJobName,
+          },
+          update: {
+            $set: {
+              date: row.shippedDate,
+              jobName: row.orderNumber,
+              normalizedJobName: row.normalizedJobName,
+              readyPercent: 100,
+              updatedAt: refreshedAt,
+            },
+            $setOnInsert: {
+              id: buildShippedProgressRecordId(row.normalizedJobName, row.shippedDate),
+              createdAt: refreshedAt,
+              isWarranty: false,
+            },
+          },
+          upsert: true,
+        },
+      }))
+
+      const upsertResult = await orderProgressCollection.bulkWrite(upsertOperations, { ordered: false })
+      let shippedProgressCorrectedCount = 0
+
+      for (const row of shippedRowsByJob.values()) {
+        const correctionResult = await orderProgressCollection.updateMany(
+          {
+            normalizedJobName: row.normalizedJobName,
+            date: { $gte: row.shippedDate },
+            readyPercent: { $ne: 100 },
+          },
+          {
+            $set: {
+              readyPercent: 100,
+              updatedAt: refreshedAt,
+            },
+          },
+        )
+
+        shippedProgressCorrectedCount += Number(correctionResult?.modifiedCount ?? 0)
+      }
+
+      return {
+        shippedProgressTrackedOrderCount: shippedRowsByJob.size,
+        shippedProgressUpsertedCount: Number(upsertResult?.upsertedCount ?? 0),
+        shippedProgressCorrectedCount,
+      }
+    } catch (error) {
+      warnings.push(`Shipped manager progress floor failed: ${normalizeText(error?.message, 400) || 'unknown error'}`)
+
+      return {
+        shippedProgressTrackedOrderCount: shippedRowsByJob.size,
+        shippedProgressUpsertedCount: 0,
+        shippedProgressCorrectedCount: 0,
+      }
+    }
+  }
+
   // -- Main refresh ---------------------------------------------------------
 
   async function runRefresh() {
@@ -852,6 +1001,13 @@ export function createOrdersUnifiedService(deps) {
       return row
     })
 
+    const shippedProgressFloorStats = await enforceShippedOrderProgressFloor({
+      mergedRows,
+      orderProgressCollection,
+      refreshedAt,
+      warnings,
+    })
+
     if (mergedRows.length > 0) {
       await ordersUnifiedCollection.bulkWrite(
         mergedRows.map((row) => ({
@@ -895,6 +1051,9 @@ export function createOrdersUnifiedService(deps) {
       quickBooksOnlyShippedCheckedCount: quickBooksOnlyCandidates.length,
       quickBooksOnlyMarkedShippedCount,
       shippedDetailEnrichedCount,
+      shippedProgressTrackedOrderCount: shippedProgressFloorStats.shippedProgressTrackedOrderCount,
+      shippedProgressUpsertedCount: shippedProgressFloorStats.shippedProgressUpsertedCount,
+      shippedProgressCorrectedCount: shippedProgressFloorStats.shippedProgressCorrectedCount,
       quickBooksProjectCount: Array.isArray(quickBooksData?.projects)
         ? quickBooksData.projects.length
         : 0,
@@ -912,13 +1071,20 @@ export function createOrdersUnifiedService(deps) {
     if (inFlightRefresh) {
       return inFlightRefresh
     }
-    const promise = runRefresh()
-    inFlightRefresh = promise.finally(() => {
-      if (inFlightRefresh === promise) {
-        inFlightRefresh = null
-      }
-    })
-    return inFlightRefresh
+    const refreshPromise = runRefresh()
+    inFlightRefresh = refreshPromise
+
+    refreshPromise
+      .finally(() => {
+        if (inFlightRefresh === refreshPromise) {
+          inFlightRefresh = null
+        }
+      })
+      .catch(() => {
+        // Swallow cleanup-chain rejection; caller receives refreshPromise.
+      })
+
+    return refreshPromise
   }
 
   return { refreshOrdersUnifiedCollection }
