@@ -17,6 +17,54 @@ export function createMongoCollectionsService({
   const mongoClientConnectPromisesByUri = new Map()
   const databasePromisesByDomain = new Map()
   let indexesPromise
+  const defaultEmailIntakeRules = [
+    '## Email Intake Routing and Chat Importance Rules (Customer-facing)',
+    '',
+    'Goal:',
+    '- Capture only important customer/dealer events worth looking back on later.',
+    '- Route each email to one destination type: quote, order, account, or none.',
+    '',
+    'Scope:',
+    '- This system is for customer/dealer-facing communication and customer-impacting updates.',
+    '- Ignore vendor/internal procurement noise by default: vendor invoice requests, vendor payment release updates, purchase-order processing, supplier upset messages, freight-only coordination, and internal workflow chatter.',
+    '- Only include vendor/internal context when it directly creates a meaningful customer-facing quote/order/account impact.',
+    '',
+    'What is important:',
+    '- Decisions, approvals, commitments, blockers, deadlines, risk, escalations, and service-quality issues.',
+    '- Price/discount changes, rush requests, late status, install/reinstall impact, and any change that affects customer expectations.',
+    '- Account-level complaints or relationship issues (for example: customer service complaints).',
+    '- Casual/random questions without long-term impact should usually be treated as none.',
+    '',
+    'Destination rules:',
+    '- quote:',
+    '  - Use for pre-order quote-stage communication.',
+    '  - Important examples: discount requests, quote revisions, quote acceptance/decline, meaningful pricing negotiation.',
+    '  - Random quote Q&A without business impact should not be logged as important.',
+    '- order:',
+    '  - Use when communication is tied to an order number or ACK/acknowledgment number.',
+    '  - Important examples: late order, rush request, production/shipping delay, install/reinstall schedule risk, quality issue, corrective action.',
+    '  - Prefer order as primary when order-specific execution detail exists.',
+    '- account:',
+    '  - Use for dealer/customer relationship-level issues.',
+    '  - Important examples: complaints about service, trust/escalation concerns, recurring account behavior that leadership should remember.',
+    '- none:',
+    '  - Use when there is no clear destination match or no important customer-facing event to remember.',
+    '',
+    'Order + Account overlap handling:',
+    '- If an event belongs to both order and account, keep detailed facts in order context.',
+    '- Account context should keep only a high-level signal (example: "Order 12345 late") without deep operational detail.',
+    '- Order remains the detailed source of truth.',
+    '',
+    'Summary style:',
+    '- Write one concise plain-English sentence by default.',
+    '- Use two short sentences only when one sentence would lose critical context.',
+    '- Never output raw email header dumps (no "From:", "To:", etc.).',
+    '- For ACK threads, clearly mention acknowledgment/order context.',
+    '',
+    'Confidence:',
+    '- Return confidence in range 0..1.',
+    '- Use high confidence only when destination and summary are strongly supported by the message content.',
+  ].join('\n')
 
   function isTransientMongoError(error) {
     const message = String(error?.message ?? '').toLowerCase()
@@ -517,14 +565,37 @@ export function createMongoCollectionsService({
     const categories = ['support', 'summaries', 'general', 'purchasing', 'email_intake']
 
     for (const category of categories) {
+      const defaultContent = category === 'email_intake'
+        ? defaultEmailIntakeRules
+        : ''
+
       await aiRulesCollection.updateOne(
         { category },
         {
           $set: { updatedAt: now },
-          $setOnInsert: { category, content: '', createdAt: now },
+          $setOnInsert: { category, content: defaultContent, createdAt: now },
         },
         { upsert: true },
       )
+
+      if (category === 'email_intake') {
+        await aiRulesCollection.updateOne(
+          {
+            category,
+            $or: [
+              { content: { $exists: false } },
+              { content: null },
+              { content: '' },
+            ],
+          },
+          {
+            $set: {
+              content: defaultEmailIntakeRules,
+              updatedAt: now,
+            },
+          },
+        )
+      }
     }
   }
 

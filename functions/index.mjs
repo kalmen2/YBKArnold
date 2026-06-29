@@ -19,6 +19,7 @@ import { registerOrderPhotoRoutes } from './src/routes/order-photos-routes.mjs'
 import { registerOrdersRoutes } from './src/routes/orders-routes.mjs'
 import { registerPurchasingRoutes } from './src/routes/purchasing-routes.mjs'
 import { registerQuickBooksRoutes } from './src/routes/quickbooks-routes.mjs'
+import { registerSlackRoutes } from './src/routes/slack-routes.mjs'
 import { registerSmsBridgeRoutes } from './src/routes/sms-bridge-routes.mjs'
 import { registerTimesheetRoutes } from './src/routes/timesheet-routes.mjs'
 import { registerVisitorsRoutes } from './src/routes/visitors-routes.mjs'
@@ -79,7 +80,13 @@ app.use(cors({
       return callback(null, true)
     }
 
-    if (allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+    // Fail closed: browser origins are only allowed when explicitly listed in
+    // ALLOWED_ORIGINS. An empty list blocks all cross-origin browser access.
+    if (allowedOrigins.length === 0) {
+      return callback(new Error('CORS origin list is not configured.'))
+    }
+
+    if (allowedOrigins.includes(origin)) {
       return callback(null, true)
     }
 
@@ -87,7 +94,12 @@ app.use(cors({
   },
   credentials: true,
 }))
-app.use(express.json({ limit: '12mb' }))
+app.use(express.json({
+  limit: '12mb',
+  verify: (req, _res, buf) => {
+    req.rawBody = buf
+  },
+}))
 
 // General API rate limit: 300 requests per minute per IP
 app.use('/api/', rateLimit({
@@ -213,6 +225,9 @@ const defaultMobileIosLatestBuild = Number(process.env.MOBILE_IOS_LATEST_BUILD ?
 const defaultMobileLatestVersion = String(process.env.MOBILE_LATEST_VERSION ?? '').trim()
 const expoPushApiUrl = 'https://exp.host/--/api/v2/push/send'
 const openAiApiKey = String(process.env.OPENAI_API_KEY ?? '').trim()
+const slackSigningSecret = String(process.env.SLACK_SIGNING_SECRET ?? '').trim()
+const slackBotToken = String(process.env.SLACK_BOT_TOKEN ?? '').trim()
+const slackAllowedChannelIds = String(process.env.SLACK_ALLOWED_CHANNEL_IDS ?? '').trim()
 const apiKeyPepper = String(process.env.API_KEY_PEPPER ?? '').trim()
 const zendeskTicketFieldCacheTtlMs = 30 * 60 * 1000
 const zendeskTicketFieldErrorCacheTtlMs = 5 * 60 * 1000
@@ -421,6 +436,7 @@ const {
 
 const {
   generateSupportReply,
+  generateSlackReply,
   classifyEmailIntakeSuggestion,
   batchSummarizeComments,
   chatForRules,
@@ -526,6 +542,7 @@ const {
   fetchMondayDashboardSnapshot,
   fetchMondayStatusColumnOptions,
   invalidateMondayBoardNamesCache,
+  moveMondayItemToBoard,
   updateMondayItemName,
   updateMondayItemStatusColumn,
   updateMondayItemTextColumn,
@@ -603,6 +620,9 @@ const {
   normalizeApiKeyValue,
   normalizeEmail,
   ownerEmail,
+  slackAllowedChannelIds,
+  slackBotToken,
+  slackSigningSecret,
   resolveAuthClientPlatformFromRequest,
   toPublicAuthUser,
   extractRequestIpAddress,
@@ -1594,6 +1614,7 @@ const routeDeps = {
   findExactItemPurchaseOptions,
   resolvePurchasingItemSearchMatches,
   generateSupportReply,
+  generateSlackReply,
   generateApiKeyValue,
   allocateWorkerNumbers,
   authAccessTimeZoneNewJersey,
@@ -1643,6 +1664,7 @@ const routeDeps = {
   mobileAlertTargetModeSelected,
   mobilePushTokenProviderExpo,
   mobilePushTokenProviderFcm,
+  moveMondayItemToBoard,
   normalizeAnyPushToken,
   normalizeAuthAccessTimeZone,
   normalizeAuthClientAccessMode,
@@ -2185,6 +2207,7 @@ const { runEmailIntakeSyncCycle } = registerEmailIntakeRoutes(app, routeDeps)
 registerOrderPhotoRoutes(app, routeDeps)
 registerPurchasingRoutes(app, routeDeps)
 registerQuickBooksRoutes(app, routeDeps)
+registerSlackRoutes(app, routeDeps)
 registerSmsBridgeRoutes(app, routeDeps)
 registerTimesheetRoutes(app, routeDeps)
 registerVisitorsRoutes(app, routeDeps)

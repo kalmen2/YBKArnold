@@ -147,6 +147,24 @@ function buildShippedProgressRecordId(normalizedJobName, date) {
   return `auto_shipped_${normalizedKey || 'unknown'}_${date}`
 }
 
+function shouldFlagOrderAsMovedToShippedOutsideWebsite(row, orderTrackBoardId) {
+  if (!row?.has_monday_record) {
+    return false
+  }
+
+  const previousBoardId = normalizeText(row?.monday_board_id, 120)
+
+  if (!orderTrackBoardId) {
+    return true
+  }
+
+  if (!previousBoardId) {
+    return true
+  }
+
+  return previousBoardId === orderTrackBoardId
+}
+
 export function createOrdersUnifiedService(deps) {
   const {
     fetchMondayBoardItemNames,
@@ -229,6 +247,10 @@ export function createOrdersUnifiedService(deps) {
         bol: normalizeText(order?.bol, 200) || null,
         BOL_cached: normalizeText(order?.bolCachedUrl, 800) || null,
         BOL_source: normalizeText(order?.bolUrl, 800) || null,
+        signed_bol: normalizeText(order?.signedBol, 200) || null,
+        Signed_BOL_source: normalizeText(order?.signedBolUrl, 800) || null,
+        inspection_sheet: normalizeText(order?.inspectionSheet, 200) || null,
+        Inspection_sheet_source: normalizeText(order?.inspectionSheetUrl, 800) || null,
         po_number: normalizeText(order?.poNumber, 120) || null,
         monday_notes: normalizeText(order?.notes, 2000) || null,
         monday_description: normalizeText(order?.description, 2000) || null,
@@ -276,6 +298,8 @@ export function createOrdersUnifiedService(deps) {
       incoming.Shop_drawing = incoming.Shop_drawing_cached || incoming.Shop_drawing_source || null
       incoming.Cut_list = incoming.Cut_list_cached || incoming.Cut_list_source || null
       incoming.BOL = incoming.BOL_cached || incoming.BOL_source || null
+      incoming.Signed_BOL = incoming.Signed_BOL_source || null
+      incoming.Inspection_sheet = incoming.Inspection_sheet_source || null
 
       if (!row.order_number && incoming.order_number) {
         row.order_number = incoming.order_number
@@ -293,6 +317,12 @@ export function createOrdersUnifiedService(deps) {
           BOL_cached: incoming.BOL_cached || null,
           BOL_source: incoming.BOL_source || null,
           BOL: incoming.BOL || row.BOL,
+          signed_bol: incoming.signed_bol || row.signed_bol,
+          Signed_BOL_source: incoming.Signed_BOL_source || null,
+          Signed_BOL: incoming.Signed_BOL || row.Signed_BOL,
+          inspection_sheet: incoming.inspection_sheet || row.inspection_sheet,
+          Inspection_sheet_source: incoming.Inspection_sheet_source || null,
+          Inspection_sheet: incoming.Inspection_sheet || row.Inspection_sheet,
           po_number: incoming.po_number || row.po_number,
           monday_notes: incoming.monday_notes || row.monday_notes,
           monday_description: incoming.monday_description || row.monday_description,
@@ -564,6 +594,8 @@ export function createOrdersUnifiedService(deps) {
         row.ship_to = normalizeText(detail?.shipTo, 500) || row.ship_to
         row.ship_notes = normalizeText(detail?.shipNotes, 2000) || row.ship_notes
         row.bol = normalizeText(detail?.bol, 200) || row.bol
+        row.signed_bol = normalizeText(detail?.signedBol, 200) || row.signed_bol
+        row.inspection_sheet = normalizeText(detail?.inspectionSheet, 200) || row.inspection_sheet
         row.po_number = normalizeText(detail?.poNumber, 120) || row.po_number
         row.monday_notes = normalizeText(detail?.notes, 2000) || row.monday_notes
         row.monday_description = normalizeText(detail?.description, 2000) || row.monday_description
@@ -613,6 +645,18 @@ export function createOrdersUnifiedService(deps) {
         if (sourceBolUrl) {
           row.BOL_source = sourceBolUrl
           row.BOL = row.BOL_cached || row.BOL_source || row.BOL
+        }
+
+        const sourceSignedBolUrl = normalizeText(detail?.signedBolUrl, 800) || null
+        if (sourceSignedBolUrl) {
+          row.Signed_BOL_source = sourceSignedBolUrl
+          row.Signed_BOL = row.Signed_BOL_source || row.Signed_BOL
+        }
+
+        const sourceInspectionSheetUrl = normalizeText(detail?.inspectionSheetUrl, 800) || null
+        if (sourceInspectionSheetUrl) {
+          row.Inspection_sheet_source = sourceInspectionSheetUrl
+          row.Inspection_sheet = row.Inspection_sheet_source || row.Inspection_sheet
         }
 
         row.hazard_reason = null
@@ -811,6 +855,10 @@ export function createOrdersUnifiedService(deps) {
       bol: order?.bol,
       bolCachedUrl: order?.bolCachedUrl,
       bolUrl: order?.bolUrl,
+      signedBol: order?.signedBol,
+      signedBolUrl: order?.signedBolUrl,
+      inspectionSheet: order?.inspectionSheet,
+      inspectionSheetUrl: order?.inspectionSheetUrl,
       poNumber: order?.poNumber,
       notes: order?.notes,
       description: order?.description,
@@ -884,6 +932,7 @@ export function createOrdersUnifiedService(deps) {
     let carryoverHazardCount = 0
     let quickBooksOnlyMarkedShippedCount = 0
     const matchedRowsByItemId = new Map()
+    const movedToShippedOutsideWebsiteRows = []
 
     rowsToCheckOnShipped.forEach((row) => {
       const match = shippedLookup ? findNameLookupMatch(row, shippedLookup) : null
@@ -891,6 +940,7 @@ export function createOrdersUnifiedService(deps) {
       if (match) {
         const matchedItemId = normalizeText(match?.id, 120)
         const existingShipped = existingShippedByOrderKey.get(normalizeText(row.orderKey, 200))
+        const isCarryoverCandidate = carryoverOrderKeys.has(row.orderKey)
 
         row.is_shipped = true
         row.Monday_status = 'Shipped'
@@ -909,7 +959,11 @@ export function createOrdersUnifiedService(deps) {
           matchedRowsByItemId.set(matchedItemId, row)
         }
 
-        if (carryoverOrderKeys.has(row.orderKey)) {
+        if (isCarryoverCandidate && shouldFlagOrderAsMovedToShippedOutsideWebsite(row, orderTrackBoardId)) {
+          movedToShippedOutsideWebsiteRows.push(row)
+        }
+
+        if (isCarryoverCandidate) {
           carryoverMarkedShippedCount += 1
         } else {
           quickBooksOnlyMarkedShippedCount += 1
@@ -934,6 +988,40 @@ export function createOrdersUnifiedService(deps) {
       refreshedAt,
       warnings,
     })
+
+    const mondayMovedToShippedOutsideWebsiteOrders = [...new Map(
+      movedToShippedOutsideWebsiteRows
+        .map((row) => {
+          const dedupeKey =
+            normalizeText(row?.orderKey, 200)
+            || normalizeText(row?.monday_item_id, 120)
+            || normalizeText(row?.order_number, 120)
+
+          if (!dedupeKey) {
+            return null
+          }
+
+          return [
+            dedupeKey,
+            {
+              orderKey: normalizeText(row?.orderKey, 200) || null,
+              orderNumber: normalizeText(row?.order_number, 120) || null,
+              orderName: normalizeText(row?.order_name, 260) || null,
+              mondayItemId: normalizeText(row?.monday_item_id, 120) || null,
+              mondayItemUrl: normalizeText(row?.Monday_url, 500) || null,
+              shippedAt: toIsoOrNull(row?.shipped_at) || refreshedAt,
+            },
+          ]
+        })
+        .filter(Boolean),
+    ).values()].slice(0, 100)
+    const mondayMovedToShippedOutsideWebsiteCount = mondayMovedToShippedOutsideWebsiteOrders.length
+
+    if (mondayMovedToShippedOutsideWebsiteCount > 0) {
+      warnings.push(
+        `${mondayMovedToShippedOutsideWebsiteCount} order(s) were moved from Order Track to Shipped in Monday outside the website shipping workflow.`,
+      )
+    }
 
     // -- Final mapping --------------------------------------------------------
 
@@ -961,6 +1049,18 @@ export function createOrdersUnifiedService(deps) {
         row.BOL_source = normalizeText(row.BOL, 800) || null
       }
       row.BOL = row.BOL_cached || row.BOL_source || null
+      row.signed_bol = normalizeText(row.signed_bol, 200) || null
+      row.Signed_BOL_source = normalizeText(row.Signed_BOL_source, 800) || null
+      if (!row.Signed_BOL_source) {
+        row.Signed_BOL_source = normalizeText(row.Signed_BOL, 800) || null
+      }
+      row.Signed_BOL = row.Signed_BOL_source || null
+      row.inspection_sheet = normalizeText(row.inspection_sheet, 200) || null
+      row.Inspection_sheet_source = normalizeText(row.Inspection_sheet_source, 800) || null
+      if (!row.Inspection_sheet_source) {
+        row.Inspection_sheet_source = normalizeText(row.Inspection_sheet, 800) || null
+      }
+      row.Inspection_sheet = row.Inspection_sheet_source || null
       row.Shop_drawing_cached = normalizeText(row.Shop_drawing_cached, 800) || null
       row.Shop_drawing_source = normalizeText(row.Shop_drawing_source, 800) || null
       if (!row.Shop_drawing_cached && !row.Shop_drawing_source) {
@@ -1051,6 +1151,8 @@ export function createOrdersUnifiedService(deps) {
       quickBooksOnlyShippedCheckedCount: quickBooksOnlyCandidates.length,
       quickBooksOnlyMarkedShippedCount,
       shippedDetailEnrichedCount,
+      mondayMovedToShippedOutsideWebsiteCount,
+      mondayMovedToShippedOutsideWebsiteOrders,
       shippedProgressTrackedOrderCount: shippedProgressFloorStats.shippedProgressTrackedOrderCount,
       shippedProgressUpsertedCount: shippedProgressFloorStats.shippedProgressUpsertedCount,
       shippedProgressCorrectedCount: shippedProgressFloorStats.shippedProgressCorrectedCount,

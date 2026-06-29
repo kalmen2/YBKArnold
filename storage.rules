@@ -15,6 +15,11 @@ service firebase.storage {
       allow read, write: if isSignedIn();
     }
 
+    // CRM sales rep contracts uploaded from Sales Reps page.
+    match /crm/sales-rep-contracts/{allPaths=**} {
+      allow read, write: if isSignedIn();
+    }
+
     // Block all other storage paths by default.
     match /{allPaths=**} {
       allow read, write: if false;

@@ -54,6 +54,11 @@ const CATEGORIES: { key: AiRuleCategory; label: string; description: string }[] 
     label: 'Purchasing',
     description: 'Rules for exact-item supplier search used on the Purchasing page',
   },
+  {
+    key: 'email_intake',
+    label: 'Email Intake',
+    description: 'Rules for email review triage, routing confidence, and summary style',
+  },
 ]
 
 const MODEL_OPTIONS: { value: AiModelQuality; label: string }[] = [
@@ -195,6 +200,8 @@ export default function AiConfigPage() {
   const contentLimit =
     selectedCategory === 'general'
       ? 20000
+      : selectedCategory === 'email_intake'
+        ? 12000
       : selectedCategory === 'purchasing'
         ? 6000
         : 2000
@@ -261,7 +268,7 @@ export default function AiConfigPage() {
             AI Configuration
           </Typography>
           <Typography variant="caption" color="text.secondary">
-            Define rules that guide Support, Summaries, and Purchasing AI behavior
+            Define rules that guide Support, Summaries, Purchasing, and Email Intake AI behavior
           </Typography>
         </Box>
       </Stack>

@@ -1393,7 +1393,7 @@ app.post('/api/timesheet/entries/bulk', requireFirebaseAuth, requireAdminRole, a
   }
 })
 
-app.post('/api/timesheet/entries/sync', requireFirebaseAuth, async (req, res, next) => {
+app.post('/api/timesheet/entries/sync', requireFirebaseAuth, requireManagerOrAdminRole, async (req, res, next) => {
   try {
     const { workersCollection, entriesCollection, stagesCollection } = await getCollections()
     const date = String(req.body?.date ?? '').trim()

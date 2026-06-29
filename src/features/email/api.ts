@@ -84,6 +84,7 @@ export type SendMicrosoftEmailResponse = SendEmailResponse
 export type EmailReviewStatus = 'pending' | 'approved' | 'rejected'
 export type EmailReviewStatusFilter = EmailReviewStatus | 'all'
 export type EmailReviewDestinationType = 'account' | 'order' | 'quote' | 'none'
+export type EmailIntakeReviewLane = 'green' | 'yellow' | 'red'
 
 export type EmailIntakeCandidateDestination = {
   type: EmailReviewDestinationType
@@ -132,16 +133,27 @@ export type EmailIntakeSuggestion = {
   ccEmails: string[]
   subject: string | null
   snippet: string | null
+  attachmentNames?: string[]
+  bodyText?: string | null
+  bodyHtml?: string | null
   bodyPreview?: string | null
+  threadId?: string | null
+  conversationId?: string | null
+  conversationKey?: string | null
+  conversationReference?: string | null
+  conversationMessageCount?: number | null
+  conversationBodyText?: string | null
   candidateDestinations: EmailIntakeCandidateDestination[]
   routingTargets?: EmailIntakeRoutingTarget[]
   destinationType: EmailReviewDestinationType
   destinationId: string | null
   destinationReason: string | null
   confidence: number | null
+  lane?: EmailIntakeReviewLane | null
   summary: string | null
   chatDraft: string | null
   tags: string[]
+  usedFallback?: boolean
   reviewNotes: string | null
   approvalResult: EmailIntakeApprovalResult | null
   reviewedAt: string | null
@@ -159,6 +171,10 @@ export type EmailIntakeReviewSummaryResponse = {
   unreadPending: number
   approved: number
   rejected: number
+  laneStatus?: EmailReviewStatus
+  green?: number
+  yellow?: number
+  red?: number
 }
 
 export type EmailIntakeReviewListResponse = {
@@ -172,6 +188,7 @@ export type EmailIntakeReviewListResponse = {
 export type EmailIntakeSyncDetail = {
   provider: EmailProvider | null
   uid: string | null
+  syncDateApplied?: string | null
   skipped?: boolean
   failed?: boolean
   timedOut?: boolean
@@ -196,6 +213,7 @@ export type EmailIntakeSyncResponse = {
   completedAt: string | null
   requestedByUid: string | null
   providerFilter: EmailProvider | null
+  syncDateRequested?: string | null
   lookbackDaysRequested?: number
   maxMessagesPerConnection?: number
   maxRuntimeMs?: number | null
@@ -224,6 +242,7 @@ export type EmailIntakeSyncRun = {
   updatedAt: string | null
   requestedByUid: string | null
   providerFilter: EmailProvider | null
+  syncDateRequested: string | null
   lookbackDaysRequested: number
   maxMessagesPerConnection: number
   maxRuntimeMs: number | null
@@ -269,6 +288,8 @@ export type EmailIntakeSyncRunLogsResponse = {
 
 export type RunEmailIntakeSyncInput = {
   provider?: EmailProvider
+  syncDate?: string
+  timeZone?: string
   includeAllConnections?: boolean
   maxConnections?: number
   lookbackDays?: number
@@ -398,20 +419,41 @@ export function sendMicrosoftEmail(input: SendMicrosoftEmailInput) {
   })
 }
 
-export function fetchEmailIntakeReviewSummary() {
-  return apiRequest<EmailIntakeReviewSummaryResponse>('/api/admin/email/review/summary')
+export function fetchEmailIntakeReviewSummary(
+  input: {
+    status?: EmailReviewStatusFilter
+    provider?: EmailProvider | 'all'
+    messageDate?: string | null
+    timeZone?: string | null
+  } = {},
+) {
+  const status = input.status ?? 'pending'
+  const provider = input.provider ?? 'all'
+
+  return apiRequest<EmailIntakeReviewSummaryResponse>(
+    withQuery('/api/admin/email/review/summary', {
+      status,
+      provider: provider === 'all' ? null : provider,
+      messageDate: input.messageDate || null,
+      timeZone: input.timeZone || null,
+    }),
+  )
 }
 
 export function fetchEmailIntakeSuggestions(
   input: {
     status?: EmailReviewStatusFilter
     provider?: EmailProvider | 'all'
+    lane?: EmailIntakeReviewLane | 'all'
+    messageDate?: string | null
+    timeZone?: string | null
     limit?: number
     offset?: number
   } = {},
 ) {
   const status = input.status ?? 'pending'
   const provider = input.provider ?? 'all'
+  const lane = input.lane ?? 'all'
   const limit = Number.isFinite(Number(input.limit)) ? Number(input.limit) : 40
   const offset = Number.isFinite(Number(input.offset)) ? Number(input.offset) : 0
 
@@ -419,6 +461,9 @@ export function fetchEmailIntakeSuggestions(
     withQuery('/api/admin/email/review', {
       status,
       provider: provider === 'all' ? null : provider,
+      lane: lane === 'all' ? null : lane,
+      messageDate: input.messageDate || null,
+      timeZone: input.timeZone || null,
       limit,
       offset,
     }),

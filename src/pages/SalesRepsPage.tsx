@@ -1,6 +1,7 @@
 import AddRoundedIcon from '@mui/icons-material/AddRounded'
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
 import MapRoundedIcon from '@mui/icons-material/MapRounded'
+import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded'
 import PrintRoundedIcon from '@mui/icons-material/PrintRounded'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import SaveRoundedIcon from '@mui/icons-material/SaveRounded'
@@ -20,18 +21,24 @@ import {
   InputAdornment,
   Paper,
   Stack,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableRow,
+  Tab,
+  Tabs,
   TextField,
   Typography,
 } from '@mui/material'
 import { alpha } from '@mui/material/styles'
+import {
+  DataGrid,
+  GridToolbar,
+  getGridDateOperators,
+  type GridColDef,
+  type GridFilterOperator,
+} from '@mui/x-data-grid'
 import usaMap from '@svg-maps/usa'
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
+import { useAuth } from '../auth/useAuth'
 import { firebaseStorage } from '../auth/firebase'
 import { LoadingPanel } from '../components/LoadingPanel'
 import { StatusAlerts } from '../components/StatusAlerts'
@@ -44,28 +51,20 @@ import {
   type CrmQuote,
   type CrmSalesRep,
 } from '../features/crm/api'
+import { resolveQuoteAgeDays } from '../features/crm/utils'
 import { resolveImageFileExtension, sanitizeStoragePathSegment } from '../lib/fileUtils'
-import { formatCurrency, formatDate, formatStatusLabel } from '../lib/formatters'
+import { formatCurrency, formatStatusLabel } from '../lib/formatters'
 import { QUERY_KEYS } from '../lib/queryKeys'
 
 type SalesRepDialogMode = 'create' | 'edit' | null
-
-type DrilldownTarget =
-  | {
-    mode: 'rep'
-    salesRepId: string
-    salesRepName: string
-  }
-  | {
-    mode: 'state'
-    stateCode: string
-  }
-  | null
 
 type SalesRepFormState = {
   name: string
   companyName: string
   logoUrl: string
+  contractUrl: string
+  contractSignedDate: string
+  contractNet: string
   email: string
   email2: string
   phone: string
@@ -131,6 +130,9 @@ function createEmptySalesRepForm(): SalesRepFormState {
     name: '',
     companyName: '',
     logoUrl: '',
+    contractUrl: '',
+    contractSignedDate: '',
+    contractNet: '',
     email: '',
     email2: '',
     phone: '',
@@ -149,46 +151,114 @@ function toStateLabel(stateCode: string) {
   return label ? `${stateCode} - ${label}` : stateCode
 }
 
-const quoteStatusOrder = ['draft', 'sent', 'accepted', 'rejected', 'cancelled']
-const quoteStageOrder = ['concept', 'proposal_submission', 'revision', 'order_placement']
-
 function normalizeText(value: string | null | undefined) {
   return String(value ?? '').trim().toLowerCase()
 }
 
-function normalizeStateCode(value: string | null | undefined) {
-  const normalized = String(value ?? '').trim().toUpperCase()
+function parseOpportunityLikeDate(value: string | null | undefined) {
+  const normalizedValue = String(value ?? '').trim()
 
-  if (!normalized) {
-    return ''
+  if (!normalizedValue) {
+    return null
   }
 
-  if (/^[A-Z]{2}$/.test(normalized)) {
-    return normalized
+  const isoDateMatch = normalizedValue.match(/^(\d{4})-(\d{2})-(\d{2})/)
+
+  if (isoDateMatch) {
+    const year = Number(isoDateMatch[1])
+    const month = Number(isoDateMatch[2])
+    const day = Number(isoDateMatch[3])
+    const parsedDate = new Date(year, month - 1, day)
+
+    return Number.isNaN(parsedDate.getTime()) ? null : parsedDate
   }
 
-  const codeMatch = normalized.match(/\b([A-Z]{2})\b/)
-  return codeMatch?.[1] || normalized.slice(0, 2)
+  const parsedDate = new Date(normalizedValue)
+
+  return Number.isNaN(parsedDate.getTime()) ? null : parsedDate
 }
 
-function resolveQuoteStageValue(quote: CrmQuote) {
-  const stage = normalizeText(quote.opportunityStage)
-
-  if (stage && quoteStageOrder.includes(stage)) {
-    return stage
+function formatQuoteGridDate(value: Date | null | undefined) {
+  if (!(value instanceof Date) || Number.isNaN(value.getTime())) {
+    return '-'
   }
 
-  const status = normalizeText(quote.status)
+  return value.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  })
+}
 
-  if (status === 'accepted') {
-    return 'order_placement'
+function isValidDateValue(value: unknown): value is Date {
+  return value instanceof Date && !Number.isNaN(value.getTime())
+}
+
+const salesRepQuoteDateFilterOperators: GridFilterOperator[] = [
+  ...getGridDateOperators(),
+  {
+    label: 'Is this month',
+    value: 'isThisMonth',
+    getApplyFilterFn: () => {
+      const now = new Date()
+      const currentYear = now.getFullYear()
+      const currentMonth = now.getMonth()
+
+      return (value) => isValidDateValue(value)
+        && value.getFullYear() === currentYear
+        && value.getMonth() === currentMonth
+    },
+    requiresFilterValue: false,
+  },
+  {
+    label: 'Is this year',
+    value: 'isThisYear',
+    getApplyFilterFn: () => {
+      const currentYear = new Date().getFullYear()
+
+      return (value) => isValidDateValue(value)
+        && value.getFullYear() === currentYear
+    },
+    requiresFilterValue: false,
+  },
+]
+
+function resolveQuoteDateSortTimestamp(quote: CrmQuote) {
+  const parsedOpportunityDate = parseOpportunityLikeDate(quote.opportunityDate)
+
+  if (parsedOpportunityDate) {
+    return parsedOpportunityDate.getTime()
   }
 
-  if (status === 'sent') {
-    return 'proposal_submission'
+  const parsedCreatedAt = parseOpportunityLikeDate(quote.createdAt)
+
+  if (parsedCreatedAt) {
+    return parsedCreatedAt.getTime()
   }
 
-  return 'concept'
+  const parsedUpdatedAt = parseOpportunityLikeDate(quote.updatedAt)
+
+  return parsedUpdatedAt ? parsedUpdatedAt.getTime() : 0
+}
+
+function resolveQuoteAgeDaysForDisplay(quote: CrmQuote) {
+  if (parseOpportunityLikeDate(quote.opportunityDate)) {
+    return resolveQuoteAgeDays({ opportunityDate: quote.opportunityDate })
+  }
+
+  const parsedCreatedAt = parseOpportunityLikeDate(quote.createdAt)
+
+  if (!parsedCreatedAt) {
+    return 0
+  }
+
+  const diffMs = Date.now() - parsedCreatedAt.getTime()
+
+  if (diffMs <= 0) {
+    return 0
+  }
+
+  return Math.floor(diffMs / (24 * 60 * 60 * 1000))
 }
 
 function resolveMapLabelTextColor(fillColor: string) {
@@ -219,19 +289,29 @@ function escapeHtml(value: string) {
 }
 
 export default function SalesRepsPage() {
+  const { appUser } = useAuth()
+  const navigate = useNavigate()
+
+  // Users assigned to a sales rep cannot access this page
+  const isAssignedToSalesRep = Boolean(appUser?.linkedSalesRepId)
+  const canManageContracts = Boolean(appUser?.isOwner || appUser?.isAdmin)
+
   const [salesReps, setSalesReps] = useState<CrmSalesRep[]>([])
   const [availableStates, setAvailableStates] = useState<string[]>([])
 
   const [selectedSalesRepId, setSelectedSalesRepId] = useState('')
   const [salesRepForm, setSalesRepForm] = useState<SalesRepFormState>(createEmptySalesRepForm)
   const [salesRepDialogMode, setSalesRepDialogMode] = useState<SalesRepDialogMode>(null)
+  const [salesRepDialogTab, setSalesRepDialogTab] = useState<'quotes' | 'settings'>('quotes')
+  const [isContractPreviewOpen, setIsContractPreviewOpen] = useState(false)
 
   const [lookupQuery, setLookupQuery] = useState('')
-  const [drilldownTarget, setDrilldownTarget] = useState<DrilldownTarget>(null)
 
   const [isSavingSalesRep, setIsSavingSalesRep] = useState(false)
   const [isUploadingSalesRepLogo, setIsUploadingSalesRepLogo] = useState(false)
+  const [isUploadingSalesRepContract, setIsUploadingSalesRepContract] = useState(false)
   const [salesRepLogoUploadError, setSalesRepLogoUploadError] = useState<string | null>(null)
+  const [salesRepContractUploadError, setSalesRepContractUploadError] = useState<string | null>(null)
   const [deletingSalesRepId, setDeletingSalesRepId] = useState('')
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
   const [stateLabelPositions, setStateLabelPositions] = useState<Record<string, StateLabelPosition>>({})
@@ -400,122 +480,122 @@ export default function SalesRepsPage() {
     [quotesQuery.data?.quotes],
   )
 
-  const drilldownRows = useMemo(() => {
-    if (!drilldownTarget) {
+  const selectedSalesRepQuotes = useMemo(() => {
+    const selectedSalesRep = salesReps.find((entry) => entry.id === selectedSalesRepId)
+
+    if (!selectedSalesRep) {
       return []
     }
 
-    let rows: CrmQuote[] = []
+    const normalizedRepName = normalizeText(selectedSalesRep.name)
 
-    if (drilldownTarget.mode === 'rep') {
-      const normalizedRepName = normalizeText(drilldownTarget.salesRepName)
-      rows = quotes.filter((quote) => normalizeText(quote.salesRep) === normalizedRepName)
-    } else {
-      rows = quotes.filter((quote) => normalizeStateCode(quote.dealerState) === drilldownTarget.stateCode)
+    return quotes
+      .filter((quote) => normalizeText(quote.salesRep) === normalizedRepName)
+      .sort((left, right) => resolveQuoteDateSortTimestamp(right) - resolveQuoteDateSortTimestamp(left))
+  }, [quotes, salesReps, selectedSalesRepId])
+
+  const handleOpenSalesRepQuoteDetails = useCallback((quote: CrmQuote) => {
+    const quoteId = String(quote?.id ?? '').trim()
+
+    if (!quoteId) {
+      return
     }
 
-    return [...rows].sort(
-      (left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime(),
-    )
-  }, [drilldownTarget, quotes])
+    navigate(`/sales?tab=opportunities&quoteId=${encodeURIComponent(quoteId)}`)
+  }, [navigate])
 
-  const drilldownTitle = useMemo(() => {
-    if (!drilldownTarget) {
-      return 'Quote Drilldown'
-    }
+  const salesRepQuoteColumns = useMemo<GridColDef<CrmQuote>[]>(() => [
+    {
+      field: 'quoteNumber',
+      headerName: 'Quote',
+      minWidth: 150,
+      flex: 1,
+      valueGetter: (_value, row) => row.quoteNumber || row.id.slice(0, 8).toUpperCase(),
+      renderCell: (params) => (
+        <Stack spacing={0.1} sx={{ minWidth: 0 }}>
+          <Button
+            size="small"
+            variant="text"
+            sx={{ p: 0, minWidth: 0, justifyContent: 'flex-start', textTransform: 'none', fontWeight: 700 }}
+            onClick={(event) => {
+              event.stopPropagation()
+              handleOpenSalesRepQuoteDetails(params.row)
+            }}
+          >
+            <Typography variant="body2" sx={{ fontWeight: 700 }} noWrap>
+              {String(params.value || '-')}
+            </Typography>
+          </Button>
+          {params.row.title ? (
+            <Typography variant="caption" color="text.secondary" noWrap>
+              {params.row.title}
+            </Typography>
+          ) : null}
+        </Stack>
+      ),
+    },
+    {
+      field: 'quoteDate',
+      headerName: 'Date',
+      minWidth: 135,
+      flex: 0.85,
+      type: 'date',
+      valueGetter: (_value, row) => {
+        return parseOpportunityLikeDate(row.opportunityDate || row.createdAt || row.updatedAt)
+      },
+      renderCell: (params) => formatQuoteGridDate(params.value as Date | null | undefined),
+      filterOperators: salesRepQuoteDateFilterOperators,
+    },
+    {
+      field: 'accountStatus',
+      headerName: 'Account Status',
+      minWidth: 230,
+      flex: 1.2,
+      valueGetter: (_value, row) => row.dealerName || row.companyName || '-',
+      renderCell: (params) => (
+        <Stack spacing={0.1} sx={{ minWidth: 0 }}>
+          <Typography variant="body2" noWrap>
+            {String(params.value || '-')}
+          </Typography>
+          <Typography variant="caption" color="text.secondary" noWrap>
+            {formatStatusLabel(String(params.row.status || 'unknown'))}
+          </Typography>
+        </Stack>
+      ),
+    },
+    {
+      field: 'ageDays',
+      headerName: 'Age',
+      minWidth: 110,
+      flex: 0.7,
+      type: 'number',
+      valueGetter: (_value, row) => resolveQuoteAgeDaysForDisplay(row),
+      renderCell: (params) => {
+        const ageDays = Number(params.value || 0)
 
-    if (drilldownTarget.mode === 'rep') {
-      return `Quotes for ${drilldownTarget.salesRepName}`
-    }
-
-    const stateName = stateNameByCode.get(drilldownTarget.stateCode)
-    return stateName
-      ? `Quotes in ${drilldownTarget.stateCode} - ${stateName}`
-      : `Quotes in ${drilldownTarget.stateCode}`
-  }, [drilldownTarget])
-
-  const drilldownTotalAmount = useMemo(
-    () => drilldownRows.reduce((sum, quote) => sum + Number(quote.totalAmount || 0), 0),
-    [drilldownRows],
-  )
-
-  const drilldownStatusBreakdown = useMemo(() => {
-    const counts = new Map<string, number>()
-
-    for (const quote of drilldownRows) {
-      const normalizedStatus = normalizeText(quote.status)
-      const nextCount = (counts.get(normalizedStatus) || 0) + 1
-      counts.set(normalizedStatus, nextCount)
-    }
-
-    const orderedEntries = quoteStatusOrder
-      .filter((status) => counts.has(status))
-      .map((status) => ({
-        key: status,
-        label: formatStatusLabel(status),
-        count: counts.get(status) || 0,
-      }))
-
-    const remainingEntries = [...counts.entries()]
-      .filter(([status]) => !quoteStatusOrder.includes(status))
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([status, count]) => ({
-        key: status,
-        label: formatStatusLabel(status),
-        count,
-      }))
-
-    return [...orderedEntries, ...remainingEntries]
-  }, [drilldownRows])
-
-  const drilldownStageBreakdown = useMemo(() => {
-    const counts = new Map<string, number>()
-
-    for (const quote of drilldownRows) {
-      const stage = resolveQuoteStageValue(quote)
-      counts.set(stage, (counts.get(stage) || 0) + 1)
-    }
-
-    const orderedEntries = quoteStageOrder
-      .filter((stage) => counts.has(stage))
-      .map((stage) => ({
-        key: stage,
-        label: formatStatusLabel(stage),
-        count: counts.get(stage) || 0,
-      }))
-
-    const remainingEntries = [...counts.entries()]
-      .filter(([stage]) => !quoteStageOrder.includes(stage))
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([stage, count]) => ({
-        key: stage,
-        label: formatStatusLabel(stage),
-        count,
-      }))
-
-    return [...orderedEntries, ...remainingEntries]
-  }, [drilldownRows])
-
-  const drilldownRepBreakdown = useMemo(() => {
-    if (drilldownTarget?.mode !== 'state') {
-      return []
-    }
-
-    const counts = new Map<string, number>()
-
-    for (const quote of drilldownRows) {
-      const repName = String(quote.salesRep ?? '').trim() || '(Unassigned)'
-      counts.set(repName, (counts.get(repName) || 0) + 1)
-    }
-
-    return [...counts.entries()]
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([repName, count]) => ({
-        key: repName,
-        label: repName,
-        count,
-      }))
-  }, [drilldownRows, drilldownTarget?.mode])
+        return (
+          <Chip
+            size="small"
+            label={`${ageDays}d`}
+            color={ageDays > 30 ? 'warning' : 'default'}
+            variant="outlined"
+            sx={{ height: 21 }}
+          />
+        )
+      },
+    },
+    {
+      field: 'totalAmount',
+      headerName: 'Amount',
+      minWidth: 130,
+      flex: 0.8,
+      type: 'number',
+      align: 'right',
+      headerAlign: 'right',
+      valueGetter: (_value, row) => Number(row.totalAmount || 0),
+      renderCell: (params) => formatCurrency(Number(params.value || 0), 2),
+    },
+  ], [handleOpenSalesRepQuoteDetails])
 
   const isStateAssignedToDifferentRep = useCallback((stateCode: string) => {
     const owner = stateOwnerByCode.get(stateCode)
@@ -523,65 +603,55 @@ export default function SalesRepsPage() {
     return Boolean(owner && owner.id !== selectedSalesRepId)
   }, [selectedSalesRepId, stateOwnerByCode])
 
-  const openSalesRepDialogForEdit = useCallback((salesRep: CrmSalesRep) => {
+  const openSalesRepDialogForEdit = useCallback((salesRep: CrmSalesRep, initialTab: 'quotes' | 'settings' = 'quotes') => {
     setSelectedSalesRepId(salesRep.id)
     setSalesRepForm({
       name: salesRep.name,
       companyName: salesRep.companyName || '',
       logoUrl: salesRep.logoUrl || '',
+      contractUrl: salesRep.contractUrl || '',
+      contractSignedDate: String(salesRep.contractSignedDate || '').slice(0, 10),
+      contractNet: salesRep.contractNet || '',
       email: salesRep.email || '',
       email2: salesRep.email2 || '',
       phone: salesRep.phone || '',
       phone2: salesRep.phone2 || '',
       states: sortStateCodes(salesRep.states),
     })
+    setSalesRepDialogTab(initialTab)
     setSalesRepDialogMode('edit')
+    setIsContractPreviewOpen(false)
     setSalesRepLogoUploadError(null)
+    setSalesRepContractUploadError(null)
     setErrorMessage(null)
     setSuccessMessage(null)
   }, [setErrorMessage])
 
-  const openSalesRepQuoteDrilldown = useCallback((salesRep: CrmSalesRep) => {
-    setDrilldownTarget({
-      mode: 'rep',
-      salesRepId: salesRep.id,
-      salesRepName: salesRep.name,
-    })
-  }, [])
-
-  const openStateQuoteDrilldown = useCallback((stateCode: string) => {
-    const normalizedStateCode = normalizeStateCode(stateCode)
-
-    if (!normalizedStateCode) {
-      return
-    }
-
-    setDrilldownTarget({
-      mode: 'state',
-      stateCode: normalizedStateCode,
-    })
-  }, [])
-
   const resetSalesRepForm = useCallback(() => {
     setSelectedSalesRepId('')
     setSalesRepForm(createEmptySalesRepForm())
+    setIsContractPreviewOpen(false)
     setSalesRepLogoUploadError(null)
+    setSalesRepContractUploadError(null)
     setErrorMessage(null)
   }, [setErrorMessage])
 
   const handleOpenAddSalesRepDialog = useCallback(() => {
     resetSalesRepForm()
+    setSalesRepDialogTab('settings')
     setSalesRepDialogMode('create')
   }, [resetSalesRepForm])
 
   const handleCloseSalesRepDialog = useCallback(() => {
-    if (isSavingSalesRep || isUploadingSalesRepLogo) {
+    if (isSavingSalesRep || isUploadingSalesRepLogo || isUploadingSalesRepContract) {
       return
     }
 
     setSalesRepDialogMode(null)
+    setIsContractPreviewOpen(false)
     setSalesRepLogoUploadError(null)
-  }, [isSavingSalesRep, isUploadingSalesRepLogo])
+    setSalesRepContractUploadError(null)
+  }, [isSavingSalesRep, isUploadingSalesRepContract, isUploadingSalesRepLogo])
 
   const handleSalesRepLogoUpload = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0] ?? null
@@ -634,10 +704,65 @@ export default function SalesRepsPage() {
     }
   }, [salesRepForm.companyName, salesRepForm.name, selectedSalesRepId, setErrorMessage])
 
+  const handleSalesRepContractUpload = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0] ?? null
+    event.target.value = ''
+
+    if (!canManageContracts) {
+      setSalesRepContractUploadError('Only admins can manage contract agreement actions.')
+      return
+    }
+
+    if (!file) {
+      return
+    }
+
+    const maxUploadBytes = 20 * 1024 * 1024
+
+    if (file.size > maxUploadBytes) {
+      setSalesRepContractUploadError('Contract is too large. Maximum size is 20MB.')
+      return
+    }
+
+    setSalesRepContractUploadError(null)
+    setErrorMessage(null)
+    setIsUploadingSalesRepContract(true)
+
+    try {
+      const repSegment = sanitizeStoragePathSegment(
+        selectedSalesRepId || salesRepForm.name || salesRepForm.companyName || 'sales-rep',
+        'sales-rep',
+      )
+      const fileBaseName = sanitizeStoragePathSegment(file.name.replace(/\.[^.]+$/, ''), 'contract')
+      const fileExtensionMatch = file.name.match(/\.[a-zA-Z0-9]{1,12}$/)
+      const fileExtension = fileExtensionMatch ? fileExtensionMatch[0].toLowerCase() : ''
+      const contractPath = `crm/sales-rep-contracts/${repSegment}/${Date.now()}-${fileBaseName}${fileExtension}`
+      const uploadTarget = storageRef(firebaseStorage, contractPath)
+
+      await uploadBytes(uploadTarget, file, {
+        contentType: file.type || undefined,
+        cacheControl: 'public,max-age=31536000',
+      })
+
+      const downloadUrl = await getDownloadURL(uploadTarget)
+      setSalesRepForm((current) => ({
+        ...current,
+        contractUrl: downloadUrl,
+      }))
+    } catch (error) {
+      setSalesRepContractUploadError(error instanceof Error ? error.message : 'Failed to upload contract.')
+    } finally {
+      setIsUploadingSalesRepContract(false)
+    }
+  }, [canManageContracts, salesRepForm.companyName, salesRepForm.name, selectedSalesRepId, setErrorMessage])
+
   const handleSaveSalesRep = useCallback(async () => {
     const normalizedName = salesRepForm.name.trim()
     const normalizedCompanyName = salesRepForm.companyName.trim()
     const normalizedLogoUrl = salesRepForm.logoUrl.trim()
+    const normalizedContractUrl = salesRepForm.contractUrl.trim()
+    const normalizedContractSignedDate = salesRepForm.contractSignedDate.trim()
+    const normalizedContractNet = salesRepForm.contractNet.trim()
     const normalizedEmail = salesRepForm.email.trim()
     const normalizedEmail2 = salesRepForm.email2.trim()
     const normalizedPhone = salesRepForm.phone.trim()
@@ -659,6 +784,9 @@ export default function SalesRepsPage() {
           name: normalizedName,
           companyName: normalizedCompanyName || null,
           logoUrl: normalizedLogoUrl || null,
+          contractUrl: normalizedContractUrl || null,
+          contractSignedDate: normalizedContractSignedDate || null,
+          contractNet: normalizedContractNet || null,
           email: normalizedEmail || null,
           email2: normalizedEmail2 || null,
           phone: normalizedPhone || null,
@@ -671,6 +799,9 @@ export default function SalesRepsPage() {
           name: normalizedName,
           companyName: normalizedCompanyName || null,
           logoUrl: normalizedLogoUrl || null,
+          contractUrl: normalizedContractUrl || null,
+          contractSignedDate: normalizedContractSignedDate || null,
+          contractNet: normalizedContractNet || null,
           email: normalizedEmail || null,
           email2: normalizedEmail2 || null,
           phone: normalizedPhone || null,
@@ -712,10 +843,6 @@ export default function SalesRepsPage() {
         setSalesRepDialogMode(null)
       }
 
-      if (drilldownTarget?.mode === 'rep' && drilldownTarget.salesRepId === salesRep.id) {
-        setDrilldownTarget(null)
-      }
-
       await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.crmSalesReps })
       setSuccessMessage('Sales rep removed successfully.')
     } catch (error) {
@@ -723,7 +850,7 @@ export default function SalesRepsPage() {
     } finally {
       setDeletingSalesRepId('')
     }
-  }, [drilldownTarget, queryClient, selectedSalesRepId, setErrorMessage])
+  }, [queryClient, selectedSalesRepId, setErrorMessage])
 
   const measureMapLabelPositions = useCallback(() => {
     const svgElement = mapSvgRef.current
@@ -909,6 +1036,34 @@ export default function SalesRepsPage() {
     }, 50)
   }, [mapLegendEntries, setErrorMessage])
 
+  // Deny access if user is assigned to a sales rep
+  if (isAssignedToSalesRep) {
+    return (
+      <Stack spacing={2.5}>
+        <Paper
+          variant="outlined"
+          sx={{
+            p: { xs: 2, md: 2.5 },
+            borderColor: (theme) => alpha(theme.palette.primary.main, 0.28),
+            background: (theme) => `linear-gradient(125deg, ${alpha(theme.palette.primary.main, 0.15)} 0%, ${alpha(theme.palette.info.main, 0.08)} 42%, ${alpha(theme.palette.background.paper, 0.98)} 100%)`,
+          }}
+        >
+          <Stack spacing={1.5}>
+            <Stack direction="row" spacing={1} alignItems="center">
+              <MapRoundedIcon color="primary" />
+              <Typography variant="h5" sx={{ fontWeight: 700 }}>
+                Sales Reps
+              </Typography>
+            </Stack>
+            <Typography variant="body2" color="text.secondary">
+              You are assigned to a sales rep and cannot access this page.
+            </Typography>
+          </Stack>
+        </Paper>
+      </Stack>
+    )
+  }
+
   return (
     <Stack spacing={2.5}>
       <Paper
@@ -1030,30 +1185,6 @@ export default function SalesRepsPage() {
                                 ? (entry.owner.companyName ? `${entry.owner.name} (${entry.owner.companyName})` : entry.owner.name)
                                 : 'Unassigned'}
                             </Typography>
-
-                            <Button
-                              size="small"
-                              variant="outlined"
-                              onClick={() => {
-                                openStateQuoteDrilldown(entry.stateCode)
-                              }}
-                            >
-                              Quotes
-                            </Button>
-
-                            {entry.owner ? (
-                              <Button
-                                size="small"
-                                variant="outlined"
-                                onClick={() => {
-                                  if (entry.owner) {
-                                    openSalesRepDialogForEdit(entry.owner)
-                                  }
-                                }}
-                              >
-                                Open
-                              </Button>
-                            ) : null}
                           </Stack>
                         </Stack>
                       </Paper>
@@ -1095,26 +1226,6 @@ export default function SalesRepsPage() {
                               ) : null}
                             </Stack>
 
-                            <Stack direction="row" spacing={0.6}>
-                              <Button
-                                size="small"
-                                variant="outlined"
-                                onClick={() => {
-                                  openSalesRepQuoteDrilldown(salesRep)
-                                }}
-                              >
-                                Quotes
-                              </Button>
-                              <Button
-                                size="small"
-                                variant="outlined"
-                                onClick={() => {
-                                  openSalesRepDialogForEdit(salesRep)
-                                }}
-                              >
-                                Open
-                              </Button>
-                            </Stack>
                           </Stack>
                         </Paper>
                       )
@@ -1149,7 +1260,6 @@ export default function SalesRepsPage() {
                 >
                   {salesReps.map((salesRep) => {
                     const isSelected = salesRep.id === selectedSalesRepId
-                    const isDrilldownRep = drilldownTarget?.mode === 'rep' && drilldownTarget.salesRepId === salesRep.id
                     const color = repColorById.get(salesRep.id) ?? '#6f8296'
                     const visibleStates = salesRep.states.slice(0, 8)
                     const hiddenStatesCount = Math.max(0, salesRep.states.length - visibleStates.length)
@@ -1166,12 +1276,24 @@ export default function SalesRepsPage() {
                       <Paper
                         key={salesRep.id}
                         variant="outlined"
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => {
+                          openSalesRepDialogForEdit(salesRep, 'quotes')
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault()
+                            openSalesRepDialogForEdit(salesRep, 'quotes')
+                          }
+                        }}
                         sx={{
                           p: 1,
-                          borderColor: (isSelected || isDrilldownRep) ? 'primary.main' : 'divider',
-                          bgcolor: (isSelected || isDrilldownRep)
+                          borderColor: isSelected ? 'primary.main' : 'divider',
+                          bgcolor: isSelected
                             ? (theme) => alpha(theme.palette.primary.main, 0.06)
                             : 'background.paper',
+                          cursor: 'pointer',
                         }}
                       >
                         <Stack
@@ -1226,38 +1348,18 @@ export default function SalesRepsPage() {
                             <Chip size="small" label={`${salesRep.states.length} states`} variant="outlined" />
                           </Stack>
 
-                          <Stack direction="row" spacing={0.5}>
-                            <Button
-                              size="small"
-                              variant={isDrilldownRep ? 'contained' : 'outlined'}
-                              color={isDrilldownRep ? 'primary' : 'inherit'}
-                              onClick={() => {
-                                openSalesRepQuoteDrilldown(salesRep)
-                              }}
-                            >
-                              Quotes
-                            </Button>
-                            <Button
-                              size="small"
-                              variant={isSelected ? 'contained' : 'outlined'}
-                              onClick={() => {
-                                openSalesRepDialogForEdit(salesRep)
-                              }}
-                            >
-                              {isSelected ? 'Editing' : 'Edit'}
-                            </Button>
-                            <IconButton
-                              size="small"
-                              color="error"
-                              aria-label={`Delete ${salesRep.name}`}
-                              disabled={deletingSalesRepId === salesRep.id}
-                              onClick={() => {
-                                void handleDeleteSalesRep(salesRep)
-                              }}
-                            >
-                              <DeleteOutlineRoundedIcon fontSize="small" />
-                            </IconButton>
-                          </Stack>
+                          <IconButton
+                            size="small"
+                            color="error"
+                            aria-label={`Delete ${salesRep.name}`}
+                            disabled={deletingSalesRepId === salesRep.id}
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              void handleDeleteSalesRep(salesRep)
+                            }}
+                          >
+                            <DeleteOutlineRoundedIcon fontSize="small" />
+                          </IconButton>
                         </Stack>
 
                         {emailsLine ? (
@@ -1311,7 +1413,7 @@ export default function SalesRepsPage() {
               </Stack>
 
               <Typography variant="body2" color="text.secondary">
-                White states are unassigned. Click any state to drill into quotes by territory.
+                White states are unassigned.
               </Typography>
 
               <Stack direction="row" flexWrap="wrap" gap={0.7}>
@@ -1380,7 +1482,6 @@ export default function SalesRepsPage() {
                         ? (repColorById.get(stateOwner.id) ?? '#6f8296')
                         : '#ffffff'
                       const isSelectedRepState = Boolean(selectedSalesRepId && stateOwner?.id === selectedSalesRepId)
-                      const isDrilldownState = drilldownTarget?.mode === 'state' && drilldownTarget.stateCode === stateCode
                       const labelPosition = stateLabelPositions[stateCode]
                       const labelOffset = stateLabelOffsetByCode[stateCode] || { dx: 0, dy: 0 }
                       const labelTextColor = resolveMapLabelTextColor(fillColor)
@@ -1397,13 +1498,9 @@ export default function SalesRepsPage() {
                             data-state-code={stateCode}
                             d={location.path}
                             fill={fillColor}
-                            stroke={isDrilldownState ? '#0b5f93' : (isSelectedRepState ? '#18202b' : '#8a95a3')}
-                            strokeWidth={isDrilldownState ? 2.4 : (isSelectedRepState ? 1.8 : 1.1)}
-                            onClick={() => {
-                              openStateQuoteDrilldown(stateCode)
-                            }}
+                            stroke={isSelectedRepState ? '#18202b' : '#8a95a3'}
+                            strokeWidth={isSelectedRepState ? 1.8 : 1.1}
                             style={{
-                              cursor: 'pointer',
                               transition: 'fill 150ms ease, stroke 150ms ease',
                             }}
                           >
@@ -1443,175 +1540,93 @@ export default function SalesRepsPage() {
             </Stack>
           </Paper>
 
-          <Paper variant="outlined" sx={{ p: 1.5 }}>
-            <Stack spacing={1}>
-              <Stack
-                direction={{ xs: 'column', sm: 'row' }}
-                spacing={0.8}
-                alignItems={{ xs: 'flex-start', sm: 'center' }}
-                justifyContent="space-between"
-              >
-                <Stack spacing={0.2}>
-                  <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-                    {drilldownTitle}
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    Click any rep card, rep search result, or map state to inspect related quotes.
-                  </Typography>
-                </Stack>
-
-                {drilldownTarget ? (
-                  <Button
-                    size="small"
-                    variant="outlined"
-                    onClick={() => {
-                      setDrilldownTarget(null)
-                    }}
-                  >
-                    Clear
-                  </Button>
-                ) : null}
-              </Stack>
-
-              {!drilldownTarget ? (
-                <Typography variant="body2" color="text.secondary" sx={{ py: 1.5 }}>
-                  No drilldown selected yet.
-                </Typography>
-              ) : isQuotesLoading ? (
-                <Typography variant="body2" color="text.secondary" sx={{ py: 1.5 }}>
-                  Loading quote analytics...
-                </Typography>
-              ) : (
-                <>
-                  <Stack direction="row" flexWrap="wrap" gap={0.75}>
-                    <Chip
-                      size="small"
-                      color="primary"
-                      variant="outlined"
-                      label={`${drilldownRows.length} quotes`}
-                    />
-                    <Chip
-                      size="small"
-                      variant="outlined"
-                      label={`Value ${formatCurrency(drilldownTotalAmount, 2)}`}
-                    />
-                    {isQuotesRefreshing ? (
-                      <Chip
-                        size="small"
-                        variant="outlined"
-                        label="Refreshing quotes..."
-                      />
-                    ) : null}
-                  </Stack>
-
-                  <Stack direction="row" flexWrap="wrap" gap={0.6}>
-                    {drilldownStatusBreakdown.map((entry) => (
-                      <Chip
-                        key={`drilldown-status-${entry.key}`}
-                        size="small"
-                        variant="outlined"
-                        label={`${entry.label}: ${entry.count}`}
-                      />
-                    ))}
-                  </Stack>
-
-                  <Stack direction="row" flexWrap="wrap" gap={0.6}>
-                    {drilldownStageBreakdown.map((entry) => (
-                      <Chip
-                        key={`drilldown-stage-${entry.key}`}
-                        size="small"
-                        variant="outlined"
-                        label={`${entry.label}: ${entry.count}`}
-                      />
-                    ))}
-                  </Stack>
-
-                  {drilldownTarget.mode === 'state' ? (
-                    <Stack direction="row" flexWrap="wrap" gap={0.6}>
-                      {drilldownRepBreakdown.map((entry) => (
-                        <Chip
-                          key={`drilldown-rep-${entry.key}`}
-                          size="small"
-                          variant="outlined"
-                          label={`${entry.label}: ${entry.count}`}
-                        />
-                      ))}
-                    </Stack>
-                  ) : null}
-
-                  {drilldownRows.length === 0 ? (
-                    <Typography variant="body2" color="text.secondary" sx={{ py: 1.2 }}>
-                      No quotes found for this drilldown.
-                    </Typography>
-                  ) : (
-                    <Box
-                      sx={{
-                        border: 1,
-                        borderColor: 'divider',
-                        borderRadius: 1,
-                        maxHeight: '52vh',
-                        overflow: 'auto',
-                      }}
-                    >
-                      <Table size="small" stickyHeader>
-                        <TableHead>
-                          <TableRow>
-                            <TableCell sx={{ fontWeight: 700 }}>Quote</TableCell>
-                            <TableCell sx={{ fontWeight: 700 }}>Dealer</TableCell>
-                            <TableCell sx={{ fontWeight: 700 }}>Sales Rep</TableCell>
-                            <TableCell sx={{ fontWeight: 700 }}>State</TableCell>
-                            <TableCell sx={{ fontWeight: 700 }}>Stage</TableCell>
-                            <TableCell sx={{ fontWeight: 700 }}>Status</TableCell>
-                            <TableCell sx={{ fontWeight: 700 }} align="right">Amount</TableCell>
-                            <TableCell sx={{ fontWeight: 700 }}>Updated</TableCell>
-                          </TableRow>
-                        </TableHead>
-                        <TableBody>
-                          {drilldownRows.map((quote) => (
-                            <TableRow key={quote.id} hover>
-                              <TableCell>
-                                <Stack spacing={0.15}>
-                                  <Typography variant="body2" sx={{ fontWeight: 700 }}>
-                                    {quote.quoteNumber || quote.id.slice(0, 8).toUpperCase()}
-                                  </Typography>
-                                  {quote.title ? (
-                                    <Typography variant="caption" color="text.secondary">
-                                      {quote.title}
-                                    </Typography>
-                                  ) : null}
-                                </Stack>
-                              </TableCell>
-                              <TableCell>{quote.dealerName || quote.companyName || '-'}</TableCell>
-                              <TableCell>{quote.salesRep || '-'}</TableCell>
-                              <TableCell>{normalizeStateCode(quote.dealerState) || '-'}</TableCell>
-                              <TableCell>{formatStatusLabel(resolveQuoteStageValue(quote))}</TableCell>
-                              <TableCell>{formatStatusLabel(String(quote.status || 'unknown'))}</TableCell>
-                              <TableCell align="right">{formatCurrency(Number(quote.totalAmount || 0), 2)}</TableCell>
-                              <TableCell>{formatDate(quote.updatedAt)}</TableCell>
-                            </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
-                    </Box>
-                  )}
-                </>
-              )}
-            </Stack>
-          </Paper>
         </>
       )}
 
       <Dialog
         open={isSalesRepDialogOpen}
         onClose={handleCloseSalesRepDialog}
-        maxWidth="md"
+        maxWidth="lg"
         fullWidth
+        PaperProps={{
+          sx: {
+            width: 'min(1180px, 96vw)',
+          },
+        }}
       >
         <DialogTitle>
           {salesRepDialogMode === 'edit' ? 'Edit sales rep' : 'Add sales rep'}
         </DialogTitle>
         <DialogContent dividers>
-          <Stack spacing={1} sx={{ pt: 0.5 }}>
+          {salesRepDialogMode === 'edit' ? (
+            <Tabs
+              value={salesRepDialogTab}
+              onChange={(_event: unknown, nextValue: 'quotes' | 'settings') => {
+                setSalesRepDialogTab(nextValue)
+              }}
+              variant="fullWidth"
+              sx={{ mb: 1 }}
+            >
+              <Tab value="quotes" label={`Quotes (${selectedSalesRepQuotes.length})`} />
+              <Tab value="settings" label="Settings" />
+            </Tabs>
+          ) : null}
+
+          {salesRepDialogMode === 'edit' && salesRepDialogTab === 'quotes' ? (
+            <Stack spacing={1.1} sx={{ pt: 0.5 }}>
+              {isQuotesLoading ? (
+                <Typography variant="body2" color="text.secondary">Loading quotes...</Typography>
+              ) : selectedSalesRepQuotes.length === 0 ? (
+                <Typography variant="body2" color="text.secondary">No quotes found for this sales rep yet.</Typography>
+              ) : (
+                <Box
+                  sx={{
+                    border: 1,
+                    borderColor: 'divider',
+                    borderRadius: 1,
+                    height: { xs: '52vh', md: '56vh' },
+                    overflow: 'auto',
+                    '& .MuiDataGrid-columnHeaders': {
+                      borderBottomColor: 'divider',
+                    },
+                    '& .MuiDataGrid-cell': {
+                      alignItems: 'center',
+                    },
+                  }}
+                >
+                  <DataGrid
+                    rows={selectedSalesRepQuotes}
+                    columns={salesRepQuoteColumns}
+                    disableRowSelectionOnClick
+                    onRowClick={(params) => {
+                      handleOpenSalesRepQuoteDetails(params.row)
+                    }}
+                    density="compact"
+                    pageSizeOptions={[25, 50, 100]}
+                    initialState={{
+                      pagination: {
+                        paginationModel: {
+                          pageSize: 25,
+                          page: 0,
+                        },
+                      },
+                    }}
+                    slots={{ toolbar: GridToolbar }}
+                    slotProps={{
+                      toolbar: {
+                        showQuickFilter: true,
+                        quickFilterProps: {
+                          debounceMs: 250,
+                        },
+                      },
+                    }}
+                    hideFooterSelectedRowCount
+                  />
+                </Box>
+              )}
+            </Stack>
+          ) : (
+            <Stack spacing={1} sx={{ pt: 0.5 }}>
             <Box
               sx={{
                 display: 'grid',
@@ -1701,89 +1716,210 @@ export default function SalesRepsPage() {
               />
             </Box>
 
-            <Paper
-              variant="outlined"
+            <Box
               sx={{
-                p: 1,
-                borderColor: 'divider',
-                bgcolor: (theme) => alpha(theme.palette.background.default, 0.45),
+                display: 'grid',
+                gridTemplateColumns: {
+                  xs: 'minmax(0, 1fr)',
+                  md: 'repeat(2, minmax(0, 1fr))',
+                },
+                gap: 0.8,
               }}
             >
-              <Stack spacing={0.75}>
-                <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
-                  <Stack direction="row" spacing={1} alignItems="center" minWidth={0}>
-                    <Avatar
-                      src={salesRepForm.logoUrl || undefined}
-                      alt={salesRepForm.companyName || salesRepForm.name || 'Sales rep logo'}
-                      sx={{ width: 44, height: 44, fontSize: 15, fontWeight: 700 }}
-                    >
-                      {(salesRepForm.companyName || salesRepForm.name || '?').charAt(0).toUpperCase()}
-                    </Avatar>
+              <Paper
+                variant="outlined"
+                sx={{
+                  p: 1,
+                  borderColor: 'divider',
+                  bgcolor: (theme) => alpha(theme.palette.background.default, 0.45),
+                }}
+              >
+                <Stack spacing={0.75}>
+                  <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
+                    <Stack direction="row" spacing={1} alignItems="center" minWidth={0}>
+                      <Avatar
+                        src={salesRepForm.logoUrl || undefined}
+                        alt={salesRepForm.companyName || salesRepForm.name || 'Sales rep logo'}
+                        sx={{ width: 44, height: 44, fontSize: 15, fontWeight: 700 }}
+                      >
+                        {(salesRepForm.companyName || salesRepForm.name || '?').charAt(0).toUpperCase()}
+                      </Avatar>
 
-                    <Stack spacing={0.1} minWidth={0}>
-                      <Typography variant="body2" sx={{ fontWeight: 700 }}>
-                        Company logo
-                      </Typography>
-                      <Typography variant="caption" color="text.secondary">
-                        Upload a logo image or paste a logo URL.
-                      </Typography>
-                      {salesRepLogoUploadError ? (
-                        <Typography variant="caption" color="error.main">
-                          {salesRepLogoUploadError}
+                      <Stack spacing={0.1} minWidth={0}>
+                        <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                          Company logo
                         </Typography>
-                      ) : null}
+                        <Typography variant="caption" color="text.secondary">
+                          Upload a logo image or paste a logo URL.
+                        </Typography>
+                        {salesRepLogoUploadError ? (
+                          <Typography variant="caption" color="error.main">
+                            {salesRepLogoUploadError}
+                          </Typography>
+                        ) : null}
+                      </Stack>
+                    </Stack>
+
+                    <Stack direction="row" spacing={0.6}>
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        component="label"
+                        disabled={isUploadingSalesRepLogo}
+                      >
+                        {isUploadingSalesRepLogo ? 'Uploading...' : 'Upload logo'}
+                        <input
+                          hidden
+                          accept="image/*"
+                          type="file"
+                          onChange={handleSalesRepLogoUpload}
+                        />
+                      </Button>
+
+                      <Button
+                        size="small"
+                        color="inherit"
+                        variant="outlined"
+                        disabled={isUploadingSalesRepLogo || !salesRepForm.logoUrl}
+                        onClick={() => {
+                          setSalesRepLogoUploadError(null)
+                          setSalesRepForm((current) => ({
+                            ...current,
+                            logoUrl: '',
+                          }))
+                        }}
+                      >
+                        Remove
+                      </Button>
                     </Stack>
                   </Stack>
 
-                  <Stack direction="row" spacing={0.6}>
+                  <TextField
+                    size="small"
+                    label="Logo URL (optional)"
+                    placeholder="https://..."
+                    value={salesRepForm.logoUrl}
+                    onChange={(event) => {
+                      setSalesRepLogoUploadError(null)
+                      setSalesRepForm((current) => ({
+                        ...current,
+                        logoUrl: event.target.value,
+                      }))
+                    }}
+                  />
+                </Stack>
+              </Paper>
+
+              <Paper
+                variant="outlined"
+                sx={{
+                  p: 1,
+                  borderColor: 'divider',
+                  bgcolor: (theme) => alpha(theme.palette.background.default, 0.45),
+                }}
+              >
+                <Stack spacing={0.75}>
+                  <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
+                    <Stack spacing={0.1} minWidth={0}>
+                      <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                        Contract agreement
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        {canManageContracts
+                          ? 'Upload when missing and open the active agreement in a popup.'
+                          : 'Only admins can view and manage contract agreement actions.'}
+                      </Typography>
+                    </Stack>
+                  </Stack>
+
+                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.6} alignItems={{ xs: 'stretch', sm: 'center' }}>
                     <Button
                       size="small"
                       variant="outlined"
                       component="label"
-                      disabled={isUploadingSalesRepLogo}
+                      disabled={!canManageContracts || isUploadingSalesRepContract}
                     >
-                      {isUploadingSalesRepLogo ? 'Uploading...' : 'Upload logo'}
+                      {isUploadingSalesRepContract ? 'Uploading contract...' : 'Upload contract'}
                       <input
                         hidden
-                        accept="image/*"
                         type="file"
-                        onChange={handleSalesRepLogoUpload}
+                        onChange={handleSalesRepContractUpload}
                       />
+                    </Button>
+
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      startIcon={<OpenInNewRoundedIcon fontSize="small" />}
+                      disabled={!canManageContracts || !salesRepForm.contractUrl}
+                      onClick={() => {
+                        setSalesRepContractUploadError(null)
+                        setIsContractPreviewOpen(true)
+                      }}
+                    >
+                      Open contract
                     </Button>
 
                     <Button
                       size="small"
                       color="inherit"
                       variant="outlined"
-                      disabled={isUploadingSalesRepLogo || !salesRepForm.logoUrl}
+                      disabled={!canManageContracts || isUploadingSalesRepContract || !salesRepForm.contractUrl}
                       onClick={() => {
-                        setSalesRepLogoUploadError(null)
+                        setSalesRepContractUploadError(null)
                         setSalesRepForm((current) => ({
                           ...current,
-                          logoUrl: '',
+                          contractUrl: '',
                         }))
                       }}
                     >
                       Remove
                     </Button>
                   </Stack>
-                </Stack>
 
-                <TextField
-                  size="small"
-                  label="Logo URL (optional)"
-                  placeholder="https://..."
-                  value={salesRepForm.logoUrl}
-                  onChange={(event) => {
-                    setSalesRepLogoUploadError(null)
-                    setSalesRepForm((current) => ({
-                      ...current,
-                      logoUrl: event.target.value,
-                    }))
-                  }}
-                />
-              </Stack>
-            </Paper>
+                  <Typography variant="caption" color="text.secondary">
+                    {salesRepForm.contractUrl
+                      ? 'Contract file is attached for this rep.'
+                      : 'No contract file uploaded yet.'}
+                  </Typography>
+
+                  {salesRepContractUploadError ? (
+                    <Typography variant="caption" color="error.main">
+                      {salesRepContractUploadError}
+                    </Typography>
+                  ) : null}
+
+                  <TextField
+                    size="small"
+                    type="date"
+                    label="Signed date"
+                    value={salesRepForm.contractSignedDate}
+                    disabled={!canManageContracts}
+                    onChange={(event) => {
+                      setSalesRepForm((current) => ({
+                        ...current,
+                        contractSignedDate: event.target.value,
+                      }))
+                    }}
+                    InputLabelProps={{ shrink: true }}
+                  />
+
+                  <TextField
+                    size="small"
+                    label="Net by country"
+                    placeholder="Enter net terms"
+                    value={salesRepForm.contractNet}
+                    disabled={!canManageContracts}
+                    onChange={(event) => {
+                      setSalesRepForm((current) => ({
+                        ...current,
+                        contractNet: event.target.value,
+                      }))
+                    }}
+                  />
+                </Stack>
+              </Paper>
+            </Box>
 
             <Autocomplete
               multiple
@@ -1824,19 +1960,21 @@ export default function SalesRepsPage() {
                 />
               )}
             />
-          </Stack>
+
+            </Stack>
+          )}
         </DialogContent>
         <DialogActions>
           <Button
             onClick={handleCloseSalesRepDialog}
-            disabled={isSavingSalesRep || isUploadingSalesRepLogo}
+            disabled={isSavingSalesRep || isUploadingSalesRepLogo || isUploadingSalesRepContract}
           >
             Cancel
           </Button>
           <Button
             variant="contained"
             startIcon={<SaveRoundedIcon fontSize="small" />}
-            disabled={isSavingSalesRep || isUploadingSalesRepLogo}
+            disabled={isSavingSalesRep || isUploadingSalesRepLogo || isUploadingSalesRepContract}
             onClick={() => {
               void handleSaveSalesRep()
             }}
@@ -1845,6 +1983,71 @@ export default function SalesRepsPage() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      <Dialog
+        open={isContractPreviewOpen && Boolean(salesRepForm.contractUrl)}
+        onClose={() => {
+          setIsContractPreviewOpen(false)
+        }}
+        maxWidth={false}
+        fullWidth
+        PaperProps={{
+          sx: {
+            width: 'min(1100px, 96vw)',
+            maxHeight: '92vh',
+          },
+        }}
+      >
+        <DialogTitle>Contract Agreement</DialogTitle>
+        <DialogContent dividers>
+          {salesRepForm.contractUrl ? (
+            <Stack spacing={0.8}>
+              <Box
+                sx={{
+                  border: (theme) => `1px solid ${theme.palette.divider}`,
+                  borderRadius: 1,
+                  overflow: 'hidden',
+                  minHeight: { xs: 380, md: 620 },
+                }}
+              >
+                <Box
+                  component="iframe"
+                  src={salesRepForm.contractUrl}
+                  title="Sales rep contract"
+                  sx={{
+                    width: '100%',
+                    height: { xs: 380, md: 620 },
+                    border: 0,
+                    bgcolor: 'background.default',
+                  }}
+                />
+              </Box>
+
+              <Stack direction="row" justifyContent="flex-end">
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<OpenInNewRoundedIcon fontSize="small" />}
+                  component="a"
+                  href={salesRepForm.contractUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Open in new tab
+                </Button>
+              </Stack>
+            </Stack>
+          ) : null}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => {
+            setIsContractPreviewOpen(false)
+          }}>
+            Close
+          </Button>
+        </DialogActions>
+      </Dialog>
+
     </Stack>
   )
 }

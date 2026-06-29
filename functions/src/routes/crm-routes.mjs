@@ -1,4 +1,5 @@
 import { createHash, timingSafeEqual } from 'node:crypto'
+import { getStorage } from 'firebase-admin/storage'
 import { createTtlCache } from '../utils/ttl-cache.mjs'
 import { normalizeText, nowIso } from '../utils/value-utils.mjs'
 
@@ -20,7 +21,6 @@ const quoteStatuses = ['draft', 'sent', 'accepted', 'rejected', 'cancelled']
 const opportunityStages = [
   'concept',
   'proposal_submission',
-  'revision',
   'order_placement',
 ]
 const orderStatuses = [
@@ -93,7 +93,7 @@ const usStateNameByCode = {
   WI: 'Wisconsin',
   WY: 'Wyoming',
 }
-const quoteProjectTypes = ['Reception Desk', 'Courtroom', 'Conference Table', 'Other']
+const quoteProjectTypes = ['Reception Desk', 'Courtroom', 'Conference Table', 'Libraries', 'Other']
 const crmRecordStatusActive = 'active'
 const crmRecordStatusDeleted = 'deleted'
 const engagementReadinessReady = 'ready'
@@ -241,6 +241,27 @@ function normalizeStatus(value, allowedStatuses, fallbackStatus) {
   return allowedStatuses.includes(normalized)
     ? normalized
     : null
+}
+
+function normalizeOpportunityStage(value, fallbackStage = 'concept') {
+  const normalized = toLowerText(value, 80)
+
+  if (normalized === 'revision') {
+    return 'proposal_submission'
+  }
+
+  return normalizeStatus(normalized, opportunityStages, fallbackStage)
+}
+
+function normalizeQuoteOpportunityStageForResponse(quote) {
+  if (!quote || typeof quote !== 'object') {
+    return quote
+  }
+
+  return {
+    ...quote,
+    opportunityStage: normalizeOpportunityStage(quote.opportunityStage, 'concept') || 'concept',
+  }
 }
 
 function inferProgressFromOrderStatus(status, fallbackProgress = 0) {
@@ -447,6 +468,52 @@ function normalizeUsStateList(input) {
   return normalizedStates.sort((left, right) => left.localeCompare(right))
 }
 
+function normalizeDelimitedTextList(input, maxItemLength = 200, maxItems = 250) {
+  const sourceItems = Array.isArray(input)
+    ? input
+    : [input]
+  const seen = new Set()
+  const normalizedValues = []
+
+  for (const sourceItem of sourceItems) {
+    const segments = String(sourceItem ?? '')
+      .split(',')
+
+    for (const segment of segments) {
+      const nextValue = toTrimmedText(segment, maxItemLength)
+
+      if (!nextValue) {
+        continue
+      }
+
+      const dedupeKey = toLowerText(nextValue, maxItemLength)
+
+      if (!dedupeKey || seen.has(dedupeKey)) {
+        continue
+      }
+
+      seen.add(dedupeKey)
+      normalizedValues.push(nextValue)
+
+      if (normalizedValues.length >= maxItems) {
+        return normalizedValues
+      }
+    }
+  }
+
+  return normalizedValues
+}
+
+function normalizeSalesRepEngagementReadinessEnabled(value) {
+  const normalized = toNullableBoolean(value)
+
+  if (normalized === null) {
+    return true
+  }
+
+  return normalized
+}
+
 function normalizeProjectType(value) {
   const normalized = toLowerText(value, 120)
     .replace(/[_-]+/g, ' ')
@@ -477,6 +544,10 @@ function normalizeProjectType(value) {
 
   if (normalized === 'courtroom' || normalized === 'court room' || normalized.startsWith('courtroom ')) {
     return 'Courtroom'
+  }
+
+  if (/\blibrar(?:y|ies)\b/.test(normalized)) {
+    return 'Libraries'
   }
 
   if (normalized === 'other' || normalized.startsWith('other ')) {
@@ -618,7 +689,7 @@ function normalizeQuoteDocuments(input) {
     return []
   }
 
-  const maxDocuments = 20
+  const maxDocuments = 500
   const normalizedDocuments = []
   const seenUrls = new Set()
 
@@ -640,7 +711,7 @@ function normalizeQuoteDocuments(input) {
 
     normalizedDocuments.push({
       url,
-      name: toTrimmedText(documentEntry.name ?? documentEntry.documentName, 240) || null,
+      name: toTrimmedText(documentEntry.name ?? documentEntry.documentName, 1200) || null,
     })
 
     if (normalizedDocuments.length >= maxDocuments) {
@@ -649,6 +720,155 @@ function normalizeQuoteDocuments(input) {
   }
 
   return normalizedDocuments
+}
+
+function extractFirebaseStorageObjectFromUrl(rawUrl) {
+  const normalizedUrl = toTrimmedText(rawUrl, 4000)
+
+  if (!normalizedUrl) {
+    return null
+  }
+
+  let parsed
+
+  try {
+    parsed = new URL(normalizedUrl)
+  } catch {
+    return null
+  }
+
+  if (String(parsed.hostname ?? '').toLowerCase() !== 'firebasestorage.googleapis.com') {
+    return null
+  }
+
+  const pathMatch = String(parsed.pathname ?? '').match(/^\/v0\/b\/([^/]+)\/o\/([^/]+)$/)
+
+  if (!pathMatch) {
+    return null
+  }
+
+  const bucketName = decodeURIComponent(String(pathMatch[1] ?? '')).trim()
+  const objectPath = decodeURIComponent(String(pathMatch[2] ?? '')).trim()
+
+  if (!bucketName || !objectPath) {
+    return null
+  }
+
+  return {
+    bucketName,
+    objectPath,
+  }
+}
+
+function resolveQuoteDocumentUrls(quote) {
+  const source = toOptionalObject(quote)
+  const urls = []
+  const seen = new Set()
+  const normalizedDocuments = normalizeQuoteDocuments(source.documents)
+
+  for (const document of normalizedDocuments) {
+    const url = toTrimmedText(document?.url, 2000)
+    const dedupeKey = toLowerText(url, 2000)
+
+    if (!url || !dedupeKey || seen.has(dedupeKey)) {
+      continue
+    }
+
+    seen.add(dedupeKey)
+    urls.push(url)
+  }
+
+  const legacyUrls = [
+    toTrimmedText(source.documentUrl ?? source.document_url, 2000),
+  ]
+
+  for (const url of legacyUrls) {
+    const dedupeKey = toLowerText(url, 2000)
+
+    if (!url || !dedupeKey || seen.has(dedupeKey)) {
+      continue
+    }
+
+    seen.add(dedupeKey)
+    urls.push(url)
+  }
+
+  return urls
+}
+
+function resolveQuoteStorageTargets(quote) {
+  const dedupe = new Set()
+  const targets = []
+
+  for (const url of resolveQuoteDocumentUrls(quote)) {
+    const target = extractFirebaseStorageObjectFromUrl(url)
+
+    if (!target) {
+      continue
+    }
+
+    const dedupeKey = `${target.bucketName.toLowerCase()}::${target.objectPath.toLowerCase()}`
+
+    if (dedupe.has(dedupeKey)) {
+      continue
+    }
+
+    dedupe.add(dedupeKey)
+    targets.push(target)
+  }
+
+  return targets
+}
+
+async function deleteQuoteStorageTargets(quote) {
+  const targets = resolveQuoteStorageTargets(quote)
+
+  if (targets.length === 0) {
+    return {
+      attemptedCount: 0,
+      deletedCount: 0,
+      failedCount: 0,
+    }
+  }
+
+  const storage = getStorage()
+  const deletionResults = await Promise.all(
+    targets.map(async (target) => {
+      try {
+        await storage
+          .bucket(target.bucketName)
+          .file(target.objectPath)
+          .delete({ ignoreNotFound: true })
+
+        return {
+          ok: true,
+        }
+      } catch (error) {
+        return {
+          ok: false,
+          bucketName: target.bucketName,
+          objectPath: target.objectPath,
+          message: error instanceof Error ? error.message : 'Unknown storage delete error.',
+        }
+      }
+    }),
+  )
+
+  const deletedCount = deletionResults.filter((entry) => entry.ok).length
+  const failures = deletionResults.filter((entry) => !entry.ok)
+
+  if (failures.length > 0) {
+    console.error('Quote document storage cleanup failed for one or more files.', {
+      failedCount: failures.length,
+      failures: failures.slice(0, 25),
+    })
+  }
+
+  return {
+    attemptedCount: targets.length,
+    deletedCount,
+    failedCount: failures.length,
+  }
 }
 
 function normalizeQuoteLineItems(input) {
@@ -687,10 +907,14 @@ function normalizeQuoteLineItems(input) {
   return normalizedLineItems
 }
 
-function toSalesRepResponse(rawSalesRep) {
+function toSalesRepResponse(rawSalesRep, options = {}) {
+  const includeContractFields = options.includeContractFields !== false
   const salesRep = toOptionalObject(rawSalesRep)
   const companyName = toTrimmedText(salesRep.companyName, 200)
   const logoUrl = toTrimmedText(salesRep.logoUrl, 800)
+  const contractUrl = toTrimmedText(salesRep.contractUrl, 1200)
+  const contractSignedDate = toIsoDateOrNull(salesRep.contractSignedDate)
+  const contractNet = toTrimmedText(salesRep.contractNet, 200)
   const email = toTrimmedText(salesRep.email, 200)
   const email2 = toTrimmedText(salesRep.email2, 200)
   const phone = toTrimmedText(salesRep.phone, 80)
@@ -701,11 +925,15 @@ function toSalesRepResponse(rawSalesRep) {
     name: toTrimmedText(salesRep.name, 200),
     companyName: companyName || null,
     logoUrl: logoUrl || null,
+    contractUrl: includeContractFields ? (contractUrl || null) : null,
+    contractSignedDate: includeContractFields ? contractSignedDate : null,
+    contractNet: includeContractFields ? (contractNet || null) : null,
     email: email || null,
     email2: email2 || null,
     phone: phone || null,
     phone2: phone2 || null,
     states: normalizeUsStateList(salesRep.states),
+    engagementReadinessEnabled: normalizeSalesRepEngagementReadinessEnabled(salesRep.engagementReadinessEnabled),
     createdAt: toIsoDateOrNull(salesRep.createdAt),
     updatedAt: toIsoDateOrNull(salesRep.updatedAt),
   }
@@ -1331,6 +1559,55 @@ export function registerCrmRoutes(app, deps) {
     }
   }
 
+  function resolveSalesRepQuoteAccessScope(accessScope) {
+    const publicUser = accessScope?.publicUser
+    const restrictToLinkedSalesRep = Boolean(
+      accessScope?.isSalesRep
+      && !publicUser?.isAdmin
+      && !publicUser?.isOwner,
+    )
+    const linkedSalesRepName = restrictToLinkedSalesRep
+      ? toTrimmedText(publicUser?.linkedSalesRepName, 200) || null
+      : null
+
+    return {
+      restrictToLinkedSalesRep,
+      linkedSalesRepName,
+      linkedSalesRepRegex: linkedSalesRepName
+        ? new RegExp(`^${escapeRegex(linkedSalesRepName)}$`, 'i')
+        : null,
+    }
+  }
+
+  function canAccessQuoteBySalesRep(quote, quoteAccessScope) {
+    if (!quoteAccessScope?.restrictToLinkedSalesRep) {
+      return true
+    }
+
+    if (!quoteAccessScope.linkedSalesRepRegex) {
+      return false
+    }
+
+    const quoteSalesRep = toTrimmedText(quote?.salesRep, 200)
+
+    if (!quoteSalesRep) {
+      return false
+    }
+
+    return quoteAccessScope.linkedSalesRepRegex.test(quoteSalesRep)
+  }
+
+  function assertCanAccessQuoteBySalesRep(quote, quoteAccessScope) {
+    if (canAccessQuoteBySalesRep(quote, quoteAccessScope)) {
+      return
+    }
+
+    throw {
+      status: 403,
+      message: 'You can only access opportunities assigned to your linked sales rep.',
+    }
+  }
+
   function isDealerInTerritory(dealerState, territoryStates) {
     if (!Array.isArray(territoryStates) || territoryStates.length === 0) {
       return false
@@ -1440,6 +1717,7 @@ export function registerCrmRoutes(app, deps) {
           title: 1,
           dealerSourceId: 1,
           dealerName: 1,
+          salesRep: 1,
           status: 1,
           opportunityStage: 1,
         },
@@ -1459,6 +1737,7 @@ export function registerCrmRoutes(app, deps) {
       title: toTrimmedText(quote.title, 240) || null,
       dealerSourceId: toTrimmedText(quote.dealerSourceId, 160) || null,
       dealerName: toTrimmedText(quote.dealerName, 240) || null,
+      salesRep: toTrimmedText(quote.salesRep, 200) || null,
       status: toTrimmedText(quote.status, 60) || null,
       opportunityStage: toTrimmedText(quote.opportunityStage, 80) || null,
     }
@@ -1592,9 +1871,11 @@ export function registerCrmRoutes(app, deps) {
     }
   })
 
-  app.get('/api/crm/sales-reps', requireFirebaseAuth, async (_req, res, next) => {
+  app.get('/api/crm/sales-reps', requireFirebaseAuth, async (req, res, next) => {
     try {
       const { crmSalesRepsCollection } = await getCollections()
+      const accessScope = resolveCrmAccessScope(req)
+      const canAccessContractFields = Boolean(accessScope.publicUser?.isOwner || accessScope.publicUser?.isAdmin)
 
       const salesReps = await crmSalesRepsCollection
         .find(
@@ -1606,11 +1887,15 @@ export function registerCrmRoutes(app, deps) {
               name: 1,
               companyName: 1,
               logoUrl: 1,
+              contractUrl: 1,
+              contractSignedDate: 1,
+              contractNet: 1,
               email: 1,
               email2: 1,
               phone: 1,
               phone2: 1,
               states: 1,
+              engagementReadinessEnabled: 1,
               createdAt: 1,
               updatedAt: 1,
             },
@@ -1620,7 +1905,9 @@ export function registerCrmRoutes(app, deps) {
         .toArray()
 
       return res.json({
-        salesReps: salesReps.map((salesRep) => toSalesRepResponse(salesRep)),
+        salesReps: salesReps.map((salesRep) => toSalesRepResponse(salesRep, {
+          includeContractFields: canAccessContractFields,
+        })),
         availableStates: usStateCodes,
       })
     } catch (error) {
@@ -1634,15 +1921,37 @@ export function registerCrmRoutes(app, deps) {
       const name = toTrimmedText(body.name, 200)
       const companyName = toTrimmedText(body.companyName, 200)
       const logoUrl = toTrimmedText(body.logoUrl, 800)
+      const contractUrl = toTrimmedText(body.contractUrl, 1200)
+      const contractSignedDateInput = toTrimmedText(body.contractSignedDate, 80)
+      const contractSignedDate = contractSignedDateInput ? toIsoDateOrNull(contractSignedDateInput) : null
+      const contractNet = toTrimmedText(body.contractNet, 200)
       const email = toTrimmedText(body.email, 200)
       const email2 = toTrimmedText(body.email2, 200)
       const phone = toTrimmedText(body.phone, 80)
       const phone2 = toTrimmedText(body.phone2, 80)
       const states = normalizeUsStateList(body.states)
+      const hasEngagementReadinessEnabledInput = Object.prototype.hasOwnProperty.call(body, 'engagementReadinessEnabled')
+      const engagementReadinessEnabledInput = toNullableBoolean(body.engagementReadinessEnabled)
+
+      if (hasEngagementReadinessEnabledInput && engagementReadinessEnabledInput === null) {
+        return res.status(400).json({
+          error: 'engagementReadinessEnabled must be true or false.',
+        })
+      }
+
+      const engagementReadinessEnabled = engagementReadinessEnabledInput === null
+        ? true
+        : engagementReadinessEnabledInput
 
       if (!name) {
         return res.status(400).json({
           error: 'name is required.',
+        })
+      }
+
+      if (contractSignedDateInput && !contractSignedDate) {
+        return res.status(400).json({
+          error: 'contractSignedDate must be a valid ISO date string.',
         })
       }
 
@@ -1661,11 +1970,15 @@ export function registerCrmRoutes(app, deps) {
         companyName: companyName || null,
         companyNameLower: toLowerText(companyName, 200),
         logoUrl: logoUrl || null,
+        contractUrl: contractUrl || null,
+        contractSignedDate,
+        contractNet: contractNet || null,
         email: email || null,
         email2: email2 || null,
         phone: phone || null,
         phone2: phone2 || null,
         states,
+        engagementReadinessEnabled,
         createdAt: now,
         updatedAt: now,
       }
@@ -1713,11 +2026,15 @@ export function registerCrmRoutes(app, deps) {
             name: 1,
             companyName: 1,
             logoUrl: 1,
+            contractUrl: 1,
+            contractSignedDate: 1,
+            contractNet: 1,
             email: 1,
             email2: 1,
             phone: 1,
             phone2: 1,
             states: 1,
+            engagementReadinessEnabled: 1,
             createdAt: 1,
             updatedAt: 1,
           },
@@ -1757,6 +2074,29 @@ export function registerCrmRoutes(app, deps) {
         updates.logoUrl = logoUrl || null
       }
 
+      if (Object.prototype.hasOwnProperty.call(body, 'contractUrl')) {
+        const contractUrl = toTrimmedText(body.contractUrl, 1200)
+        updates.contractUrl = contractUrl || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'contractSignedDate')) {
+        const contractSignedDateInput = toTrimmedText(body.contractSignedDate, 80)
+        const contractSignedDate = contractSignedDateInput ? toIsoDateOrNull(contractSignedDateInput) : null
+
+        if (contractSignedDateInput && !contractSignedDate) {
+          return res.status(400).json({
+            error: 'contractSignedDate must be a valid ISO date string.',
+          })
+        }
+
+        updates.contractSignedDate = contractSignedDate
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'contractNet')) {
+        const contractNet = toTrimmedText(body.contractNet, 200)
+        updates.contractNet = contractNet || null
+      }
+
       if (Object.prototype.hasOwnProperty.call(body, 'email')) {
         const email = toTrimmedText(body.email, 200)
         updates.email = email || null
@@ -1780,6 +2120,18 @@ export function registerCrmRoutes(app, deps) {
       if (Object.prototype.hasOwnProperty.call(body, 'states')) {
         nextStates = normalizeUsStateList(body.states)
         updates.states = nextStates
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'engagementReadinessEnabled')) {
+        const engagementReadinessEnabled = toNullableBoolean(body.engagementReadinessEnabled)
+
+        if (engagementReadinessEnabled === null) {
+          return res.status(400).json({
+            error: 'engagementReadinessEnabled must be true or false.',
+          })
+        }
+
+        updates.engagementReadinessEnabled = engagementReadinessEnabled
       }
 
       if (Object.keys(updates).length === 0) {
@@ -1814,11 +2166,15 @@ export function registerCrmRoutes(app, deps) {
               name: 1,
               companyName: 1,
               logoUrl: 1,
+              contractUrl: 1,
+              contractSignedDate: 1,
+              contractNet: 1,
               email: 1,
               email2: 1,
               phone: 1,
               phone2: 1,
               states: 1,
+              engagementReadinessEnabled: 1,
               createdAt: 1,
               updatedAt: 1,
             },
@@ -1901,6 +2257,8 @@ export function registerCrmRoutes(app, deps) {
       const ownerEmail = toLowerText(req.query?.ownerEmail, 200)
       const accountType = toLowerText(req.query?.accountType, 60)
       const engagementBucket = toLowerText(req.query?.engagementBucket, 20)
+      const dealerStates = normalizeUsStateList(normalizeDelimitedTextList(req.query?.dealerStates, 24, 120))
+      const salesReps = normalizeDelimitedTextList(req.query?.salesReps, 200, 250)
       const normalizedEngagementBucket = normalizeEngagementReadinessStatusForFiltering(engagementBucket)
       const hasEmail = toNullableBoolean(req.query?.hasEmail)
       const offset = toNonNegativeInteger(req.query?.offset, 0)
@@ -1925,6 +2283,8 @@ export function registerCrmRoutes(app, deps) {
         ownerEmail,
         accountType,
         engagementBucket: normalizedEngagementBucket || engagementBucket,
+        dealerStates,
+        salesReps,
         hasEmail,
         territoryStates,
         offset,
@@ -1938,10 +2298,11 @@ export function registerCrmRoutes(app, deps) {
       }
 
       const collections = await getCollections()
-      const { crmAccountsCollection, crmContactsCollection } = collections
+      const { crmAccountsCollection, crmContactsCollection, crmSalesRepsCollection } = collections
       const crmAccountChatsCollection = await getCrmAccountChatsCollection(collections)
       const filterClauses = []
       let accountSourceIdsFromContactSearch = []
+      let readinessDisabledStateRegexes = []
 
       filterClauses.push({
         recordStatus: {
@@ -1953,6 +2314,22 @@ export function registerCrmRoutes(app, deps) {
         filterClauses.push({
           state: {
             $in: buildExactStateRegexes(territoryStates),
+          },
+        })
+      }
+
+      if (dealerStates.length > 0) {
+        filterClauses.push({
+          state: {
+            $in: buildExactStateRegexes(dealerStates),
+          },
+        })
+      }
+
+      if (salesReps.length > 0) {
+        filterClauses.push({
+          salesRep: {
+            $in: salesReps.map((salesRepName) => new RegExp(`^${escapeRegex(salesRepName)}$`, 'i')),
           },
         })
       }
@@ -1998,24 +2375,81 @@ export function registerCrmRoutes(app, deps) {
       }
 
       if (engagementBucket && engagementBucket !== 'all') {
-        if (normalizedEngagementBucket === engagementReadinessReady) {
-          filterClauses.push({
-            engagementReadinessStatus: {
-              $in: engagementReadinessReadyFilterValues,
+        const readinessDisabledSalesReps = await crmSalesRepsCollection
+          .find(
+            {
+              isDeleted: {
+                $ne: true,
+              },
+              engagementReadinessEnabled: false,
             },
-          })
+            {
+              projection: {
+                _id: 0,
+                states: 1,
+              },
+            },
+          )
+          .toArray()
+
+        const readinessDisabledStates = uniqueSorted(
+          readinessDisabledSalesReps.flatMap((salesRep) => normalizeUsStateList(salesRep.states)),
+        )
+
+        readinessDisabledStateRegexes = readinessDisabledStates.length > 0
+          ? buildExactStateRegexes(readinessDisabledStates)
+          : []
+
+        if (normalizedEngagementBucket === engagementReadinessReady) {
+          const readyClauseOptions = [
+            {
+              engagementReadinessStatus: {
+                $in: engagementReadinessReadyFilterValues,
+              },
+            },
+          ]
+
+          if (readinessDisabledStateRegexes.length > 0) {
+            readyClauseOptions.push({
+              state: {
+                $in: readinessDisabledStateRegexes,
+              },
+            })
+          }
+
+          filterClauses.push(readyClauseOptions.length === 1
+            ? readyClauseOptions[0]
+            : {
+              $or: readyClauseOptions,
+            })
         } else if (normalizedEngagementBucket === engagementReadinessNotReady) {
           filterClauses.push({
             engagementReadinessStatus: {
               $in: engagementReadinessNotReadyFilterValues,
             },
           })
+
+          if (readinessDisabledStateRegexes.length > 0) {
+            filterClauses.push({
+              state: {
+                $nin: readinessDisabledStateRegexes,
+              },
+            })
+          }
         } else if (engagementBucket === 'none') {
           filterClauses.push({
             engagementReadinessStatus: {
               $nin: engagementReadinessKnownFilterValues,
             },
           })
+
+          if (readinessDisabledStateRegexes.length > 0) {
+            filterClauses.push({
+              state: {
+                $nin: readinessDisabledStateRegexes,
+              },
+            })
+          }
         }
       }
 
@@ -2253,7 +2687,7 @@ export function registerCrmRoutes(app, deps) {
     }
   })
 
-  app.post('/api/crm/dealers', requireFirebaseAuth, requireSalesManagerOrAdminRole, async (req, res, next) => {
+  app.post('/api/crm/dealers', requireFirebaseAuth, async (req, res, next) => {
     try {
       const { isSalesRep, territoryStates } = resolveCrmAccessScope(req)
       const body = toOptionalObject(req.body)
@@ -3088,6 +3522,8 @@ export function registerCrmRoutes(app, deps) {
 
   app.get('/api/crm/quotes/:quoteId/chats', requireFirebaseAuth, async (req, res, next) => {
     try {
+      const accessScope = resolveCrmAccessScope(req)
+      const quoteAccessScope = resolveSalesRepQuoteAccessScope(accessScope)
       const quoteId = toTrimmedText(req.params.quoteId, 160)
 
       if (!quoteId) {
@@ -3102,6 +3538,7 @@ export function registerCrmRoutes(app, deps) {
       const { crmQuotesCollection } = collections
       const crmQuoteChatsCollection = await getCrmQuoteChatsCollection(collections)
       const quote = await resolveQuoteOrThrow(crmQuotesCollection, quoteId)
+      assertCanAccessQuoteBySalesRep(quote, quoteAccessScope)
       const filter = {
         quoteId: quote.id,
       }
@@ -3153,7 +3590,9 @@ export function registerCrmRoutes(app, deps) {
 
   app.post('/api/crm/quotes/:quoteId/chats', requireFirebaseAuth, async (req, res, next) => {
     try {
-      const { publicUser } = resolveCrmAccessScope(req)
+      const accessScope = resolveCrmAccessScope(req)
+      const { publicUser } = accessScope
+      const quoteAccessScope = resolveSalesRepQuoteAccessScope(accessScope)
       const quoteId = toTrimmedText(req.params.quoteId, 160)
       const body = toOptionalObject(req.body)
       const messageText = toTrimmedText(body.message, 4000)
@@ -3186,6 +3625,7 @@ export function registerCrmRoutes(app, deps) {
       } = collections
       const crmQuoteChatsCollection = await getCrmQuoteChatsCollection(collections)
       const quote = await resolveQuoteOrThrow(crmQuotesCollection, quoteId)
+      assertCanAccessQuoteBySalesRep(quote, quoteAccessScope)
       const now = nowIso()
       const requesterUid = toTrimmedText(req.authUser?.uid, 200)
       const requesterEmail = toTrimmedText(req.authUser?.email, 200) || null
@@ -3288,7 +3728,9 @@ export function registerCrmRoutes(app, deps) {
 
   app.patch('/api/crm/quotes/:quoteId/chats/:messageId', requireFirebaseAuth, async (req, res, next) => {
     try {
-      const { publicUser } = resolveCrmAccessScope(req)
+      const accessScope = resolveCrmAccessScope(req)
+      const { publicUser } = accessScope
+      const quoteAccessScope = resolveSalesRepQuoteAccessScope(accessScope)
       const quoteId = toTrimmedText(req.params.quoteId, 160)
       const messageId = toTrimmedText(req.params.messageId, 160)
       const body = toOptionalObject(req.body)
@@ -3316,6 +3758,7 @@ export function registerCrmRoutes(app, deps) {
       const { crmQuotesCollection } = collections
       const crmQuoteChatsCollection = await getCrmQuoteChatsCollection(collections)
       const quote = await resolveQuoteOrThrow(crmQuotesCollection, quoteId)
+      assertCanAccessQuoteBySalesRep(quote, quoteAccessScope)
       const existingMessage = await crmQuoteChatsCollection.findOne(
         {
           id: messageId,
@@ -3397,7 +3840,9 @@ export function registerCrmRoutes(app, deps) {
 
   app.delete('/api/crm/quotes/:quoteId/chats/:messageId', requireFirebaseAuth, async (req, res, next) => {
     try {
-      const { publicUser } = resolveCrmAccessScope(req)
+      const accessScope = resolveCrmAccessScope(req)
+      const { publicUser } = accessScope
+      const quoteAccessScope = resolveSalesRepQuoteAccessScope(accessScope)
       const quoteId = toTrimmedText(req.params.quoteId, 160)
       const messageId = toTrimmedText(req.params.messageId, 160)
 
@@ -3417,6 +3862,7 @@ export function registerCrmRoutes(app, deps) {
       const { crmQuotesCollection } = collections
       const crmQuoteChatsCollection = await getCrmQuoteChatsCollection(collections)
       const quote = await resolveQuoteOrThrow(crmQuotesCollection, quoteId)
+      assertCanAccessQuoteBySalesRep(quote, quoteAccessScope)
       const existingMessage = await crmQuoteChatsCollection.findOne(
         {
           id: messageId,
@@ -5402,6 +5848,8 @@ export function registerCrmRoutes(app, deps) {
 
   app.get('/api/crm/quotes', requireFirebaseAuth, async (req, res, next) => {
     try {
+      const accessScope = resolveCrmAccessScope(req)
+      const quoteAccessScope = resolveSalesRepQuoteAccessScope(accessScope)
       const status = toLowerText(req.query?.status, 60)
       const lifecycle = normalizeQuoteLifecycle(req.query?.lifecycle)
       const dealerSourceId = toTrimmedText(req.query?.dealerSourceId, 160)
@@ -5414,6 +5862,12 @@ export function registerCrmRoutes(app, deps) {
       const collections = await getCollections()
       const { crmQuotesCollection } = collections
       const filterClauses = []
+
+      if (quoteAccessScope.restrictToLinkedSalesRep && !quoteAccessScope.linkedSalesRepName) {
+        return res.json({
+          quotes: [],
+        })
+      }
 
       if (status && status !== 'all') {
         filterClauses.push({ status })
@@ -5435,6 +5889,12 @@ export function registerCrmRoutes(app, deps) {
           status: {
             $in: ['draft', 'sent'],
           },
+        })
+      }
+
+      if (quoteAccessScope.restrictToLinkedSalesRep && quoteAccessScope.linkedSalesRepRegex) {
+        filterClauses.push({
+          salesRep: quoteAccessScope.linkedSalesRepRegex,
         })
       }
 
@@ -5491,7 +5951,7 @@ export function registerCrmRoutes(app, deps) {
             },
           },
         )
-        .sort({ createdAt: -1, updatedAt: -1 })
+        .sort({ updatedAt: -1, id: -1 })
         .limit(limit)
         .toArray()
 
@@ -5536,12 +5996,12 @@ export function registerCrmRoutes(app, deps) {
       const quotesWithChatCounts = quotes.map((quote) => {
         const quoteId = toTrimmedText(quote?.id, 160)
 
-        return {
+        return normalizeQuoteOpportunityStageForResponse({
           ...quote,
           chatMessageCount: quoteId
             ? Number(chatMessageCountByQuoteId.get(quoteId) ?? 0)
             : 0,
-        }
+        })
       })
 
       return res.json({
@@ -5554,6 +6014,8 @@ export function registerCrmRoutes(app, deps) {
 
   app.post('/api/crm/quotes', requireFirebaseAuth, async (req, res, next) => {
     try {
+      const accessScope = resolveCrmAccessScope(req)
+      const quoteAccessScope = resolveSalesRepQuoteAccessScope(accessScope)
       const body = toOptionalObject(req.body)
       const quoteNumber = toTrimmedText(body.quoteNumber, 120) || null
       // A quote can be created with just a quote number; the rest is filled in
@@ -5563,7 +6025,7 @@ export function registerCrmRoutes(app, deps) {
         || (quoteNumber ? `Opportunity ${quoteNumber}` : 'Untitled opportunity')
 
       const status = normalizeStatus(body.status, quoteStatuses, 'draft')
-      const opportunityStage = normalizeStatus(body.opportunityStage, opportunityStages, 'concept')
+      const opportunityStage = normalizeOpportunityStage(body.opportunityStage, 'concept')
 
       if (!status) {
         return res.status(400).json({
@@ -5586,6 +6048,12 @@ export function registerCrmRoutes(app, deps) {
       if (totalAmount === null) {
         return res.status(400).json({
           error: 'totalAmount must be a non-negative number.',
+        })
+      }
+
+      if (quoteAccessScope.restrictToLinkedSalesRep && !quoteAccessScope.linkedSalesRepName) {
+        return res.status(403).json({
+          error: 'Sales rep access is not linked to a CRM sales rep yet.',
         })
       }
 
@@ -5660,7 +6128,9 @@ export function registerCrmRoutes(app, deps) {
         dealerName: dealer ? (dealer.name || dealer.sourceId) : null,
         dealerState: normalizeUsStateCode(body.dealerState) || normalizeUsStateCode(dealer?.state) || null,
         companyName: toTrimmedText(body.companyName, 200) || null,
-        salesRep: toTrimmedText(body.salesRep, 200) || null,
+        salesRep: quoteAccessScope.restrictToLinkedSalesRep
+          ? quoteAccessScope.linkedSalesRepName
+          : (toTrimmedText(body.salesRep, 200) || null),
         projectType: normalizeProjectType(body.projectType),
         opportunityDate: toIsoDateOrNull(body.opportunityDate),
         opportunityStage,
@@ -5700,14 +6170,13 @@ export function registerCrmRoutes(app, deps) {
         lastStatusChangedAt: now,
         createdByUid: toTrimmedText(req.authUser?.uid, 160) || null,
         createdByEmail: toTrimmedText(req.authUser?.email, 200) || null,
-        createdAt: now,
         updatedAt: now,
       }
 
       await crmQuotesCollection.insertOne(nextQuote)
 
       return res.status(201).json({
-        quote: nextQuote,
+        quote: normalizeQuoteOpportunityStageForResponse(nextQuote),
       })
     } catch (error) {
       next(error)
@@ -5721,6 +6190,15 @@ export function registerCrmRoutes(app, deps) {
       if (!quoteId) {
         return res.status(400).json({
           error: 'quoteId is required.',
+        })
+      }
+
+      const accessScope = resolveCrmAccessScope(req)
+      const quoteAccessScope = resolveSalesRepQuoteAccessScope(accessScope)
+
+      if (quoteAccessScope.restrictToLinkedSalesRep && !quoteAccessScope.linkedSalesRepName) {
+        return res.status(403).json({
+          error: 'Sales rep access is not linked to a CRM sales rep yet.',
         })
       }
 
@@ -5748,6 +6226,12 @@ export function registerCrmRoutes(app, deps) {
         })
       }
 
+      if (!canAccessQuoteBySalesRep(existingQuote, quoteAccessScope)) {
+        return res.status(403).json({
+          error: 'You can only access opportunities assigned to your linked sales rep.',
+        })
+      }
+
       const updates = {}
       const now = nowIso()
       const hasDocumentsInput = Object.prototype.hasOwnProperty.call(body, 'documents')
@@ -5772,8 +6256,8 @@ export function registerCrmRoutes(app, deps) {
       }
 
       if (Object.prototype.hasOwnProperty.call(body, 'opportunityStage')) {
-        const currentStage = normalizeStatus(existingQuote.opportunityStage, opportunityStages, 'concept') || 'concept'
-        const nextStage = normalizeStatus(body.opportunityStage, opportunityStages, currentStage)
+        const currentStage = normalizeOpportunityStage(existingQuote.opportunityStage, 'concept') || 'concept'
+        const nextStage = normalizeOpportunityStage(body.opportunityStage, currentStage)
 
         if (!nextStage) {
           return res.status(400).json({
@@ -5845,7 +6329,22 @@ export function registerCrmRoutes(app, deps) {
       }
 
       if (Object.prototype.hasOwnProperty.call(body, 'salesRep')) {
-        updates.salesRep = toTrimmedText(body.salesRep, 200) || null
+        if (quoteAccessScope.restrictToLinkedSalesRep) {
+          const requestedSalesRep = toTrimmedText(body.salesRep, 200)
+
+          if (
+            requestedSalesRep
+            && !quoteAccessScope.linkedSalesRepRegex?.test(requestedSalesRep)
+          ) {
+            return res.status(403).json({
+              error: 'Sales reps can only assign opportunities to their linked sales rep.',
+            })
+          }
+
+          updates.salesRep = quoteAccessScope.linkedSalesRepName
+        } else {
+          updates.salesRep = toTrimmedText(body.salesRep, 200) || null
+        }
       }
 
       if (Object.prototype.hasOwnProperty.call(body, 'opportunityDate')) {
@@ -6003,7 +6502,7 @@ export function registerCrmRoutes(app, deps) {
 
       if (Object.keys(updates).length === 0) {
         return res.json({
-          quote: existingQuote,
+          quote: normalizeQuoteOpportunityStageForResponse(existingQuote),
         })
       }
 
@@ -6025,14 +6524,14 @@ export function registerCrmRoutes(app, deps) {
       )
 
       return res.json({
-        quote: updatedQuote,
+        quote: normalizeQuoteOpportunityStageForResponse(updatedQuote),
       })
     } catch (error) {
       next(error)
     }
   })
 
-  app.delete('/api/crm/quotes/:quoteId', requireFirebaseAuth, async (req, res, next) => {
+  app.delete('/api/crm/quotes/:quoteId', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
     try {
       const quoteId = toTrimmedText(req.params.quoteId, 160)
 
@@ -6061,11 +6560,14 @@ export function registerCrmRoutes(app, deps) {
         })
       }
 
+      const documentCleanup = await deleteQuoteStorageTargets(deletedQuote)
+
       cacheDelete(OVERVIEW_CACHE_KEY)
 
       return res.json({
         ok: true,
         quote: deletedQuote,
+        documentCleanup,
       })
     } catch (error) {
       next(error)
@@ -6150,7 +6652,7 @@ export function registerCrmRoutes(app, deps) {
     const findOptions = {
       sort: {
         updatedAt: -1,
-        createdAt: -1,
+        id: -1,
       },
       projection,
     }
@@ -6187,14 +6689,24 @@ export function registerCrmRoutes(app, deps) {
     return next()
   }
 
-  async function lookupExcelQuoteByNumber(quoteNumberInput) {
+  async function lookupExcelQuoteByNumber(quoteNumberInput, options = {}) {
     const quoteNumber = toTrimmedText(quoteNumberInput, 120)
+    const quoteAccessScope = resolveSalesRepQuoteAccessScope(toOptionalObject(options.accessScope))
 
     if (!quoteNumber) {
       return {
         status: 400,
         body: {
           error: 'quoteNumber is required.',
+        },
+      }
+    }
+
+    if (quoteAccessScope.restrictToLinkedSalesRep && !quoteAccessScope.linkedSalesRepName) {
+      return {
+        status: 403,
+        body: {
+          error: 'Sales rep access is not linked to a CRM sales rep yet.',
         },
       }
     }
@@ -6226,13 +6738,22 @@ export function registerCrmRoutes(app, deps) {
       }
     }
 
+    if (!canAccessQuoteBySalesRep(quote, quoteAccessScope)) {
+      return {
+        status: 200,
+        body: {
+          found: false,
+        },
+      }
+    }
+
     return {
       status: 200,
       body: {
         found: true,
         id: quote.id,
         quoteNumber: quote.quoteNumber || null,
-        opportunityStage: normalizeStatus(quote.opportunityStage, opportunityStages, 'concept') || 'concept',
+        opportunityStage: normalizeOpportunityStage(quote.opportunityStage, 'concept') || 'concept',
         status: quote.status || null,
         dealerName: quote.dealerName || null,
         title: quote.title || null,
@@ -6254,7 +6775,10 @@ export function registerCrmRoutes(app, deps) {
 
   app.get('/api/crm/quotes/excel-lookup', requireFirebaseAuth, async (req, res, next) => {
     try {
-      const lookupResult = await lookupExcelQuoteByNumber(req.query?.quoteNumber)
+      const accessScope = resolveCrmAccessScope(req)
+      const lookupResult = await lookupExcelQuoteByNumber(req.query?.quoteNumber, {
+        accessScope,
+      })
       return res.status(lookupResult.status).json(lookupResult.body)
     } catch (error) {
       next(error)
@@ -6308,15 +6832,25 @@ export function registerCrmRoutes(app, deps) {
     }
   })
 
-  async function syncExcelQuotePayload(rawBody) {
+  async function syncExcelQuotePayload(rawBody, options = {}) {
     const body = toOptionalObject(rawBody)
     const quoteNumber = toTrimmedText(body.quoteNumber, 120)
+    const quoteAccessScope = resolveSalesRepQuoteAccessScope(toOptionalObject(options.accessScope))
 
     if (!quoteNumber) {
       return {
         status: 400,
         body: {
           error: 'quoteNumber is required.',
+        },
+      }
+    }
+
+    if (quoteAccessScope.restrictToLinkedSalesRep && !quoteAccessScope.linkedSalesRepName) {
+      return {
+        status: 403,
+        body: {
+          error: 'Sales rep access is not linked to a CRM sales rep yet.',
         },
       }
     }
@@ -6347,7 +6881,9 @@ export function registerCrmRoutes(app, deps) {
           dealerName: null,
           dealerState: normalizeUsStateCode(body.dealerState) || null,
           companyName: toTrimmedText(body.companyName, 200) || null,
-          salesRep: toTrimmedText(body.salesRep, 200) || null,
+          salesRep: quoteAccessScope.restrictToLinkedSalesRep
+            ? quoteAccessScope.linkedSalesRepName
+            : (toTrimmedText(body.salesRep, 200) || null),
           projectType: normalizeProjectType(body.projectType),
           opportunityDate: toIsoDateOrNull(body.opportunityDate),
           opportunityStage: 'proposal_submission',
@@ -6383,7 +6919,6 @@ export function registerCrmRoutes(app, deps) {
           lastStatusChangedAt: now,
           createdByUid: null,
           createdByEmail: null,
-          createdAt: now,
           updatedAt: now,
         }
 
@@ -6399,7 +6934,7 @@ export function registerCrmRoutes(app, deps) {
             fromStage: 'not_found',
             toStage: 'proposal_submission',
             quoteNumber,
-            quote: nextQuote,
+            quote: normalizeQuoteOpportunityStageForResponse(nextQuote),
             message: 'Quote was not found in Concept and was created directly from the uploaded file.',
           },
         }
@@ -6414,76 +6949,112 @@ export function registerCrmRoutes(app, deps) {
       }
     }
 
-    const fromStage = normalizeStatus(existingQuote.opportunityStage, opportunityStages, 'concept') || 'concept'
+    if (!canAccessQuoteBySalesRep(existingQuote, quoteAccessScope)) {
+      return {
+        status: 403,
+        body: {
+          error: 'You can only sync opportunities assigned to your linked sales rep.',
+        },
+      }
+    }
+
+    const fromStage = normalizeOpportunityStage(existingQuote.opportunityStage, 'concept') || 'concept'
     const now = nowIso()
     const updates = {}
+    let hasExcelFieldChanges = false
+
+    const setExcelFieldUpdateIfChanged = (fieldName, nextValue) => {
+      const previousValue = Object.prototype.hasOwnProperty.call(existingQuote, fieldName)
+        ? existingQuote[fieldName]
+        : null
+      const normalizedPrevious = previousValue === undefined ? null : previousValue
+      const normalizedNext = nextValue === undefined ? null : nextValue
+
+      const hasChanged = (
+        Array.isArray(normalizedNext)
+        || (normalizedNext && typeof normalizedNext === 'object')
+      )
+        ? JSON.stringify(normalizedPrevious ?? null) !== JSON.stringify(normalizedNext ?? null)
+        : normalizedPrevious !== normalizedNext
+
+      if (!hasChanged) {
+        return
+      }
+
+      updates[fieldName] = normalizedNext
+      hasExcelFieldChanges = true
+    }
 
     const title = toTrimmedText(body.title, 240)
     if (title) {
-      updates.title = title
+      setExcelFieldUpdateIfChanged('title', title)
     }
 
     if (body.companyName !== undefined) {
-      updates.companyName = toTrimmedText(body.companyName, 200) || null
+      setExcelFieldUpdateIfChanged('companyName', toTrimmedText(body.companyName, 200) || null)
     }
 
     if (body.salesRep !== undefined) {
-      updates.salesRep = toTrimmedText(body.salesRep, 200) || null
+      if (quoteAccessScope.restrictToLinkedSalesRep) {
+        setExcelFieldUpdateIfChanged('salesRep', quoteAccessScope.linkedSalesRepName)
+      } else {
+        setExcelFieldUpdateIfChanged('salesRep', toTrimmedText(body.salesRep, 200) || null)
+      }
     }
 
     if (body.dealerState !== undefined) {
-      updates.dealerState = normalizeUsStateCode(body.dealerState) || null
+      setExcelFieldUpdateIfChanged('dealerState', normalizeUsStateCode(body.dealerState) || null)
     }
 
     if (body.projectType !== undefined) {
-      updates.projectType = normalizeProjectType(body.projectType)
+      setExcelFieldUpdateIfChanged('projectType', normalizeProjectType(body.projectType))
     }
 
     if (body.opportunityDate !== undefined) {
-      updates.opportunityDate = toIsoDateOrNull(body.opportunityDate)
+      setExcelFieldUpdateIfChanged('opportunityDate', toIsoDateOrNull(body.opportunityDate))
     }
 
     if (body.contactName !== undefined) {
-      updates.contactName = toTrimmedText(body.contactName, 240) || null
+      setExcelFieldUpdateIfChanged('contactName', toTrimmedText(body.contactName, 240) || null)
     }
 
     if (body.contactEmail !== undefined) {
-      updates.contactEmail = toTrimmedText(body.contactEmail, 200) || null
+      setExcelFieldUpdateIfChanged('contactEmail', toTrimmedText(body.contactEmail, 200) || null)
     }
 
     if (body.contactPhone !== undefined) {
-      updates.contactPhone = toTrimmedText(body.contactPhone, 80) || null
+      setExcelFieldUpdateIfChanged('contactPhone', toTrimmedText(body.contactPhone, 80) || null)
     }
 
     if (body.paymentTerms !== undefined) {
-      updates.paymentTerms = toTrimmedText(body.paymentTerms, 240) || null
+      setExcelFieldUpdateIfChanged('paymentTerms', toTrimmedText(body.paymentTerms, 240) || null)
     }
 
     if (body.leadTime !== undefined) {
-      updates.leadTime = toTrimmedText(body.leadTime, 240) || null
+      setExcelFieldUpdateIfChanged('leadTime', toTrimmedText(body.leadTime, 240) || null)
     }
 
     if (body.subtotal !== undefined) {
-      updates.subtotal = toNonNegativeNumberOrNull(body.subtotal)
+      setExcelFieldUpdateIfChanged('subtotal', toNonNegativeNumberOrNull(body.subtotal))
     }
 
     if (body.freight !== undefined) {
-      updates.freight = toNonNegativeNumberOrNull(body.freight)
+      setExcelFieldUpdateIfChanged('freight', toNonNegativeNumberOrNull(body.freight))
     }
 
     if (body.freightDescription !== undefined) {
-      updates.freightDescription = toTrimmedText(body.freightDescription, 1200) || null
+      setExcelFieldUpdateIfChanged('freightDescription', toTrimmedText(body.freightDescription, 1200) || null)
     }
 
     if (body.totalAmount !== undefined) {
       const nextAmount = toNonNegativeNumberOrNull(body.totalAmount)
       if (nextAmount !== null) {
-        updates.totalAmount = Number(nextAmount.toFixed(2))
+        setExcelFieldUpdateIfChanged('totalAmount', Number(nextAmount.toFixed(2)))
       }
     }
 
     if (body.lineItems !== undefined) {
-      updates.lineItems = normalizeQuoteLineItems(body.lineItems)
+      setExcelFieldUpdateIfChanged('lineItems', normalizeQuoteLineItems(body.lineItems))
     }
 
     let toStage = fromStage
@@ -6495,12 +7066,7 @@ export function registerCrmRoutes(app, deps) {
       updates.sentAt = now
       updates.lastStatusChangedAt = now
     } else if (fromStage === 'proposal_submission') {
-      toStage = 'revision'
-      updates.opportunityStage = 'revision'
-      updates.status = 'draft'
-      updates.lastStatusChangedAt = now
-    } else if (fromStage === 'revision') {
-      toStage = 'revision'
+      toStage = 'proposal_submission'
     } else {
       return {
         status: 409,
@@ -6509,6 +7075,21 @@ export function registerCrmRoutes(app, deps) {
           ok: false,
           fromStage,
           message: `Quote is in stage '${fromStage}', which the Excel sync does not manage.`,
+        },
+      }
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return {
+        status: 200,
+        body: {
+          ok: true,
+          found: true,
+          fromStage,
+          toStage,
+          quoteNumber: existingQuote?.quoteNumber || quoteNumber,
+          quote: normalizeQuoteOpportunityStageForResponse(existingQuote),
+          message: 'No Excel data changes detected; stage unchanged.',
         },
       }
     }
@@ -6531,14 +7112,17 @@ export function registerCrmRoutes(app, deps) {
         fromStage,
         toStage,
         quoteNumber: updatedQuote?.quoteNumber || quoteNumber,
-        quote: updatedQuote || null,
+        quote: normalizeQuoteOpportunityStageForResponse(updatedQuote) || null,
       },
     }
   }
 
   app.post('/api/crm/quotes/excel-sync', requireFirebaseAuth, async (req, res, next) => {
     try {
-      const syncResult = await syncExcelQuotePayload(req.body)
+      const accessScope = resolveCrmAccessScope(req)
+      const syncResult = await syncExcelQuotePayload(req.body, {
+        accessScope,
+      })
       return res.status(syncResult.status).json(syncResult.body)
     } catch (error) {
       next(error)

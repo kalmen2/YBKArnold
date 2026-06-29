@@ -14,7 +14,7 @@ export function registerOrderPhotoRoutes(app, deps) {
   } = deps
 
 
-app.get('/api/orders/photos-index', async (_req, res, next) => {
+app.get('/api/orders/photos-index', requireFirebaseAuth, async (_req, res, next) => {
   try {
     const orders = await listAllOrderPhotoGroups()
 
@@ -27,7 +27,7 @@ app.get('/api/orders/photos-index', async (_req, res, next) => {
   }
 })
 
-app.get('/api/orders/:orderId/photos', async (req, res, next) => {
+app.get('/api/orders/:orderId/photos', requireFirebaseAuth, async (req, res, next) => {
   try {
     const orderId = normalizeOrderPhotoOrderId(req.params.orderId)
 
@@ -42,7 +42,7 @@ app.get('/api/orders/:orderId/photos', async (req, res, next) => {
   }
 })
 
-app.get('/api/orders/:orderId/photos/download', async (req, res, next) => {
+app.get('/api/orders/:orderId/photos/download', requireFirebaseAuth, async (req, res, next) => {
   try {
     const orderId = normalizeOrderPhotoOrderId(req.params.orderId)
 

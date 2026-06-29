@@ -13,7 +13,6 @@ export type BulkWorkerRow = {
   stageId: string
   jobName: string
   hours: string
-  overtimeHours: string
   notes: string
 }
 
@@ -317,7 +316,6 @@ export function createEmptyBulkRowForWorker(workerId: string, stageId = ''): Bul
     stageId,
     jobName: '',
     hours: '',
-    overtimeHours: '',
     notes: '',
   }
 }
@@ -357,8 +355,7 @@ export function buildBulkRowsForDate(
       workerId: worker.id,
       stageId: entry.stageId ?? '',
       jobName: entry.jobName,
-      hours: String(entry.hours),
-      overtimeHours: String(entry.overtimeHours ?? ''),
+      hours: String((Number(entry.hours) || 0) + (Number(entry.overtimeHours) || 0)),
       notes: entry.notes,
     }))
   })

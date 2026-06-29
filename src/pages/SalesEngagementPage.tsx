@@ -43,6 +43,7 @@ import {
   fetchCrmDealerChats,
   fetchCrmDealerDetail,
   fetchCrmDealers,
+  fetchCrmSalesReps,
   removeCrmDealer,
   removeCrmDealerChatMessage,
   updateCrmDealerChatMessage,
@@ -207,6 +208,25 @@ function normalizeEngagementStatus(value: string | null | undefined): Engagement
   return 'none'
 }
 
+function normalizeUsStateCode(value: string | null | undefined) {
+  const normalized = String(value ?? '').trim().toUpperCase()
+
+  if (!normalized) {
+    return ''
+  }
+
+  if (/^[A-Z]{2}$/.test(normalized)) {
+    return normalized
+  }
+
+  const stateMatch = normalized.match(/\b([A-Z]{2})\b/)
+  return stateMatch?.[1] || ''
+}
+
+function normalizeSalesRepName(value: string | null | undefined) {
+  return String(value ?? '').trim().toLowerCase()
+}
+
 function formatEngagementStatusLabel(status: EngagementStatus) {
   if (status === 'ready') {
     return 'Ready'
@@ -233,14 +253,23 @@ function resolveStatusChipColor(status: EngagementStatus): 'success' | 'error' |
 
 type DealerCardProps = {
   dealer: CrmDealer
+  readinessEnabled: boolean
   onOpenDealer: (dealer: CrmDealer, initialTab?: QuickViewTab) => void
   onDeleteDealer: (dealer: CrmDealer) => void
 }
 
-function DealerCard({ dealer, onOpenDealer, onDeleteDealer }: DealerCardProps) {
+function DealerCard({ dealer, readinessEnabled, onOpenDealer, onDeleteDealer }: DealerCardProps) {
   const accountName = resolveDealerName(dealer)
   const accountType = resolveAccountTypeBucket(dealer)
-  const engagementStatus = normalizeEngagementStatus(dealer.engagementReadinessStatus)
+  const engagementStatus = readinessEnabled
+    ? normalizeEngagementStatus(dealer.engagementReadinessStatus)
+    : 'ready'
+  const engagementStatusLabel = readinessEnabled
+    ? formatEngagementStatusLabel(engagementStatus)
+    : 'Engagement'
+  const engagementStatusColor = readinessEnabled
+    ? resolveStatusChipColor(engagementStatus)
+    : 'default'
   const accountWebsite = String(dealer.website ?? '').trim()
   const accountWebsiteLabel = formatOptional(accountWebsite)
   const accountWebsiteHref = normalizeWebsiteHref(accountWebsite)
@@ -384,8 +413,8 @@ function DealerCard({ dealer, onOpenDealer, onDeleteDealer }: DealerCardProps) {
       <Stack direction="row" spacing={0.55} sx={{ flexWrap: 'wrap', rowGap: 0.55 }}>
         <Chip
           size="small"
-          color={resolveStatusChipColor(engagementStatus)}
-          label={formatEngagementStatusLabel(engagementStatus)}
+          color={engagementStatusColor}
+          label={engagementStatusLabel}
         />
         <Chip size="small" variant="outlined" label={formatAccountTypeLabel(accountType)} />
         <Chip size="small" variant="outlined" label={accountState} />
@@ -401,7 +430,7 @@ function DealerCard({ dealer, onOpenDealer, onDeleteDealer }: DealerCardProps) {
         }}
       >
         <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.25 }}>
-          Readiness note
+          {readinessEnabled ? 'Readiness note' : 'Engagement note'}
         </Typography>
         <Typography
           variant="body2"
@@ -607,6 +636,8 @@ export default function SalesEngagementPage() {
   const [searchParams] = useSearchParams()
   const [statusFilter, setStatusFilter] = useState<EngagementFilter>('ready')
   const [accountType, setAccountType] = useState<AccountTypeBucket>('dealer')
+  const [selectedStates, setSelectedStates] = useState<string[]>([])
+  const [selectedSalesReps, setSelectedSalesReps] = useState<string[]>([])
   const [searchInput, setSearchInput] = useState('')
   const [page, setPage] = useState(0)
   const [rowsPerPage, setRowsPerPage] = useState(24)
@@ -638,22 +669,140 @@ export default function SalesEngagementPage() {
   const chatMessageElementByIdRef = useRef<Map<string, HTMLDivElement>>(new Map())
 
   const search = useDebounceValue(searchInput)
+  const normalizedTerritoryStates = useMemo(
+    () => (Array.isArray(appUser?.salesTerritoryStates)
+      ? appUser.salesTerritoryStates
+        .map((value) => normalizeUsStateCode(value))
+        .filter(Boolean)
+      : []),
+    [appUser?.salesTerritoryStates],
+  )
+
+  const salesRepsQuery = useQuery({
+    queryKey: ['crm', 'engagement-sales-reps'],
+    queryFn: () => fetchCrmSalesReps(),
+    staleTime: 5 * 60 * 1000,
+  })
+
+  const salesReps = useMemo(
+    () => (Array.isArray(salesRepsQuery.data?.salesReps) ? salesRepsQuery.data.salesReps : []),
+    [salesRepsQuery.data?.salesReps],
+  )
+
+  const availableStateOptions = useMemo(() => {
+    const statesFromResponse = Array.isArray(salesRepsQuery.data?.availableStates)
+      ? salesRepsQuery.data.availableStates
+      : []
+    const statesFromReps = salesReps.flatMap((salesRep) => salesRep.states)
+
+    return [...new Set([...statesFromResponse, ...statesFromReps]
+      .map((stateCode) => normalizeUsStateCode(stateCode))
+      .filter(Boolean))]
+      .sort((left, right) => left.localeCompare(right))
+  }, [salesReps, salesRepsQuery.data?.availableStates])
+
+  const availableSalesRepOptions = useMemo(() => [...new Set(
+    salesReps
+      .map((salesRep) => String(salesRep.name ?? '').trim())
+      .filter(Boolean),
+  )].sort((left, right) => left.localeCompare(right)), [salesReps])
+
+  const readinessEnabledByState = useMemo(() => {
+    const readinessMap = new Map<string, boolean>()
+
+    salesReps.forEach((salesRep) => {
+      const engagementReadinessEnabled = salesRep.engagementReadinessEnabled !== false
+
+      salesRep.states.forEach((stateCode) => {
+        const normalizedStateCode = normalizeUsStateCode(stateCode)
+
+        if (!normalizedStateCode) {
+          return
+        }
+
+        readinessMap.set(normalizedStateCode, engagementReadinessEnabled)
+      })
+    })
+
+    return readinessMap
+  }, [salesReps])
+
+  const currentSalesRepReadinessEnabled = useMemo(() => {
+    if (!appUser?.isSalesRep) {
+      return true
+    }
+
+    const linkedSalesRepId = String(appUser.linkedSalesRepId ?? '').trim()
+
+    if (linkedSalesRepId) {
+      const matchedById = salesReps.find((salesRep) => salesRep.id === linkedSalesRepId)
+
+      if (matchedById) {
+        return matchedById.engagementReadinessEnabled !== false
+      }
+    }
+
+    const linkedSalesRepName = normalizeSalesRepName(appUser.linkedSalesRepName)
+
+    if (linkedSalesRepName) {
+      const matchedByName = salesReps.find((salesRep) => normalizeSalesRepName(salesRep.name) === linkedSalesRepName)
+
+      if (matchedByName) {
+        return matchedByName.engagementReadinessEnabled !== false
+      }
+    }
+
+    if (normalizedTerritoryStates.length > 0) {
+      const matchedReps = salesReps.filter((salesRep) => salesRep.states.some((stateCode) => normalizedTerritoryStates.includes(stateCode)))
+
+      if (matchedReps.length > 0) {
+        return matchedReps.every((salesRep) => salesRep.engagementReadinessEnabled !== false)
+      }
+    }
+
+    return true
+  }, [appUser?.isSalesRep, appUser?.linkedSalesRepId, appUser?.linkedSalesRepName, normalizedTerritoryStates, salesReps])
+
+  const showReadinessTabs = !appUser?.isSalesRep || currentSalesRepReadinessEnabled
+  const effectiveStatusFilter: EngagementFilter = showReadinessTabs
+    ? statusFilter
+    : 'ready'
+  const selectedStatesQueryValue = selectedStates.join('|')
+  const selectedSalesRepsQueryValue = selectedSalesReps.join('|')
+
+  useEffect(() => {
+    if (!showReadinessTabs && statusFilter !== 'ready') {
+      setStatusFilter('ready')
+    }
+  }, [showReadinessTabs, statusFilter])
 
   useEffect(() => {
     setPage(0)
-  }, [statusFilter, accountType, search])
+  }, [effectiveStatusFilter, accountType, search, selectedStatesQueryValue, selectedSalesRepsQueryValue])
 
   const dealersQuery = useQuery({
-    queryKey: ['crm', 'engagement-grid', statusFilter, accountType, search, page, rowsPerPage],
+    queryKey: [
+      'crm',
+      'engagement-grid',
+      effectiveStatusFilter,
+      accountType,
+      search,
+      selectedStatesQueryValue,
+      selectedSalesRepsQueryValue,
+      page,
+      rowsPerPage,
+    ],
     queryFn: () => fetchCrmDealers({
       limit: rowsPerPage,
       offset: page * rowsPerPage,
       search: search || undefined,
       accountType,
+      dealerStates: !appUser?.isSalesRep ? selectedStates : undefined,
+      salesReps: !appUser?.isSalesRep ? selectedSalesReps : undefined,
       // Keep legacy bucket values so filtering works even before functions are redeployed.
-      engagementBucket: statusFilter === 'ready'
+      engagementBucket: effectiveStatusFilter === 'ready'
         ? 'yes'
-        : statusFilter === 'not_ready'
+        : effectiveStatusFilter === 'not_ready'
           ? 'no'
           : 'none',
     }),
@@ -708,7 +857,9 @@ export default function SalesEngagementPage() {
     ? dealersQuery.error.message
     : null
 
-  const combinedPageErrorMessage = errorMessage || (chatUsersQuery.error instanceof Error ? chatUsersQuery.error.message : null)
+  const combinedPageErrorMessage = errorMessage
+    || (chatUsersQuery.error instanceof Error ? chatUsersQuery.error.message : null)
+    || (salesRepsQuery.error instanceof Error ? salesRepsQuery.error.message : null)
 
   const isInitialLoading = dealersQuery.isLoading && !dealersQuery.data
   const isQuickViewLoading = quickViewDealerQuery.isLoading && !quickViewDealerQuery.data
@@ -728,6 +879,16 @@ export default function SalesEngagementPage() {
     const end = Math.min(totalAccounts, (page + 1) * rowsPerPage)
     return `${start}-${end} of ${totalAccounts}`
   }, [page, rowsPerPage, totalAccounts])
+
+  const isDealerReadinessEnabled = (dealer: CrmDealer | CrmDealerDetail | null | undefined) => {
+    const stateCode = normalizeUsStateCode(dealer?.state)
+
+    if (!stateCode) {
+      return true
+    }
+
+    return readinessEnabledByState.get(stateCode) !== false
+  }
 
   const handleOpenQuickView = (dealer: CrmDealer, initialTab: QuickViewTab = 'info') => {
     setQuickViewDealer(dealer)
@@ -835,7 +996,13 @@ export default function SalesEngagementPage() {
   const quickViewChatTotal = quickViewChatsQuery.data?.total ?? Math.max(0, Number(quickViewDealerRecord?.chatMessageCount ?? 0) || 0)
   const quickViewContactTotal = quickViewDealerQuery.data?.contactsTotal ?? quickViewDealer?.contactCountSource ?? 0
   const quickViewName = quickViewDealerRecord ? resolveDealerName(quickViewDealerRecord) : 'Account details'
-  const quickViewStatus = normalizeEngagementStatus(quickViewDealerRecord?.engagementReadinessStatus)
+  const quickViewReadinessEnabled = isDealerReadinessEnabled(quickViewDealerRecord)
+  const quickViewStatus = quickViewReadinessEnabled
+    ? normalizeEngagementStatus(quickViewDealerRecord?.engagementReadinessStatus)
+    : 'ready'
+  const quickViewStatusLabel = quickViewReadinessEnabled
+    ? formatEngagementStatusLabel(quickViewStatus)
+    : 'Engagement'
   const quickViewAccountType = quickViewDealerRecord ? resolveAccountTypeBucket(quickViewDealerRecord) : 'none'
   const quickViewAccountId = formatOptional(quickViewDealerRecord?.sourceId)
   const quickViewState = formatOptional(quickViewDealerRecord?.state)
@@ -1208,9 +1375,11 @@ export default function SalesEngagementPage() {
       >
         <Stack spacing={1}>
           <Tabs
-            value={statusFilter}
+            value={effectiveStatusFilter}
             onChange={(_event, nextValue: EngagementFilter) => {
-              setStatusFilter(nextValue)
+              if (showReadinessTabs) {
+                setStatusFilter(nextValue)
+              }
             }}
             variant="fullWidth"
             sx={{
@@ -1231,29 +1400,119 @@ export default function SalesEngagementPage() {
               },
             }}
           >
-            {engagementTabs.map((tabEntry) => (
-              <Tab key={tabEntry.value} value={tabEntry.value} label={tabEntry.label} />
-            ))}
+            {showReadinessTabs
+              ? engagementTabs.map((tabEntry) => (
+                <Tab key={tabEntry.value} value={tabEntry.value} label={tabEntry.label} />
+              ))
+              : <Tab value="ready" label="Engagement" />}
           </Tabs>
 
           <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} alignItems={{ xs: 'stretch', md: 'center' }}>
-            <FormControl size="small" sx={{ width: { xs: '100%', md: 180 } }}>
-              <InputLabel id="engagement-account-type-filter">Type filter</InputLabel>
-              <Select
-                labelId="engagement-account-type-filter"
-                label="Type filter"
-                value={accountType}
-                onChange={(event) => {
-                  setAccountType(event.target.value as AccountTypeBucket)
-                }}
-              >
-                {accountTypeOptions.map((optionEntry) => (
-                  <MenuItem key={optionEntry.value} value={optionEntry.value}>
-                    {optionEntry.label}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
+            <Tabs
+              value={accountType}
+              onChange={(_event, nextValue: AccountTypeBucket) => {
+                setAccountType(nextValue)
+              }}
+              variant="scrollable"
+              allowScrollButtonsMobile
+              sx={{
+                minHeight: 34,
+                '& .MuiTabs-flexContainer': {
+                  gap: 0.4,
+                },
+                '& .MuiTab-root': {
+                  minHeight: 34,
+                  py: 0.25,
+                  px: 1,
+                  textTransform: 'none',
+                  fontSize: 12,
+                  lineHeight: 1.2,
+                  borderRadius: 1,
+                },
+              }}
+            >
+              {accountTypeOptions.map((optionEntry) => (
+                <Tab key={optionEntry.value} value={optionEntry.value} label={optionEntry.label} />
+              ))}
+            </Tabs>
+
+            {!appUser?.isSalesRep ? (
+              <FormControl size="small" sx={{ width: { xs: '100%', md: 210 } }}>
+                <InputLabel id="engagement-state-filter">State filter</InputLabel>
+                <Select
+                  labelId="engagement-state-filter"
+                  label="State filter"
+                  multiple
+                  value={selectedStates}
+                  onChange={(event) => {
+                    const nextValue = event.target.value
+                    const nextStates = (Array.isArray(nextValue)
+                      ? nextValue.map((value) => normalizeUsStateCode(value))
+                      : String(nextValue).split(',').map((value) => normalizeUsStateCode(value)))
+                      .filter(Boolean)
+
+                    setSelectedStates([...new Set(nextStates)].sort((left, right) => left.localeCompare(right)))
+                  }}
+                  renderValue={(selected) => {
+                    const selectedStatesValue = Array.isArray(selected)
+                      ? selected
+                      : []
+
+                    if (selectedStatesValue.length === 0) {
+                      return 'All states'
+                    }
+
+                    return selectedStatesValue.join(', ')
+                  }}
+                >
+                  {availableStateOptions.map((stateCode) => (
+                    <MenuItem key={`engagement-state-${stateCode}`} value={stateCode}>
+                      <Checkbox size="small" checked={selectedStates.includes(stateCode)} />
+                      <Typography variant="body2">{stateCode}</Typography>
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            ) : null}
+
+            {!appUser?.isSalesRep ? (
+              <FormControl size="small" sx={{ width: { xs: '100%', md: 260 } }}>
+                <InputLabel id="engagement-sales-rep-filter">Sales rep filter</InputLabel>
+                <Select
+                  labelId="engagement-sales-rep-filter"
+                  label="Sales rep filter"
+                  multiple
+                  value={selectedSalesReps}
+                  onChange={(event) => {
+                    const nextValue = event.target.value
+                    const nextSalesReps = (Array.isArray(nextValue)
+                      ? nextValue.map((value) => String(value ?? '').trim())
+                      : String(nextValue).split(',').map((value) => String(value ?? '').trim()))
+                      .filter(Boolean)
+
+                    setSelectedSalesReps([...new Set(nextSalesReps)].sort((left, right) => left.localeCompare(right)))
+                  }}
+                  renderValue={(selected) => {
+                    const selectedSalesRepsValue = Array.isArray(selected)
+                      ? selected
+                      : []
+
+                    if (selectedSalesRepsValue.length === 0) {
+                      return 'All sales reps'
+                    }
+
+                    return selectedSalesRepsValue.join(', ')
+                  }}
+                >
+                  {availableSalesRepOptions.map((salesRepName) => (
+                    <MenuItem key={`engagement-rep-${salesRepName}`} value={salesRepName}>
+                      <Checkbox size="small" checked={selectedSalesReps.includes(salesRepName)} />
+                      <Typography variant="body2">{salesRepName}</Typography>
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            ) : null}
 
             <TextField
               size="small"
@@ -1308,9 +1567,15 @@ export default function SalesEngagementPage() {
                 }}
               >
                 {dealers.map((dealer) => (
-                  <DealerCard key={dealer.sourceId} dealer={dealer} onOpenDealer={handleOpenQuickView} onDeleteDealer={(targetDealer) => {
-                    void handleDeleteDealer(targetDealer)
-                  }} />
+                  <DealerCard
+                    key={dealer.sourceId}
+                    dealer={dealer}
+                    readinessEnabled={isDealerReadinessEnabled(dealer)}
+                    onOpenDealer={handleOpenQuickView}
+                    onDeleteDealer={(targetDealer) => {
+                      void handleDeleteDealer(targetDealer)
+                    }}
+                  />
                 ))}
               </Box>
             )}
@@ -1374,7 +1639,11 @@ export default function SalesEngagementPage() {
             >
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="space-between" alignItems={{ xs: 'flex-start', sm: 'center' }}>
                 <Stack direction="row" spacing={0.7} sx={{ flexWrap: 'wrap' }}>
-                  <Chip size="small" color={resolveStatusChipColor(quickViewStatus)} label={formatEngagementStatusLabel(quickViewStatus)} />
+                  <Chip
+                    size="small"
+                    color={quickViewReadinessEnabled ? resolveStatusChipColor(quickViewStatus) : 'default'}
+                    label={quickViewStatusLabel}
+                  />
                   <Chip size="small" variant="outlined" label={formatAccountTypeLabel(quickViewAccountType)} />
                   <Chip size="small" variant="outlined" label={quickViewState} />
                 </Stack>
@@ -1613,7 +1882,7 @@ export default function SalesEngagementPage() {
                     }}
                   >
                     <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.25 }}>
-                      Readiness note
+                      {quickViewReadinessEnabled ? 'Readiness note' : 'Engagement note'}
                     </Typography>
                     <Typography variant="body2">{quickViewNote}</Typography>
                   </Paper>

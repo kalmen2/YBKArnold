@@ -72,7 +72,7 @@ export default function DailySheetTab({
               <TableCell>Stage</TableCell>
               <TableCell>Job</TableCell>
               <TableCell align="right">Hours</TableCell>
-              <TableCell align="right">Overtime</TableCell>
+              <TableCell>OT Status</TableCell>
               <TableCell>Notes</TableCell>
             </TableRow>
           </TableHead>
@@ -154,16 +154,8 @@ export default function DailySheetTab({
                         onChange={(event) => onBulkRowChange(row.id, 'hours', event.target.value)}
                       />
                     </TableCell>
-                    <TableCell align="right" sx={{ minWidth: 140 }}>
-                      <TextField
-                        size="small"
-                        fullWidth
-                        type="number"
-                        inputProps={{ min: 0, step: 0.25 }}
-                        placeholder="0"
-                        value={row.overtimeHours}
-                        onChange={(event) => onBulkRowChange(row.id, 'overtimeHours', event.target.value)}
-                      />
+                    <TableCell sx={{ minWidth: 140 }}>
+                      <Typography variant="body2" color="text.secondary">Auto</Typography>
                     </TableCell>
                     <TableCell sx={{ minWidth: 260 }}>
                       <TextField

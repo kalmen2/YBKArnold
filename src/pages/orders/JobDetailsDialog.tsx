@@ -37,16 +37,19 @@ import {
 import { alpha } from '@mui/material/styles'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Mention, MentionsInput } from 'react-mentions'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAuth } from '../../auth/useAuth'
 import {
   createOrderChatMessage,
   fetchOrderChats,
   fetchOrdersChatUsers,
   fetchOrdersJobDetails,
+  postOrdersShip,
+  postOrdersShippingDocumentUpload,
   removeOrderChatMessage,
   postOrdersOrderNumberContactAdmin,
   postOrdersOrderNumberUpdate,
+  type OrdersShippingDocumentType,
   type OrdersChatUser,
   type OrdersJobDetailEntry,
   ordersJobDetailsQueryKey,
@@ -257,6 +260,86 @@ function renderMessageWithMentionPills(message: string) {
   })
 }
 
+const shippingUploadSupportedMimeTypes = new Set([
+  'application/pdf',
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/heic',
+  'image/heif',
+])
+
+function inferShippingMimeTypeFromFileName(fileName: string) {
+  const normalized = String(fileName ?? '').trim().toLowerCase()
+
+  if (normalized.endsWith('.pdf')) {
+    return 'application/pdf'
+  }
+
+  if (normalized.endsWith('.jpg') || normalized.endsWith('.jpeg')) {
+    return 'image/jpeg'
+  }
+
+  if (normalized.endsWith('.png')) {
+    return 'image/png'
+  }
+
+  if (normalized.endsWith('.webp')) {
+    return 'image/webp'
+  }
+
+  if (normalized.endsWith('.heic')) {
+    return 'image/heic'
+  }
+
+  if (normalized.endsWith('.heif')) {
+    return 'image/heif'
+  }
+
+  return ''
+}
+
+function resolveShippingUploadMimeType(file: File) {
+  const fromFile = String(file?.type ?? '').trim().toLowerCase()
+
+  if (shippingUploadSupportedMimeTypes.has(fromFile)) {
+    return fromFile
+  }
+
+  const fromName = inferShippingMimeTypeFromFileName(file?.name ?? '')
+
+  if (shippingUploadSupportedMimeTypes.has(fromName)) {
+    return fromName
+  }
+
+  return ''
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+
+    reader.onload = () => {
+      const result = typeof reader.result === 'string'
+        ? reader.result
+        : ''
+
+      if (!result) {
+        reject(new Error('Could not read file data.'))
+        return
+      }
+
+      resolve(result)
+    }
+
+    reader.onerror = () => {
+      reject(new Error('Could not read file data.'))
+    }
+
+    reader.readAsDataURL(file)
+  })
+}
+
 export function JobDetailsDialog({
   open,
   mode,
@@ -291,6 +374,16 @@ export function JobDetailsDialog({
   const [reminderDueDate, setReminderDueDate] = useState('')
   const [reminderRecipientUids, setReminderRecipientUids] = useState<string[]>([])
   const [reminderNote, setReminderNote] = useState('')
+  const signedBolUploadInputRef = useRef<HTMLInputElement | null>(null)
+  const inspectionSheetUploadInputRef = useRef<HTMLInputElement | null>(null)
+  const [shippingUploadInFlightType, setShippingUploadInFlightType] = useState<OrdersShippingDocumentType | ''>('')
+  const [isShippingOrder, setIsShippingOrder] = useState(false)
+  const [shippingActionError, setShippingActionError] = useState<string | null>(null)
+  const [shippingActionSuccess, setShippingActionSuccess] = useState<string | null>(null)
+  const [uploadedSignedBolUrl, setUploadedSignedBolUrl] = useState<string | null>(null)
+  const [uploadedInspectionSheetUrl, setUploadedInspectionSheetUrl] = useState<string | null>(null)
+  const [uploadedSignedBolName, setUploadedSignedBolName] = useState<string | null>(null)
+  const [uploadedInspectionSheetName, setUploadedInspectionSheetName] = useState<string | null>(null)
 
   const detailsQuery = useQuery<OrdersJobDetailsResponse>({
     queryKey: ordersJobDetailsQueryKey({
@@ -354,6 +447,22 @@ export function JobDetailsDialog({
     setReminderDueDate('')
     setReminderRecipientUids([])
     setReminderNote('')
+    setShippingUploadInFlightType('')
+    setIsShippingOrder(false)
+    setShippingActionError(null)
+    setShippingActionSuccess(null)
+    setUploadedSignedBolUrl(null)
+    setUploadedInspectionSheetUrl(null)
+    setUploadedSignedBolName(null)
+    setUploadedInspectionSheetName(null)
+
+    if (signedBolUploadInputRef.current) {
+      signedBolUploadInputRef.current.value = ''
+    }
+
+    if (inspectionSheetUploadInputRef.current) {
+      inspectionSheetUploadInputRef.current.value = ''
+    }
   }, [mode, open, order?.id, order?.orderNumber])
 
   const label = order?.orderNumber || order?.jobNumber || 'Job'
@@ -673,8 +782,18 @@ export function JobDetailsDialog({
   const cutListUrl = resolveCutListUrl(order)
   const invoiceNumber = String(order?.invoiceNumber ?? '').trim()
   const hasBolText = Boolean(String(order?.bol ?? '').trim())
+  const signedBolUrl = uploadedSignedBolUrl || String(order?.signedBolUrl ?? '').trim() || null
+  const inspectionSheetUrl = uploadedInspectionSheetUrl || String(order?.inspectionSheetUrl ?? '').trim() || null
+  const signedBolDisplayName = uploadedSignedBolName || String(order?.signedBol ?? '').trim() || null
+  const inspectionSheetDisplayName = uploadedInspectionSheetName || String(order?.inspectionSheet ?? '').trim() || null
   const hasMondayItemId = Boolean(String(order?.mondayItemId ?? '').trim())
   const canOpenBolDocument = Boolean(bolUrl || (hasBolText && hasMondayItemId))
+  const hasSignedBolForShipping = Boolean(signedBolUrl)
+  const hasInspectionSheetForShipping = Boolean(inspectionSheetUrl)
+  const canShipFromWebsiteFlow = hasSignedBolForShipping && hasInspectionSheetForShipping
+  const isUploadingSignedBol = shippingUploadInFlightType === 'signed_bol'
+  const isUploadingInspectionSheet = shippingUploadInFlightType === 'inspection_sheet'
+  const isUploadingShippingDocument = Boolean(shippingUploadInFlightType)
   const canOpenShopDrawingDocument = Boolean(shopDrawingUrl)
   const canOpenCutListDocument = Boolean(cutListUrl)
   const canOpenInvoiceDocument = Boolean(invoiceNumber)
@@ -803,6 +922,141 @@ export function JobDetailsDialog({
       )
     } finally {
       setIsContactingAdminForOrderNumber(false)
+    }
+  }
+
+  const handleUploadShippingDocument = async (
+    documentType: OrdersShippingDocumentType,
+    file: File,
+  ) => {
+    if (!order || isUploadingShippingDocument) {
+      return
+    }
+
+    const mimeType = resolveShippingUploadMimeType(file)
+
+    if (!mimeType) {
+      setShippingActionError('Only PDF/JPG/PNG/WEBP/HEIC/HEIF files are supported.')
+      return
+    }
+
+    if (file.size > 10 * 1024 * 1024) {
+      setShippingActionError('File exceeds 10MB limit.')
+      return
+    }
+
+    setShippingUploadInFlightType(documentType)
+    setShippingActionError(null)
+    setShippingActionSuccess(null)
+
+    try {
+      const fileBase64 = await readFileAsDataUrl(file)
+      const response = await postOrdersShippingDocumentUpload({
+        orderKey: order.id,
+        mondayItemId: order.mondayItemId,
+        orderNumber: order.orderNumber,
+        documentType,
+        fileName: file.name,
+        mimeType,
+        fileBase64,
+      })
+
+      if (documentType === 'signed_bol') {
+        setUploadedSignedBolUrl(response.order.signedBolUrl || null)
+        setUploadedSignedBolName(response.order.signedBol || file.name)
+      } else {
+        setUploadedInspectionSheetUrl(response.order.inspectionSheetUrl || null)
+        setUploadedInspectionSheetName(response.order.inspectionSheet || file.name)
+      }
+
+      setShippingActionSuccess(
+        `${response.document.label} uploaded${response.order.isShipped ? ' for this shipped order' : ''}.`,
+      )
+
+      await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.ordersOverview })
+      await queryClient.invalidateQueries({
+        queryKey: ordersJobDetailsQueryKey({
+          mondayItemId: order?.mondayItemId ?? '',
+          jobNumber: order?.jobNumber ?? '',
+          orderName: order?.orderName ?? '',
+        }),
+      })
+    } catch (error) {
+      setShippingActionError(
+        error instanceof Error
+          ? error.message
+          : 'Could not upload shipping document.',
+      )
+    } finally {
+      setShippingUploadInFlightType('')
+
+      if (documentType === 'signed_bol' && signedBolUploadInputRef.current) {
+        signedBolUploadInputRef.current.value = ''
+      }
+
+      if (documentType === 'inspection_sheet' && inspectionSheetUploadInputRef.current) {
+        inspectionSheetUploadInputRef.current.value = ''
+      }
+    }
+  }
+
+  const handleShipOrder = async () => {
+    if (!order || isShippingOrder || isUploadingShippingDocument) {
+      return
+    }
+
+    setShippingActionError(null)
+    setShippingActionSuccess(null)
+
+    if (order.isShipped) {
+      setShippingActionError('Order is already shipped. You can still upload shipping documents.')
+      return
+    }
+
+    if (!canShipFromWebsiteFlow) {
+      setShippingActionError('Upload Signed BOL and Inspection Sheet before shipping.')
+      return
+    }
+
+    const shouldContinue = window.confirm(
+      'Ship this order now? It will move from Order Track to Shipped in Monday.',
+    )
+
+    if (!shouldContinue) {
+      return
+    }
+
+    setIsShippingOrder(true)
+
+    try {
+      const response = await postOrdersShip({
+        orderKey: order.id,
+        mondayItemId: order.mondayItemId,
+        orderNumber: order.orderNumber,
+      })
+
+      setShippingActionSuccess(
+        response.move.mappingMode === 'best_match_fallback'
+          ? 'Order moved to Shipped with Monday best-match mapping fallback.'
+          : 'Order moved to Shipped with Monday column mapping.',
+      )
+
+      await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.ordersOverview })
+      await queryClient.invalidateQueries({
+        queryKey: ordersJobDetailsQueryKey({
+          mondayItemId: order?.mondayItemId ?? '',
+          jobNumber: order?.jobNumber ?? '',
+          orderName: order?.orderName ?? '',
+        }),
+      })
+    } catch (error) {
+      setShippingActionError(
+        error instanceof Error
+          ? error.message
+          : 'Could not ship this order.',
+      )
+    } finally {
+      setIsShippingOrder(false)
     }
   }
 
@@ -1288,6 +1542,14 @@ export function JobDetailsDialog({
 
             {detailsTab === 'shipping' ? (
               <Stack spacing={1.25}>
+                {shippingActionSuccess ? (
+                  <Alert severity="success">{shippingActionSuccess}</Alert>
+                ) : null}
+
+                {shippingActionError ? (
+                  <Alert severity="error">{shippingActionError}</Alert>
+                ) : null}
+
                 <Paper variant="outlined" sx={{ p: { xs: 1.3, md: 1.5 } }}>
                   <Stack spacing={0.85}>
                     <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
@@ -1326,10 +1588,26 @@ export function JobDetailsDialog({
                 <Paper variant="outlined" sx={{ p: { xs: 1.3, md: 1.5 } }}>
                   <Stack spacing={0.85}>
                     <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-                      Bill Of Lading
+                      Shipping Documents
                     </Typography>
-                    <Typography variant="body1" sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
-                      {canOpenBolDocument ? 'BOL' : '—'}
+
+                    <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
+                      <Chip
+                        size="small"
+                        variant="outlined"
+                        color={hasSignedBolForShipping ? 'success' : 'error'}
+                        label={hasSignedBolForShipping ? 'Signed BOL: Ready' : 'Signed BOL: Missing'}
+                      />
+                      <Chip
+                        size="small"
+                        variant="outlined"
+                        color={hasInspectionSheetForShipping ? 'success' : 'error'}
+                        label={hasInspectionSheetForShipping ? 'Inspection Sheet: Ready' : 'Inspection Sheet: Missing'}
+                      />
+                    </Stack>
+
+                    <Typography variant="caption" color="text.secondary">
+                      Upload Signed BOL and Inspection Sheet to enable shipping.
                     </Typography>
 
                     <Box
@@ -1356,9 +1634,79 @@ export function JobDetailsDialog({
                           onOpenBolDocument(order)
                         }}
                       >
-                        Open BOL
+                        BOL
+                      </Button>
+
+                      <Button
+                        size="medium"
+                        variant="contained"
+                        color={hasSignedBolForShipping ? 'success' : 'error'}
+                        disabled={!order || isUploadingShippingDocument || isShippingOrder}
+                        onClick={() => {
+                          if (signedBolUrl) {
+                            window.open(signedBolUrl, '_blank', 'noopener,noreferrer')
+                            return
+                          }
+
+                          signedBolUploadInputRef.current?.click()
+                        }}
+                      >
+                        {isUploadingSignedBol ? 'Uploading Signed BOL...' : 'Signed BOL'}
+                      </Button>
+
+                      <Button
+                        size="medium"
+                        variant="contained"
+                        color={hasInspectionSheetForShipping ? 'success' : 'error'}
+                        disabled={!order || isUploadingShippingDocument || isShippingOrder}
+                        onClick={() => {
+                          if (inspectionSheetUrl) {
+                            window.open(inspectionSheetUrl, '_blank', 'noopener,noreferrer')
+                            return
+                          }
+
+                          inspectionSheetUploadInputRef.current?.click()
+                        }}
+                      >
+                        {isUploadingInspectionSheet ? 'Uploading Inspection Sheet...' : 'Inspection Sheet'}
+                      </Button>
+
+                      <Button
+                        size="medium"
+                        variant="contained"
+                        color={canShipFromWebsiteFlow ? 'success' : 'error'}
+                        disabled={Boolean(order?.isShipped) || isShippingOrder || isUploadingShippingDocument}
+                        onClick={() => {
+                          void handleShipOrder()
+                        }}
+                      >
+                        {order?.isShipped ? 'Shipped' : isShippingOrder ? 'Shipping...' : 'Ship'}
                       </Button>
                     </Box>
+
+                    {signedBolDisplayName ? (
+                      <Typography variant="caption" color="text.secondary">
+                        Signed BOL file: {signedBolDisplayName}
+                      </Typography>
+                    ) : null}
+
+                    {inspectionSheetDisplayName ? (
+                      <Typography variant="caption" color="text.secondary">
+                        Inspection Sheet file: {inspectionSheetDisplayName}
+                      </Typography>
+                    ) : null}
+
+                    {!canShipFromWebsiteFlow ? (
+                      <Typography variant="caption" color="error.main">
+                        Ship requires uploaded Signed BOL and Inspection Sheet.
+                      </Typography>
+                    ) : null}
+
+                    {order?.isShipped ? (
+                      <Typography variant="caption" color="text.secondary">
+                        Order is already shipped. Document uploads are still available.
+                      </Typography>
+                    ) : null}
                   </Stack>
                 </Paper>
               </Stack>
@@ -1739,7 +2087,7 @@ export function JobDetailsDialog({
                         }}
                         disabled={!canOpenShopDrawingDocument}
                       >
-                        Open Shop Drawing
+                        Ship
                       </Button>
                       <Button
                         size="medium"
@@ -1753,7 +2101,7 @@ export function JobDetailsDialog({
                         }}
                         disabled={!canOpenCutListDocument}
                       >
-                        Open Cut List
+                        Cut List
                       </Button>
                       <Button
                         size="medium"
@@ -1767,7 +2115,58 @@ export function JobDetailsDialog({
                         }}
                         disabled={!canOpenInvoiceDocument}
                       >
-                        Open Invoice
+                        Invoice
+                      </Button>
+                      <Button
+                        size="medium"
+                        variant="contained"
+                        disabled={!canOpenBolDocument || !order}
+                        onClick={() => {
+                          if (!order) {
+                            return
+                          }
+
+                          if (bolUrl) {
+                            window.open(bolUrl, '_blank', 'noopener,noreferrer')
+                            return
+                          }
+
+                          onOpenBolDocument(order)
+                        }}
+                      >
+                        BOL
+                      </Button>
+                      <Button
+                        size="medium"
+                        variant="contained"
+                        color={hasSignedBolForShipping ? 'success' : 'error'}
+                        disabled={!order || isUploadingShippingDocument || isShippingOrder}
+                        onClick={() => {
+                          if (signedBolUrl) {
+                            window.open(signedBolUrl, '_blank', 'noopener,noreferrer')
+                            return
+                          }
+
+                          signedBolUploadInputRef.current?.click()
+                        }}
+                      >
+                        {isUploadingSignedBol ? 'Uploading Signed BOL...' : 'Signed BOL'}
+                      </Button>
+                      <Button
+                        size="medium"
+                        variant="contained"
+                        color={hasInspectionSheetForShipping ? 'success' : 'error'}
+                        disabled={!order || isUploadingShippingDocument || isShippingOrder}
+                        onClick={() => {
+                          if (inspectionSheetUrl) {
+                            window.open(inspectionSheetUrl, '_blank', 'noopener,noreferrer')
+                            return
+                          }
+
+                          inspectionSheetUploadInputRef.current?.click()
+                        }}
+                      >
+                        {isUploadingInspectionSheet ? 'Uploading Inspection Sheet...' : 'Inspection Sheet'}
                       </Button>
                     </Box>
                   </Stack>
@@ -1783,6 +2182,38 @@ export function JobDetailsDialog({
             ) : null}
           </Stack>
         )}
+
+        <input
+          ref={signedBolUploadInputRef}
+          type="file"
+          accept=".pdf,.jpg,.jpeg,.png,.webp,.heic,.heif,application/pdf,image/*"
+          style={{ display: 'none' }}
+          onChange={(event) => {
+            const file = event.target.files?.[0]
+
+            if (file) {
+              void handleUploadShippingDocument('signed_bol', file)
+            }
+
+            event.currentTarget.value = ''
+          }}
+        />
+
+        <input
+          ref={inspectionSheetUploadInputRef}
+          type="file"
+          accept=".pdf,.jpg,.jpeg,.png,.webp,.heic,.heif,application/pdf,image/*"
+          style={{ display: 'none' }}
+          onChange={(event) => {
+            const file = event.target.files?.[0]
+
+            if (file) {
+              void handleUploadShippingDocument('inspection_sheet', file)
+            }
+
+            event.currentTarget.value = ''
+          }}
+        />
       </DialogContent>
       <DialogActions
         sx={{

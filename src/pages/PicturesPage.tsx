@@ -37,6 +37,8 @@ import {
   fetchDashboardBootstrap,
 } from '../features/dashboard/api'
 import { useAuth } from '../auth/useAuth'
+import { firebaseAuth } from '../auth/firebase'
+import { apiRequest } from '../features/api-client'
 import { formatDateTime, formatDisplayDate } from '../lib/formatters'
 import { QUERY_KEYS } from '../lib/queryKeys'
 
@@ -75,25 +77,9 @@ type ViewerTarget = {
   photo: OrderPhoto
 }
 
-async function request<T>(path: string, options: RequestInit = {}) {
-  const headers = new Headers(options.headers ?? {})
-
-  if (options.body && !headers.has('Content-Type')) {
-    headers.set('Content-Type', 'application/json')
-  }
-
-  const response = await fetch(path, {
-    ...options,
-    headers,
-  })
-
-  const payload = await response.json().catch(() => ({}))
-
-  if (!response.ok) {
-    throw new Error(payload.error ?? 'Request failed.')
-  }
-
-  return payload as T
+// These endpoints require Firebase auth — apiRequest attaches the ID token.
+function request<T>(path: string, options: RequestInit = {}) {
+  return apiRequest<T>(path, options)
 }
 
 function buildApiPath(baseUrl: string, relativePath: string) {
@@ -179,11 +165,14 @@ async function fetchPhotoBlob(orderId: string, path: string) {
   const encodedOrderId = encodeURIComponent(orderId)
   const encodedPath = encodeURIComponent(path)
   const relativePath = `/api/orders/${encodedOrderId}/photos/download?path=${encodedPath}`
+  const idToken = await firebaseAuth.currentUser?.getIdToken()
   let lastError: unknown = null
 
   for (const baseUrl of API_BASE_CANDIDATES) {
     try {
-      const response = await fetch(buildApiPath(baseUrl, relativePath))
+      const response = await fetch(buildApiPath(baseUrl, relativePath), {
+        headers: idToken ? { Authorization: `Bearer ${idToken}` } : {},
+      })
 
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}))

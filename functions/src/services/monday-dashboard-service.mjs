@@ -117,6 +117,26 @@ export function createMondayDashboardService({
     const bolColumnId =
       pickColumnIdByExactTitle(columns, 'bol') ||
       pickColumnId(columns, ['bol', 'bill of lading'], ['text', 'long-text', 'numbers', 'numeric'])
+    const signedBolColumnId =
+      pickColumnIdByExactTitle(columns, 'signed bol') ||
+      pickColumnId(
+        columns,
+        ['signed bol', 'signed bill of lading', 'signed b.o.l'],
+        ['file', 'link', 'text', 'long-text'],
+      )
+    const inspectionSheetColumnId =
+      pickColumnIdByExactTitle(columns, 'inspection sheet') ||
+      pickColumnId(
+        columns,
+        [
+          'inspection sheet',
+          'inspection and release',
+          'inspection',
+          'release certificate',
+          'order inspection',
+        ],
+        ['file', 'link', 'text', 'long-text'],
+      )
     const poNumberColumnId =
       pickColumnIdByExactTitle(columns, 'po number') ||
       pickColumnId(columns, ['po number', 'purchase order number'], ['text', 'long-text', 'numbers', 'numeric'])
@@ -159,6 +179,8 @@ export function createMondayDashboardService({
       shipToColumnId,
       shipNotesColumnId,
       bolColumnId,
+      signedBolColumnId,
+      inspectionSheetColumnId,
       poNumberColumnId,
       notesColumnId,
       descriptionColumnId,
@@ -259,6 +281,18 @@ export function createMondayDashboardService({
     const bolColumn =
       findColumnById(columnValues, columnMap.bolColumnId) ||
       findColumnByKeywords(columnValues, ['bol', 'bill of lading'])
+    const signedBolColumn =
+      findColumnById(columnValues, columnMap.signedBolColumnId) ||
+      findColumnByKeywords(columnValues, ['signed bol', 'signed bill of lading', 'signed b.o.l'])
+    const inspectionSheetColumn =
+      findColumnById(columnValues, columnMap.inspectionSheetColumnId) ||
+      findColumnByKeywords(columnValues, [
+        'inspection sheet',
+        'inspection and release',
+        'inspection',
+        'release certificate',
+        'order inspection',
+      ])
     const poNumberColumn =
       findColumnById(columnValues, columnMap.poNumberColumnId) ||
       findColumnByKeywords(columnValues, ['po number', 'purchase order number'])
@@ -312,7 +346,11 @@ export function createMondayDashboardService({
     const shipTo = readTextFromColumn(shipToColumn) || null
     const shipNotes = readTextFromColumn(shipNotesColumn) || null
     const bolDocument = parseShopDrawing(bolColumn)
+    const signedBolDocument = parseShopDrawing(signedBolColumn)
+    const inspectionSheetDocument = parseShopDrawing(inspectionSheetColumn)
     const bol = readTextFromColumn(bolColumn) || null
+    const signedBol = readTextFromColumn(signedBolColumn) || null
+    const inspectionSheet = readTextFromColumn(inspectionSheetColumn) || null
     const poNumber = readTextFromColumn(poNumberColumn) || null
     const notes = readTextFromColumn(notesColumn) || null
     const description = readTextFromColumn(descriptionColumn) || null
@@ -347,6 +385,12 @@ export function createMondayDashboardService({
       bol,
       bolUrl: bolDocument.url,
       bolFileName: bolDocument.fileName,
+      signedBol,
+      signedBolUrl: signedBolDocument.url,
+      signedBolFileName: signedBolDocument.fileName,
+      inspectionSheet,
+      inspectionSheetUrl: inspectionSheetDocument.url,
+      inspectionSheetFileName: inspectionSheetDocument.fileName,
       poNumber,
       notes,
       description,

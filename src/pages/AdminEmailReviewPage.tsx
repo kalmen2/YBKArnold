@@ -14,16 +14,19 @@ import {
   DialogContent,
   DialogTitle,
   FormControl,
+  FormControlLabel,
   InputLabel,
   MenuItem,
   Paper,
   Select,
   Stack,
+  Switch,
   Tab,
   Tabs,
   TextField,
   Typography,
 } from '@mui/material'
+import DOMPurify from 'dompurify'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Navigate } from 'react-router-dom'
@@ -33,27 +36,29 @@ import { StatusAlerts } from '../components/StatusAlerts'
 import {
   approveAllEmailIntakeSuggestions,
   approveEmailIntakeSuggestion,
-  fetchEmailIntakeSyncRunLogs,
   fetchEmailIntakeReviewSummary,
   fetchEmailIntakeSuggestions,
+  fetchEmailIntakeSyncRunLogs,
   markEmailIntakeSuggestionRead,
   rejectEmailIntakeSuggestion,
   resetEmailIntakeReviewData,
   startEmailIntakeSyncRun,
   stepEmailIntakeSyncRun,
+  type EmailIntakeReviewLane,
+  type EmailIntakeSuggestion,
   type EmailIntakeSyncRun,
   type EmailIntakeSyncRunLogEntry,
-  updateEmailIntakeSuggestion,
-  type EmailIntakeSuggestion,
   type EmailProvider,
   type EmailReviewDestinationType,
   type EmailReviewStatus,
   type EmailReviewStatusFilter,
+  updateEmailIntakeSuggestion,
 } from '../features/email/api'
 import { formatDateTime, formatOptional } from '../lib/formatters'
 import { QUERY_KEYS } from '../lib/queryKeys'
 
 type ProviderFilter = EmailProvider | 'all'
+type ReviewDialogTab = 'overview' | 'review' | 'email'
 
 type SuggestionDraft = {
   destinationType: EmailReviewDestinationType
@@ -64,21 +69,63 @@ type SuggestionDraft = {
   rejectReason: string
 }
 
-type SuggestionConversationGroup = {
-  key: string
-  representative: EmailIntakeSuggestion
-  suggestions: EmailIntakeSuggestion[]
-  unreadCount: number
+const suggestionPageLimit = 40
+const reviewSureMatchConfidenceThreshold = 0.8
+
+const laneOrder: EmailIntakeReviewLane[] = ['green', 'yellow', 'red']
+
+const laneMeta: Record<EmailIntakeReviewLane, {
+  label: string
+  description: string
+  chipColor: 'success' | 'warning' | 'error'
+  backgroundColor: string
+  borderColor: string
+}> = {
+  green: {
+    label: 'Green',
+    description: 'Sure match found with high confidence.',
+    chipColor: 'success',
+    backgroundColor: '#edf7ed',
+    borderColor: '#a5d6a7',
+  },
+  yellow: {
+    label: 'Yellow',
+    description: 'Possible or semi match. Needs review.',
+    chipColor: 'warning',
+    backgroundColor: '#fff8e1',
+    borderColor: '#ffe082',
+  },
+  red: {
+    label: 'Red',
+    description: 'No valid match found.',
+    chipColor: 'error',
+    backgroundColor: '#ffebee',
+    borderColor: '#ef9a9a',
+  },
 }
 
-const suggestionPageLimit = 40
-const manualResyncLookbackDays = 3
+function todayIsoDate() {
+  const now = new Date()
+  const year = now.getFullYear()
+  const month = String(now.getMonth() + 1).padStart(2, '0')
+  const day = String(now.getDate()).padStart(2, '0')
+
+  return `${year}-${month}-${day}`
+}
+
+function resolveBrowserTimeZone() {
+  try {
+    return String(Intl.DateTimeFormat().resolvedOptions().timeZone ?? '').trim()
+  } catch {
+    return ''
+  }
+}
 
 function toErrorMessage(error: unknown, fallback: string) {
   const statusCode = Number(
     typeof error === 'object' && error !== null && 'status' in error
       ? (error as { status?: unknown }).status
-      : NaN,
+      : Number.NaN,
   )
   const message = error instanceof Error ? error.message : fallback
 
@@ -145,7 +192,7 @@ function formatDestinationTypeLabel(type: EmailReviewDestinationType) {
     return 'Account'
   }
 
-  return 'General'
+  return 'None'
 }
 
 function formatCandidateReference(
@@ -237,26 +284,6 @@ function trimToOptional(value: string) {
   return normalized ? normalized : undefined
 }
 
-function normalizeConversationSubject(subject: string | null | undefined) {
-  let normalized = String(subject ?? '')
-    .replace(/\[external\]/ig, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-
-  if (!normalized) {
-    return ''
-  }
-
-  let previous = ''
-
-  while (normalized && normalized !== previous) {
-    previous = normalized
-    normalized = normalized.replace(/^(?:(?:re|fw|fwd)\s*:\s*)+/i, '').trim()
-  }
-
-  return normalized.toLowerCase().slice(0, 260)
-}
-
 function resolveSuggestionSortTimestamp(suggestion: EmailIntakeSuggestion) {
   const candidates = [
     suggestion.messageDate,
@@ -275,27 +302,37 @@ function resolveSuggestionSortTimestamp(suggestion: EmailIntakeSuggestion) {
   return 0
 }
 
-function buildConversationKey(suggestion: EmailIntakeSuggestion) {
-  const subjectKey = normalizeConversationSubject(suggestion.subject)
-    || normalizeConversationSubject(suggestion.snippet)
-    || String(suggestion.id ?? '').trim()
-  const connectedEmail = String(suggestion.connectedEmail ?? '').trim().toLowerCase()
-  const participantEmails = [...new Set([
-    suggestion.fromEmail,
-    ...(Array.isArray(suggestion.toEmails) ? suggestion.toEmails : []),
-    ...(Array.isArray(suggestion.ccEmails) ? suggestion.ccEmails : []),
-  ]
-    .map((value) => String(value ?? '').trim().toLowerCase())
-    .filter((value) => value && (!connectedEmail || value !== connectedEmail)))]
-    .sort()
-  const participantKey = participantEmails.slice(0, 4).join('|') || 'no-participants'
+function resolveSuggestionLane(suggestion: EmailIntakeSuggestion): EmailIntakeReviewLane {
+  const explicitLane = String(suggestion.lane ?? '').trim().toLowerCase()
 
-  return [
-    String(suggestion.provider ?? '').trim(),
-    String(suggestion.uid ?? '').trim(),
-    subjectKey,
-    participantKey,
-  ].join('::')
+  if (explicitLane === 'green' || explicitLane === 'yellow' || explicitLane === 'red') {
+    return explicitLane as EmailIntakeReviewLane
+  }
+
+  const destinationType = String(suggestion.destinationType ?? '').trim().toLowerCase()
+  const destinationId = String(suggestion.destinationId ?? '').trim()
+  const hasDestinationMatch = (
+    destinationType === 'account'
+    || destinationType === 'order'
+    || destinationType === 'quote'
+  ) && Boolean(destinationId)
+
+  if (!hasDestinationMatch) {
+    return 'red'
+  }
+
+  const confidence = Number(suggestion.confidence)
+  const hasConfidence = Number.isFinite(confidence)
+
+  if (
+    hasConfidence
+    && confidence >= reviewSureMatchConfidenceThreshold
+    && !suggestion.usedFallback
+  ) {
+    return 'green'
+  }
+
+  return 'yellow'
 }
 
 export default function AdminEmailReviewPage() {
@@ -303,10 +340,11 @@ export default function AdminEmailReviewPage() {
   const queryClient = useQueryClient()
   const [statusFilter, setStatusFilter] = useState<EmailReviewStatusFilter>('pending')
   const [providerFilter, setProviderFilter] = useState<ProviderFilter>('all')
+  const [syncDate, setSyncDate] = useState(todayIsoDate())
   const [offset, setOffset] = useState(0)
-  const [selectedConversationKey, setSelectedConversationKey] = useState<string | null>(null)
   const [selectedSuggestionId, setSelectedSuggestionId] = useState<string | null>(null)
-  const [reviewDialogTab, setReviewDialogTab] = useState<'overview' | 'review' | 'email'>('overview')
+  const [reviewDialogTab, setReviewDialogTab] = useState<ReviewDialogTab>('overview')
+  const [showConversationBody, setShowConversationBody] = useState(false)
   const [draftBySuggestionId, setDraftBySuggestionId] = useState<Record<string, SuggestionDraft>>({})
   const [processingActionKeys, setProcessingActionKeys] = useState<string[]>([])
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
@@ -314,28 +352,50 @@ export default function AdminEmailReviewPage() {
   const [activeSyncRun, setActiveSyncRun] = useState<EmailIntakeSyncRun | null>(null)
   const [syncRunLogs, setSyncRunLogs] = useState<EmailIntakeSyncRunLogEntry[]>([])
   const [isSyncLogsDialogOpen, setIsSyncLogsDialogOpen] = useState(false)
+  const reviewTimeZone = useMemo(() => {
+    const browserTimeZone = resolveBrowserTimeZone()
+
+    if (browserTimeZone) {
+      return browserTimeZone
+    }
+
+    const configuredTimeZone = String(appUser?.accessTimeZone ?? '').trim()
+
+    return configuredTimeZone || 'UTC'
+  }, [appUser?.accessTimeZone])
 
   useEffect(() => {
     setOffset(0)
-  }, [providerFilter, statusFilter])
+  }, [providerFilter, statusFilter, syncDate, reviewTimeZone])
 
   const reviewSummaryQuery = useQuery({
-    queryKey: QUERY_KEYS.adminEmailReviewSummary,
-    queryFn: fetchEmailIntakeReviewSummary,
+    queryKey: [...QUERY_KEYS.adminEmailReviewSummary, statusFilter, providerFilter, syncDate, reviewTimeZone],
+    queryFn: () => fetchEmailIntakeReviewSummary({
+      status: statusFilter,
+      provider: providerFilter,
+      messageDate: syncDate,
+      timeZone: reviewTimeZone,
+    }),
     staleTime: 20 * 1000,
     enabled: appUser?.isAdmin === true,
   })
 
   const reviewListQuery = useQuery({
-    queryKey: QUERY_KEYS.adminEmailReviewList(
-      statusFilter,
-      providerFilter,
-      suggestionPageLimit,
-      offset,
-    ),
+    queryKey: [
+      ...QUERY_KEYS.adminEmailReviewList(
+        statusFilter,
+        providerFilter,
+        suggestionPageLimit,
+        offset,
+      ),
+      syncDate,
+      reviewTimeZone,
+    ],
     queryFn: () => fetchEmailIntakeSuggestions({
       status: statusFilter,
       provider: providerFilter,
+      messageDate: syncDate,
+      timeZone: reviewTimeZone,
       limit: suggestionPageLimit,
       offset,
     }),
@@ -348,77 +408,129 @@ export default function AdminEmailReviewPage() {
   const totalSuggestions = Number(listPayload?.total ?? 0)
   const hasMore = Boolean(listPayload?.hasMore)
 
-  const conversationGroups = useMemo<SuggestionConversationGroup[]>(() => {
-    const groupedByKey = new Map<string, EmailIntakeSuggestion[]>()
+  const sortedSuggestions = useMemo(() => {
+    return [...suggestions].sort((left, right) => {
+      const byTimestamp = resolveSuggestionSortTimestamp(right) - resolveSuggestionSortTimestamp(left)
 
-    suggestions.forEach((suggestion) => {
-      const key = buildConversationKey(suggestion)
-      const existing = groupedByKey.get(key)
-
-      if (existing) {
-        existing.push(suggestion)
-        return
+      if (byTimestamp !== 0) {
+        return byTimestamp
       }
 
-      groupedByKey.set(key, [suggestion])
+      return String(right.id ?? '').localeCompare(String(left.id ?? ''))
     })
-
-    return [...groupedByKey.entries()]
-      .map(([key, groupedSuggestions]) => {
-        const sortedSuggestions = [...groupedSuggestions].sort((left, right) => {
-          const byTimestamp = resolveSuggestionSortTimestamp(right) - resolveSuggestionSortTimestamp(left)
-
-          if (byTimestamp !== 0) {
-            return byTimestamp
-          }
-
-          return String(right.id ?? '').localeCompare(String(left.id ?? ''))
-        })
-        const representative = sortedSuggestions[0] ?? groupedSuggestions[0]
-
-        return {
-          key,
-          representative,
-          suggestions: sortedSuggestions,
-          unreadCount: sortedSuggestions.filter((entry) => !entry.isRead).length,
-        }
-      })
-      .sort((left, right) => {
-        const byTimestamp = resolveSuggestionSortTimestamp(right.representative)
-          - resolveSuggestionSortTimestamp(left.representative)
-
-        if (byTimestamp !== 0) {
-          return byTimestamp
-        }
-
-        return String(right.representative.id ?? '').localeCompare(String(left.representative.id ?? ''))
-      })
   }, [suggestions])
 
+  const suggestionsByLane = useMemo(() => {
+    const grouped: Record<EmailIntakeReviewLane, EmailIntakeSuggestion[]> = {
+      green: [],
+      yellow: [],
+      red: [],
+    }
+
+    sortedSuggestions.forEach((suggestion) => {
+      grouped[resolveSuggestionLane(suggestion)].push(suggestion)
+    })
+
+    return grouped
+  }, [sortedSuggestions])
+
   useEffect(() => {
-    if (!selectedConversationKey) {
+    if (!selectedSuggestionId) {
       return
     }
 
-    const selectedConversation = conversationGroups.find((conversation) => (
-      conversation.key === selectedConversationKey
-    ))
+    const selectedStillExists = sortedSuggestions.some((suggestion) => suggestion.id === selectedSuggestionId)
 
-    if (!selectedConversation) {
-      setSelectedConversationKey(null)
+    if (!selectedStillExists) {
       setSelectedSuggestionId(null)
-      return
+      setReviewDialogTab('overview')
+    }
+  }, [selectedSuggestionId, sortedSuggestions])
+
+  useEffect(() => {
+    setShowConversationBody(false)
+  }, [selectedSuggestionId])
+
+  const selectedSuggestion = selectedSuggestionId
+    ? sortedSuggestions.find((suggestion) => suggestion.id === selectedSuggestionId) ?? null
+    : null
+  const selectedDraft = selectedSuggestion
+    ? (draftBySuggestionId[selectedSuggestion.id] ?? buildSuggestionDraft(selectedSuggestion))
+    : null
+
+  const selectedDestinationCandidate = selectedSuggestion?.candidateDestinations.find((candidate) => (
+    candidate.type === selectedSuggestion.destinationType
+    && candidate.id === selectedSuggestion.destinationId
+  ))
+  const selectedDestinationLabel = selectedSuggestion
+    ? formatCandidateReference(
+      selectedDestinationCandidate
+        ? {
+          id: selectedDestinationCandidate.id,
+          label: selectedDestinationCandidate.label,
+        }
+        : selectedSuggestion.destinationId
+          ? {
+            id: selectedSuggestion.destinationId,
+            label: selectedSuggestion.destinationId,
+          }
+          : null,
+      'None',
+    )
+    : 'None'
+  const selectedRoutingTargets = resolveSuggestionRoutingTargets(selectedSuggestion)
+  const selectedAdditionalRoutingTargets = selectedRoutingTargets.filter((target) => !(
+    String(target.type).toLowerCase() === String(selectedSuggestion?.destinationType ?? '').toLowerCase()
+    && String(target.id) === String(selectedSuggestion?.destinationId ?? '')
+  ))
+
+  const selectedSanitizedEmailHtml = useMemo(() => {
+    const rawHtml = String(selectedSuggestion?.bodyHtml ?? '').trim()
+
+    if (!rawHtml) {
+      return null
     }
 
-    if (
-      selectedSuggestionId
-      && selectedConversation.suggestions.some((suggestion) => suggestion.id === selectedSuggestionId)
-    ) {
-      return
+    const sanitizedBodyHtml = DOMPurify.sanitize(rawHtml, {
+      USE_PROFILES: { html: true },
+      FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'form'],
+      FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover'],
+    })
+
+    if (!sanitizedBodyHtml) {
+      return null
     }
 
-    setSelectedSuggestionId(selectedConversation.representative.id)
-  }, [conversationGroups, selectedConversationKey, selectedSuggestionId])
+    return [
+      '<!doctype html>',
+      '<html>',
+      '<head>',
+      '<meta charset="utf-8" />',
+      '<meta name="viewport" content="width=device-width, initial-scale=1" />',
+      '<style>body{margin:0;padding:16px;font-family:Arial,Helvetica,sans-serif;background:#fff;color:#1a1a1a;} img{max-width:100%;height:auto;} table{max-width:100%;}</style>',
+      '</head>',
+      '<body>',
+      sanitizedBodyHtml,
+      '</body>',
+      '</html>',
+    ].join('')
+  }, [selectedSuggestion?.bodyHtml])
+
+  const selectedConversationBodyText = String(selectedSuggestion?.conversationBodyText ?? '').trim()
+  const selectedConversationMessageCount = Number(selectedSuggestion?.conversationMessageCount ?? 0)
+  const canShowConversationBody = selectedConversationMessageCount > 1 && selectedConversationBodyText.length > 0
+  const selectedEmailBodyMode = showConversationBody && canShowConversationBody
+    ? 'conversation'
+    : 'single'
+
+  const selectedPlainEmailBody = selectedEmailBodyMode === 'conversation'
+    ? selectedConversationBodyText
+    : (
+      selectedSuggestion?.bodyText
+      || selectedSuggestion?.bodyPreview
+      || selectedSuggestion?.snippet
+      || 'No email text available.'
+    )
 
   const invalidateReviewQueries = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.adminEmailReviewSummary })
@@ -475,7 +587,7 @@ export default function AdminEmailReviewPage() {
 
       return [...mergedBySequence.values()]
         .sort((left, right) => Number(left.sequence) - Number(right.sequence))
-        .slice(-500)
+        .slice(-600)
     })
   }, [])
 
@@ -489,7 +601,9 @@ export default function AdminEmailReviewPage() {
         provider: providerFilter === 'all' ? undefined : providerFilter,
         includeAllConnections: true,
         maxConnections: 120,
-        lookbackDays: manualResyncLookbackDays,
+        maxMessagesPerConnection: 400,
+        syncDate,
+        timeZone: reviewTimeZone,
       })
       const startedRun = startPayload?.run ?? null
       const runId = String(startedRun?.id ?? '').trim()
@@ -529,78 +643,23 @@ export default function AdminEmailReviewPage() {
     },
     onSuccess: (summary) => {
       const details = Array.isArray(summary?.details) ? summary.details : []
-      const bootstrappedCount = details.filter((detail) => detail?.bootstrapped).length
-      const skippedReasons = details
-        .filter((detail) => detail?.skipped && detail?.reason)
-        .map((detail) => String(detail.reason))
-      const lookbackDaysRequested = Number(summary?.lookbackDaysRequested ?? manualResyncLookbackDays)
-      const lookbackConnections = details
-        .filter((detail) => Number(detail?.lookbackDaysApplied ?? 0) > 0)
-        .length
       const messagesCaught = Number(
         summary?.messagesCaught
-        ?? details.reduce((sum, detail) => {
-          return sum + Number(detail?.messagesCaught ?? detail?.lookbackMessagesCollected ?? 0)
-        }, 0),
+        ?? details.reduce((sum, detail) => sum + Number(detail?.messagesCaught ?? detail?.lookbackMessagesCollected ?? 0), 0),
       )
-      const lookbackMessagesCollected = details.reduce((sum, detail) => {
-        return sum + Number(detail?.lookbackMessagesCollected ?? 0)
-      }, 0)
-      const skippedNoDestination = details.reduce((sum, detail) => {
-        return sum + Number(detail?.messagesSkippedNoDestination ?? 0)
-      }, 0)
-      const skippedByPolicy = details.reduce((sum, detail) => {
-        return sum + Number(detail?.messagesSkippedByPolicy ?? 0)
-      }, 0)
-      const processedConnections = Number(summary?.processedConnections ?? summary?.scannedConnections ?? 0)
       const timedOutConnections = details.filter((detail) => Boolean(detail?.timedOut)).length
-      const skippedReasonText = skippedReasons.length > 0
-        ? ` Skipped: ${[...new Set(skippedReasons)].slice(0, 2).join(' | ')}.`
-        : ''
-      const bootstrapHint = bootstrappedCount > 0 && lookbackConnections === 0
-        ? ` Initial baseline created for ${bootstrappedCount} mailbox(es).`
-        : ''
-      const lookbackHint = lookbackDaysRequested > 0
-        ? ` Rescan window: last ${lookbackDaysRequested} day(s).`
-        : ''
-      const caughtHint = lookbackDaysRequested > 0
-        ? ` Emails caught in that window: ${messagesCaught}.`
-        : messagesCaught > 0
-          ? ` Emails caught: ${messagesCaught}.`
-          : ''
-      const lookbackAppliedHint = lookbackConnections > 0
-        ? ` Historical scan applied to ${lookbackConnections} mailbox(es); candidates found: ${lookbackMessagesCollected}.`
-        : ''
-      const skippedNoDestinationHint = skippedNoDestination > 0
-        ? ` Ignored ${skippedNoDestination} non-matching email(s).`
-        : ''
-      const skippedByPolicyHint = skippedByPolicy > 0
-        ? ` Filtered ${skippedByPolicy} logistics/PO workflow email(s).`
-        : ''
-      const timedOutHint = timedOutConnections > 0
-        ? ` ${timedOutConnections} mailbox(es) hit runtime limits and stopped early; partial progress was saved.`
-        : ''
-      const timedOutProgressHint = timedOutConnections > 0
-        ? ` Processed ${details
-          .filter((detail) => Boolean(detail?.timedOut))
-          .map((detail) => {
-            const visited = Number(detail?.messagesVisitedForProcessing ?? 0)
-            const planned = Number(detail?.messagesPlannedForProcessing ?? 0)
-            return planned > 0 ? `${visited}/${planned}` : `${visited}`
-          })
-          .slice(0, 2)
-          .join(' | ')} email(s) on timed mailbox runs.`
-        : ''
+      const processedConnections = Number(summary?.processedConnections ?? summary?.scannedConnections ?? 0)
+      const syncDateLabel = summary?.syncDateRequested || syncDate
       const truncationHint = summary?.truncated
         ? ` ${String(summary?.truncationReason ?? 'Sync returned partial results due to runtime budget.')}`
         : ''
-      const failureHint = summary?.status === 'failed'
-        ? ' Sync run failed before completion; check logs for details.'
+      const timeoutHint = timedOutConnections > 0
+        ? ` ${timedOutConnections} mailbox(es) timed out before finishing, and partial progress was saved.`
         : ''
 
       setErrorMessage(null)
       setSuccessMessage(
-        `Mailbox sync finished. Connections scanned: ${summary.scannedConnections}. Connections processed: ${processedConnections}.${lookbackHint}${caughtHint} Messages ingested: ${summary.messagesIngested}. Suggestions created: ${summary.suggestionsCreated}.${lookbackAppliedHint}${skippedNoDestinationHint}${skippedByPolicyHint}${bootstrapHint}${timedOutHint}${timedOutProgressHint}${truncationHint}${failureHint}${skippedReasonText}`,
+        `Mailbox sync finished for ${syncDateLabel}. Connections scanned: ${summary.scannedConnections}. Connections processed: ${processedConnections}. Emails caught: ${messagesCaught}. Messages ingested: ${summary.messagesIngested}. Suggestions created: ${summary.suggestionsCreated}.${timeoutHint}${truncationHint}`,
       )
       invalidateReviewQueries()
     },
@@ -616,11 +675,11 @@ export default function AdminEmailReviewPage() {
 
           appendSyncLogs(logPayload?.logs)
         } catch {
-          // Ignore log refresh errors when primary sync call has already failed.
+          // Ignore log refresh errors after primary failure.
         }
       }
 
-      setErrorMessage(`${toErrorMessage(error, 'Manual mailbox sync failed.')} Queue refresh triggered in case sync partially completed. Use See Logs for the decision trace.`)
+      setErrorMessage(`${toErrorMessage(error, 'Manual mailbox sync failed.')} Use See Logs for details.`)
       setSuccessMessage(null)
       invalidateReviewQueries()
     },
@@ -628,7 +687,7 @@ export default function AdminEmailReviewPage() {
 
   const syncButtonLabel = useMemo(() => {
     if (!syncMutation.isPending) {
-      return 'Sync Mailboxes'
+      return 'Sync Selected Day'
     }
 
     const scannedConnections = Number(activeSyncRun?.scannedConnections ?? 0)
@@ -638,13 +697,13 @@ export default function AdminEmailReviewPage() {
       return 'Syncing...'
     }
 
-    return `Sync ${Math.min(processedConnections, scannedConnections)} out of ${scannedConnections}`
+    return `Sync ${Math.min(processedConnections, scannedConnections)} of ${scannedConnections}`
   }, [activeSyncRun?.processedConnections, activeSyncRun?.scannedConnections, syncMutation.isPending])
 
   const approveAllMutation = useMutation({
     mutationFn: () => approveAllEmailIntakeSuggestions({
       provider: providerFilter === 'all' ? undefined : providerFilter,
-      limit: 100,
+      limit: 120,
     }),
     onSuccess: (payload) => {
       setErrorMessage(null)
@@ -668,7 +727,6 @@ export default function AdminEmailReviewPage() {
       setSuccessMessage(
         `Review queue reset completed. Deleted: suggestions ${payload.deleted.suggestions}, messages ${payload.deleted.messages}, feedback ${payload.deleted.feedback}, sync states ${payload.deleted.syncStates}.`,
       )
-      setSelectedConversationKey(null)
       setSelectedSuggestionId(null)
       setDraftBySuggestionId({})
       invalidateReviewQueries()
@@ -691,7 +749,7 @@ export default function AdminEmailReviewPage() {
 
         appendSyncLogs(logPayload?.logs)
       } catch {
-        // Keep showing existing client-side logs even if refresh fails.
+        // Keep showing existing logs if refresh fails.
       }
     }
 
@@ -875,22 +933,15 @@ export default function AdminEmailReviewPage() {
     }
   }, [invalidateReviewQueries, resolveDraft, setActionProcessing, updateDraft])
 
-  const handleOpenConversation = useCallback((conversation: SuggestionConversationGroup) => {
-    setSelectedConversationKey(conversation.key)
-    setSelectedSuggestionId(conversation.representative.id)
+  const handleOpenSuggestion = useCallback((suggestion: EmailIntakeSuggestion) => {
+    setSelectedSuggestionId(suggestion.id)
     setReviewDialogTab('overview')
 
-    const unreadSuggestionIds = conversation.suggestions
-      .filter((suggestion) => !suggestion.isRead)
-      .map((suggestion) => suggestion.id)
-
-    if (unreadSuggestionIds.length === 0) {
+    if (suggestion.isRead) {
       return
     }
 
-    void Promise.allSettled(
-      unreadSuggestionIds.map((suggestionId) => markEmailIntakeSuggestionRead(suggestionId)),
-    )
+    void markEmailIntakeSuggestionRead(suggestion.id)
       .then(() => {
         invalidateReviewQueries()
       })
@@ -902,43 +953,6 @@ export default function AdminEmailReviewPage() {
   const pendingSummary = reviewSummaryQuery.data
   const pageStart = totalSuggestions === 0 ? 0 : offset + 1
   const pageEnd = Math.min(offset + suggestions.length, totalSuggestions)
-  const visibleConversations = conversationGroups.length
-
-  const selectedConversation = selectedConversationKey
-    ? conversationGroups.find((conversation) => conversation.key === selectedConversationKey) ?? null
-    : null
-  const selectedSuggestion = selectedConversation
-    ? selectedConversation.suggestions.find((suggestion) => suggestion.id === selectedSuggestionId)
-      || selectedConversation.representative
-    : null
-  const selectedDraft = selectedSuggestion
-    ? resolveDraft(selectedSuggestion)
-    : null
-  const selectedDestinationCandidate = selectedSuggestion?.candidateDestinations.find((candidate) => (
-    candidate.type === selectedSuggestion.destinationType
-    && candidate.id === selectedSuggestion.destinationId
-  ))
-  const selectedDestinationLabel = selectedSuggestion
-    ? formatCandidateReference(
-      selectedDestinationCandidate
-        ? {
-          id: selectedDestinationCandidate.id,
-          label: selectedDestinationCandidate.label,
-        }
-        : selectedSuggestion.destinationId
-          ? {
-            id: selectedSuggestion.destinationId,
-            label: selectedSuggestion.destinationId,
-          }
-          : null,
-      'None',
-    )
-    : 'None'
-  const selectedRoutingTargets = resolveSuggestionRoutingTargets(selectedSuggestion)
-  const selectedAdditionalRoutingTargets = selectedRoutingTargets.filter((target) => !(
-    String(target.type).toLowerCase() === String(selectedSuggestion?.destinationType ?? '').toLowerCase()
-    && String(target.id) === String(selectedSuggestion?.destinationId ?? '')
-  ))
   const canOpenSyncLogs = Boolean(activeSyncRun?.id) || syncRunLogs.length > 0
 
   if (!appUser?.isAdmin) {
@@ -950,24 +964,38 @@ export default function AdminEmailReviewPage() {
       <Paper variant="outlined" sx={{ p: { xs: 2, md: 2.5 } }}>
         <Stack spacing={1.5}>
           <Stack
-            direction={{ xs: 'column', sm: 'row' }}
+            direction={{ xs: 'column', md: 'row' }}
             spacing={1}
             justifyContent="space-between"
-            alignItems={{ xs: 'flex-start', sm: 'center' }}
+            alignItems={{ xs: 'flex-start', md: 'center' }}
           >
             <Stack direction="row" spacing={1.2} alignItems="center">
               <AlternateEmailRoundedIcon color="primary" />
               <Box>
                 <Typography variant="h5" fontWeight={700}>
-                  Email Review Queue
+                  Email Review
                 </Typography>
                 <Typography color="text.secondary">
-                  Review AI routing suggestions in a compact card workflow.
+                  Sync one day at a time and triage every email into Green, Yellow, or Red.
                 </Typography>
               </Box>
             </Stack>
 
             <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.8}>
+              <TextField
+                size="small"
+                type="date"
+                label="Sync Date"
+                InputLabelProps={{ shrink: true }}
+                value={syncDate}
+                onChange={(event) => {
+                  const nextValue = String(event.target.value ?? '').trim()
+                  setSyncDate(nextValue || todayIsoDate())
+                }}
+                helperText={`Date uses ${reviewTimeZone}`}
+                sx={{ minWidth: 168 }}
+              />
+
               <Button
                 variant="outlined"
                 size="small"
@@ -1012,7 +1040,7 @@ export default function AdminEmailReviewPage() {
                 variant="contained"
                 size="small"
                 startIcon={<TaskAltRoundedIcon />}
-                disabled={approveAllMutation.isPending || statusFilter === 'rejected'}
+                disabled={approveAllMutation.isPending || statusFilter !== 'pending'}
                 onClick={() => {
                   if (!window.confirm('Approve all pending suggestions in the current filter?')) {
                     return
@@ -1053,20 +1081,30 @@ export default function AdminEmailReviewPage() {
               label={`Rejected: ${pendingSummary?.rejected ?? 0}`}
               color="error"
             />
+            <Chip
+              size="small"
+              variant="outlined"
+              label={`Green: ${pendingSummary?.green ?? suggestionsByLane.green.length}`}
+              color="success"
+            />
+            <Chip
+              size="small"
+              variant="outlined"
+              label={`Yellow: ${pendingSummary?.yellow ?? suggestionsByLane.yellow.length}`}
+              color="warning"
+            />
+            <Chip
+              size="small"
+              variant="outlined"
+              label={`Red: ${pendingSummary?.red ?? suggestionsByLane.red.length}`}
+              color="error"
+            />
             {syncMutation.isPending || activeSyncRun ? (
               <Chip
                 size="small"
                 variant="outlined"
                 color="primary"
                 label={`Sync progress: ${Number(activeSyncRun?.processedConnections ?? 0)}/${Number(activeSyncRun?.scannedConnections ?? 0)}`}
-              />
-            ) : null}
-            {syncMutation.isPending || activeSyncRun ? (
-              <Chip
-                size="small"
-                variant="outlined"
-                color="info"
-                label={`Emails caught: ${Number(activeSyncRun?.messagesCaught ?? 0)}`}
               />
             ) : null}
           </Stack>
@@ -1117,14 +1155,6 @@ export default function AdminEmailReviewPage() {
                 : 'No emails'}
             />
 
-            <Chip
-              size="small"
-              variant="outlined"
-              label={visibleConversations > 0
-                ? `${visibleConversations} conversation${visibleConversations === 1 ? '' : 's'} on page`
-                : 'No conversations'}
-            />
-
             <Stack direction="row" spacing={0.8} sx={{ ml: { md: 'auto' } }}>
               <Button
                 variant="outlined"
@@ -1158,10 +1188,10 @@ export default function AdminEmailReviewPage() {
         contained
       />
 
-      {!reviewListQuery.isLoading && suggestions.length === 0 ? (
+      {!reviewListQuery.isLoading && sortedSuggestions.length === 0 ? (
         <Paper variant="outlined" sx={{ p: 2.5 }}>
           <Typography color="text.secondary">
-            No email suggestions were found for this filter.
+            No email suggestions were found for this filter and date.
           </Typography>
         </Paper>
       ) : null}
@@ -1174,137 +1204,173 @@ export default function AdminEmailReviewPage() {
               gap: 1.5,
               gridTemplateColumns: {
                 xs: '1fr',
-                sm: 'repeat(auto-fill, minmax(330px, 1fr))',
+                xl: 'repeat(3, minmax(0, 1fr))',
               },
             }}
           >
-            {conversationGroups.map((conversation) => {
-              const suggestion = conversation.representative
-              const destinationCandidate = suggestion.candidateDestinations.find((candidate) => (
-                candidate.type === suggestion.destinationType
-                && candidate.id === suggestion.destinationId
-              ))
-              const routingTargets = resolveSuggestionRoutingTargets(suggestion)
-              const suggestionDestinationLabel = formatCandidateReference(
-                destinationCandidate
-                  ? {
-                    id: destinationCandidate.id,
-                    label: destinationCandidate.label,
-                  }
-                  : suggestion.destinationId
-                    ? {
-                      id: suggestion.destinationId,
-                      label: suggestion.destinationId,
-                    }
-                    : null,
-                'None',
-              )
+            {laneOrder.map((laneKey) => {
+              const laneSuggestions = suggestionsByLane[laneKey]
+              const laneInfo = laneMeta[laneKey]
 
               return (
                 <Paper
-                  key={conversation.key}
+                  key={laneKey}
                   variant="outlined"
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => {
-                    handleOpenConversation(conversation)
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key !== 'Enter' && event.key !== ' ') {
-                      return
-                    }
-
-                    event.preventDefault()
-                    handleOpenConversation(conversation)
-                  }}
                   sx={{
-                    p: { xs: 2, md: 2.25 },
-                    borderRadius: 2.5,
-                    cursor: 'pointer',
-                    transition: 'transform 140ms ease, box-shadow 140ms ease, border-color 140ms ease',
-                    '&:hover': {
-                      transform: 'translateY(-2px)',
-                      borderColor: 'primary.main',
-                      boxShadow: 2,
-                    },
-                    '&:focus-visible': {
-                      outline: '2px solid',
-                      outlineColor: 'primary.main',
-                      outlineOffset: '2px',
-                    },
+                    p: 1.2,
+                    bgcolor: laneInfo.backgroundColor,
+                    borderColor: laneInfo.borderColor,
+                    minHeight: 260,
                   }}
                 >
-                  <Stack spacing={1.1}>
-                    <Stack direction="row" spacing={0.6} flexWrap="wrap" useFlexGap>
+                  <Stack spacing={1}>
+                    <Stack direction="row" justifyContent="space-between" alignItems="center">
+                      <Typography variant="subtitle1" fontWeight={700}>
+                        {laneInfo.label}
+                      </Typography>
                       <Chip
                         size="small"
-                        label={formatStatusLabel(suggestion.status)}
-                        color={resolveStatusChipColor(suggestion.status)}
+                        color={laneInfo.chipColor}
                         variant="outlined"
+                        label={laneSuggestions.length}
                       />
-                      <Chip
-                        size="small"
-                        label={suggestion.provider === 'google' ? 'Google' : 'Microsoft'}
-                        variant="outlined"
-                      />
-                      <Chip
-                        size="small"
-                        label={`${conversation.suggestions.length} msg${conversation.suggestions.length === 1 ? '' : 's'}`}
-                        variant="outlined"
-                      />
-                      {conversation.unreadCount > 0 ? (
-                        <Chip
-                          size="small"
-                          label={`${conversation.unreadCount} unread`}
-                          color="info"
-                          variant="outlined"
-                        />
-                      ) : null}
                     </Stack>
 
-                    <Typography
-                      variant="subtitle1"
-                      fontWeight={700}
-                      sx={{
-                        lineHeight: 1.35,
-                        minHeight: 66,
-                        display: '-webkit-box',
-                        WebkitLineClamp: 3,
-                        WebkitBoxOrient: 'vertical',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                      }}
-                    >
-                      {formatOptional(suggestion.summary || suggestion.snippet || 'No AI summary available.')}
+                    <Typography variant="caption" color="text.secondary">
+                      {laneInfo.description}
                     </Typography>
 
-                    <Typography
-                      variant="body2"
-                      color="text.secondary"
-                      sx={{
-                        display: '-webkit-box',
-                        WebkitLineClamp: 2,
-                        WebkitBoxOrient: 'vertical',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                      }}
-                    >
-                      {`Subject: ${formatOptional(suggestion.subject)}`}
-                    </Typography>
-
-                    <Typography variant="body2" color="text.secondary" fontWeight={600}>
-                      {`${formatDestinationTypeLabel(suggestion.destinationType)}: ${suggestionDestinationLabel}`}
-                    </Typography>
-
-                    {routingTargets.length > 1 ? (
-                      <Typography variant="caption" color="text.secondary">
-                        {`Also routes to ${formatRoutingTargetsLabel(routingTargets.slice(1))}`}
-                      </Typography>
+                    {laneSuggestions.length === 0 ? (
+                      <Paper variant="outlined" sx={{ p: 1.1, bgcolor: 'rgba(255,255,255,0.7)' }}>
+                        <Typography variant="body2" color="text.secondary">
+                          No emails in this lane.
+                        </Typography>
+                      </Paper>
                     ) : null}
 
-                    <Typography variant="caption" color="text.secondary">
-                      {`Latest ${formatDateTime(suggestion.messageDate)} · Confidence ${formatConfidence(suggestion.confidence)}`}
-                    </Typography>
+                    <Stack spacing={0.9}>
+                      {laneSuggestions.map((suggestion) => {
+                        const destinationCandidate = suggestion.candidateDestinations.find((candidate) => (
+                          candidate.type === suggestion.destinationType
+                          && candidate.id === suggestion.destinationId
+                        ))
+                        const suggestionDestinationLabel = formatCandidateReference(
+                          destinationCandidate
+                            ? {
+                              id: destinationCandidate.id,
+                              label: destinationCandidate.label,
+                            }
+                            : suggestion.destinationId
+                              ? {
+                                id: suggestion.destinationId,
+                                label: suggestion.destinationId,
+                              }
+                              : null,
+                          'None',
+                        )
+
+                        return (
+                          <Paper
+                            key={suggestion.id}
+                            variant="outlined"
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => {
+                              handleOpenSuggestion(suggestion)
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key !== 'Enter' && event.key !== ' ') {
+                                return
+                              }
+
+                              event.preventDefault()
+                              handleOpenSuggestion(suggestion)
+                            }}
+                            sx={{
+                              p: 1.2,
+                              borderRadius: 1.5,
+                              cursor: 'pointer',
+                              bgcolor: 'rgba(255,255,255,0.9)',
+                              borderColor: selectedSuggestion?.id === suggestion.id
+                                ? 'primary.main'
+                                : 'divider',
+                              transition: 'transform 140ms ease, box-shadow 140ms ease, border-color 140ms ease',
+                              '&:hover': {
+                                transform: 'translateY(-1px)',
+                                borderColor: 'primary.main',
+                                boxShadow: 2,
+                              },
+                              '&:focus-visible': {
+                                outline: '2px solid',
+                                outlineColor: 'primary.main',
+                                outlineOffset: '2px',
+                              },
+                            }}
+                          >
+                            <Stack spacing={0.8}>
+                              <Stack direction="row" spacing={0.55} flexWrap="wrap" useFlexGap>
+                                <Chip
+                                  size="small"
+                                  label={formatStatusLabel(suggestion.status)}
+                                  color={resolveStatusChipColor(suggestion.status)}
+                                  variant="outlined"
+                                />
+                                <Chip
+                                  size="small"
+                                  label={suggestion.provider === 'google' ? 'Google' : 'Microsoft'}
+                                  variant="outlined"
+                                />
+                                {!suggestion.isRead ? (
+                                  <Chip
+                                    size="small"
+                                    label="Unread"
+                                    color="info"
+                                    variant="outlined"
+                                  />
+                                ) : null}
+                              </Stack>
+
+                              <Typography
+                                variant="subtitle2"
+                                fontWeight={700}
+                                sx={{
+                                  lineHeight: 1.35,
+                                  display: '-webkit-box',
+                                  WebkitLineClamp: 2,
+                                  WebkitBoxOrient: 'vertical',
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                }}
+                              >
+                                {formatOptional(suggestion.summary || suggestion.snippet || 'No AI summary available.')}
+                              </Typography>
+
+                              <Typography
+                                variant="body2"
+                                color="text.secondary"
+                                sx={{
+                                  display: '-webkit-box',
+                                  WebkitLineClamp: 2,
+                                  WebkitBoxOrient: 'vertical',
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                }}
+                              >
+                                {`Subject: ${formatOptional(suggestion.subject)}`}
+                              </Typography>
+
+                              <Typography variant="caption" color="text.secondary" fontWeight={600}>
+                                {`${formatDestinationTypeLabel(suggestion.destinationType)}: ${suggestionDestinationLabel}`}
+                              </Typography>
+
+                              <Typography variant="caption" color="text.secondary">
+                                {`${formatDateTime(suggestion.messageDate)} · Confidence ${formatConfidence(suggestion.confidence)}`}
+                              </Typography>
+                            </Stack>
+                          </Paper>
+                        )
+                      })}
+                    </Stack>
                   </Stack>
                 </Paper>
               )
@@ -1312,13 +1378,12 @@ export default function AdminEmailReviewPage() {
           </Box>
 
           <Dialog
-            open={Boolean(selectedConversation)}
+            open={Boolean(selectedSuggestion)}
             onClose={() => {
-              setSelectedConversationKey(null)
               setSelectedSuggestionId(null)
             }}
             fullWidth
-            maxWidth="md"
+            maxWidth="lg"
           >
             <DialogTitle sx={{ pb: 1.25 }}>
               <Stack spacing={0.6}>
@@ -1328,56 +1393,49 @@ export default function AdminEmailReviewPage() {
                 <Typography variant="body2" color="text.secondary">
                   {`Subject: ${formatOptional(selectedSuggestion?.subject)}`}
                 </Typography>
-                {selectedConversation ? (
-                  <Typography variant="caption" color="text.secondary">
-                    {`Conversation messages: ${selectedConversation.suggestions.length}`}
-                  </Typography>
-                ) : null}
               </Stack>
             </DialogTitle>
 
             <DialogContent dividers>
-              {selectedConversation && selectedConversation.suggestions.length > 1 ? (
-                <Stack spacing={0.7} sx={{ mb: 1.5 }}>
-                  <Typography variant="caption" color="text.secondary">
-                    Conversation timeline
-                  </Typography>
-
-                  <Stack direction="row" spacing={0.65} flexWrap="wrap" useFlexGap>
-                    {selectedConversation.suggestions.map((conversationSuggestion, index) => {
-                      const isActive = selectedSuggestion?.id === conversationSuggestion.id
-
-                      return (
-                        <Button
-                          key={conversationSuggestion.id}
-                          size="small"
-                          variant={isActive ? 'contained' : 'outlined'}
-                          onClick={() => {
-                            setSelectedSuggestionId(conversationSuggestion.id)
-                          }}
-                        >
-                          {index === 0 ? 'Latest' : `Msg ${selectedConversation.suggestions.length - index}`}
-                        </Button>
-                      )
-                    })}
-                  </Stack>
-                </Stack>
-              ) : null}
-
               <Tabs
                 value={reviewDialogTab}
-                onChange={(_, value: 'overview' | 'review' | 'email') => {
+                onChange={(_, value: ReviewDialogTab) => {
                   setReviewDialogTab(value)
                 }}
                 sx={{ mb: 1.5 }}
               >
                 <Tab label="Overview" value="overview" />
                 <Tab label="Review" value="review" />
-                <Tab label="Email Body" value="email" />
+                <Tab label="Email" value="email" />
               </Tabs>
 
               {reviewDialogTab === 'overview' ? (
                 <Stack spacing={1}>
+                  <Stack direction="row" spacing={0.7} flexWrap="wrap" useFlexGap>
+                    <Chip
+                      size="small"
+                      label={selectedSuggestion ? laneMeta[resolveSuggestionLane(selectedSuggestion)].label : 'Lane'}
+                      color={selectedSuggestion ? laneMeta[resolveSuggestionLane(selectedSuggestion)].chipColor : 'default'}
+                      variant="outlined"
+                    />
+                    <Chip
+                      size="small"
+                      label={selectedSuggestion?.provider === 'google' ? 'Google' : 'Microsoft'}
+                      variant="outlined"
+                    />
+                    <Chip
+                      size="small"
+                      label={selectedSuggestion?.direction === 'outbound' ? 'Outbound' : 'Inbound'}
+                      color={resolveDirectionChipColor(selectedSuggestion?.direction ?? 'inbound')}
+                      variant="outlined"
+                    />
+                    <Chip
+                      size="small"
+                      label={`Confidence ${formatConfidence(selectedSuggestion?.confidence)}`}
+                      variant="outlined"
+                    />
+                  </Stack>
+
                   <Typography variant="body2" fontWeight={600}>
                     {`${formatDestinationTypeLabel(selectedSuggestion?.destinationType ?? 'none')}: ${selectedDestinationLabel}`}
                   </Typography>
@@ -1408,24 +1466,21 @@ export default function AdminEmailReviewPage() {
                     </Typography>
                   ) : null}
 
-                  <Stack direction="row" spacing={0.7} flexWrap="wrap" useFlexGap>
-                    <Chip
-                      size="small"
-                      label={selectedSuggestion?.provider === 'google' ? 'Google' : 'Microsoft'}
-                      variant="outlined"
-                    />
-                    <Chip
-                      size="small"
-                      label={selectedSuggestion?.direction === 'outbound' ? 'Outbound' : 'Inbound'}
-                      color={resolveDirectionChipColor(selectedSuggestion?.direction ?? 'inbound')}
-                      variant="outlined"
-                    />
-                    <Chip
-                      size="small"
-                      label={`Confidence ${formatConfidence(selectedSuggestion?.confidence)}`}
-                      variant="outlined"
-                    />
-                  </Stack>
+                  {selectedSuggestion?.attachmentNames?.length ? (
+                    <Typography variant="body2" color="text.secondary">
+                      Attachments: {selectedSuggestion.attachmentNames.join(', ')}
+                    </Typography>
+                  ) : null}
+
+                  <Typography variant="caption" color="text.secondary">
+                    Message Date: {formatDateTime(selectedSuggestion?.messageDate)}
+                  </Typography>
+
+                  {Number(selectedSuggestion?.conversationMessageCount ?? 0) > 1 ? (
+                    <Typography variant="caption" color="text.secondary">
+                      Conversation messages: {Number(selectedSuggestion?.conversationMessageCount ?? 0)}
+                    </Typography>
+                  ) : null}
                 </Stack>
               ) : null}
 
@@ -1507,25 +1562,73 @@ export default function AdminEmailReviewPage() {
               ) : null}
 
               {reviewDialogTab === 'email' ? (
-                <Typography
-                  variant="body2"
-                  component="pre"
-                  sx={{
-                    whiteSpace: 'pre-wrap',
-                    wordBreak: 'break-word',
-                    m: 0,
-                    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-                  }}
-                >
-                  {String(selectedSuggestion?.bodyPreview || selectedSuggestion?.snippet || 'No email text available.')}
-                </Typography>
+                <Stack spacing={1}>
+                  <Typography variant="caption" color="text.secondary">
+                    {selectedEmailBodyMode === 'conversation'
+                      ? `Showing full conversation thread (${selectedConversationMessageCount} messages).`
+                      : selectedSanitizedEmailHtml
+                        ? 'Showing sanitized HTML email rendering.'
+                        : 'Showing plain text email body.'}
+                  </Typography>
+
+                  {canShowConversationBody ? (
+                    <FormControlLabel
+                      control={(
+                        <Switch
+                          checked={showConversationBody}
+                          onChange={(_, checked) => {
+                            setShowConversationBody(checked)
+                          }}
+                        />
+                      )}
+                      label={`Show full conversation (${selectedConversationMessageCount} messages)`}
+                      sx={{ mt: -0.4 }}
+                    />
+                  ) : null}
+
+                  {selectedEmailBodyMode === 'single' && selectedSanitizedEmailHtml ? (
+                    <Box
+                      sx={{
+                        border: '1px solid',
+                        borderColor: 'divider',
+                        borderRadius: 1.5,
+                        overflow: 'hidden',
+                        bgcolor: 'common.white',
+                      }}
+                    >
+                      <iframe
+                        title="Email body"
+                        srcDoc={selectedSanitizedEmailHtml}
+                        sandbox=""
+                        style={{
+                          width: '100%',
+                          minHeight: '460px',
+                          border: 'none',
+                          display: 'block',
+                        }}
+                      />
+                    </Box>
+                  ) : (
+                    <Typography
+                      variant="body2"
+                      component="pre"
+                      sx={{
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word',
+                        m: 0,
+                        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                      }}
+                    >
+                      {String(selectedPlainEmailBody)}
+                    </Typography>
+                  )}
+                </Stack>
               ) : null}
             </DialogContent>
 
             <DialogActions>
               <Button
                 onClick={() => {
-                  setSelectedConversationKey(null)
                   setSelectedSuggestionId(null)
                 }}
               >
@@ -1590,7 +1693,7 @@ export default function AdminEmailReviewPage() {
               <Stack spacing={1.1}>
                 <Typography variant="body2" color="text.secondary">
                   {activeSyncRun
-                    ? `Run ${formatOptional(activeSyncRun.id)} · Status ${formatOptional(activeSyncRun.status)} · Progress ${Number(activeSyncRun.processedConnections ?? 0)}/${Number(activeSyncRun.scannedConnections ?? 0)} · Emails caught ${Number(activeSyncRun.messagesCaught ?? 0)}`
+                    ? `Run ${formatOptional(activeSyncRun.id)} · Status ${formatOptional(activeSyncRun.status)} · Date ${formatOptional(activeSyncRun.syncDateRequested || syncDate)} · Progress ${Number(activeSyncRun.processedConnections ?? 0)}/${Number(activeSyncRun.scannedConnections ?? 0)} · Emails caught ${Number(activeSyncRun.messagesCaught ?? 0)}`
                     : 'No active sync run. Showing latest captured logs.'}
                 </Typography>
 

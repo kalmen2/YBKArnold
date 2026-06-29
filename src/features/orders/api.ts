@@ -59,6 +59,56 @@ export type OrdersOrderNumberContactAdminResponse = {
   alert?: unknown
 }
 
+export type OrdersShippingDocumentType = 'signed_bol' | 'inspection_sheet'
+
+export type OrdersShippingDocumentUploadResponse = {
+  ok: boolean
+  document: {
+    type: OrdersShippingDocumentType
+    label: string
+    fileName: string
+    mimeType: string
+    url: string
+    uploadedAt: string
+  }
+  order: {
+    orderKey: string | null
+    mondayItemId: string | null
+    orderNumber: string | null
+    isShipped: boolean
+    signedBol: string | null
+    signedBolUrl: string | null
+    inspectionSheet: string | null
+    inspectionSheetUrl: string | null
+  }
+}
+
+export type OrdersShipResponse = {
+  ok: boolean
+  move: {
+    itemId: string
+    sourceBoardId: string | null
+    sourceBoardName: string | null
+    targetBoardId: string | null
+    targetBoardName: string | null
+    targetGroupId: string | null
+    targetGroupTitle: string | null
+    mappingMode: 'explicit' | 'best_match_fallback' | string
+    mappedColumnCount: number
+    totalSourceColumnCount: number
+  }
+  order: {
+    orderKey: string | null
+    mondayItemId: string
+    orderNumber: string | null
+    isShipped: boolean
+    shippedAt: string | null
+    mondayStatus: string | null
+    mondayBoardId: string | null
+    mondayBoardName: string | null
+  }
+}
+
 export type OrdersChatMessage = {
   id: string
   orderId: string
@@ -135,6 +185,10 @@ export type OrdersOverviewOrder = {
   bol: string | null
   bolCachedUrl: string | null
   bolUrl: string | null
+  signedBol: string | null
+  signedBolUrl: string | null
+  inspectionSheet: string | null
+  inspectionSheetUrl: string | null
   poNumber: string | null
   notes: string | null
   description: string | null
@@ -201,16 +255,30 @@ export type OrdersOverviewResponse = {
 export type OrdersRefreshSummary = {
   refreshedAt: string
   mergedOrderCount: number
-  mondayOrderCount: number
-  shippedBoardOrderCount: number
-  preproductionCandidateCount: number
-  preproductionMatchedCount: number
-  preproductionBoardOrderCount: number
-  preproductionBoardRefreshed: boolean
+  orderTrackOrderCount: number
+  designBoardCandidateCount: number
+  designBoardMatchedCount: number
   quickBooksProjectCount: number
   carryoverCheckedCount: number
   carryoverMarkedShippedCount: number
   carryoverHazardCount: number
+  shippedLookupCandidateCount: number
+  quickBooksOnlyShippedCheckedCount: number
+  quickBooksOnlyMarkedShippedCount: number
+  shippedDetailEnrichedCount: number
+  mondayMovedToShippedOutsideWebsiteCount: number
+  mondayMovedToShippedOutsideWebsiteOrders: Array<{
+    orderKey: string | null
+    orderNumber: string | null
+    orderName: string | null
+    mondayItemId: string | null
+    mondayItemUrl: string | null
+    shippedAt: string | null
+  }>
+  shippedProgressTrackedOrderCount: number
+  shippedProgressUpsertedCount: number
+  shippedProgressCorrectedCount: number
+  staleQuickBooksDeletedCount: number
   quickBooksSyncedAt: string | null
   warnings: string[]
 }
@@ -443,6 +511,92 @@ export function postOrdersOrderNumberContactAdmin(input: ContactAdminForOrderNum
         currentOrderNumber: currentOrderNumber || undefined,
       }),
     },
+  )
+}
+
+type UploadOrdersShippingDocumentInput = {
+  documentType: OrdersShippingDocumentType
+  fileName: string
+  mimeType: string
+  fileBase64: string
+  orderKey?: string | null
+  mondayItemId?: string | null
+  orderNumber?: string | null
+}
+
+export function postOrdersShippingDocumentUpload(input: UploadOrdersShippingDocumentInput) {
+  const orderKey = String(input?.orderKey ?? '').trim()
+  const mondayItemId = String(input?.mondayItemId ?? '').trim()
+  const orderNumber = String(input?.orderNumber ?? '').trim()
+  const documentType = String(input?.documentType ?? '').trim().toLowerCase()
+  const fileName = String(input?.fileName ?? '').trim()
+  const mimeType = String(input?.mimeType ?? '').trim().toLowerCase()
+  const fileBase64 = String(input?.fileBase64 ?? '').trim()
+
+  if (!orderKey && !mondayItemId && !orderNumber) {
+    throw new Error('orderKey, mondayItemId, or orderNumber is required.')
+  }
+
+  if (documentType !== 'signed_bol' && documentType !== 'inspection_sheet') {
+    throw new Error('documentType must be signed_bol or inspection_sheet.')
+  }
+
+  if (!fileName) {
+    throw new Error('fileName is required.')
+  }
+
+  if (!mimeType) {
+    throw new Error('mimeType is required.')
+  }
+
+  if (!fileBase64) {
+    throw new Error('fileBase64 is required.')
+  }
+
+  return apiRequest<OrdersShippingDocumentUploadResponse>(
+    '/api/orders/documents/upload',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        orderKey: orderKey || undefined,
+        mondayItemId: mondayItemId || undefined,
+        orderNumber: orderNumber || undefined,
+        documentType,
+        fileName,
+        mimeType,
+        fileBase64,
+      }),
+    },
+    { timeoutMs: 90_000 },
+  )
+}
+
+type PostOrdersShipInput = {
+  orderKey?: string | null
+  mondayItemId?: string | null
+  orderNumber?: string | null
+}
+
+export function postOrdersShip(input: PostOrdersShipInput) {
+  const orderKey = String(input?.orderKey ?? '').trim()
+  const mondayItemId = String(input?.mondayItemId ?? '').trim()
+  const orderNumber = String(input?.orderNumber ?? '').trim()
+
+  if (!orderKey && !mondayItemId && !orderNumber) {
+    throw new Error('orderKey, mondayItemId, or orderNumber is required.')
+  }
+
+  return apiRequest<OrdersShipResponse>(
+    '/api/orders/ship',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        orderKey: orderKey || undefined,
+        mondayItemId: mondayItemId || undefined,
+        orderNumber: orderNumber || undefined,
+      }),
+    },
+    { timeoutMs: 90_000 },
   )
 }
 

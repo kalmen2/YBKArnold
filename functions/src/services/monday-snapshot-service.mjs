@@ -162,6 +162,113 @@ function dedupeMondayItems(items) {
   return [...byId.values()]
 }
 
+function normalizeMondayColumnTitle(value) {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+}
+
+function buildColumnsMappingBetweenBoards(sourceColumns, targetColumns) {
+  const normalizedSourceColumns = Array.isArray(sourceColumns)
+    ? sourceColumns
+    : []
+  const normalizedTargetColumns = Array.isArray(targetColumns)
+    ? targetColumns
+    : []
+  const targetById = new Map()
+  const targetByTitleAndType = new Map()
+  const targetByTitle = new Map()
+  const usedTargetColumnIds = new Set()
+
+  normalizedTargetColumns.forEach((column) => {
+    const columnId = String(column?.id ?? '').trim()
+
+    if (!columnId) {
+      return
+    }
+
+    const columnType = String(column?.type ?? '').trim().toLowerCase()
+    const titleKey = normalizeMondayColumnTitle(column?.title)
+    const titleAndTypeKey = `${titleKey}::${columnType}`
+
+    targetById.set(columnId, column)
+
+    if (titleKey && !targetByTitle.has(titleKey)) {
+      targetByTitle.set(titleKey, column)
+    }
+
+    if (titleKey && columnType && !targetByTitleAndType.has(titleAndTypeKey)) {
+      targetByTitleAndType.set(titleAndTypeKey, column)
+    }
+  })
+
+  return normalizedSourceColumns.map((sourceColumn) => {
+    const sourceId = String(sourceColumn?.id ?? '').trim()
+
+    if (!sourceId) {
+      return null
+    }
+
+    const sourceType = String(sourceColumn?.type ?? '').trim().toLowerCase()
+    const sourceTitleKey = normalizeMondayColumnTitle(sourceColumn?.title)
+    const titleAndTypeKey = `${sourceTitleKey}::${sourceType}`
+    let matchedTarget = null
+
+    if (sourceId === 'name' && targetById.has('name')) {
+      matchedTarget = targetById.get('name')
+    }
+
+    if (!matchedTarget) {
+      const sameIdTarget = targetById.get(sourceId)
+
+      if (sameIdTarget && !usedTargetColumnIds.has(String(sameIdTarget?.id ?? '').trim())) {
+        matchedTarget = sameIdTarget
+      }
+    }
+
+    if (!matchedTarget && sourceTitleKey) {
+      const titleAndTypeTarget = targetByTitleAndType.get(titleAndTypeKey)
+
+      if (
+        titleAndTypeTarget
+        && !usedTargetColumnIds.has(String(titleAndTypeTarget?.id ?? '').trim())
+      ) {
+        matchedTarget = titleAndTypeTarget
+      }
+    }
+
+    if (!matchedTarget && sourceTitleKey) {
+      const titleTarget = targetByTitle.get(sourceTitleKey)
+
+      if (titleTarget && !usedTargetColumnIds.has(String(titleTarget?.id ?? '').trim())) {
+        matchedTarget = titleTarget
+      }
+    }
+
+    const matchedTargetId = String(matchedTarget?.id ?? '').trim() || null
+
+    if (matchedTargetId) {
+      usedTargetColumnIds.add(matchedTargetId)
+    }
+
+    // Monday formula columns cannot be copied between boards. We keep them in
+    // the mapping with a null target so move_item_to_board can still proceed.
+    if (sourceType === 'formula') {
+      return {
+        source: sourceId,
+        target: null,
+      }
+    }
+
+    return {
+      source: sourceId,
+      target: matchedTargetId,
+    }
+  }).filter(Boolean)
+}
+
 export function createMondaySnapshotService({
   ensureMondayConfiguration,
   mondayApiUrl,
@@ -205,6 +312,8 @@ export function createMondaySnapshotService({
       'shipToColumnId',
       'shipNotesColumnId',
       'bolColumnId',
+      'signedBolColumnId',
+      'inspectionSheetColumnId',
       'poNumberColumnId',
       'notesColumnId',
       'descriptionColumnId',
@@ -796,6 +905,169 @@ mutation UpdateMondayItemName($boardId: ID!, $itemId: ID!, $name: String!) {
     }
   }
 
+  async function moveMondayItemToBoard({ sourceBoardId, targetBoardId, itemId }) {
+    ensureMondayConfiguration()
+
+    const normalizedSourceBoardId = String(sourceBoardId ?? '').trim()
+    const normalizedTargetBoardId = String(targetBoardId ?? '').trim()
+    const normalizedItemId = String(itemId ?? '').trim()
+
+    if (!normalizedSourceBoardId) {
+      throw {
+        status: 400,
+        message: 'Missing source Monday board id for move.',
+      }
+    }
+
+    if (!normalizedTargetBoardId) {
+      throw {
+        status: 500,
+        message: 'Missing target Monday board id for move.',
+      }
+    }
+
+    if (!normalizedItemId) {
+      throw {
+        status: 400,
+        message: 'Missing Monday item id for move.',
+      }
+    }
+
+    const boardMetadata = await callMondayGraphql(
+      `
+query GetMoveBoardMetadata($sourceBoardId: ID!, $targetBoardId: ID!) {
+  sourceBoards: boards(ids: [$sourceBoardId]) {
+    id
+    name
+    columns {
+      id
+      type
+      title
+    }
+  }
+  targetBoards: boards(ids: [$targetBoardId]) {
+    id
+    name
+    columns {
+      id
+      type
+      title
+    }
+    groups {
+      id
+      title
+    }
+  }
+}
+`,
+      {
+        sourceBoardId: normalizedSourceBoardId,
+        targetBoardId: normalizedTargetBoardId,
+      },
+    )
+
+    const sourceBoard = Array.isArray(boardMetadata?.sourceBoards)
+      ? boardMetadata.sourceBoards[0]
+      : null
+    const targetBoard = Array.isArray(boardMetadata?.targetBoards)
+      ? boardMetadata.targetBoards[0]
+      : null
+
+    if (!sourceBoard) {
+      throw {
+        status: 404,
+        message: `Source Monday board ${normalizedSourceBoardId} was not found.`,
+      }
+    }
+
+    if (!targetBoard) {
+      throw {
+        status: 404,
+        message: `Target Monday board ${normalizedTargetBoardId} was not found.`,
+      }
+    }
+
+    const targetGroups = Array.isArray(targetBoard?.groups)
+      ? targetBoard.groups
+      : []
+    const targetGroup = targetGroups.find((group) => String(group?.id ?? '').trim()) || null
+    const targetGroupId = String(targetGroup?.id ?? '').trim()
+
+    if (!targetGroupId) {
+      throw {
+        status: 409,
+        message: `Target Monday board ${normalizedTargetBoardId} does not have an active group.`,
+      }
+    }
+
+    const sourceColumns = Array.isArray(sourceBoard?.columns)
+      ? sourceBoard.columns
+      : []
+    const targetColumns = Array.isArray(targetBoard?.columns)
+      ? targetBoard.columns
+      : []
+    const columnsMapping = buildColumnsMappingBetweenBoards(sourceColumns, targetColumns)
+    let mappingMode = 'explicit'
+
+    try {
+      await callMondayGraphql(
+        `
+mutation MoveMondayItemToBoard($itemId: ID!, $boardId: ID!, $groupId: ID!, $columnsMapping: [ColumnMappingInput!]) {
+  move_item_to_board(
+    item_id: $itemId
+    board_id: $boardId
+    group_id: $groupId
+    columns_mapping: $columnsMapping
+  ) {
+    id
+  }
+}
+`,
+        {
+          itemId: normalizedItemId,
+          boardId: normalizedTargetBoardId,
+          groupId: targetGroupId,
+          columnsMapping,
+        },
+      )
+    } catch (error) {
+      // If explicit mapping fails due a board schema mismatch, retry with
+      // Monday's built-in best-match mapping to keep shipping operational.
+      await callMondayGraphql(
+        `
+mutation MoveMondayItemToBoardFallback($itemId: ID!, $boardId: ID!, $groupId: ID!) {
+  move_item_to_board(
+    item_id: $itemId
+    board_id: $boardId
+    group_id: $groupId
+  ) {
+    id
+  }
+}
+`,
+        {
+          itemId: normalizedItemId,
+          boardId: normalizedTargetBoardId,
+          groupId: targetGroupId,
+        },
+      )
+      mappingMode = 'best_match_fallback'
+    }
+
+    return {
+      itemId: normalizedItemId,
+      sourceBoardId: normalizedSourceBoardId,
+      sourceBoardName: String(sourceBoard?.name ?? '').trim() || null,
+      targetBoardId: normalizedTargetBoardId,
+      targetBoardName: String(targetBoard?.name ?? '').trim() || null,
+      targetGroupId,
+      targetGroupTitle: String(targetGroup?.title ?? '').trim() || null,
+      mappingMode,
+      mappedColumnCount: columnsMapping.filter((entry) => String(entry?.target ?? '').trim()).length,
+      totalSourceColumnCount: columnsMapping.length,
+    }
+  }
+
   // Targeted name-only fetch: pull every item on a board with just id+name
   // (no column_values block). Used for "is this order on the Shipped board?" /
   // "is this order on the Design board?" without paying for the full column
@@ -1039,6 +1311,7 @@ query GetItemsByIds($itemIds: [ID!]!) {
     fetchMondayDashboardSnapshot,
     fetchMondayStatusColumnOptions,
     invalidateMondayBoardNamesCache,
+    moveMondayItemToBoard,
     updateMondayItemName,
     updateMondayItemStatusColumn,
     updateMondayItemTextColumn,

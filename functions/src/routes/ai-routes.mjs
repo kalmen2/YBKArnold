@@ -1,4 +1,4 @@
-const VALID_CATEGORIES = new Set(['support', 'general', 'summaries', 'purchasing'])
+const VALID_CATEGORIES = new Set(['support', 'general', 'summaries', 'purchasing', 'email_intake'])
 const VALID_MODEL_QUALITIES = new Set(['fast', 'better', 'deep'])
 
 export function registerAiRoutes(app, deps) {
@@ -736,6 +736,8 @@ export function registerAiRoutes(app, deps) {
       const contentLimit =
         category === 'general'
           ? 20000
+          : category === 'email_intake'
+            ? 12000
           : category === 'purchasing'
             ? 6000
             : 2000

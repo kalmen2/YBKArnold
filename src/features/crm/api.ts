@@ -199,6 +199,8 @@ export type CrmDealersQueryOptions = {
   search?: string
   accountType?: 'dealer' | 'designer' | 'all' | string
   engagementBucket?: 'ready' | 'not_ready' | 'yes' | 'no' | 'none' | 'all' | string
+  dealerStates?: string[]
+  salesReps?: string[]
   ownerEmail?: string
   hasEmail?: boolean | null
 }
@@ -208,11 +210,15 @@ export type CrmSalesRep = {
   name: string
   companyName: string | null
   logoUrl: string | null
+  contractUrl?: string | null
+  contractSignedDate?: string | null
+  contractNet?: string | null
   email: string | null
   email2: string | null
   phone: string | null
   phone2: string | null
   states: string[]
+  engagementReadinessEnabled: boolean
   createdAt: string | null
   updatedAt: string | null
 }
@@ -226,11 +232,15 @@ export type CrmSalesRepUpsertInput = {
   name: string
   companyName?: string | null
   logoUrl?: string | null
+  contractUrl?: string | null
+  contractSignedDate?: string | null
+  contractNet?: string | null
   email?: string | null
   email2?: string | null
   phone?: string | null
   phone2?: string | null
   states: string[]
+  engagementReadinessEnabled?: boolean
 }
 
 export type CrmContact = {
@@ -583,7 +593,6 @@ export type CrmQuoteStatus = 'draft' | 'sent' | 'accepted' | 'rejected' | 'cance
 export type CrmOpportunityStage =
   | 'concept'
   | 'proposal_submission'
-  | 'revision'
   | 'order_placement'
 
 export type CrmQuoteDocument = {
@@ -642,7 +651,7 @@ export type CrmQuote = {
   lastStatusChangedAt: string
   createdByUid: string | null
   createdByEmail: string | null
-  createdAt: string
+  createdAt?: string | null
   updatedAt: string
 }
 
@@ -846,6 +855,12 @@ export function fetchCrmDealers(
       search: options.search ?? undefined,
       accountType: options.accountType ?? undefined,
       engagementBucket: options.engagementBucket ?? undefined,
+      dealerStates: Array.isArray(options.dealerStates) && options.dealerStates.length > 0
+        ? options.dealerStates.map((value) => String(value ?? '').trim()).filter(Boolean).join(',')
+        : undefined,
+      salesReps: Array.isArray(options.salesReps) && options.salesReps.length > 0
+        ? options.salesReps.map((value) => String(value ?? '').trim()).filter(Boolean).join(',')
+        : undefined,
       ownerEmail: options.ownerEmail ?? undefined,
       hasEmail: options.hasEmail === null || options.hasEmail === undefined
         ? undefined

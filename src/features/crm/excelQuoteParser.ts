@@ -12,6 +12,7 @@ const supportedQuoteSyncExtensions = new Set([
 const ROW_QUOTE_NUMBER = 2
 const COL_QUOTE_NUMBER = 8
 const ROW_QUOTE_NUMBER_FALLBACK = 1
+const quoteNumberHeaderAliases = new Set(['quoteno', 'quotenumber'])
 const ROW_PROJECT_NAME = 3
 const COL_PROJECT_NAME = 8
 const COL_PROJECT_NAME_FALLBACK = 6
@@ -439,6 +440,10 @@ function inferProjectTypeFromTitle(title: string | undefined): string | undefine
     return 'Courtroom'
   }
 
+  if (normalized.includes('libraries') || normalized.includes('library')) {
+    return 'Libraries'
+  }
+
   if (
     normalized.includes('conference table')
     || (normalized.includes('conference') && normalized.includes('table'))
@@ -447,6 +452,106 @@ function inferProjectTypeFromTitle(title: string | undefined): string | undefine
   }
 
   return undefined
+}
+
+function resolveQuoteNumber(rows: unknown[][]): string | undefined {
+  const primaryCandidate = toOptionalText(getCell(rows, ROW_QUOTE_NUMBER, COL_QUOTE_NUMBER))
+
+  if (primaryCandidate) {
+    return primaryCandidate
+  }
+
+  const fallbackCandidate = toOptionalText(getCell(rows, ROW_QUOTE_NUMBER_FALLBACK, COL_QUOTE_NUMBER))
+
+  if (fallbackCandidate) {
+    return fallbackCandidate
+  }
+
+  // Legacy quote template often keeps "Quote No." in E1 and merges the value in F1:G2.
+  for (const [row, col] of [[1, 6], [2, 6], [1, 7], [2, 7]] as Array<[number, number]>) {
+    const candidate = toOptionalText(getCell(rows, row, col))
+
+    if (candidate) {
+      return candidate
+    }
+  }
+
+  // Last fallback: find "Quote No." header in the top rows and read nearest value to the right.
+  const maxHeaderRow = Math.min(rows.length, 6)
+
+  for (let row = 1; row <= maxHeaderRow; row += 1) {
+    const rowValues = rows[row - 1]
+
+    if (!Array.isArray(rowValues)) {
+      continue
+    }
+
+    const maxHeaderCol = Math.min(rowValues.length || 0, 12)
+
+    for (let col = 1; col <= maxHeaderCol; col += 1) {
+      const normalizedHeader = normalizeHeaderText(getCell(rows, row, col))
+
+      if (!quoteNumberHeaderAliases.has(normalizedHeader)) {
+        continue
+      }
+
+      for (const [targetRow, targetCol] of [
+        [row, col + 1],
+        [row, col + 2],
+        [row + 1, col + 1],
+        [row + 1, col + 2],
+      ]) {
+        const candidate = toOptionalText(getCell(rows, targetRow, targetCol))
+
+        if (candidate) {
+          return candidate
+        }
+      }
+    }
+  }
+
+  return undefined
+}
+
+function resolvePreferredQuoteSheetName(workbook: XLSX.WorkBook): string {
+  const sheetNames = Array.isArray(workbook.SheetNames)
+    ? workbook.SheetNames.map((name) => String(name ?? '').trim()).filter(Boolean)
+    : []
+
+  if (sheetNames.length === 0) {
+    return ''
+  }
+
+  const revisionMatches = sheetNames
+    .map((name, index) => {
+      const revisionMatch = name.match(/(?:^|[\s_-])R(\d+)(?:$|[\s_-])/i)
+
+      if (!revisionMatch?.[1]) {
+        return null
+      }
+
+      return {
+        name,
+        revision: Number(revisionMatch[1]),
+        index,
+      }
+    })
+    .filter((entry): entry is { name: string; revision: number; index: number } => Boolean(entry))
+    .filter((entry) => Number.isFinite(entry.revision))
+
+  if (revisionMatches.length === 0) {
+    return sheetNames[0]
+  }
+
+  revisionMatches.sort((left, right) => {
+    if (right.revision !== left.revision) {
+      return right.revision - left.revision
+    }
+
+    return right.index - left.index
+  })
+
+  return revisionMatches[0].name
 }
 
 export async function parseExcelQuoteForSync(file: File): Promise<CrmExcelQuoteSyncInput> {
@@ -471,16 +576,16 @@ export async function parseExcelQuoteForSync(file: File): Promise<CrmExcelQuoteS
     throw new Error('Could not read the uploaded file. Ensure it is a valid .xls, .xlsx, .xlsm, .ods, or .csv file.')
   }
 
-  const firstSheetName = workbook.SheetNames[0]
+  const preferredSheetName = resolvePreferredQuoteSheetName(workbook)
 
-  if (!firstSheetName) {
+  if (!preferredSheetName) {
     throw new Error('The uploaded workbook has no sheets.')
   }
 
-  const sheet = workbook.Sheets[firstSheetName]
+  const sheet = workbook.Sheets[preferredSheetName]
 
   if (!sheet) {
-    throw new Error('Could not read the first sheet from the workbook.')
+    throw new Error('Could not read the latest quote revision sheet from the workbook.')
   }
 
   const rows = XLSX.utils.sheet_to_json(sheet, {
@@ -489,11 +594,10 @@ export async function parseExcelQuoteForSync(file: File): Promise<CrmExcelQuoteS
     defval: null,
   }) as unknown[][]
 
-  const quoteNumber = toOptionalText(getCell(rows, ROW_QUOTE_NUMBER, COL_QUOTE_NUMBER))
-    || toOptionalText(getCell(rows, ROW_QUOTE_NUMBER_FALLBACK, COL_QUOTE_NUMBER))
+  const quoteNumber = resolveQuoteNumber(rows)
 
   if (!quoteNumber) {
-    throw new Error('No quote number found in H2 (or fallback H1).')
+    throw new Error('No quote number found. Expected H2/H1 or a merged Quote No. value near the header.')
   }
 
   const title = toOptionalText(getCell(rows, ROW_PROJECT_NAME, COL_PROJECT_NAME))

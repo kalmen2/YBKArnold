@@ -1,3 +1,4 @@
+import { createHash, timingSafeEqual } from 'node:crypto'
 import axios from 'axios'
 import express from 'express'
 import twilio from 'twilio'
@@ -13,6 +14,14 @@ let cachedTwilioAuthToken = ''
 
 function normalizePhoneNumber(value) {
   return normalizeText(value, 40)
+}
+
+// Hash both sides so timingSafeEqual gets equal-length buffers regardless of input.
+function isSecretEqual(provided, expected) {
+  const providedHash = createHash('sha256').update(String(provided ?? '')).digest()
+  const expectedHash = createHash('sha256').update(String(expected ?? '')).digest()
+
+  return timingSafeEqual(providedHash, expectedHash)
 }
 
 function normalizeTelegramUsername(value) {
@@ -247,8 +256,9 @@ function resolveTelegramSenderDisplayName(message) {
 function isMessageFromManus(message, manusBotUsername) {
   const normalizedManusUsername = normalizeTelegramUsername(manusBotUsername)
 
+  // Fail closed: without a configured sender allowlist, no message may trigger SMS.
   if (!normalizedManusUsername) {
-    return true
+    return false
   }
 
   const fromUsername = normalizeTelegramUsername(message?.from?.username)
@@ -542,10 +552,20 @@ export function registerSmsBridgeRoutes(app, deps) {
         logsCollection,
         pendingRepliesCollection,
       } = await getSmsBridgeCollections()
+      // Fail closed: the webhook is unusable until a shared secret is configured
+      // and registered with Telegram (TELEGRAM_WEBHOOK_SECRET).
+      if (!config.telegramWebhookSecret) {
+        return res.status(503).json({ error: 'Telegram webhook secret is not configured.' })
+      }
+
       const secretHeader = normalizeText(req.headers?.['x-telegram-bot-api-secret-token'], 200)
 
-      if (config.telegramWebhookSecret && secretHeader !== config.telegramWebhookSecret) {
+      if (!isSecretEqual(secretHeader, config.telegramWebhookSecret)) {
         return res.status(403).json({ error: 'Invalid Telegram webhook secret.' })
+      }
+
+      if (!normalizeTelegramUsername(config.manusBotUsername)) {
+        return res.json({ ok: true, ignored: 'manus_username_not_configured' })
       }
 
       const update = req.body && typeof req.body === 'object'
@@ -575,6 +595,8 @@ export function registerSmsBridgeRoutes(app, deps) {
         return res.json({ ok: true, ignored: 'missing_text' })
       }
 
+      // Only explicit Telegram replies to a forwarded SMS are sent back as SMS —
+      // guessing a destination from "most recent pending" risks texting the wrong customer.
       const replyToMessageId = Number(message?.reply_to_message?.message_id)
       let pendingReply = null
       let pendingReplyId = null
@@ -582,15 +604,6 @@ export function registerSmsBridgeRoutes(app, deps) {
       if (Number.isFinite(replyToMessageId)) {
         pendingReplyId = pendingReplyDocIdFromTelegramMessageId(replyToMessageId)
         pendingReply = await pendingRepliesCollection.findOne({ id: pendingReplyId })
-      }
-
-      if (!pendingReply) {
-        pendingReply = await pendingRepliesCollection
-          .find({})
-          .sort({ createdAt: -1 })
-          .limit(1)
-          .next()
-        pendingReplyId = normalizeText(pendingReply?.id, 160)
       }
 
       if (!pendingReply) {

@@ -120,12 +120,11 @@ export default function AppLayout() {
     }
 
     const isSalesRoute = location.pathname === '/sales' || location.pathname.startsWith('/sales/')
-    const isConfigRoute = location.pathname === '/config' || location.pathname.startsWith('/config/')
     const isSalesRepNotificationsRoute =
       location.pathname === '/notifications'
       || location.pathname.startsWith('/notifications/')
 
-    if (!isSalesRoute && !isConfigRoute && !isSalesRepNotificationsRoute) {
+    if (!isSalesRoute && !isSalesRepNotificationsRoute) {
       navigate('/sales?tab=dealers', { replace: true })
     }
   }, [appUser?.isSalesRep, location.pathname, navigate])
@@ -153,6 +152,10 @@ export default function AppLayout() {
 
   const alerts = alertsQuery.data?.alerts ?? []
   const unreadCount = alertsQuery.data?.unreadCount ?? 0
+  const unreadAlerts = useMemo(
+    () => alerts.filter((alert) => !alert.isRead),
+    [alerts],
+  )
 
   const handleProfileMenuClose = () => {
     setProfileMenuAnchorEl(null)
@@ -188,8 +191,6 @@ export default function AppLayout() {
     if (isMarkingAllRead) {
       return
     }
-
-    const unreadAlerts = alerts.filter((alert) => !alert.isRead)
 
     if (unreadAlerts.length === 0) {
       return
@@ -348,14 +349,14 @@ export default function AppLayout() {
 
             <Divider />
 
-            {alerts.length === 0 ? (
+            {unreadAlerts.length === 0 ? (
               <MenuItem disabled>
                 <Typography variant="body2" color="text.secondary">
-                  No notifications yet.
+                  No unread notifications.
                 </Typography>
               </MenuItem>
             ) : (
-              alerts.map((alert) => (
+              unreadAlerts.map((alert) => (
                 <MenuItem
                   key={alert.id}
                   sx={{ alignItems: 'flex-start', whiteSpace: 'normal', py: 1.1 }}

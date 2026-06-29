@@ -4,6 +4,7 @@ import {
 } from './RouteGuards'
 import {
   AdminApiPage,
+  AdminEmailWorkspacePage,
   AdminSettingsPage,
   AppLayout,
   ConfigPage,
@@ -161,11 +162,15 @@ export const router = createBrowserRouter([
       },
       {
         path: 'admin/ai-config',
-        element: <Navigate to="/admin/settings?tab=ai" replace />,
+        element: <Navigate to="/admin/settings?tab=ai-config" replace />,
       },
       {
         path: 'admin/email',
-        element: <Navigate to="/admin/settings?tab=email" replace />,
+        element: withRouteSuspense(
+          <RequireAdminRoute>
+            <AdminEmailWorkspacePage />
+          </RequireAdminRoute>,
+        ),
       },
       {
         path: 'admin/sms-bridge',

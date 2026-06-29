@@ -20,6 +20,15 @@ const emailReviewStatuses = new Set([
   emailReviewStatusApproved,
   emailReviewStatusRejected,
 ])
+const emailReviewLaneGreen = 'green'
+const emailReviewLaneYellow = 'yellow'
+const emailReviewLaneRed = 'red'
+const emailReviewSureMatchConfidenceThreshold = 0.8
+const emailReviewLanes = new Set([
+  emailReviewLaneGreen,
+  emailReviewLaneYellow,
+  emailReviewLaneRed,
+])
 const googleTokenUrl = 'https://oauth2.googleapis.com/token'
 const microsoftGraphApiBaseUrl = 'https://graph.microsoft.com/v1.0'
 const googleGmailProfileUrl = 'https://gmail.googleapis.com/gmail/v1/users/me/profile'
@@ -33,10 +42,12 @@ const emailIntakeManualSyncLookbackDaysDefault = 3
 const emailIntakeManualSyncLookbackDaysMax = 3
 const emailIntakeManualSyncMaxRuntimeMs = 57 * 1000
 const emailIntakeManualSyncPerConnectionTimeoutMs = 55 * 1000
-const emailIntakeManualSyncMaxMessagesPerConnectionDefault = 70
+const emailIntakeManualSyncMaxMessagesPerConnectionDefault = 400
+const emailIntakeManualSyncMaxMessagesPerConnectionMax = 1200
 const emailIntakeAiClassificationTimeoutMs = 12 * 1000
 const emailIntakeRuntimeReserveMs = 5 * 1000
 const emailIntakePerEmailRuntimeEstimateMs = 800
+const emailIntakeDefaultSyncTimeZone = 'UTC'
 const emailIntakeSyncRunStatusQueued = 'queued'
 const emailIntakeSyncRunStatusRunning = 'running'
 const emailIntakeSyncRunStatusCompleted = 'completed'
@@ -46,6 +57,8 @@ const emailIntakeSyncRunStatusesTerminal = new Set([
   emailIntakeSyncRunStatusFailed,
 ])
 const emailIntakeSyncRunLogsMax = 600
+
+const timeZonePartsFormatterCache = new Map()
 
 let cachedEncryptionSecret = ''
 let cachedEncryptionKey = null
@@ -297,6 +310,16 @@ function normalizeEmailDestinationType(value) {
   return 'none'
 }
 
+function normalizeEmailReviewLane(value, fallbackLane = emailReviewLaneRed) {
+  const normalizedValue = String(value ?? '').trim().toLowerCase()
+
+  if (emailReviewLanes.has(normalizedValue)) {
+    return normalizedValue
+  }
+
+  return fallbackLane
+}
+
 function normalizeDirection(value) {
   return String(value ?? '').trim().toLowerCase() === 'outbound'
     ? 'outbound'
@@ -311,6 +334,320 @@ function normalizeSyncProvider(value) {
   }
 
   return null
+}
+
+function resolveEmailConversationIdentity(message) {
+  const provider = normalizeSyncProvider(message?.provider)
+  const threadId = normalizeText(message?.threadId, 220) || null
+  const conversationId = normalizeText(message?.conversationId, 220) || null
+  const internetMessageId = (normalizeText(message?.internetMessageId, 320) || '').toLowerCase() || null
+  const externalMessageId = normalizeText(message?.externalMessageId, 220) || null
+
+  let conversationReference = null
+
+  if (provider === googleProviderId) {
+    conversationReference = threadId
+      ? `thread:${threadId}`
+      : internetMessageId
+        ? `internet:${internetMessageId}`
+        : externalMessageId
+          ? `external:${externalMessageId}`
+          : null
+  } else if (provider === microsoftProviderId) {
+    conversationReference = conversationId
+      ? `conversation:${conversationId}`
+      : internetMessageId
+        ? `internet:${internetMessageId}`
+        : externalMessageId
+          ? `external:${externalMessageId}`
+          : null
+  }
+
+  return {
+    provider,
+    threadId,
+    conversationId,
+    conversationReference,
+    conversationKey: provider && conversationReference
+      ? `${provider}:${conversationReference}`
+      : null,
+  }
+}
+
+function normalizeSyncTimeZone(value, fallbackTimeZone = emailIntakeDefaultSyncTimeZone) {
+  const normalizedValue = String(value ?? '').trim()
+
+  if (!normalizedValue) {
+    return fallbackTimeZone
+  }
+
+  if (normalizedValue.toUpperCase() === 'UTC') {
+    return 'UTC'
+  }
+
+  try {
+    new Intl.DateTimeFormat('en-US', {
+      timeZone: normalizedValue,
+    }).format(new Date(0))
+
+    return normalizedValue
+  } catch {
+    return fallbackTimeZone
+  }
+}
+
+function getTimeZonePartsFormatter(timeZone) {
+  const normalizedTimeZone = normalizeSyncTimeZone(timeZone)
+
+  if (timeZonePartsFormatterCache.has(normalizedTimeZone)) {
+    return timeZonePartsFormatterCache.get(normalizedTimeZone)
+  }
+
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: normalizedTimeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  })
+
+  timeZonePartsFormatterCache.set(normalizedTimeZone, formatter)
+
+  return formatter
+}
+
+function parseIsoDateParts(value) {
+  const normalizedValue = String(value ?? '').trim()
+  const match = normalizedValue.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+
+  if (!match) {
+    return null
+  }
+
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+
+  if (
+    !Number.isFinite(year)
+    || !Number.isFinite(month)
+    || !Number.isFinite(day)
+    || month < 1
+    || month > 12
+    || day < 1
+    || day > 31
+  ) {
+    return null
+  }
+
+  const parsedMs = Date.parse(`${normalizedValue}T00:00:00.000Z`)
+
+  if (!Number.isFinite(parsedMs)) {
+    return null
+  }
+
+  const parsedDate = new Date(parsedMs)
+
+  if (
+    parsedDate.getUTCFullYear() !== year
+    || parsedDate.getUTCMonth() + 1 !== month
+    || parsedDate.getUTCDate() !== day
+  ) {
+    return null
+  }
+
+  return {
+    year,
+    month,
+    day,
+    isoDate: `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
+  }
+}
+
+function addDaysToIsoDate(value, dayOffset = 0) {
+  const parsedDate = parseIsoDateParts(value)
+
+  if (!parsedDate) {
+    return null
+  }
+
+  const baseMs = Date.UTC(parsedDate.year, parsedDate.month - 1, parsedDate.day)
+  const nextMs = baseMs + Number(dayOffset) * 24 * 60 * 60 * 1000
+
+  if (!Number.isFinite(nextMs)) {
+    return null
+  }
+
+  const nextDate = new Date(nextMs)
+
+  return `${String(nextDate.getUTCFullYear()).padStart(4, '0')}-${String(nextDate.getUTCMonth() + 1).padStart(2, '0')}-${String(nextDate.getUTCDate()).padStart(2, '0')}`
+}
+
+function resolveTimeZoneOffsetMs(timeZone, timestampMs) {
+  const formatter = getTimeZonePartsFormatter(timeZone)
+  const parts = formatter.formatToParts(new Date(timestampMs))
+  const partMap = {}
+
+  parts.forEach((part) => {
+    partMap[part.type] = part.value
+  })
+
+  const year = Number(partMap.year)
+  const month = Number(partMap.month)
+  const day = Number(partMap.day)
+  const hour = Number(partMap.hour)
+  const minute = Number(partMap.minute)
+  const second = Number(partMap.second)
+
+  if (
+    !Number.isFinite(year)
+    || !Number.isFinite(month)
+    || !Number.isFinite(day)
+    || !Number.isFinite(hour)
+    || !Number.isFinite(minute)
+    || !Number.isFinite(second)
+  ) {
+    return 0
+  }
+
+  const asUtcMs = Date.UTC(year, month - 1, day, hour, minute, second)
+
+  return asUtcMs - timestampMs
+}
+
+function resolveTimeZoneMidnightUtcMs(syncDate, timeZone) {
+  const parsedDate = parseIsoDateParts(syncDate)
+
+  if (!parsedDate) {
+    return Number.NaN
+  }
+
+  const utcGuessMs = Date.UTC(parsedDate.year, parsedDate.month - 1, parsedDate.day, 0, 0, 0)
+  const initialOffsetMs = resolveTimeZoneOffsetMs(timeZone, utcGuessMs)
+  let resolvedUtcMs = utcGuessMs - initialOffsetMs
+  const refinedOffsetMs = resolveTimeZoneOffsetMs(timeZone, resolvedUtcMs)
+
+  if (refinedOffsetMs !== initialOffsetMs) {
+    resolvedUtcMs = utcGuessMs - refinedOffsetMs
+  }
+
+  return resolvedUtcMs
+}
+
+function resolveCurrentIsoDateInTimeZone(timeZone) {
+  const normalizedTimeZone = normalizeSyncTimeZone(timeZone)
+
+  try {
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: normalizedTimeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    })
+    const parts = formatter.formatToParts(new Date())
+    const partMap = {}
+
+    parts.forEach((part) => {
+      partMap[part.type] = part.value
+    })
+
+    const year = Number(partMap.year)
+    const month = Number(partMap.month)
+    const day = Number(partMap.day)
+
+    if (
+      Number.isFinite(year)
+      && Number.isFinite(month)
+      && Number.isFinite(day)
+      && year > 0
+      && month > 0
+      && day > 0
+    ) {
+      return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+    }
+  } catch {
+    // Fallback to UTC date below.
+  }
+
+  return nowIso().slice(0, 10)
+}
+
+function isTimestampWithinIsoRange(value, startIso, endIso) {
+  const targetMs = Date.parse(String(value ?? ''))
+  const startMs = Date.parse(String(startIso ?? ''))
+  const endMs = Date.parse(String(endIso ?? ''))
+
+  if (!Number.isFinite(targetMs) || !Number.isFinite(startMs) || !Number.isFinite(endMs)) {
+    return false
+  }
+
+  return targetMs >= startMs && targetMs < endMs
+}
+
+function normalizeSyncDateValue(value) {
+  return parseIsoDateParts(value)?.isoDate || null
+}
+
+function resolveSyncDateRange(value, timeZone = emailIntakeDefaultSyncTimeZone) {
+  const syncDate = normalizeSyncDateValue(value)
+
+  if (!syncDate) {
+    return null
+  }
+
+  const normalizedTimeZone = normalizeSyncTimeZone(timeZone)
+
+  if (normalizedTimeZone === 'UTC') {
+    const startMs = Date.parse(`${syncDate}T00:00:00.000Z`)
+
+    if (!Number.isFinite(startMs)) {
+      return null
+    }
+
+    const endMs = startMs + 24 * 60 * 60 * 1000
+
+    return {
+      syncDate,
+      timeZone: normalizedTimeZone,
+      startIso: new Date(startMs).toISOString(),
+      endIso: new Date(endMs).toISOString(),
+    }
+  }
+
+  const nextSyncDate = addDaysToIsoDate(syncDate, 1)
+
+  if (!nextSyncDate) {
+    return null
+  }
+
+  const startMs = resolveTimeZoneMidnightUtcMs(syncDate, normalizedTimeZone)
+  const endMs = resolveTimeZoneMidnightUtcMs(nextSyncDate, normalizedTimeZone)
+
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+    return null
+  }
+
+  return {
+    syncDate,
+    timeZone: normalizedTimeZone,
+    startIso: new Date(startMs).toISOString(),
+    endIso: new Date(endMs).toISOString(),
+  }
+}
+
+function formatGoogleQueryDate(syncDate, dayOffset = 0) {
+  const targetDate = addDaysToIsoDate(syncDate, dayOffset)
+
+  if (!targetDate) {
+    return ''
+  }
+
+  const [year = '', month = '', day = ''] = targetDate.split('-')
+
+  return `${year}/${month}/${day}`
 }
 
 function toIsoDateSafe(value) {
@@ -470,6 +807,7 @@ function toPublicEmailIntakeSyncRun(run) {
         processingStoppedReason: normalizeText(detail?.processingStoppedReason, 600) || undefined,
         bootstrapped: Boolean(detail?.bootstrapped),
         rebaselined: Boolean(detail?.rebaselined),
+        syncDateApplied: normalizeSyncDateValue(detail?.syncDateApplied),
         lookbackDaysApplied: clampInteger(detail?.lookbackDaysApplied, 0, 120, 0),
         messagesCaught: clampInteger(detail?.messagesCaught, 0, 20000, 0),
         messagesPlannedForProcessing: clampInteger(detail?.messagesPlannedForProcessing, 0, 20000, 0),
@@ -492,8 +830,17 @@ function toPublicEmailIntakeSyncRun(run) {
     updatedAt: toIsoDateSafe(run?.updatedAt),
     requestedByUid: normalizeText(run?.requestedByUid, 200) || null,
     providerFilter: normalizeSyncProvider(run?.providerFilter),
+    syncDateRequested: normalizeSyncDateValue(run?.syncDateRequested),
+    syncTimeZoneRequested: normalizeSyncDateValue(run?.syncDateRequested)
+      ? normalizeSyncTimeZone(run?.syncTimeZoneRequested)
+      : null,
     lookbackDaysRequested: clampInteger(run?.lookbackDaysRequested, 0, emailIntakeSyncLookbackDaysMax, 0),
-    maxMessagesPerConnection: clampInteger(run?.maxMessagesPerConnection, 20, 400, 120),
+    maxMessagesPerConnection: clampInteger(
+      run?.maxMessagesPerConnection,
+      20,
+      emailIntakeManualSyncMaxMessagesPerConnectionMax,
+      emailIntakeManualSyncMaxMessagesPerConnectionDefault,
+    ),
     maxRuntimeMs: clampInteger(run?.maxRuntimeMs, 0, 120000, 0) || null,
     perConnectionTimeoutMs: clampInteger(run?.perConnectionTimeoutMs, 0, 60000, 0) || null,
     scannedConnections: clampInteger(run?.scannedConnections, 0, 500, 0),
@@ -556,6 +903,19 @@ function buildGoogleLookbackQuery(lookbackDays) {
   )
 
   return `newer_than:${resolvedLookbackDays}d -in:trash -in:spam`
+}
+
+function buildGoogleExactDayQuery(syncDate, timeZone = emailIntakeDefaultSyncTimeZone) {
+  const resolvedTimeZone = normalizeSyncTimeZone(timeZone)
+  const shouldWidenWindow = resolvedTimeZone !== 'UTC'
+  const startDate = formatGoogleQueryDate(syncDate, shouldWidenWindow ? -1 : 0)
+  const endDate = formatGoogleQueryDate(syncDate, shouldWidenWindow ? 2 : 1)
+
+  if (!startDate || !endDate) {
+    return null
+  }
+
+  return `after:${startDate} before:${endDate} -in:trash -in:spam`
 }
 
 function escapeRegexLiteral(value) {
@@ -709,9 +1069,25 @@ function stripHtmlMarkup(value) {
     .trim()
 }
 
+function normalizeHtmlForStorage(value, maxLength = 50000) {
+  const normalizedValue = String(value ?? '').trim()
+
+  if (!normalizedValue) {
+    return null
+  }
+
+  // Defensive strip for executable tags; client still sanitizes before rendering.
+  return normalizedValue
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+    .replace(/<iframe[^>]*>[\s\S]*?<\/iframe>/gi, '')
+    .replace(/<object[^>]*>[\s\S]*?<\/object>/gi, '')
+    .slice(0, maxLength)
+}
+
 function extractGooglePayloadContent(payload) {
   const attachmentNames = []
-  const bodyChunks = []
+  const bodyTextChunks = []
+  const bodyHtmlChunks = []
 
   function visitPart(part) {
     if (!part || typeof part !== 'object') {
@@ -728,12 +1104,20 @@ function extractGooglePayloadContent(payload) {
     const bodyData = decodeGoogleBase64Url(part?.body?.data)
 
     if (bodyData) {
-      const normalizedChunk = mimeType.includes('html')
+      const normalizedTextChunk = mimeType.includes('html')
         ? stripHtmlMarkup(bodyData)
         : bodyData.replace(/\s+/g, ' ').trim()
 
-      if (normalizedChunk) {
-        bodyChunks.push(normalizedChunk)
+      if (normalizedTextChunk) {
+        bodyTextChunks.push(normalizedTextChunk)
+      }
+
+      if (mimeType.includes('html')) {
+        const normalizedHtmlChunk = normalizeHtmlForStorage(bodyData)
+
+        if (normalizedHtmlChunk) {
+          bodyHtmlChunks.push(normalizedHtmlChunk)
+        }
       }
     }
 
@@ -745,7 +1129,8 @@ function extractGooglePayloadContent(payload) {
   visitPart(payload)
 
   return {
-    bodyText: normalizeText(bodyChunks.join('\n\n'), 6000) || null,
+    bodyText: normalizeText(bodyTextChunks.join('\n\n'), 12000) || null,
+    bodyHtml: normalizeHtmlForStorage(bodyHtmlChunks.join('\n\n<hr />\n\n'), 50000),
     attachmentNames: [...new Set(
       attachmentNames
         .map((name) => normalizeText(name, 240))
@@ -1344,6 +1729,10 @@ export function registerEmailIntakeRoutes(app, deps) {
       bccEmails,
       subject: normalizeText(headerMap.get('subject'), 500) || null,
       snippet: normalizeText(rawMessage?.snippet, 1600) || null,
+      bodyText: normalizeText(payloadContent?.bodyText, 12000)
+        || normalizeText(rawMessage?.snippet, 12000)
+        || null,
+      bodyHtml: normalizeHtmlForStorage(payloadContent?.bodyHtml, 50000),
       bodyPreview: normalizeText(payloadContent?.bodyText, 2600)
         || normalizeText(rawMessage?.snippet, 2600)
         || null,
@@ -1364,15 +1753,28 @@ export function registerEmailIntakeRoutes(app, deps) {
   async function fetchMicrosoftMessagesSince({
     accessToken,
     sinceIso,
+    startIso,
+    endIso,
     maxPages = 8,
     pageSize = 80,
   }) {
     const url = new URL(`${microsoftGraphApiBaseUrl}/me/messages`)
+    const rangeStartIso = toIsoDateSafe(startIso)
+    const rangeEndIso = toIsoDateSafe(endIso)
+    const sinceCursorIso = toIsoDateSafe(sinceIso)
 
-    url.searchParams.set('$select', 'id,internetMessageId,conversationId,subject,from,toRecipients,ccRecipients,bccRecipients,receivedDateTime,sentDateTime,lastModifiedDateTime,bodyPreview,isDraft,webLink')
-    url.searchParams.set('$orderby', 'lastModifiedDateTime asc')
+    url.searchParams.set('$select', 'id,internetMessageId,conversationId,subject,from,toRecipients,ccRecipients,bccRecipients,receivedDateTime,sentDateTime,lastModifiedDateTime,bodyPreview,body,hasAttachments,isDraft,webLink')
+    url.searchParams.set('$orderby', 'lastModifiedDateTime desc')
     url.searchParams.set('$top', String(clampInteger(pageSize, 10, 200, 80)))
-    url.searchParams.set('$filter', `lastModifiedDateTime ge ${toIsoDateSafe(sinceIso) || new Date(Date.now() - 15 * 60 * 1000).toISOString()}`)
+
+    if (rangeStartIso && rangeEndIso) {
+      url.searchParams.set(
+        '$filter',
+        `((receivedDateTime ge ${rangeStartIso} and receivedDateTime lt ${rangeEndIso}) or (sentDateTime ge ${rangeStartIso} and sentDateTime lt ${rangeEndIso})) and isDraft eq false`,
+      )
+    } else {
+      url.searchParams.set('$filter', `lastModifiedDateTime ge ${sinceCursorIso || new Date(Date.now() - 15 * 60 * 1000).toISOString()}`)
+    }
 
     const messages = []
     let nextUrl = url.toString()
@@ -1419,6 +1821,13 @@ export function registerEmailIntakeRoutes(app, deps) {
     const ccEmails = normalizeGraphRecipientList(rawMessage?.ccRecipients, normalizeEmail)
     const bccEmails = normalizeGraphRecipientList(rawMessage?.bccRecipients, normalizeEmail)
     const connected = normalizeEmailAddress(connectedEmail)
+    const bodyContentType = String(rawMessage?.body?.contentType ?? '').trim().toLowerCase()
+    const rawBodyContent = String(rawMessage?.body?.content ?? '').trim()
+    const extractedBodyText = rawBodyContent
+      ? (bodyContentType === 'html'
+        ? stripHtmlMarkup(rawBodyContent)
+        : rawBodyContent.replace(/\s+/g, ' ').trim())
+      : ''
     const direction = normalizeDirection(
       fromEmail && connected && fromEmail === connected
         ? 'outbound'
@@ -1437,6 +1846,12 @@ export function registerEmailIntakeRoutes(app, deps) {
       bccEmails,
       subject: normalizeText(rawMessage?.subject, 500) || null,
       snippet: normalizeText(rawMessage?.bodyPreview, 1600) || null,
+      bodyText: normalizeText(extractedBodyText, 12000)
+        || normalizeText(rawMessage?.bodyPreview, 12000)
+        || null,
+      bodyHtml: bodyContentType === 'html'
+        ? normalizeHtmlForStorage(rawBodyContent, 50000)
+        : null,
       bodyPreview: normalizeText(rawMessage?.bodyPreview, 2600) || null,
       attachmentNames: [],
       messageDate: toIsoDateSafe(direction === 'outbound' ? rawMessage?.sentDateTime : rawMessage?.receivedDateTime)
@@ -1453,12 +1868,14 @@ export function registerEmailIntakeRoutes(app, deps) {
     subject,
     snippet,
     bodyPreview,
+    bodyText,
     attachmentNames,
   }) {
     const sourceText = [
       String(subject ?? ''),
       String(snippet ?? ''),
       String(bodyPreview ?? ''),
+      String(bodyText ?? ''),
       ...(Array.isArray(attachmentNames) ? attachmentNames.map((item) => String(item ?? '')) : []),
     ].join(' ')
     const quoteTokens = new Set()
@@ -1535,6 +1952,7 @@ export function registerEmailIntakeRoutes(app, deps) {
       String(message?.subject ?? ''),
       String(message?.snippet ?? ''),
       String(message?.bodyPreview ?? ''),
+      String(message?.bodyText ?? ''),
       ...(Array.isArray(message?.attachmentNames)
         ? message.attachmentNames.map((item) => String(item ?? ''))
         : []),
@@ -1601,6 +2019,7 @@ export function registerEmailIntakeRoutes(app, deps) {
         subject: message?.subject,
         snippet: message?.snippet,
         bodyPreview: message?.bodyPreview,
+        bodyText: message?.bodyText,
         attachmentNames: message?.attachmentNames,
       })
       const numericOrderToken = (Array.isArray(orderTokens) ? orderTokens : []).find((token) => /^\d{4,}$/.test(String(token ?? '')))
@@ -1772,6 +2191,38 @@ export function registerEmailIntakeRoutes(app, deps) {
     }
   }
 
+  function resolveEmailIntakeReviewLane({
+    destinationType,
+    destinationId = null,
+    confidence,
+    usedFallback = false,
+    policySkipped = false,
+  }) {
+    if (policySkipped) {
+      return emailReviewLaneRed
+    }
+
+    const normalizedDestinationType = normalizeEmailDestinationType(destinationType)
+    const normalizedDestinationId = normalizeText(destinationId, 220)
+
+    if (normalizedDestinationType === 'none' || !normalizedDestinationId) {
+      return emailReviewLaneRed
+    }
+
+    const normalizedConfidence = Number(confidence)
+    const hasConfidence = Number.isFinite(normalizedConfidence)
+
+    if (
+      hasConfidence
+      && normalizedConfidence >= emailReviewSureMatchConfidenceThreshold
+      && !usedFallback
+    ) {
+      return emailReviewLaneGreen
+    }
+
+    return emailReviewLaneYellow
+  }
+
   async function resolveEmailDestinationCandidates({
     crmAccountsCollection,
     crmContactsCollection,
@@ -1812,6 +2263,7 @@ export function registerEmailIntakeRoutes(app, deps) {
       subject: message?.subject,
       snippet: message?.snippet,
       bodyPreview: message?.bodyPreview,
+      bodyText: message?.bodyText,
       attachmentNames: message?.attachmentNames,
     })
     const candidatesByKey = new Map()
@@ -2171,7 +2623,8 @@ export function registerEmailIntakeRoutes(app, deps) {
     emailIntakeMessagesCollection,
     message,
   }) {
-    const provider = normalizeSyncProvider(message?.provider)
+    const conversationIdentity = resolveEmailConversationIdentity(message)
+    const provider = conversationIdentity.provider
     const uid = normalizeText(message?.uid, 200)
     const externalMessageId = normalizeText(message?.externalMessageId, 220)
 
@@ -2195,8 +2648,10 @@ export function registerEmailIntakeRoutes(app, deps) {
       connectedEmail: normalizeEmailAddress(message?.connectedEmail) || null,
       externalMessageId,
       internetMessageId: normalizeText(message?.internetMessageId, 320) || null,
-      threadId: normalizeText(message?.threadId, 220) || null,
-      conversationId: normalizeText(message?.conversationId, 220) || null,
+      threadId: conversationIdentity.threadId,
+      conversationId: conversationIdentity.conversationId,
+      conversationKey: conversationIdentity.conversationKey,
+      conversationReference: conversationIdentity.conversationReference,
       direction: normalizeDirection(message?.direction),
       fromEmail: normalizeEmailAddress(message?.fromEmail) || null,
       toEmails: [...new Set((Array.isArray(message?.toEmails) ? message.toEmails : []).map((value) => normalizeEmailAddress(value)).filter(Boolean))].slice(0, 50),
@@ -2204,6 +2659,8 @@ export function registerEmailIntakeRoutes(app, deps) {
       bccEmails: [...new Set((Array.isArray(message?.bccEmails) ? message.bccEmails : []).map((value) => normalizeEmailAddress(value)).filter(Boolean))].slice(0, 50),
       subject: normalizeText(message?.subject, 500) || null,
       snippet: normalizeText(message?.snippet, 1600) || null,
+      bodyText: normalizeText(message?.bodyText, 12000) || null,
+      bodyHtml: normalizeHtmlForStorage(message?.bodyHtml, 50000),
       bodyPreview: normalizeText(message?.bodyPreview, 2600) || null,
       attachmentNames: [...new Set((Array.isArray(message?.attachmentNames) ? message.attachmentNames : [])
         .map((value) => normalizeText(value, 240))
@@ -2297,6 +2754,108 @@ export function registerEmailIntakeRoutes(app, deps) {
     }
   }
 
+  async function buildConversationBodySnapshot({
+    emailIntakeMessagesCollection,
+    message,
+  }) {
+    const provider = normalizeSyncProvider(message?.provider)
+    const uid = normalizeText(message?.uid, 200)
+    const conversationKey = normalizeText(message?.conversationKey, 320)
+    const fallbackMessageDate = toIsoDateSafe(message?.messageDate) || nowIso()
+
+    if (!provider || !uid || !conversationKey) {
+      return {
+        conversationMessageCount: 1,
+        latestMessageDate: fallbackMessageDate,
+        conversationBodyText: null,
+      }
+    }
+
+    const conversationMessages = await emailIntakeMessagesCollection
+      .find(
+        {
+          provider,
+          uid,
+          conversationKey,
+        },
+        {
+          projection: {
+            _id: 0,
+            fromEmail: 1,
+            toEmails: 1,
+            ccEmails: 1,
+            subject: 1,
+            messageDate: 1,
+            bodyText: 1,
+            bodyPreview: 1,
+            snippet: 1,
+            createdAt: 1,
+            id: 1,
+          },
+        },
+      )
+      .sort({ messageDate: 1, createdAt: 1, id: 1 })
+      .limit(50)
+      .toArray()
+
+    if (!conversationMessages.length) {
+      return {
+        conversationMessageCount: 1,
+        latestMessageDate: fallbackMessageDate,
+        conversationBodyText: null,
+      }
+    }
+
+    let latestMessageDate = fallbackMessageDate
+    let latestMessageDateMs = Date.parse(fallbackMessageDate)
+
+    const blocks = conversationMessages.map((entry, index) => {
+      const entryMessageDate = toIsoDateSafe(entry?.messageDate)
+
+      if (entryMessageDate) {
+        const entryMessageDateMs = Date.parse(entryMessageDate)
+
+        if (Number.isFinite(entryMessageDateMs) && entryMessageDateMs > latestMessageDateMs) {
+          latestMessageDateMs = entryMessageDateMs
+          latestMessageDate = entryMessageDate
+        }
+      }
+
+      const fromLine = normalizeEmailAddress(entry?.fromEmail) || 'unknown sender'
+      const toLine = (Array.isArray(entry?.toEmails) ? entry.toEmails : [])
+        .map((value) => normalizeEmailAddress(value))
+        .filter(Boolean)
+        .slice(0, 20)
+        .join(', ')
+      const ccLine = (Array.isArray(entry?.ccEmails) ? entry.ccEmails : [])
+        .map((value) => normalizeEmailAddress(value))
+        .filter(Boolean)
+        .slice(0, 20)
+        .join(', ')
+      const body = normalizeText(entry?.bodyText, 6000)
+        || normalizeText(entry?.bodyPreview, 6000)
+        || normalizeText(entry?.snippet, 6000)
+        || '(no email body text)'
+
+      return [
+        `Message ${index + 1} of ${conversationMessages.length}`,
+        `Date: ${entryMessageDate || 'unknown'}`,
+        `From: ${fromLine}`,
+        `To: ${toLine || '-'}`,
+        ccLine ? `CC: ${ccLine}` : null,
+        `Subject: ${normalizeText(entry?.subject, 500) || '(no subject)'}`,
+        '',
+        body,
+      ].filter(Boolean).join('\n')
+    })
+
+    return {
+      conversationMessageCount: conversationMessages.length,
+      latestMessageDate,
+      conversationBodyText: normalizeText(blocks.join('\n\n---\n\n'), 45000) || null,
+    }
+  }
+
   async function createEmailIntakeSuggestion({
     aiRulesCollection,
     crmAccountsCollection,
@@ -2307,15 +2866,27 @@ export function registerEmailIntakeRoutes(app, deps) {
     emailIntakeSuggestionsCollection,
     ordersUnifiedCollection,
     message,
+    forceDefaultRed = false,
     onTrace = null,
   }) {
+    const conversationIdentity = resolveEmailConversationIdentity(message)
+    const suggestionProvider = conversationIdentity.provider
+    const suggestionUid = normalizeText(message?.uid, 200)
     const suggestionMessageId = normalizeText(message?.id, 220) || null
+    const suggestionConversationKey = conversationIdentity.conversationKey
     const suggestionSubject = normalizeText(message?.subject, 220) || '(no subject)'
-
-    const existingSuggestion = await emailIntakeSuggestionsCollection.findOne(
-      {
+    const existingSuggestionFilter = suggestionConversationKey && suggestionProvider && suggestionUid
+      ? {
+        provider: suggestionProvider,
+        uid: suggestionUid,
+        conversationKey: suggestionConversationKey,
+      }
+      : {
         messageId: suggestionMessageId,
-      },
+      }
+
+    let existingSuggestion = await emailIntakeSuggestionsCollection.findOne(
+      existingSuggestionFilter,
       {
         projection: {
           _id: 0,
@@ -2324,16 +2895,121 @@ export function registerEmailIntakeRoutes(app, deps) {
       },
     )
 
+    if (!existingSuggestion?.id && suggestionProvider && suggestionUid) {
+      const legacyConversationFilter = conversationIdentity.threadId && suggestionProvider === googleProviderId
+        ? {
+          provider: suggestionProvider,
+          uid: suggestionUid,
+          threadId: conversationIdentity.threadId,
+        }
+        : conversationIdentity.conversationId && suggestionProvider === microsoftProviderId
+          ? {
+            provider: suggestionProvider,
+            uid: suggestionUid,
+            conversationId: conversationIdentity.conversationId,
+          }
+          : null
+
+      if (legacyConversationFilter) {
+        const linkedConversationMessage = await emailIntakeMessagesCollection.findOne(
+          {
+            ...legacyConversationFilter,
+            suggestionId: {
+              $nin: [null, ''],
+            },
+          },
+          {
+            projection: {
+              _id: 0,
+              suggestionId: 1,
+            },
+            sort: {
+              messageDate: -1,
+              createdAt: -1,
+            },
+          },
+        )
+        const linkedSuggestionId = normalizeText(linkedConversationMessage?.suggestionId, 220)
+
+        if (linkedSuggestionId) {
+          existingSuggestion = await emailIntakeSuggestionsCollection.findOne(
+            {
+              id: linkedSuggestionId,
+            },
+            {
+              projection: {
+                _id: 0,
+                id: 1,
+              },
+            },
+          )
+        }
+      }
+    }
+
     if (existingSuggestion?.id) {
-      emitEmailSyncTrace(onTrace, 'info', 'Email already has a suggestion. Skipping duplicate AI run.', {
+      const now = nowIso()
+      const conversationSnapshot = await buildConversationBodySnapshot({
+        emailIntakeMessagesCollection,
+        message,
+      })
+
+      await Promise.all([
+        emailIntakeMessagesCollection.updateOne(
+          {
+            id: message.id,
+          },
+          {
+            $set: {
+              suggestionId: existingSuggestion.id,
+              updatedAt: now,
+            },
+          },
+        ),
+        emailIntakeSuggestionsCollection.updateOne(
+          {
+            id: existingSuggestion.id,
+          },
+          {
+            $set: {
+              messageId: message.id,
+              provider: suggestionProvider,
+              uid: suggestionUid,
+              connectionId: normalizeText(message?.connectionId, 220) || null,
+              connectedEmail: normalizeEmailAddress(message?.connectedEmail) || null,
+              direction: normalizeDirection(message?.direction),
+              messageDate: conversationSnapshot.latestMessageDate || toIsoDateSafe(message?.messageDate) || now,
+              fromEmail: normalizeEmailAddress(message?.fromEmail) || null,
+              toEmails: Array.isArray(message?.toEmails) ? message.toEmails.slice(0, 40) : [],
+              ccEmails: Array.isArray(message?.ccEmails) ? message.ccEmails.slice(0, 40) : [],
+              subject: normalizeText(message?.subject, 500) || null,
+              snippet: normalizeText(message?.snippet, 1600) || null,
+              bodyText: normalizeText(message?.bodyText, 12000) || null,
+              bodyHtml: normalizeHtmlForStorage(message?.bodyHtml, 50000),
+              bodyPreview: normalizeText(message?.bodyPreview, 2600) || null,
+              threadId: conversationIdentity.threadId,
+              conversationId: conversationIdentity.conversationId,
+              conversationKey: suggestionConversationKey,
+              conversationReference: conversationIdentity.conversationReference,
+              conversationMessageCount: Number(conversationSnapshot.conversationMessageCount ?? 1),
+              conversationBodyText: conversationSnapshot.conversationBodyText || null,
+              updatedAt: now,
+            },
+          },
+        ),
+      ])
+
+      emitEmailSyncTrace(onTrace, 'info', 'Conversation already has a suggestion. Linked message to existing review item.', {
         messageId: suggestionMessageId,
         suggestionId: existingSuggestion.id,
         subject: suggestionSubject,
+        conversationKey: suggestionConversationKey,
       })
 
       return {
         created: false,
         suggestionId: existingSuggestion.id,
+        deduplicatedConversation: Boolean(suggestionConversationKey),
       }
     }
 
@@ -2368,17 +3044,11 @@ export function registerEmailIntakeRoutes(app, deps) {
         messageId: suggestionMessageId,
         subject: suggestionSubject,
       })
-
-      return {
-        created: false,
-        skippedNoDestination: true,
-        skipReason: 'No destination candidate matched this email.',
-      }
     }
 
     let aiSuggestion = null
 
-    if (typeof classifyEmailIntakeSuggestion === 'function') {
+    if (!forceDefaultRed && typeof classifyEmailIntakeSuggestion === 'function') {
       emitEmailSyncTrace(onTrace, 'info', 'AI classification started for email.', {
         messageId: suggestionMessageId,
         subject: suggestionSubject,
@@ -2396,7 +3066,9 @@ export function registerEmailIntakeRoutes(app, deps) {
               ccEmails: message?.ccEmails,
               subject: message?.subject,
               snippet: message?.snippet,
+              bodyText: message?.bodyText,
               bodyPreview: message?.bodyPreview,
+              bodyHtml: message?.bodyHtml,
               attachmentNames: message?.attachmentNames,
               messageDate: message?.messageDate,
             },
@@ -2434,29 +3106,35 @@ export function registerEmailIntakeRoutes(app, deps) {
       }
     }
 
-    const routingPlan = resolveSuggestionRoutingPlan({
-      message,
-      candidateDestinations,
-      aiSuggestion,
-    })
+    const routingPlan = forceDefaultRed
+      ? {
+        skipSuggestion: false,
+        skipReason: null,
+        routeTargets: [],
+        primaryTarget: null,
+        destinationReason: null,
+      }
+      : resolveSuggestionRoutingPlan({
+        message,
+        candidateDestinations,
+        aiSuggestion,
+      })
+    const policySkipped = Boolean(routingPlan.skipSuggestion)
 
-    if (routingPlan.skipSuggestion) {
-      emitEmailSyncTrace(onTrace, 'warn', routingPlan.skipReason || 'Routing policy skipped this email.', {
+    if (policySkipped) {
+      emitEmailSyncTrace(onTrace, 'warn', routingPlan.skipReason || 'Routing policy marked this email as red triage.', {
         messageId: suggestionMessageId,
         subject: suggestionSubject,
         skipByPolicy: true,
       })
-
-      return {
-        created: false,
-        skippedNoDestination: true,
-        skippedByPolicy: true,
-        skipReason: routingPlan.skipReason,
-      }
     }
 
-    const routeTargets = routingPlan.routeTargets
-    const primaryTarget = routingPlan.primaryTarget
+    const routeTargets = policySkipped
+      ? []
+      : routingPlan.routeTargets
+    const primaryTarget = policySkipped
+      ? null
+      : routingPlan.primaryTarget
     const preferredSummary = resolvePreferredEmailIntakeSummary({
       message,
       aiSuggestion,
@@ -2465,25 +3143,38 @@ export function registerEmailIntakeRoutes(app, deps) {
       || normalizeText(aiSuggestion?.chatDraft, 4000)
       || null
 
-    if (routeTargets.length === 0 || !primaryTarget?.id) {
-      emitEmailSyncTrace(onTrace, 'warn', 'No valid routing target remained after policy checks.', {
-        messageId: suggestionMessageId,
-        subject: suggestionSubject,
-      })
+    const destinationType = normalizeEmailDestinationType(primaryTarget?.type)
+    const destinationId = normalizeText(primaryTarget?.id, 220) || null
+    const confidence = Number.isFinite(Number(aiSuggestion?.confidence))
+      ? Number(Math.max(0, Math.min(1, Number(aiSuggestion.confidence))).toFixed(2))
+      : Number.isFinite(Number(primaryTarget?.confidence))
+        ? Number(Math.max(0, Math.min(1, Number(primaryTarget.confidence))).toFixed(2))
+        : destinationType === 'none'
+          ? 0.25
+          : 0.5
+    const lane = resolveEmailIntakeReviewLane({
+      destinationType,
+      destinationId,
+      confidence,
+      usedFallback: Boolean(aiSuggestion?.usedFallback),
+      policySkipped,
+    })
+    let destinationReason = normalizeText(routingPlan.destinationReason, 600)
+      || normalizeText(aiSuggestion?.destinationReason, 600)
+      || (policySkipped
+        ? normalizeText(routingPlan.skipReason, 600)
+        : null)
 
-      return {
-        created: false,
-        skippedNoDestination: true,
-        skipReason: 'No routing target remained after policy checks.',
-      }
+    if (destinationType === 'none') {
+      destinationReason = null
     }
 
     const now = nowIso()
     const suggestion = {
       id: randomUUID(),
       messageId: message.id,
-      provider: normalizeSyncProvider(message?.provider),
-      uid: normalizeText(message?.uid, 200),
+      provider: suggestionProvider,
+      uid: suggestionUid,
       connectionId: normalizeText(message?.connectionId, 220) || null,
       connectedEmail: normalizeEmailAddress(message?.connectedEmail) || null,
       status: emailReviewStatusPending,
@@ -2495,25 +3186,29 @@ export function registerEmailIntakeRoutes(app, deps) {
       ccEmails: Array.isArray(message?.ccEmails) ? message.ccEmails.slice(0, 40) : [],
       subject: normalizeText(message?.subject, 500) || null,
       snippet: normalizeText(message?.snippet, 1600) || null,
+      bodyText: normalizeText(message?.bodyText, 12000) || null,
+      bodyHtml: normalizeHtmlForStorage(message?.bodyHtml, 50000),
       bodyPreview: normalizeText(message?.bodyPreview, 2600) || null,
+      threadId: conversationIdentity.threadId,
+      conversationId: conversationIdentity.conversationId,
+      conversationKey: suggestionConversationKey,
+      conversationReference: conversationIdentity.conversationReference,
+      conversationMessageCount: 1,
+      conversationBodyText: null,
       candidateDestinations,
       routingTargets: routeTargets,
-      destinationType: normalizeEmailDestinationType(primaryTarget?.type),
-      destinationId: normalizeText(primaryTarget?.id, 220) || null,
-      destinationReason: normalizeText(routingPlan.destinationReason, 600)
-        || normalizeText(aiSuggestion?.destinationReason, 600)
-        || null,
-      confidence: Number.isFinite(Number(aiSuggestion?.confidence))
-        ? Number(Math.max(0, Math.min(1, Number(aiSuggestion.confidence))).toFixed(2))
-        : Number.isFinite(Number(primaryTarget?.confidence))
-          ? Number(Math.max(0, Math.min(1, Number(primaryTarget.confidence))).toFixed(2))
-          : null,
+      destinationType,
+      destinationId,
+      destinationReason,
+      confidence,
+      lane,
       summary: normalizeText(preferredSummary, 1200) || null,
       chatDraft: preferredChatDraft,
       tags: (Array.isArray(aiSuggestion?.tags) ? aiSuggestion.tags : [])
         .map((tag) => normalizeText(tag, 100).toLowerCase())
         .filter(Boolean)
         .concat(routeTargets.length > 1 ? ['multi-route'] : [])
+        .concat(policySkipped ? ['policy-skip'] : [])
         .slice(0, 10),
       usedFallback: Boolean(aiSuggestion?.usedFallback),
       reviewNotes: null,
@@ -2542,6 +3237,25 @@ export function registerEmailIntakeRoutes(app, deps) {
       },
     )
 
+    const conversationSnapshot = await buildConversationBodySnapshot({
+      emailIntakeMessagesCollection,
+      message,
+    })
+
+    await emailIntakeSuggestionsCollection.updateOne(
+      {
+        id: suggestion.id,
+      },
+      {
+        $set: {
+          messageDate: conversationSnapshot.latestMessageDate || suggestion.messageDate,
+          conversationMessageCount: Number(conversationSnapshot.conversationMessageCount ?? 1),
+          conversationBodyText: conversationSnapshot.conversationBodyText || null,
+          updatedAt: nowIso(),
+        },
+      },
+    )
+
     emitEmailSyncTrace(onTrace, 'info', 'Suggestion created and queued for review.', {
       messageId: suggestionMessageId,
       suggestionId: suggestion.id,
@@ -2556,6 +3270,8 @@ export function registerEmailIntakeRoutes(app, deps) {
       suggestionId: suggestion.id,
       destinationType: suggestion.destinationType,
       destinationId: suggestion.destinationId,
+      lane: suggestion.lane,
+      skippedByPolicy: policySkipped,
       routingTargetCount: routeTargets.length,
     }
   }
@@ -2564,6 +3280,8 @@ export function registerEmailIntakeRoutes(app, deps) {
     collections,
     connection,
     historicalLookbackDays = 0,
+    syncDate = null,
+    syncTimeZone = emailIntakeDefaultSyncTimeZone,
     bootstrapLookbackDays = null,
     maxMessagesPerConnection = 120,
     processingDeadlineMs = 0,
@@ -2581,12 +3299,21 @@ export function registerEmailIntakeRoutes(app, deps) {
       emailSyncStatesCollection,
       ordersUnifiedCollection,
     } = collections
-    const resolvedHistoricalLookbackDays = resolveSyncLookbackDays(historicalLookbackDays, 0)
+    const resolvedSyncTimeZone = normalizeSyncTimeZone(syncTimeZone)
+    const syncDateRange = resolveSyncDateRange(syncDate, resolvedSyncTimeZone)
+    const resolvedHistoricalLookbackDays = syncDateRange
+      ? 0
+      : resolveSyncLookbackDays(historicalLookbackDays, 0)
     const resolvedBootstrapLookbackDays = resolveSyncLookbackDays(
       bootstrapLookbackDays,
       resolveBootstrapLookbackDays(),
     )
-    const resolvedMaxMessagesPerConnection = clampInteger(maxMessagesPerConnection, 20, 400, 120)
+    const resolvedMaxMessagesPerConnection = clampInteger(
+      maxMessagesPerConnection,
+      20,
+      emailIntakeManualSyncMaxMessagesPerConnectionMax,
+      emailIntakeManualSyncMaxMessagesPerConnectionDefault,
+    )
     const resolvedProcessingDeadlineMs = Number.isFinite(Number(processingDeadlineMs))
       ? Number(processingDeadlineMs)
       : 0
@@ -2602,6 +3329,7 @@ export function registerEmailIntakeRoutes(app, deps) {
         uid: null,
         skipped: true,
         reason: 'Missing connection uid.',
+        syncDateApplied: syncDateRange?.syncDate || null,
         lookbackDaysApplied: 0,
         messagesCaught: 0,
         messagesIngested: 0,
@@ -2665,6 +3393,7 @@ export function registerEmailIntakeRoutes(app, deps) {
         uid,
         skipped: true,
         reason: 'Auto sync is disabled.',
+        syncDateApplied: syncDateRange?.syncDate || null,
         lookbackDaysApplied: 0,
         messagesCaught: 0,
         messagesIngested: 0,
@@ -2680,7 +3409,44 @@ export function registerEmailIntakeRoutes(app, deps) {
     const messageIds = new Set()
     let latestHistoryId = currentHistoryId || profileHistoryId || null
 
-    if (!currentHistoryId || !profileHistoryId) {
+    if (syncDateRange) {
+      const exactDayQuery = buildGoogleExactDayQuery(syncDateRange.syncDate, resolvedSyncTimeZone)
+      let syncDatePageToken = null
+      let syncDatePageCount = 0
+
+      emitEmailSyncTrace(onTrace, 'info', `Running exact-day Gmail sync for ${syncDateRange.syncDate}.`, {
+        provider: googleProviderId,
+        uid,
+        syncDate: syncDateRange.syncDate,
+        syncTimeZone: resolvedSyncTimeZone,
+      })
+
+      if (exactDayQuery) {
+        while (syncDatePageCount < 10 && messageIds.size < 1200) {
+          const dayPayload = await callWithRefresh((accessToken) => fetchGoogleMessageIdPage({
+            accessToken,
+            query: exactDayQuery,
+            pageToken: syncDatePageToken,
+            maxResults: 120,
+          }))
+
+          ;(Array.isArray(dayPayload?.messages) ? dayPayload.messages : []).forEach((messageEntry) => {
+            const dayMessageId = normalizeText(messageEntry?.id, 220)
+
+            if (dayMessageId) {
+              messageIds.add(dayMessageId)
+            }
+          })
+
+          syncDatePageToken = normalizeText(dayPayload?.nextPageToken, 220) || null
+          syncDatePageCount += 1
+
+          if (!syncDatePageToken) {
+            break
+          }
+        }
+      }
+    } else if (!currentHistoryId || !profileHistoryId) {
       await emailSyncStatesCollection.updateOne(
         {
           provider: googleProviderId,
@@ -2716,6 +3482,7 @@ export function registerEmailIntakeRoutes(app, deps) {
           provider: googleProviderId,
           uid,
           bootstrapped: true,
+          syncDateApplied: syncDateRange?.syncDate || null,
           lookbackDaysApplied: 0,
           messagesCaught: 0,
           messagesIngested: 0,
@@ -2776,6 +3543,7 @@ export function registerEmailIntakeRoutes(app, deps) {
               provider: googleProviderId,
               uid,
               rebaselined: true,
+              syncDateApplied: syncDateRange?.syncDate || null,
               lookbackDaysApplied: 0,
               messagesCaught: 0,
               messagesIngested: 0,
@@ -2807,14 +3575,16 @@ export function registerEmailIntakeRoutes(app, deps) {
       }
     }
 
-    const lookbackDaysApplied = resolvedHistoricalLookbackDays > 0
+    const lookbackDaysApplied = syncDateRange
+      ? 0
+      : resolvedHistoricalLookbackDays > 0
       ? resolvedHistoricalLookbackDays
       : bootstrapped
         ? resolvedBootstrapLookbackDays
         : 0
     let lookbackMessagesCollected = 0
 
-    if (lookbackDaysApplied > 0) {
+    if (!syncDateRange && lookbackDaysApplied > 0) {
       const lookbackQuery = buildGoogleLookbackQuery(lookbackDaysApplied)
       let lookbackPageToken = null
       let lookbackPageCount = 0
@@ -2862,6 +3632,7 @@ export function registerEmailIntakeRoutes(app, deps) {
       {
         provider: googleProviderId,
         uid,
+        syncDateApplied: syncDateRange?.syncDate || null,
         lookbackDaysApplied,
         messagesCaught: messageIds.size,
         processingCount: selectedMessageIds.length,
@@ -2912,6 +3683,24 @@ export function registerEmailIntakeRoutes(app, deps) {
           continue
         }
 
+        if (
+          syncDateRange
+          && !isTimestampWithinIsoRange(
+            normalizedMessage.messageDate,
+            syncDateRange.startIso,
+            syncDateRange.endIso,
+          )
+        ) {
+          emitEmailSyncTrace(onTrace, 'info', 'Email fell outside selected-date timezone range and was skipped.', {
+            provider: googleProviderId,
+            uid,
+            messageId,
+            syncDate: syncDateRange.syncDate,
+            syncTimeZone: resolvedSyncTimeZone,
+          })
+          continue
+        }
+
         const ingestResult = await upsertEmailIntakeMessage({
           emailIntakeMessagesCollection,
           message: {
@@ -2955,26 +3744,19 @@ export function registerEmailIntakeRoutes(app, deps) {
             emailIntakeSuggestionsCollection,
             ordersUnifiedCollection,
             message: ingestResult.message,
+            forceDefaultRed: Boolean(syncDateRange?.syncDate),
             onTrace,
           }),
           15 * 1000,
           'Email suggestion creation',
         )
 
+        if (suggestionResult?.skippedByPolicy) {
+          messagesSkippedByPolicy += 1
+        }
+
         if (suggestionResult?.skippedNoDestination) {
-          if (suggestionResult?.skippedByPolicy) {
-            messagesSkippedByPolicy += 1
-          } else {
-            messagesSkippedNoDestination += 1
-          }
-
-          if (ingestResult.isNew) {
-            await emailIntakeMessagesCollection.deleteOne({
-              id: normalizeText(ingestResult?.message?.id, 220),
-            })
-          }
-
-          continue
+          messagesSkippedNoDestination += 1
         }
 
         if (suggestionResult?.created) {
@@ -3041,6 +3823,7 @@ export function registerEmailIntakeRoutes(app, deps) {
       processingStoppedReason,
       bootstrapped,
       rebaselined,
+      syncDateApplied: syncDateRange?.syncDate || null,
       lookbackDaysApplied,
       messagesCaught: messageIds.size,
       messagesPlannedForProcessing: selectedMessageIds.length,
@@ -3057,6 +3840,8 @@ export function registerEmailIntakeRoutes(app, deps) {
     collections,
     connection,
     historicalLookbackDays = 0,
+    syncDate = null,
+    syncTimeZone = emailIntakeDefaultSyncTimeZone,
     bootstrapLookbackDays = null,
     maxMessagesPerConnection = 120,
     processingDeadlineMs = 0,
@@ -3074,12 +3859,21 @@ export function registerEmailIntakeRoutes(app, deps) {
       emailSyncStatesCollection,
       ordersUnifiedCollection,
     } = collections
-    const resolvedHistoricalLookbackDays = resolveSyncLookbackDays(historicalLookbackDays, 0)
+    const resolvedSyncTimeZone = normalizeSyncTimeZone(syncTimeZone)
+    const syncDateRange = resolveSyncDateRange(syncDate, resolvedSyncTimeZone)
+    const resolvedHistoricalLookbackDays = syncDateRange
+      ? 0
+      : resolveSyncLookbackDays(historicalLookbackDays, 0)
     const resolvedBootstrapLookbackDays = resolveSyncLookbackDays(
       bootstrapLookbackDays,
       resolveBootstrapLookbackDays(),
     )
-    const resolvedMaxMessagesPerConnection = clampInteger(maxMessagesPerConnection, 20, 400, 120)
+    const resolvedMaxMessagesPerConnection = clampInteger(
+      maxMessagesPerConnection,
+      20,
+      emailIntakeManualSyncMaxMessagesPerConnectionMax,
+      emailIntakeManualSyncMaxMessagesPerConnectionDefault,
+    )
     const resolvedProcessingDeadlineMs = Number.isFinite(Number(processingDeadlineMs))
       ? Number(processingDeadlineMs)
       : 0
@@ -3095,6 +3889,7 @@ export function registerEmailIntakeRoutes(app, deps) {
         uid: null,
         skipped: true,
         reason: 'Missing connection uid.',
+        syncDateApplied: syncDateRange?.syncDate || null,
         lookbackDaysApplied: 0,
         messagesCaught: 0,
         messagesIngested: 0,
@@ -3157,6 +3952,7 @@ export function registerEmailIntakeRoutes(app, deps) {
         uid,
         skipped: true,
         reason: 'Auto sync is disabled.',
+        syncDateApplied: syncDateRange?.syncDate || null,
         lookbackDaysApplied: 0,
         messagesCaught: 0,
         messagesIngested: 0,
@@ -3194,11 +3990,12 @@ export function registerEmailIntakeRoutes(app, deps) {
         { upsert: true },
       )
 
-      if (resolvedHistoricalLookbackDays <= 0 && resolvedBootstrapLookbackDays <= 0) {
+      if (!syncDateRange && resolvedHistoricalLookbackDays <= 0 && resolvedBootstrapLookbackDays <= 0) {
         return {
           provider: microsoftProviderId,
           uid,
           bootstrapped: true,
+          syncDateApplied: syncDateRange?.syncDate || null,
           lookbackDaysApplied: 0,
           messagesCaught: 0,
           messagesIngested: 0,
@@ -3207,7 +4004,9 @@ export function registerEmailIntakeRoutes(app, deps) {
       }
     }
 
-    const lookbackDaysApplied = resolvedHistoricalLookbackDays > 0
+    const lookbackDaysApplied = syncDateRange
+      ? 0
+      : resolvedHistoricalLookbackDays > 0
       ? resolvedHistoricalLookbackDays
       : isBootstrappedNow
         ? resolvedBootstrapLookbackDays
@@ -3219,10 +4018,14 @@ export function registerEmailIntakeRoutes(app, deps) {
     const lookbackSinceIso = lookbackDaysApplied > 0
       ? new Date(Date.now() - lookbackDaysApplied * 24 * 60 * 60 * 1000).toISOString()
       : null
-    const sinceIso = lookbackSinceIso || incrementalSinceIso
+    const sinceIso = syncDateRange
+      ? syncDateRange.startIso
+      : lookbackSinceIso || incrementalSinceIso
     const rawMessages = await callWithRefresh((accessToken) => fetchMicrosoftMessagesSince({
       accessToken,
       sinceIso,
+      startIso: syncDateRange?.startIso,
+      endIso: syncDateRange?.endIso,
       maxPages: 8,
       pageSize: 80,
     }))
@@ -3242,6 +4045,7 @@ export function registerEmailIntakeRoutes(app, deps) {
       {
         provider: microsoftProviderId,
         uid,
+        syncDateApplied: syncDateRange?.syncDate || null,
         lookbackDaysApplied,
         messagesCaught: Array.isArray(rawMessages) ? rawMessages.length : 0,
         processingCount: selectedRawMessages.length,
@@ -3280,6 +4084,23 @@ export function registerEmailIntakeRoutes(app, deps) {
           emitEmailSyncTrace(onTrace, 'warn', 'Email metadata was not usable and was skipped.', {
             provider: microsoftProviderId,
             uid,
+          })
+          continue
+        }
+
+        if (
+          syncDateRange
+          && !isTimestampWithinIsoRange(
+            normalizedMessage.messageDate,
+            syncDateRange.startIso,
+            syncDateRange.endIso,
+          )
+        ) {
+          emitEmailSyncTrace(onTrace, 'info', 'Email fell outside selected-date timezone range and was skipped.', {
+            provider: microsoftProviderId,
+            uid,
+            syncDate: syncDateRange.syncDate,
+            syncTimeZone: resolvedSyncTimeZone,
           })
           continue
         }
@@ -3330,26 +4151,19 @@ export function registerEmailIntakeRoutes(app, deps) {
             emailIntakeSuggestionsCollection,
             ordersUnifiedCollection,
             message: ingestResult.message,
+            forceDefaultRed: Boolean(syncDateRange?.syncDate),
             onTrace,
           }),
           15 * 1000,
           'Email suggestion creation',
         )
 
+        if (suggestionResult?.skippedByPolicy) {
+          messagesSkippedByPolicy += 1
+        }
+
         if (suggestionResult?.skippedNoDestination) {
-          if (suggestionResult?.skippedByPolicy) {
-            messagesSkippedByPolicy += 1
-          } else {
-            messagesSkippedNoDestination += 1
-          }
-
-          if (ingestResult.isNew) {
-            await emailIntakeMessagesCollection.deleteOne({
-              id: normalizeText(ingestResult?.message?.id, 220),
-            })
-          }
-
-          continue
+          messagesSkippedNoDestination += 1
         }
 
         if (suggestionResult?.created) {
@@ -3410,6 +4224,7 @@ export function registerEmailIntakeRoutes(app, deps) {
       timedOut: processingTimedOut,
       processingStoppedReason,
       bootstrapped: isBootstrappedNow,
+      syncDateApplied: syncDateRange?.syncDate || null,
       lookbackDaysApplied,
       messagesCaught: Array.isArray(rawMessages) ? rawMessages.length : 0,
       messagesPlannedForProcessing: selectedRawMessages.length,
@@ -3425,6 +4240,8 @@ export function registerEmailIntakeRoutes(app, deps) {
   async function runEmailIntakeSyncCycle({
     requestedByUid = null,
     requestedProvider = null,
+    syncDate = null,
+    syncTimeZone = emailIntakeDefaultSyncTimeZone,
     maxConnections = 40,
     lookbackDays = 0,
     maxMessagesPerConnection = emailIntakeManualSyncMaxMessagesPerConnectionDefault,
@@ -3435,12 +4252,19 @@ export function registerEmailIntakeRoutes(app, deps) {
     const {
       emailConnectionsCollection,
     } = collections
-    const resolvedLookbackDays = resolveSyncLookbackDays(lookbackDays, 0)
+    const syncDateRange = resolveSyncDateRange(syncDate, syncTimeZone)
+    const resolvedSyncDate = syncDateRange?.syncDate || null
+    const resolvedSyncTimeZone = resolvedSyncDate
+      ? normalizeSyncTimeZone(syncDateRange?.timeZone || syncTimeZone)
+      : null
+    const resolvedLookbackDays = resolvedSyncDate
+      ? 0
+      : resolveSyncLookbackDays(lookbackDays, 0)
     const resolvedBootstrapLookbackDays = resolveBootstrapLookbackDays()
     const resolvedMaxMessagesPerConnection = clampInteger(
       maxMessagesPerConnection,
       20,
-      400,
+      emailIntakeManualSyncMaxMessagesPerConnectionMax,
       emailIntakeManualSyncMaxMessagesPerConnectionDefault,
     )
     const resolvedMaxRuntimeMs = clampInteger(maxRuntimeMs, 0, 120000, 0)
@@ -3472,6 +4296,8 @@ export function registerEmailIntakeRoutes(app, deps) {
       completedAt: null,
       requestedByUid: normalizeText(requestedByUid, 200) || null,
       providerFilter,
+      syncDateRequested: resolvedSyncDate,
+      syncTimeZoneRequested: resolvedSyncTimeZone,
       lookbackDaysRequested: resolvedLookbackDays,
       maxMessagesPerConnection: resolvedMaxMessagesPerConnection,
       maxRuntimeMs: resolvedMaxRuntimeMs || null,
@@ -3512,6 +4338,7 @@ export function registerEmailIntakeRoutes(app, deps) {
           uid: normalizeText(connection?.uid, 200) || null,
           skipped: true,
           reason: `Missing required scope: ${provider === googleProviderId ? googleRequiredReadScope : microsoftRequiredReadScope}`,
+          syncDateApplied: resolvedSyncDate,
           lookbackDaysApplied: 0,
           messagesCaught: 0,
           messagesIngested: 0,
@@ -3528,7 +4355,8 @@ export function registerEmailIntakeRoutes(app, deps) {
         const timeoutForConnectionMs = resolvedMaxRuntimeMs > 0
           ? Math.max(0, Math.min(adaptivePerConnectionTimeoutMs, remainingRuntimeMs - 600))
           : adaptivePerConnectionTimeoutMs
-        const estimatedMessagesByTimeout = timeoutForConnectionMs > 0
+        const useAdaptiveMessageBudget = !resolvedSyncDate
+        const estimatedMessagesByTimeout = useAdaptiveMessageBudget && timeoutForConnectionMs > 0
           ? Math.max(
             1,
             Math.floor(
@@ -3537,12 +4365,14 @@ export function registerEmailIntakeRoutes(app, deps) {
             ),
           )
           : resolvedMaxMessagesPerConnection
-        const effectiveMaxMessagesPerConnection = clampInteger(
-          estimatedMessagesByTimeout,
-          1,
-          resolvedMaxMessagesPerConnection,
-          resolvedMaxMessagesPerConnection,
-        )
+        const effectiveMaxMessagesPerConnection = useAdaptiveMessageBudget
+          ? clampInteger(
+            estimatedMessagesByTimeout,
+            1,
+            resolvedMaxMessagesPerConnection,
+            resolvedMaxMessagesPerConnection,
+          )
+          : resolvedMaxMessagesPerConnection
 
         if (resolvedMaxRuntimeMs > 0 && timeoutForConnectionMs <= 0) {
           summary.truncated = true
@@ -3557,6 +4387,8 @@ export function registerEmailIntakeRoutes(app, deps) {
           ? runGoogleSyncForConnection({
             collections,
             connection,
+            syncDate: resolvedSyncDate,
+            syncTimeZone: resolvedSyncTimeZone,
             historicalLookbackDays: resolvedLookbackDays,
             bootstrapLookbackDays: resolvedBootstrapLookbackDays,
             maxMessagesPerConnection: effectiveMaxMessagesPerConnection,
@@ -3565,6 +4397,8 @@ export function registerEmailIntakeRoutes(app, deps) {
           : runMicrosoftSyncForConnection({
             collections,
             connection,
+            syncDate: resolvedSyncDate,
+            syncTimeZone: resolvedSyncTimeZone,
             historicalLookbackDays: resolvedLookbackDays,
             bootstrapLookbackDays: resolvedBootstrapLookbackDays,
             maxMessagesPerConnection: effectiveMaxMessagesPerConnection,
@@ -3596,6 +4430,7 @@ export function registerEmailIntakeRoutes(app, deps) {
           failed: true,
           timedOut,
           error: normalizeText(error?.message, 1200) || 'Mailbox sync failed.',
+          syncDateApplied: resolvedSyncDate,
           lookbackDaysApplied: 0,
           messagesCaught: 0,
           messagesIngested: 0,
@@ -3617,6 +4452,8 @@ export function registerEmailIntakeRoutes(app, deps) {
   async function createEmailIntakeSyncRun({
     actor,
     requestedProvider = null,
+    syncDate = null,
+    syncTimeZone = emailIntakeDefaultSyncTimeZone,
     includeAllConnections = false,
     maxConnections = 40,
     lookbackDays = 0,
@@ -3633,11 +4470,18 @@ export function registerEmailIntakeRoutes(app, deps) {
     const requestedByUid = actor?.isAdmin && includeAllConnections
       ? null
       : normalizeText(actor?.uid, 200) || null
-    const resolvedLookbackDays = resolveSyncLookbackDays(lookbackDays, 0)
+    const syncDateRange = resolveSyncDateRange(syncDate, syncTimeZone)
+    const resolvedSyncDate = syncDateRange?.syncDate || null
+    const resolvedSyncTimeZone = resolvedSyncDate
+      ? normalizeSyncTimeZone(syncDateRange?.timeZone || syncTimeZone)
+      : null
+    const resolvedLookbackDays = resolvedSyncDate
+      ? 0
+      : resolveSyncLookbackDays(lookbackDays, 0)
     const resolvedMaxMessagesPerConnection = clampInteger(
       maxMessagesPerConnection,
       20,
-      400,
+      emailIntakeManualSyncMaxMessagesPerConnectionMax,
       emailIntakeManualSyncMaxMessagesPerConnectionDefault,
     )
     const resolvedMaxRuntimeMs = clampInteger(maxRuntimeMs, 0, 120000, 0)
@@ -3704,6 +4548,8 @@ export function registerEmailIntakeRoutes(app, deps) {
       `Sync run queued for ${connectionQueue.length} mailbox(es).`,
       {
         providerFilter: providerFilter || 'all',
+        syncDateRequested: resolvedSyncDate,
+        syncTimeZoneRequested: resolvedSyncTimeZone,
         lookbackDaysRequested: resolvedLookbackDays,
       },
     )
@@ -3729,6 +4575,8 @@ export function registerEmailIntakeRoutes(app, deps) {
       updatedAt: now,
       requestedByUid,
       providerFilter,
+      syncDateRequested: resolvedSyncDate,
+      syncTimeZoneRequested: resolvedSyncTimeZone,
       lookbackDaysRequested: resolvedLookbackDays,
       maxMessagesPerConnection: resolvedMaxMessagesPerConnection,
       maxRuntimeMs: resolvedMaxRuntimeMs,
@@ -4039,11 +4887,13 @@ export function registerEmailIntakeRoutes(app, deps) {
 
     if (queueEntry?.missingReadScope) {
       const missingScopeName = normalizeText(queueEntry?.missingScopeName, 240)
+      const resolvedSyncDate = normalizeSyncDateValue(run?.syncDateRequested)
       const detail = {
         provider: connectionProvider,
         uid: connectionUid,
         skipped: true,
         reason: `Missing required scope: ${missingScopeName || 'Mail.Read'}`,
+        syncDateApplied: resolvedSyncDate,
         lookbackDaysApplied: 0,
         messagesCaught: 0,
         messagesIngested: 0,
@@ -4102,12 +4952,23 @@ export function registerEmailIntakeRoutes(app, deps) {
     }
 
     const resolvedLookbackDays = resolveSyncLookbackDays(run?.lookbackDaysRequested, 0)
+    const resolvedSyncDate = normalizeSyncDateValue(run?.syncDateRequested)
+    const resolvedSyncTimeZone = normalizeSyncTimeZone(run?.syncTimeZoneRequested)
+    const effectiveLookbackDays = resolvedSyncDate
+      ? 0
+      : resolvedLookbackDays
     const resolvedBootstrapLookbackDays = resolveBootstrapLookbackDays()
-    const resolvedMaxMessagesPerConnection = clampInteger(run?.maxMessagesPerConnection, 20, 400, 120)
+    const resolvedMaxMessagesPerConnection = clampInteger(
+      run?.maxMessagesPerConnection,
+      20,
+      emailIntakeManualSyncMaxMessagesPerConnectionMax,
+      emailIntakeManualSyncMaxMessagesPerConnectionDefault,
+    )
     const timeoutForConnectionMs = maxRuntimeMs > 0
       ? Math.max(0, Math.min(perConnectionTimeoutMs, remainingRuntimeMs - 600))
       : perConnectionTimeoutMs
-    const estimatedMessagesByTimeout = timeoutForConnectionMs > 0
+    const useAdaptiveMessageBudget = !resolvedSyncDate
+    const estimatedMessagesByTimeout = useAdaptiveMessageBudget && timeoutForConnectionMs > 0
       ? Math.max(
         1,
         Math.floor(
@@ -4116,12 +4977,14 @@ export function registerEmailIntakeRoutes(app, deps) {
         ),
       )
       : resolvedMaxMessagesPerConnection
-    const effectiveMaxMessagesPerConnection = clampInteger(
-      estimatedMessagesByTimeout,
-      1,
-      resolvedMaxMessagesPerConnection,
-      resolvedMaxMessagesPerConnection,
-    )
+    const effectiveMaxMessagesPerConnection = useAdaptiveMessageBudget
+      ? clampInteger(
+        estimatedMessagesByTimeout,
+        1,
+        resolvedMaxMessagesPerConnection,
+        resolvedMaxMessagesPerConnection,
+      )
+      : resolvedMaxMessagesPerConnection
 
     if (maxRuntimeMs > 0 && timeoutForConnectionMs <= 0) {
       const truncationReason = `Sync runtime budget reached (${Math.ceil(maxRuntimeMs / 1000)}s). Returned partial results.`
@@ -4207,6 +5070,7 @@ export function registerEmailIntakeRoutes(app, deps) {
         uid: connectionUid,
         failed: true,
         error: 'Mailbox connection was not found.',
+        syncDateApplied: resolvedSyncDate,
         lookbackDaysApplied: 0,
         messagesCaught: 0,
         messagesIngested: 0,
@@ -4224,6 +5088,7 @@ export function registerEmailIntakeRoutes(app, deps) {
           uid: connectionUid,
           failed: true,
           error: 'Mailbox provider is invalid.',
+          syncDateApplied: resolvedSyncDate,
           lookbackDaysApplied: 0,
           messagesCaught: 0,
           messagesIngested: 0,
@@ -4241,7 +5106,9 @@ export function registerEmailIntakeRoutes(app, deps) {
             ? runGoogleSyncForConnection({
               collections,
               connection: activeConnection,
-              historicalLookbackDays: resolvedLookbackDays,
+              syncDate: resolvedSyncDate,
+                syncTimeZone: resolvedSyncTimeZone,
+              historicalLookbackDays: effectiveLookbackDays,
               bootstrapLookbackDays: resolvedBootstrapLookbackDays,
               maxMessagesPerConnection: effectiveMaxMessagesPerConnection,
               processingDeadlineMs: connectionProcessingDeadlineMs,
@@ -4250,7 +5117,9 @@ export function registerEmailIntakeRoutes(app, deps) {
             : runMicrosoftSyncForConnection({
               collections,
               connection: activeConnection,
-              historicalLookbackDays: resolvedLookbackDays,
+              syncDate: resolvedSyncDate,
+                syncTimeZone: resolvedSyncTimeZone,
+              historicalLookbackDays: effectiveLookbackDays,
               bootstrapLookbackDays: resolvedBootstrapLookbackDays,
               maxMessagesPerConnection: effectiveMaxMessagesPerConnection,
               processingDeadlineMs: connectionProcessingDeadlineMs,
@@ -4301,6 +5170,7 @@ export function registerEmailIntakeRoutes(app, deps) {
             failed: true,
             timedOut,
             error: normalizeText(error?.message, 1200) || 'Mailbox sync failed.',
+            syncDateApplied: resolvedSyncDate,
             lookbackDaysApplied: 0,
             messagesCaught: 0,
             messagesIngested: 0,
@@ -4801,6 +5671,12 @@ export function registerEmailIntakeRoutes(app, deps) {
       postResult?.postedTargets,
       suggestion?.candidateDestinations,
     )
+    const approvedLane = resolveEmailIntakeReviewLane({
+      destinationType: postResult?.destinationType || 'none',
+      destinationId: postResult?.destinationId || null,
+      confidence: suggestion?.confidence,
+      usedFallback: Boolean(suggestion?.usedFallback),
+    })
 
     await emailIntakeSuggestionsCollection.updateOne(
       {
@@ -4813,6 +5689,7 @@ export function registerEmailIntakeRoutes(app, deps) {
           routingTargets: persistedRouteTargets,
           destinationType: postResult?.destinationType || 'none',
           destinationId: postResult?.destinationId || null,
+          lane: approvedLane,
           summary,
           chatDraft,
           reviewNotes,
@@ -4866,17 +5743,33 @@ export function registerEmailIntakeRoutes(app, deps) {
       const requestedProvider = normalizeSyncProvider(req.body?.provider)
       const includeAllConnections = Boolean(req.body?.includeAllConnections)
       const maxConnections = clampInteger(req.body?.maxConnections, 1, 200, 40)
-      const lookbackDays = Math.min(
-        resolveSyncLookbackDays(
-          req.body?.lookbackDays,
-          emailIntakeManualSyncLookbackDaysDefault,
-        ),
-        emailIntakeManualSyncLookbackDaysMax,
+      const requestedSyncTimeZone = normalizeSyncTimeZone(
+        req.body?.timeZone
+          || req.authUser?.accessTimeZone
+          || emailIntakeDefaultSyncTimeZone,
       )
-      const maxMessagesPerConnection = clampInteger(req.body?.maxMessagesPerConnection, 20, 400, 120)
+      const requestedSyncDate = normalizeSyncDateValue(req.body?.syncDate)
+        || resolveCurrentIsoDateInTimeZone(requestedSyncTimeZone)
+      const lookbackDays = requestedSyncDate
+        ? 0
+        : Math.min(
+          resolveSyncLookbackDays(
+            req.body?.lookbackDays,
+            emailIntakeManualSyncLookbackDaysDefault,
+          ),
+          emailIntakeManualSyncLookbackDaysMax,
+        )
+      const maxMessagesPerConnection = clampInteger(
+        req.body?.maxMessagesPerConnection,
+        20,
+        emailIntakeManualSyncMaxMessagesPerConnectionMax,
+        emailIntakeManualSyncMaxMessagesPerConnectionDefault,
+      )
       const createdRun = await createEmailIntakeSyncRun({
         actor,
         requestedProvider,
+        syncDate: requestedSyncDate,
+        syncTimeZone: requestedSyncTimeZone,
         includeAllConnections,
         maxConnections,
         lookbackDays,
@@ -4960,19 +5853,35 @@ export function registerEmailIntakeRoutes(app, deps) {
       const requestedProvider = normalizeSyncProvider(req.body?.provider)
       const includeAllConnections = Boolean(req.body?.includeAllConnections)
       const maxConnections = clampInteger(req.body?.maxConnections, 1, 200, 40)
-      const lookbackDays = Math.min(
-        resolveSyncLookbackDays(
-          req.body?.lookbackDays,
-          emailIntakeManualSyncLookbackDaysDefault,
-        ),
-        emailIntakeManualSyncLookbackDaysMax,
+      const requestedSyncTimeZone = normalizeSyncTimeZone(
+        req.body?.timeZone
+          || req.authUser?.accessTimeZone
+          || emailIntakeDefaultSyncTimeZone,
       )
-      const maxMessagesPerConnection = clampInteger(req.body?.maxMessagesPerConnection, 20, 400, 120)
+      const requestedSyncDate = normalizeSyncDateValue(req.body?.syncDate)
+        || resolveCurrentIsoDateInTimeZone(requestedSyncTimeZone)
+      const lookbackDays = requestedSyncDate
+        ? 0
+        : Math.min(
+          resolveSyncLookbackDays(
+            req.body?.lookbackDays,
+            emailIntakeManualSyncLookbackDaysDefault,
+          ),
+          emailIntakeManualSyncLookbackDaysMax,
+        )
+      const maxMessagesPerConnection = clampInteger(
+        req.body?.maxMessagesPerConnection,
+        20,
+        emailIntakeManualSyncMaxMessagesPerConnectionMax,
+        emailIntakeManualSyncMaxMessagesPerConnectionDefault,
+      )
       const summary = await runEmailIntakeSyncCycle({
         requestedByUid: actor.isAdmin && includeAllConnections
           ? null
           : actor.uid,
         requestedProvider,
+        syncDate: requestedSyncDate,
+        syncTimeZone: requestedSyncTimeZone,
         maxConnections,
         lookbackDays,
         maxMessagesPerConnection,
@@ -5037,22 +5946,39 @@ export function registerEmailIntakeRoutes(app, deps) {
   app.get('/api/admin/email/review/summary', requireFirebaseAuth, async (req, res, next) => {
     try {
       const actor = resolveReviewActor(req)
+      const requestedSyncTimeZone = normalizeSyncTimeZone(
+        req.query?.timeZone
+          || req.authUser?.accessTimeZone
+          || emailIntakeDefaultSyncTimeZone,
+      )
       const {
         emailIntakeSuggestionsCollection,
       } = await getEmailIntakeCollections()
+      const providerFilter = normalizeSyncProvider(req.query?.provider)
+      const statusFilterRaw = normalizeText(req.query?.status, 40).toLowerCase()
+      const statusFilter = statusFilterRaw === 'all'
+        ? null
+        : normalizeEmailReviewStatus(statusFilterRaw)
+      const messageDateRange = resolveSyncDateRange(req.query?.messageDate, requestedSyncTimeZone)
+      const laneStatus = statusFilter || emailReviewStatusPending
       const baseFilter = actor.isAdmin
-        ? {
-          destinationType: {
-            $ne: 'none',
-          },
-        }
+        ? {}
         : {
           uid: actor.uid,
-          destinationType: {
-            $ne: 'none',
-          },
         }
-      const [pendingCount, unreadPendingCount, approvedCount, rejectedCount] = await Promise.all([
+
+      if (providerFilter) {
+        baseFilter.provider = providerFilter
+      }
+
+      if (messageDateRange) {
+        baseFilter.messageDate = {
+          $gte: messageDateRange.startIso,
+          $lt: messageDateRange.endIso,
+        }
+      }
+
+      const [pendingCount, unreadPendingCount, approvedCount, rejectedCount, greenCount, yellowCount, redCount] = await Promise.all([
         emailIntakeSuggestionsCollection.countDocuments({
           ...baseFilter,
           status: emailReviewStatusPending,
@@ -5070,6 +5996,21 @@ export function registerEmailIntakeRoutes(app, deps) {
           ...baseFilter,
           status: emailReviewStatusRejected,
         }),
+        emailIntakeSuggestionsCollection.countDocuments({
+          ...baseFilter,
+          status: laneStatus,
+          lane: emailReviewLaneGreen,
+        }),
+        emailIntakeSuggestionsCollection.countDocuments({
+          ...baseFilter,
+          status: laneStatus,
+          lane: emailReviewLaneYellow,
+        }),
+        emailIntakeSuggestionsCollection.countDocuments({
+          ...baseFilter,
+          status: laneStatus,
+          lane: emailReviewLaneRed,
+        }),
       ])
 
       return res.json({
@@ -5077,6 +6018,10 @@ export function registerEmailIntakeRoutes(app, deps) {
         unreadPending: unreadPendingCount,
         approved: approvedCount,
         rejected: rejectedCount,
+        laneStatus,
+        green: greenCount,
+        yellow: yellowCount,
+        red: redCount,
       })
     } catch (error) {
       next(error)
@@ -5086,6 +6031,11 @@ export function registerEmailIntakeRoutes(app, deps) {
   app.get('/api/admin/email/review', requireFirebaseAuth, async (req, res, next) => {
     try {
       const actor = resolveReviewActor(req)
+      const requestedSyncTimeZone = normalizeSyncTimeZone(
+        req.query?.timeZone
+          || req.authUser?.accessTimeZone
+          || emailIntakeDefaultSyncTimeZone,
+      )
       const {
         emailIntakeSuggestionsCollection,
       } = await getEmailIntakeCollections()
@@ -5094,13 +6044,16 @@ export function registerEmailIntakeRoutes(app, deps) {
         ? null
         : normalizeEmailReviewStatus(statusFilterRaw)
       const providerFilter = normalizeSyncProvider(req.query?.provider)
+      const laneFilterRaw = normalizeText(req.query?.lane, 40).toLowerCase()
+      const laneFilter = laneFilterRaw === 'all'
+        ? null
+        : (emailReviewLanes.has(laneFilterRaw)
+          ? laneFilterRaw
+          : null)
+      const messageDateRange = resolveSyncDateRange(req.query?.messageDate, requestedSyncTimeZone)
       const limit = clampInteger(req.query?.limit, 1, 200, 40)
       const offset = clampInteger(req.query?.offset, 0, 5000, 0)
-      const baseFilter = {
-        destinationType: {
-          $ne: 'none',
-        },
-      }
+      const baseFilter = {}
 
       if (providerFilter) {
         baseFilter.provider = providerFilter
@@ -5108,6 +6061,17 @@ export function registerEmailIntakeRoutes(app, deps) {
 
       if (statusFilter) {
         baseFilter.status = statusFilter
+      }
+
+      if (laneFilter) {
+        baseFilter.lane = laneFilter
+      }
+
+      if (messageDateRange) {
+        baseFilter.messageDate = {
+          $gte: messageDateRange.startIso,
+          $lt: messageDateRange.endIso,
+        }
       }
 
       const filter = buildSuggestionAccessFilter(baseFilter, actor)
@@ -5122,7 +6086,7 @@ export function registerEmailIntakeRoutes(app, deps) {
               },
             },
           )
-          .sort({ createdAt: -1, id: -1 })
+          .sort({ messageDate: -1, createdAt: -1, id: -1 })
           .skip(offset)
           .limit(limit)
           .toArray(),
@@ -5229,6 +6193,12 @@ export function registerEmailIntakeRoutes(app, deps) {
           suggestion?.candidateDestinations,
         )
         : []
+      const lane = resolveEmailIntakeReviewLane({
+        destinationType,
+        destinationId,
+        confidence: suggestion?.confidence,
+        usedFallback: Boolean(suggestion?.usedFallback),
+      })
 
       if (destinationType !== 'none' && !destinationId) {
         return res.status(400).json({
@@ -5247,6 +6217,7 @@ export function registerEmailIntakeRoutes(app, deps) {
             routingTargets,
             destinationType,
             destinationId,
+            lane,
             summary,
             chatDraft,
             reviewNotes,
@@ -5454,6 +6425,7 @@ export function registerEmailIntakeRoutes(app, deps) {
           $set: {
             status: emailReviewStatusRejected,
             isRead: true,
+            lane: emailReviewLaneRed,
             rejectedReason: reason,
             reviewedAt: now,
             reviewedByUid: normalizeText(actor?.uid, 200) || null,
@@ -5567,6 +6539,18 @@ export function registerEmailIntakeRoutes(app, deps) {
         correctedDestinationType,
         correctedDestinationId,
       })
+      const finalDestinationType = correctedDestinationType !== 'none'
+        ? correctedDestinationType
+        : normalizeEmailDestinationType(suggestion?.destinationType)
+      const finalDestinationId = correctedDestinationType !== 'none'
+        ? correctedDestinationId
+        : normalizeText(suggestion?.destinationId, 220)
+      const correctedLane = resolveEmailIntakeReviewLane({
+        destinationType: finalDestinationType,
+        destinationId: finalDestinationId,
+        confidence: suggestion?.confidence,
+        usedFallback: Boolean(suggestion?.usedFallback),
+      })
 
       await emailIntakeSuggestionsCollection.updateOne(
         {
@@ -5583,12 +6567,9 @@ export function registerEmailIntakeRoutes(app, deps) {
                 suggestion?.routingTargets,
                 suggestion?.candidateDestinations,
               ),
-            destinationType: correctedDestinationType !== 'none'
-              ? correctedDestinationType
-              : normalizeText(suggestion?.destinationType, 40),
-            destinationId: correctedDestinationType !== 'none'
-              ? correctedDestinationId
-              : normalizeText(suggestion?.destinationId, 220),
+            destinationType: finalDestinationType,
+            destinationId: finalDestinationId,
+            lane: correctedLane,
             summary: normalizeText(req.body?.correctedSummary, 1200)
               || normalizeText(suggestion?.summary, 1200)
               || null,

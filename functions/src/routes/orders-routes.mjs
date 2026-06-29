@@ -19,11 +19,13 @@ export function registerOrdersRoutes(app, deps) {
   const {
     authApprovalApproved,
     authRoleAdmin,
+    decodeBase64Image,
     fetchMondayBoardItemsByIds,
     fetchMondayStatusColumnOptions,
     getCollections,
     getOrderPhotosBucket,
     mobileAlertTargetModeSelected,
+    moveMondayItemToBoard,
     normalizeEmail,
     normalizeOptionalShortText,
     randomUUID,
@@ -44,6 +46,14 @@ export function registerOrdersRoutes(app, deps) {
   let ordersChatsIndexesPromise
   const linkedOrderNumberChangeMessage =
     'Sorry, this cannot be done because of its linked. If it needs to be done, contact admin.'
+  const shippingDocumentMimeTypes = new Set([
+    'application/pdf',
+    'image/jpeg',
+    'image/png',
+    'image/webp',
+    'image/heic',
+    'image/heif',
+  ])
 
   function sanitizeQuickBooksTokenText(value, maxLength = 8000) {
     return String(value ?? '').trim().slice(0, maxLength)
@@ -77,6 +87,108 @@ export function registerOrdersRoutes(app, deps) {
     }
 
     return `${safeFileName}.pdf`
+  }
+
+  function normalizeShippingDocumentType(value) {
+    const normalized = String(value ?? '').trim().toLowerCase()
+
+    if (normalized === 'signed_bol' || normalized === 'signed-bol') {
+      return 'signed_bol'
+    }
+
+    if (normalized === 'inspection_sheet' || normalized === 'inspection-sheet') {
+      return 'inspection_sheet'
+    }
+
+    return ''
+  }
+
+  function extensionForShippingDocumentMimeType(mimeType) {
+    const normalized = String(mimeType ?? '').trim().toLowerCase()
+
+    switch (normalized) {
+      case 'image/jpeg':
+        return 'jpg'
+      case 'image/png':
+        return 'png'
+      case 'image/webp':
+        return 'webp'
+      case 'image/heic':
+        return 'heic'
+      case 'image/heif':
+        return 'heif'
+      default:
+        return 'pdf'
+    }
+  }
+
+  function ensureShippingDocumentFileName(fileName, mimeType, fallbackBaseName) {
+    const safeName = sanitizeDownloadFileName(fileName, fallbackBaseName)
+
+    if (/\.[a-zA-Z0-9]{2,8}$/.test(safeName)) {
+      return safeName
+    }
+
+    return `${safeName}.${extensionForShippingDocumentMimeType(mimeType)}`
+  }
+
+  function buildOrderIdentityFilter({
+    orderKey,
+    mondayItemId,
+    orderNumber,
+  }) {
+    const normalizedOrderKey = String(orderKey ?? '').trim()
+    const normalizedMondayItemId = String(mondayItemId ?? '').trim()
+    const normalizedOrderNumber = String(orderNumber ?? '').trim()
+    const filters = []
+
+    if (normalizedOrderKey) {
+      filters.push({ orderKey: normalizedOrderKey })
+    }
+
+    if (normalizedMondayItemId) {
+      filters.push({ monday_item_id: normalizedMondayItemId })
+    }
+
+    if (normalizedOrderNumber) {
+      filters.push({ order_number: normalizedOrderNumber })
+    }
+
+    if (filters.length === 0) {
+      return null
+    }
+
+    if (filters.length === 1) {
+      return filters[0]
+    }
+
+    return { $or: filters }
+  }
+
+  function resolveShippingDocumentFieldNames(documentType) {
+    if (documentType === 'signed_bol') {
+      return {
+        documentLabel: 'Signed BOL',
+        storageFolder: 'signed-bol',
+        fileNameField: 'signed_bol',
+        urlFieldPrimary: 'Signed_BOL_source',
+        urlFieldLegacy: 'Signed_BOL',
+        uploadedAtField: 'signed_bol_uploaded_at',
+        storagePathField: 'signed_bol_storage_path',
+        mimeTypeField: 'signed_bol_mime_type',
+      }
+    }
+
+    return {
+      documentLabel: 'Inspection Sheet',
+      storageFolder: 'inspection-sheet',
+      fileNameField: 'inspection_sheet',
+      urlFieldPrimary: 'Inspection_sheet_source',
+      urlFieldLegacy: 'Inspection_sheet',
+      uploadedAtField: 'inspection_sheet_uploaded_at',
+      storagePathField: 'inspection_sheet_storage_path',
+      mimeTypeField: 'inspection_sheet_mime_type',
+    }
   }
 
   async function exchangeQuickBooksRefreshToken({
@@ -934,6 +1046,106 @@ export function registerOrdersRoutes(app, deps) {
     return alertDocument
   }
 
+  async function createOrdersMovedToShippedOutsideWebsiteAdminAlert({
+    authUsersCollection,
+    mobileAlertsCollection,
+    publicUser,
+    refreshSummary,
+  }) {
+    const rawDetectedOrders = Array.isArray(refreshSummary?.mondayMovedToShippedOutsideWebsiteOrders)
+      ? refreshSummary.mondayMovedToShippedOutsideWebsiteOrders
+      : []
+    const detectedOrders = rawDetectedOrders
+      .map((entry) => ({
+        orderKey: normalizeOptionalShortText(entry?.orderKey, 200) || null,
+        orderNumber: normalizeOrderNumberInput(entry?.orderNumber) || null,
+        orderName: normalizeOptionalShortText(entry?.orderName, 260) || null,
+        mondayItemId: normalizeOptionalShortText(entry?.mondayItemId, 120) || null,
+        mondayItemUrl: normalizeOptionalShortText(entry?.mondayItemUrl, 500) || null,
+        shippedAt: normalizeOptionalShortText(entry?.shippedAt, 80) || null,
+      }))
+      .filter((entry) => Boolean(entry.orderKey || entry.mondayItemId || entry.orderNumber))
+      .slice(0, 100)
+
+    const detectedCountRaw = Number(refreshSummary?.mondayMovedToShippedOutsideWebsiteCount)
+    const detectedCount = Number.isFinite(detectedCountRaw)
+      ? Math.max(0, Math.floor(detectedCountRaw))
+      : detectedOrders.length
+
+    if (detectedCount <= 0 || detectedOrders.length === 0) {
+      return null
+    }
+
+    const adminUsers = await authUsersCollection
+      .find(
+        {
+          approvalStatus: authApprovalApproved,
+          role: authRoleAdmin,
+        },
+        {
+          projection: {
+            _id: 0,
+          },
+        },
+      )
+      .toArray()
+
+    const recipientUids = adminUsers
+      .map((document) => toPublicAuthUser(document))
+      .filter((user) => Boolean(user?.uid && user.isApproved && user.isAdmin))
+      .map((user) => String(user.uid))
+
+    if (recipientUids.length === 0) {
+      return null
+    }
+
+    const senderLabel = normalizeOptionalShortText(publicUser?.displayName, 120)
+      || normalizeOptionalShortText(publicUser?.email, 200)
+      || 'A team member'
+    const sampleLabels = detectedOrders
+      .slice(0, 6)
+      .map((entry) => entry.orderNumber || entry.mondayItemId || entry.orderKey)
+      .filter(Boolean)
+    const overflowCount = Math.max(0, detectedCount - sampleLabels.length)
+    const sampleText = sampleLabels.join(', ')
+    const now = new Date().toISOString()
+
+    const alertDocument = {
+      id: randomUUID(),
+      title: 'Orders: Direct Monday Shipping Detected',
+      message:
+        `${senderLabel} refreshed orders and detected ${detectedCount} order(s) moved from Order Track to Shipped directly in Monday (outside website shipping flow).`
+        + (sampleText ? ` Orders: ${sampleText}` : '')
+        + (overflowCount > 0 ? `, +${overflowCount} more.` : '.'),
+      isUpdate: false,
+      targetMode: mobileAlertTargetModeSelected,
+      targetUserUids: recipientUids,
+      createdByUid: String(publicUser?.uid ?? '').trim() || null,
+      createdByEmail: normalizeEmail(publicUser?.email) || null,
+      delivery: {
+        targetUserCount: recipientUids.length,
+        pushTokenCount: 0,
+        pushAcceptedCount: 0,
+        pushErrorCount: 0,
+        errorSamples: [],
+      },
+      metadata: {
+        type: 'orders_monday_direct_ship_detected',
+        detectedCount,
+        refreshedAt: normalizeOptionalShortText(refreshSummary?.refreshedAt, 80) || now,
+        sourceUid: String(publicUser?.uid ?? '').trim() || null,
+        sourceEmail: normalizeEmail(publicUser?.email) || null,
+        orders: detectedOrders,
+      },
+      createdAt: now,
+      updatedAt: now,
+    }
+
+    await mobileAlertsCollection.insertOne(alertDocument)
+
+    return alertDocument
+  }
+
   async function resolveMondayOrderContext({
     mondayItemId,
     mondayOrdersCollection,
@@ -1306,6 +1518,16 @@ export function registerOrdersRoutes(app, deps) {
         String(orderDocument?.BOL_source ?? '').trim()
         || String(orderDocument?.BOL ?? '').trim()
         || null,
+      signedBol: String(orderDocument?.signed_bol ?? '').trim() || null,
+      signedBolUrl:
+        String(orderDocument?.Signed_BOL_source ?? '').trim()
+        || String(orderDocument?.Signed_BOL ?? '').trim()
+        || null,
+      inspectionSheet: String(orderDocument?.inspection_sheet ?? '').trim() || null,
+      inspectionSheetUrl:
+        String(orderDocument?.Inspection_sheet_source ?? '').trim()
+        || String(orderDocument?.Inspection_sheet ?? '').trim()
+        || null,
       poNumber: String(orderDocument?.po_number ?? '').trim() || null,
       notes: String(orderDocument?.monday_notes ?? '').trim() || null,
       description: String(orderDocument?.monday_description ?? '').trim() || null,
@@ -1403,6 +1625,12 @@ export function registerOrdersRoutes(app, deps) {
               BOL: 1,
               BOL_cached: 1,
               BOL_source: 1,
+              signed_bol: 1,
+              Signed_BOL: 1,
+              Signed_BOL_source: 1,
+              inspection_sheet: 1,
+              Inspection_sheet: 1,
+              Inspection_sheet_source: 1,
               po_number: 1,
               monday_notes: 1,
               monday_description: 1,
@@ -1801,10 +2029,39 @@ export function registerOrdersRoutes(app, deps) {
   app.post(
     '/api/orders/refresh',
     requireFirebaseAuth,
-    async (_req, res, next) => {
+    async (req, res, next) => {
       try {
         const summary = await refreshOrdersUnifiedCollection()
-        const { dashboardSnapshotsCollection } = await getCollections()
+        const publicUser = toPublicAuthUser(req.authUser)
+        const {
+          authUsersCollection,
+          dashboardSnapshotsCollection,
+          mobileAlertsCollection,
+        } = await getCollections()
+
+        let refreshAlertWarning = null
+        const movedOutsideWebsiteCount = Number(summary?.mondayMovedToShippedOutsideWebsiteCount)
+
+        if (Number.isFinite(movedOutsideWebsiteCount) && movedOutsideWebsiteCount > 0) {
+          try {
+            await createOrdersMovedToShippedOutsideWebsiteAdminAlert({
+              authUsersCollection,
+              mobileAlertsCollection,
+              publicUser,
+              refreshSummary: summary,
+            })
+          } catch (alertError) {
+            refreshAlertWarning =
+              normalizeOptionalShortText(alertError?.message, 280)
+              || 'Detected direct Monday shipping but failed to notify admins.'
+          }
+        }
+
+        if (refreshAlertWarning) {
+          const existingWarnings = Array.isArray(summary?.warnings) ? summary.warnings : []
+          summary.warnings = [...new Set([...existingWarnings, refreshAlertWarning])]
+        }
+
         await dashboardSnapshotsCollection.updateOne(
           { snapshotKey: 'orders_unified_refresh' },
           {
@@ -2379,6 +2636,460 @@ export function registerOrdersRoutes(app, deps) {
         return res.status(201).json({
           ok: true,
           alert: toPublicMobileAlert(alertDocument),
+        })
+      } catch (error) {
+        next(error)
+      }
+    },
+  )
+
+  // POST /api/orders/documents/upload — upload shipping documents to Firebase
+  // Storage, then persist the URL on the unified order row.
+  app.post(
+    '/api/orders/documents/upload',
+    requireFirebaseAuth,
+    requireManagerOrAdminRole,
+    async (req, res, next) => {
+      try {
+        const documentType = normalizeShippingDocumentType(req.body?.documentType)
+        const mimeType = String(req.body?.mimeType ?? 'application/pdf')
+          .trim()
+          .toLowerCase()
+        const base64Payload = req.body?.fileBase64
+          ?? req.body?.fileData
+          ?? req.body?.data
+          ?? null
+        const requestedFileName = String(req.body?.fileName ?? '').trim()
+        const orderIdentityFilter = buildOrderIdentityFilter({
+          orderKey: req.body?.orderKey,
+          mondayItemId: req.body?.mondayItemId,
+          orderNumber: req.body?.orderNumber,
+        })
+
+        if (!orderIdentityFilter) {
+          return res.status(400).json({
+            error: 'orderKey, mondayItemId, or orderNumber is required.',
+          })
+        }
+
+        if (!documentType) {
+          return res.status(400).json({
+            error: 'documentType must be signed_bol or inspection_sheet.',
+          })
+        }
+
+        if (!shippingDocumentMimeTypes.has(mimeType)) {
+          return res.status(400).json({
+            error: 'Unsupported document mimeType.',
+          })
+        }
+
+        const fileBuffer = decodeBase64Image(base64Payload)
+
+        if (!fileBuffer || fileBuffer.length <= 0) {
+          return res.status(400).json({
+            error: 'fileBase64 is required.',
+          })
+        }
+
+        if (fileBuffer.length > 10 * 1024 * 1024) {
+          return res.status(400).json({
+            error: 'File exceeds 10MB limit.',
+          })
+        }
+
+        const {
+          ordersUnifiedCollection,
+        } = await getCollections()
+        const bucket = typeof getOrderPhotosBucket === 'function'
+          ? getOrderPhotosBucket()
+          : null
+
+        if (!bucket) {
+          throw Object.assign(new Error('Order photo storage bucket is unavailable.'), { status: 500 })
+        }
+
+        const orderDocument = await ordersUnifiedCollection.findOne(
+          orderIdentityFilter,
+          {
+            projection: {
+              _id: 0,
+              orderKey: 1,
+              monday_item_id: 1,
+              order_number: 1,
+              is_shipped: 1,
+              signed_bol: 1,
+              Signed_BOL_source: 1,
+              Signed_BOL: 1,
+              inspection_sheet: 1,
+              Inspection_sheet_source: 1,
+              Inspection_sheet: 1,
+            },
+          },
+        )
+
+        if (!orderDocument) {
+          return res.status(404).json({
+            error: 'Order was not found.',
+          })
+        }
+
+        const documentFields = resolveShippingDocumentFieldNames(documentType)
+        const now = new Date().toISOString()
+        const storageOrderId = sanitizeStorageSegment(
+          orderDocument?.order_number
+          || orderDocument?.monday_item_id
+          || orderDocument?.orderKey
+          || req.body?.orderNumber,
+          'order',
+        )
+        const storedFileName = ensureShippingDocumentFileName(
+          requestedFileName,
+          mimeType,
+          `${storageOrderId}-${documentFields.storageFolder}.pdf`,
+        )
+        const storagePath = `orders-shipping-docs/${storageOrderId}/${documentFields.storageFolder}/${Date.now()}-${storedFileName}`
+        const downloadToken = typeof randomUUID === 'function'
+          ? randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`
+
+        await bucket.file(storagePath).save(fileBuffer, {
+          resumable: false,
+          metadata: {
+            contentType: mimeType,
+            metadata: {
+              firebaseStorageDownloadTokens: downloadToken,
+              orderKey: String(orderDocument?.orderKey ?? '').trim() || null,
+              mondayItemId: String(orderDocument?.monday_item_id ?? '').trim() || null,
+              orderNumber: String(orderDocument?.order_number ?? '').trim() || null,
+              documentType,
+              uploadedAt: now,
+            },
+          },
+        })
+
+        const downloadUrl = buildFirebaseStorageDownloadUrl(bucket.name, storagePath, downloadToken)
+        const updateFilter = buildOrderIdentityFilter({
+          orderKey: orderDocument?.orderKey,
+          mondayItemId: orderDocument?.monday_item_id,
+          orderNumber: orderDocument?.order_number,
+        })
+
+        if (!updateFilter) {
+          return res.status(409).json({
+            error: 'Could not resolve order identity for document update.',
+          })
+        }
+
+        await ordersUnifiedCollection.updateOne(
+          updateFilter,
+          {
+            $set: {
+              [documentFields.fileNameField]: storedFileName,
+              [documentFields.urlFieldPrimary]: downloadUrl,
+              [documentFields.urlFieldLegacy]: downloadUrl,
+              [documentFields.uploadedAtField]: now,
+              [documentFields.storagePathField]: storagePath,
+              [documentFields.mimeTypeField]: mimeType,
+              updatedAt: now,
+              lastSyncedAt: now,
+            },
+          },
+        )
+
+        const refreshedOrderDocument = await ordersUnifiedCollection.findOne(
+          updateFilter,
+          {
+            projection: {
+              _id: 0,
+              orderKey: 1,
+              monday_item_id: 1,
+              order_number: 1,
+              is_shipped: 1,
+              signed_bol: 1,
+              Signed_BOL_source: 1,
+              Signed_BOL: 1,
+              inspection_sheet: 1,
+              Inspection_sheet_source: 1,
+              Inspection_sheet: 1,
+            },
+          },
+        )
+
+        return res.status(201).json({
+          ok: true,
+          document: {
+            type: documentType,
+            label: documentFields.documentLabel,
+            fileName: storedFileName,
+            mimeType,
+            url: downloadUrl,
+            uploadedAt: now,
+          },
+          order: {
+            orderKey: String(refreshedOrderDocument?.orderKey ?? '').trim() || null,
+            mondayItemId: String(refreshedOrderDocument?.monday_item_id ?? '').trim() || null,
+            orderNumber: String(refreshedOrderDocument?.order_number ?? '').trim() || null,
+            isShipped: Boolean(refreshedOrderDocument?.is_shipped),
+            signedBol: String(refreshedOrderDocument?.signed_bol ?? '').trim() || null,
+            signedBolUrl:
+              String(refreshedOrderDocument?.Signed_BOL_source ?? '').trim()
+              || String(refreshedOrderDocument?.Signed_BOL ?? '').trim()
+              || null,
+            inspectionSheet: String(refreshedOrderDocument?.inspection_sheet ?? '').trim() || null,
+            inspectionSheetUrl:
+              String(refreshedOrderDocument?.Inspection_sheet_source ?? '').trim()
+              || String(refreshedOrderDocument?.Inspection_sheet ?? '').trim()
+              || null,
+          },
+        })
+      } catch (error) {
+        next(error)
+      }
+    },
+  )
+
+  // POST /api/orders/ship — move an order from Order Track to Shipped in
+  // Monday after required website shipping docs are uploaded.
+  app.post(
+    '/api/orders/ship',
+    requireFirebaseAuth,
+    requireManagerOrAdminRole,
+    async (req, res, next) => {
+      try {
+        const orderIdentityFilter = buildOrderIdentityFilter({
+          orderKey: req.body?.orderKey,
+          mondayItemId: req.body?.mondayItemId,
+          orderNumber: req.body?.orderNumber,
+        })
+
+        if (!orderIdentityFilter) {
+          return res.status(400).json({
+            error: 'orderKey, mondayItemId, or orderNumber is required.',
+          })
+        }
+
+        const {
+          mondayOrdersCollection,
+          ordersUnifiedCollection,
+        } = await getCollections()
+        const orderDocument = await ordersUnifiedCollection.findOne(
+          orderIdentityFilter,
+          {
+            projection: {
+              _id: 0,
+              orderKey: 1,
+              order_number: 1,
+              order_name: 1,
+              monday_item_id: 1,
+              monday_board_id: 1,
+              monday_board_name: 1,
+              Monday_url: 1,
+              is_shipped: 1,
+              signed_bol: 1,
+              Signed_BOL_source: 1,
+              Signed_BOL: 1,
+              inspection_sheet: 1,
+              Inspection_sheet_source: 1,
+              Inspection_sheet: 1,
+            },
+          },
+        )
+
+        if (!orderDocument) {
+          return res.status(404).json({ error: 'Order was not found.' })
+        }
+
+        const mondayItemId = String(orderDocument?.monday_item_id ?? '').trim()
+
+        if (!mondayItemId) {
+          return res.status(409).json({
+            error: 'This order is not linked to a Monday item, so it cannot be shipped from the website.',
+          })
+        }
+
+        const signedBolValue = String(orderDocument?.signed_bol ?? '').trim()
+        const signedBolUrl =
+          String(orderDocument?.Signed_BOL_source ?? '').trim()
+          || String(orderDocument?.Signed_BOL ?? '').trim()
+          || null
+        const inspectionSheetValue = String(orderDocument?.inspection_sheet ?? '').trim()
+        const inspectionSheetUrl =
+          String(orderDocument?.Inspection_sheet_source ?? '').trim()
+          || String(orderDocument?.Inspection_sheet ?? '').trim()
+          || null
+
+        if (!signedBolValue && !signedBolUrl) {
+          return res.status(409).json({
+            error: 'Signed BOL must be uploaded before shipping.',
+          })
+        }
+
+        if (!inspectionSheetValue && !inspectionSheetUrl) {
+          return res.status(409).json({
+            error: 'Inspection Sheet must be uploaded before shipping.',
+          })
+        }
+
+        if (Boolean(orderDocument?.is_shipped)) {
+          return res.status(409).json({
+            error: 'Order is already shipped. You can still upload shipping documents.',
+          })
+        }
+
+        const sourceBoardId = String(orderDocument?.monday_board_id ?? '').trim()
+        const targetBoardId = String(process.env.MONDAY_SHIPPED_BOARD_ID ?? '').trim()
+        const targetBoardUrl = String(process.env.MONDAY_SHIPPED_BOARD_URL ?? '').trim() || null
+
+        if (!sourceBoardId) {
+          return res.status(409).json({
+            error: 'Could not resolve source Monday board for this order.',
+          })
+        }
+
+        if (!targetBoardId) {
+          return res.status(500).json({
+            error: 'MONDAY_SHIPPED_BOARD_ID is not configured.',
+          })
+        }
+
+        const moveResult = await moveMondayItemToBoard({
+          sourceBoardId,
+          targetBoardId,
+          itemId: mondayItemId,
+        })
+        const movedSnapshot = await fetchMondayBoardItemsByIds({
+          boardId: targetBoardId,
+          boardName: moveResult?.targetBoardName,
+          boardUrl: targetBoardUrl,
+          itemIds: [mondayItemId],
+        })
+        const movedOrder = Array.isArray(movedSnapshot?.orders)
+          ? movedSnapshot.orders[0]
+          : null
+        const now = new Date().toISOString()
+        const mondayUpdatedAt = String(movedOrder?.updatedAt ?? '').trim() || now
+        const mondayStatus = String(movedOrder?.statusLabel ?? '').trim() || 'Shipped'
+        const shippedAt = String(movedOrder?.shippedAt ?? '').trim() || now
+        const progressStatusDetails = normalizeProgressStatusDetails(movedOrder?.progressStatusDetails)
+        const publicUser = toPublicAuthUser(req.authUser)
+        const updateFilter = buildOrderIdentityFilter({
+          orderKey: orderDocument?.orderKey,
+          mondayItemId,
+          orderNumber: orderDocument?.order_number,
+        })
+
+        if (!updateFilter) {
+          return res.status(409).json({
+            error: 'Could not resolve order identity for shipping update.',
+          })
+        }
+
+        await Promise.all([
+          mondayOrdersCollection.updateOne(
+            { mondayItemId },
+            {
+              $set: {
+                mondayItemId,
+                mondayBoardId: targetBoardId,
+                mondayBoardName: moveResult?.targetBoardName || String(orderDocument?.monday_board_name ?? '').trim() || null,
+                mondayBoardUrl: targetBoardUrl,
+                orderName: String(movedOrder?.name ?? '').trim() || String(orderDocument?.order_name ?? '').trim() || null,
+                jobNumber: String(movedOrder?.jobNumber ?? '').trim() || String(orderDocument?.order_number ?? '').trim() || null,
+                statusLabel: 'Shipped',
+                stageLabel: String(movedOrder?.stageLabel ?? '').trim() || null,
+                readyLabel: String(movedOrder?.readyLabel ?? '').trim() || null,
+                progressStatusDetails,
+                progressPercent: Number.isFinite(Number(movedOrder?.progressPercent))
+                  ? Number(movedOrder.progressPercent)
+                  : null,
+                orderDate: String(movedOrder?.orderDate ?? '').trim() || null,
+                dueDate: String(movedOrder?.dueDate ?? '').trim() || null,
+                computedDueDate: String(movedOrder?.computedDueDate ?? '').trim() || null,
+                effectiveDueDate: String(movedOrder?.effectiveDueDate ?? '').trim() || null,
+                leadTimeDays: Number.isFinite(Number(movedOrder?.leadTimeDays))
+                  ? Number(movedOrder.leadTimeDays)
+                  : null,
+                shippedAt,
+                movedToShippedAt: now,
+                isDone: true,
+                isLate: Boolean(movedOrder?.isLate),
+                daysLate: Number.isFinite(Number(movedOrder?.daysLate))
+                  ? Number(movedOrder.daysLate)
+                  : 0,
+                mondayItemUrl: String(movedOrder?.itemUrl ?? '').trim() || String(orderDocument?.Monday_url ?? '').trim() || null,
+                mondayUpdatedAt,
+                updatedAt: now,
+                lastSeenAt: now,
+              },
+              $setOnInsert: {
+                createdAt: now,
+              },
+            },
+            { upsert: true },
+          ),
+          ordersUnifiedCollection.updateOne(
+            updateFilter,
+            {
+              $set: {
+                has_monday_record: true,
+                monday_item_id: mondayItemId,
+                monday_board_id: targetBoardId,
+                monday_board_name: moveResult?.targetBoardName || String(orderDocument?.monday_board_name ?? '').trim() || 'Shipped Orders',
+                Monday_url: String(movedOrder?.itemUrl ?? '').trim() || String(orderDocument?.Monday_url ?? '').trim() || null,
+                Monday_status: 'Shipped',
+                is_shipped: true,
+                shipped_at: shippedAt,
+                shipped_at_inferred: String(movedOrder?.shippedAt ?? '').trim() ? false : true,
+                Due_date:
+                  String(movedOrder?.effectiveDueDate ?? '').trim()
+                  || String(movedOrder?.dueDate ?? '').trim()
+                  || String(movedOrder?.computedDueDate ?? '').trim()
+                  || null,
+                Lead_time_days: Number.isFinite(Number(movedOrder?.leadTimeDays))
+                  ? Number(movedOrder.leadTimeDays)
+                  : null,
+                progress_percent: Number.isFinite(Number(movedOrder?.progressPercent))
+                  ? Number(movedOrder.progressPercent)
+                  : null,
+                progress_status_details: progressStatusDetails,
+                order_date: String(movedOrder?.orderDate ?? '').trim() || null,
+                monday_updated_at: mondayUpdatedAt,
+                moved_to_shipped_via_website_at: now,
+                moved_to_shipped_via_website_by_uid: String(publicUser?.uid ?? '').trim() || null,
+                moved_to_shipped_via_website_by_email: normalizeEmail(publicUser?.email) || null,
+                monday_ship_mapping_mode: String(moveResult?.mappingMode ?? '').trim() || null,
+                updatedAt: now,
+                lastSyncedAt: now,
+              },
+            },
+          ),
+        ])
+
+        return res.json({
+          ok: true,
+          move: {
+            itemId: mondayItemId,
+            sourceBoardId: moveResult?.sourceBoardId || sourceBoardId,
+            sourceBoardName: moveResult?.sourceBoardName || null,
+            targetBoardId: moveResult?.targetBoardId || targetBoardId,
+            targetBoardName: moveResult?.targetBoardName || null,
+            targetGroupId: moveResult?.targetGroupId || null,
+            targetGroupTitle: moveResult?.targetGroupTitle || null,
+            mappingMode: moveResult?.mappingMode || 'explicit',
+            mappedColumnCount: Number(moveResult?.mappedColumnCount) || 0,
+            totalSourceColumnCount: Number(moveResult?.totalSourceColumnCount) || 0,
+          },
+          order: {
+            orderKey: String(orderDocument?.orderKey ?? '').trim() || null,
+            mondayItemId,
+            orderNumber: String(orderDocument?.order_number ?? '').trim() || null,
+            isShipped: true,
+            shippedAt,
+            mondayStatus,
+            mondayBoardId: targetBoardId,
+            mondayBoardName: moveResult?.targetBoardName || null,
+          },
         })
       } catch (error) {
         next(error)
@@ -3023,6 +3734,12 @@ export function registerOrdersRoutes(app, deps) {
                     BOL: 1,
                     BOL_cached: 1,
                     BOL_source: 1,
+                    signed_bol: 1,
+                    Signed_BOL: 1,
+                    Signed_BOL_source: 1,
+                    inspection_sheet: 1,
+                    Inspection_sheet: 1,
+                    Inspection_sheet_source: 1,
                     po_number: 1,
                     monday_notes: 1,
                     monday_description: 1,

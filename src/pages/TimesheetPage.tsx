@@ -17,6 +17,7 @@ import {
   DialogTitle,
   Divider,
   IconButton,
+  Menu,
   MenuItem,
   Paper,
   Popover,
@@ -33,7 +34,7 @@ import {
   TextField,
   Typography,
 } from '@mui/material'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { QUERY_KEYS } from '../lib/queryKeys'
 import {
@@ -81,7 +82,9 @@ import {
   formatMissingInfoDateLabel,
   formatMonthKeyLabel,
   getEntryCost,
+  getEntryOvertimeHours,
   getEntryRate,
+  getEntryRegularHours,
   getEntryTotalHours,
   isDateInRange,
   monthKeyFromIsoDate,
@@ -91,15 +94,10 @@ import {
   type BulkWorkerRow,
   type MissingWorkerReview,
 } from './timesheet/utils'
-import {
-  buildDailySheetSyncRows,
-  formatDailySheetSaveMessage,
-  hasEntriesForDate,
-} from './timesheet/dailySheetSync'
 import QuickBooksPage from './QuickBooksPage'
 import WorkersPage from './WorkersPage'
 
-type WorkerRangePreset = 'week' | 'month' | 'year' | 'custom'
+type WorkerRangePreset = 'week' | 'month' | 'year' | 'all' | 'custom'
 type ReportRangeMode = 'month' | 'custom'
 
 type DateReportWorkerRow = {
@@ -328,6 +326,242 @@ const REPORT_SUMMARY_CARD_SX = {
   flex: 1,
 } as const
 
+type DailySyncTimelineEntry = {
+  date: string
+  totalHours: number
+  rowId: string | null
+}
+
+function resolvePayrollWeekStartForSync(isoDate: string) {
+  const [year, month, day] = String(isoDate ?? '').split('-').map(Number)
+
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day) || !year || !month || !day) {
+    return null
+  }
+
+  const date = new Date(year, month - 1, day)
+
+  if (Number.isNaN(date.getTime())) {
+    return null
+  }
+
+  // Payroll week runs Thursday -> Wednesday.
+  const dayOfWeek = date.getDay()
+  const daysSinceThursday = (dayOfWeek - 4 + 7) % 7
+  date.setDate(date.getDate() - daysSinceThursday)
+
+  return date
+}
+
+function toIsoDateFromDate(value: Date) {
+  const year = value.getFullYear()
+  const month = String(value.getMonth() + 1).padStart(2, '0')
+  const day = String(value.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function buildDailySheetSyncRows(
+  bulkRows: BulkWorkerRow[],
+  workersById: Map<string, TimesheetWorker>,
+  entries: TimesheetEntry[],
+  targetDate: string,
+) {
+  const syncRows: Array<SyncDailyEntryRowInput & { sourceRowId: string }> = []
+  const invalidWorkerNames = new Set<string>()
+  const overtimeByRowId = new Map<string, number>()
+  const weekTotalHoursByWorkerId = new Map<string, number>()
+  const weekOvertimeHoursByWorkerId = new Map<string, number>()
+
+  const weekStartDate = resolvePayrollWeekStartForSync(targetDate)
+  const weekStartIso = weekStartDate ? toIsoDateFromDate(weekStartDate) : ''
+  const weekEndIso = weekStartDate
+    ? toIsoDateFromDate(new Date(weekStartDate.getFullYear(), weekStartDate.getMonth(), weekStartDate.getDate() + 6))
+    : ''
+
+  const workerWeekTimeline = new Map<string, DailySyncTimelineEntry[]>()
+
+  if (weekStartIso && weekEndIso) {
+    entries.forEach((entry) => {
+      if (!entry?.workerId || !entry?.date) {
+        return
+      }
+
+      if (entry.date < weekStartIso || entry.date > weekEndIso || entry.date === targetDate) {
+        return
+      }
+
+      const regularHours = Number(entry.hours)
+      const overtimeHours = Number(entry.overtimeHours ?? 0)
+      const totalHours = (Number.isFinite(regularHours) ? Math.max(0, regularHours) : 0)
+        + (Number.isFinite(overtimeHours) ? Math.max(0, overtimeHours) : 0)
+
+      if (totalHours <= 0) {
+        return
+      }
+
+      if (!workerWeekTimeline.has(entry.workerId)) {
+        workerWeekTimeline.set(entry.workerId, [])
+      }
+
+      workerWeekTimeline.get(entry.workerId)?.push({
+        date: entry.date,
+        totalHours,
+        rowId: null,
+      })
+    })
+  }
+
+  bulkRows.forEach((row) => {
+    const hasInput =
+      row.jobName.trim()
+      || row.hours.trim()
+      || row.notes.trim()
+      || row.stageId.trim()
+
+    if (!hasInput) {
+      return
+    }
+
+    const jobName = row.jobName.trim()
+    const stageId = row.stageId.trim()
+    const enteredHours = Number(row.hours)
+    const normalizedHours = Number.isFinite(enteredHours) ? enteredHours : Number.NaN
+
+    if (
+      !jobName
+      || !Number.isFinite(normalizedHours)
+      || normalizedHours <= 0
+    ) {
+      const workerName = workersById.get(row.workerId)?.fullName ?? 'Unknown worker'
+      invalidWorkerNames.add(workerName)
+      return
+    }
+
+    if (!workerWeekTimeline.has(row.workerId)) {
+      workerWeekTimeline.set(row.workerId, [])
+    }
+
+    workerWeekTimeline.get(row.workerId)?.push({
+      date: targetDate,
+      totalHours: normalizedHours,
+      rowId: row.id,
+    })
+
+    syncRows.push({
+      sourceRowId: row.id,
+      ...(row.entryId
+        ? {
+            entryId: row.entryId,
+          }
+        : {}),
+      workerId: row.workerId,
+      jobName,
+      hours: normalizedHours,
+      overtimeHours: 0,
+      notes: row.notes.trim(),
+      ...(stageId
+        ? {
+            stageId,
+          }
+        : {}),
+    })
+  })
+
+  if (weekStartIso && weekEndIso) {
+    workerWeekTimeline.forEach((timelineEntries, workerId) => {
+      const sortedTimeline = [...timelineEntries].sort((left, right) => left.date.localeCompare(right.date))
+
+      let cumulativeHours = 0
+      let workerWeekTotalHours = 0
+      let workerWeekOvertimeHours = 0
+
+      sortedTimeline.forEach((timelineEntry) => {
+        const regularHours = Math.min(timelineEntry.totalHours, Math.max(0, 40 - cumulativeHours))
+        const overtimeHours = Math.max(0, timelineEntry.totalHours - regularHours)
+
+        cumulativeHours += timelineEntry.totalHours
+        workerWeekTotalHours += timelineEntry.totalHours
+        workerWeekOvertimeHours += overtimeHours
+
+        if (timelineEntry.rowId) {
+          overtimeByRowId.set(timelineEntry.rowId, overtimeHours)
+        }
+      })
+
+      if (workerWeekTotalHours > 0) {
+        weekTotalHoursByWorkerId.set(workerId, workerWeekTotalHours)
+      }
+
+      if (workerWeekOvertimeHours > 0) {
+        weekOvertimeHoursByWorkerId.set(workerId, workerWeekOvertimeHours)
+      }
+    })
+  }
+
+  const syncRowsWithAutoOvertime: SyncDailyEntryRowInput[] = syncRows.map((row) => {
+    const overtimeHours = overtimeByRowId.get(row.sourceRowId) ?? 0
+    const regularHours = Math.max(0, Number(row.hours) - overtimeHours)
+
+    return {
+      ...(row.entryId
+        ? {
+            entryId: row.entryId,
+          }
+        : {}),
+      workerId: row.workerId,
+      ...(row.stageId
+        ? {
+            stageId: row.stageId,
+          }
+        : {}),
+      jobName: row.jobName,
+      hours: regularHours,
+      overtimeHours,
+      notes: row.notes,
+    }
+  })
+
+  return {
+    invalidWorkers: [...invalidWorkerNames],
+    syncRows: syncRowsWithAutoOvertime,
+    overtimeByRowId,
+    weekTotalHoursByWorkerId,
+    weekOvertimeHoursByWorkerId,
+    weekStartIso,
+    weekEndIso,
+  }
+}
+
+function hasEntriesForDate(entries: TimesheetEntry[], date: string) {
+  return entries.some((entry) => entry.date === date)
+}
+
+function formatDailySheetSaveMessage(summary: {
+  insertedCount: number
+  updatedCount: number
+  deletedCount: number
+}) {
+  const statusParts: string[] = []
+
+  if (summary.insertedCount > 0) {
+    statusParts.push(`${summary.insertedCount} added`)
+  }
+
+  if (summary.updatedCount > 0) {
+    statusParts.push(`${summary.updatedCount} updated`)
+  }
+
+  if (summary.deletedCount > 0) {
+    statusParts.push(`${summary.deletedCount} removed`)
+  }
+
+  if (statusParts.length === 0) {
+    return 'Daily sheet saved.'
+  }
+
+  return `Daily sheet saved: ${statusParts.join(', ')}.`
+}
+
 function toIsoDateOnly(value: string | null | undefined) {
   const normalized = String(value ?? '').trim()
 
@@ -440,6 +674,15 @@ function isGeneralJobReference(value: string | null | undefined) {
   return Boolean(digits && /^0+$/.test(digits))
 }
 
+function escapeHtml(value: string) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
 export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPageProps) {
   const { appUser, getIdToken } = useAuth()
   const canAccessManagerSheet =
@@ -524,9 +767,10 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
   const [missingReviewByKey, setMissingReviewByKey] =
     useState<Record<string, MissingWorkerReview>>({})
   const [workerRangePreset, setWorkerRangePreset] =
-    useState<WorkerRangePreset>('month')
+    useState<WorkerRangePreset>('all')
   const [workerCustomStartDate, setWorkerCustomStartDate] = useState(todayIsoDate())
   const [workerCustomEndDate, setWorkerCustomEndDate] = useState(todayIsoDate())
+  const [workerPrintMenuAnchorEl, setWorkerPrintMenuAnchorEl] = useState<HTMLElement | null>(null)
   const [profitInfoAnchorEl, setProfitInfoAnchorEl] = useState<HTMLElement | null>(null)
   const [profitInfoPopup, setProfitInfoPopup] = useState<{
     jobName: string
@@ -1031,6 +1275,13 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
   }, [selectedJobEntries, stageOrderById, stagesById, workersById])
 
   const workerDateRange = useMemo(() => {
+    if (workerRangePreset === 'all') {
+      return {
+        start: undefined,
+        end: undefined,
+      }
+    }
+
     const end = todayIsoDate()
 
     if (workerRangePreset === 'week') {
@@ -1070,6 +1321,14 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     )
   }, [sortedEntries, workerDateRange.end, workerDateRange.start, workerViewWorkerId])
 
+  const workerAllEntries = useMemo(() => {
+    if (!workerViewWorkerId) {
+      return []
+    }
+
+    return sortedEntries.filter((entry) => entry.workerId === workerViewWorkerId)
+  }, [sortedEntries, workerViewWorkerId])
+
   const workerByJobRows = useMemo(() => {
     const grouped = new Map<
       string,
@@ -1101,6 +1360,122 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
 
     return [...grouped.values()].sort((left, right) => right.totalHours - left.totalHours)
   }, [workerFilteredEntries, workersById])
+
+  const selectedWorkerHoursBreakdown = useMemo(() => {
+    const resolvePayrollWeekStartIso = (dateValue: string) => {
+      const normalizedIsoDate = String(dateValue ?? '').trim().slice(0, 10)
+
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(normalizedIsoDate)) {
+        return ''
+      }
+
+      const [year, month, day] = normalizedIsoDate.split('-').map(Number)
+
+      if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day) || !year || !month || !day) {
+        return ''
+      }
+
+      const date = new Date(year, month - 1, day)
+
+      if (Number.isNaN(date.getTime())) {
+        return ''
+      }
+
+      // Payroll week runs Thursday -> Wednesday.
+      const dayOfWeek = date.getDay()
+      const daysSinceThursday = (dayOfWeek - 4 + 7) % 7
+      date.setDate(date.getDate() - daysSinceThursday)
+
+      const startYear = date.getFullYear()
+      const startMonth = String(date.getMonth() + 1).padStart(2, '0')
+      const startDay = String(date.getDate()).padStart(2, '0')
+      return `${startYear}-${startMonth}-${startDay}`
+    }
+
+    const entriesByPayrollWeek = new Map<string, Array<{
+      date: string
+      createdAt: string
+      totalHours: number
+      inRange: boolean
+    }>>()
+    let parsedWeekEntriesCount = 0
+
+    workerAllEntries.forEach((entry) => {
+      const weekKey = resolvePayrollWeekStartIso(entry.date)
+
+      if (!weekKey) {
+        return
+      }
+
+      if (!entriesByPayrollWeek.has(weekKey)) {
+        entriesByPayrollWeek.set(weekKey, [])
+      }
+
+      entriesByPayrollWeek.get(weekKey)?.push({
+        date: entry.date,
+        createdAt: entry.createdAt,
+        totalHours: getEntryTotalHours(entry),
+        inRange: isDateInRange(entry.date, workerDateRange.start, workerDateRange.end),
+      })
+      parsedWeekEntriesCount += 1
+    })
+
+    let regularHours = 0
+    let overtimeHours = 0
+
+    entriesByPayrollWeek.forEach((weekEntries) => {
+      const sortedWeekEntries = [...weekEntries].sort((left, right) => {
+        const byDate = left.date.localeCompare(right.date)
+
+        if (byDate !== 0) {
+          return byDate
+        }
+
+        const leftCreatedAt = new Date(left.createdAt).getTime()
+        const rightCreatedAt = new Date(right.createdAt).getTime()
+        const normalizedLeftCreatedAt = Number.isFinite(leftCreatedAt) ? leftCreatedAt : 0
+        const normalizedRightCreatedAt = Number.isFinite(rightCreatedAt) ? rightCreatedAt : 0
+
+        return normalizedLeftCreatedAt - normalizedRightCreatedAt
+      })
+
+      let weeklyRunningHours = 0
+
+      sortedWeekEntries.forEach((weekEntry) => {
+        const entryRegularHours = Math.min(weekEntry.totalHours, Math.max(0, 40 - weeklyRunningHours))
+        const entryOvertimeHours = Math.max(0, weekEntry.totalHours - entryRegularHours)
+
+        weeklyRunningHours += weekEntry.totalHours
+
+        if (!weekEntry.inRange) {
+          return
+        }
+
+        regularHours += entryRegularHours
+        overtimeHours += entryOvertimeHours
+      })
+    })
+
+    if (parsedWeekEntriesCount === 0 && workerFilteredEntries.length > 0) {
+      return workerFilteredEntries.reduce(
+        (accumulator, entry) => {
+          accumulator.regularHours += getEntryRegularHours(entry)
+          accumulator.overtimeHours += getEntryOvertimeHours(entry)
+
+          return accumulator
+        },
+        {
+          regularHours: 0,
+          overtimeHours: 0,
+        },
+      )
+    }
+
+    return {
+      regularHours,
+      overtimeHours,
+    }
+  }, [workerAllEntries, workerDateRange.end, workerDateRange.start, workerFilteredEntries])
 
   const workerReportRows = useMemo(() => {
     const rowsByWorkerId = new Map<string, {
@@ -1267,6 +1642,11 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
 
     return map
   }, [bulkRows])
+
+  const dailySheetPreview = useMemo(
+    () => buildDailySheetSyncRows(bulkRows, workersById, entries, bulkDate),
+    [bulkRows, workersById, entries, bulkDate],
+  )
 
   const selectedJobExportRows = useMemo(
     () => buildExportRows(selectedJobEntries, workersById, stagesById),
@@ -3811,10 +4191,13 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
       return
     }
 
-    const { invalidWorkers, syncRows } = buildDailySheetSyncRows(
-      bulkRows,
-      workersById,
-    )
+    const {
+      invalidWorkers,
+      syncRows,
+      weekOvertimeHoursByWorkerId,
+      weekStartIso,
+      weekEndIso,
+    } = dailySheetPreview
 
     if (invalidWorkers.length > 0) {
       setError(`Some rows are invalid. Fix: ${invalidWorkers.join(', ')}`)
@@ -3822,7 +4205,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     }
 
     if (syncRows.length === 0 && !hasEntriesForDate(entries, bulkDate)) {
-      setError('No valid rows to save. Fill job and regular or overtime hours for at least one worker.')
+      setError('No valid rows to save. Fill job and hours for at least one worker.')
       return
     }
 
@@ -3898,17 +4281,27 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
       }
 
       const baseMessage = formatDailySheetSaveMessage(response)
+      const workersWithOvertime = [...weekOvertimeHoursByWorkerId.entries()]
+        .filter(([, overtimeHours]) => overtimeHours > 0)
+        .map(([workerId, overtimeHours]) => {
+          const workerName = workersById.get(workerId)?.fullName ?? 'Unknown worker'
+          return `${workerName} (${formatHours(overtimeHours)}h OT)`
+        })
+
+      const overtimeNotice = workersWithOvertime.length > 0 && weekStartIso && weekEndIso
+        ? ` Overtime (${weekStartIso} to ${weekEndIso}): ${workersWithOvertime.join(', ')}.`
+        : ''
 
       if (unmatchedOrderNumbers.length > 0) {
         setSuccess(
           mismatchAlertFailed
-            ? `${baseMessage} Unmatched orders were saved, but admin notification failed.`
-            : `${baseMessage} Unmatched orders were saved and admin was notified.`,
+            ? `${baseMessage}${overtimeNotice} Unmatched orders were saved, but admin notification failed.`
+            : `${baseMessage}${overtimeNotice} Unmatched orders were saved and admin was notified.`,
         )
         return
       }
 
-      setSuccess(baseMessage)
+      setSuccess(`${baseMessage}${overtimeNotice}`)
     } catch (requestError) {
       const message =
         requestError instanceof Error
@@ -4582,6 +4975,162 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     setSuccess('Print dialog opened for View By Month.')
   }
 
+  const openWorkerPrintWindow = useCallback((
+    title: string,
+    rows: TimesheetEntry[],
+  ) => {
+    if (typeof window === 'undefined') {
+      setError('Print is not available in this environment.')
+      return false
+    }
+
+    const printWindow = window.open('', '_blank', 'noopener,noreferrer')
+
+    if (!printWindow) {
+      setError('Popup blocked. Please allow popups to print this report.')
+      return false
+    }
+
+    const rowsHtml = rows
+      .map((entry) => {
+        const workerName = workersById.get(entry.workerId)?.fullName ?? 'Unknown worker'
+        const stageName = entry.stageId ? stagesById.get(entry.stageId)?.name ?? 'Unknown stage' : '-'
+        const hours = formatHours(getEntryTotalHours(entry))
+        const rate = formatCurrency(getEntryRate(entry, workersById))
+        const cost = formatCurrency(getEntryCost(entry, workersById))
+        const notes = entry.notes?.trim() || '-'
+
+        return `
+          <tr>
+            <td>${escapeHtml(String(entry.date ?? ''))}</td>
+            <td>${escapeHtml(workerName)}</td>
+            <td>${escapeHtml(stageName)}</td>
+            <td>${escapeHtml(String(entry.jobName ?? '-'))}</td>
+            <td class="right">${escapeHtml(hours)}</td>
+            <td class="right">${escapeHtml(rate)}</td>
+            <td class="right">${escapeHtml(cost)}</td>
+            <td>${escapeHtml(notes)}</td>
+          </tr>
+        `
+      })
+      .join('')
+
+    const html = `
+      <html>
+        <head>
+          <title>${escapeHtml(title)}</title>
+          <style>
+            body { font-family: Arial, sans-serif; margin: 16px; color: #1f2937; }
+            h1 { margin: 0 0 4px; font-size: 20px; }
+            p { margin: 0 0 12px; color: #4b5563; }
+            table { width: 100%; border-collapse: collapse; }
+            th, td { border: 1px solid #d1d5db; padding: 6px 8px; font-size: 12px; vertical-align: top; }
+            th { background: #f3f4f6; text-align: left; }
+            .right { text-align: right; }
+          </style>
+        </head>
+        <body>
+          <h1>${escapeHtml(title)}</h1>
+          <p>Generated: ${escapeHtml(new Date().toLocaleString())}</p>
+          <table>
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Worker</th>
+                <th>Stage</th>
+                <th>Job</th>
+                <th>Hours</th>
+                <th>Rate</th>
+                <th>Cost</th>
+                <th>Notes</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rowsHtml}
+            </tbody>
+          </table>
+        </body>
+      </html>
+    `
+
+    printWindow.document.open()
+    printWindow.document.write(html)
+    printWindow.document.close()
+    printWindow.focus()
+    printWindow.print()
+
+    return true
+  }, [stagesById, workersById])
+
+  const handleOpenWorkerPrintMenu = useCallback((event: ReactMouseEvent<HTMLElement>) => {
+    setWorkerPrintMenuAnchorEl(event.currentTarget)
+  }, [])
+
+  const handleCloseWorkerPrintMenu = useCallback(() => {
+    setWorkerPrintMenuAnchorEl(null)
+  }, [])
+
+  const handlePrintWorkerReport = useCallback((scope: 'selected' | 'all') => {
+    const startDate = workerDateRange.start ?? 'Any'
+    const endDate = workerDateRange.end ?? 'Any'
+    const rangeLabel = `${startDate} to ${endDate}`
+
+    if (scope === 'selected') {
+      if (!workerViewWorkerId) {
+        setError('Select a worker first.')
+        return
+      }
+
+      const workerName = workersById.get(workerViewWorkerId)?.fullName ?? 'Selected worker'
+
+      if (workerFilteredEntries.length === 0) {
+        setError('No rows available for this worker in the selected range.')
+        return
+      }
+
+      const printed = openWorkerPrintWindow(
+        `Worker Report - ${workerName} (${rangeLabel})`,
+        workerFilteredEntries,
+      )
+
+      if (printed) {
+        setSuccess(`Print dialog opened for ${workerName}.`)
+      }
+
+      handleCloseWorkerPrintMenu()
+      return
+    }
+
+    const allRowsInRange = sortedEntries.filter((entry) =>
+      isDateInRange(entry.date, workerDateRange.start, workerDateRange.end),
+    )
+
+    if (allRowsInRange.length === 0) {
+      setError('No rows available in the selected range.')
+      return
+    }
+
+    const printed = openWorkerPrintWindow(
+      `Worker Report - All Workers (${rangeLabel})`,
+      allRowsInRange,
+    )
+
+    if (printed) {
+      setSuccess('Print dialog opened for all workers in selected range.')
+    }
+
+    handleCloseWorkerPrintMenu()
+  }, [
+    handleCloseWorkerPrintMenu,
+    openWorkerPrintWindow,
+    sortedEntries,
+    workerDateRange.end,
+    workerDateRange.start,
+    workerFilteredEntries,
+    workerViewWorkerId,
+    workersById,
+  ])
+
   return (
     <Stack spacing={isReportsView ? 1.5 : 2.5}>
       {!isReportsView ? (
@@ -4673,7 +5222,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                       <TableCell>Stage</TableCell>
                       <TableCell>Job</TableCell>
                       <TableCell align="right">Hours</TableCell>
-                      <TableCell align="right">Overtime</TableCell>
+                      <TableCell>OT Status</TableCell>
                       <TableCell>Notes</TableCell>
                     </TableRow>
                   </TableHead>
@@ -4778,22 +5327,31 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                                 }
                               />
                             </TableCell>
-                            <TableCell align="right" sx={{ minWidth: 140 }}>
-                              <TextField
-                                size="small"
-                                fullWidth
-                                type="number"
-                                inputProps={{ min: 0, step: 0.25 }}
-                                placeholder="0"
-                                value={row.overtimeHours}
-                                onChange={(event) =>
-                                  handleBulkRowChange(
-                                    row.id,
-                                    'overtimeHours',
-                                    event.target.value,
+                            <TableCell sx={{ minWidth: 180 }}>
+                              {(() => {
+                                const overtimeHours = dailySheetPreview.overtimeByRowId.get(row.id) ?? 0
+                                const weekOvertimeHours = dailySheetPreview.weekOvertimeHoursByWorkerId.get(row.workerId) ?? 0
+                                const weekTotalHours = dailySheetPreview.weekTotalHoursByWorkerId.get(row.workerId) ?? 0
+
+                                if (overtimeHours <= 0) {
+                                  return (
+                                    <Typography variant="body2" color="text.secondary">
+                                      Regular
+                                    </Typography>
                                   )
                                 }
-                              />
+
+                                return (
+                                  <Stack spacing={0.2}>
+                                    <Typography variant="body2" sx={{ color: 'error.main', fontWeight: 700 }}>
+                                      Overtime: {formatHours(overtimeHours)}h
+                                    </Typography>
+                                    <Typography variant="caption" sx={{ color: 'error.main' }}>
+                                      Week total {formatHours(weekTotalHours)}h, OT {formatHours(weekOvertimeHours)}h
+                                    </Typography>
+                                  </Stack>
+                                )
+                              })()}
                             </TableCell>
                             <TableCell sx={{ minWidth: 260 }}>
                               <TextField
@@ -4828,6 +5386,10 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                 {!canAccessManagerSheet
                   ? 'Manager Progress tab is available for manager or admin accounts only.'
                   : 'Use the Manager Progress tab to update ready percentages by date.'}
+              </Typography>
+
+              <Typography variant="caption" color="text.secondary">
+                Overtime is auto-calculated each payroll week (Thursday to Wednesday). Enter only total hours.
               </Typography>
             </Stack>
           ) : null}
@@ -5476,8 +6038,9 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                   }
                 >
                   <MenuItem value="week">Last 7 days</MenuItem>
-                  <MenuItem value="month">Last 30 days (default)</MenuItem>
+                  <MenuItem value="month">Last 30 days</MenuItem>
                   <MenuItem value="year">Last 365 days</MenuItem>
+                  <MenuItem value="all">All time (default)</MenuItem>
                   <MenuItem value="custom">Custom range</MenuItem>
                 </TextField>
 
@@ -5507,6 +6070,74 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
               <Typography variant="body2" color="text.secondary">
                 Range: {workerDateRange.start ?? 'Any'} to {workerDateRange.end ?? 'Any'}
               </Typography>
+
+              <Stack
+                direction={{ xs: 'column', md: 'row' }}
+                justifyContent="space-between"
+                alignItems={{ xs: 'stretch', md: 'center' }}
+                gap={1.2}
+              >
+                <TextField
+                  select
+                  fullWidth
+                  label="Selected worker"
+                  value={workerViewWorkerId}
+                  onChange={(event) => setWorkerViewWorkerId(event.target.value)}
+                >
+                  {workerReportRows.length === 0 ? (
+                    <MenuItem disabled value="">
+                      No workers in selected range
+                    </MenuItem>
+                  ) : null}
+
+                  {workerReportRows.map((workerRow) => (
+                    <MenuItem key={workerRow.workerId} value={workerRow.workerId}>
+                      {workerRow.workerName}
+                    </MenuItem>
+                  ))}
+                </TextField>
+
+                <Stack direction="row" spacing={1} justifyContent={{ xs: 'flex-start', md: 'flex-end' }}>
+                  <Button
+                    variant="outlined"
+                    startIcon={<PrintRoundedIcon />}
+                    onClick={handleOpenWorkerPrintMenu}
+                  >
+                    Print report
+                  </Button>
+
+                  <Button
+                    variant="outlined"
+                    startIcon={<FileDownloadRoundedIcon />}
+                    onClick={exportWorkerHistoryToXlsx}
+                    disabled={workerExportRows.length === 0}
+                  >
+                    Download XL
+                  </Button>
+
+                  <Button
+                    variant="outlined"
+                    startIcon={<FileDownloadRoundedIcon />}
+                    onClick={exportWorkerHistoryToCsv}
+                    disabled={workerExportRows.length === 0}
+                  >
+                    Download CSV
+                  </Button>
+                </Stack>
+              </Stack>
+
+              <Menu
+                anchorEl={workerPrintMenuAnchorEl}
+                open={Boolean(workerPrintMenuAnchorEl)}
+                onClose={handleCloseWorkerPrintMenu}
+              >
+                <MenuItem onClick={() => handlePrintWorkerReport('selected')}>
+                  Print report for user
+                </MenuItem>
+                <MenuItem onClick={() => handlePrintWorkerReport('all')}>
+                  Print all
+                </MenuItem>
+              </Menu>
 
               <TableContainer sx={WORKSHEET_TABLE_CONTAINER_SX}>
                 <Table size="small" stickyHeader>
@@ -5573,44 +6204,9 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                 alignItems={{ xs: 'flex-start', md: 'center' }}
                 gap={1.2}
               >
-                <TextField
-                  select
-                  fullWidth
-                  label="Selected worker details"
-                  value={workerViewWorkerId}
-                  onChange={(event) => setWorkerViewWorkerId(event.target.value)}
-                >
-                  {workerReportRows.length === 0 ? (
-                    <MenuItem disabled value="">
-                      No workers in selected range
-                    </MenuItem>
-                  ) : null}
-
-                  {workerReportRows.map((workerRow) => (
-                    <MenuItem key={workerRow.workerId} value={workerRow.workerId}>
-                      {workerRow.workerName}
-                    </MenuItem>
-                  ))}
-                </TextField>
-
-                <Stack direction="row" spacing={1}>
-                  <Button
-                    variant="outlined"
-                    startIcon={<FileDownloadRoundedIcon />}
-                    onClick={exportWorkerHistoryToXlsx}
-                    disabled={workerExportRows.length === 0}
-                  >
-                    Download XL
-                  </Button>
-                  <Button
-                    variant="outlined"
-                    startIcon={<FileDownloadRoundedIcon />}
-                    onClick={exportWorkerHistoryToCsv}
-                    disabled={workerExportRows.length === 0}
-                  >
-                    Download CSV
-                  </Button>
-                </Stack>
+                <Typography variant="body2" color="text.secondary">
+                  Selected worker details
+                </Typography>
               </Stack>
 
               <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5}>
@@ -5620,6 +6216,24 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                   </Typography>
                   <Typography variant="h6" fontWeight={700}>
                     {formatHours(selectedWorkerReportRow?.totalHours ?? 0)} h
+                  </Typography>
+                </Paper>
+
+                <Paper variant="outlined" sx={{ p: 2, flex: 1 }}>
+                  <Typography variant="caption" color="text.secondary">
+                    Regular hours
+                  </Typography>
+                  <Typography variant="h6" fontWeight={700}>
+                    {formatHours(selectedWorkerHoursBreakdown.regularHours)} h
+                  </Typography>
+                </Paper>
+
+                <Paper variant="outlined" sx={{ p: 2, flex: 1 }}>
+                  <Typography variant="caption" color="text.secondary">
+                    Overtime hours
+                  </Typography>
+                  <Typography variant="h6" fontWeight={700} color={selectedWorkerHoursBreakdown.overtimeHours > 0 ? 'error.main' : 'text.primary'}>
+                    {formatHours(selectedWorkerHoursBreakdown.overtimeHours)} h
                   </Typography>
                 </Paper>
 
@@ -5657,78 +6271,89 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                 </Paper>
               </Stack>
 
-              <TableContainer sx={WORKSHEET_TABLE_CONTAINER_SX}>
-                <Table size="small" stickyHeader>
-                  <TableHead>
-                    <TableRow>
-                      <TableCell>Job</TableCell>
-                      <TableCell align="right">Hours</TableCell>
-                      <TableCell align="right">Cost</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {workerByJobRows.length === 0 ? (
+              <Box
+                sx={{
+                  display: 'grid',
+                  gridTemplateColumns: {
+                    xs: 'repeat(1, minmax(0, 1fr))',
+                    md: 'repeat(2, minmax(0, 1fr))',
+                  },
+                  gap: 1.25,
+                }}
+              >
+                <TableContainer sx={WORKSHEET_TABLE_CONTAINER_SX}>
+                  <Table size="small" stickyHeader>
+                    <TableHead>
                       <TableRow>
-                        <TableCell colSpan={3}>
-                          <Typography color="text.secondary">No rows in selected range.</Typography>
-                        </TableCell>
+                        <TableCell>Job</TableCell>
+                        <TableCell align="right">Hours</TableCell>
+                        <TableCell align="right">Cost</TableCell>
                       </TableRow>
-                    ) : (
-                      workerByJobRows.map((row) => (
-                        <TableRow key={row.jobName} hover>
-                          <TableCell>{row.jobName}</TableCell>
-                          <TableCell align="right">{formatHours(row.totalHours)}</TableCell>
-                          <TableCell align="right">{formatCurrency(row.totalCost)}</TableCell>
+                    </TableHead>
+                    <TableBody>
+                      {workerByJobRows.length === 0 ? (
+                        <TableRow>
+                          <TableCell colSpan={3}>
+                            <Typography color="text.secondary">No rows in selected range.</Typography>
+                          </TableCell>
                         </TableRow>
-                      ))
-                    )}
-                  </TableBody>
-                </Table>
-              </TableContainer>
-
-              <TableContainer sx={WORKSHEET_TABLE_CONTAINER_SX}>
-                <Table size="small" stickyHeader>
-                  <TableHead>
-                    <TableRow>
-                      <TableCell>Date</TableCell>
-                      <TableCell>Stage</TableCell>
-                      <TableCell>Job</TableCell>
-                      <TableCell align="right">Hours</TableCell>
-                      <TableCell align="right">Rate</TableCell>
-                      <TableCell align="right">Cost</TableCell>
-                      <TableCell>Notes</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {workerFilteredEntries.length === 0 ? (
-                      <TableRow>
-                        <TableCell colSpan={7}>
-                          <Typography color="text.secondary">No history rows in selected range.</Typography>
-                        </TableCell>
-                      </TableRow>
-                    ) : (
-                      workerFilteredEntries.map((entry) => {
-                        const rate = getEntryRate(entry, workersById)
-                        const cost = getEntryCost(entry, workersById)
-
-                        return (
-                          <TableRow key={entry.id} hover>
-                            <TableCell>{entry.date}</TableCell>
-                            <TableCell>
-                              {entry.stageId ? stagesById.get(entry.stageId)?.name ?? 'Unknown stage' : '-'}
-                            </TableCell>
-                            <TableCell>{entry.jobName}</TableCell>
-                            <TableCell align="right">{formatHours(getEntryTotalHours(entry))}</TableCell>
-                            <TableCell align="right">{formatCurrency(rate)}</TableCell>
-                            <TableCell align="right">{formatCurrency(cost)}</TableCell>
-                            <TableCell>{entry.notes || '-'}</TableCell>
+                      ) : (
+                        workerByJobRows.map((row) => (
+                          <TableRow key={row.jobName} hover>
+                            <TableCell>{row.jobName}</TableCell>
+                            <TableCell align="right">{formatHours(row.totalHours)}</TableCell>
+                            <TableCell align="right">{formatCurrency(row.totalCost)}</TableCell>
                           </TableRow>
-                        )
-                      })
-                    )}
-                  </TableBody>
-                </Table>
-              </TableContainer>
+                        ))
+                      )}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+
+                <TableContainer sx={WORKSHEET_TABLE_CONTAINER_SX}>
+                  <Table size="small" stickyHeader>
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>Date</TableCell>
+                        <TableCell>Stage</TableCell>
+                        <TableCell>Job</TableCell>
+                        <TableCell align="right">Hours</TableCell>
+                        <TableCell align="right">Rate</TableCell>
+                        <TableCell align="right">Cost</TableCell>
+                        <TableCell>Notes</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {workerFilteredEntries.length === 0 ? (
+                        <TableRow>
+                          <TableCell colSpan={7}>
+                            <Typography color="text.secondary">No history rows in selected range.</Typography>
+                          </TableCell>
+                        </TableRow>
+                      ) : (
+                        workerFilteredEntries.map((entry) => {
+                          const rate = getEntryRate(entry, workersById)
+                          const cost = getEntryCost(entry, workersById)
+
+                          return (
+                            <TableRow key={entry.id} hover>
+                              <TableCell>{entry.date}</TableCell>
+                              <TableCell>
+                                {entry.stageId ? stagesById.get(entry.stageId)?.name ?? 'Unknown stage' : '-'}
+                              </TableCell>
+                              <TableCell>{entry.jobName}</TableCell>
+                              <TableCell align="right">{formatHours(getEntryTotalHours(entry))}</TableCell>
+                              <TableCell align="right">{formatCurrency(rate)}</TableCell>
+                              <TableCell align="right">{formatCurrency(cost)}</TableCell>
+                              <TableCell>{entry.notes || '-'}</TableCell>
+                            </TableRow>
+                          )
+                        })
+                      )}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              </Box>
             </Stack>
           ) : null}
 

@@ -306,6 +306,15 @@ function isStaleState(createdAtIso) {
   return Date.now() - createdAtMs > googleOauthStateTtlMs
 }
 
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
 function toEmailCallbackHtml({
   provider,
   providerTitle,
@@ -316,6 +325,11 @@ function toEmailCallbackHtml({
   const normalizedPath = sanitizeRedirectPath(redirectPath)
   const separator = normalizedPath.includes('?') ? '&' : '?'
   const redirectLocation = `${normalizedPath}${separator}${encodeURIComponent(provider)}=${encodeURIComponent(status)}&${encodeURIComponent(provider)}Message=${encodeURIComponent(message)}`
+  // message and redirectLocation can carry provider-supplied text (e.g.
+  // error_description), so every HTML interpolation must be escaped; the
+  // script tag embeds JSON with "<" escaped so it cannot be broken out of.
+  const escapedRedirectLocation = escapeHtml(redirectLocation)
+  const scriptSafeRedirectLocation = JSON.stringify(redirectLocation).replace(/</g, '\\u003c')
 
   return `<!doctype html>
 <html lang="en">
@@ -323,7 +337,7 @@ function toEmailCallbackHtml({
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Google Connection</title>
-    <meta http-equiv="refresh" content="0;url=${redirectLocation}" />
+    <meta http-equiv="refresh" content="0;url=${escapedRedirectLocation}" />
     <style>
       body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; padding: 24px; color: #0f172a; }
       .box { max-width: 560px; margin: 0 auto; border: 1px solid #dbe3ef; border-radius: 12px; padding: 16px; }
@@ -332,14 +346,14 @@ function toEmailCallbackHtml({
       a { color: #2563eb; text-decoration: none; }
     </style>
     <script>
-      window.location.replace(${JSON.stringify(redirectLocation)})
+      window.location.replace(${scriptSafeRedirectLocation})
     </script>
   </head>
   <body>
     <div class="box">
-      <div class="title">${providerTitle} Connection</div>
-      <div class="message">${message}</div>
-      <a href="${redirectLocation}">Continue</a>
+      <div class="title">${escapeHtml(providerTitle)} Connection</div>
+      <div class="message">${escapeHtml(message)}</div>
+      <a href="${escapedRedirectLocation}">Continue</a>
     </div>
   </body>
 </html>`
@@ -1121,6 +1135,7 @@ export function registerEmailRoutes(app, deps) {
     getCollections,
     normalizeEmail,
     randomUUID,
+    requireAdminRole,
     requireFirebaseAuth,
     toPublicAuthUser,
   } = deps
@@ -1366,7 +1381,7 @@ export function registerEmailRoutes(app, deps) {
     }
   }
 
-  app.get('/api/admin/email/google/status', requireFirebaseAuth, async (req, res, next) => {
+  app.get('/api/admin/email/google/status', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
     try {
       const publicUser = toPublicAuthUser(req.authUser)
 
@@ -1439,7 +1454,7 @@ export function registerEmailRoutes(app, deps) {
     }
   })
 
-  app.get('/api/admin/email/google/oauth/start', requireFirebaseAuth, async (req, res, next) => {
+  app.get('/api/admin/email/google/oauth/start', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
     try {
       const publicUser = toPublicAuthUser(req.authUser)
 
@@ -1627,7 +1642,7 @@ export function registerEmailRoutes(app, deps) {
     }
   })
 
-  app.post('/api/admin/email/google/disconnect', requireFirebaseAuth, async (req, res, next) => {
+  app.post('/api/admin/email/google/disconnect', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
     try {
       const publicUser = toPublicAuthUser(req.authUser)
 
@@ -1652,7 +1667,7 @@ export function registerEmailRoutes(app, deps) {
     }
   })
 
-  app.post('/api/admin/email/google/send', requireFirebaseAuth, async (req, res, next) => {
+  app.post('/api/admin/email/google/send', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
     try {
       const publicUser = toPublicAuthUser(req.authUser)
 
@@ -1827,7 +1842,7 @@ export function registerEmailRoutes(app, deps) {
     }
   })
 
-  app.get('/api/admin/email/microsoft/status', requireFirebaseAuth, async (req, res, next) => {
+  app.get('/api/admin/email/microsoft/status', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
     try {
       const publicUser = toPublicAuthUser(req.authUser)
 
@@ -1900,7 +1915,7 @@ export function registerEmailRoutes(app, deps) {
     }
   })
 
-  app.get('/api/admin/email/microsoft/oauth/start', requireFirebaseAuth, async (req, res, next) => {
+  app.get('/api/admin/email/microsoft/oauth/start', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
     try {
       const publicUser = toPublicAuthUser(req.authUser)
 
@@ -2075,7 +2090,7 @@ export function registerEmailRoutes(app, deps) {
     }
   })
 
-  app.post('/api/admin/email/microsoft/disconnect', requireFirebaseAuth, async (req, res, next) => {
+  app.post('/api/admin/email/microsoft/disconnect', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
     try {
       const publicUser = toPublicAuthUser(req.authUser)
 
@@ -2100,7 +2115,7 @@ export function registerEmailRoutes(app, deps) {
     }
   })
 
-  app.post('/api/admin/email/microsoft/send', requireFirebaseAuth, async (req, res, next) => {
+  app.post('/api/admin/email/microsoft/send', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
     try {
       const publicUser = toPublicAuthUser(req.authUser)
 

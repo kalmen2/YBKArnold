@@ -4,6 +4,9 @@ import EditRoundedIcon from '@mui/icons-material/EditRounded'
 import FacebookRoundedIcon from '@mui/icons-material/FacebookRounded'
 import LanguageRoundedIcon from '@mui/icons-material/LanguageRounded'
 import LinkedInIcon from '@mui/icons-material/LinkedIn'
+import MoreVertRoundedIcon from '@mui/icons-material/MoreVertRounded'
+import NotificationsActiveRoundedIcon from '@mui/icons-material/NotificationsActiveRounded'
+import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded'
 import PinterestIcon from '@mui/icons-material/Pinterest'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded'
@@ -15,6 +18,7 @@ import {
   Avatar,
   Box,
   Button,
+  Checkbox,
   Chip,
   CircularProgress,
   Dialog,
@@ -23,12 +27,14 @@ import {
   DialogTitle,
   Divider,
   FormControl,
+  FormControlLabel,
   IconButton,
   InputAdornment,
   InputLabel,
   List,
   ListItemButton,
   ListItemText,
+  Menu,
   MenuItem,
   Paper,
   Tab,
@@ -47,7 +53,9 @@ import {
   Typography,
 } from '@mui/material'
 import { alpha } from '@mui/material/styles'
+import { useQuery } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
+import { Mention, MentionsInput } from 'react-mentions'
 import { Link as RouterLink, unstable_usePrompt, useBeforeUnload, useSearchParams } from 'react-router-dom'
 import { firebaseStorage } from '../auth/firebase'
 import { useAuth } from '../auth/useAuth'
@@ -58,22 +66,33 @@ import { useDataLoader } from '../hooks/useDataLoader'
 import { useDebounceValue } from '../hooks/useDebounceValue'
 import {
   createCrmDealerContact,
+  createCrmDealerChatMessage,
   fetchCrmDealerDetail,
+  fetchCrmDealerChats,
+  fetchCrmChatUsers,
   fetchCrmDealers,
   fetchCrmOrders,
   fetchCrmQuotes,
+  fetchCrmSalesReps,
+  removeCrmDealerChatMessage,
   removeCrmContact,
   removeCrmDealer,
+  updateCrmDealerChatMessage,
   updateCrmContact,
   updateCrmDealer,
+  type CrmChatUser,
   type CrmDealer,
+  type CrmDealerChatMessage,
   type CrmDealerDetailResponse,
   type CrmDealersResponse,
   type CrmOrder,
   type CrmQuote,
+  type CrmSalesRep,
 } from '../features/crm/api'
 import { displayContactName } from '../features/crm/utils'
 import { resolveImageFileExtension, sanitizeStoragePathSegment } from '../lib/fileUtils'
+import { formatDateTime, formatOptional } from '../lib/formatters'
+import { QUERY_KEYS } from '../lib/queryKeys'
 
 function resolveSocialVisual(platform: string, href: string) {
   const source = `${platform} ${href}`.toLowerCase()
@@ -201,6 +220,35 @@ function resolveReadinessChip(status: 'ready' | 'not_ready' | null | undefined) 
     color: 'default' as const,
     label: 'None',
   }
+}
+
+function normalizeUsStateCode(value: string | null | undefined) {
+  const normalized = String(value ?? '').trim().toUpperCase()
+
+  if (!normalized) {
+    return ''
+  }
+
+  if (/^[A-Z]{2}$/.test(normalized)) {
+    return normalized
+  }
+
+  const stateMatch = normalized.match(/\b([A-Z]{2})\b/)
+  return stateMatch?.[1] || ''
+}
+
+function normalizeWebsiteHref(value: string | null | undefined) {
+  const trimmedValue = String(value ?? '').trim()
+
+  if (!trimmedValue) {
+    return ''
+  }
+
+  if (/^https?:\/\//i.test(trimmedValue)) {
+    return trimmedValue
+  }
+
+  return `https://${trimmedValue}`
 }
 
 type DealerFormState = {
@@ -405,6 +453,165 @@ function createContactFormState(contact: CrmDealerDetailResponse['contacts'][num
   }
 }
 
+function normalizeMentionAlias(value: string | null | undefined) {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/^@+/, '')
+    .replace(/[^a-z0-9._-]+/g, '')
+}
+
+function resolveMentionFirstName(value: string | null | undefined) {
+  const normalized = String(value ?? '').trim()
+
+  if (!normalized) {
+    return ''
+  }
+
+  const source = normalized.includes('@')
+    ? normalized.slice(0, normalized.indexOf('@'))
+    : normalized
+  const alias = normalizeMentionAlias(source)
+  const firstToken = alias.split(/[._-]/).find(Boolean) ?? ''
+
+  if (!firstToken) {
+    return ''
+  }
+
+  return `${firstToken.charAt(0).toUpperCase()}${firstToken.slice(1)}`
+}
+
+type MentionSuggestionOption = {
+  id: string
+  display: string
+}
+
+const chatMentionsInputStyle = {
+  control: {
+    width: '100%',
+    fontFamily: 'inherit',
+    fontSize: 14,
+    lineHeight: 1.45,
+  },
+  '&multiLine': {
+    control: {
+      minHeight: 84,
+      maxHeight: 188,
+      border: '1px solid rgba(15, 23, 42, 0.26)',
+      borderRadius: 8,
+      backgroundColor: '#ffffff',
+      overflowY: 'auto',
+    },
+    highlighter: {
+      padding: '10px 12px',
+      border: '1px solid transparent',
+      boxSizing: 'border-box',
+      whiteSpace: 'pre-wrap',
+      overflowWrap: 'anywhere',
+      wordBreak: 'break-word',
+      color: 'transparent',
+    },
+    input: {
+      margin: 0,
+      padding: '10px 12px',
+      minHeight: 84,
+      border: '1px solid transparent',
+      outline: 0,
+      boxSizing: 'border-box',
+      fontFamily: 'inherit',
+      fontSize: 14,
+      lineHeight: 1.45,
+      color: '#0f172a',
+      backgroundColor: 'transparent',
+      whiteSpace: 'pre-wrap',
+      overflowWrap: 'anywhere',
+      wordBreak: 'break-word',
+    },
+  },
+  suggestions: {
+    list: {
+      zIndex: 1600,
+      backgroundColor: '#ffffff',
+      border: '1px solid rgba(15, 23, 42, 0.2)',
+      borderRadius: 8,
+      boxShadow: '0 10px 28px rgba(15, 23, 42, 0.16)',
+      maxHeight: 220,
+      overflowY: 'auto',
+      padding: '4px',
+    },
+    item: {
+      padding: '0',
+    },
+  },
+} as const
+
+function extractMentionUserUidsFromMarkup(markup: string) {
+  const ids = Array.from(String(markup ?? '').matchAll(/@\[[^\]]+\]\(([^)]+)\)/g))
+    .map((entry) => String(entry[1] ?? '').trim())
+    .filter(Boolean)
+
+  return [...new Set(ids)]
+}
+
+function extractMentionAliases(message: string) {
+  const aliases = Array.from(message.matchAll(/@([a-zA-Z0-9._-]+)/g))
+    .map((entry) => normalizeMentionAlias(entry[1]))
+    .filter(Boolean)
+
+  return [...new Set(aliases)]
+}
+
+function renderMessageWithMentionPills(message: string) {
+  const normalized = String(message ?? '').trim()
+
+  if (!normalized) {
+    return '-'
+  }
+
+  const segments = normalized.split(/(@[a-zA-Z0-9._-]+)/g)
+
+  return segments.map((segment, index) => {
+    if (!/^@[a-zA-Z0-9._-]+$/.test(segment)) {
+      return (
+        <Box key={`text-${index}`} component="span">
+          {segment}
+        </Box>
+      )
+    }
+
+    const label = resolveMentionFirstName(segment.slice(1))
+
+    if (!label) {
+      return (
+        <Box key={`mention-fallback-${index}`} component="span">
+          {segment}
+        </Box>
+      )
+    }
+
+    return (
+      <Box
+        key={`mention-${index}`}
+        component="span"
+        sx={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          px: 0.85,
+          py: 0.05,
+          mx: 0.2,
+          borderRadius: 999,
+          bgcolor: (theme) => alpha(theme.palette.info.main, 0.18),
+          color: (theme) => theme.palette.info.dark,
+          fontWeight: 700,
+          lineHeight: 1.35,
+        }}
+      >
+        @{label}
+      </Box>
+    )
+  })
+}
+
 export default function CrmDealersPage() {
   const { appUser } = useAuth()
   const [searchParams] = useSearchParams()
@@ -416,7 +623,18 @@ export default function CrmDealersPage() {
 
   const [dealerQuotes, setDealerQuotes] = useState<CrmQuote[]>([])
   const [dealerOrders, setDealerOrders] = useState<CrmOrder[]>([])
-  const [detailsTab, setDetailsTab] = useState<'info' | 'contacts' | 'quotes' | 'orders'>('info')
+  const [detailsTab, setDetailsTab] = useState<'info' | 'contacts' | 'chat' | 'quotes' | 'orders'>('info')
+  const [dealerChatDraft, setDealerChatDraft] = useState('')
+  const [dealerChatDraftMarkup, setDealerChatDraftMarkup] = useState('')
+  const [isSendingDealerChat, setIsSendingDealerChat] = useState(false)
+  const [editingDealerChatMessageId, setEditingDealerChatMessageId] = useState('')
+  const [dealerChatEditDraft, setDealerChatEditDraft] = useState('')
+  const [isSavingDealerChatEdit, setIsSavingDealerChatEdit] = useState(false)
+  const [deletingDealerChatMessageId, setDeletingDealerChatMessageId] = useState('')
+  const [dealerChatReminderEnabled, setDealerChatReminderEnabled] = useState(false)
+  const [dealerChatReminderDueDate, setDealerChatReminderDueDate] = useState('')
+  const [dealerChatReminderRecipientUids, setDealerChatReminderRecipientUids] = useState<string[]>([])
+  const [dealerChatReminderNote, setDealerChatReminderNote] = useState('')
 
   const [isLoadingDetail, setIsLoadingDetail] = useState(false)
   const [isLoadingSalesData, setIsLoadingSalesData] = useState(false)
@@ -431,6 +649,10 @@ export default function CrmDealersPage() {
   const dealerSearch = useDebounceValue(dealerSearchInput)
   const [accountTypeFilter, setAccountTypeFilter] = useState<'all' | 'dealer' | 'designer' | 'none'>('all')
   const [engagementFilter, setEngagementFilter] = useState<'all' | 'ready' | 'not_ready' | 'none'>('all')
+  const [dealerStateFilters, setDealerStateFilters] = useState<string[]>([])
+  const [dealerSalesRepFilters, setDealerSalesRepFilters] = useState<string[]>([])
+  const [filtersMenuAnchorEl, setFiltersMenuAnchorEl] = useState<HTMLElement | null>(null)
+  const [filtersMenuMode, setFiltersMenuMode] = useState<'root' | 'state' | 'salesRep'>('root')
 
   const [contactSearchInput, setContactSearchInput] = useState('')
   const contactSearch = useDebounceValue(contactSearchInput)
@@ -460,6 +682,114 @@ export default function CrmDealersPage() {
   const [removingContactSourceId, setRemovingContactSourceId] = useState('')
   const [isRemovingDealer, setIsRemovingDealer] = useState(false)
   const canRemoveDealer = appUser?.isAdmin === true || appUser?.isManager === true || appUser?.isSalesRep === true
+
+  const salesRepsQuery = useQuery({
+    queryKey: QUERY_KEYS.crmSalesReps,
+    queryFn: () => fetchCrmSalesReps(),
+    staleTime: 5 * 60 * 1000,
+  })
+
+  const dealerChatsQuery = useQuery({
+    queryKey: ['crm', 'dealer-detail-chat', selectedDealerId],
+    queryFn: () => fetchCrmDealerChats(selectedDealerId, {
+      limit: 200,
+      offset: 0,
+    }),
+    enabled: detailsTab === 'chat' && Boolean(selectedDealerId),
+    staleTime: 20 * 1000,
+  })
+
+  const chatUsersQuery = useQuery({
+    queryKey: ['crm', 'chat-users'],
+    queryFn: () => fetchCrmChatUsers(),
+    enabled: detailsTab === 'chat',
+    staleTime: 2 * 60 * 1000,
+  })
+
+  const salesReps = useMemo(
+    () => (Array.isArray(salesRepsQuery.data?.salesReps) ? salesRepsQuery.data.salesReps : []),
+    [salesRepsQuery.data?.salesReps],
+  )
+
+  const availableDealerStateOptions = useMemo(() => {
+    const optionSet = new Set<string>()
+
+    const statesFromSalesReps = Array.isArray(salesRepsQuery.data?.availableStates)
+      ? salesRepsQuery.data.availableStates
+      : []
+
+    statesFromSalesReps.forEach((stateCode) => {
+      const normalizedStateCode = normalizeUsStateCode(stateCode)
+
+      if (normalizedStateCode) {
+        optionSet.add(normalizedStateCode)
+      }
+    })
+
+    salesReps.forEach((salesRep) => {
+      salesRep.states.forEach((stateCode) => {
+        const normalizedStateCode = normalizeUsStateCode(stateCode)
+
+        if (normalizedStateCode) {
+          optionSet.add(normalizedStateCode)
+        }
+      })
+    })
+
+    dealers.forEach((dealer) => {
+      const normalizedStateCode = normalizeUsStateCode(dealer.state)
+
+      if (normalizedStateCode) {
+        optionSet.add(normalizedStateCode)
+      }
+    })
+
+    return [...optionSet].sort((left, right) => left.localeCompare(right))
+  }, [dealers, salesReps, salesRepsQuery.data?.availableStates])
+
+  const availableDealerSalesRepOptions = useMemo(() => {
+    const optionSet = new Set<string>()
+
+    salesReps.forEach((salesRep) => {
+      const normalizedName = String(salesRep.name ?? '').trim()
+
+      if (normalizedName) {
+        optionSet.add(normalizedName)
+      }
+    })
+
+    dealers.forEach((dealer) => {
+      const normalizedName = String(dealer.salesRep ?? '').trim()
+
+      if (normalizedName) {
+        optionSet.add(normalizedName)
+      }
+    })
+
+    return [...optionSet].sort((left, right) => left.localeCompare(right))
+  }, [dealers, salesReps])
+
+  const hasAdvancedFilters = dealerStateFilters.length > 0 || dealerSalesRepFilters.length > 0
+
+  const readinessEnabledByState = useMemo(() => {
+    const readinessMap = new Map<string, boolean>()
+
+    salesReps.forEach((salesRep: CrmSalesRep) => {
+      const readinessEnabled = salesRep.engagementReadinessEnabled !== false
+
+      salesRep.states.forEach((stateCode) => {
+        const normalizedStateCode = normalizeUsStateCode(stateCode)
+
+        if (!normalizedStateCode) {
+          return
+        }
+
+        readinessMap.set(normalizedStateCode, readinessEnabled)
+      })
+    })
+
+    return readinessMap
+  }, [salesReps])
 
   useEffect(() => {
     const requestedDealerId = searchParams.get('dealerSourceId')?.trim() ?? ''
@@ -493,7 +823,7 @@ export default function CrmDealersPage() {
 
   useEffect(() => {
     setDealerPage(0)
-  }, [accountTypeFilter, engagementFilter])
+  }, [accountTypeFilter, dealerSalesRepFilters, dealerStateFilters, engagementFilter])
 
   const { isLoading: isLoadingDealers, isRefreshing: isRefreshingDealers, errorMessage, setErrorMessage, load: loadDealers } = useDataLoader({
     fetcher: useCallback(() => fetchCrmDealers({
@@ -502,7 +832,9 @@ export default function CrmDealersPage() {
       search: dealerSearch || undefined,
       accountType: accountTypeFilter === 'all' ? undefined : accountTypeFilter,
       engagementBucket: engagementFilter === 'all' ? undefined : engagementFilter,
-    }), [accountTypeFilter, dealerPage, dealerRowsPerPage, dealerSearch, engagementFilter]),
+      dealerStates: dealerStateFilters.length > 0 ? dealerStateFilters : undefined,
+      salesReps: dealerSalesRepFilters.length > 0 ? dealerSalesRepFilters : undefined,
+    }), [accountTypeFilter, dealerPage, dealerRowsPerPage, dealerSalesRepFilters, dealerSearch, dealerStateFilters, engagementFilter]),
     onSuccess: useCallback((response: CrmDealersResponse) => {
       const nextDealers = Array.isArray(response.dealers) ? response.dealers : []
       const normalizedTotal = typeof response.total === 'number' && Number.isFinite(response.total)
@@ -638,7 +970,12 @@ export default function CrmDealersPage() {
     setIsLoadingQuotesData(true)
 
     try {
-      const quotesPayload = await fetchCrmQuotes({ dealerSourceId: selectedDealerId, limit: 150 })
+      const quotesPayload = await fetchCrmQuotes({
+        dealerSourceId: selectedDealerId,
+        limit: 150,
+        status: 'all',
+        lifecycle: 'all',
+      })
 
       if (selectedDealerIdRef.current !== fetchingForId) {
         return
@@ -673,10 +1010,98 @@ export default function CrmDealersPage() {
   }, [detailsTab, loadDealerQuotesData, loadDealerSalesData])
 
   const selectedDealer = dealerDetail?.dealer ?? null
-  const selectedDealerReadinessChip = resolveReadinessChip(selectedDealer?.engagementReadinessStatus)
+  const selectedDealerStateCode = normalizeUsStateCode(dealerForm?.state || selectedDealer?.state)
+  const selectedDealerReadinessEnabled = selectedDealerStateCode
+    ? readinessEnabledByState.get(selectedDealerStateCode) !== false
+    : true
+  const selectedDealerReadinessChip = selectedDealerReadinessEnabled
+    ? resolveReadinessChip(selectedDealer?.engagementReadinessStatus)
+    : {
+      color: 'default' as const,
+      label: 'Engagement',
+    }
   const contactsPageLink = selectedDealerId
     ? `/sales?tab=contacts&dealerSourceId=${encodeURIComponent(selectedDealerId)}`
     : '/sales?tab=contacts'
+
+  const dealerChatMessages = dealerChatsQuery.data?.messages ?? []
+  const dealerChatTotal = dealerChatsQuery.data?.total ?? Math.max(0, Number(selectedDealer?.chatMessageCount ?? 0) || 0)
+  const dealerChatErrorMessage = dealerChatsQuery.error instanceof Error
+    ? dealerChatsQuery.error.message
+    : chatUsersQuery.error instanceof Error
+      ? chatUsersQuery.error.message
+      : null
+  const chatUsers = chatUsersQuery.data?.users ?? []
+  const canManageDealerChat = Boolean(appUser?.uid)
+  const currentUserUid = String(appUser?.uid ?? '').trim()
+  const currentUserEmail = String(appUser?.email ?? '').trim().toLowerCase()
+  const isCurrentUserAdmin = Boolean(appUser?.isApproved && appUser?.isAdmin)
+
+  const mentionAliasToUsers = useMemo<Map<string, CrmChatUser[]>>(() => {
+    const aliasMap = new Map<string, CrmChatUser[]>()
+
+    chatUsers.forEach((user) => {
+      const aliases = new Set<string>([
+        normalizeMentionAlias(user.email),
+        normalizeMentionAlias(String(user.email ?? '').split('@')[0]),
+        normalizeMentionAlias(user.displayName),
+        normalizeMentionAlias(resolveMentionFirstName(user.displayName)),
+        normalizeMentionAlias(resolveMentionFirstName(user.email)),
+      ].filter(Boolean))
+
+      aliases.forEach((alias) => {
+        const existingUsers = aliasMap.get(alias) ?? []
+        aliasMap.set(alias, [...existingUsers, user])
+      })
+    })
+
+    return aliasMap
+  }, [chatUsers])
+
+  const mentionSuggestionSource = useMemo(() => chatUsers
+    .map((user) => {
+      const id = String(user.uid ?? '').trim()
+      const email = String(user.email ?? '').trim()
+      const display = resolveMentionFirstName(user.displayName || user.email)
+        || normalizeMentionAlias(email.split('@')[0])
+      const normalizedDisplay = normalizeMentionAlias(display)
+
+      return {
+        id,
+        email,
+        display,
+        normalizedDisplay,
+      }
+    })
+    .filter((entry) => Boolean(entry.id && entry.normalizedDisplay))
+    .sort((left, right) => left.display.localeCompare(right.display)), [chatUsers])
+
+  const mentionEmailByUid = useMemo(
+    () => new Map(mentionSuggestionSource.map((entry) => [entry.id, entry.email])),
+    [mentionSuggestionSource],
+  )
+
+  const loadMentionSuggestions = (
+    query: string,
+    callback: (items: MentionSuggestionOption[]) => void,
+  ) => {
+    const normalizedQuery = normalizeMentionAlias(query)
+
+    if (!normalizedQuery) {
+      callback([])
+      return
+    }
+
+    callback(
+      mentionSuggestionSource
+        .filter((entry) => entry.normalizedDisplay.startsWith(normalizedQuery))
+        .slice(0, 8)
+        .map((entry) => ({
+          id: entry.id,
+          display: entry.display,
+        })),
+    )
+  }
 
   const orderRows = useMemo(
     () => [...dealerOrders].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()),
@@ -689,6 +1114,18 @@ export default function CrmDealersPage() {
     () => [...dealerQuotes].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()),
     [dealerQuotes],
   )
+
+  useEffect(() => {
+    setDealerChatDraft('')
+    setDealerChatDraftMarkup('')
+    setEditingDealerChatMessageId('')
+    setDealerChatEditDraft('')
+    setDeletingDealerChatMessageId('')
+    setDealerChatReminderEnabled(false)
+    setDealerChatReminderDueDate('')
+    setDealerChatReminderRecipientUids([])
+    setDealerChatReminderNote('')
+  }, [selectedDealerId])
 
   const dealerFormSnapshot = useMemo(
     () => serializeDealerFormState(dealerForm),
@@ -912,7 +1349,11 @@ export default function CrmDealersPage() {
       return
     }
 
-    if (dealerForm.engagementReadinessStatus === 'not_ready' && !normalizedEngagementReadinessNote) {
+    if (
+      selectedDealerReadinessEnabled
+      && dealerForm.engagementReadinessStatus === 'not_ready'
+      && !normalizedEngagementReadinessNote
+    ) {
       setErrorMessage('Please provide a note when account readiness is Not ready.')
       return
     }
@@ -957,8 +1398,12 @@ export default function CrmDealersPage() {
         zip: dealerForm.zip.trim(),
         country: dealerForm.country.trim(),
         accountText: dealerForm.accountText,
-        engagementReadinessStatus: dealerForm.engagementReadinessStatus || null,
-        engagementReadinessNote: normalizedEngagementReadinessNote || null,
+        engagementReadinessStatus: selectedDealerReadinessEnabled
+          ? (dealerForm.engagementReadinessStatus || null)
+          : null,
+        engagementReadinessNote: selectedDealerReadinessEnabled
+          ? (normalizedEngagementReadinessNote || null)
+          : null,
         pictureUrl: dealerForm.pictureUrl.trim(),
         emails: normalizedEmails,
         socialMediaLinks: Object.keys(socialMediaLinks).length > 0 ? socialMediaLinks : null,
@@ -978,7 +1423,7 @@ export default function CrmDealersPage() {
     } finally {
       setIsSavingDealer(false)
     }
-  }, [dealerForm, loadDealerDetail, loadDealers, selectedDealerId, setErrorMessage])
+  }, [dealerForm, loadDealerDetail, loadDealers, selectedDealerId, selectedDealerReadinessEnabled, setErrorMessage])
 
   const handleRemoveDealer = useCallback(async () => {
     if (!selectedDealerId || !selectedDealer) {
@@ -1032,7 +1477,11 @@ export default function CrmDealersPage() {
 
     const normalizedContactReadinessNote = contactForm.engagementReadinessNote.trim()
 
-    if (contactForm.engagementReadinessStatus === 'not_ready' && !normalizedContactReadinessNote) {
+    if (
+      selectedDealerReadinessEnabled
+      && contactForm.engagementReadinessStatus === 'not_ready'
+      && !normalizedContactReadinessNote
+    ) {
       setErrorMessage('Please provide a note when contact readiness is Not ready.')
       return
     }
@@ -1061,8 +1510,12 @@ export default function CrmDealersPage() {
         gender: contactForm.gender,
         contactTypeId: contactForm.contactTypeId,
         photoUrl: contactForm.photoUrl,
-        engagementReadinessStatus: contactForm.engagementReadinessStatus || null,
-        engagementReadinessNote: normalizedContactReadinessNote || null,
+        engagementReadinessStatus: selectedDealerReadinessEnabled
+          ? (contactForm.engagementReadinessStatus || null)
+          : null,
+        engagementReadinessNote: selectedDealerReadinessEnabled
+          ? (normalizedContactReadinessNote || null)
+          : null,
         isArchived: contactForm.isArchived,
       }
 
@@ -1092,6 +1545,7 @@ export default function CrmDealersPage() {
     loadDealerDetail,
     loadDealers,
     selectedDealerId,
+    selectedDealerReadinessEnabled,
     setErrorMessage,
   ])
 
@@ -1118,6 +1572,210 @@ export default function CrmDealersPage() {
     }
   }, [loadDealerDetail, loadDealers, setErrorMessage])
 
+  const canManageDealerChatMessage = useCallback((message: CrmDealerChatMessage) => {
+    if (isCurrentUserAdmin) {
+      return true
+    }
+
+    const createdByUid = String(message.createdByUid ?? '').trim()
+    const createdByEmail = String(message.createdByEmail ?? '').trim().toLowerCase()
+
+    return Boolean(
+      (currentUserUid && createdByUid && currentUserUid === createdByUid)
+      || (currentUserEmail && createdByEmail && currentUserEmail === createdByEmail),
+    )
+  }, [currentUserEmail, currentUserUid, isCurrentUserAdmin])
+
+  const handleSendDealerChatMessage = useCallback(async () => {
+    const nextMessage = dealerChatDraft.trim()
+    const shouldCreateReminder = dealerChatReminderEnabled
+    const reminderHasRequiredFields = Boolean(
+      dealerChatReminderDueDate
+      && dealerChatReminderRecipientUids.length > 0,
+    )
+    const fallbackReminderMessage = dealerChatReminderNote.trim()
+    const finalMessage = nextMessage || (shouldCreateReminder ? fallbackReminderMessage : '')
+
+    if (!selectedDealerId || !finalMessage) {
+      return
+    }
+
+    if (!canManageDealerChat) {
+      setErrorMessage('You do not have permission to post account chat messages.')
+      return
+    }
+
+    if (shouldCreateReminder && !reminderHasRequiredFields) {
+      setErrorMessage('Reminder needs a due date and at least one recipient.')
+      return
+    }
+
+    setErrorMessage(null)
+    setIsSendingDealerChat(true)
+
+    try {
+      const mentionUserUidsFromMarkup = extractMentionUserUidsFromMarkup(dealerChatDraftMarkup)
+      const mentionAliases = extractMentionAliases(finalMessage)
+      const mentionUserUidsFromAliases = [...new Set(
+        mentionAliases.flatMap((alias) => {
+          const matchedUsers = mentionAliasToUsers.get(alias) ?? []
+
+          return matchedUsers.length === 1
+            ? [matchedUsers[0].uid]
+            : []
+        }),
+      )]
+      const mentionUserUids = [...new Set([...mentionUserUidsFromMarkup, ...mentionUserUidsFromAliases])]
+
+      await createCrmDealerChatMessage(selectedDealerId, {
+        message: finalMessage,
+        mentionUserUids,
+        reminder: shouldCreateReminder
+          ? {
+            dueDate: dealerChatReminderDueDate,
+            note: dealerChatReminderNote.trim() || null,
+            targetUserUids: dealerChatReminderRecipientUids,
+          }
+          : null,
+      })
+
+      setDealerChatDraft('')
+      setDealerChatDraftMarkup('')
+      setDealerChatReminderEnabled(false)
+      setDealerChatReminderDueDate('')
+      setDealerChatReminderRecipientUids([])
+      setDealerChatReminderNote('')
+
+      await Promise.all([
+        dealerChatsQuery.refetch(),
+        loadDealerDetail(),
+        loadDealers(true),
+      ])
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to send account chat message.')
+    } finally {
+      setIsSendingDealerChat(false)
+    }
+  }, [
+    canManageDealerChat,
+    dealerChatDraft,
+    dealerChatDraftMarkup,
+    dealerChatReminderDueDate,
+    dealerChatReminderEnabled,
+    dealerChatReminderNote,
+    dealerChatReminderRecipientUids,
+    dealerChatsQuery,
+    loadDealerDetail,
+    loadDealers,
+    mentionAliasToUsers,
+    selectedDealerId,
+    setErrorMessage,
+  ])
+
+  const handleStartDealerChatMessageEdit = useCallback((message: CrmDealerChatMessage) => {
+    setErrorMessage(null)
+    setEditingDealerChatMessageId(message.id)
+    setDealerChatEditDraft(String(message.message ?? '').trim())
+  }, [setErrorMessage])
+
+  const handleCancelDealerChatMessageEdit = useCallback(() => {
+    setEditingDealerChatMessageId('')
+    setDealerChatEditDraft('')
+  }, [])
+
+  const handleSaveDealerChatMessageEdit = useCallback(async () => {
+    const nextMessage = dealerChatEditDraft.trim()
+
+    if (!selectedDealerId || !editingDealerChatMessageId || !nextMessage) {
+      return
+    }
+
+    setErrorMessage(null)
+    setIsSavingDealerChatEdit(true)
+
+    try {
+      await updateCrmDealerChatMessage(selectedDealerId, editingDealerChatMessageId, nextMessage)
+      await Promise.all([
+        dealerChatsQuery.refetch(),
+        loadDealerDetail(),
+        loadDealers(true),
+      ])
+      setEditingDealerChatMessageId('')
+      setDealerChatEditDraft('')
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to update account chat message.')
+    } finally {
+      setIsSavingDealerChatEdit(false)
+    }
+  }, [
+    dealerChatEditDraft,
+    dealerChatsQuery,
+    editingDealerChatMessageId,
+    loadDealerDetail,
+    loadDealers,
+    selectedDealerId,
+    setErrorMessage,
+  ])
+
+  const handleDeleteDealerChatMessage = useCallback(async (messageId: string) => {
+    if (!selectedDealerId || !messageId) {
+      return
+    }
+
+    if (!window.confirm('Delete this chat message?')) {
+      return
+    }
+
+    setErrorMessage(null)
+    setDeletingDealerChatMessageId(messageId)
+
+    try {
+      await removeCrmDealerChatMessage(selectedDealerId, messageId)
+
+      if (editingDealerChatMessageId === messageId) {
+        setEditingDealerChatMessageId('')
+        setDealerChatEditDraft('')
+      }
+
+      await Promise.all([
+        dealerChatsQuery.refetch(),
+        loadDealerDetail(),
+        loadDealers(true),
+      ])
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to delete account chat message.')
+    } finally {
+      setDeletingDealerChatMessageId('')
+    }
+  }, [
+    dealerChatsQuery,
+    editingDealerChatMessageId,
+    loadDealerDetail,
+    loadDealers,
+    selectedDealerId,
+    setErrorMessage,
+  ])
+
+  const toggleDealerStateFilter = (stateCode: string) => {
+    setDealerStateFilters((current) => {
+      if (current.includes(stateCode)) {
+        return current.filter((value) => value !== stateCode)
+      }
+
+      return [...current, stateCode].sort((left, right) => left.localeCompare(right))
+    })
+  }
+
+  const toggleDealerSalesRepFilter = (salesRepName: string) => {
+    setDealerSalesRepFilters((current) => {
+      if (current.includes(salesRepName)) {
+        return current.filter((value) => value !== salesRepName)
+      }
+
+      return [...current, salesRepName].sort((left, right) => left.localeCompare(right))
+    })
+  }
+
   return (
     <Stack spacing={2.5}>
       <Paper
@@ -1140,9 +1798,140 @@ export default function CrmDealersPage() {
             alignItems={{ xs: 'flex-start', sm: 'center' }}
             sx={{ flexShrink: 0 }}
           >
-            <Typography variant="h6" sx={{ fontWeight: 700, lineHeight: 1.2 }}>
-              Accounts
-            </Typography>
+            <Stack direction="row" spacing={0.4} alignItems="center">
+              <Typography variant="h6" sx={{ fontWeight: 700, lineHeight: 1.2 }}>
+                Accounts
+              </Typography>
+            </Stack>
+
+            <Menu
+              anchorEl={filtersMenuAnchorEl}
+              open={Boolean(filtersMenuAnchorEl)}
+              onClose={() => {
+                setFiltersMenuAnchorEl(null)
+                setFiltersMenuMode('root')
+              }}
+              PaperProps={{
+                sx: {
+                  width: 320,
+                  maxHeight: 460,
+                },
+              }}
+            >
+              <Box sx={{ px: 1.5, py: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                  Account filters
+                </Typography>
+                <Button
+                  size="small"
+                  onClick={() => {
+                    setDealerStateFilters([])
+                    setDealerSalesRepFilters([])
+                  }}
+                  disabled={!hasAdvancedFilters}
+                >
+                  Clear
+                </Button>
+              </Box>
+
+              <Divider />
+
+              {filtersMenuMode === 'root' ? (
+                <>
+                  <MenuItem
+                    onClick={() => {
+                      setFiltersMenuMode('state')
+                    }}
+                  >
+                    <ListItemText
+                      primary="By state"
+                      secondary={dealerStateFilters.length > 0 ? `${dealerStateFilters.length} selected` : 'All states'}
+                    />
+                  </MenuItem>
+
+                  <MenuItem
+                    onClick={() => {
+                      setFiltersMenuMode('salesRep')
+                    }}
+                  >
+                    <ListItemText
+                      primary="By sales rep"
+                      secondary={dealerSalesRepFilters.length > 0 ? `${dealerSalesRepFilters.length} selected` : 'All sales reps'}
+                    />
+                  </MenuItem>
+                </>
+              ) : filtersMenuMode === 'state' ? (
+                <>
+                  <MenuItem
+                    onClick={() => {
+                      setFiltersMenuMode('root')
+                    }}
+                  >
+                    <ListItemText primary="Back" secondary="Choose filter type" />
+                  </MenuItem>
+
+                  <Divider />
+
+                  <MenuItem
+                    dense
+                    selected={dealerStateFilters.length === 0}
+                    onClick={() => {
+                      setDealerStateFilters([])
+                    }}
+                  >
+                    <ListItemText primary="All states" />
+                  </MenuItem>
+
+                  {availableDealerStateOptions.map((stateCode) => (
+                    <MenuItem
+                      dense
+                      key={`accounts-state-filter-${stateCode}`}
+                      onClick={() => {
+                        toggleDealerStateFilter(stateCode)
+                      }}
+                    >
+                      <Checkbox size="small" checked={dealerStateFilters.includes(stateCode)} sx={{ mr: 0.25 }} />
+                      <ListItemText primary={stateCode} />
+                    </MenuItem>
+                  ))}
+                </>
+              ) : (
+                <>
+                  <MenuItem
+                    onClick={() => {
+                      setFiltersMenuMode('root')
+                    }}
+                  >
+                    <ListItemText primary="Back" secondary="Choose filter type" />
+                  </MenuItem>
+
+                  <Divider />
+
+                  <MenuItem
+                    dense
+                    selected={dealerSalesRepFilters.length === 0}
+                    onClick={() => {
+                      setDealerSalesRepFilters([])
+                    }}
+                  >
+                    <ListItemText primary="All sales reps" />
+                  </MenuItem>
+
+                  {availableDealerSalesRepOptions.map((salesRepName) => (
+                    <MenuItem
+                      dense
+                      key={`accounts-sales-rep-filter-${salesRepName}`}
+                      onClick={() => {
+                        toggleDealerSalesRepFilter(salesRepName)
+                      }}
+                    >
+                      <Checkbox size="small" checked={dealerSalesRepFilters.includes(salesRepName)} sx={{ mr: 0.25 }} />
+                      <ListItemText primary={salesRepName} />
+                    </MenuItem>
+                  ))}
+                </>
+              )}
+            </Menu>
 
             <Stack
               direction={{ xs: 'column', md: 'row' }}
@@ -1265,9 +2054,26 @@ export default function CrmDealersPage() {
           }}
         >
           <Stack spacing={1.25} sx={{ height: '100%', minHeight: 0 }}>
-            <Typography variant="h6" sx={{ fontWeight: 700 }}>
-              Account Names
-            </Typography>
+            <Stack direction="row" spacing={0.5} alignItems="center" justifyContent="space-between">
+              <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                Account Names
+              </Typography>
+
+              <Tooltip title={hasAdvancedFilters ? 'More filters (active)' : 'More filters'}>
+                <IconButton
+                  size="small"
+                  onClick={(event) => {
+                    setFiltersMenuMode('root')
+                    setFiltersMenuAnchorEl(event.currentTarget)
+                  }}
+                  sx={{
+                    color: hasAdvancedFilters ? 'primary.main' : 'text.secondary',
+                  }}
+                >
+                  <MoreVertRoundedIcon fontSize="small" />
+                </IconButton>
+              </Tooltip>
+            </Stack>
 
             <Divider />
 
@@ -1538,7 +2344,7 @@ export default function CrmDealersPage() {
               >
                 <Tabs
                   value={detailsTab}
-                  onChange={(_event, nextValue: 'info' | 'contacts' | 'quotes' | 'orders') => {
+                  onChange={(_event, nextValue: 'info' | 'contacts' | 'chat' | 'quotes' | 'orders') => {
                     setDetailsTab(nextValue)
                   }}
                   variant="scrollable"
@@ -1560,6 +2366,7 @@ export default function CrmDealersPage() {
                 >
                   <Tab value="info" label="Account Info" />
                   <Tab value="contacts" label={`Contacts (${dealerDetail?.contactsTotal ?? 0})`} />
+                  <Tab value="chat" label={`Chat (${dealerChatTotal})`} />
                   <Tab value="quotes" label={`Quotes (${dealerQuotes.length})`} />
                   <Tab value="orders" label={`Orders (${dealerOrders.length})`} />
                 </Tabs>
@@ -1570,34 +2377,9 @@ export default function CrmDealersPage() {
               {detailsTab === 'info' ? (
                 dealerForm ? (
                   <Stack spacing={1}>
-                    <Box sx={{ position: 'relative' }}>
-                      {!isAccountEditing ? (
-                        <Tooltip title="Click Edit to make account changes." arrow placement="top">
-                          <Box
-                            role="button"
-                            tabIndex={0}
-                            aria-label="Account fields are read-only. Click Edit to change values."
-                            onClick={(event) => {
-                              event.preventDefault()
-                            }}
-                            onKeyDown={(event) => {
-                              if (event.key === 'Enter' || event.key === ' ') {
-                                event.preventDefault()
-                              }
-                            }}
-                            sx={{
-                              position: 'absolute',
-                              inset: 0,
-                              zIndex: 2,
-                              cursor: 'not-allowed',
-                              borderRadius: 1,
-                            }}
-                          />
-                        </Tooltip>
-                      ) : null}
-
+                    <Box>
                       <fieldset
-                        disabled={!isAccountEditing || isSavingDealer}
+                        disabled={isSavingDealer}
                         style={{
                           border: 0,
                           padding: 0,
@@ -1605,7 +2387,7 @@ export default function CrmDealersPage() {
                           minInlineSize: 0,
                         }}
                       >
-                        <Stack spacing={1} sx={{ opacity: isAccountEditing ? 1 : 0.82 }}>
+                        <Stack spacing={1}>
                       <Box
                         sx={{
                           display: 'grid',
@@ -1616,20 +2398,120 @@ export default function CrmDealersPage() {
                           gap: 0.7,
                         }}
                       >
-                        <TextField size="small" label="Account name" value={dealerForm.name} onChange={(e) => setDealerTextField('name', e.target.value)} />
-                        <TextField size="small" label="Owner" value={dealerForm.owner} onChange={(e) => setDealerTextField('owner', e.target.value)} />
-                        <TextField size="small" label="Owner email" value={dealerForm.ownerEmail} onChange={(e) => setDealerTextField('ownerEmail', e.target.value)} />
-                        <TextField size="small" label="Primary email (optional)" value={dealerForm.primaryEmail} onChange={(e) => setDealerTextField('primaryEmail', e.target.value)} />
-                        <TextField size="small" label="Optional email" value={dealerForm.secondaryEmail} onChange={(e) => setDealerTextField('secondaryEmail', e.target.value)} />
-                        <TextField size="small" label="Sales rep" value={dealerForm.salesRep} onChange={(e) => setDealerTextField('salesRep', e.target.value)} />
-                        <TextField size="small" label="Primary phone" value={dealerForm.phone} onChange={(e) => setDealerTextField('phone', e.target.value)} />
-                        <TextField size="small" label="Secondary phone" value={dealerForm.phone2} onChange={(e) => setDealerTextField('phone2', e.target.value)} />
-                        <TextField size="small" label="Website" value={dealerForm.website} onChange={(e) => setDealerTextField('website', e.target.value)} />
-                        <TextField size="small" label="Address" value={dealerForm.address} onChange={(e) => setDealerTextField('address', e.target.value)} />
-                        <TextField size="small" label="City" value={dealerForm.city} onChange={(e) => setDealerTextField('city', e.target.value)} />
-                        <TextField size="small" label="State" value={dealerForm.state} onChange={(e) => setDealerTextField('state', e.target.value)} />
-                        <TextField size="small" label="Zip" value={dealerForm.zip} onChange={(e) => setDealerTextField('zip', e.target.value)} />
-                        <TextField size="small" label="Country" value={dealerForm.country} onChange={(e) => setDealerTextField('country', e.target.value)} />
+                        <TextField
+                          size="small"
+                          label="Account name"
+                          value={dealerForm.name}
+                          onChange={(e) => setDealerTextField('name', e.target.value)}
+                          InputProps={{ readOnly: !isAccountEditing }}
+                        />
+                        <TextField
+                          size="small"
+                          label="Owner"
+                          value={dealerForm.owner}
+                          onChange={(e) => setDealerTextField('owner', e.target.value)}
+                          InputProps={{ readOnly: !isAccountEditing }}
+                        />
+                        <TextField
+                          size="small"
+                          label="Owner email"
+                          value={dealerForm.ownerEmail}
+                          onChange={(e) => setDealerTextField('ownerEmail', e.target.value)}
+                          InputProps={{ readOnly: !isAccountEditing }}
+                        />
+                        <TextField
+                          size="small"
+                          label="Primary email (optional)"
+                          value={dealerForm.primaryEmail}
+                          onChange={(e) => setDealerTextField('primaryEmail', e.target.value)}
+                          InputProps={{ readOnly: !isAccountEditing }}
+                        />
+                        <TextField
+                          size="small"
+                          label="Optional email"
+                          value={dealerForm.secondaryEmail}
+                          onChange={(e) => setDealerTextField('secondaryEmail', e.target.value)}
+                          InputProps={{ readOnly: !isAccountEditing }}
+                        />
+                        <TextField
+                          size="small"
+                          label="Sales rep"
+                          value={dealerForm.salesRep}
+                          onChange={(e) => setDealerTextField('salesRep', e.target.value)}
+                          InputProps={{ readOnly: !isAccountEditing }}
+                        />
+                        <TextField
+                          size="small"
+                          label="Primary phone"
+                          value={dealerForm.phone}
+                          onChange={(e) => setDealerTextField('phone', e.target.value)}
+                          InputProps={{ readOnly: !isAccountEditing }}
+                        />
+                        <TextField
+                          size="small"
+                          label="Secondary phone"
+                          value={dealerForm.phone2}
+                          onChange={(e) => setDealerTextField('phone2', e.target.value)}
+                          InputProps={{ readOnly: !isAccountEditing }}
+                        />
+                        <TextField
+                          size="small"
+                          label="Website"
+                          value={dealerForm.website}
+                          onChange={(e) => setDealerTextField('website', e.target.value)}
+                          InputProps={{
+                            readOnly: !isAccountEditing,
+                            endAdornment: normalizeWebsiteHref(dealerForm.website) ? (
+                              <InputAdornment position="end">
+                                <IconButton
+                                  size="small"
+                                  component="a"
+                                  href={normalizeWebsiteHref(dealerForm.website)}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  aria-label="Open website in new tab"
+                                >
+                                  <OpenInNewRoundedIcon fontSize="inherit" />
+                                </IconButton>
+                              </InputAdornment>
+                            ) : undefined,
+                          }}
+                        />
+                        <TextField
+                          size="small"
+                          label="Address"
+                          value={dealerForm.address}
+                          onChange={(e) => setDealerTextField('address', e.target.value)}
+                          InputProps={{ readOnly: !isAccountEditing }}
+                        />
+                        <TextField
+                          size="small"
+                          label="City"
+                          value={dealerForm.city}
+                          onChange={(e) => setDealerTextField('city', e.target.value)}
+                          InputProps={{ readOnly: !isAccountEditing }}
+                        />
+                        <TextField
+                          size="small"
+                          label="State"
+                          value={dealerForm.state}
+                          onChange={(e) => setDealerTextField('state', e.target.value)}
+                          InputProps={{ readOnly: !isAccountEditing }}
+                        />
+                        <TextField
+                          size="small"
+                          label="Zip"
+                          value={dealerForm.zip}
+                          onChange={(e) => setDealerTextField('zip', e.target.value)}
+                          InputProps={{ readOnly: !isAccountEditing }}
+                        />
+                        <TextField
+                          size="small"
+                          label="Country"
+                          value={dealerForm.country}
+                          onChange={(e) => setDealerTextField('country', e.target.value)}
+                          InputProps={{ readOnly: !isAccountEditing }}
+                        />
 
                       </Box>
 
@@ -1696,6 +2578,7 @@ export default function CrmDealersPage() {
                                       labelId={`dealer-social-platform-${entry.id}`}
                                       label="Platform"
                                       value={selectedPlatform}
+                                      disabled={!isAccountEditing}
                                       onChange={(event) => {
                                         setDealerSocialLinkAtIndex(index, 'platform', event.target.value)
                                       }}
@@ -1716,12 +2599,14 @@ export default function CrmDealersPage() {
                                     onChange={(event) => {
                                       setDealerSocialLinkAtIndex(index, 'url', event.target.value)
                                     }}
+                                    InputProps={{ readOnly: !isAccountEditing }}
                                   />
 
                                   <IconButton
                                     size="small"
                                     color="error"
                                     aria-label="Remove social link"
+                                    disabled={!isAccountEditing}
                                     onClick={() => {
                                       removeDealerSocialLink(index)
                                     }}
@@ -1737,6 +2622,7 @@ export default function CrmDealersPage() {
                               size="small"
                               startIcon={<AddRoundedIcon fontSize="small" />}
                               onClick={addDealerSocialLink}
+                              disabled={!isAccountEditing}
                               sx={{ width: 'fit-content' }}
                             >
                               Add social link
@@ -1771,6 +2657,10 @@ export default function CrmDealersPage() {
                                 size="small"
                                 label="Engagement readiness"
                                 value={dealerForm.engagementReadinessStatus}
+                                disabled={!isAccountEditing || !selectedDealerReadinessEnabled}
+                                helperText={selectedDealerReadinessEnabled
+                                  ? ''
+                                  : 'Readiness is disabled for this territory in Sales Reps.'}
                                 onChange={(event) => {
                                   const nextStatus = event.target.value === 'not_ready'
                                     ? 'not_ready'
@@ -1793,6 +2683,7 @@ export default function CrmDealersPage() {
                                 size="small"
                                 label="Account type"
                                 value={dealerForm.accountType}
+                                disabled={!isAccountEditing}
                                 onChange={(event) => {
                                   const nextType = event.target.value === 'designer' ? 'designer' : 'dealer'
                                   setDealerTextField('accountType', nextType)
@@ -1810,16 +2701,19 @@ export default function CrmDealersPage() {
                               placeholder="Required when status is Not ready"
                               value={dealerForm.engagementReadinessNote}
                               required={dealerForm.engagementReadinessStatus === 'not_ready'}
-                              error={dealerForm.engagementReadinessStatus === 'not_ready' && dealerForm.engagementReadinessNote.trim() === ''}
-                              helperText={dealerForm.engagementReadinessStatus === 'not_ready' && dealerForm.engagementReadinessNote.trim() === ''
+                              error={selectedDealerReadinessEnabled && dealerForm.engagementReadinessStatus === 'not_ready' && dealerForm.engagementReadinessNote.trim() === ''}
+                              helperText={!selectedDealerReadinessEnabled
+                                ? 'Readiness is disabled for this territory in Sales Reps.'
+                                : (dealerForm.engagementReadinessStatus === 'not_ready' && dealerForm.engagementReadinessNote.trim() === ''
                                 ? 'A note is required when status is Not ready.'
-                                : 'Optional context for readiness reviews.'}
+                                : 'Optional context for readiness reviews.')}
                               onChange={(event) => {
                                 setDealerForm((current) => current ? {
                                   ...current,
                                   engagementReadinessNote: event.target.value,
                                 } : current)
                               }}
+                              InputProps={{ readOnly: !isAccountEditing || !selectedDealerReadinessEnabled }}
                               sx={{
                                 '& .MuiInputBase-root': {
                                   fontSize: 13,
@@ -1835,6 +2729,7 @@ export default function CrmDealersPage() {
                               onChange={(event) => {
                                 setDealerTextField('accountText', event.target.value)
                               }}
+                              InputProps={{ readOnly: !isAccountEditing }}
                               sx={{
                                 '& .MuiInputBase-root': {
                                   fontSize: 13,
@@ -1889,7 +2784,7 @@ export default function CrmDealersPage() {
                               size="small"
                               variant="outlined"
                               component="label"
-                              disabled={isUploadingDealerPicture}
+                              disabled={!isAccountEditing || isUploadingDealerPicture}
                             >
                               {isUploadingDealerPicture ? 'Uploading...' : (dealerForm.pictureUrl ? 'Change picture' : 'Upload picture')}
                               <input
@@ -1904,7 +2799,7 @@ export default function CrmDealersPage() {
                               size="small"
                               color="inherit"
                               variant="outlined"
-                              disabled={isUploadingDealerPicture || !dealerForm.pictureUrl}
+                              disabled={!isAccountEditing || isUploadingDealerPicture || !dealerForm.pictureUrl}
                               onClick={() => {
                                 setDealerPictureUploadError(null)
                                 setDealerTextField('pictureUrl', '')
@@ -2104,6 +2999,298 @@ export default function CrmDealersPage() {
                     rowsPerPageOptions={[10, 25, 50, 100]}
                   />
                 </>
+              ) : detailsTab === 'chat' ? (
+                <Stack spacing={0.85}>
+                  <Paper
+                    variant="outlined"
+                    sx={{
+                      p: 0.75,
+                      maxHeight: { xs: 320, xl: 520 },
+                      overflowY: 'auto',
+                    }}
+                  >
+                    {dealerChatsQuery.isLoading && !dealerChatsQuery.data ? (
+                      <Stack direction="row" spacing={1} alignItems="center" sx={{ py: 2 }}>
+                        <CircularProgress size={16} />
+                        <Typography variant="body2" color="text.secondary">
+                          Loading chat...
+                        </Typography>
+                      </Stack>
+                    ) : dealerChatMessages.length === 0 ? (
+                      <Typography variant="body2" color="text.secondary">No chat messages yet.</Typography>
+                    ) : (
+                      <Stack spacing={0.7}>
+                        {dealerChatMessages.map((message) => {
+                          const isEditingThisMessage = editingDealerChatMessageId === message.id
+                          const canManageMessage = canManageDealerChatMessage(message)
+                          const isDeletingThisMessage = deletingDealerChatMessageId === message.id
+                          const hasOtherDeletePending = Boolean(
+                            deletingDealerChatMessageId
+                            && deletingDealerChatMessageId !== message.id,
+                          )
+                          const editedAt = formatDateTime(message.updatedAt ?? null)
+                          const showEditedTimestamp = Boolean(message.updatedAt && editedAt !== '-')
+
+                          if (isEditingThisMessage && canManageMessage) {
+                            return (
+                              <Paper key={message.id} variant="outlined" sx={{ p: 0.7 }}>
+                                <Stack spacing={0.7}>
+                                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                                    Editing your message
+                                  </Typography>
+                                  <TextField
+                                    size="small"
+                                    multiline
+                                    minRows={2}
+                                    maxRows={6}
+                                    value={dealerChatEditDraft}
+                                    onChange={(event) => {
+                                      setDealerChatEditDraft(event.target.value)
+                                    }}
+                                  />
+                                  <Stack direction="row" spacing={0.6} justifyContent="flex-end">
+                                    <Button
+                                      size="small"
+                                      variant="outlined"
+                                      onClick={handleCancelDealerChatMessageEdit}
+                                      disabled={isSavingDealerChatEdit}
+                                    >
+                                      Cancel
+                                    </Button>
+                                    <Button
+                                      size="small"
+                                      variant="contained"
+                                      onClick={() => {
+                                        void handleSaveDealerChatMessageEdit()
+                                      }}
+                                      disabled={isSavingDealerChatEdit || !dealerChatEditDraft.trim()}
+                                    >
+                                      {isSavingDealerChatEdit ? 'Saving...' : 'Save'}
+                                    </Button>
+                                  </Stack>
+                                </Stack>
+                              </Paper>
+                            )
+                          }
+
+                          return (
+                            <Paper key={message.id} variant="outlined" sx={{ p: 0.7 }}>
+                              <Stack spacing={0.45}>
+                                <Stack direction="row" spacing={0.8} justifyContent="space-between" alignItems="flex-start">
+                                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                                    {formatOptional(message.createdByName || message.createdByEmail)} · {formatDateTime(message.createdAt)}
+                                    {showEditedTimestamp ? ` · Edited ${editedAt}` : ''}
+                                  </Typography>
+
+                                  {canManageMessage ? (
+                                    <Stack direction="row" spacing={0.45}>
+                                      <Button
+                                        size="small"
+                                        variant="text"
+                                        onClick={() => {
+                                          handleStartDealerChatMessageEdit(message)
+                                        }}
+                                        disabled={isSavingDealerChatEdit || isDeletingThisMessage || hasOtherDeletePending}
+                                      >
+                                        Edit
+                                      </Button>
+                                      <Button
+                                        size="small"
+                                        color="error"
+                                        variant="text"
+                                        onClick={() => {
+                                          void handleDeleteDealerChatMessage(message.id)
+                                        }}
+                                        disabled={isSavingDealerChatEdit || Boolean(deletingDealerChatMessageId)}
+                                      >
+                                        {isDeletingThisMessage ? 'Deleting...' : 'Delete'}
+                                      </Button>
+                                    </Stack>
+                                  ) : null}
+                                </Stack>
+
+                                <Box
+                                  sx={{
+                                    whiteSpace: 'pre-wrap',
+                                    overflowWrap: 'anywhere',
+                                    fontSize: '0.875rem',
+                                    lineHeight: 1.45,
+                                  }}
+                                >
+                                  {renderMessageWithMentionPills(message.message)}
+                                </Box>
+
+                                {message.reminder ? (
+                                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.5}>
+                                    <Chip
+                                      size="small"
+                                      icon={<NotificationsActiveRoundedIcon fontSize="small" />}
+                                      label={`Reminder ${message.reminder.dueDate}`}
+                                      variant="outlined"
+                                    />
+                                    <Typography variant="caption" color="text.secondary" sx={{ overflowWrap: 'anywhere' }}>
+                                      For: {message.reminder.targetUserEmails.map((entry) => entry).join(', ') || '-'}
+                                    </Typography>
+                                  </Stack>
+                                ) : null}
+                              </Stack>
+                            </Paper>
+                          )
+                        })}
+                      </Stack>
+                    )}
+                  </Paper>
+
+                  {dealerChatErrorMessage ? (
+                    <Typography variant="caption" color="error.main">
+                      {dealerChatErrorMessage}
+                    </Typography>
+                  ) : null}
+
+                  <Stack spacing={0.4}>
+                    <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
+                      Write update
+                    </Typography>
+
+                    <MentionsInput
+                      value={dealerChatDraftMarkup}
+                      onChange={(_event, nextMarkupValue, nextPlainTextValue) => {
+                        setDealerChatDraftMarkup(nextMarkupValue)
+                        setDealerChatDraft(nextPlainTextValue)
+                      }}
+                      placeholder="Write update"
+                      style={chatMentionsInputStyle}
+                      a11ySuggestionsListLabel="Mention users"
+                      allowSuggestionsAboveCursor
+                      disabled={!canManageDealerChat || isSendingDealerChat}
+                    >
+                      <Mention
+                        trigger="@"
+                        markup="@[__display__](__id__)"
+                        data={loadMentionSuggestions}
+                        appendSpaceOnAdd
+                        displayTransform={(_id, display) => `@${display}`}
+                        style={{
+                          backgroundColor: 'rgba(30, 144, 255, 0.18)',
+                          borderRadius: 4,
+                          color: 'transparent',
+                        }}
+                        renderSuggestion={(entry, _search, highlightedDisplay, _index, focused) => (
+                          <Box
+                            sx={{
+                              px: 0.8,
+                              py: 0.6,
+                              borderRadius: 0.8,
+                              bgcolor: focused ? alpha('#2196f3', 0.14) : 'transparent',
+                            }}
+                          >
+                            <Typography variant="body2" sx={{ fontWeight: 700, lineHeight: 1.2 }}>
+                              {highlightedDisplay}
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.15 }}>
+                              {mentionEmailByUid.get(String(entry.id ?? '')) || ''}
+                            </Typography>
+                          </Box>
+                        )}
+                      />
+                    </MentionsInput>
+                  </Stack>
+
+                  <Paper variant="outlined" sx={{ p: 0.75 }}>
+                    <Stack spacing={0.7}>
+                      <FormControlLabel
+                        control={(
+                          <Checkbox
+                            size="small"
+                            checked={dealerChatReminderEnabled}
+                            disabled={!canManageDealerChat || isSendingDealerChat}
+                            onChange={(event) => {
+                              const nextValue = event.target.checked
+                              setDealerChatReminderEnabled(nextValue)
+
+                              if (nextValue && currentUserUid && !dealerChatReminderRecipientUids.includes(currentUserUid)) {
+                                setDealerChatReminderRecipientUids((current) => [...new Set([...current, currentUserUid])])
+                              }
+                            }}
+                          />
+                        )}
+                        label="Create reminder"
+                      />
+
+                      {dealerChatReminderEnabled ? (
+                        <Stack spacing={0.7}>
+                          <TextField
+                            size="small"
+                            type="date"
+                            label="Reminder date"
+                            InputLabelProps={{ shrink: true }}
+                            value={dealerChatReminderDueDate}
+                            onChange={(event) => {
+                              setDealerChatReminderDueDate(event.target.value)
+                            }}
+                            disabled={!canManageDealerChat || isSendingDealerChat}
+                          />
+
+                          <FormControl size="small">
+                            <InputLabel id="accounts-chat-reminder-recipients-label">Notify workers</InputLabel>
+                            <Select
+                              labelId="accounts-chat-reminder-recipients-label"
+                              multiple
+                              label="Notify workers"
+                              value={dealerChatReminderRecipientUids}
+                              onChange={(event) => {
+                                const nextValue = event.target.value
+                                setDealerChatReminderRecipientUids(Array.isArray(nextValue) ? nextValue.map(String) : String(nextValue).split(','))
+                              }}
+                              disabled={!canManageDealerChat || isSendingDealerChat}
+                              renderValue={(selected) => {
+                                const selectedIds = Array.isArray(selected) ? selected : []
+                                const selectedUsers = chatUsers.filter((user) => selectedIds.includes(user.uid))
+                                return selectedUsers.map((user) => String(user.displayName ?? '').trim() || user.email).join(', ')
+                              }}
+                            >
+                              {chatUsers.map((user) => (
+                                <MenuItem key={user.uid} value={user.uid}>
+                                  <Checkbox size="small" checked={dealerChatReminderRecipientUids.includes(user.uid)} />
+                                  <Typography variant="body2">
+                                    {String(user.displayName ?? '').trim() || user.email} ({user.email})
+                                  </Typography>
+                                </MenuItem>
+                              ))}
+                            </Select>
+                          </FormControl>
+
+                          <TextField
+                            size="small"
+                            label="Reminder note"
+                            placeholder="What should they remember?"
+                            value={dealerChatReminderNote}
+                            onChange={(event) => {
+                              setDealerChatReminderNote(event.target.value)
+                            }}
+                            disabled={!canManageDealerChat || isSendingDealerChat}
+                          />
+                        </Stack>
+                      ) : null}
+                    </Stack>
+                  </Paper>
+
+                  <Stack direction="row" justifyContent="flex-end">
+                    <Button
+                      variant="contained"
+                      onClick={() => {
+                        void handleSendDealerChatMessage()
+                      }}
+                      disabled={
+                        !canManageDealerChat
+                        || isSendingDealerChat
+                        || (!dealerChatDraft.trim() && !(dealerChatReminderEnabled && dealerChatReminderDueDate && dealerChatReminderRecipientUids.length > 0 && dealerChatReminderNote.trim()))
+                      }
+                    >
+                      {isSendingDealerChat ? 'Sending...' : 'Send'}
+                    </Button>
+                  </Stack>
+                </Stack>
               ) : detailsTab === 'quotes' ? (
                 <DealerQuotesTab
                   isLoading={isLoadingQuotesData}
@@ -2170,6 +3357,7 @@ export default function CrmDealersPage() {
                 labelId="contact-readiness-label"
                 label="Engagement Readiness"
                 value={contactForm.engagementReadinessStatus}
+                disabled={!selectedDealerReadinessEnabled}
                 onChange={(e) => setContactFormField(
                   'engagementReadinessStatus',
                   e.target.value === 'not_ready'
@@ -2191,11 +3379,14 @@ export default function CrmDealersPage() {
               label="Readiness note"
               placeholder="Required when status is Not ready"
               value={contactForm.engagementReadinessNote}
+              disabled={!selectedDealerReadinessEnabled}
               required={contactForm.engagementReadinessStatus === 'not_ready'}
-              error={contactForm.engagementReadinessStatus === 'not_ready' && contactForm.engagementReadinessNote.trim() === ''}
-              helperText={contactForm.engagementReadinessStatus === 'not_ready' && contactForm.engagementReadinessNote.trim() === ''
+              error={selectedDealerReadinessEnabled && contactForm.engagementReadinessStatus === 'not_ready' && contactForm.engagementReadinessNote.trim() === ''}
+              helperText={!selectedDealerReadinessEnabled
+                ? 'Readiness is disabled for this territory in Sales Reps.'
+                : (contactForm.engagementReadinessStatus === 'not_ready' && contactForm.engagementReadinessNote.trim() === ''
                 ? 'A note is required when status is Not ready.'
-                : ''}
+                : '')}
               onChange={(e) => setContactFormField('engagementReadinessNote', e.target.value)}
             />
             <FormControl size="small">

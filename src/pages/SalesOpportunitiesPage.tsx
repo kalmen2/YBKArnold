@@ -1,4 +1,5 @@
 import AddRoundedIcon from '@mui/icons-material/AddRounded'
+import ArrowDropDownRoundedIcon from '@mui/icons-material/ArrowDropDownRounded'
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded'
 import ArrowForwardRoundedIcon from '@mui/icons-material/ArrowForwardRounded'
 import ChatBubbleOutlineRoundedIcon from '@mui/icons-material/ChatBubbleOutlineRounded'
@@ -20,6 +21,7 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  FormControlLabel,
   IconButton,
   InputAdornment,
   Link,
@@ -27,13 +29,11 @@ import {
   MenuItem,
   Paper,
   Stack,
-  Tab,
   Table,
   TableBody,
   TableCell,
   TableHead,
   TableRow,
-  Tabs,
   TextField,
   Tooltip,
   Typography,
@@ -42,6 +42,7 @@ import { alpha } from '@mui/material/styles'
 import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type MouseEvent } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
 import { firebaseStorage } from '../auth/firebase'
 import { LoadingPanel } from '../components/LoadingPanel'
@@ -59,6 +60,7 @@ import {
   fetchCrmSalesReps,
   removeCrmQuoteChatMessage,
   removeCrmQuote,
+  syncCrmQuoteFromExcel,
   updateCrmQuote,
   type CrmDealer,
   type CrmExcelQuoteLookupResponse,
@@ -167,12 +169,18 @@ type StageColumnProps = {
   onOpenChat: (quote: CrmQuote) => void
 }
 
-type StageSortMode = 'value_desc' | 'value_asc' | 'date_desc' | 'date_asc' | 'alpha_asc' | 'alpha_desc'
+type StageSortMode =
+  | 'date_oldest_to_newest'
+  | 'date_newest_to_oldest'
+  | 'quote_number_oldest_to_newest'
+  | 'quote_number_asc'
+  | 'quote_number_desc'
 
 type StageAmountCondition = 'any' | 'gt' | 'gte' | 'lt' | 'lte' | 'between'
 
-type ExcelSyncProjectTypeOption = 'Reception Desk' | 'Courtroom' | 'Conference Table' | 'Other'
-type ExcelSyncAccountMode = 'existing' | 'create'
+type ExcelSyncProjectTypeOption = 'Reception Desk' | 'Courtroom' | 'Conference Table' | 'Libraries' | 'Other'
+type ExcelSyncAccountMode = 'existing' | 'create' | 'none'
+type ExcelSyncLaunchMode = 'excel_file' | 'folder_scan'
 
 type UsStateOption = {
   code: string
@@ -189,7 +197,64 @@ type StageColumnFilters = {
 }
 
 type OpportunityDetailsSaveMode = 'save' | 'decline' | 'convert_to_order'
-type OpportunityDetailsTab = 'details' | 'chat'
+type QuoteSidebarFolderKey =
+  | 'client_doc'
+  | 'renderings'
+  | 'vendor_quotes'
+  | 'quotes'
+  | 'site_visits'
+  | 'shop_drawings'
+  | 'admin'
+  | 'product_picture'
+  | 'service_call'
+  | 'material_estimate'
+  | 'cut_list'
+
+type QuoteSidebarFolderDefinition = {
+  key: QuoteSidebarFolderKey
+  label: string
+}
+
+type OpportunityDetailsTab = 'details' | 'chat' | QuoteSidebarFolderKey
+
+type FolderScanQueueEntry = {
+  id: string
+  file: File
+  folderKey: QuoteSidebarFolderKey
+  folderLabel: string
+  relativePath: string
+  documentName: string
+  selected: boolean
+  duplicateBlocked: boolean
+  duplicateReason: string | null
+}
+
+type FolderScanSidebarKey = 'all' | QuoteSidebarFolderKey
+
+type FolderScanSidebarSection = {
+  key: FolderScanSidebarKey
+  label: string
+  totalCount: number
+  selectedCount: number
+  blockedCount: number
+}
+
+type FolderScanUploadSummary = {
+  uploadedCount: number
+  attemptedCount: number
+  failedCount: number
+}
+
+type FolderScanNestedSection = {
+  path: string
+  totalCount: number
+  selectedCount: number
+}
+
+type QuoteNestedFolderGroup = {
+  path: string
+  documents: CrmQuoteDocument[]
+}
 
 type LineItemsEditorProps = {
   lineItems: OpportunityLineItemFormState[]
@@ -216,14 +281,6 @@ const stageDefinitions: StageDefinition[] = [
     headerColor: '#0a6c99',
     panelColor: '#edf7fb',
   },
-  {
-    id: 'revision',
-    label: '3. Revision',
-    probability: 30,
-    description: 'Customer requested updates to quote.',
-    headerColor: '#1d6ea5',
-    panelColor: '#eef3fb',
-  },
 ]
 
 const stageById = new Map(stageDefinitions.map((stage) => [stage.id, stage]))
@@ -232,8 +289,42 @@ const excelSyncProjectTypeOptions: ExcelSyncProjectTypeOption[] = [
   'Reception Desk',
   'Courtroom',
   'Conference Table',
+  'Libraries',
   'Other',
 ]
+
+const quoteSidebarFolders: QuoteSidebarFolderDefinition[] = [
+  { key: 'client_doc', label: 'Client Doc' },
+  { key: 'renderings', label: 'Renderings' },
+  { key: 'vendor_quotes', label: 'Vendor Quotes' },
+  { key: 'quotes', label: 'Quotes' },
+  { key: 'site_visits', label: 'Site Visits' },
+  { key: 'shop_drawings', label: 'Shop Drawings' },
+  { key: 'admin', label: 'Admin' },
+  { key: 'product_picture', label: 'Product Picture' },
+  { key: 'service_call', label: 'Service Call' },
+  { key: 'material_estimate', label: 'Material Estimate' },
+  { key: 'cut_list', label: 'Cut List' },
+]
+
+const quoteSidebarFolderByKey = new Map(quoteSidebarFolders.map((entry) => [entry.key, entry] as const))
+const quoteSidebarFolderKeySet = new Set<QuoteSidebarFolderKey>(quoteSidebarFolders.map((entry) => entry.key))
+const quoteSidebarFolderAliases: Record<QuoteSidebarFolderKey, string[]> = {
+  client_doc: ['client doc', 'client docs', 'client', 'customer doc', 'customer docs'],
+  renderings: ['renderings', 'rendering', 'renders'],
+  vendor_quotes: ['vendor quotes', 'vendor quote', 'vendor'],
+  quotes: ['quotes', 'quote'],
+  site_visits: ['site visits', 'site visit', 'site'],
+  shop_drawings: ['shop drawings', 'shop drawing', 'shop'],
+  admin: ['admin', 'administration'],
+  product_picture: ['product picture', 'product pictures', 'product photo', 'product photos', 'pictures'],
+  service_call: ['service call', 'service calls', 'service'],
+  material_estimate: ['material estimate', 'material estimates', 'materials', 'material'],
+  cut_list: ['cut list', 'cut lists'],
+}
+const excelDocumentExtensions = new Set(['xls', 'xlsx', 'xlsm', 'ods', 'csv'])
+const imagePreviewDocumentExtensions = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'])
+const officePreviewDocumentExtensions = new Set(['xls', 'xlsx', 'xlsm', 'csv', 'ods'])
 
 const usStateOptions: UsStateOption[] = [
   { code: 'AL', label: 'AL - Alabama' },
@@ -694,6 +785,61 @@ function formatQuoteChatTimestamp(value: string | null | undefined) {
   return parsed.toLocaleString()
 }
 
+function parseOpportunityLikeDate(value: string | null | undefined) {
+  const normalizedValue = String(value || '').trim()
+
+  if (!normalizedValue) {
+    return null
+  }
+
+  const isoDateMatch = normalizedValue.match(/^(\d{4})-(\d{2})-(\d{2})/)
+
+  if (isoDateMatch) {
+    const year = Number(isoDateMatch[1])
+    const month = Number(isoDateMatch[2])
+    const day = Number(isoDateMatch[3])
+    const parsedDate = new Date(year, month - 1, day)
+
+    return Number.isNaN(parsedDate.getTime()) ? null : parsedDate
+  }
+
+  const parsedDate = new Date(normalizedValue)
+
+  return Number.isNaN(parsedDate.getTime()) ? null : parsedDate
+}
+
+function formatOpportunityLikeDate(value: string | null | undefined) {
+  const parsedDate = parseOpportunityLikeDate(value)
+
+  if (!parsedDate) {
+    return 'N/A'
+  }
+
+  return parsedDate.toLocaleDateString('en-US', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  })
+}
+
+function parseQuoteChatRefreshRequest(rawMessage: string): {
+  messageText: string
+  refreshRequested: boolean
+} {
+  const input = String(rawMessage || '')
+  const refreshPattern = /(?:^|\s)(?:\/refresh|@refresh)[.,!?]?(?=\s|$)/gi
+  const refreshRequested = refreshPattern.test(input)
+  const messageText = input
+    .replace(/(?:^|\s)(?:\/refresh|@refresh)[.,!?]?(?=\s|$)/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  return {
+    messageText,
+    refreshRequested,
+  }
+}
+
 function resolveQuoteChatAuthorLabel(message: CrmQuoteChatMessage) {
   return String(
     message.createdByName
@@ -705,6 +851,543 @@ function resolveQuoteChatAuthorLabel(message: CrmQuoteChatMessage) {
 
 function normalizeMatchValue(value: string | null | undefined) {
   return String(value ?? '').trim().toLowerCase()
+}
+
+function resolveQuoteNumberSortValue(quote: CrmQuote) {
+  return String(quote.quoteNumber || quote.title || quote.id || '').trim()
+}
+
+function compareQuotesByQuoteNumber(left: CrmQuote, right: CrmQuote) {
+  const leftValue = resolveQuoteNumberSortValue(left)
+  const rightValue = resolveQuoteNumberSortValue(right)
+  const sortResult = leftValue.localeCompare(rightValue, undefined, {
+    numeric: true,
+    sensitivity: 'base',
+  })
+
+  if (sortResult !== 0) {
+    return sortResult
+  }
+
+  return String(left.id || '').localeCompare(String(right.id || ''))
+}
+
+function resolveQuoteDateSortTimestamp(quote: CrmQuote): number | null {
+  const opportunityDate = parseOpportunityLikeDate(quote.opportunityDate)
+
+  if (opportunityDate) {
+    return opportunityDate.getTime()
+  }
+
+  return null
+}
+
+function compareQuotesByDate(left: CrmQuote, right: CrmQuote, direction: 'asc' | 'desc') {
+  const leftTimestamp = resolveQuoteDateSortTimestamp(left)
+  const rightTimestamp = resolveQuoteDateSortTimestamp(right)
+
+  if (leftTimestamp === null && rightTimestamp === null) {
+    return compareQuotesByQuoteNumber(left, right)
+  }
+
+  if (leftTimestamp === null) {
+    return 1
+  }
+
+  if (rightTimestamp === null) {
+    return -1
+  }
+
+  if (leftTimestamp !== rightTimestamp) {
+    return direction === 'asc'
+      ? leftTimestamp - rightTimestamp
+      : rightTimestamp - leftTimestamp
+  }
+
+  return compareQuotesByQuoteNumber(left, right)
+}
+
+function normalizeFolderComparableValue(value: string | null | undefined) {
+  return normalizeMatchValue(value)
+    .replace(/^\d+\s*[-.)]\s*/g, '')
+    .replace(/[_-]+/g, ' ')
+    .replace(/[^a-z0-9 ]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function normalizeFolderComparableCompactValue(value: string | null | undefined) {
+  return normalizeFolderComparableValue(value).replace(/\s+/g, '')
+}
+
+function folderComparableMatches(normalizedValue: string, candidateValue: string | null | undefined) {
+  const normalizedCandidate = normalizeFolderComparableValue(candidateValue)
+
+  if (!normalizedCandidate) {
+    return false
+  }
+
+  if (normalizedCandidate === normalizedValue) {
+    return true
+  }
+
+  const compactValue = normalizeFolderComparableCompactValue(normalizedValue)
+  const compactCandidate = normalizeFolderComparableCompactValue(normalizedCandidate)
+
+  if (!compactCandidate) {
+    return false
+  }
+
+  if (compactCandidate === compactValue) {
+    return true
+  }
+
+  if (compactCandidate.length < 4) {
+    return false
+  }
+
+  return compactValue.startsWith(compactCandidate) || compactValue.endsWith(compactCandidate)
+}
+
+function resolveQuoteSidebarFolderKey(value: string | null | undefined): QuoteSidebarFolderKey | null {
+  const normalizedValue = normalizeFolderComparableValue(value)
+
+  if (!normalizedValue) {
+    return null
+  }
+
+  for (const folder of quoteSidebarFolders) {
+    if (folderComparableMatches(normalizedValue, folder.label)) {
+      return folder.key
+    }
+
+    const aliases = quoteSidebarFolderAliases[folder.key] ?? []
+
+    for (const alias of aliases) {
+      if (folderComparableMatches(normalizedValue, alias)) {
+        return folder.key
+      }
+    }
+  }
+
+  return null
+}
+
+function resolveQuoteSidebarFolderKeyFromRelativePath(relativePath: string | null | undefined): QuoteSidebarFolderKey | null {
+  const normalizedPath = String(relativePath ?? '').trim()
+
+  if (!normalizedPath) {
+    return null
+  }
+
+  const segments = normalizedPath
+    .split(/[\\/]+/)
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+
+  for (const segment of segments) {
+    const folderKey = resolveQuoteSidebarFolderKey(segment)
+
+    if (folderKey) {
+      return folderKey
+    }
+  }
+
+  return null
+}
+
+function parseDocumentNameMetadata(name: string | null | undefined): {
+  folderKey: QuoteSidebarFolderKey | null
+  plainName: string
+} {
+  const normalizedName = String(name ?? '').trim()
+
+  if (!normalizedName) {
+    return {
+      folderKey: null,
+      plainName: '',
+    }
+  }
+
+  const prefixedMatch = normalizedName.match(/^\[([^\]]+)\]\s*(.+)$/)
+
+  if (!prefixedMatch) {
+    return {
+      folderKey: null,
+      plainName: normalizedName,
+    }
+  }
+
+  const folderKey = resolveQuoteSidebarFolderKey(prefixedMatch[1])
+
+  if (!folderKey) {
+    return {
+      folderKey: null,
+      plainName: normalizedName,
+    }
+  }
+
+  return {
+    folderKey,
+    plainName: String(prefixedMatch[2] ?? '').trim() || normalizedName,
+  }
+}
+
+function buildDocumentNameWithFolder(folderLabel: string, fileName: string): string {
+  const normalizedLabel = String(folderLabel ?? '').trim()
+  const normalizedFileName = String(fileName ?? '').trim()
+
+  if (!normalizedLabel || !normalizedFileName) {
+    return normalizedFileName || normalizedLabel
+  }
+
+  return `[${normalizedLabel}] ${normalizedFileName}`
+}
+
+function resolveDocumentDisplayName(document: CrmQuoteDocument): string {
+  const parsed = parseDocumentNameMetadata(document.name)
+
+  if (parsed.plainName) {
+    return parsed.plainName
+  }
+
+  const fallbackName = String(document.name ?? '').trim()
+
+  if (fallbackName) {
+    return fallbackName
+  }
+
+  return 'Open document'
+}
+
+function resolveDocumentPathSegments(document: CrmQuoteDocument): string[] {
+  return resolveDocumentDisplayName(document)
+    .split(/[\\/]+/)
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+}
+
+function resolveDocumentPathSegmentsForFolder(
+  document: CrmQuoteDocument,
+  folderKey: QuoteSidebarFolderKey | null | undefined,
+): string[] {
+  const segments = resolveDocumentPathSegments(document)
+
+  if (!folderKey || segments.length === 0) {
+    return segments
+  }
+
+  const firstSegmentFolderKey = resolveQuoteSidebarFolderKey(segments[0])
+
+  if (firstSegmentFolderKey && firstSegmentFolderKey === folderKey) {
+    return segments.slice(1)
+  }
+
+  return segments
+}
+
+function resolveDocumentNestedFolderPath(
+  document: CrmQuoteDocument,
+  folderKey: QuoteSidebarFolderKey | null | undefined = null,
+): string | null {
+  const segments = resolveDocumentPathSegmentsForFolder(document, folderKey)
+
+  if (segments.length <= 1) {
+    return null
+  }
+
+  return segments.slice(0, -1).join('/')
+}
+
+function resolveDocumentLeafName(
+  document: CrmQuoteDocument,
+  folderKey: QuoteSidebarFolderKey | null | undefined = null,
+): string {
+  const segments = resolveDocumentPathSegmentsForFolder(document, folderKey)
+
+  if (segments.length === 0) {
+    return resolveDocumentDisplayName(document)
+  }
+
+  return segments[segments.length - 1]
+}
+
+function buildQuoteNestedFolderGroups(
+  documents: CrmQuoteDocument[],
+  folderKey: QuoteSidebarFolderKey | null | undefined = null,
+): QuoteNestedFolderGroup[] {
+  const grouped = new Map<string, CrmQuoteDocument[]>()
+
+  for (const document of documents) {
+    const nestedFolderPath = resolveDocumentNestedFolderPath(document, folderKey)
+
+    if (!nestedFolderPath) {
+      continue
+    }
+
+    const existing = grouped.get(nestedFolderPath) ?? []
+    grouped.set(nestedFolderPath, [...existing, document])
+  }
+
+  return Array.from(grouped.entries())
+    .map(([path, folderDocuments]) => ({
+      path,
+      documents: [...folderDocuments].sort((left, right) => (
+        resolveDocumentDisplayName(left).localeCompare(resolveDocumentDisplayName(right))
+      )),
+    }))
+    .sort((left, right) => left.path.localeCompare(right.path))
+}
+
+function resolveDocumentTypeLabel(document: CrmQuoteDocument): string {
+  const displayName = resolveDocumentDisplayName(document)
+  const extensionMatch = displayName.toLowerCase().match(/\.([a-z0-9]{2,8})$/)
+
+  if (!extensionMatch) {
+    return 'FILE'
+  }
+
+  return extensionMatch[1].toUpperCase()
+}
+
+function resolveDocumentFileExtension(document: CrmQuoteDocument): string {
+  const displayName = resolveDocumentDisplayName(document)
+  const extensionMatch = displayName.toLowerCase().match(/\.([a-z0-9]{2,8})$/)
+  return extensionMatch?.[1] ?? ''
+}
+
+function resolveDocumentPreviewKind(document: CrmQuoteDocument): 'image' | 'pdf' | 'office' | 'file' {
+  const extension = resolveDocumentFileExtension(document)
+
+  if (!extension) {
+    return 'file'
+  }
+
+  if (imagePreviewDocumentExtensions.has(extension)) {
+    return 'image'
+  }
+
+  if (extension === 'pdf') {
+    return 'pdf'
+  }
+
+  if (officePreviewDocumentExtensions.has(extension)) {
+    return 'office'
+  }
+
+  return 'file'
+}
+
+function resolveDocumentPreviewSource(
+  document: CrmQuoteDocument,
+  previewKind: 'image' | 'pdf' | 'office' | 'file',
+): string | null {
+  const url = String(document.url ?? '').trim()
+
+  if (!url) {
+    return null
+  }
+
+  if (previewKind === 'image') {
+    return url
+  }
+
+  if (previewKind === 'pdf') {
+    return `${url}#toolbar=0&navpanes=0&scrollbar=0&page=1&view=FitH`
+  }
+
+  if (previewKind === 'office') {
+    return `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(url)}`
+  }
+
+  return null
+}
+
+function resolveDocumentFolderKey(document: CrmQuoteDocument): QuoteSidebarFolderKey {
+  const parsed = parseDocumentNameMetadata(document.name)
+
+  if (parsed.folderKey) {
+    return parsed.folderKey
+  }
+
+  return 'quotes'
+}
+
+function normalizeFileNameForComparison(value: string | null | undefined) {
+  return normalizeMatchValue(value)
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function resolvePathSegments(value: string | null | undefined): string[] {
+  return String(value ?? '')
+    .trim()
+    .split(/[\\/]+/)
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+}
+
+function buildFolderScanDocumentName(relativePath: string | null | undefined, fileName: string | null | undefined) {
+  const normalizedPath = String(relativePath ?? '').trim()
+  const normalizedFileName = String(fileName ?? '').trim()
+
+  if (!normalizedPath) {
+    return normalizedFileName
+  }
+
+  const segments = resolvePathSegments(normalizedPath)
+
+  if (segments.length === 0) {
+    return normalizedFileName
+  }
+
+  if (segments.length === 1) {
+    return segments[0]
+  }
+
+  return segments.slice(1).join('/')
+}
+
+function isExcelDocumentFileName(fileName: string | null | undefined): boolean {
+  const normalizedName = String(fileName ?? '').trim()
+
+  if (!normalizedName || !normalizedName.includes('.')) {
+    return false
+  }
+
+  const extension = normalizedName.split('.').pop()?.toLowerCase() ?? ''
+  return excelDocumentExtensions.has(extension)
+}
+
+function isAlwaysResyncedQuotesExcelFile(
+  relativePath: string | null | undefined,
+  fileName: string | null | undefined,
+): boolean {
+  if (!isExcelDocumentFileName(fileName)) {
+    return false
+  }
+
+  const segments = resolvePathSegments(relativePath)
+
+  if (segments.length <= 1) {
+    return false
+  }
+
+  const fileSegmentIndex = segments.length - 1
+
+  for (let index = fileSegmentIndex - 1; index >= 0; index -= 1) {
+    const segmentFolderKey = resolveQuoteSidebarFolderKey(segments[index])
+
+    if (segmentFolderKey !== 'quotes') {
+      continue
+    }
+
+    return index === fileSegmentIndex - 1
+  }
+
+  return false
+}
+
+function isAlwaysResyncedQuotesExcelDocument(document: CrmQuoteDocument): boolean {
+  const displayName = resolveDocumentDisplayName(document)
+
+  if (!isExcelDocumentFileName(displayName)) {
+    return false
+  }
+
+  if (resolveDocumentFolderKey(document) !== 'quotes') {
+    return false
+  }
+
+  const segments = resolvePathSegments(displayName)
+
+  if (segments.length === 0) {
+    return false
+  }
+
+  const firstSegmentFolderKey = resolveQuoteSidebarFolderKey(segments[0])
+
+  if (firstSegmentFolderKey === 'quotes') {
+    return segments.length === 2
+  }
+
+  return segments.length === 1
+}
+
+function resolveFolderScanEntryPathSegments(entry: FolderScanQueueEntry): string[] {
+  const segments = resolvePathSegments(entry.documentName)
+
+  if (segments.length === 0) {
+    return []
+  }
+
+  const firstFolderKey = resolveQuoteSidebarFolderKey(segments[0])
+
+  if (firstFolderKey && firstFolderKey === entry.folderKey) {
+    return segments.slice(1)
+  }
+
+  return segments
+}
+
+function resolveFolderScanEntryNestedFolderPath(entry: FolderScanQueueEntry): string | null {
+  const segments = resolveFolderScanEntryPathSegments(entry)
+
+  if (segments.length <= 1) {
+    return null
+  }
+
+  return segments.slice(0, -1).join('/')
+}
+
+function buildFolderScanQueueEntriesForQuote(targetQuote: CrmQuote, scannedFiles: File[]): FolderScanQueueEntry[] {
+  const existingDocuments = resolveQuoteDocuments(targetQuote)
+  const existingDuplicateKeys = new Set(
+    existingDocuments
+      .filter((document) => !isAlwaysResyncedQuotesExcelDocument(document))
+      .map((document) => `${resolveDocumentFolderKey(document)}::${normalizeFileNameForComparison(resolveDocumentDisplayName(document))}`),
+  )
+  const pendingDuplicateKeys = new Set<string>()
+  const fallbackFolder = quoteSidebarFolderByKey.get('quotes')
+
+  return scannedFiles.flatMap((file, index) => {
+    const relativePath = String(file.webkitRelativePath || file.name).trim()
+    const documentName = buildFolderScanDocumentName(relativePath, file.name)
+    const folderKey = resolveQuoteSidebarFolderKeyFromRelativePath(relativePath) || 'quotes'
+    const folder = quoteSidebarFolderByKey.get(folderKey) ?? fallbackFolder
+
+    if (!folder) {
+      return []
+    }
+
+    const isExcelFile = isExcelDocumentFileName(file.name)
+    const isAlwaysResyncedExcel = isExcelFile && isAlwaysResyncedQuotesExcelFile(relativePath, file.name)
+    const shouldEnforceDuplicateCheck = !isAlwaysResyncedExcel
+
+    const duplicateKey = `${folderKey}::${normalizeFileNameForComparison(documentName)}`
+    const duplicateExists = shouldEnforceDuplicateCheck
+      && (existingDuplicateKeys.has(duplicateKey) || pendingDuplicateKeys.has(duplicateKey))
+
+    if (duplicateExists) {
+      return []
+    }
+
+    if (shouldEnforceDuplicateCheck) {
+      pendingDuplicateKeys.add(duplicateKey)
+    }
+
+    return [{
+      id: `${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`,
+      file,
+      folderKey,
+      folderLabel: folder.label,
+      relativePath,
+      documentName,
+      selected: true,
+      duplicateBlocked: false,
+      duplicateReason: null,
+    }]
+  })
 }
 
 function normalizeDealerLookupKey(value: string | null | undefined) {
@@ -958,6 +1641,10 @@ function resolveDefaultExcelProjectType(value: string | null | undefined): Excel
     return 'Courtroom'
   }
 
+  if (normalized.includes('libraries') || normalized.includes('library')) {
+    return 'Libraries'
+  }
+
   if (
     normalized.includes('conference table')
     || (normalized.includes('conference') && normalized.includes('table'))
@@ -1007,6 +1694,10 @@ function resolveQuoteDocuments(quote: CrmQuote | null | undefined): CrmQuoteDocu
 
 function resolveOpportunityStage(quote: CrmQuote): CrmOpportunityStage {
   const explicitStage = normalizeMatchValue(quote.opportunityStage)
+
+  if (explicitStage === 'revision') {
+    return 'proposal_submission'
+  }
 
   if (stageById.has(explicitStage as CrmOpportunityStage)) {
     return explicitStage as CrmOpportunityStage
@@ -1199,6 +1890,7 @@ function OpportunityCard({
   const normalizedChatMessageCount = Number.isFinite(Number(chatMessageCount))
     ? Math.max(0, Number(chatMessageCount))
     : 0
+  const quoteDateLabel = formatOpportunityLikeDate(quote.opportunityDate)
   const [menuAnchorEl, setMenuAnchorEl] = useState<HTMLElement | null>(null)
   const suppressCardOpenUntilRef = useRef(0)
   const isMenuOpen = Boolean(menuAnchorEl)
@@ -1263,7 +1955,23 @@ function OpportunityCard({
           </Avatar>
 
           <Stack spacing={0.25} sx={{ flex: 1, minWidth: 0 }}>
-            <Typography variant="subtitle2" sx={{ fontWeight: 700, lineHeight: 1.2 }}>
+            <Typography
+              variant="subtitle2"
+              sx={{
+                fontWeight: 700,
+                lineHeight: 1.2,
+                cursor: 'pointer',
+                textDecoration: 'underline',
+                textDecorationColor: 'transparent',
+                '&:hover': {
+                  textDecorationColor: alpha('#0f4c81', 0.6),
+                },
+              }}
+              onClick={(event) => {
+                event.stopPropagation()
+                onOpenDetails(quote)
+              }}
+            >
               {quote.quoteNumber || quote.title}
             </Typography>
             <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.1 }}>
@@ -1336,8 +2044,12 @@ function OpportunityCard({
           </Stack>
         ) : null}
 
-        {canManage ? (
-          <Stack direction="row" justifyContent="flex-end" onClick={preventCardClick}>
+        <Stack direction="row" justifyContent="space-between" alignItems="center" onClick={preventCardClick}>
+          <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.1 }}>
+            Quote Date: {quoteDateLabel}
+          </Typography>
+
+          {canManage ? (
             <Tooltip title="Delete quote">
               <span>
                 <IconButton
@@ -1353,8 +2065,8 @@ function OpportunityCard({
                 </IconButton>
               </span>
             </Tooltip>
-          </Stack>
-        ) : null}
+          ) : null}
+        </Stack>
 
         <Menu
           anchorEl={menuAnchorEl}
@@ -1402,13 +2114,16 @@ function StageColumn({
 }: StageColumnProps) {
   const [menuAnchorEl, setMenuAnchorEl] = useState<HTMLElement | null>(null)
   const [sortSubmenuAnchorEl, setSortSubmenuAnchorEl] = useState<HTMLElement | null>(null)
+  const [sortOptionSubmenuAnchorEl, setSortOptionSubmenuAnchorEl] = useState<HTMLElement | null>(null)
+  const [sortOptionSubmenuType, setSortOptionSubmenuType] = useState<'date' | 'quote_number' | null>(null)
   const [isFilterDialogOpen, setIsFilterDialogOpen] = useState(false)
-  const [sortMode, setSortMode] = useState<StageSortMode>('date_desc')
+  const [sortMode, setSortMode] = useState<StageSortMode>('quote_number_desc')
   const [activeFilters, setActiveFilters] = useState<StageColumnFilters>(createEmptyStageColumnFilters)
   const [draftFilters, setDraftFilters] = useState<StageColumnFilters>(createEmptyStageColumnFilters)
 
   const isMenuOpen = Boolean(menuAnchorEl)
   const isSortSubmenuOpen = Boolean(sortSubmenuAnchorEl) && isMenuOpen
+  const isSortOptionSubmenuOpen = Boolean(sortOptionSubmenuAnchorEl) && Boolean(sortOptionSubmenuType) && isSortSubmenuOpen
 
   const resolveDealerName = useCallback((quote: CrmQuote) => String(
     dealersBySourceId.get(quote.dealerSourceId)?.name
@@ -1536,25 +2251,16 @@ function StageColumn({
 
     const nextRows = [...filteredRows]
 
-    const getAlphaKey = (quote: CrmQuote) => {
-      const dealerName = resolveDealerName(quote).toLowerCase()
-      const quoteLabel = String(quote.quoteNumber || quote.title || '').toLowerCase()
-
-      return `${dealerName} ${quoteLabel}`
-    }
-
-    if (sortMode === 'value_desc') {
-      nextRows.sort((left, right) => Number(right.totalAmount || 0) - Number(left.totalAmount || 0))
-    } else if (sortMode === 'value_asc') {
-      nextRows.sort((left, right) => Number(left.totalAmount || 0) - Number(right.totalAmount || 0))
-    } else if (sortMode === 'date_asc') {
-      nextRows.sort((left, right) => new Date(left.updatedAt).getTime() - new Date(right.updatedAt).getTime())
-    } else if (sortMode === 'alpha_asc') {
-      nextRows.sort((left, right) => getAlphaKey(left).localeCompare(getAlphaKey(right)))
-    } else if (sortMode === 'alpha_desc') {
-      nextRows.sort((left, right) => getAlphaKey(right).localeCompare(getAlphaKey(left)))
+    if (sortMode === 'date_oldest_to_newest') {
+      nextRows.sort((left, right) => compareQuotesByDate(left, right, 'asc'))
+    } else if (sortMode === 'date_newest_to_oldest') {
+      nextRows.sort((left, right) => compareQuotesByDate(left, right, 'desc'))
+    } else if (sortMode === 'quote_number_oldest_to_newest') {
+      nextRows.sort((left, right) => compareQuotesByDate(left, right, 'asc'))
+    } else if (sortMode === 'quote_number_desc') {
+      nextRows.sort((left, right) => compareQuotesByQuoteNumber(right, left))
     } else {
-      nextRows.sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime())
+      nextRows.sort(compareQuotesByQuoteNumber)
     }
 
     return nextRows
@@ -1573,8 +2279,21 @@ function StageColumn({
 
   const handleSelectSortMode = (nextSortMode: StageSortMode) => {
     setSortMode(nextSortMode)
+    setSortOptionSubmenuAnchorEl(null)
+    setSortOptionSubmenuType(null)
     setSortSubmenuAnchorEl(null)
     setMenuAnchorEl(null)
+  }
+
+  const openSortOptionSubmenu = (event: MouseEvent<HTMLElement>, submenuType: 'date' | 'quote_number') => {
+    setSortOptionSubmenuAnchorEl(event.currentTarget)
+    setSortOptionSubmenuType(submenuType)
+  }
+
+  const closeSortSubmenus = () => {
+    setSortOptionSubmenuAnchorEl(null)
+    setSortOptionSubmenuType(null)
+    setSortSubmenuAnchorEl(null)
   }
 
   const totalAmount = visibleRows.reduce((sum, quote) => sum + Number(quote.totalAmount || 0), 0)
@@ -1595,6 +2314,7 @@ function StageColumn({
         sx={{
           px: 1.1,
           py: 0.9,
+          minHeight: 104,
           background: `linear-gradient(135deg, ${stage.headerColor} 0%, ${alpha(stage.headerColor, 0.86)} 100%)`,
           color: '#ffffff',
         }}
@@ -1618,41 +2338,58 @@ function StageColumn({
             <MoreVertRoundedIcon sx={{ fontSize: 16 }} />
           </IconButton>
         </Stack>
-        <Typography variant="caption" sx={{ display: 'block', mt: 0.4, opacity: 0.92 }}>
+        <Typography
+          variant="caption"
+          sx={{
+            display: 'block',
+            mt: 0.4,
+            opacity: 0.92,
+            minHeight: '2.4em',
+            lineHeight: 1.2,
+          }}
+        >
           {stage.description}
         </Typography>
-        {activeFilterCount > 0 ? (
-          <Typography variant="caption" sx={{ display: 'block', mt: 0.2, opacity: 0.92 }}>
-            {activeFilterCount} active filter{activeFilterCount === 1 ? '' : 's'}
-          </Typography>
-        ) : null}
+        <Typography
+          variant="caption"
+          sx={{
+            display: 'block',
+            mt: 0.2,
+            minHeight: '1.2em',
+            opacity: activeFilterCount > 0 ? 0.92 : 0,
+            lineHeight: 1.2,
+          }}
+        >
+          {activeFilterCount > 0
+            ? `${activeFilterCount} active filter${activeFilterCount === 1 ? '' : 's'}`
+            : '0 active filters'}
+        </Typography>
         <Menu
           anchorEl={menuAnchorEl}
           open={isMenuOpen}
           onClose={() => {
-            setSortSubmenuAnchorEl(null)
+            closeSortSubmenus()
             setMenuAnchorEl(null)
           }}
           anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
           transformOrigin={{ vertical: 'top', horizontal: 'right' }}
         >
           <MenuItem
-            onMouseEnter={(event) => {
+            onClick={(event) => {
               setSortSubmenuAnchorEl(event.currentTarget)
-            }}
-            onClick={() => {
-              setSortSubmenuAnchorEl((current) => current || menuAnchorEl)
+              setSortOptionSubmenuAnchorEl(null)
+              setSortOptionSubmenuType(null)
             }}
             sx={{ minWidth: 170, display: 'flex', justifyContent: 'space-between', gap: 1.5 }}
           >
-            Sort
+            Sort by
             <ChevronRightRoundedIcon fontSize="small" />
           </MenuItem>
           <MenuItem
             onClick={() => {
               setDraftFilters(activeFilters)
               setIsFilterDialogOpen(true)
-              setSortSubmenuAnchorEl(null)
+              closeSortSubmenus()
               setMenuAnchorEl(null)
             }}
           >
@@ -1664,7 +2401,7 @@ function StageColumn({
               const emptyFilters = createEmptyStageColumnFilters()
               setDraftFilters(emptyFilters)
               setActiveFilters(emptyFilters)
-              setSortSubmenuAnchorEl(null)
+              closeSortSubmenus()
               setMenuAnchorEl(null)
             }}
           >
@@ -1675,64 +2412,91 @@ function StageColumn({
           anchorEl={sortSubmenuAnchorEl}
           open={isSortSubmenuOpen}
           onClose={() => {
-            setSortSubmenuAnchorEl(null)
+            closeSortSubmenus()
           }}
           anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
           transformOrigin={{ vertical: 'top', horizontal: 'left' }}
-          MenuListProps={{
-            onMouseLeave: () => {
-              setSortSubmenuAnchorEl(null)
-            },
-          }}
         >
           <MenuItem
-            selected={sortMode === 'value_desc'}
-            onClick={() => {
-              handleSelectSortMode('value_desc')
+            selected={sortOptionSubmenuType === 'date'}
+            onClick={(event) => {
+              openSortOptionSubmenu(event, 'date')
             }}
+            sx={{ minWidth: 190, display: 'flex', justifyContent: 'space-between', gap: 1.5 }}
           >
-            Sort by value (high to low)
+            Sort by date
+            <ChevronRightRoundedIcon fontSize="small" />
           </MenuItem>
           <MenuItem
-            selected={sortMode === 'value_asc'}
-            onClick={() => {
-              handleSelectSortMode('value_asc')
+            selected={sortOptionSubmenuType === 'quote_number'}
+            onClick={(event) => {
+              openSortOptionSubmenu(event, 'quote_number')
             }}
+            sx={{ minWidth: 190, display: 'flex', justifyContent: 'space-between', gap: 1.5 }}
           >
-            Sort by value (low to high)
+            Sort by quote number
+            <ChevronRightRoundedIcon fontSize="small" />
           </MenuItem>
-          <MenuItem
-            selected={sortMode === 'date_desc'}
-            onClick={() => {
-              handleSelectSortMode('date_desc')
-            }}
-          >
-            Sort by date (newest)
-          </MenuItem>
-          <MenuItem
-            selected={sortMode === 'date_asc'}
-            onClick={() => {
-              handleSelectSortMode('date_asc')
-            }}
-          >
-            Sort by date (oldest)
-          </MenuItem>
-          <MenuItem
-            selected={sortMode === 'alpha_asc'}
-            onClick={() => {
-              handleSelectSortMode('alpha_asc')
-            }}
-          >
-            Sort A-Z
-          </MenuItem>
-          <MenuItem
-            selected={sortMode === 'alpha_desc'}
-            onClick={() => {
-              handleSelectSortMode('alpha_desc')
-            }}
-          >
-            Sort Z-A
-          </MenuItem>
+        </Menu>
+        <Menu
+          anchorEl={sortOptionSubmenuAnchorEl}
+          open={isSortOptionSubmenuOpen}
+          onClose={() => {
+            setSortOptionSubmenuAnchorEl(null)
+            setSortOptionSubmenuType(null)
+          }}
+          anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
+          transformOrigin={{ vertical: 'top', horizontal: 'left' }}
+        >
+          {sortOptionSubmenuType === 'date' ? (
+            <>
+              <MenuItem
+                selected={sortMode === 'date_oldest_to_newest'}
+                onClick={() => {
+                  handleSelectSortMode('date_oldest_to_newest')
+                }}
+              >
+                Oldest to newest
+              </MenuItem>
+              <MenuItem
+                selected={sortMode === 'date_newest_to_oldest'}
+                onClick={() => {
+                  handleSelectSortMode('date_newest_to_oldest')
+                }}
+              >
+                Newest to oldest
+              </MenuItem>
+            </>
+          ) : null}
+
+          {sortOptionSubmenuType === 'quote_number' ? (
+            <>
+              <MenuItem
+                selected={sortMode === 'quote_number_oldest_to_newest'}
+                onClick={() => {
+                  handleSelectSortMode('quote_number_oldest_to_newest')
+                }}
+              >
+                Oldest to newest
+              </MenuItem>
+              <MenuItem
+                selected={sortMode === 'quote_number_desc'}
+                onClick={() => {
+                  handleSelectSortMode('quote_number_desc')
+                }}
+              >
+                Newest highest to lowest
+              </MenuItem>
+              <MenuItem
+                selected={sortMode === 'quote_number_asc'}
+                onClick={() => {
+                  handleSelectSortMode('quote_number_asc')
+                }}
+              >
+                Lowest to highest
+              </MenuItem>
+            </>
+          ) : null}
         </Menu>
       </Box>
 
@@ -1751,8 +2515,7 @@ function StageColumn({
         spacing={0.75}
         sx={{
           p: 0.8,
-          minHeight: 580,
-          maxHeight: '72vh',
+          height: 'clamp(520px, 72vh, 760px)',
           overflowY: 'auto',
           backgroundColor: alpha(stage.panelColor, 0.5),
         }}
@@ -1994,6 +2757,8 @@ function StageColumn({
 export default function SalesOpportunitiesPage() {
   const { appUser } = useAuth()
   const queryClient = useQueryClient()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const deepLinkedQuoteId = String(searchParams.get('quoteId') || '').trim()
 
   const [isDialogOpen, setIsDialogOpen] = useState(false)
   const [showAddDetails, setShowAddDetails] = useState(false)
@@ -2021,21 +2786,37 @@ export default function SalesOpportunitiesPage() {
   const [excelSyncDialogError, setExcelSyncDialogError] = useState<string | null>(null)
   const [isSavingOpportunity, setIsSavingOpportunity] = useState(false)
   const [isUploadingQuoteDocument, setIsUploadingQuoteDocument] = useState(false)
-  const [isUploadingSelectedOpportunityDocument, setIsUploadingSelectedOpportunityDocument] = useState(false)
+  const [isUploadingFolderSelection, setIsUploadingFolderSelection] = useState(false)
   const [isSavingOpportunityDetails, setIsSavingOpportunityDetails] = useState(false)
   const [busyQuoteId, setBusyQuoteId] = useState<string | null>(null)
   const [selectedOpportunity, setSelectedOpportunity] = useState<CrmQuote | null>(null)
   const [selectedOpportunityDetailsTab, setSelectedOpportunityDetailsTab] = useState<OpportunityDetailsTab>('details')
+  const [selectedOpportunityNestedFolderPath, setSelectedOpportunityNestedFolderPath] = useState<string | null>(null)
   const [opportunityDetailsFormState, setOpportunityDetailsFormState] = useState<OpportunityDetailsFormState | null>(null)
+  const [folderScanQueue, setFolderScanQueue] = useState<FolderScanQueueEntry[]>([])
+  const [excelSyncLaunchMode, setExcelSyncLaunchMode] = useState<ExcelSyncLaunchMode>('excel_file')
+  const [pendingFolderScanFiles, setPendingFolderScanFiles] = useState<File[] | null>(null)
+  const [isFolderScanSelectionDialogOpen, setIsFolderScanSelectionDialogOpen] = useState(false)
+  const [folderScanTargetQuoteId, setFolderScanTargetQuoteId] = useState('')
+  const [folderScanTargetQuoteSnapshot, setFolderScanTargetQuoteSnapshot] = useState<CrmQuote | null>(null)
+  const [folderScanActiveSidebarKey, setFolderScanActiveSidebarKey] = useState<FolderScanSidebarKey>('all')
+  const [folderScanExpandedSidebarFolderKey, setFolderScanExpandedSidebarFolderKey] = useState<QuoteSidebarFolderKey | null>(null)
+  const [folderScanActiveNestedPath, setFolderScanActiveNestedPath] = useState<string | null>(null)
+  const [folderScanUploadSummary, setFolderScanUploadSummary] = useState<FolderScanUploadSummary | null>(null)
+  const [folderScanUploadProgress, setFolderScanUploadProgress] = useState({ completed: 0, total: 0 })
   const [opportunityDetailsInitialSnapshot, setOpportunityDetailsInitialSnapshot] = useState('')
   const [selectedOpportunityChatDraft, setSelectedOpportunityChatDraft] = useState('')
+  const [selectedOpportunityRefreshOnSend, setSelectedOpportunityRefreshOnSend] = useState(false)
   const [isSendingSelectedOpportunityChat, setIsSendingSelectedOpportunityChat] = useState(false)
   const [deletingSelectedOpportunityChatMessageId, setDeletingSelectedOpportunityChatMessageId] = useState('')
   const [pendingExcelSyncPromotionQuoteId, setPendingExcelSyncPromotionQuoteId] = useState<string | null>(null)
   const [detailsActionMenuAnchorEl, setDetailsActionMenuAnchorEl] = useState<HTMLElement | null>(null)
+  const [uploadQuoteActionMenuAnchorEl, setUploadQuoteActionMenuAnchorEl] = useState<HTMLElement | null>(null)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
   const [globalSearch, setGlobalSearch] = useState('')
+  const pipelineUploadExcelInputRef = useRef<HTMLInputElement | null>(null)
+  const folderScanInputRef = useRef<HTMLInputElement | null>(null)
   const selectedOpportunityId = selectedOpportunity?.id ?? ''
 
   const dealersQuery = useQuery({
@@ -2219,7 +3000,6 @@ export default function SalesOpportunitiesPage() {
     const base: Record<CrmOpportunityStage, CrmQuote[]> = {
       concept: [],
       proposal_submission: [],
-      revision: [],
       order_placement: [],
     }
 
@@ -2229,7 +3009,7 @@ export default function SalesOpportunitiesPage() {
     }
 
     for (const stage of stageDefinitions) {
-      base[stage.id].sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime())
+      base[stage.id].sort(compareQuotesByQuoteNumber)
     }
 
     return base
@@ -2264,6 +3044,7 @@ export default function SalesOpportunitiesPage() {
   )
 
   const isDetailsActionMenuOpen = Boolean(detailsActionMenuAnchorEl)
+  const isUploadQuoteActionMenuOpen = Boolean(uploadQuoteActionMenuAnchorEl)
   const canUseProposalDetailsActions = Boolean(
     canManage
     && selectedOpportunity
@@ -2280,6 +3061,258 @@ export default function SalesOpportunitiesPage() {
     () => (opportunityDetailsFormState?.documents ?? []),
     [opportunityDetailsFormState],
   )
+
+  const selectedOpportunitySidebarFolderKey = useMemo<QuoteSidebarFolderKey | null>(() => {
+    if (quoteSidebarFolderKeySet.has(selectedOpportunityDetailsTab as QuoteSidebarFolderKey)) {
+      return selectedOpportunityDetailsTab as QuoteSidebarFolderKey
+    }
+
+    return null
+  }, [selectedOpportunityDetailsTab])
+
+  const selectedOpportunitySidebarFolder = useMemo(
+    () => (selectedOpportunitySidebarFolderKey
+      ? (quoteSidebarFolderByKey.get(selectedOpportunitySidebarFolderKey) ?? null)
+      : null),
+    [selectedOpportunitySidebarFolderKey],
+  )
+
+  const selectedOpportunityDocumentsByFolder = useMemo(() => {
+    const grouped = new Map<QuoteSidebarFolderKey, CrmQuoteDocument[]>()
+
+    for (const folder of quoteSidebarFolders) {
+      grouped.set(folder.key, [])
+    }
+
+    for (const document of selectedOpportunityDocuments) {
+      const folderKey = resolveDocumentFolderKey(document)
+      const existing = grouped.get(folderKey) ?? []
+      grouped.set(folderKey, [...existing, document])
+    }
+
+    return grouped
+  }, [selectedOpportunityDocuments])
+
+  const selectedOpportunityFolderDocuments = useMemo(
+    () => (selectedOpportunitySidebarFolderKey
+      ? (selectedOpportunityDocumentsByFolder.get(selectedOpportunitySidebarFolderKey) ?? [])
+      : []),
+    [selectedOpportunityDocumentsByFolder, selectedOpportunitySidebarFolderKey],
+  )
+
+  const selectedOpportunityNestedGroupsByFolder = useMemo(() => {
+    const grouped = new Map<QuoteSidebarFolderKey, QuoteNestedFolderGroup[]>()
+
+    for (const folder of quoteSidebarFolders) {
+      grouped.set(folder.key, buildQuoteNestedFolderGroups(selectedOpportunityDocumentsByFolder.get(folder.key) ?? [], folder.key))
+    }
+
+    return grouped
+  }, [selectedOpportunityDocumentsByFolder])
+
+  const selectedOpportunityFolderRootDocuments = useMemo(
+    () => selectedOpportunityFolderDocuments.filter(
+      (document) => !resolveDocumentNestedFolderPath(document, selectedOpportunitySidebarFolderKey),
+    ),
+    [selectedOpportunityFolderDocuments, selectedOpportunitySidebarFolderKey],
+  )
+
+  const selectedOpportunityFolderNestedGroups = useMemo(
+    () => buildQuoteNestedFolderGroups(selectedOpportunityFolderDocuments, selectedOpportunitySidebarFolderKey),
+    [selectedOpportunityFolderDocuments, selectedOpportunitySidebarFolderKey],
+  )
+
+  const selectedOpportunityActiveNestedFolderGroup = useMemo(
+    () => (selectedOpportunityNestedFolderPath
+      ? (selectedOpportunityFolderNestedGroups.find((entry) => entry.path === selectedOpportunityNestedFolderPath) ?? null)
+      : null),
+    [selectedOpportunityFolderNestedGroups, selectedOpportunityNestedFolderPath],
+  )
+
+  useEffect(() => {
+    if (!selectedOpportunityNestedFolderPath) {
+      return
+    }
+
+    const isNestedFolderStillVisible = selectedOpportunityFolderNestedGroups
+      .some((entry) => entry.path === selectedOpportunityNestedFolderPath)
+
+    if (!isNestedFolderStillVisible) {
+      setSelectedOpportunityNestedFolderPath(null)
+    }
+  }, [selectedOpportunityFolderNestedGroups, selectedOpportunityNestedFolderPath])
+
+  const folderScanTargetQuote = useMemo(
+    () => quotes.find((entry) => entry.id === folderScanTargetQuoteId) || folderScanTargetQuoteSnapshot || null,
+    [folderScanTargetQuoteId, folderScanTargetQuoteSnapshot, quotes],
+  )
+
+  const folderScanSelectedQueueCount = useMemo(
+    () => folderScanQueue.filter((entry) => entry.selected && !entry.duplicateBlocked).length,
+    [folderScanQueue],
+  )
+
+  const folderScanQueueByFolder = useMemo(() => {
+    const grouped = new Map<QuoteSidebarFolderKey, FolderScanQueueEntry[]>()
+
+    for (const folder of quoteSidebarFolders) {
+      grouped.set(folder.key, [])
+    }
+
+    for (const entry of folderScanQueue) {
+      const existing = grouped.get(entry.folderKey)
+
+      if (existing) {
+        existing.push(entry)
+      } else {
+        grouped.set(entry.folderKey, [entry])
+      }
+    }
+
+    return grouped
+  }, [folderScanQueue])
+
+  const folderScanNestedSectionsByFolder = useMemo(() => {
+    const grouped = new Map<QuoteSidebarFolderKey, FolderScanNestedSection[]>()
+
+    for (const folder of quoteSidebarFolders) {
+      const entries = folderScanQueueByFolder.get(folder.key) ?? []
+      const nestedPathCounts = new Map<string, { totalCount: number; selectedCount: number }>()
+
+      for (const entry of entries) {
+        const nestedFolderPath = resolveFolderScanEntryNestedFolderPath(entry)
+
+        if (!nestedFolderPath) {
+          continue
+        }
+
+        const existing = nestedPathCounts.get(nestedFolderPath) ?? { totalCount: 0, selectedCount: 0 }
+
+        nestedPathCounts.set(nestedFolderPath, {
+          totalCount: existing.totalCount + 1,
+          selectedCount: existing.selectedCount + (entry.selected && !entry.duplicateBlocked ? 1 : 0),
+        })
+      }
+
+      const nestedSections = Array.from(nestedPathCounts.entries())
+        .map(([path, counts]) => ({
+          path,
+          totalCount: counts.totalCount,
+          selectedCount: counts.selectedCount,
+        }))
+        .sort((left, right) => left.path.localeCompare(right.path))
+
+      grouped.set(folder.key, nestedSections)
+    }
+
+    return grouped
+  }, [folderScanQueueByFolder])
+
+  const folderScanSidebarSections = useMemo<FolderScanSidebarSection[]>(() => {
+    const allSection: FolderScanSidebarSection = {
+      key: 'all',
+      label: 'All Folders',
+      totalCount: folderScanQueue.length,
+      selectedCount: folderScanSelectedQueueCount,
+      blockedCount: folderScanQueue.filter((entry) => entry.duplicateBlocked).length,
+    }
+
+    const folderSections = quoteSidebarFolders.map((folder) => {
+      const entries = folderScanQueueByFolder.get(folder.key) ?? []
+
+      return {
+        key: folder.key,
+        label: folder.label,
+        totalCount: entries.length,
+        selectedCount: entries.filter((entry) => entry.selected && !entry.duplicateBlocked).length,
+        blockedCount: entries.filter((entry) => entry.duplicateBlocked).length,
+      }
+    })
+
+    return [allSection, ...folderSections]
+  }, [folderScanQueue, folderScanQueueByFolder, folderScanSelectedQueueCount])
+
+  const folderScanVisibleSections = useMemo<Array<QuoteSidebarFolderDefinition & { entries: FolderScanQueueEntry[] }>>(() => {
+    const filterEntriesByActiveNestedPath = (entries: FolderScanQueueEntry[]) => {
+      if (!folderScanActiveNestedPath || folderScanActiveSidebarKey === 'all') {
+        return entries
+      }
+
+      return entries.filter((entry) => resolveFolderScanEntryNestedFolderPath(entry) === folderScanActiveNestedPath)
+    }
+
+    if (folderScanActiveSidebarKey === 'all') {
+      return quoteSidebarFolders.map((folder) => ({
+        ...folder,
+        entries: folderScanQueueByFolder.get(folder.key) ?? [],
+      }))
+    }
+
+    const folder = quoteSidebarFolderByKey.get(folderScanActiveSidebarKey)
+
+    if (!folder) {
+      return []
+    }
+
+    return [{
+      ...folder,
+      entries: filterEntriesByActiveNestedPath(folderScanQueueByFolder.get(folder.key) ?? []),
+    }]
+  }, [folderScanActiveNestedPath, folderScanActiveSidebarKey, folderScanQueueByFolder])
+
+  const folderScanVisibleEntriesCount = useMemo(
+    () => folderScanVisibleSections.reduce((total, section) => total + section.entries.length, 0),
+    [folderScanVisibleSections],
+  )
+
+  const folderScanSelectionScopeLabel = useMemo(() => {
+    if (folderScanActiveSidebarKey === 'all') {
+      return 'all folders'
+    }
+
+    const folderLabel = quoteSidebarFolderByKey.get(folderScanActiveSidebarKey)?.label ?? 'selected folder'
+
+    if (!folderScanActiveNestedPath) {
+      return folderLabel
+    }
+
+    return `${folderLabel} / ${folderScanActiveNestedPath}`
+  }, [folderScanActiveNestedPath, folderScanActiveSidebarKey])
+
+  useEffect(() => {
+    if (folderScanActiveSidebarKey === 'all') {
+      if (folderScanActiveNestedPath) {
+        setFolderScanActiveNestedPath(null)
+      }
+
+      return
+    }
+
+    const activeFolderEntries = folderScanQueueByFolder.get(folderScanActiveSidebarKey) ?? []
+
+    if (activeFolderEntries.length === 0) {
+      setFolderScanActiveSidebarKey('all')
+      setFolderScanExpandedSidebarFolderKey(null)
+      setFolderScanActiveNestedPath(null)
+      return
+    }
+
+    if (!folderScanActiveNestedPath) {
+      return
+    }
+
+    const nestedPathStillExists = activeFolderEntries
+      .some((entry) => resolveFolderScanEntryNestedFolderPath(entry) === folderScanActiveNestedPath)
+
+    if (!nestedPathStillExists) {
+      setFolderScanActiveNestedPath(null)
+    }
+  }, [
+    folderScanActiveNestedPath,
+    folderScanActiveSidebarKey,
+    folderScanQueueByFolder,
+    setFolderScanExpandedSidebarFolderKey,
+  ])
 
   const selectedOpportunityChatMessages = useMemo(
     () => (Array.isArray(selectedOpportunityChatsQuery.data?.messages)
@@ -2341,6 +3374,8 @@ export default function SalesOpportunitiesPage() {
     setIsExcelMissingConceptDialogOpen(false)
     setIsExcelAccountDialogOpen(false)
     setIsExcelSyncDialogOpen(false)
+    setExcelSyncLaunchMode('excel_file')
+    setPendingFolderScanFiles(null)
     setExcelSyncAllowCreateWhenMissingConcept(false)
     setExcelSyncDraft(null)
     setExcelSyncLookupResult(null)
@@ -2435,6 +3470,69 @@ export default function SalesOpportunitiesPage() {
     ])
   }, [dealersQuery, ordersQuery, quotesQuery])
 
+  const initializeExcelSyncFromPayload = useCallback(async (
+    excelPayload: CrmExcelQuoteSyncInput,
+    sourceFileName: string,
+    options: {
+      launchMode: ExcelSyncLaunchMode
+      scannedFiles?: File[]
+    },
+  ) => {
+    const quoteNumberFromExcel = String(excelPayload.quoteNumber ?? '').trim()
+
+    if (!quoteNumberFromExcel) {
+      throw new Error('Excel quote file is missing a quote number.')
+    }
+
+    const lookupResult = await fetchCrmExcelQuoteLookup(quoteNumberFromExcel)
+    const isMissingFromConcept = !lookupResult.found
+    const salesRepFromExcel = String(excelPayload.salesRep ?? '').trim()
+    const defaultSalesRep = resolveMatchingOption(salesRepFromExcel, excelSyncSalesRepOptions)
+    const accountNameFromExcel = String(excelPayload.companyName ?? '').trim()
+    const matchedDealers = accountNameFromExcel
+      ? findMatchingDealersByName(dealers, accountNameFromExcel)
+      : []
+
+    setExcelSyncLaunchMode(options.launchMode)
+    setPendingFolderScanFiles(options.launchMode === 'folder_scan' ? (options.scannedFiles ?? []) : null)
+    setExcelSyncLookupResult(lookupResult)
+    setExcelSyncDraft(excelPayload)
+    setExcelSyncSourceFileName(sourceFileName)
+    setExcelSyncQuoteNumberInput(quoteNumberFromExcel)
+    setExcelSyncRawSalesRep(salesRepFromExcel)
+    setExcelSyncSalesRepInput(defaultSalesRep)
+    setExcelSyncDealerStateCode('')
+    setExcelSyncProjectTypeInput(resolveDefaultExcelProjectType(excelPayload.projectType))
+    setExcelSyncNewDealerNameInput(accountNameFromExcel)
+    setExcelSyncResolvedDealerSourceId('')
+    setExcelSyncResolvedDealerName('')
+
+    if (matchedDealers.length === 1) {
+      setExcelSyncAccountMode('existing')
+      setExcelSyncDealerSourceIdInput(matchedDealers[0].sourceId)
+    } else if (matchedDealers.length > 1) {
+      setExcelSyncAccountMode('existing')
+      setExcelSyncDealerSourceIdInput('')
+    } else if (accountNameFromExcel) {
+      setExcelSyncAccountMode('create')
+      setExcelSyncDealerSourceIdInput('')
+    } else {
+      setExcelSyncAccountMode('none')
+      setExcelSyncDealerSourceIdInput('')
+    }
+
+    setExcelSyncDialogError(null)
+
+    if (isMissingFromConcept) {
+      setExcelSyncAllowCreateWhenMissingConcept(true)
+      setIsExcelMissingConceptDialogOpen(true)
+      return
+    }
+
+    setExcelSyncAllowCreateWhenMissingConcept(false)
+    setIsExcelAccountDialogOpen(true)
+  }, [dealers, excelSyncSalesRepOptions])
+
   const handleExcelQuoteSyncUpload = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     event.target.value = ''
@@ -2449,59 +3547,15 @@ export default function SalesOpportunitiesPage() {
 
     try {
       const excelPayload = await parseExcelQuoteForSync(file)
-      const quoteNumberFromExcel = String(excelPayload.quoteNumber ?? '').trim()
-
-      const lookupResult = await fetchCrmExcelQuoteLookup(quoteNumberFromExcel)
-      const isMissingFromConcept = !lookupResult.found
-      setExcelSyncLookupResult(lookupResult)
-
-      const salesRepFromExcel = String(excelPayload.salesRep ?? '').trim()
-      const defaultSalesRep = resolveMatchingOption(salesRepFromExcel, excelSyncSalesRepOptions)
-      const accountNameFromExcel = String(excelPayload.companyName ?? '').trim()
-      const matchedDealers = accountNameFromExcel
-        ? findMatchingDealersByName(dealers, accountNameFromExcel)
-        : []
-
-      setExcelSyncDraft(excelPayload)
-      setExcelSyncSourceFileName(file.name)
-      setExcelSyncQuoteNumberInput(quoteNumberFromExcel)
-      setExcelSyncRawSalesRep(salesRepFromExcel)
-      setExcelSyncSalesRepInput(defaultSalesRep)
-      setExcelSyncDealerStateCode('')
-      setExcelSyncProjectTypeInput(resolveDefaultExcelProjectType(excelPayload.projectType))
-      setExcelSyncNewDealerNameInput(accountNameFromExcel)
-      setExcelSyncResolvedDealerSourceId('')
-      setExcelSyncResolvedDealerName('')
-
-      if (matchedDealers.length === 1) {
-        setExcelSyncAccountMode('existing')
-        setExcelSyncDealerSourceIdInput(matchedDealers[0].sourceId)
-      } else if (matchedDealers.length > 1) {
-        setExcelSyncAccountMode('existing')
-        setExcelSyncDealerSourceIdInput('')
-      } else if (accountNameFromExcel) {
-        setExcelSyncAccountMode('create')
-        setExcelSyncDealerSourceIdInput('')
-      } else {
-        setExcelSyncAccountMode('existing')
-        setExcelSyncDealerSourceIdInput('')
-      }
-
-      setExcelSyncDialogError(null)
-
-      if (isMissingFromConcept) {
-        setExcelSyncAllowCreateWhenMissingConcept(true)
-        setIsExcelMissingConceptDialogOpen(true)
-      } else {
-        setExcelSyncAllowCreateWhenMissingConcept(false)
-        setIsExcelAccountDialogOpen(true)
-      }
+      await initializeExcelSyncFromPayload(excelPayload, file.name, {
+        launchMode: 'excel_file',
+      })
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Failed to sync quote file.')
     } finally {
       setIsSyncingExcelQuote(false)
     }
-  }, [dealers, excelSyncSalesRepOptions])
+  }, [initializeExcelSyncFromPayload])
 
   const handleCancelExcelSyncDialog = useCallback(() => {
     if (isSyncingExcelQuote) {
@@ -2551,6 +3605,16 @@ export default function SalesOpportunitiesPage() {
       return
     }
 
+    if (excelSyncAccountMode === 'none') {
+      setExcelSyncDealerSourceIdInput('')
+      setExcelSyncResolvedDealerSourceId('')
+      setExcelSyncResolvedDealerName(excelSyncAccountCandidateName)
+      setExcelSyncDialogError(null)
+      setIsExcelAccountDialogOpen(false)
+      setIsExcelSyncDialogOpen(true)
+      return
+    }
+
     if (!newDealerName) {
       setExcelSyncDialogError('Enter a new Account Name before continuing.')
       return
@@ -2594,6 +3658,7 @@ export default function SalesOpportunitiesPage() {
       setIsSyncingExcelQuote(false)
     }
   }, [
+    excelSyncAccountCandidateName,
     dealersBySourceId,
     excelSyncAccountMode,
     excelSyncDealerSourceIdInput,
@@ -2611,6 +3676,23 @@ export default function SalesOpportunitiesPage() {
     setIsExcelSyncDialogOpen(false)
     setIsExcelAccountDialogOpen(true)
   }, [isSyncingExcelQuote])
+
+  const openFolderScanSelectionDialogForQuote = useCallback((targetQuote: CrmQuote, scannedFiles: File[]) => {
+    const nextQueue = buildFolderScanQueueEntriesForQuote(targetQuote, scannedFiles)
+
+    resetExcelSyncDialog()
+    setFolderScanQueue(nextQueue)
+    setFolderScanTargetQuoteId(targetQuote.id)
+    setFolderScanTargetQuoteSnapshot(targetQuote)
+    setFolderScanActiveSidebarKey('all')
+    setFolderScanExpandedSidebarFolderKey(null)
+    setFolderScanActiveNestedPath(null)
+    setFolderScanUploadSummary(null)
+    setFolderScanUploadProgress({ completed: 0, total: 0 })
+    setIsFolderScanSelectionDialogOpen(true)
+
+    return nextQueue
+  }, [resetExcelSyncDialog])
 
   const handleConfirmExcelQuoteSync = useCallback(async () => {
     if (!excelSyncDraft) {
@@ -2647,7 +3729,7 @@ export default function SalesOpportunitiesPage() {
 
     const resolvedDealerSourceId = excelSyncResolvedDealerSourceId.trim()
 
-    if (!resolvedDealerSourceId) {
+    if (excelSyncAccountMode === 'existing' && !resolvedDealerSourceId) {
       setExcelSyncDialogError('Select an Account in step 1 before syncing.')
       return
     }
@@ -2677,6 +3759,33 @@ export default function SalesOpportunitiesPage() {
 
       if (resolvedCompanyName) {
         syncInput.companyName = resolvedCompanyName
+      }
+
+      if (excelSyncLaunchMode === 'folder_scan') {
+        if (!pendingFolderScanFiles || pendingFolderScanFiles.length === 0) {
+          throw new Error('No scanned folder files were found for upload.')
+        }
+
+        const syncResponse = await syncCrmQuoteFromExcel(syncInput)
+        let syncedQuote = syncResponse.quote
+
+        if (!syncedQuote) {
+          throw new Error(syncResponse.message || 'Failed to sync quote from scanned folder Excel file.')
+        }
+
+        if (resolvedDealerSourceId || resolvedCompanyName) {
+          const patchResponse = await updateCrmQuote(syncedQuote.id, {
+            ...(resolvedDealerSourceId ? { dealerSourceId: resolvedDealerSourceId } : {}),
+            ...(resolvedCompanyName ? { companyName: resolvedCompanyName } : {}),
+          })
+          syncedQuote = patchResponse.quote
+        }
+
+        const scannedFilesForSelection = pendingFolderScanFiles
+        const nextQueue = openFolderScanSelectionDialogForQuote(syncedQuote, scannedFilesForSelection)
+        const queueLabel = nextQueue.length === 1 ? '1 new file' : `${nextQueue.length} new files`
+        setSuccessMessage(`Excel sync is ready for ${quoteNumber}. Showing ${queueLabel}. Only the main Quotes-folder Excel file is always included.`)
+        return
       }
 
       const lookupQuoteId = String(excelSyncLookupResult?.id || '').trim()
@@ -2759,16 +3868,20 @@ export default function SalesOpportunitiesPage() {
     }
   }, [
     dealersBySourceId,
+    excelSyncLaunchMode,
     excelSyncDealerStateCode,
     excelSyncDraft,
     excelSyncLookupResult,
     excelSyncAllowCreateWhenMissingConcept,
+    excelSyncAccountMode,
     excelSyncProjectTypeInput,
     excelSyncQuoteNumberInput,
     excelSyncResolvedDealerName,
     excelSyncResolvedDealerSourceId,
     excelSyncSalesRepInput,
     excelSyncSalesRepOptions,
+    openFolderScanSelectionDialogForQuote,
+    pendingFolderScanFiles,
     quotes,
     resetExcelSyncDialog,
   ])
@@ -2828,7 +3941,14 @@ export default function SalesOpportunitiesPage() {
     }
   }, [uploadQuoteDocumentFile])
 
-  const uploadSelectedOpportunityDocumentFile = useCallback(async (quote: CrmQuote, file: File) => {
+  const uploadSelectedOpportunityDocumentFile = useCallback(async (
+    quote: CrmQuote,
+    file: File,
+    options: {
+      folderLabel?: string
+      documentName?: string
+    } = {},
+  ) => {
     const maxFileSize = 15 * 1024 * 1024
 
     if (file.size > maxFileSize) {
@@ -2854,42 +3974,329 @@ export default function SalesOpportunitiesPage() {
 
     const downloadUrl = await getDownloadURL(fileRef)
 
+    const normalizedFileName = String(file.name ?? '').trim()
+    const normalizedDocumentName = String(options.documentName ?? normalizedFileName).trim() || normalizedFileName
+    const normalizedFolderLabel = String(options.folderLabel ?? '').trim()
+
     return {
       url: downloadUrl,
-      name: file.name,
+      name: normalizedFolderLabel
+        ? buildDocumentNameWithFolder(normalizedFolderLabel, normalizedDocumentName)
+        : normalizedDocumentName,
     }
   }, [])
 
-  const handleSelectedOpportunityDocumentUpload = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
+  const handleOpenFolderScanDialog = useCallback(() => {
+    const input = folderScanInputRef.current
+
+    if (!input) {
+      return
+    }
+
+    input.value = ''
+    input.setAttribute('webkitdirectory', '')
+    input.setAttribute('directory', '')
+    input.click()
+  }, [])
+
+  const handleFolderScanUpload = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
+    const scannedFiles = Array.from(event.target.files ?? [])
     event.target.value = ''
 
-    if (!file || !selectedOpportunity) {
+    if (scannedFiles.length === 0) {
+      return
+    }
+
+    if (!canManage) {
+      setErrorMessage('You do not have permission to upload quote folders.')
       return
     }
 
     setErrorMessage(null)
     setSuccessMessage(null)
-    setIsUploadingSelectedOpportunityDocument(true)
+    setIsUploadingFolderSelection(true)
 
     try {
-      const nextDocument = await uploadSelectedOpportunityDocumentFile(selectedOpportunity, file)
-      setOpportunityDetailsFormState((current) => {
-        if (!current) {
-          return current
+      const excelFiles = scannedFiles.filter((file) => {
+        const relativePath = String(file.webkitRelativePath || file.name).trim()
+        return isAlwaysResyncedQuotesExcelFile(relativePath, file.name)
+      })
+
+      if (excelFiles.length === 0) {
+        setErrorMessage('Scanned folder must include the main Excel file directly inside the Quotes folder (not in Quotes subfolders).')
+        return
+      }
+
+      let parsedExcelPayload: CrmExcelQuoteSyncInput | null = null
+      let sourceExcelFileName = ''
+
+      for (const file of excelFiles) {
+        try {
+          parsedExcelPayload = await parseExcelQuoteForSync(file)
+          sourceExcelFileName = file.name
+          break
+        } catch {
+          // Try the next Excel file if this workbook fails to parse.
+        }
+      }
+
+      if (!parsedExcelPayload) {
+        setErrorMessage('Could not parse an Excel quote file from the selected folder.')
+        return
+      }
+
+      const quoteNumberFromExcel = String(parsedExcelPayload.quoteNumber ?? '').trim()
+
+      if (!quoteNumberFromExcel) {
+        throw new Error('Excel quote file is missing a quote number.')
+      }
+
+      const normalizedQuoteNumber = normalizeMatchValue(quoteNumberFromExcel)
+      const existingQuote = quotes.find((entry) => normalizeMatchValue(entry.quoteNumber) === normalizedQuoteNumber) || null
+
+      if (existingQuote) {
+        let syncedQuote: CrmQuote | null = existingQuote
+        let syncErrorMessage = ''
+
+        try {
+          const syncResponse = await syncCrmQuoteFromExcel({
+            ...parsedExcelPayload,
+            quoteNumber: quoteNumberFromExcel,
+          })
+
+          syncedQuote = syncResponse.quote || syncedQuote
+        } catch (error) {
+          const apiError = error as {
+            status?: number
+            payload?: {
+              error?: unknown
+              message?: unknown
+            }
+          }
+
+          const payloadError = typeof apiError.payload === 'object' && apiError.payload
+            ? String(apiError.payload.error ?? apiError.payload.message ?? '').trim()
+            : ''
+
+          syncErrorMessage = payloadError || (error instanceof Error ? error.message : 'Failed to sync Excel data for this quote.')
+
+          if (apiError.status !== 409) {
+            throw error
+          }
         }
 
-        return {
-          ...current,
-          documents: [...current.documents, nextDocument],
+        if (!syncedQuote) {
+          throw new Error('Could not resolve the existing quote for this scanned folder.')
         }
+
+        const nextQueue = openFolderScanSelectionDialogForQuote(syncedQuote, scannedFiles)
+        const queueLabel = nextQueue.length === 1 ? '1 new file' : `${nextQueue.length} new files`
+
+        setSuccessMessage(
+          `Quote ${quoteNumberFromExcel} already exists. Showing ${queueLabel}. Only the main Quotes-folder Excel file is always included.`,
+        )
+
+        if (syncErrorMessage) {
+          setErrorMessage(syncErrorMessage)
+        }
+
+        await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.crmOpportunitiesQuotes })
+        return
+      }
+
+      await initializeExcelSyncFromPayload(parsedExcelPayload, sourceExcelFileName, {
+        launchMode: 'folder_scan',
+        scannedFiles,
       })
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Failed to add document.')
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to scan quote folder.')
     } finally {
-      setIsUploadingSelectedOpportunityDocument(false)
+      setIsUploadingFolderSelection(false)
     }
-  }, [selectedOpportunity, uploadSelectedOpportunityDocumentFile])
+  }, [canManage, initializeExcelSyncFromPayload, openFolderScanSelectionDialogForQuote, queryClient, quotes])
+
+  const handleToggleFolderScanEntry = useCallback((entryId: string, checked: boolean) => {
+    setFolderScanQueue((current) => current.map((entry) => {
+      if (entry.id !== entryId || entry.duplicateBlocked) {
+        return entry
+      }
+
+      return {
+        ...entry,
+        selected: checked,
+      }
+    }))
+  }, [])
+
+  const handleSetAllFolderScanEntries = useCallback((checked: boolean) => {
+    setFolderScanQueue((current) => current.map((entry) => (
+      entry.duplicateBlocked
+      || (folderScanActiveSidebarKey !== 'all' && entry.folderKey !== folderScanActiveSidebarKey)
+      || (folderScanActiveSidebarKey !== 'all'
+        && folderScanActiveNestedPath
+        && resolveFolderScanEntryNestedFolderPath(entry) !== folderScanActiveNestedPath)
+        ? entry
+        : {
+          ...entry,
+          selected: checked,
+        }
+    )))
+  }, [folderScanActiveNestedPath, folderScanActiveSidebarKey])
+
+  const handleClearFolderScanEntries = useCallback(() => {
+    setFolderScanQueue([])
+    setFolderScanActiveSidebarKey('all')
+    setFolderScanExpandedSidebarFolderKey(null)
+    setFolderScanActiveNestedPath(null)
+    setFolderScanUploadSummary(null)
+  }, [])
+
+  const handleCloseFolderScanSelectionDialog = useCallback(() => {
+    if (isUploadingFolderSelection) {
+      return
+    }
+
+    setIsFolderScanSelectionDialogOpen(false)
+    setFolderScanTargetQuoteId('')
+    setFolderScanTargetQuoteSnapshot(null)
+    setFolderScanActiveSidebarKey('all')
+    setFolderScanExpandedSidebarFolderKey(null)
+    setFolderScanActiveNestedPath(null)
+    setFolderScanUploadSummary(null)
+    setFolderScanUploadProgress({ completed: 0, total: 0 })
+    setFolderScanQueue([])
+  }, [isUploadingFolderSelection])
+
+  const handleUploadSelectedFolderEntries = useCallback(async () => {
+    const targetQuote = folderScanTargetQuote
+
+    if (!targetQuote) {
+      setErrorMessage('Could not resolve the target quote for this scanned folder.')
+      return
+    }
+
+    const selectedEntries = folderScanQueue.filter((entry) => entry.selected && !entry.duplicateBlocked)
+
+    if (selectedEntries.length === 0) {
+      setErrorMessage('Select at least one scanned file to upload.')
+      return
+    }
+
+    const existingDocuments = resolveQuoteDocuments(targetQuote)
+    const nextDocuments = [...existingDocuments]
+    const uploadedEntryIds = new Set<string>()
+    const failedFileMessages: string[] = []
+    let cursor = 0
+
+    setErrorMessage(null)
+    setSuccessMessage(null)
+    setFolderScanUploadSummary(null)
+    setIsUploadingFolderSelection(true)
+    setFolderScanUploadProgress({ completed: 0, total: selectedEntries.length })
+
+    try {
+      const workerCount = Math.min(4, selectedEntries.length)
+      const workers = Array.from({ length: workerCount }, async () => {
+        while (cursor < selectedEntries.length) {
+          const entryIndex = cursor
+          cursor += 1
+          const entry = selectedEntries[entryIndex]
+
+          try {
+            const nextDocument = await uploadSelectedOpportunityDocumentFile(targetQuote, entry.file, {
+              folderLabel: entry.folderLabel,
+              documentName: entry.documentName,
+            })
+            nextDocuments.push(nextDocument)
+            uploadedEntryIds.add(entry.id)
+          } catch (error) {
+            const message = error instanceof Error ? error.message : 'Failed to upload file.'
+            failedFileMessages.push(`${entry.file.name}: ${message}`)
+          } finally {
+            setFolderScanUploadProgress((current) => ({
+              completed: Math.min(current.total, current.completed + 1),
+              total: current.total,
+            }))
+          }
+        }
+      })
+
+      await Promise.all(workers)
+
+      if (uploadedEntryIds.size > 0) {
+        const updateResponse = await updateCrmQuote(targetQuote.id, {
+          documents: nextDocuments,
+        })
+        setFolderScanTargetQuoteSnapshot(updateResponse.quote)
+
+        if (selectedOpportunityId && selectedOpportunityId === targetQuote.id) {
+          setOpportunityDetailsFormState((current) => {
+            if (!current) {
+              return current
+            }
+
+            return {
+              ...current,
+              documents: resolveQuoteDocuments(updateResponse.quote),
+            }
+          })
+        }
+
+        await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.crmOpportunitiesQuotes })
+      }
+
+      setFolderScanQueue((current) => current.filter((entry) => !uploadedEntryIds.has(entry.id)))
+
+      const failedCount = failedFileMessages.length
+
+      setFolderScanUploadSummary({
+        uploadedCount: uploadedEntryIds.size,
+        attemptedCount: selectedEntries.length,
+        failedCount,
+      })
+
+      const summaryParts = [
+        `Uploaded ${uploadedEntryIds.size} of ${selectedEntries.length} selected file${selectedEntries.length === 1 ? '' : 's'}.`,
+      ]
+
+      if (failedCount > 0) {
+        summaryParts.push(`${failedCount} file${failedCount === 1 ? '' : 's'} failed.`)
+      }
+
+      setSuccessMessage(summaryParts.join(' '))
+
+      if (failedCount > 0) {
+        setErrorMessage(failedFileMessages.join(' | '))
+      }
+    } finally {
+      setIsUploadingFolderSelection(false)
+    }
+  }, [folderScanQueue, folderScanTargetQuote, queryClient, selectedOpportunityId, uploadSelectedOpportunityDocumentFile])
+
+  const handleOpenUploadQuoteActionMenu = useCallback((event: MouseEvent<HTMLButtonElement>) => {
+    setUploadQuoteActionMenuAnchorEl(event.currentTarget)
+  }, [])
+
+  const handleCloseUploadQuoteActionMenu = useCallback(() => {
+    setUploadQuoteActionMenuAnchorEl(null)
+  }, [])
+
+  const handleOpenUploadQuoteExcelPicker = useCallback(() => {
+    setUploadQuoteActionMenuAnchorEl(null)
+    const input = pipelineUploadExcelInputRef.current
+
+    if (!input) {
+      return
+    }
+
+    input.value = ''
+    input.click()
+  }, [])
+
+  const handleOpenUploadQuoteFolderScanner = useCallback(() => {
+    setUploadQuoteActionMenuAnchorEl(null)
+    handleOpenFolderScanDialog()
+  }, [handleOpenFolderScanDialog])
 
   const handleRemoveSelectedOpportunityDocument = useCallback(async (documentUrl: string) => {
     const confirmed = window.confirm('Remove this document from the opportunity?')
@@ -2911,9 +4318,14 @@ export default function SalesOpportunitiesPage() {
   }, [])
 
   const handleSendSelectedOpportunityChat = useCallback(async () => {
-    const nextMessage = selectedOpportunityChatDraft.trim()
+    const parsedDraft = parseQuoteChatRefreshRequest(selectedOpportunityChatDraft)
+    const nextMessage = parsedDraft.messageText
+    const shouldRefreshQuoteDate = selectedOpportunityRefreshOnSend || parsedDraft.refreshRequested
 
     if (!selectedOpportunityId || !nextMessage) {
+      if (selectedOpportunityId && shouldRefreshQuoteDate && !nextMessage) {
+        setErrorMessage('Add a chat message with /refresh when refreshing the quote date.')
+      }
       return
     }
 
@@ -2928,8 +4340,61 @@ export default function SalesOpportunitiesPage() {
 
     try {
       await createCrmQuoteChatMessage(selectedOpportunityId, nextMessage)
+
+      let refreshedQuoteDate: string | null = null
+      let refreshErrorMessage = ''
+
+      if (shouldRefreshQuoteDate) {
+        const nextRefreshedQuoteDate = getTodayEasternDateInputValue()
+        refreshedQuoteDate = nextRefreshedQuoteDate
+
+        try {
+          await updateCrmQuote(selectedOpportunityId, {
+            opportunityDate: nextRefreshedQuoteDate,
+          })
+
+          setSelectedOpportunity((current) => {
+            if (!current || current.id !== selectedOpportunityId) {
+              return current
+            }
+
+            return {
+              ...current,
+              opportunityDate: nextRefreshedQuoteDate,
+              updatedAt: new Date().toISOString(),
+            }
+          })
+
+          setOpportunityDetailsFormState((current) => {
+            if (!current) {
+              return current
+            }
+
+            return {
+              ...current,
+              opportunityDateInput: nextRefreshedQuoteDate,
+            }
+          })
+        } catch (refreshError) {
+          refreshErrorMessage = refreshError instanceof Error
+            ? refreshError.message
+            : 'Could not refresh quote date.'
+        }
+      }
+
       setSelectedOpportunityChatDraft('')
+      setSelectedOpportunityRefreshOnSend(false)
       await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.crmQuoteChats(selectedOpportunityId) })
+
+      if (shouldRefreshQuoteDate) {
+        await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.crmOpportunitiesQuotes })
+
+        if (refreshErrorMessage) {
+          setErrorMessage(`Message sent, but refresh failed: ${refreshErrorMessage}`)
+        } else if (refreshedQuoteDate) {
+          setSuccessMessage(`Message sent. Quote date refreshed to ${formatOpportunityLikeDate(refreshedQuoteDate)}.`)
+        }
+      }
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Failed to send quote chat message.')
     } finally {
@@ -2938,6 +4403,7 @@ export default function SalesOpportunitiesPage() {
   }, [
     canManage,
     queryClient,
+    selectedOpportunityRefreshOnSend,
     selectedOpportunityChatDraft,
     selectedOpportunityId,
   ])
@@ -2992,23 +4458,63 @@ export default function SalesOpportunitiesPage() {
     setIsDialogOpen(true)
   }, [])
 
+  const clearDeepLinkedQuoteId = useCallback(() => {
+    if (!searchParams.has('quoteId')) {
+      return
+    }
+
+    const nextSearchParams = new URLSearchParams(searchParams)
+    nextSearchParams.delete('quoteId')
+    setSearchParams(nextSearchParams, { replace: true })
+  }, [searchParams, setSearchParams])
+
   const handleOpenOpportunityDetails = useCallback((quote: CrmQuote, initialTab: OpportunityDetailsTab = 'details') => {
     setErrorMessage(null)
     setSuccessMessage(null)
     setDetailsActionMenuAnchorEl(null)
+    setUploadQuoteActionMenuAnchorEl(null)
     const nextFormState = createOpportunityDetailsFormState(quote)
     setSelectedOpportunityChatDraft('')
+    setSelectedOpportunityRefreshOnSend(false)
     setDeletingSelectedOpportunityChatMessageId('')
     setSelectedOpportunityDetailsTab(initialTab)
+    setSelectedOpportunityNestedFolderPath(null)
     setSelectedOpportunity(quote)
     setOpportunityDetailsFormState(nextFormState)
     setOpportunityDetailsInitialSnapshot(serializeOpportunityDetailsFormState(nextFormState))
+    setFolderScanQueue([])
+    setIsUploadingFolderSelection(false)
     setPendingExcelSyncPromotionQuoteId(null)
   }, [])
 
   const handleOpenOpportunityChat = useCallback((quote: CrmQuote) => {
     handleOpenOpportunityDetails(quote, 'chat')
   }, [handleOpenOpportunityDetails])
+
+  useEffect(() => {
+    if (!deepLinkedQuoteId) {
+      return
+    }
+
+    const deepLinkedQuote = quotes.find((quote) => quote.id === deepLinkedQuoteId)
+
+    if (deepLinkedQuote) {
+      handleOpenOpportunityDetails(deepLinkedQuote)
+      clearDeepLinkedQuoteId()
+      return
+    }
+
+    if (!isLoading && !isRefreshing) {
+      clearDeepLinkedQuoteId()
+    }
+  }, [
+    clearDeepLinkedQuoteId,
+    deepLinkedQuoteId,
+    handleOpenOpportunityDetails,
+    isLoading,
+    isRefreshing,
+    quotes,
+  ])
 
   const handleCloseDialog = useCallback(() => {
     if (isSavingOpportunity || isUploadingQuoteDocument) {
@@ -3033,7 +4539,11 @@ export default function SalesOpportunitiesPage() {
   }, [isAddDialogDirty, isSavingOpportunity, isUploadingQuoteDocument])
 
   const handleCloseOpportunityDetails = useCallback(() => {
-    if (isSavingOpportunityDetails || isUploadingSelectedOpportunityDocument || isSendingSelectedOpportunityChat) {
+    if (
+      isSavingOpportunityDetails
+      || isUploadingFolderSelection
+      || isSendingSelectedOpportunityChat
+    ) {
       return
     }
 
@@ -3046,17 +4556,23 @@ export default function SalesOpportunitiesPage() {
     }
 
     setDetailsActionMenuAnchorEl(null)
+    setUploadQuoteActionMenuAnchorEl(null)
     setSelectedOpportunity(null)
     setOpportunityDetailsFormState(null)
     setOpportunityDetailsInitialSnapshot('')
     setSelectedOpportunityDetailsTab('details')
+    setSelectedOpportunityNestedFolderPath(null)
     setSelectedOpportunityChatDraft('')
+    setSelectedOpportunityRefreshOnSend(false)
+    setFolderScanQueue([])
+    setIsUploadingFolderSelection(false)
     setPendingExcelSyncPromotionQuoteId(null)
   }, [
     isSendingSelectedOpportunityChat,
     isOpportunityDetailsDirty,
     isSavingOpportunityDetails,
-    isUploadingSelectedOpportunityDocument,
+    setSelectedOpportunityNestedFolderPath,
+    isUploadingFolderSelection,
   ])
 
   const handleAddFormLineItem = useCallback(() => {
@@ -3491,13 +5007,6 @@ export default function SalesOpportunitiesPage() {
             sentAt: new Date().toISOString(),
           })
           setSuccessMessage('Opportunity updated and moved to Proposal Submitted.')
-        } else if (selectedOpportunityStage === 'proposal_submission') {
-          await updateCrmQuote(selectedOpportunity.id, {
-            ...detailsPayload,
-            opportunityStage: 'revision',
-            status: 'draft',
-          })
-          setSuccessMessage('Opportunity updated and moved to Revision.')
         } else {
           await updateCrmQuote(selectedOpportunity.id, detailsPayload)
           setSuccessMessage('Opportunity updated.')
@@ -3594,6 +5103,510 @@ export default function SalesOpportunitiesPage() {
       </Dialog>
 
       <Dialog
+        open={isFolderScanSelectionDialogOpen}
+        onClose={handleCloseFolderScanSelectionDialog}
+        maxWidth="md"
+        fullWidth
+      >
+        <DialogTitle>Select New Scanned Documents</DialogTitle>
+        <DialogContent>
+          <Stack spacing={1} sx={{ mt: 0.6 }}>
+            <Typography variant="body2">
+              Quote <strong>{folderScanTargetQuote?.quoteNumber || 'N/A'}</strong> is ready. Choose which scanned files to upload.
+            </Typography>
+
+            <Typography variant="caption" color="text.secondary">
+              Selected: {folderScanSelectedQueueCount} of {folderScanQueue.length}. Only new files are shown; only the main Excel file in Quotes is always included.
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              Viewing: {folderScanSelectionScopeLabel} ({folderScanVisibleEntriesCount} file{folderScanVisibleEntriesCount === 1 ? '' : 's'}).
+            </Typography>
+
+            {folderScanUploadSummary && !isUploadingFolderSelection ? (
+              <Paper
+                variant="outlined"
+                sx={{
+                  px: 1,
+                  py: 0.8,
+                  borderRadius: 1,
+                  borderColor: folderScanUploadSummary.failedCount > 0
+                    ? alpha('#b45309', 0.35)
+                    : alpha('#166534', 0.35),
+                  backgroundColor: folderScanUploadSummary.failedCount > 0
+                    ? alpha('#f59e0b', 0.08)
+                    : alpha('#16a34a', 0.08),
+                }}
+              >
+                <Typography
+                  variant="body2"
+                  sx={{
+                    fontWeight: 700,
+                    color: folderScanUploadSummary.failedCount > 0 ? '#92400e' : '#166534',
+                  }}
+                >
+                  Uploaded {folderScanUploadSummary.uploadedCount} of {folderScanUploadSummary.attemptedCount} selected file{folderScanUploadSummary.attemptedCount === 1 ? '' : 's'}.
+                </Typography>
+                {folderScanUploadSummary.failedCount > 0 ? (
+                  <Typography variant="caption" sx={{ color: '#92400e' }}>
+                    {folderScanUploadSummary.failedCount} file{folderScanUploadSummary.failedCount === 1 ? '' : 's'} failed. You can retry or click Done.
+                  </Typography>
+                ) : (
+                  <Typography variant="caption" sx={{ color: '#166534' }}>
+                    Upload completed. You can close this screen or click Done.
+                  </Typography>
+                )}
+              </Paper>
+            ) : null}
+
+            <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.1} alignItems="stretch">
+              <Stack
+                spacing={0.5}
+                sx={{
+                  width: { xs: '100%', md: 230 },
+                  flexShrink: 0,
+                  border: `1px solid ${alpha('#0f4c81', 0.2)}`,
+                  borderRadius: 1.1,
+                  backgroundColor: '#ffffff',
+                  p: 0.8,
+                }}
+              >
+                {folderScanSidebarSections.map((section) => {
+                  if (section.key === 'all') {
+                    return (
+                      <Button
+                        key={section.key}
+                        size="small"
+                        variant={folderScanActiveSidebarKey === 'all' ? 'contained' : 'text'}
+                        onClick={() => {
+                          setFolderScanActiveSidebarKey('all')
+                          setFolderScanExpandedSidebarFolderKey(null)
+                          setFolderScanActiveNestedPath(null)
+                        }}
+                        sx={{
+                          justifyContent: 'space-between',
+                          textTransform: 'none',
+                          fontWeight: 700,
+                          px: 1,
+                        }}
+                      >
+                        <span>{section.label}</span>
+                        <span>{section.selectedCount}/{section.totalCount}</span>
+                      </Button>
+                    )
+                  }
+
+                  const folderKey = section.key as QuoteSidebarFolderKey
+                  const nestedSections = folderScanNestedSectionsByFolder.get(folderKey) ?? []
+                  const isExpanded = folderScanExpandedSidebarFolderKey === folderKey
+
+                  return (
+                    <Stack key={section.key} spacing={0.35}>
+                      <Button
+                        size="small"
+                        variant={folderScanActiveSidebarKey === folderKey ? 'contained' : 'text'}
+                        onClick={() => {
+                          setFolderScanActiveSidebarKey(folderKey)
+                          setFolderScanActiveNestedPath(null)
+                          setFolderScanExpandedSidebarFolderKey((current) => (
+                            current === folderKey ? null : folderKey
+                          ))
+                        }}
+                        sx={{
+                          justifyContent: 'space-between',
+                          textTransform: 'none',
+                          fontWeight: 700,
+                          px: 1,
+                        }}
+                      >
+                        <Stack direction="row" spacing={0.45} alignItems="center" sx={{ minWidth: 0 }}>
+                          {nestedSections.length > 0 ? (
+                            <ArrowDropDownRoundedIcon
+                              sx={{
+                                fontSize: 17,
+                                transform: isExpanded ? 'rotate(0deg)' : 'rotate(-90deg)',
+                                transition: 'transform 0.15s ease',
+                              }}
+                            />
+                          ) : null}
+                          <span>{section.label}</span>
+                        </Stack>
+                        <span>{section.selectedCount}/{section.totalCount}</span>
+                      </Button>
+
+                      {isExpanded && nestedSections.length > 0 ? (
+                        <Stack spacing={0.25} sx={{ pb: 0.2 }}>
+                          {nestedSections.map((nestedSection) => {
+                            const isActiveNestedSection = (
+                              folderScanActiveSidebarKey === folderKey
+                              && folderScanActiveNestedPath === nestedSection.path
+                            )
+
+                            return (
+                              <Button
+                                key={`${folderKey}::${nestedSection.path}`}
+                                size="small"
+                                variant={isActiveNestedSection ? 'contained' : 'text'}
+                                onClick={() => {
+                                  setFolderScanActiveSidebarKey(folderKey)
+                                  setFolderScanExpandedSidebarFolderKey(folderKey)
+                                  setFolderScanActiveNestedPath(nestedSection.path)
+                                }}
+                                sx={{
+                                  alignSelf: 'flex-end',
+                                  width: 'calc(100% - 14px)',
+                                  justifyContent: 'space-between',
+                                  textTransform: 'none',
+                                  fontWeight: 600,
+                                  pl: 2,
+                                  pr: 1,
+                                  minHeight: 27,
+                                }}
+                              >
+                                <span>{nestedSection.path}</span>
+                                <span>{nestedSection.selectedCount}/{nestedSection.totalCount}</span>
+                              </Button>
+                            )
+                          })}
+                        </Stack>
+                      ) : null}
+                    </Stack>
+                  )
+                })}
+              </Stack>
+
+              <Stack spacing={0.7} sx={{ flex: 1, minWidth: 0 }}>
+                <Stack direction="row" spacing={0.7} flexWrap="wrap" useFlexGap>
+                  <Button
+                    size="small"
+                    variant="text"
+                    disabled={folderScanVisibleEntriesCount === 0 || isUploadingFolderSelection}
+                    onClick={() => {
+                      handleSetAllFolderScanEntries(true)
+                    }}
+                  >
+                    Select shown
+                  </Button>
+                  <Button
+                    size="small"
+                    variant="text"
+                    disabled={folderScanVisibleEntriesCount === 0 || isUploadingFolderSelection}
+                    onClick={() => {
+                      handleSetAllFolderScanEntries(false)
+                    }}
+                  >
+                    Clear shown
+                  </Button>
+                  <Button
+                    size="small"
+                    variant="text"
+                    color="inherit"
+                    disabled={folderScanQueue.length === 0 || isUploadingFolderSelection}
+                    onClick={handleClearFolderScanEntries}
+                  >
+                    Clear scanned list
+                  </Button>
+                </Stack>
+
+                <Paper
+                  variant="outlined"
+                  sx={{
+                    p: 0.9,
+                    borderRadius: 1,
+                    borderColor: alpha('#0f4c81', 0.2),
+                    backgroundColor: '#ffffff',
+                    maxHeight: 360,
+                    overflowY: 'auto',
+                  }}
+                >
+                  {folderScanQueue.length === 0 ? (
+                    <Typography variant="caption" color="text.secondary">
+                      No scanned files queued.
+                    </Typography>
+                  ) : (
+                    <Stack spacing={1}>
+                      {folderScanVisibleSections.map((section) => {
+                        const sectionSelectedCount = section.entries.filter((entry) => entry.selected && !entry.duplicateBlocked).length
+
+                        return (
+                          <Stack key={section.key} spacing={0.45}>
+                            <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                              {section.label} ({sectionSelectedCount}/{section.entries.length})
+                            </Typography>
+
+                            {section.entries.length === 0 ? (
+                              <Typography variant="caption" color="text.secondary">
+                                No scanned files in this folder.
+                              </Typography>
+                            ) : (
+                              <Stack spacing={0.6}>
+                                {section.entries.map((entry) => (
+                                  <Stack key={entry.id} direction="row" spacing={0.6} alignItems="center" sx={{ minWidth: 0 }}>
+                                    <Checkbox
+                                      size="small"
+                                      checked={entry.selected}
+                                      disabled={entry.duplicateBlocked || isUploadingFolderSelection}
+                                      onChange={(_event, checked) => {
+                                        handleToggleFolderScanEntry(entry.id, checked)
+                                      }}
+                                    />
+                                    <Stack spacing={0.1} sx={{ flex: 1, minWidth: 0 }}>
+                                      <Typography variant="body2" sx={{ fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                        {entry.file.name}
+                                      </Typography>
+                                      <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                        {entry.relativePath}
+                                      </Typography>
+                                      {entry.duplicateReason ? (
+                                        <Typography variant="caption" color="warning.main">
+                                          {entry.duplicateReason}
+                                        </Typography>
+                                      ) : null}
+                                    </Stack>
+                                  </Stack>
+                                ))}
+                              </Stack>
+                            )}
+                          </Stack>
+                        )
+                      })}
+                    </Stack>
+                  )}
+                </Paper>
+              </Stack>
+            </Stack>
+
+            {isUploadingFolderSelection && folderScanUploadProgress.total > 0 ? (
+              <Typography variant="caption" color="text.secondary">
+                Uploading {folderScanUploadProgress.completed} / {folderScanUploadProgress.total}...
+              </Typography>
+            ) : null}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={handleCloseFolderScanSelectionDialog}
+            disabled={isUploadingFolderSelection}
+          >
+            {folderScanUploadSummary ? 'Done' : 'Close'}
+          </Button>
+          <Button
+            variant="contained"
+            onClick={() => {
+              if (folderScanSelectedQueueCount > 0) {
+                void handleUploadSelectedFolderEntries()
+                return
+              }
+
+              handleCloseFolderScanSelectionDialog()
+            }}
+            disabled={
+              !canManage
+              || isUploadingFolderSelection
+              || (folderScanSelectedQueueCount === 0 && !folderScanUploadSummary)
+            }
+          >
+            {isUploadingFolderSelection
+              ? 'Uploading...'
+              : (folderScanSelectedQueueCount > 0
+                ? `Upload Selected (${folderScanSelectedQueueCount})`
+                : 'Done')}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(selectedOpportunityActiveNestedFolderGroup)}
+        onClose={() => {
+          setSelectedOpportunityNestedFolderPath(null)
+        }}
+        maxWidth="md"
+        fullWidth
+      >
+        <DialogTitle>
+          {selectedOpportunitySidebarFolder?.label || 'Folder'}
+          {selectedOpportunityActiveNestedFolderGroup ? ` / ${selectedOpportunityActiveNestedFolderGroup.path}` : ''}
+        </DialogTitle>
+        <DialogContent>
+          <Stack spacing={1} sx={{ mt: 0.6 }}>
+            {selectedOpportunityActiveNestedFolderGroup ? (
+              <Typography variant="caption" color="text.secondary">
+                {selectedOpportunityActiveNestedFolderGroup.documents.length} file{selectedOpportunityActiveNestedFolderGroup.documents.length === 1 ? '' : 's'} in this folder.
+              </Typography>
+            ) : null}
+
+            {selectedOpportunityActiveNestedFolderGroup && selectedOpportunityActiveNestedFolderGroup.documents.length > 0 ? (
+              <Box
+                sx={{
+                  display: 'grid',
+                  gap: 0.9,
+                  gridTemplateColumns: {
+                    xs: '1fr',
+                    sm: 'repeat(2, minmax(0, 1fr))',
+                    lg: 'repeat(3, minmax(0, 1fr))',
+                  },
+                }}
+              >
+                {selectedOpportunityActiveNestedFolderGroup.documents.map((document) => {
+                  const documentDisplayName = resolveDocumentDisplayName(document)
+                  const documentLeafName = resolveDocumentLeafName(document, selectedOpportunitySidebarFolderKey)
+                  const previewKind = resolveDocumentPreviewKind(document)
+                  const previewSource = resolveDocumentPreviewSource(document, previewKind)
+
+                  return (
+                    <Paper
+                      key={`nested-doc-${document.url}`}
+                      variant="outlined"
+                      sx={{
+                        p: 1,
+                        borderRadius: 1,
+                        borderColor: alpha('#0f4c81', 0.2),
+                        backgroundColor: '#ffffff',
+                      }}
+                    >
+                      <Stack spacing={0.7} sx={{ minWidth: 0 }}>
+                        <Stack direction="row" spacing={0.8} alignItems="center" justifyContent="space-between">
+                          <Chip
+                            size="small"
+                            label={resolveDocumentTypeLabel(document)}
+                            sx={{
+                              height: 20,
+                              fontSize: 11,
+                              fontWeight: 700,
+                              backgroundColor: alpha('#0f4c81', 0.1),
+                              color: '#0f4c81',
+                            }}
+                          />
+                          <IconButton
+                            size="small"
+                            color="error"
+                            disabled={!canManage || busyQuoteId === selectedOpportunityId || isUploadingFolderSelection}
+                            onClick={() => {
+                              void handleRemoveSelectedOpportunityDocument(document.url)
+                            }}
+                          >
+                            <DeleteOutlineRoundedIcon sx={{ fontSize: 16 }} />
+                          </IconButton>
+                        </Stack>
+
+                        <Box
+                          component="a"
+                          href={document.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          sx={{
+                            display: 'block',
+                            height: 122,
+                            borderRadius: 0.9,
+                            overflow: 'hidden',
+                            border: `1px solid ${alpha('#0f4c81', 0.18)}`,
+                            backgroundColor: alpha('#0f4c81', 0.04),
+                            textDecoration: 'none',
+                          }}
+                        >
+                          {previewKind === 'image' && previewSource ? (
+                            <Box
+                              component="img"
+                              src={previewSource}
+                              alt={documentLeafName || documentDisplayName}
+                              sx={{
+                                width: '100%',
+                                height: '100%',
+                                objectFit: 'cover',
+                                display: 'block',
+                              }}
+                            />
+                          ) : null}
+
+                          {previewKind !== 'image' && previewSource ? (
+                            <Box
+                              component="iframe"
+                              src={previewSource}
+                              title={`preview-${documentDisplayName}`}
+                              sx={{
+                                width: '100%',
+                                height: '100%',
+                                border: 0,
+                                display: 'block',
+                                pointerEvents: 'none',
+                                backgroundColor: '#ffffff',
+                              }}
+                            />
+                          ) : null}
+
+                          {!previewSource ? (
+                            <Stack
+                              alignItems="center"
+                              justifyContent="center"
+                              sx={{ height: '100%', px: 1 }}
+                            >
+                              <Typography variant="caption" sx={{ fontWeight: 700, color: '#0f4c81' }}>
+                                Preview unavailable
+                              </Typography>
+                            </Stack>
+                          ) : null}
+                        </Box>
+
+                        <Link
+                          href={document.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          underline="hover"
+                          sx={{
+                            minWidth: 0,
+                            display: 'block',
+                            fontWeight: 600,
+                            lineHeight: 1.3,
+                            wordBreak: 'break-word',
+                          }}
+                        >
+                          {documentLeafName}
+                        </Link>
+
+                        {documentDisplayName !== documentLeafName ? (
+                          <Typography variant="caption" color="text.secondary" sx={{ wordBreak: 'break-word' }}>
+                            {documentDisplayName}
+                          </Typography>
+                        ) : null}
+
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          component="a"
+                          href={document.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          sx={{
+                            alignSelf: 'flex-start',
+                            textTransform: 'none',
+                            fontWeight: 700,
+                          }}
+                        >
+                          Open File
+                        </Button>
+                      </Stack>
+                    </Paper>
+                  )
+                })}
+              </Box>
+            ) : (
+              <Typography variant="caption" color="text.secondary">
+                No files found in this folder.
+              </Typography>
+            )}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={() => {
+              setSelectedOpportunityNestedFolderPath(null)
+            }}
+          >
+            Close
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
         open={isExcelAccountDialogOpen}
         onClose={handleRequestCloseExcelSyncDialog}
         maxWidth="sm"
@@ -3634,7 +5647,7 @@ export default function SalesOpportunitiesPage() {
               </Stack>
             ) : (
               <Typography variant="caption" color="text.secondary">
-                No direct account name match found. Select one manually or create a new account.
+                No direct account name match found. Select one manually, create a new account, or choose Create no account.
               </Typography>
             )}
 
@@ -3661,6 +5674,16 @@ export default function SalesOpportunitiesPage() {
                   }
                 }}
               />
+              <Chip
+                clickable
+                color={excelSyncAccountMode === 'none' ? 'primary' : 'default'}
+                variant={excelSyncAccountMode === 'none' ? 'filled' : 'outlined'}
+                label="Create no account"
+                onClick={() => {
+                  setExcelSyncAccountMode('none')
+                  setExcelSyncDealerSourceIdInput('')
+                }}
+              />
             </Stack>
 
             {excelSyncAccountMode === 'existing' ? (
@@ -3682,7 +5705,7 @@ export default function SalesOpportunitiesPage() {
                   />
                 )}
               />
-            ) : (
+            ) : excelSyncAccountMode === 'create' ? (
               <TextField
                 label="New Account Name"
                 required
@@ -3693,6 +5716,10 @@ export default function SalesOpportunitiesPage() {
                 error={excelSyncDialogError === 'Enter a new Account Name before continuing.'}
                 helperText="Creates a new account now with just the account name."
               />
+            ) : (
+              <Typography variant="caption" color="text.secondary">
+                No account will be created or linked. The quote will keep the company name from Excel.
+              </Typography>
             )}
 
             {excelSyncDialogError ? (
@@ -3745,9 +5772,15 @@ export default function SalesOpportunitiesPage() {
             <Stack spacing={0.55}>
               <TextField
                 label="Linked Account"
-                value={excelSyncResolvedDealerName || excelSyncResolvedDealerSourceId}
+                value={
+                  excelSyncResolvedDealerName
+                  || excelSyncResolvedDealerSourceId
+                  || (excelSyncAccountMode === 'none' ? 'Create no account' : '')
+                }
                 InputProps={{ readOnly: true }}
-                helperText="Selected in step 1."
+                helperText={excelSyncAccountMode === 'none'
+                  ? 'No account will be created or linked for this quote.'
+                  : 'Selected in step 1.'}
               />
               <Button
                 size="small"
@@ -3874,7 +5907,7 @@ export default function SalesOpportunitiesPage() {
               </Typography>
             </Stack>
             <Typography variant="body2" color="text.secondary">
-              Concept - Proposal - Revision.
+              Concept - Proposal Submitted.
             </Typography>
           </Stack>
 
@@ -3896,19 +5929,14 @@ export default function SalesOpportunitiesPage() {
               sx={{ width: 260 }}
             />
             <Button
-              component="label"
               variant="outlined"
               color="inherit"
               startIcon={<FileUploadRoundedIcon fontSize="small" />}
-              disabled={!canManage || isSyncingExcelQuote}
+              endIcon={<ArrowDropDownRoundedIcon fontSize="small" />}
+              disabled={!canManage || isSyncingExcelQuote || isUploadingFolderSelection}
+              onClick={handleOpenUploadQuoteActionMenu}
             >
-              {isSyncingExcelQuote ? 'Syncing File...' : 'Sync Quote File'}
-              <input
-                hidden
-                type="file"
-                accept=".xls,.xlsx,.xlsm,.ods,.csv"
-                onChange={handleExcelQuoteSyncUpload}
-              />
+              {isSyncingExcelQuote ? 'Syncing Excel...' : (isUploadingFolderSelection ? 'Scanning Folder...' : 'Sync Excel Sheet')}
             </Button>
             <Button
               variant="outlined"
@@ -3930,6 +5958,43 @@ export default function SalesOpportunitiesPage() {
             >
               Add Opportunity
             </Button>
+
+            <Menu
+              anchorEl={uploadQuoteActionMenuAnchorEl}
+              open={isUploadQuoteActionMenuOpen}
+              onClose={handleCloseUploadQuoteActionMenu}
+              anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+              transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+            >
+              <MenuItem
+                disabled={!canManage || isSyncingExcelQuote || isUploadingFolderSelection}
+                onClick={handleOpenUploadQuoteExcelPicker}
+              >
+                Sync Excel Sheet
+              </MenuItem>
+              <MenuItem
+                disabled={!canManage || isSyncingExcelQuote || isUploadingFolderSelection}
+                onClick={handleOpenUploadQuoteFolderScanner}
+              >
+                Scan Folder
+              </MenuItem>
+            </Menu>
+            <input
+              hidden
+              ref={pipelineUploadExcelInputRef}
+              type="file"
+              accept=".xls,.xlsx,.xlsm,.ods,.csv"
+              onChange={handleExcelQuoteSyncUpload}
+            />
+            <input
+              hidden
+              ref={folderScanInputRef}
+              type="file"
+              multiple
+              onChange={(event) => {
+                void handleFolderScanUpload(event)
+              }}
+            />
           </Stack>
         </Stack>
 
@@ -3942,27 +6007,44 @@ export default function SalesOpportunitiesPage() {
             gap: 1.1,
             gridTemplateColumns: {
               xs: '1fr',
-              md: 'repeat(2, minmax(0, 1fr))',
-              lg: 'repeat(3, minmax(0, 1fr))',
+              md: 'repeat(3, minmax(0, 1fr))',
+              lg: 'repeat(4, minmax(0, 1fr))',
             },
             alignItems: 'start',
           }}
         >
           {stageDefinitions.map((stage) => (
-            <StageColumn
+            <Box
               key={stage.id}
-              stage={stage}
-              rows={stageBuckets[stage.id]}
-              dealersBySourceId={dealersBySourceId}
-              canManage={canManage}
-              busyQuoteId={busyQuoteId}
-              onAdvanceStage={handleAdvanceStage}
-              onMarkApproved={handleMarkApproved}
-              onDeclineQuote={handleDeclineQuote}
-              onDeleteQuote={handleDeleteQuote}
-              onOpenDetails={handleOpenOpportunityDetails}
-              onOpenChat={handleOpenOpportunityChat}
-            />
+              sx={{
+                minWidth: 0,
+                gridColumn: stage.id === 'proposal_submission'
+                  ? {
+                    xs: 'span 1',
+                    md: 'span 2',
+                    lg: 'span 3',
+                  }
+                  : {
+                    xs: 'span 1',
+                    md: 'span 1',
+                    lg: 'span 1',
+                  },
+              }}
+            >
+              <StageColumn
+                stage={stage}
+                rows={stageBuckets[stage.id]}
+                dealersBySourceId={dealersBySourceId}
+                canManage={canManage}
+                busyQuoteId={busyQuoteId}
+                onAdvanceStage={handleAdvanceStage}
+                onMarkApproved={handleMarkApproved}
+                onDeclineQuote={handleDeclineQuote}
+                onDeleteQuote={handleDeleteQuote}
+                onOpenDetails={handleOpenOpportunityDetails}
+                onOpenChat={handleOpenOpportunityChat}
+              />
+            </Box>
           ))}
         </Box>
       </Box>
@@ -4326,10 +6408,11 @@ export default function SalesOpportunitiesPage() {
       <Dialog
         open={Boolean(selectedOpportunity && opportunityDetailsFormState)}
         onClose={handleCloseOpportunityDetails}
-        maxWidth="xl"
+        maxWidth={false}
         fullWidth
         PaperProps={{
           sx: {
+            width: 'min(1560px, 97vw)',
             borderRadius: 2.5,
             overflow: 'hidden',
             minHeight: { md: '84vh' },
@@ -4354,20 +6437,26 @@ export default function SalesOpportunitiesPage() {
               Opportunity Details
             </Typography>
             <Typography variant="caption" sx={{ color: alpha('#0b2239', 0.78) }}>
-              Make updates and click Save Changes to keep them.
+              Update details here. Upload quote packages from the pipeline header.
             </Typography>
           </Stack>
-          {canUseProposalDetailsActions ? (
-            <IconButton
-              size="medium"
-              disabled={isSavingOpportunityDetails || isUploadingSelectedOpportunityDocument || isSendingSelectedOpportunityChat}
-              onClick={(event) => {
-                setDetailsActionMenuAnchorEl(event.currentTarget)
-              }}
-            >
-              <MoreVertRoundedIcon sx={{ fontSize: 20 }} />
-            </IconButton>
-          ) : null}
+          <Stack direction="row" spacing={0.6} alignItems="center">
+            {canUseProposalDetailsActions ? (
+              <IconButton
+                size="medium"
+                disabled={
+                  isSavingOpportunityDetails
+                  || isUploadingFolderSelection
+                  || isSendingSelectedOpportunityChat
+                }
+                onClick={(event) => {
+                  setDetailsActionMenuAnchorEl(event.currentTarget)
+                }}
+              >
+                <MoreVertRoundedIcon sx={{ fontSize: 20 }} />
+              </IconButton>
+            ) : null}
+          </Stack>
         </DialogTitle>
         <Menu
           anchorEl={detailsActionMenuAnchorEl}
@@ -4379,7 +6468,12 @@ export default function SalesOpportunitiesPage() {
           transformOrigin={{ vertical: 'top', horizontal: 'right' }}
         >
           <MenuItem
-            disabled={!canUseProposalDetailsActions || isSavingOpportunityDetails || isUploadingSelectedOpportunityDocument || isSendingSelectedOpportunityChat}
+            disabled={
+              !canUseProposalDetailsActions
+              || isSavingOpportunityDetails
+              || isUploadingFolderSelection
+              || isSendingSelectedOpportunityChat
+            }
             onClick={() => {
               setDetailsActionMenuAnchorEl(null)
               void handleSaveOpportunityDetails('decline')
@@ -4388,7 +6482,12 @@ export default function SalesOpportunitiesPage() {
             Declined
           </MenuItem>
           <MenuItem
-            disabled={!canUseProposalDetailsActions || isSavingOpportunityDetails || isUploadingSelectedOpportunityDocument || isSendingSelectedOpportunityChat}
+            disabled={
+              !canUseProposalDetailsActions
+              || isSavingOpportunityDetails
+              || isUploadingFolderSelection
+              || isSendingSelectedOpportunityChat
+            }
             onClick={() => {
               setDetailsActionMenuAnchorEl(null)
               void handleSaveOpportunityDetails('convert_to_order')
@@ -4397,7 +6496,12 @@ export default function SalesOpportunitiesPage() {
             Convert to order
           </MenuItem>
           <MenuItem
-            disabled={!canUseProposalDetailsActions || isSavingOpportunityDetails || isUploadingSelectedOpportunityDocument || isSendingSelectedOpportunityChat}
+            disabled={
+              !canUseProposalDetailsActions
+              || isSavingOpportunityDetails
+              || isUploadingFolderSelection
+              || isSendingSelectedOpportunityChat
+            }
             onClick={() => {
               setDetailsActionMenuAnchorEl(null)
               void handleSaveOpportunityDetails('save')
@@ -4416,27 +6520,123 @@ export default function SalesOpportunitiesPage() {
         >
           {selectedOpportunity && opportunityDetailsFormState ? (
             <Stack spacing={2} sx={{ mt: 0.2 }}>
-              <Tabs
-                value={selectedOpportunityDetailsTab}
-                onChange={(_event, nextValue: OpportunityDetailsTab) => {
-                  setSelectedOpportunityDetailsTab(nextValue)
-                }}
-                variant="fullWidth"
-                sx={{
-                  minHeight: 40,
-                  '& .MuiTab-root': {
-                    minHeight: 40,
-                    textTransform: 'none',
-                    fontWeight: 700,
-                  },
-                }}
-              >
-                <Tab value="details" label="Details" />
-                <Tab
-                  value="chat"
-                  label={selectedOpportunityChatCount > 0 ? `Chat (${selectedOpportunityChatCount})` : 'Chat'}
-                />
-              </Tabs>
+              <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.2} alignItems="stretch">
+                <Stack
+                  spacing={0.6}
+                  sx={{
+                    width: { xs: '100%', md: 232 },
+                    flexShrink: 0,
+                    border: `1px solid ${alpha('#0f4c81', 0.2)}`,
+                    borderRadius: 1.2,
+                    backgroundColor: '#ffffff',
+                    p: 0.8,
+                  }}
+                >
+                  <Button
+                    size="small"
+                    variant={selectedOpportunityDetailsTab === 'details' ? 'contained' : 'text'}
+                    onClick={() => {
+                      setSelectedOpportunityDetailsTab('details')
+                    }}
+                    sx={{ justifyContent: 'flex-start', textTransform: 'none', fontWeight: 700 }}
+                  >
+                    Details
+                  </Button>
+
+                  <Stack
+                    spacing={0.2}
+                    sx={{
+                      py: 0.4,
+                      borderTop: `1px solid ${alpha('#0f4c81', 0.16)}`,
+                      borderBottom: `1px solid ${alpha('#0f4c81', 0.16)}`,
+                    }}
+                  >
+                    {quoteSidebarFolders.map((folder) => {
+                      const folderDocumentCount = (selectedOpportunityDocumentsByFolder.get(folder.key) ?? []).length
+                      const folderNestedGroups = selectedOpportunityNestedGroupsByFolder.get(folder.key) ?? []
+                      const isFolderSelected = selectedOpportunityDetailsTab === folder.key
+
+                      return (
+                        <Stack key={folder.key} spacing={0.25}>
+                          <Button
+                            size="small"
+                            variant={isFolderSelected ? 'contained' : 'text'}
+                            onClick={() => {
+                              setSelectedOpportunityDetailsTab(folder.key)
+                              setSelectedOpportunityNestedFolderPath(null)
+                            }}
+                            sx={{
+                              justifyContent: 'space-between',
+                              textTransform: 'none',
+                              fontWeight: 600,
+                              px: 1,
+                            }}
+                          >
+                            <Stack direction="row" spacing={0.45} alignItems="center" sx={{ minWidth: 0 }}>
+                              {folderNestedGroups.length > 0 ? (
+                                <ArrowDropDownRoundedIcon
+                                  sx={{
+                                    fontSize: 17,
+                                    transform: isFolderSelected ? 'rotate(0deg)' : 'rotate(-90deg)',
+                                    transition: 'transform 0.15s ease',
+                                  }}
+                                />
+                              ) : null}
+                              <span>{folder.label}</span>
+                            </Stack>
+                            <span>{folderDocumentCount}</span>
+                          </Button>
+
+                          {isFolderSelected && folderNestedGroups.length > 0 ? (
+                            <Stack spacing={0.2} sx={{ pb: 0.15 }}>
+                              {folderNestedGroups.map((group) => {
+                                const isActiveNestedFolder = selectedOpportunityNestedFolderPath === group.path
+
+                                return (
+                                  <Button
+                                    key={`${folder.key}::${group.path}`}
+                                    size="small"
+                                    variant={isActiveNestedFolder ? 'contained' : 'text'}
+                                    onClick={() => {
+                                      setSelectedOpportunityDetailsTab(folder.key)
+                                      setSelectedOpportunityNestedFolderPath(group.path)
+                                    }}
+                                    sx={{
+                                      alignSelf: 'flex-end',
+                                      width: 'calc(100% - 14px)',
+                                      justifyContent: 'space-between',
+                                      textTransform: 'none',
+                                      fontWeight: 600,
+                                      pl: 2,
+                                      pr: 1,
+                                      minHeight: 27,
+                                    }}
+                                  >
+                                    <span>{group.path}</span>
+                                    <span>{group.documents.length}</span>
+                                  </Button>
+                                )
+                              })}
+                            </Stack>
+                          ) : null}
+                        </Stack>
+                      )
+                    })}
+                  </Stack>
+
+                  <Button
+                    size="small"
+                    variant={selectedOpportunityDetailsTab === 'chat' ? 'contained' : 'text'}
+                    onClick={() => {
+                      setSelectedOpportunityDetailsTab('chat')
+                    }}
+                    sx={{ justifyContent: 'flex-start', textTransform: 'none', fontWeight: 700 }}
+                  >
+                    {selectedOpportunityChatCount > 0 ? `Chat (${selectedOpportunityChatCount})` : 'Chat'}
+                  </Button>
+                </Stack>
+
+                <Stack spacing={1.2} sx={{ flex: 1, minWidth: 0 }}>
 
               {selectedOpportunityDetailsTab === 'details' ? (
                 <>
@@ -4760,76 +6960,189 @@ export default function SalesOpportunitiesPage() {
                 onRemoveLineItem={handleRemoveDetailsLineItem}
               />
 
-              <Stack spacing={0.8}>
-                <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
-                  Documents
-                </Typography>
+                </>
+              ) : null}
 
-                <Stack direction="row" spacing={0.8} alignItems="center" flexWrap="wrap" useFlexGap>
-                  <Button
-                    component="label"
-                    size="small"
-                    variant="outlined"
-                    startIcon={<FileUploadRoundedIcon fontSize="small" />}
-                    disabled={!canManage || isUploadingSelectedOpportunityDocument || isSavingOpportunityDetails}
-                  >
-                    {isUploadingSelectedOpportunityDocument ? 'Uploading...' : 'Upload Document'}
-                    <input
-                      hidden
-                      type="file"
-                      accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.png,.jpg,.jpeg"
-                      onChange={handleSelectedOpportunityDocumentUpload}
-                    />
-                  </Button>
+              {selectedOpportunitySidebarFolder ? (
+                <Stack spacing={0.9}>
+                  <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
+                    {selectedOpportunitySidebarFolder.label}
+                  </Typography>
 
                   <Typography variant="caption" color="text.secondary">
-                    Add proposal, spec sheet, or signed file.
+                    Upload quote packages from the Sales Opportunities Pipeline header using Sync Excel Sheet / Scan Folder.
                   </Typography>
-                </Stack>
 
-                {selectedOpportunityDocuments.length === 0 ? (
-                  <Typography variant="caption" color="text.secondary">
-                    No documents attached.
-                  </Typography>
-                ) : (
                   <Stack spacing={0.6}>
-                    {selectedOpportunityDocuments.map((document) => (
-                      <Box
-                        key={document.url}
-                        sx={{
-                          px: 1,
-                          py: 0.45,
-                          borderBottom: `1px solid ${alpha('#0f4c81', 0.18)}`,
-                        }}
-                      >
-                        <Stack direction="row" spacing={0.8} alignItems="center" justifyContent="space-between">
-                          <Link
-                            href={document.url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            underline="hover"
-                            sx={{ minWidth: 0, flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
-                          >
-                            {document.name || 'Open document'}
-                          </Link>
-                          <IconButton
-                            size="small"
-                            color="error"
-                            disabled={!canManage || busyQuoteId === selectedOpportunity.id}
-                            onClick={() => {
-                              void handleRemoveSelectedOpportunityDocument(document.url)
+                    {selectedOpportunityFolderDocuments.length === 0 ? (
+                      <Typography variant="caption" color="text.secondary">
+                        No files uploaded in this folder yet.
+                      </Typography>
+                    ) : (
+                      <Stack spacing={0.9}>
+                        {selectedOpportunityFolderRootDocuments.length === 0 ? (
+                          <Typography variant="caption" color="text.secondary">
+                            Files in this tab are organized in nested folders. Use the left sidebar subfolders to open them.
+                          </Typography>
+                        ) : (
+                          <Box
+                            sx={{
+                              display: 'grid',
+                              gap: 0.9,
+                              gridTemplateColumns: {
+                                xs: '1fr',
+                                sm: 'repeat(2, minmax(0, 1fr))',
+                                lg: 'repeat(3, minmax(0, 1fr))',
+                              },
                             }}
                           >
-                            <DeleteOutlineRoundedIcon sx={{ fontSize: 16 }} />
-                          </IconButton>
-                        </Stack>
-                      </Box>
-                    ))}
-                  </Stack>
-                )}
-              </Stack>
+                            {selectedOpportunityFolderRootDocuments.map((document) => {
+                              const documentDisplayName = resolveDocumentDisplayName(document)
+                              const documentLeafName = resolveDocumentLeafName(document, selectedOpportunitySidebarFolderKey)
+                              const previewKind = resolveDocumentPreviewKind(document)
+                              const previewSource = resolveDocumentPreviewSource(document, previewKind)
 
-                </>
+                              return (
+                                <Paper
+                                  key={document.url}
+                                  variant="outlined"
+                                  sx={{
+                                    p: 1,
+                                    borderRadius: 1,
+                                    borderColor: alpha('#0f4c81', 0.2),
+                                    backgroundColor: '#ffffff',
+                                  }}
+                                >
+                                  <Stack spacing={0.7} sx={{ minWidth: 0 }}>
+                                    <Stack direction="row" spacing={0.8} alignItems="center" justifyContent="space-between">
+                                      <Chip
+                                        size="small"
+                                        label={resolveDocumentTypeLabel(document)}
+                                        sx={{
+                                          height: 20,
+                                          fontSize: 11,
+                                          fontWeight: 700,
+                                          backgroundColor: alpha('#0f4c81', 0.1),
+                                          color: '#0f4c81',
+                                        }}
+                                      />
+                                      <IconButton
+                                        size="small"
+                                        color="error"
+                                        disabled={!canManage || busyQuoteId === selectedOpportunityId || isUploadingFolderSelection}
+                                        onClick={() => {
+                                          void handleRemoveSelectedOpportunityDocument(document.url)
+                                        }}
+                                      >
+                                        <DeleteOutlineRoundedIcon sx={{ fontSize: 16 }} />
+                                      </IconButton>
+                                    </Stack>
+
+                                    <Box
+                                      component="a"
+                                      href={document.url}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      sx={{
+                                        display: 'block',
+                                        height: 122,
+                                        borderRadius: 0.9,
+                                        overflow: 'hidden',
+                                        border: `1px solid ${alpha('#0f4c81', 0.18)}`,
+                                        backgroundColor: alpha('#0f4c81', 0.04),
+                                        textDecoration: 'none',
+                                      }}
+                                    >
+                                      {previewKind === 'image' && previewSource ? (
+                                        <Box
+                                          component="img"
+                                          src={previewSource}
+                                          alt={documentLeafName || documentDisplayName}
+                                          sx={{
+                                            width: '100%',
+                                            height: '100%',
+                                            objectFit: 'cover',
+                                            display: 'block',
+                                          }}
+                                        />
+                                      ) : null}
+
+                                      {previewKind !== 'image' && previewSource ? (
+                                        <Box
+                                          component="iframe"
+                                          src={previewSource}
+                                          title={`preview-${documentDisplayName}`}
+                                          sx={{
+                                            width: '100%',
+                                            height: '100%',
+                                            border: 0,
+                                            display: 'block',
+                                            pointerEvents: 'none',
+                                            backgroundColor: '#ffffff',
+                                          }}
+                                        />
+                                      ) : null}
+
+                                      {!previewSource ? (
+                                        <Stack
+                                          alignItems="center"
+                                          justifyContent="center"
+                                          sx={{ height: '100%', px: 1 }}
+                                        >
+                                          <Typography variant="caption" sx={{ fontWeight: 700, color: '#0f4c81' }}>
+                                            Preview unavailable
+                                          </Typography>
+                                        </Stack>
+                                      ) : null}
+                                    </Box>
+
+                                    <Link
+                                      href={document.url}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      underline="hover"
+                                      sx={{
+                                        minWidth: 0,
+                                        display: 'block',
+                                        fontWeight: 600,
+                                        lineHeight: 1.3,
+                                        wordBreak: 'break-word',
+                                      }}
+                                    >
+                                      {documentLeafName}
+                                    </Link>
+
+                                    {documentDisplayName !== documentLeafName ? (
+                                      <Typography variant="caption" color="text.secondary" sx={{ wordBreak: 'break-word' }}>
+                                        {documentDisplayName}
+                                      </Typography>
+                                    ) : null}
+
+                                    <Button
+                                      size="small"
+                                      variant="outlined"
+                                      component="a"
+                                      href={document.url}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      sx={{
+                                        alignSelf: 'flex-start',
+                                        textTransform: 'none',
+                                        fontWeight: 700,
+                                      }}
+                                    >
+                                      Open File
+                                    </Button>
+                                  </Stack>
+                                </Paper>
+                              )
+                            })}
+                          </Box>
+                        )}
+                      </Stack>
+                    )}
+                  </Stack>
+                </Stack>
               ) : null}
 
               {selectedOpportunityDetailsTab === 'chat' ? (
@@ -4922,22 +7235,46 @@ export default function SalesOpportunitiesPage() {
                     disabled={!canManage || isSendingSelectedOpportunityChat}
                     multiline
                     minRows={2}
-                    placeholder="Add a note that stays with this quote"
+                    placeholder="Add a note that stays with this quote (/refresh also works)"
                     sx={{ flex: 1 }}
                   />
-                  <Button
-                    variant="contained"
-                    onClick={() => {
-                      void handleSendSelectedOpportunityChat()
-                    }}
-                    disabled={
-                      !canManage
-                      || isSendingSelectedOpportunityChat
-                      || selectedOpportunityChatDraft.trim().length === 0
-                    }
-                  >
-                    {isSendingSelectedOpportunityChat ? 'Sending...' : 'Send'}
-                  </Button>
+
+                  <Stack spacing={0.4} sx={{ minWidth: { xs: 0, sm: 240 } }}>
+                    {selectedOpportunityChatDraft.trim().length > 0 ? (
+                      <FormControlLabel
+                        sx={{ m: 0, alignItems: 'flex-start' }}
+                        control={(
+                          <Checkbox
+                            size="small"
+                            checked={selectedOpportunityRefreshOnSend}
+                            onChange={(event) => {
+                              setSelectedOpportunityRefreshOnSend(event.target.checked)
+                            }}
+                            disabled={!canManage || isSendingSelectedOpportunityChat}
+                          />
+                        )}
+                        label={(
+                          <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.2 }}>
+                            Refresh quote age date on send
+                          </Typography>
+                        )}
+                      />
+                    ) : null}
+
+                    <Button
+                      variant="contained"
+                      onClick={() => {
+                        void handleSendSelectedOpportunityChat()
+                      }}
+                      disabled={
+                        !canManage
+                        || isSendingSelectedOpportunityChat
+                        || selectedOpportunityChatDraft.trim().length === 0
+                      }
+                    >
+                      {isSendingSelectedOpportunityChat ? 'Sending...' : 'Send'}
+                    </Button>
+                  </Stack>
                 </Stack>
               </Stack>
 
@@ -4964,13 +7301,19 @@ export default function SalesOpportunitiesPage() {
                   minRows={3}
                 />
               ) : null}
+                </Stack>
+              </Stack>
             </Stack>
           ) : null}
         </DialogContent>
         <DialogActions>
           <Button
             onClick={handleCloseOpportunityDetails}
-            disabled={isSavingOpportunityDetails || isUploadingSelectedOpportunityDocument || isSendingSelectedOpportunityChat}
+            disabled={
+              isSavingOpportunityDetails
+              || isUploadingFolderSelection
+              || isSendingSelectedOpportunityChat
+            }
           >
             Close Without Saving
           </Button>
@@ -4982,7 +7325,7 @@ export default function SalesOpportunitiesPage() {
             disabled={
               !canManage
               || isSavingOpportunityDetails
-              || isUploadingSelectedOpportunityDocument
+              || isUploadingFolderSelection
               || isSendingSelectedOpportunityChat
               || !opportunityDetailsFormState
             }
