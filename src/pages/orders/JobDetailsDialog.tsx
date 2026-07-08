@@ -1,6 +1,9 @@
 import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded'
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
+import EditRoundedIcon from '@mui/icons-material/EditRounded'
 import NotificationsActiveRoundedIcon from '@mui/icons-material/NotificationsActiveRounded'
+import UploadFileRoundedIcon from '@mui/icons-material/UploadFileRounded'
+import VisibilityRoundedIcon from '@mui/icons-material/VisibilityRounded'
 import {
   Accordion,
   AccordionDetails,
@@ -17,6 +20,7 @@ import {
   DialogTitle,
   FormControl,
   FormControlLabel,
+  IconButton,
   InputLabel,
   LinearProgress,
   MenuItem,
@@ -44,10 +48,18 @@ import {
   fetchOrderChats,
   fetchOrdersChatUsers,
   fetchOrdersJobDetails,
+  postOrdersWarrantyIssueCreate,
+  postOrdersWarrantyLeadTimeUpdate,
+  postOrdersWarrantyMarkDone,
+  postOrdersShopDrawingDelete,
+  postOrdersShopDrawingUpload,
+  postOrdersCutListDelete,
+  postOrdersCutListUpload,
+  postOrdersOrderDetailsUpdate,
   postOrdersShip,
+  postOrdersShippingDocumentDelete,
   postOrdersShippingDocumentUpload,
   removeOrderChatMessage,
-  postOrdersOrderNumberContactAdmin,
   postOrdersOrderNumberUpdate,
   type OrdersShippingDocumentType,
   type OrdersChatUser,
@@ -78,13 +90,70 @@ type JobDetailsDialogProps = {
   onClose: () => void
 }
 
-export type JobDetailsTab = 'hours' | 'shipping' | 'info' | 'chat'
+export type JobDetailsTab = 'hours' | 'shipping' | 'info' | 'warranty' | 'chat'
 
-const ORDER_NUMBER_CHANGE_LINKED_MESSAGE =
-  'Sorry, this cannot be done because of its linked. If it needs to be done, contact admin.'
+function normalizeDateInputValue(value: string | null | undefined) {
+  const normalized = String(value ?? '').trim()
+  const matched = normalized.match(/^(\d{4}-\d{2}-\d{2})/)
 
-function isLinkedOrderNumberChangeMessage(message: string | null | undefined) {
-  return String(message ?? '').trim() === ORDER_NUMBER_CHANGE_LINKED_MESSAGE
+  return matched ? matched[1] : ''
+}
+
+type OrderWarrantyState = {
+  issueActive: boolean
+  issueDescription: string | null
+  issueReportedAt: string | null
+  issueLeadTimeDate: string | null
+  issueDoneAt: string | null
+  lastCompletedDescription: string | null
+  lastCompletedReportedAt: string | null
+  lastCompletedLeadTimeDate: string | null
+  lastCompletedDoneAt: string | null
+  lastCompletedDurationDays: number | null
+  lastCompletedLeadTimeVarianceDays: number | null
+}
+
+function buildOrderWarrantyState(order: OrdersOverviewOrder | null | undefined): OrderWarrantyState {
+  const durationDaysRaw = Number(order?.warrantyLastCompletedDurationDays)
+  const leadTimeVarianceDaysRaw = Number(order?.warrantyLastCompletedLeadTimeVarianceDays)
+
+  return {
+    issueActive: order?.warrantyIssueActive === true,
+    issueDescription: String(order?.warrantyIssueDescription ?? '').trim() || null,
+    issueReportedAt: String(order?.warrantyIssueReportedAt ?? '').trim() || null,
+    issueLeadTimeDate: normalizeDateInputValue(order?.warrantyIssueLeadTimeDate ?? '') || null,
+    issueDoneAt: String(order?.warrantyIssueDoneAt ?? '').trim() || null,
+    lastCompletedDescription:
+      String(order?.warrantyLastCompletedDescription ?? '').trim() || null,
+    lastCompletedReportedAt:
+      String(order?.warrantyLastCompletedReportedAt ?? '').trim() || null,
+    lastCompletedLeadTimeDate:
+      normalizeDateInputValue(order?.warrantyLastCompletedLeadTimeDate ?? '') || null,
+    lastCompletedDoneAt:
+      String(order?.warrantyLastCompletedDoneAt ?? '').trim() || null,
+    lastCompletedDurationDays:
+      Number.isFinite(durationDaysRaw) ? Number(durationDaysRaw) : null,
+    lastCompletedLeadTimeVarianceDays:
+      Number.isFinite(leadTimeVarianceDaysRaw) ? Number(leadTimeVarianceDaysRaw) : null,
+  }
+}
+
+function formatWarrantyVarianceLabel(value: number | null) {
+  if (!Number.isFinite(Number(value))) {
+    return '—'
+  }
+
+  const normalized = Number(value)
+  const abs = Math.abs(normalized)
+  const dayLabel = `${abs} day${abs === 1 ? '' : 's'}`
+
+  if (normalized === 0) {
+    return 'On time'
+  }
+
+  return normalized > 0
+    ? `${dayLabel} late`
+    : `${dayLabel} early`
 }
 
 function formatStageLabel(value: string | null | undefined): string {
@@ -340,6 +409,74 @@ function readFileAsDataUrl(file: File): Promise<string> {
   })
 }
 
+type DocumentPreviewMode = 'image' | 'pdf' | 'unsupported'
+
+function toInlinePreviewUrl(url: string | null | undefined) {
+  const normalized = String(url ?? '').trim()
+
+  if (!normalized) {
+    return ''
+  }
+
+  let parsedUrl: URL
+
+  try {
+    parsedUrl = new URL(normalized, 'http://localhost')
+  } catch {
+    return normalized
+  }
+
+  if (!/^\/api\/dashboard\/monday\/.+\/download$/i.test(parsedUrl.pathname)) {
+    return normalized
+  }
+
+  if (parsedUrl.searchParams.get('inline') !== '1') {
+    parsedUrl.searchParams.set('inline', '1')
+  }
+
+  const updatedSearch = parsedUrl.searchParams.toString()
+
+  if (/^https?:\/\//i.test(normalized)) {
+    const absoluteUrl = new URL(normalized)
+    absoluteUrl.search = updatedSearch ? `?${updatedSearch}` : ''
+    return absoluteUrl.toString()
+  }
+
+  return `${parsedUrl.pathname}${updatedSearch ? `?${updatedSearch}` : ''}${parsedUrl.hash || ''}`
+}
+
+function resolveDocumentPreviewMode({
+  fileName,
+  mimeType,
+  url,
+}: {
+  fileName?: string | null
+  mimeType?: string | null
+  url?: string | null
+}): DocumentPreviewMode {
+  const normalizedMimeType = String(mimeType ?? '').trim().toLowerCase()
+
+  if (normalizedMimeType.startsWith('image/')) {
+    return 'image'
+  }
+
+  if (normalizedMimeType === 'application/pdf') {
+    return 'pdf'
+  }
+
+  const source = `${String(fileName ?? '').trim()} ${String(url ?? '').trim()}`.toLowerCase()
+
+  if (/\.(png|jpe?g|webp|heic|heif)(\?|#|$)/.test(source)) {
+    return 'image'
+  }
+
+  if (/\.pdf(\?|#|$)/.test(source)) {
+    return 'pdf'
+  }
+
+  return 'unsupported'
+}
+
 export function JobDetailsDialog({
   open,
   mode,
@@ -357,13 +494,6 @@ export function JobDetailsDialog({
   const orderChatId = String(order?.id ?? '').trim()
   const [detailsTab, setDetailsTab] = useState<JobDetailsTab>('info')
   const [orderNumberDraft, setOrderNumberDraft] = useState('')
-  const [orderNumberEditError, setOrderNumberEditError] = useState<string | null>(null)
-  const [orderNumberEditSuccess, setOrderNumberEditSuccess] = useState<string | null>(null)
-  const [orderNumberEditWarning, setOrderNumberEditWarning] = useState<string | null>(null)
-  const [isOrderNumberEditing, setIsOrderNumberEditing] = useState(false)
-  const [isSavingOrderNumber, setIsSavingOrderNumber] = useState(false)
-  const [canContactAdminForOrderNumber, setCanContactAdminForOrderNumber] = useState(false)
-  const [isContactingAdminForOrderNumber, setIsContactingAdminForOrderNumber] = useState(false)
   const [chatDraft, setChatDraft] = useState('')
   const [chatDraftMarkup, setChatDraftMarkup] = useState('')
   const [isSendingChat, setIsSendingChat] = useState(false)
@@ -374,9 +504,13 @@ export function JobDetailsDialog({
   const [reminderDueDate, setReminderDueDate] = useState('')
   const [reminderRecipientUids, setReminderRecipientUids] = useState<string[]>([])
   const [reminderNote, setReminderNote] = useState('')
+  const shopDrawingUploadInputRef = useRef<HTMLInputElement | null>(null)
+  const cutListUploadInputRef = useRef<HTMLInputElement | null>(null)
   const signedBolUploadInputRef = useRef<HTMLInputElement | null>(null)
   const inspectionSheetUploadInputRef = useRef<HTMLInputElement | null>(null)
+  const [isShippingDocumentsEditMode, setIsShippingDocumentsEditMode] = useState(false)
   const [shippingUploadInFlightType, setShippingUploadInFlightType] = useState<OrdersShippingDocumentType | ''>('')
+  const [shippingDeleteInFlightType, setShippingDeleteInFlightType] = useState<OrdersShippingDocumentType | ''>('')
   const [isShippingOrder, setIsShippingOrder] = useState(false)
   const [shippingActionError, setShippingActionError] = useState<string | null>(null)
   const [shippingActionSuccess, setShippingActionSuccess] = useState<string | null>(null)
@@ -384,6 +518,43 @@ export function JobDetailsDialog({
   const [uploadedInspectionSheetUrl, setUploadedInspectionSheetUrl] = useState<string | null>(null)
   const [uploadedSignedBolName, setUploadedSignedBolName] = useState<string | null>(null)
   const [uploadedInspectionSheetName, setUploadedInspectionSheetName] = useState<string | null>(null)
+  const [signedBolDeletedLocally, setSignedBolDeletedLocally] = useState(false)
+  const [inspectionSheetDeletedLocally, setInspectionSheetDeletedLocally] = useState(false)
+  const [isUploadingShopDrawing, setIsUploadingShopDrawing] = useState(false)
+  const [isDeletingShopDrawing, setIsDeletingShopDrawing] = useState(false)
+  const [isUploadingCutList, setIsUploadingCutList] = useState(false)
+  const [isDeletingCutList, setIsDeletingCutList] = useState(false)
+  const [uploadedShopDrawingUrl, setUploadedShopDrawingUrl] = useState<string | null>(null)
+  const [uploadedCutListUrl, setUploadedCutListUrl] = useState<string | null>(null)
+  const [uploadedShopDrawingName, setUploadedShopDrawingName] = useState<string | null>(null)
+  const [uploadedCutListName, setUploadedCutListName] = useState<string | null>(null)
+  const [shopDrawingDeletedLocally, setShopDrawingDeletedLocally] = useState(false)
+  const [cutListDeletedLocally, setCutListDeletedLocally] = useState(false)
+  const [infoDocumentActionError, setInfoDocumentActionError] = useState<string | null>(null)
+  const [infoDocumentActionSuccess, setInfoDocumentActionSuccess] = useState<string | null>(null)
+  const [documentPreviewUrl, setDocumentPreviewUrl] = useState('')
+  const [documentPreviewTitle, setDocumentPreviewTitle] = useState('Document Preview')
+  const [documentPreviewMode, setDocumentPreviewMode] = useState<DocumentPreviewMode>('unsupported')
+  const [isManagerEditMode, setIsManagerEditMode] = useState(false)
+  const [isSavingManagerEdit, setIsSavingManagerEdit] = useState(false)
+  const [managerEditError, setManagerEditError] = useState<string | null>(null)
+  const [managerEditSuccess, setManagerEditSuccess] = useState<string | null>(null)
+  const [managerEditWarning, setManagerEditWarning] = useState<string | null>(null)
+  const [orderNameDraft, setOrderNameDraft] = useState('')
+  const [poNumberDraft, setPoNumberDraft] = useState('')
+  const [notesDraft, setNotesDraft] = useState('')
+  const [descriptionDraft, setDescriptionDraft] = useState('')
+  const [orderDateDraft, setOrderDateDraft] = useState('')
+  const [leadTimeDateDraft, setLeadTimeDateDraft] = useState('')
+  const [podDateDraft, setPodDateDraft] = useState('')
+  const [warrantyState, setWarrantyState] = useState<OrderWarrantyState>(() => buildOrderWarrantyState(order))
+  const [warrantyIssueDescriptionDraft, setWarrantyIssueDescriptionDraft] = useState('')
+  const [warrantyLeadTimeDateDraft, setWarrantyLeadTimeDateDraft] = useState('')
+  const [isSavingWarrantyIssue, setIsSavingWarrantyIssue] = useState(false)
+  const [isSavingWarrantyLeadTime, setIsSavingWarrantyLeadTime] = useState(false)
+  const [isMarkingWarrantyDone, setIsMarkingWarrantyDone] = useState(false)
+  const [warrantyActionError, setWarrantyActionError] = useState<string | null>(null)
+  const [warrantyActionSuccess, setWarrantyActionSuccess] = useState<string | null>(null)
 
   const detailsQuery = useQuery<OrdersJobDetailsResponse>({
     queryKey: ordersJobDetailsQueryKey({
@@ -433,11 +604,6 @@ export function JobDetailsDialog({
     }
 
     setOrderNumberDraft(String(order?.orderNumber ?? '').trim())
-    setOrderNumberEditError(null)
-    setOrderNumberEditSuccess(null)
-    setOrderNumberEditWarning(null)
-    setIsOrderNumberEditing(false)
-    setCanContactAdminForOrderNumber(false)
     setChatDraft('')
     setChatDraftMarkup('')
     setDeletingChatMessageId('')
@@ -447,7 +613,9 @@ export function JobDetailsDialog({
     setReminderDueDate('')
     setReminderRecipientUids([])
     setReminderNote('')
+    setIsShippingDocumentsEditMode(false)
     setShippingUploadInFlightType('')
+    setShippingDeleteInFlightType('')
     setIsShippingOrder(false)
     setShippingActionError(null)
     setShippingActionSuccess(null)
@@ -455,6 +623,52 @@ export function JobDetailsDialog({
     setUploadedInspectionSheetUrl(null)
     setUploadedSignedBolName(null)
     setUploadedInspectionSheetName(null)
+    setSignedBolDeletedLocally(false)
+    setInspectionSheetDeletedLocally(false)
+    setIsUploadingShopDrawing(false)
+    setIsDeletingShopDrawing(false)
+    setIsUploadingCutList(false)
+    setIsDeletingCutList(false)
+    setUploadedShopDrawingUrl(null)
+    setUploadedCutListUrl(null)
+    setUploadedShopDrawingName(null)
+    setUploadedCutListName(null)
+    setShopDrawingDeletedLocally(false)
+    setCutListDeletedLocally(false)
+    setInfoDocumentActionError(null)
+    setInfoDocumentActionSuccess(null)
+    setDocumentPreviewUrl('')
+    setDocumentPreviewTitle('Document Preview')
+    setDocumentPreviewMode('unsupported')
+    setIsManagerEditMode(false)
+    setIsSavingManagerEdit(false)
+    setManagerEditError(null)
+    setManagerEditSuccess(null)
+    setManagerEditWarning(null)
+    setOrderNameDraft(String(order?.orderName ?? '').trim())
+    setPoNumberDraft(String(order?.poNumber ?? '').trim())
+    setNotesDraft(String(order?.notes ?? '').trim())
+    setDescriptionDraft(String(order?.description ?? '').trim())
+    setOrderDateDraft(normalizeDateInputValue(order?.orderDate ?? ''))
+    setLeadTimeDateDraft(normalizeDateInputValue(order?.dueDate ?? ''))
+    setPodDateDraft(normalizeDateInputValue(order?.shippedAt ?? ''))
+    const nextWarrantyState = buildOrderWarrantyState(order)
+    setWarrantyState(nextWarrantyState)
+    setWarrantyIssueDescriptionDraft(nextWarrantyState.issueDescription ?? '')
+    setWarrantyLeadTimeDateDraft(nextWarrantyState.issueLeadTimeDate ?? '')
+    setIsSavingWarrantyIssue(false)
+    setIsSavingWarrantyLeadTime(false)
+    setIsMarkingWarrantyDone(false)
+    setWarrantyActionError(null)
+    setWarrantyActionSuccess(null)
+
+    if (shopDrawingUploadInputRef.current) {
+      shopDrawingUploadInputRef.current.value = ''
+    }
+
+    if (cutListUploadInputRef.current) {
+      cutListUploadInputRef.current.value = ''
+    }
 
     if (signedBolUploadInputRef.current) {
       signedBolUploadInputRef.current.value = ''
@@ -463,7 +677,30 @@ export function JobDetailsDialog({
     if (inspectionSheetUploadInputRef.current) {
       inspectionSheetUploadInputRef.current.value = ''
     }
-  }, [mode, open, order?.id, order?.orderNumber])
+  }, [
+    mode,
+    open,
+    order?.description,
+    order?.dueDate,
+    order?.id,
+    order?.orderDate,
+    order?.orderName,
+    order?.orderNumber,
+    order?.notes,
+    order?.poNumber,
+    order?.shippedAt,
+    order?.warrantyIssueActive,
+    order?.warrantyIssueDescription,
+    order?.warrantyIssueReportedAt,
+    order?.warrantyIssueLeadTimeDate,
+    order?.warrantyIssueDoneAt,
+    order?.warrantyLastCompletedDescription,
+    order?.warrantyLastCompletedReportedAt,
+    order?.warrantyLastCompletedLeadTimeDate,
+    order?.warrantyLastCompletedDoneAt,
+    order?.warrantyLastCompletedDurationDays,
+    order?.warrantyLastCompletedLeadTimeVarianceDays,
+  ])
 
   const label = order?.orderNumber || order?.jobNumber || 'Job'
   const errorMessage = detailsQuery.error instanceof Error ? detailsQuery.error.message : null
@@ -778,14 +1015,35 @@ export function JobDetailsDialog({
   const description = String(order?.description ?? '').trim()
   const notes = String(order?.notes ?? '').trim()
   const bolUrl = resolveBolUrl(order)
-  const shopDrawingUrl = resolveShopDrawingUrl(order)
-  const cutListUrl = resolveCutListUrl(order)
+  const shopDrawingUrlFromOrder = resolveShopDrawingUrl(order)
+  const cutListUrlFromOrder = resolveCutListUrl(order)
+  const shopDrawingUrl = shopDrawingDeletedLocally
+    ? null
+    : uploadedShopDrawingUrl || shopDrawingUrlFromOrder || null
+  const cutListUrl = cutListDeletedLocally
+    ? null
+    : uploadedCutListUrl || cutListUrlFromOrder || null
+  const shopDrawingDisplayName = shopDrawingDeletedLocally
+    ? null
+    : uploadedShopDrawingName || 'shop-drawing.pdf'
+  const cutListDisplayName = cutListDeletedLocally
+    ? null
+    : uploadedCutListName || 'cut-list.pdf'
   const invoiceNumber = String(order?.invoiceNumber ?? '').trim()
+  const invoicePreviewUrl = String(order?.invoiceCachedUrl ?? '').trim()
   const hasBolText = Boolean(String(order?.bol ?? '').trim())
-  const signedBolUrl = uploadedSignedBolUrl || String(order?.signedBolUrl ?? '').trim() || null
-  const inspectionSheetUrl = uploadedInspectionSheetUrl || String(order?.inspectionSheetUrl ?? '').trim() || null
-  const signedBolDisplayName = uploadedSignedBolName || String(order?.signedBol ?? '').trim() || null
-  const inspectionSheetDisplayName = uploadedInspectionSheetName || String(order?.inspectionSheet ?? '').trim() || null
+  const signedBolUrl = signedBolDeletedLocally
+    ? null
+    : uploadedSignedBolUrl || String(order?.signedBolUrl ?? '').trim() || null
+  const inspectionSheetUrl = inspectionSheetDeletedLocally
+    ? null
+    : uploadedInspectionSheetUrl || String(order?.inspectionSheetUrl ?? '').trim() || null
+  const signedBolDisplayName = signedBolDeletedLocally
+    ? null
+    : uploadedSignedBolName || String(order?.signedBol ?? '').trim() || null
+  const inspectionSheetDisplayName = inspectionSheetDeletedLocally
+    ? null
+    : uploadedInspectionSheetName || String(order?.inspectionSheet ?? '').trim() || null
   const hasMondayItemId = Boolean(String(order?.mondayItemId ?? '').trim())
   const canOpenBolDocument = Boolean(bolUrl || (hasBolText && hasMondayItemId))
   const hasSignedBolForShipping = Boolean(signedBolUrl)
@@ -793,135 +1051,406 @@ export function JobDetailsDialog({
   const canShipFromWebsiteFlow = hasSignedBolForShipping && hasInspectionSheetForShipping
   const isUploadingSignedBol = shippingUploadInFlightType === 'signed_bol'
   const isUploadingInspectionSheet = shippingUploadInFlightType === 'inspection_sheet'
+  const isDeletingSignedBol = shippingDeleteInFlightType === 'signed_bol'
+  const isDeletingInspectionSheet = shippingDeleteInFlightType === 'inspection_sheet'
   const isUploadingShippingDocument = Boolean(shippingUploadInFlightType)
+  const isDeletingShippingDocument = Boolean(shippingDeleteInFlightType)
+  const isUpdatingInfoDocument =
+    isUploadingShopDrawing
+    || isDeletingShopDrawing
+    || isUploadingCutList
+    || isDeletingCutList
   const canOpenShopDrawingDocument = Boolean(shopDrawingUrl)
   const canOpenCutListDocument = Boolean(cutListUrl)
   const canOpenInvoiceDocument = Boolean(invoiceNumber)
   const hasMondayRecord = Boolean(order?.hasMondayRecord)
-  const canEditOrderNumber = hasMondayRecord && Boolean(String(order?.mondayItemId ?? '').trim())
+  const canManageOrderMetadata = appUser?.isAdmin === true || appUser?.isManager === true
+  const canEditOrderNumber =
+    canManageOrderMetadata
+    && hasMondayRecord
+    && Boolean(String(order?.mondayItemId ?? '').trim())
+  const isWarrantyActionInFlight =
+    isSavingWarrantyIssue || isSavingWarrantyLeadTime || isMarkingWarrantyDone
+  const canManageWarrantyIssue = Boolean(order?.isShipped && String(order?.mondayItemId ?? '').trim())
+  const canCreateWarrantyIssue = canManageWarrantyIssue && !warrantyState.issueActive
+  const canUpdateWarrantyLeadTime = canManageWarrantyIssue && warrantyState.issueActive
 
-  const handleStartOrderNumberEdit = () => {
-    if (!canEditOrderNumber || isSavingOrderNumber || isContactingAdminForOrderNumber) {
+  const renderInlineDocumentMiniPreview = ({
+    url,
+    fileName,
+    mimeType,
+    emptyLabel = 'Preview unavailable',
+  }: {
+    url: string | null | undefined
+    fileName?: string | null
+    mimeType?: string | null
+    emptyLabel?: string
+  }) => {
+    const normalizedUrl = toInlinePreviewUrl(url)
+    const previewMode = resolveDocumentPreviewMode({
+      fileName,
+      mimeType,
+      url: normalizedUrl,
+    })
+
+    if (!normalizedUrl || previewMode === 'unsupported') {
+      return (
+        <Stack
+          alignItems="center"
+          justifyContent="center"
+          sx={{
+            height: 128,
+            borderRadius: 1,
+            border: '1px solid',
+            borderColor: 'divider',
+            bgcolor: 'action.hover',
+            px: 1,
+            textAlign: 'center',
+          }}
+        >
+          <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
+            {emptyLabel}
+          </Typography>
+        </Stack>
+      )
+    }
+
+    if (previewMode === 'image') {
+      return (
+        <Box
+          component="img"
+          src={normalizedUrl}
+          alt={String(fileName ?? '').trim() || 'Attachment preview'}
+          sx={{
+            width: '100%',
+            height: 128,
+            borderRadius: 1,
+            border: '1px solid',
+            borderColor: 'divider',
+            objectFit: 'cover',
+            display: 'block',
+            bgcolor: 'action.hover',
+          }}
+        />
+      )
+    }
+
+    return (
+      <Box
+        component="iframe"
+        src={normalizedUrl}
+        title={`mini-preview-${String(fileName ?? 'document').trim() || 'document'}`}
+        sx={{
+          width: '100%',
+          height: 128,
+          border: '1px solid',
+          borderColor: 'divider',
+          borderRadius: 1,
+          display: 'block',
+          pointerEvents: 'none',
+          bgcolor: '#ffffff',
+        }}
+      />
+    )
+  }
+
+  const resetManagerEditDraftsFromOrder = () => {
+    setOrderNameDraft(String(order?.orderName ?? '').trim())
+    setPoNumberDraft(String(order?.poNumber ?? '').trim())
+    setNotesDraft(String(order?.notes ?? '').trim())
+    setDescriptionDraft(String(order?.description ?? '').trim())
+    setOrderDateDraft(normalizeDateInputValue(order?.orderDate ?? ''))
+    setLeadTimeDateDraft(normalizeDateInputValue(order?.dueDate ?? ''))
+    setPodDateDraft(normalizeDateInputValue(order?.shippedAt ?? ''))
+  }
+
+  const handleStartManagerEdit = () => {
+    if (!canManageOrderMetadata || isSavingManagerEdit) {
       return
     }
 
-    const shouldContinue = window.confirm('Edit this order number?')
+    if (!hasMondayRecord || !String(order?.mondayItemId ?? '').trim()) {
+      setManagerEditError('Only Monday-linked orders can be edited.')
+      return
+    }
+
+    setManagerEditError(null)
+    setManagerEditSuccess(null)
+    setManagerEditWarning(null)
+    setIsManagerEditMode(true)
+  }
+
+  const handleCancelManagerEdit = () => {
+    resetManagerEditDraftsFromOrder()
+    setManagerEditError(null)
+    setManagerEditWarning(null)
+    setIsManagerEditMode(false)
+  }
+
+  const handleSaveManagerEdit = async () => {
+    if (!order || !isManagerEditMode) {
+      return
+    }
+
+    if (!canManageOrderMetadata) {
+      setManagerEditError('Only managers and admins can edit these fields.')
+      return
+    }
+
+    const mondayItemId = String(order.mondayItemId ?? '').trim()
+    const nextOrderName = String(orderNameDraft ?? '').trim()
+    const requestedOrderNumber = String(orderNumberDraft ?? '').trim()
+    const currentOrderNumber = String(order.orderNumber ?? '').trim()
+
+    if (!mondayItemId) {
+      setManagerEditError('Monday item id is missing for this order.')
+      return
+    }
+
+    if (!requestedOrderNumber) {
+      setManagerEditError('Order number is required.')
+      return
+    }
+
+    if (!nextOrderName) {
+      setManagerEditError('Order name is required.')
+      return
+    }
+
+    setIsSavingManagerEdit(true)
+    setManagerEditError(null)
+    setManagerEditSuccess(null)
+    setManagerEditWarning(null)
+
+    try {
+      let orderNumberWarning: string | null = null
+
+      if (requestedOrderNumber !== currentOrderNumber) {
+        const orderNumberResponse = await postOrdersOrderNumberUpdate({
+          mondayItemId,
+          orderNumber: requestedOrderNumber,
+          currentOrderNumber,
+        })
+
+        setOrderNumberDraft(String(orderNumberResponse.order.orderNumber ?? '').trim())
+        orderNumberWarning = orderNumberResponse.warning ?? null
+      }
+
+      const response = await postOrdersOrderDetailsUpdate({
+        mondayItemId,
+        orderName: nextOrderName,
+        poNumber: String(poNumberDraft ?? '').trim(),
+        notes: String(notesDraft ?? '').trim(),
+        description: String(descriptionDraft ?? '').trim(),
+        orderDate: String(orderDateDraft ?? '').trim(),
+        dueDate: String(leadTimeDateDraft ?? '').trim(),
+        podDate: String(podDateDraft ?? '').trim(),
+      })
+
+      setOrderNameDraft(String(response.order.orderName ?? '').trim())
+      setPoNumberDraft(String(response.order.poNumber ?? '').trim())
+      setNotesDraft(String(response.order.notes ?? '').trim())
+      setDescriptionDraft(String(response.order.description ?? '').trim())
+      setOrderDateDraft(normalizeDateInputValue(response.order.orderDate ?? ''))
+      setLeadTimeDateDraft(normalizeDateInputValue(response.order.dueDate ?? ''))
+      setPodDateDraft(normalizeDateInputValue(response.order.podDate ?? ''))
+      setManagerEditSuccess('All information updated successfully.')
+      setManagerEditWarning(response.warning ?? orderNumberWarning ?? null)
+      setIsManagerEditMode(false)
+
+      await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.ordersOverview })
+      await queryClient.invalidateQueries({
+        queryKey: ordersJobDetailsQueryKey({
+          mondayItemId: order?.mondayItemId ?? '',
+          jobNumber: order?.jobNumber ?? '',
+          orderName: order?.orderName ?? '',
+        }),
+      })
+    } catch (error) {
+      setManagerEditError(
+        error instanceof Error
+          ? error.message
+          : 'Could not update order details.',
+      )
+    } finally {
+      setIsSavingManagerEdit(false)
+    }
+  }
+
+  const applyWarrantyOrderPayload = (nextOrder: {
+    warrantyIssueActive: boolean
+    warrantyIssueDescription: string | null
+    warrantyIssueReportedAt: string | null
+    warrantyIssueLeadTimeDate: string | null
+    warrantyIssueDoneAt: string | null
+    warrantyLastCompletedDescription: string | null
+    warrantyLastCompletedReportedAt: string | null
+    warrantyLastCompletedLeadTimeDate: string | null
+    warrantyLastCompletedDoneAt: string | null
+    warrantyLastCompletedDurationDays: number | null
+    warrantyLastCompletedLeadTimeVarianceDays: number | null
+  }) => {
+    const nextState: OrderWarrantyState = {
+      issueActive: nextOrder.warrantyIssueActive === true,
+      issueDescription: String(nextOrder.warrantyIssueDescription ?? '').trim() || null,
+      issueReportedAt: String(nextOrder.warrantyIssueReportedAt ?? '').trim() || null,
+      issueLeadTimeDate: normalizeDateInputValue(nextOrder.warrantyIssueLeadTimeDate ?? '') || null,
+      issueDoneAt: String(nextOrder.warrantyIssueDoneAt ?? '').trim() || null,
+      lastCompletedDescription:
+        String(nextOrder.warrantyLastCompletedDescription ?? '').trim() || null,
+      lastCompletedReportedAt:
+        String(nextOrder.warrantyLastCompletedReportedAt ?? '').trim() || null,
+      lastCompletedLeadTimeDate:
+        normalizeDateInputValue(nextOrder.warrantyLastCompletedLeadTimeDate ?? '') || null,
+      lastCompletedDoneAt:
+        String(nextOrder.warrantyLastCompletedDoneAt ?? '').trim() || null,
+      lastCompletedDurationDays:
+        Number.isFinite(Number(nextOrder.warrantyLastCompletedDurationDays))
+          ? Number(nextOrder.warrantyLastCompletedDurationDays)
+          : null,
+      lastCompletedLeadTimeVarianceDays:
+        Number.isFinite(Number(nextOrder.warrantyLastCompletedLeadTimeVarianceDays))
+          ? Number(nextOrder.warrantyLastCompletedLeadTimeVarianceDays)
+          : null,
+    }
+
+    setWarrantyState(nextState)
+    setWarrantyIssueDescriptionDraft(nextState.issueActive ? (nextState.issueDescription ?? '') : '')
+    setWarrantyLeadTimeDateDraft(nextState.issueLeadTimeDate ?? '')
+  }
+
+  const handleCreateWarrantyIssue = async () => {
+    if (!order || isSavingWarrantyIssue || isSavingWarrantyLeadTime || isMarkingWarrantyDone) {
+      return
+    }
+
+    if (!order.isShipped) {
+      setWarrantyActionError('Warranty issues can only be opened after the order is shipped.')
+      return
+    }
+
+    const mondayItemId = String(order.mondayItemId ?? '').trim()
+    const descriptionValue = String(warrantyIssueDescriptionDraft ?? '').trim()
+
+    if (!mondayItemId) {
+      setWarrantyActionError('Monday item id is missing for this order.')
+      return
+    }
+
+    if (!descriptionValue) {
+      setWarrantyActionError('Issue description is required.')
+      return
+    }
+
+    setIsSavingWarrantyIssue(true)
+    setWarrantyActionError(null)
+    setWarrantyActionSuccess(null)
+
+    try {
+      const response = await postOrdersWarrantyIssueCreate({
+        mondayItemId,
+        description: descriptionValue,
+      })
+
+      applyWarrantyOrderPayload(response.order)
+      setWarrantyActionSuccess('Warranty issue added.')
+
+      await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.ordersOverview })
+    } catch (error) {
+      setWarrantyActionError(
+        error instanceof Error
+          ? error.message
+          : 'Could not add warranty issue.',
+      )
+    } finally {
+      setIsSavingWarrantyIssue(false)
+    }
+  }
+
+  const handleSaveWarrantyLeadTime = async () => {
+    if (!order || isSavingWarrantyIssue || isSavingWarrantyLeadTime || isMarkingWarrantyDone) {
+      return
+    }
+
+    const mondayItemId = String(order.mondayItemId ?? '').trim()
+
+    if (!mondayItemId) {
+      setWarrantyActionError('Monday item id is missing for this order.')
+      return
+    }
+
+    if (!warrantyState.issueActive) {
+      setWarrantyActionError('Open a warranty issue before setting lead time.')
+      return
+    }
+
+    setIsSavingWarrantyLeadTime(true)
+    setWarrantyActionError(null)
+    setWarrantyActionSuccess(null)
+
+    try {
+      const response = await postOrdersWarrantyLeadTimeUpdate({
+        mondayItemId,
+        leadTimeDate: String(warrantyLeadTimeDateDraft ?? '').trim() || null,
+      })
+
+      applyWarrantyOrderPayload(response.order)
+      setWarrantyActionSuccess('Warranty lead time updated.')
+
+      await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.ordersOverview })
+    } catch (error) {
+      setWarrantyActionError(
+        error instanceof Error
+          ? error.message
+          : 'Could not update warranty lead time.',
+      )
+    } finally {
+      setIsSavingWarrantyLeadTime(false)
+    }
+  }
+
+  const handleMarkWarrantyDone = async () => {
+    if (!order || isSavingWarrantyIssue || isSavingWarrantyLeadTime || isMarkingWarrantyDone) {
+      return
+    }
+
+    const mondayItemId = String(order.mondayItemId ?? '').trim()
+
+    if (!mondayItemId) {
+      setWarrantyActionError('Monday item id is missing for this order.')
+      return
+    }
+
+    if (!warrantyState.issueActive) {
+      setWarrantyActionError('No active warranty issue to close.')
+      return
+    }
+
+    const shouldContinue = window.confirm('Mark this warranty issue as done?')
 
     if (!shouldContinue) {
       return
     }
 
-    setOrderNumberEditError(null)
-    setOrderNumberEditSuccess(null)
-    setOrderNumberEditWarning(null)
-    setCanContactAdminForOrderNumber(false)
-    setIsOrderNumberEditing(true)
-  }
-
-  const handleCancelOrderNumberEdit = () => {
-    setOrderNumberDraft(String(order?.orderNumber ?? '').trim())
-    setOrderNumberEditError(null)
-    setOrderNumberEditWarning(null)
-    setCanContactAdminForOrderNumber(false)
-    setIsOrderNumberEditing(false)
-  }
-
-  const handleSaveOrderNumber = async () => {
-    if (!order) {
-      return
-    }
-
-    if (!isOrderNumberEditing) {
-      return
-    }
-
-    const mondayItemId = String(order.mondayItemId ?? '').trim()
-    const requestedOrderNumber = String(orderNumberDraft ?? '').trim()
-    const currentOrderNumber = String(order.orderNumber ?? '').trim()
-
-    if (!mondayItemId) {
-      setOrderNumberEditError('Monday item id is missing for this order.')
-      return
-    }
-
-    if (!requestedOrderNumber) {
-      setOrderNumberEditError('Order number is required.')
-      return
-    }
-
-    setIsSavingOrderNumber(true)
-    setOrderNumberEditError(null)
-    setOrderNumberEditSuccess(null)
-    setOrderNumberEditWarning(null)
-    setCanContactAdminForOrderNumber(false)
+    setIsMarkingWarrantyDone(true)
+    setWarrantyActionError(null)
+    setWarrantyActionSuccess(null)
 
     try {
-      const response = await postOrdersOrderNumberUpdate({
-        mondayItemId,
-        orderNumber: requestedOrderNumber,
-        currentOrderNumber,
-      })
+      const response = await postOrdersWarrantyMarkDone({ mondayItemId })
 
-      setOrderNumberDraft(response.order.orderNumber)
-      setOrderNumberEditSuccess(
-        `Order number updated: ${response.order.previousOrderNumber} -> ${response.order.orderNumber}`,
-      )
-      setOrderNumberEditWarning(response.warning ?? null)
-      setCanContactAdminForOrderNumber(false)
-      setIsOrderNumberEditing(false)
+      applyWarrantyOrderPayload(response.order)
+      setWarrantyActionSuccess('Warranty issue marked as done.')
 
-      void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.ordersOverview })
+      await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.ordersOverview })
     } catch (error) {
-      const message = error instanceof Error
-        ? error.message
-        : 'Could not update order number.'
-
-      setOrderNumberEditError(message)
-      setCanContactAdminForOrderNumber(isLinkedOrderNumberChangeMessage(message))
-    } finally {
-      setIsSavingOrderNumber(false)
-    }
-  }
-
-  const handleContactAdminForOrderNumber = async () => {
-    if (!order) {
-      return
-    }
-
-    const mondayItemId = String(order.mondayItemId ?? '').trim()
-    const requestedOrderNumber = String(orderNumberDraft ?? '').trim()
-    const currentOrderNumber = String(order.orderNumber ?? '').trim()
-
-    if (!mondayItemId) {
-      setOrderNumberEditError('Monday item id is missing for this order.')
-      return
-    }
-
-    if (!requestedOrderNumber) {
-      setOrderNumberEditError('Order number is required.')
-      return
-    }
-
-    setIsContactingAdminForOrderNumber(true)
-    setOrderNumberEditError(null)
-
-    try {
-      await postOrdersOrderNumberContactAdmin({
-        mondayItemId,
-        requestedOrderNumber,
-        currentOrderNumber,
-      })
-
-      setOrderNumberEditSuccess('Admin was notified about this order number change request.')
-      setCanContactAdminForOrderNumber(false)
-    } catch (error) {
-      setOrderNumberEditError(
+      setWarrantyActionError(
         error instanceof Error
           ? error.message
-          : 'Could not notify admin right now.',
+          : 'Could not mark warranty issue as done.',
       )
     } finally {
-      setIsContactingAdminForOrderNumber(false)
+      setIsMarkingWarrantyDone(false)
     }
   }
 
@@ -929,7 +1458,7 @@ export function JobDetailsDialog({
     documentType: OrdersShippingDocumentType,
     file: File,
   ) => {
-    if (!order || isUploadingShippingDocument) {
+    if (!order || isUploadingShippingDocument || isDeletingShippingDocument) {
       return
     }
 
@@ -964,9 +1493,11 @@ export function JobDetailsDialog({
       if (documentType === 'signed_bol') {
         setUploadedSignedBolUrl(response.order.signedBolUrl || null)
         setUploadedSignedBolName(response.order.signedBol || file.name)
+        setSignedBolDeletedLocally(false)
       } else {
         setUploadedInspectionSheetUrl(response.order.inspectionSheetUrl || null)
         setUploadedInspectionSheetName(response.order.inspectionSheet || file.name)
+        setInspectionSheetDeletedLocally(false)
       }
 
       setShippingActionSuccess(
@@ -1000,8 +1531,300 @@ export function JobDetailsDialog({
     }
   }
 
+  const handleOpenDocumentPreview = ({
+    title,
+    url,
+    fileName,
+    mimeType,
+  }: {
+    title: string
+    url: string | null | undefined
+    fileName?: string | null
+    mimeType?: string | null
+  }) => {
+    const normalizedUrl = String(url ?? '').trim()
+    const previewUrl = toInlinePreviewUrl(normalizedUrl)
+
+    if (!previewUrl) {
+      return
+    }
+
+    setDocumentPreviewTitle(title)
+    setDocumentPreviewUrl(previewUrl)
+    setDocumentPreviewMode(resolveDocumentPreviewMode({
+      fileName,
+      mimeType,
+      url: previewUrl,
+    }))
+  }
+
+  const handleCloseDocumentPreview = () => {
+    setDocumentPreviewUrl('')
+    setDocumentPreviewTitle('Document Preview')
+    setDocumentPreviewMode('unsupported')
+  }
+
+  const handleDeleteShippingDocument = async (documentType: OrdersShippingDocumentType) => {
+    if (!order || isUploadingShippingDocument || isDeletingShippingDocument || isShippingOrder) {
+      return
+    }
+
+    const mondayItemId = String(order.mondayItemId ?? '').trim()
+
+    if (!mondayItemId) {
+      setShippingActionError('Monday item id is missing for this order.')
+      return
+    }
+
+    const shouldContinue = window.confirm(
+      documentType === 'signed_bol'
+        ? 'Delete Signed BOL from this order?'
+        : 'Delete Inspection Sheet from this order?',
+    )
+
+    if (!shouldContinue) {
+      return
+    }
+
+    setShippingDeleteInFlightType(documentType)
+    setShippingActionError(null)
+    setShippingActionSuccess(null)
+
+    try {
+      const response = await postOrdersShippingDocumentDelete({
+        orderKey: order.id,
+        mondayItemId: order.mondayItemId,
+        orderNumber: order.orderNumber,
+        documentType,
+      })
+
+      const nextSignedBolUrl = response.order.signedBolUrl || null
+      const nextInspectionSheetUrl = response.order.inspectionSheetUrl || null
+
+      setUploadedSignedBolUrl(nextSignedBolUrl)
+      setUploadedSignedBolName(response.order.signedBol || null)
+      setSignedBolDeletedLocally(!nextSignedBolUrl)
+
+      setUploadedInspectionSheetUrl(nextInspectionSheetUrl)
+      setUploadedInspectionSheetName(response.order.inspectionSheet || null)
+      setInspectionSheetDeletedLocally(!nextInspectionSheetUrl)
+
+      setShippingActionSuccess(`${response.document.label} deleted.`)
+
+      await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.ordersOverview })
+      await queryClient.invalidateQueries({
+        queryKey: ordersJobDetailsQueryKey({
+          mondayItemId: order?.mondayItemId ?? '',
+          jobNumber: order?.jobNumber ?? '',
+          orderName: order?.orderName ?? '',
+        }),
+      })
+    } catch (error) {
+      setShippingActionError(
+        error instanceof Error
+          ? error.message
+          : 'Could not delete shipping document.',
+      )
+    } finally {
+      setShippingDeleteInFlightType('')
+    }
+  }
+
+  const handleUploadInfoDocument = async (
+    documentType: 'shop_drawing' | 'cut_list',
+    file: File,
+  ) => {
+    if (!order || !canManageOrderMetadata || isUpdatingInfoDocument || isSavingManagerEdit) {
+      return
+    }
+
+    const mondayItemId = String(order.mondayItemId ?? '').trim()
+
+    if (!mondayItemId) {
+      setInfoDocumentActionError('Monday item id is missing for this order.')
+      return
+    }
+
+    const mimeType = resolveShippingUploadMimeType(file)
+
+    if (!mimeType) {
+      setInfoDocumentActionError('Only PDF/JPG/PNG/WEBP/HEIC/HEIF files are supported.')
+      return
+    }
+
+    if (file.size > 10 * 1024 * 1024) {
+      setInfoDocumentActionError('File exceeds 10MB limit.')
+      return
+    }
+
+    setInfoDocumentActionError(null)
+    setInfoDocumentActionSuccess(null)
+
+    if (documentType === 'shop_drawing') {
+      setIsUploadingShopDrawing(true)
+    } else {
+      setIsUploadingCutList(true)
+    }
+
+    try {
+      const fileBase64 = await readFileAsDataUrl(file)
+
+      if (documentType === 'shop_drawing') {
+        const response = await postOrdersShopDrawingUpload({
+          mondayItemId,
+          fileName: file.name,
+          mimeType,
+          fileBase64,
+        })
+        const nextUrl = String(response.order.shopDrawingCachedUrl ?? '').trim()
+          || String(response.order.shopDrawingUrl ?? '').trim()
+          || null
+
+        setUploadedShopDrawingUrl(nextUrl)
+        setUploadedShopDrawingName(response.document?.fileName || file.name)
+        setShopDrawingDeletedLocally(!nextUrl)
+        setInfoDocumentActionSuccess('Shop drawing updated.')
+
+        if (response.warning) {
+          setInfoDocumentActionError(response.warning)
+        }
+      } else {
+        const response = await postOrdersCutListUpload({
+          mondayItemId,
+          fileName: file.name,
+          mimeType,
+          fileBase64,
+        })
+        const nextUrl = String(response.order.cutListCachedUrl ?? '').trim()
+          || String(response.order.cutListUrl ?? '').trim()
+          || null
+
+        setUploadedCutListUrl(nextUrl)
+        setUploadedCutListName(response.document?.fileName || file.name)
+        setCutListDeletedLocally(!nextUrl)
+        setInfoDocumentActionSuccess('Cut list updated.')
+
+        if (response.warning) {
+          setInfoDocumentActionError(response.warning)
+        }
+      }
+
+      await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.ordersOverview })
+      await queryClient.invalidateQueries({
+        queryKey: ordersJobDetailsQueryKey({
+          mondayItemId: order?.mondayItemId ?? '',
+          jobNumber: order?.jobNumber ?? '',
+          orderName: order?.orderName ?? '',
+        }),
+      })
+    } catch (error) {
+      setInfoDocumentActionError(
+        error instanceof Error
+          ? error.message
+          : `Could not update ${documentType === 'shop_drawing' ? 'shop drawing' : 'cut list'}.`,
+      )
+    } finally {
+      if (documentType === 'shop_drawing') {
+        setIsUploadingShopDrawing(false)
+        if (shopDrawingUploadInputRef.current) {
+          shopDrawingUploadInputRef.current.value = ''
+        }
+      } else {
+        setIsUploadingCutList(false)
+        if (cutListUploadInputRef.current) {
+          cutListUploadInputRef.current.value = ''
+        }
+      }
+    }
+  }
+
+  const handleDeleteInfoDocument = async (documentType: 'shop_drawing' | 'cut_list') => {
+    if (!order || !canManageOrderMetadata || isUpdatingInfoDocument || isSavingManagerEdit) {
+      return
+    }
+
+    const mondayItemId = String(order.mondayItemId ?? '').trim()
+
+    if (!mondayItemId) {
+      setInfoDocumentActionError('Monday item id is missing for this order.')
+      return
+    }
+
+    const shouldContinue = window.confirm(
+      documentType === 'shop_drawing'
+        ? 'Delete this shop drawing from website and Monday?'
+        : 'Delete this cut list from website and Monday?',
+    )
+
+    if (!shouldContinue) {
+      return
+    }
+
+    setInfoDocumentActionError(null)
+    setInfoDocumentActionSuccess(null)
+
+    if (documentType === 'shop_drawing') {
+      setIsDeletingShopDrawing(true)
+    } else {
+      setIsDeletingCutList(true)
+    }
+
+    try {
+      if (documentType === 'shop_drawing') {
+        const response = await postOrdersShopDrawingDelete({ mondayItemId })
+        const nextUrl = String(response.order.shopDrawingCachedUrl ?? '').trim()
+          || String(response.order.shopDrawingUrl ?? '').trim()
+          || null
+
+        setUploadedShopDrawingUrl(nextUrl)
+        setUploadedShopDrawingName(null)
+        setShopDrawingDeletedLocally(!nextUrl)
+        setInfoDocumentActionSuccess('Shop drawing deleted.')
+
+        if (response.warning) {
+          setInfoDocumentActionError(response.warning)
+        }
+      } else {
+        const response = await postOrdersCutListDelete({ mondayItemId })
+        const nextUrl = String(response.order.cutListCachedUrl ?? '').trim()
+          || String(response.order.cutListUrl ?? '').trim()
+          || null
+
+        setUploadedCutListUrl(nextUrl)
+        setUploadedCutListName(null)
+        setCutListDeletedLocally(!nextUrl)
+        setInfoDocumentActionSuccess('Cut list deleted.')
+
+        if (response.warning) {
+          setInfoDocumentActionError(response.warning)
+        }
+      }
+
+      await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.ordersOverview })
+      await queryClient.invalidateQueries({
+        queryKey: ordersJobDetailsQueryKey({
+          mondayItemId: order?.mondayItemId ?? '',
+          jobNumber: order?.jobNumber ?? '',
+          orderName: order?.orderName ?? '',
+        }),
+      })
+    } catch (error) {
+      setInfoDocumentActionError(
+        error instanceof Error
+          ? error.message
+          : `Could not delete ${documentType === 'shop_drawing' ? 'shop drawing' : 'cut list'}.`,
+      )
+    } finally {
+      if (documentType === 'shop_drawing') {
+        setIsDeletingShopDrawing(false)
+      } else {
+        setIsDeletingCutList(false)
+      }
+    }
+  }
+
   const handleShipOrder = async () => {
-    if (!order || isShippingOrder || isUploadingShippingDocument) {
+    if (!order || isShippingOrder || isUploadingShippingDocument || isDeletingShippingDocument) {
       return
     }
 
@@ -1243,6 +2066,7 @@ export function JobDetailsDialog({
               <Tab value="info" label="Info" />
               <Tab value="hours" label="Hours" />
               <Tab value="shipping" label="Shipping" />
+              <Tab value="warranty" label="Warranty" />
               <Tab value="chat" label="Chat" />
             </Tabs>
 
@@ -1586,9 +2410,33 @@ export function JobDetailsDialog({
                 </Paper>
 
                 <Paper variant="outlined" sx={{ p: { xs: 1.3, md: 1.5 } }}>
-                  <Stack spacing={0.85}>
-                    <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-                      Shipping Documents
+                  <Stack spacing={1.1}>
+                    <Stack
+                      direction={{ xs: 'column', sm: 'row' }}
+                      spacing={1}
+                      alignItems={{ xs: 'flex-start', sm: 'center' }}
+                      justifyContent="space-between"
+                    >
+                      <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+                        Shipping Documents
+                      </Typography>
+                      <Button
+                        size="small"
+                        variant={isShippingDocumentsEditMode ? 'contained' : 'outlined'}
+                        startIcon={<EditRoundedIcon fontSize="small" />}
+                        onClick={() => {
+                          setIsShippingDocumentsEditMode((current) => !current)
+                        }}
+                        disabled={!canManageOrderMetadata || isUploadingShippingDocument || isDeletingShippingDocument || isShippingOrder}
+                      >
+                        {isShippingDocumentsEditMode ? 'Done Editing' : 'Edit'}
+                      </Button>
+                    </Stack>
+
+                    <Typography variant="body2" color="text.secondary">
+                      {isShippingDocumentsEditMode
+                        ? 'Edit mode is on. Signed BOL and Inspection Sheet are one file each; you can replace or delete them.'
+                        : 'Preview files below. Signed BOL and Inspection Sheet are one file each.'}
                     </Typography>
 
                     <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
@@ -1606,93 +2454,205 @@ export function JobDetailsDialog({
                       />
                     </Stack>
 
-                    <Typography variant="caption" color="text.secondary">
-                      Upload Signed BOL and Inspection Sheet to enable shipping.
-                    </Typography>
-
                     <Box
                       sx={{
-                        display: 'flex',
-                        gap: 0.75,
-                        flexWrap: 'wrap',
+                        display: 'grid',
+                        gap: 1,
+                        gridTemplateColumns: { xs: '1fr', md: 'repeat(3, minmax(0, 1fr))' },
                       }}
                     >
-                      <Button
-                        size="medium"
-                        variant="contained"
-                        disabled={!canOpenBolDocument || !order}
-                        onClick={() => {
-                          if (!order) {
-                            return
-                          }
+                      <Paper variant="outlined" sx={{ p: 1.1 }}>
+                        <Stack spacing={0.9}>
+                          <Stack direction="row" justifyContent="space-between" alignItems="center">
+                            <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                              BOL
+                            </Typography>
+                            <Chip
+                              size="small"
+                              variant="outlined"
+                              color={canOpenBolDocument ? 'success' : 'default'}
+                              label={canOpenBolDocument ? 'Available' : 'Missing'}
+                            />
+                          </Stack>
+                          <Typography variant="body2" color="text.secondary" sx={{ minHeight: 36 }}>
+                            {hasBolText
+                              ? 'Bill of lading is available for preview.'
+                              : 'No bill of lading is available yet.'}
+                          </Typography>
+                          {renderInlineDocumentMiniPreview({
+                            url: bolUrl,
+                            fileName: String(order?.bol ?? '').trim() || null,
+                            emptyLabel: 'No BOL preview yet',
+                          })}
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            startIcon={<VisibilityRoundedIcon fontSize="small" />}
+                            disabled={!canOpenBolDocument || !order || isShippingOrder}
+                            onClick={() => {
+                              if (!order) {
+                                return
+                              }
 
-                          if (bolUrl) {
-                            window.open(bolUrl, '_blank', 'noopener,noreferrer')
-                            return
-                          }
+                              if (bolUrl) {
+                                handleOpenDocumentPreview({
+                                  title: 'BOL Preview',
+                                  url: bolUrl,
+                                  fileName: String(order.bol ?? '').trim() || null,
+                                })
+                                return
+                              }
 
-                          onOpenBolDocument(order)
-                        }}
-                      >
-                        BOL
-                      </Button>
+                              onOpenBolDocument(order)
+                            }}
+                          >
+                            Preview
+                          </Button>
+                        </Stack>
+                      </Paper>
 
-                      <Button
-                        size="medium"
-                        variant="contained"
-                        color={hasSignedBolForShipping ? 'success' : 'error'}
-                        disabled={!order || isUploadingShippingDocument || isShippingOrder}
-                        onClick={() => {
-                          if (signedBolUrl) {
-                            window.open(signedBolUrl, '_blank', 'noopener,noreferrer')
-                            return
-                          }
+                      <Paper variant="outlined" sx={{ p: 1.1 }}>
+                        <Stack spacing={0.9}>
+                          <Stack direction="row" justifyContent="space-between" alignItems="center">
+                            <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                              Signed BOL
+                            </Typography>
+                            <Chip
+                              size="small"
+                              variant="outlined"
+                              color={hasSignedBolForShipping ? 'success' : 'error'}
+                              label={hasSignedBolForShipping ? 'Ready' : 'Missing'}
+                            />
+                          </Stack>
+                          <Typography variant="body2" color="text.secondary" sx={{ minHeight: 36, overflowWrap: 'anywhere' }}>
+                            {signedBolDisplayName || 'No file attached yet.'}
+                          </Typography>
+                          {renderInlineDocumentMiniPreview({
+                            url: signedBolUrl,
+                            fileName: signedBolDisplayName,
+                            emptyLabel: 'Signed BOL not uploaded',
+                          })}
+                          <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              startIcon={<VisibilityRoundedIcon fontSize="small" />}
+                              disabled={!signedBolUrl || isUploadingShippingDocument || isDeletingShippingDocument}
+                              onClick={() => {
+                                handleOpenDocumentPreview({
+                                  title: 'Signed BOL Preview',
+                                  url: signedBolUrl,
+                                  fileName: signedBolDisplayName,
+                                })
+                              }}
+                            >
+                              Preview
+                            </Button>
 
-                          signedBolUploadInputRef.current?.click()
-                        }}
-                      >
-                        {isUploadingSignedBol ? 'Uploading Signed BOL...' : 'Signed BOL'}
-                      </Button>
+                            {isShippingDocumentsEditMode ? (
+                              <>
+                                <Button
+                                  size="small"
+                                  variant="outlined"
+                                  startIcon={<UploadFileRoundedIcon fontSize="small" />}
+                                  disabled={!canManageOrderMetadata || isUploadingShippingDocument || isDeletingShippingDocument || isShippingOrder}
+                                  onClick={() => {
+                                    signedBolUploadInputRef.current?.click()
+                                  }}
+                                >
+                                  {isUploadingSignedBol ? 'Uploading...' : hasSignedBolForShipping ? 'Replace' : 'Upload'}
+                                </Button>
+                                <Button
+                                  size="small"
+                                  color="error"
+                                  variant="outlined"
+                                  startIcon={<DeleteOutlineRoundedIcon fontSize="small" />}
+                                  disabled={!canManageOrderMetadata || !hasSignedBolForShipping || isUploadingShippingDocument || isDeletingShippingDocument || isShippingOrder}
+                                  onClick={() => {
+                                    void handleDeleteShippingDocument('signed_bol')
+                                  }}
+                                >
+                                  {isDeletingSignedBol ? 'Deleting...' : 'Delete'}
+                                </Button>
+                              </>
+                            ) : null}
+                          </Stack>
+                        </Stack>
+                      </Paper>
 
-                      <Button
-                        size="medium"
-                        variant="contained"
-                        color={hasInspectionSheetForShipping ? 'success' : 'error'}
-                        disabled={!order || isUploadingShippingDocument || isShippingOrder}
-                        onClick={() => {
-                          if (inspectionSheetUrl) {
-                            window.open(inspectionSheetUrl, '_blank', 'noopener,noreferrer')
-                            return
-                          }
+                      <Paper variant="outlined" sx={{ p: 1.1 }}>
+                        <Stack spacing={0.9}>
+                          <Stack direction="row" justifyContent="space-between" alignItems="center">
+                            <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                              Inspection Sheet
+                            </Typography>
+                            <Chip
+                              size="small"
+                              variant="outlined"
+                              color={hasInspectionSheetForShipping ? 'success' : 'error'}
+                              label={hasInspectionSheetForShipping ? 'Ready' : 'Missing'}
+                            />
+                          </Stack>
+                          <Typography variant="body2" color="text.secondary" sx={{ minHeight: 36, overflowWrap: 'anywhere' }}>
+                            {inspectionSheetDisplayName || 'No file attached yet.'}
+                          </Typography>
+                          {renderInlineDocumentMiniPreview({
+                            url: inspectionSheetUrl,
+                            fileName: inspectionSheetDisplayName,
+                            emptyLabel: 'Inspection sheet not uploaded',
+                          })}
+                          <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              startIcon={<VisibilityRoundedIcon fontSize="small" />}
+                              disabled={!inspectionSheetUrl || isUploadingShippingDocument || isDeletingShippingDocument}
+                              onClick={() => {
+                                handleOpenDocumentPreview({
+                                  title: 'Inspection Sheet Preview',
+                                  url: inspectionSheetUrl,
+                                  fileName: inspectionSheetDisplayName,
+                                })
+                              }}
+                            >
+                              Preview
+                            </Button>
 
-                          inspectionSheetUploadInputRef.current?.click()
-                        }}
-                      >
-                        {isUploadingInspectionSheet ? 'Uploading Inspection Sheet...' : 'Inspection Sheet'}
-                      </Button>
-
-                      <Button
-                        size="medium"
-                        variant="contained"
-                        color={canShipFromWebsiteFlow ? 'success' : 'error'}
-                        disabled={Boolean(order?.isShipped) || isShippingOrder || isUploadingShippingDocument}
-                        onClick={() => {
-                          void handleShipOrder()
-                        }}
-                      >
-                        {order?.isShipped ? 'Shipped' : isShippingOrder ? 'Shipping...' : 'Ship'}
-                      </Button>
+                            {isShippingDocumentsEditMode ? (
+                              <>
+                                <Button
+                                  size="small"
+                                  variant="outlined"
+                                  startIcon={<UploadFileRoundedIcon fontSize="small" />}
+                                  disabled={!canManageOrderMetadata || isUploadingShippingDocument || isDeletingShippingDocument || isShippingOrder}
+                                  onClick={() => {
+                                    inspectionSheetUploadInputRef.current?.click()
+                                  }}
+                                >
+                                  {isUploadingInspectionSheet ? 'Uploading...' : hasInspectionSheetForShipping ? 'Replace' : 'Upload'}
+                                </Button>
+                                <Button
+                                  size="small"
+                                  color="error"
+                                  variant="outlined"
+                                  startIcon={<DeleteOutlineRoundedIcon fontSize="small" />}
+                                  disabled={!canManageOrderMetadata || !hasInspectionSheetForShipping || isUploadingShippingDocument || isDeletingShippingDocument || isShippingOrder}
+                                  onClick={() => {
+                                    void handleDeleteShippingDocument('inspection_sheet')
+                                  }}
+                                >
+                                  {isDeletingInspectionSheet ? 'Deleting...' : 'Delete'}
+                                </Button>
+                              </>
+                            ) : null}
+                          </Stack>
+                        </Stack>
+                      </Paper>
                     </Box>
 
-                    {signedBolDisplayName ? (
+                    {!canManageOrderMetadata ? (
                       <Typography variant="caption" color="text.secondary">
-                        Signed BOL file: {signedBolDisplayName}
-                      </Typography>
-                    ) : null}
-
-                    {inspectionSheetDisplayName ? (
-                      <Typography variant="caption" color="text.secondary">
-                        Inspection Sheet file: {inspectionSheetDisplayName}
+                        Only managers and admins can edit attachments.
                       </Typography>
                     ) : null}
 
@@ -1704,8 +2664,173 @@ export function JobDetailsDialog({
 
                     {order?.isShipped ? (
                       <Typography variant="caption" color="text.secondary">
-                        Order is already shipped. Document uploads are still available.
+                        Order is already shipped. Document edits are still available.
                       </Typography>
+                    ) : null}
+
+                    <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.75}>
+                      <Button
+                        size="medium"
+                        variant="contained"
+                        color={canShipFromWebsiteFlow ? 'success' : 'error'}
+                        disabled={Boolean(order?.isShipped) || isShippingOrder || isUploadingShippingDocument || isDeletingShippingDocument}
+                        onClick={() => {
+                          void handleShipOrder()
+                        }}
+                      >
+                        {order?.isShipped ? 'Shipped' : isShippingOrder ? 'Shipping...' : 'Ship'}
+                      </Button>
+                    </Stack>
+                  </Stack>
+                </Paper>
+              </Stack>
+            ) : null}
+
+            {detailsTab === 'warranty' ? (
+              <Stack spacing={1.25}>
+                <Paper variant="outlined" sx={{ p: { xs: 1.3, md: 1.5 } }}>
+                  <Stack spacing={1}>
+                    <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+                      Warranty
+                    </Typography>
+
+                    {warrantyActionError ? (
+                      <Alert severity="error">{warrantyActionError}</Alert>
+                    ) : null}
+
+                    {warrantyActionSuccess ? (
+                      <Alert severity="success">{warrantyActionSuccess}</Alert>
+                    ) : null}
+
+                    {!canManageWarrantyIssue ? (
+                      <Typography variant="body2" color="text.secondary">
+                        Warranty issues can be added after the order is shipped.
+                      </Typography>
+                    ) : null}
+
+                    {warrantyState.issueActive ? (
+                      <>
+                        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
+                          <Chip
+                            size="small"
+                            color="warning"
+                            variant="outlined"
+                            label="In progress"
+                          />
+                          <Chip
+                            size="small"
+                            variant="outlined"
+                            label={`Reported: ${warrantyState.issueReportedAt ? formatDate(warrantyState.issueReportedAt) : '—'}`}
+                          />
+                        </Stack>
+
+                        <TextField
+                          size="small"
+                          label="Issue description"
+                          value={warrantyState.issueDescription ?? ''}
+                          fullWidth
+                          multiline
+                          minRows={3}
+                          disabled
+                        />
+
+                        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
+                          <TextField
+                            size="small"
+                            label="Lead time"
+                            type="date"
+                            InputLabelProps={{ shrink: true }}
+                            value={warrantyLeadTimeDateDraft}
+                            onChange={(event) => setWarrantyLeadTimeDateDraft(event.target.value)}
+                            disabled={!canUpdateWarrantyLeadTime || isWarrantyActionInFlight}
+                            fullWidth
+                          />
+
+                          <Button
+                            variant="outlined"
+                            onClick={() => {
+                              void handleSaveWarrantyLeadTime()
+                            }}
+                            disabled={!canUpdateWarrantyLeadTime || isWarrantyActionInFlight}
+                            sx={{ minWidth: 150 }}
+                          >
+                            {isSavingWarrantyLeadTime ? 'Saving...' : 'Save Lead Time'}
+                          </Button>
+
+                          <Button
+                            variant="contained"
+                            color="success"
+                            onClick={() => {
+                              void handleMarkWarrantyDone()
+                            }}
+                            disabled={!canUpdateWarrantyLeadTime || isWarrantyActionInFlight}
+                            sx={{ minWidth: 130 }}
+                          >
+                            {isMarkingWarrantyDone ? 'Saving...' : 'Mark Done'}
+                          </Button>
+                        </Stack>
+                      </>
+                    ) : (
+                      <>
+                        <Typography variant="body2" color="text.secondary">
+                          Add a warranty issue to move this order into the Warranty tab.
+                        </Typography>
+
+                        <TextField
+                          size="small"
+                          label="Issue description"
+                          placeholder="What went wrong?"
+                          value={warrantyIssueDescriptionDraft}
+                          onChange={(event) => setWarrantyIssueDescriptionDraft(event.target.value)}
+                          disabled={!canCreateWarrantyIssue || isWarrantyActionInFlight}
+                          fullWidth
+                          multiline
+                          minRows={3}
+                        />
+
+                        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
+                          <Button
+                            variant="contained"
+                            onClick={() => {
+                              void handleCreateWarrantyIssue()
+                            }}
+                            disabled={!canCreateWarrantyIssue || isWarrantyActionInFlight}
+                            sx={{ minWidth: 130 }}
+                          >
+                            {isSavingWarrantyIssue ? 'Saving...' : 'Add Issue'}
+                          </Button>
+                        </Stack>
+                      </>
+                    )}
+
+                    {warrantyState.lastCompletedDoneAt ? (
+                      <Paper variant="outlined" sx={{ p: 1 }}>
+                        <Stack spacing={0.5}>
+                          <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                            Last Completed Warranty
+                          </Typography>
+                          <Typography variant="body2">
+                            Description: {warrantyState.lastCompletedDescription || '—'}
+                          </Typography>
+                          <Typography variant="body2">
+                            Reported: {warrantyState.lastCompletedReportedAt ? formatDate(warrantyState.lastCompletedReportedAt) : '—'}
+                          </Typography>
+                          <Typography variant="body2">
+                            Lead time: {warrantyState.lastCompletedLeadTimeDate ? formatDate(warrantyState.lastCompletedLeadTimeDate) : '—'}
+                          </Typography>
+                          <Typography variant="body2">
+                            Done: {formatDate(warrantyState.lastCompletedDoneAt)}
+                          </Typography>
+                          <Typography variant="body2">
+                            Duration: {Number.isFinite(Number(warrantyState.lastCompletedDurationDays))
+                              ? `${warrantyState.lastCompletedDurationDays} day${Number(warrantyState.lastCompletedDurationDays) === 1 ? '' : 's'}`
+                              : '—'}
+                          </Typography>
+                          <Typography variant="body2">
+                            Lead time result: {formatWarrantyVarianceLabel(warrantyState.lastCompletedLeadTimeVarianceDays)}
+                          </Typography>
+                        </Stack>
+                      </Paper>
                     ) : null}
                   </Stack>
                 </Paper>
@@ -1941,119 +3066,214 @@ export function JobDetailsDialog({
               <Stack spacing={1.25}>
                 <Paper variant="outlined" sx={{ p: { xs: 1.3, md: 1.5 } }}>
                   <Stack spacing={1}>
-                    <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-                      Order Number
-                    </Typography>
+                    <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
+                      <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+                        All Information
+                      </Typography>
 
-                    {orderNumberEditError ? (
-                      <Alert severity="error">{orderNumberEditError}</Alert>
-                    ) : null}
-
-                    {orderNumberEditSuccess ? (
-                      <Alert severity="success">{orderNumberEditSuccess}</Alert>
-                    ) : null}
-
-                    {orderNumberEditWarning ? (
-                      <Alert severity="warning">{orderNumberEditWarning}</Alert>
-                    ) : null}
-
-                    <Typography variant="body2" color="text.secondary">
-                      Click Edit to unlock this field. You will be asked to confirm first.
-                    </Typography>
-
-                    <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
-                      <TextField
-                        size="small"
-                        label="Order number"
-                        value={orderNumberDraft}
-                        onChange={(event) => setOrderNumberDraft(event.target.value)}
-                        disabled={
-                          !canEditOrderNumber
-                          || !isOrderNumberEditing
-                          || isSavingOrderNumber
-                          || isContactingAdminForOrderNumber
-                        }
-                        fullWidth
-                      />
-
-                      {isOrderNumberEditing ? (
-                        <>
-                          <Button
-                            variant="outlined"
-                            onClick={handleCancelOrderNumberEdit}
-                            disabled={isSavingOrderNumber || isContactingAdminForOrderNumber}
-                            sx={{ minWidth: 120 }}
+                      {canManageOrderMetadata ? (
+                        isManagerEditMode ? (
+                          <Stack direction="row" spacing={0.75}>
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              onClick={handleCancelManagerEdit}
+                              disabled={isSavingManagerEdit}
+                              sx={{ minWidth: 84 }}
+                            >
+                              Cancel
+                            </Button>
+                            <Button
+                              size="small"
+                              variant="contained"
+                              onClick={() => {
+                                void handleSaveManagerEdit()
+                              }}
+                              disabled={isSavingManagerEdit || !canManageOrderMetadata}
+                              startIcon={isSavingManagerEdit ? <CircularProgress size={14} /> : null}
+                              sx={{ minWidth: 84 }}
+                            >
+                              Save
+                            </Button>
+                          </Stack>
+                        ) : (
+                          <IconButton
+                            size="small"
+                            onClick={handleStartManagerEdit}
+                            disabled={!canManageOrderMetadata || !hasMondayRecord || isSavingManagerEdit}
+                            sx={{ border: '1px solid', borderColor: 'divider' }}
                           >
-                            Cancel
-                          </Button>
-
-                          <Button
-                            variant="contained"
-                            onClick={() => {
-                              void handleSaveOrderNumber()
-                            }}
-                            disabled={!canEditOrderNumber || isSavingOrderNumber || isContactingAdminForOrderNumber}
-                            startIcon={isSavingOrderNumber ? <CircularProgress size={14} /> : null}
-                            sx={{ minWidth: 120 }}
-                          >
-                            Save
-                          </Button>
-                        </>
-                      ) : (
-                        <Button
-                          variant="outlined"
-                          onClick={handleStartOrderNumberEdit}
-                          disabled={!canEditOrderNumber || isSavingOrderNumber || isContactingAdminForOrderNumber}
-                          sx={{ minWidth: 120 }}
-                        >
-                          Edit
-                        </Button>
-                      )}
+                            <EditRoundedIcon fontSize="small" />
+                          </IconButton>
+                        )
+                      ) : null}
                     </Stack>
 
-                    {!canEditOrderNumber ? (
+                    {managerEditError ? (
+                      <Alert severity="error">{managerEditError}</Alert>
+                    ) : null}
+
+                    {managerEditSuccess ? (
+                      <Alert severity="success">{managerEditSuccess}</Alert>
+                    ) : null}
+
+                    {managerEditWarning ? (
+                      <Alert severity="warning">{managerEditWarning}</Alert>
+                    ) : null}
+
+                    {isManagerEditMode ? (
+                      <Stack spacing={1}>
+                        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
+                          <TextField
+                            size="small"
+                            label="Order number"
+                            value={orderNumberDraft}
+                            onChange={(event) => setOrderNumberDraft(event.target.value)}
+                            disabled={!canEditOrderNumber || isSavingManagerEdit}
+                            fullWidth
+                          />
+                          <TextField
+                            size="small"
+                            label="Order name"
+                            value={orderNameDraft}
+                            onChange={(event) => setOrderNameDraft(event.target.value)}
+                            disabled={!isManagerEditMode || isSavingManagerEdit || !canManageOrderMetadata}
+                            fullWidth
+                          />
+                        </Stack>
+
+                        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
+                          <TextField
+                            size="small"
+                            label="PO number"
+                            value={poNumberDraft}
+                            onChange={(event) => setPoNumberDraft(event.target.value)}
+                            disabled={!isManagerEditMode || isSavingManagerEdit || !canManageOrderMetadata}
+                            fullWidth
+                          />
+                          <TextField
+                            size="small"
+                            label="Order date"
+                            type="date"
+                            InputLabelProps={{ shrink: true }}
+                            value={orderDateDraft}
+                            onChange={(event) => setOrderDateDraft(event.target.value)}
+                            disabled={!isManagerEditMode || isSavingManagerEdit || !canManageOrderMetadata}
+                            fullWidth
+                          />
+                        </Stack>
+
+                        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
+                          <TextField
+                            size="small"
+                            label="Lead time"
+                            type="date"
+                            InputLabelProps={{ shrink: true }}
+                            value={leadTimeDateDraft}
+                            onChange={(event) => setLeadTimeDateDraft(event.target.value)}
+                            disabled={!isManagerEditMode || isSavingManagerEdit || !canManageOrderMetadata}
+                            fullWidth
+                          />
+                          <TextField
+                            size="small"
+                            label="POD date"
+                            type="date"
+                            InputLabelProps={{ shrink: true }}
+                            value={podDateDraft}
+                            onChange={(event) => setPodDateDraft(event.target.value)}
+                            disabled={!isManagerEditMode || isSavingManagerEdit || !canManageOrderMetadata}
+                            fullWidth
+                          />
+                        </Stack>
+
+                        <TextField
+                          size="small"
+                          label="Notes"
+                          value={notesDraft}
+                          onChange={(event) => setNotesDraft(event.target.value)}
+                          disabled={!isManagerEditMode || isSavingManagerEdit || !canManageOrderMetadata}
+                          fullWidth
+                          multiline
+                          minRows={3}
+                        />
+
+                        <TextField
+                          size="small"
+                          label="Description"
+                          value={descriptionDraft}
+                          onChange={(event) => setDescriptionDraft(event.target.value)}
+                          disabled={!isManagerEditMode || isSavingManagerEdit || !canManageOrderMetadata}
+                          fullWidth
+                          multiline
+                          minRows={3}
+                        />
+                      </Stack>
+                    ) : (
+                      <>
+                        <Typography variant="body2" color="text.secondary">
+                          Information is read-only until a manager uses the pencil icon.
+                        </Typography>
+
+                        <Box
+                          sx={{
+                            display: 'grid',
+                            gap: 0.8,
+                            gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 1fr))' },
+                          }}
+                        >
+                          <Paper variant="outlined" sx={{ p: 1, borderRadius: 1 }}>
+                            <Typography variant="caption" color="text.secondary">Order number</Typography>
+                            <Typography variant="body2" sx={{ fontWeight: 700 }}>{orderNumberDraft || '—'}</Typography>
+                          </Paper>
+                          <Paper variant="outlined" sx={{ p: 1, borderRadius: 1 }}>
+                            <Typography variant="caption" color="text.secondary">Order name</Typography>
+                            <Typography variant="body2" sx={{ fontWeight: 700 }}>{orderNameDraft || '—'}</Typography>
+                          </Paper>
+                          <Paper variant="outlined" sx={{ p: 1, borderRadius: 1 }}>
+                            <Typography variant="caption" color="text.secondary">PO number</Typography>
+                            <Typography variant="body2" sx={{ fontWeight: 700 }}>{poNumberDraft || '—'}</Typography>
+                          </Paper>
+                          <Paper variant="outlined" sx={{ p: 1, borderRadius: 1 }}>
+                            <Typography variant="caption" color="text.secondary">Order date</Typography>
+                            <Typography variant="body2" sx={{ fontWeight: 700 }}>{orderDateDraft || '—'}</Typography>
+                          </Paper>
+                          <Paper variant="outlined" sx={{ p: 1, borderRadius: 1 }}>
+                            <Typography variant="caption" color="text.secondary">Lead time</Typography>
+                            <Typography variant="body2" sx={{ fontWeight: 700 }}>{leadTimeDateDraft || '—'}</Typography>
+                          </Paper>
+                          <Paper variant="outlined" sx={{ p: 1, borderRadius: 1 }}>
+                            <Typography variant="caption" color="text.secondary">POD date</Typography>
+                            <Typography variant="body2" sx={{ fontWeight: 700 }}>{podDateDraft || '—'}</Typography>
+                          </Paper>
+                        </Box>
+
+                        <Paper variant="outlined" sx={{ p: 1, borderRadius: 1 }}>
+                          <Typography variant="caption" color="text.secondary">Description</Typography>
+                          <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+                            {description || '—'}
+                          </Typography>
+                        </Paper>
+
+                        <Paper variant="outlined" sx={{ p: 1, borderRadius: 1 }}>
+                          <Typography variant="caption" color="text.secondary">Notes</Typography>
+                          <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+                            {notes || '—'}
+                          </Typography>
+                        </Paper>
+                      </>
+                    )}
+
+                    {!canManageOrderMetadata ? (
+                      <Typography variant="caption" color="text.secondary">
+                        Only managers and admins can edit with the pencil icon.
+                      </Typography>
+                    ) : null}
+
+                    {canManageOrderMetadata && !hasMondayRecord ? (
                       <Typography variant="caption" color="text.secondary">
                         Only Monday-linked orders can be edited.
                       </Typography>
                     ) : null}
-
-                    {isOrderNumberEditing && canContactAdminForOrderNumber ? (
-                      <Box>
-                        <Button
-                          color="warning"
-                          variant="outlined"
-                          onClick={() => {
-                            void handleContactAdminForOrderNumber()
-                          }}
-                          disabled={isSavingOrderNumber || isContactingAdminForOrderNumber}
-                          startIcon={isContactingAdminForOrderNumber ? <CircularProgress size={14} /> : null}
-                        >
-                          Contact Admin
-                        </Button>
-                      </Box>
-                    ) : null}
-                  </Stack>
-                </Paper>
-
-                <Paper variant="outlined" sx={{ p: { xs: 1.3, md: 1.5 } }}>
-                  <Stack spacing={0.5}>
-                    <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-                      Description
-                    </Typography>
-                    <Typography variant="body1" sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
-                      {description || '—'}
-                    </Typography>
-                  </Stack>
-                </Paper>
-
-                <Paper variant="outlined" sx={{ p: { xs: 1.3, md: 1.5 } }}>
-                  <Stack spacing={0.5}>
-                    <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-                      Notes
-                    </Typography>
-                    <Typography variant="body1" sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
-                      {notes || '—'}
-                    </Typography>
                   </Stack>
                 </Paper>
 
@@ -2062,113 +3282,187 @@ export function JobDetailsDialog({
                     <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
                       Documents
                     </Typography>
-                    <Typography variant="body1" sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
-                      Open order documents in a popup preview.
-                    </Typography>
+
+                    {infoDocumentActionError ? (
+                      <Alert severity="error">{infoDocumentActionError}</Alert>
+                    ) : null}
+
+                    {infoDocumentActionSuccess ? (
+                      <Alert severity="success">{infoDocumentActionSuccess}</Alert>
+                    ) : null}
+
                     <Typography variant="body2" color="text.secondary">
-                      Invoice pulls from cache first, then QuickBooks on demand if missing.
+                      Click any box to open full preview.
                     </Typography>
+
                     <Box
                       sx={{
-                        display: 'flex',
-                        gap: 0.75,
-                        flexWrap: 'wrap',
+                        display: 'grid',
+                        gap: 0.8,
+                        gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 1fr))', md: 'repeat(3, minmax(0, 1fr))' },
                       }}
                     >
-                      <Button
-                        size="medium"
-                        variant="contained"
-                        onClick={() => {
-                          if (!order) {
-                            return
-                          }
+                      <Paper variant="outlined" sx={{ p: 1, borderRadius: 1 }}>
+                        <Stack spacing={0.7}>
+                          <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                            Shop Drawing
+                          </Typography>
+                          <Box
+                            sx={{ position: 'relative', cursor: canOpenShopDrawingDocument ? 'pointer' : 'default' }}
+                            onClick={() => {
+                              if (!order || !canOpenShopDrawingDocument) {
+                                return
+                              }
 
-                          onOpenShopDrawingDocument(order)
-                        }}
-                        disabled={!canOpenShopDrawingDocument}
-                      >
-                        Ship
-                      </Button>
-                      <Button
-                        size="medium"
-                        variant="contained"
-                        onClick={() => {
-                          if (!order) {
-                            return
-                          }
+                              onOpenShopDrawingDocument(order)
+                            }}
+                          >
+                            {renderInlineDocumentMiniPreview({
+                              url: shopDrawingUrl,
+                              fileName: shopDrawingDisplayName,
+                              emptyLabel: 'No preview available',
+                            })}
 
-                          onOpenCutListDocument(order)
-                        }}
-                        disabled={!canOpenCutListDocument}
-                      >
-                        Cut List
-                      </Button>
-                      <Button
-                        size="medium"
-                        variant="contained"
-                        onClick={() => {
-                          if (!order) {
-                            return
-                          }
+                            {canManageOrderMetadata ? (
+                              <Stack
+                                direction="row"
+                                spacing={0.4}
+                                sx={{
+                                  position: 'absolute',
+                                  top: 6,
+                                  right: 6,
+                                  p: 0.3,
+                                  borderRadius: 1,
+                                  bgcolor: alpha('#ffffff', 0.92),
+                                }}
+                                onClick={(event) => {
+                                  event.stopPropagation()
+                                }}
+                              >
+                                <IconButton
+                                  size="small"
+                                  onClick={() => {
+                                    shopDrawingUploadInputRef.current?.click()
+                                  }}
+                                  disabled={isUpdatingInfoDocument || isSavingManagerEdit}
+                                >
+                                  <UploadFileRoundedIcon fontSize="small" />
+                                </IconButton>
+                                <IconButton
+                                  size="small"
+                                  color="error"
+                                  onClick={() => {
+                                    void handleDeleteInfoDocument('shop_drawing')
+                                  }}
+                                  disabled={!shopDrawingUrl || isUpdatingInfoDocument || isSavingManagerEdit}
+                                >
+                                  <DeleteOutlineRoundedIcon fontSize="small" />
+                                </IconButton>
+                              </Stack>
+                            ) : null}
+                          </Box>
+                          <Typography variant="caption" color="text.secondary" sx={{ overflowWrap: 'anywhere' }}>
+                            {shopDrawingDisplayName || 'No file attached'}
+                          </Typography>
+                        </Stack>
+                      </Paper>
 
-                          onOpenInvoiceDocument(order)
-                        }}
-                        disabled={!canOpenInvoiceDocument}
-                      >
-                        Invoice
-                      </Button>
-                      <Button
-                        size="medium"
-                        variant="contained"
-                        disabled={!canOpenBolDocument || !order}
-                        onClick={() => {
-                          if (!order) {
-                            return
-                          }
+                      <Paper variant="outlined" sx={{ p: 1, borderRadius: 1 }}>
+                        <Stack spacing={0.7}>
+                          <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                            Cut List
+                          </Typography>
+                          <Box
+                            sx={{ position: 'relative', cursor: canOpenCutListDocument ? 'pointer' : 'default' }}
+                            onClick={() => {
+                              if (!order || !canOpenCutListDocument) {
+                                return
+                              }
 
-                          if (bolUrl) {
-                            window.open(bolUrl, '_blank', 'noopener,noreferrer')
-                            return
-                          }
+                              onOpenCutListDocument(order)
+                            }}
+                          >
+                            {renderInlineDocumentMiniPreview({
+                              url: cutListUrl,
+                              fileName: cutListDisplayName,
+                              emptyLabel: 'No preview available',
+                            })}
 
-                          onOpenBolDocument(order)
-                        }}
-                      >
-                        BOL
-                      </Button>
-                      <Button
-                        size="medium"
-                        variant="contained"
-                        color={hasSignedBolForShipping ? 'success' : 'error'}
-                        disabled={!order || isUploadingShippingDocument || isShippingOrder}
-                        onClick={() => {
-                          if (signedBolUrl) {
-                            window.open(signedBolUrl, '_blank', 'noopener,noreferrer')
-                            return
-                          }
+                            {canManageOrderMetadata ? (
+                              <Stack
+                                direction="row"
+                                spacing={0.4}
+                                sx={{
+                                  position: 'absolute',
+                                  top: 6,
+                                  right: 6,
+                                  p: 0.3,
+                                  borderRadius: 1,
+                                  bgcolor: alpha('#ffffff', 0.92),
+                                }}
+                                onClick={(event) => {
+                                  event.stopPropagation()
+                                }}
+                              >
+                                <IconButton
+                                  size="small"
+                                  onClick={() => {
+                                    cutListUploadInputRef.current?.click()
+                                  }}
+                                  disabled={isUpdatingInfoDocument || isSavingManagerEdit}
+                                >
+                                  <UploadFileRoundedIcon fontSize="small" />
+                                </IconButton>
+                                <IconButton
+                                  size="small"
+                                  color="error"
+                                  onClick={() => {
+                                    void handleDeleteInfoDocument('cut_list')
+                                  }}
+                                  disabled={!cutListUrl || isUpdatingInfoDocument || isSavingManagerEdit}
+                                >
+                                  <DeleteOutlineRoundedIcon fontSize="small" />
+                                </IconButton>
+                              </Stack>
+                            ) : null}
+                          </Box>
+                          <Typography variant="caption" color="text.secondary" sx={{ overflowWrap: 'anywhere' }}>
+                            {cutListDisplayName || 'No file attached'}
+                          </Typography>
+                        </Stack>
+                      </Paper>
 
-                          signedBolUploadInputRef.current?.click()
-                        }}
-                      >
-                        {isUploadingSignedBol ? 'Uploading Signed BOL...' : 'Signed BOL'}
-                      </Button>
-                      <Button
-                        size="medium"
-                        variant="contained"
-                        color={hasInspectionSheetForShipping ? 'success' : 'error'}
-                        disabled={!order || isUploadingShippingDocument || isShippingOrder}
-                        onClick={() => {
-                          if (inspectionSheetUrl) {
-                            window.open(inspectionSheetUrl, '_blank', 'noopener,noreferrer')
-                            return
-                          }
+                      <Paper variant="outlined" sx={{ p: 1, borderRadius: 1 }}>
+                        <Stack spacing={0.7}>
+                          <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                            Invoice
+                          </Typography>
+                          <Box
+                            sx={{ cursor: canOpenInvoiceDocument ? 'pointer' : 'default' }}
+                            onClick={() => {
+                              if (!order || !canOpenInvoiceDocument) {
+                                return
+                              }
 
-                          inspectionSheetUploadInputRef.current?.click()
-                        }}
-                      >
-                        {isUploadingInspectionSheet ? 'Uploading Inspection Sheet...' : 'Inspection Sheet'}
-                      </Button>
+                              onOpenInvoiceDocument(order)
+                            }}
+                          >
+                            {renderInlineDocumentMiniPreview({
+                              url: invoicePreviewUrl,
+                              fileName: invoiceNumber || 'invoice.pdf',
+                              emptyLabel: 'Invoice preview loads on click',
+                            })}
+                          </Box>
+                          <Typography variant="caption" color="text.secondary" sx={{ overflowWrap: 'anywhere' }}>
+                            {invoiceNumber ? `Invoice #${invoiceNumber} (read-only from QuickBooks)` : 'No invoice number yet'}
+                          </Typography>
+                        </Stack>
+                      </Paper>
                     </Box>
+
+                    <Typography variant="caption" color="text.secondary">
+                      Invoice is read-only. Shop Drawing and Cut List can be replaced or deleted by managers.
+                    </Typography>
                   </Stack>
                 </Paper>
 
@@ -2182,6 +3476,100 @@ export function JobDetailsDialog({
             ) : null}
           </Stack>
         )}
+
+        <Dialog
+          open={Boolean(documentPreviewUrl)}
+          onClose={handleCloseDocumentPreview}
+          maxWidth="lg"
+          fullWidth
+        >
+          <DialogTitle>{documentPreviewTitle}</DialogTitle>
+          <DialogContent dividers>
+            {documentPreviewMode === 'image' ? (
+              <Box
+                component="img"
+                src={documentPreviewUrl}
+                alt={documentPreviewTitle}
+                sx={{
+                  display: 'block',
+                  width: '100%',
+                  maxHeight: '70vh',
+                  objectFit: 'contain',
+                }}
+              />
+            ) : documentPreviewMode === 'pdf' ? (
+              <Box
+                component="iframe"
+                src={documentPreviewUrl}
+                title={documentPreviewTitle}
+                sx={{
+                  width: '100%',
+                  height: '70vh',
+                  border: 0,
+                }}
+              />
+            ) : (
+              <Stack spacing={1.2}>
+                <Typography variant="body2" color="text.secondary">
+                  Inline preview is not available for this file type.
+                </Typography>
+                <Button
+                  variant="contained"
+                  onClick={() => {
+                    window.open(documentPreviewUrl, '_blank', 'noopener,noreferrer')
+                  }}
+                  sx={{ alignSelf: 'flex-start' }}
+                >
+                  Open in New Tab
+                </Button>
+              </Stack>
+            )}
+          </DialogContent>
+          <DialogActions>
+            <Button
+              onClick={() => {
+                if (documentPreviewUrl) {
+                  window.open(documentPreviewUrl, '_blank', 'noopener,noreferrer')
+                }
+              }}
+            >
+              Open in New Tab
+            </Button>
+            <Button onClick={handleCloseDocumentPreview}>Close</Button>
+          </DialogActions>
+        </Dialog>
+
+        <input
+          ref={shopDrawingUploadInputRef}
+          type="file"
+          accept=".pdf,.jpg,.jpeg,.png,.webp,.heic,.heif,application/pdf,image/*"
+          style={{ display: 'none' }}
+          onChange={(event) => {
+            const file = event.target.files?.[0]
+
+            if (file) {
+              void handleUploadInfoDocument('shop_drawing', file)
+            }
+
+            event.currentTarget.value = ''
+          }}
+        />
+
+        <input
+          ref={cutListUploadInputRef}
+          type="file"
+          accept=".pdf,.jpg,.jpeg,.png,.webp,.heic,.heif,application/pdf,image/*"
+          style={{ display: 'none' }}
+          onChange={(event) => {
+            const file = event.target.files?.[0]
+
+            if (file) {
+              void handleUploadInfoDocument('cut_list', file)
+            }
+
+            event.currentTarget.value = ''
+          }}
+        />
 
         <input
           ref={signedBolUploadInputRef}

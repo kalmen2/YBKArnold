@@ -10,6 +10,7 @@ export type DashboardOrder = {
   movedToShippedAt?: string | null
   groupTitle: string
   statusLabel: string
+  rowStatus?: string | null
   stageLabel: string
   readyLabel: string
   leadTimeDays: number | null
@@ -21,6 +22,7 @@ export type DashboardOrder = {
   effectiveDueDate: string | null
   daysUntilDue: number | null
   isDone: boolean
+  isProductionStarted?: boolean
   isLate: boolean
   daysLate: number
   updatedAt: string | null

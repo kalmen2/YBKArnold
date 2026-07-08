@@ -1,6 +1,12 @@
 const OPENAI_URL = 'https://api.openai.com/v1/chat/completions'
+const OPENAI_RESPONSES_URL = 'https://api.openai.com/v1/responses'
 const FAST_MODEL = 'gpt-4o-mini'
 const BETTER_MODEL = 'gpt-4o'
+const WEB_SEARCH_MODEL = String(
+  process.env.AI_COUNCIL_WEB_SEARCH_MODEL
+    || process.env.OPENAI_WEB_SEARCH_MODEL
+    || 'gpt-5.5',
+).trim()
 
 function resolveModel(modelQuality) {
   const normalized = String(modelQuality ?? '').trim().toLowerCase()
@@ -84,6 +90,112 @@ export function createOpenAiService({ openAiApiKey }) {
 
     const data = await response.json()
     return String(data?.choices?.[0]?.message?.content ?? '').trim()
+  }
+
+  function extractResponseText(data) {
+    const outputText = String(data?.output_text ?? '').trim()
+
+    if (outputText) {
+      return outputText
+    }
+
+    const output = Array.isArray(data?.output) ? data.output : []
+    const textParts = []
+
+    for (const item of output) {
+      const content = Array.isArray(item?.content) ? item.content : []
+
+      for (const contentItem of content) {
+        const text = String(contentItem?.text ?? '').trim()
+
+        if (text) {
+          textParts.push(text)
+        }
+      }
+    }
+
+    return textParts.join('\n\n').trim()
+  }
+
+  async function callOpenAiWebSearch(
+    input,
+    {
+      maxOutputTokens = 2200,
+      model = WEB_SEARCH_MODEL,
+      searchContextSize = 'medium',
+      forceSearch = true,
+    } = {},
+  ) {
+    if (!openAiApiKey) {
+      throw {
+        status: 503,
+        message: 'AI web search is not configured yet. Add OPENAI_API_KEY to the server environment.',
+      }
+    }
+
+    const candidateModels = [...new Set([model, 'gpt-4.1'].filter(Boolean))]
+    let lastError = null
+
+    for (const candidateModel of candidateModels) {
+      const requestBody = {
+        model: candidateModel,
+        input: String(input ?? '').trim(),
+        max_output_tokens: maxOutputTokens,
+        tools: [
+          {
+            type: 'web_search',
+            search_context_size: searchContextSize,
+          },
+        ],
+        include: ['web_search_call.results'],
+      }
+
+      if (forceSearch) {
+        requestBody.tool_choice = 'required'
+      }
+
+      const response = await fetch(OPENAI_RESPONSES_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${openAiApiKey}`,
+        },
+        body: JSON.stringify(requestBody),
+      })
+
+      if (!response.ok) {
+        let errorMessage = `OpenAI web search API error (${response.status}).`
+
+        try {
+          const errorBody = await response.json()
+
+          if (errorBody?.error?.message) {
+            errorMessage = errorBody.error.message
+          }
+        } catch {
+          // ignore parse failure
+        }
+
+        lastError = { status: 502, message: errorMessage }
+
+        if (/model|does not exist|not found|unsupported|not available/i.test(errorMessage)) {
+          continue
+        }
+
+        throw lastError
+      }
+
+      const data = await response.json()
+      const text = extractResponseText(data)
+
+      if (!text) {
+        throw { status: 502, message: 'OpenAI web search returned no text.' }
+      }
+
+      return text
+    }
+
+    throw lastError || { status: 502, message: 'OpenAI web search failed.' }
   }
 
   // Generates a professional draft reply for a Zendesk support ticket.
@@ -1017,6 +1129,8 @@ export function createOpenAiService({ openAiApiKey }) {
   }
 
   return {
+    callOpenAi,
+    callOpenAiWebSearch,
     generateSupportReply,
     generateSlackReply,
     batchSummarizeComments,

@@ -1,6 +1,7 @@
 import AdminPanelSettingsRoundedIcon from '@mui/icons-material/AdminPanelSettingsRounded'
 import AlternateEmailRoundedIcon from '@mui/icons-material/AlternateEmailRounded'
 import FactCheckRoundedIcon from '@mui/icons-material/FactCheckRounded'
+import ForumRoundedIcon from '@mui/icons-material/ForumRounded'
 import PeopleAltRoundedIcon from '@mui/icons-material/PeopleAltRounded'
 import ManageHistoryRoundedIcon from '@mui/icons-material/ManageHistoryRounded'
 import NotificationsActiveRoundedIcon from '@mui/icons-material/NotificationsActiveRounded'
@@ -19,6 +20,7 @@ const AdminEmailSettingsPage = lazy(() => import('./AdminEmailSettingsPage'))
 const AdminSmsBridgePage = lazy(() => import('./AdminSmsBridgePage'))
 const AdminSalesReviewPage = lazy(() => import('./AdminSalesReviewPage'))
 const AiConfigPage = lazy(() => import('./AiConfigPage'))
+const AdminAiCouncilPage = lazy(() => import('./AdminAiCouncilPage'))
 
 type AdminSettingsTab =
   | 'users'
@@ -27,6 +29,7 @@ type AdminSettingsTab =
   | 'visitors'
   | 'email'
   | 'ai-config'
+  | 'ai-council'
   | 'sms-bridge'
   | 'sales-review'
 
@@ -66,6 +69,11 @@ const adminSettingsTabs: Array<{
     icon: SmartToyRoundedIcon,
   },
   {
+    value: 'ai-council',
+    label: 'AI Council',
+    icon: ForumRoundedIcon,
+  },
+  {
     value: 'sms-bridge',
     label: 'SMS Bridge',
     icon: SmsRoundedIcon,
@@ -85,6 +93,7 @@ function getTabFromQuery(rawTab: string | null): AdminSettingsTab {
     || rawTab === 'visitors'
     || rawTab === 'email'
     || rawTab === 'ai-config'
+    || rawTab === 'ai-council'
     || rawTab === 'sms-bridge'
     || rawTab === 'sales-review'
   ) {
@@ -117,6 +126,10 @@ function renderAdminSettingsTab(selectedTab: AdminSettingsTab) {
 
   if (selectedTab === 'ai-config') {
     return <AiConfigPage />
+  }
+
+  if (selectedTab === 'ai-council') {
+    return <AdminAiCouncilPage />
   }
 
   if (selectedTab === 'sms-bridge') {

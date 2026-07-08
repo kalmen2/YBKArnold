@@ -34,6 +34,7 @@ export function registerOrdersRoutes(app, deps) {
     requireManagerOrAdminRole,
     toPublicAuthUser,
     toPublicMobileAlert,
+    updateMondayItemJsonColumn,
     updateMondayItemName,
     updateMondayItemStatusColumn,
     updateMondayItemTextColumn,
@@ -44,6 +45,12 @@ export function registerOrdersRoutes(app, deps) {
   let cachedLaborLookups = null
   let cachedLaborLookupsExpiresAt = 0
   let ordersChatsIndexesPromise
+  let ordersProgressStatusQueueIndexesPromise
+  let ordersProgressStatusQueueInFlight = null
+  const ordersProgressStatusQueueCollectionName = 'orders_progress_status_queue'
+  const ordersProgressStatusQueueRetryDelaysSeconds = [10, 30, 90, 180, 300, 600]
+  const ordersProgressStatusQueueMaxAttempts = ordersProgressStatusQueueRetryDelaysSeconds.length
+  const ordersProgressStatusQueueDefaultBatchSize = 80
   const linkedOrderNumberChangeMessage =
     'Sorry, this cannot be done because of its linked. If it needs to be done, contact admin.'
   const shippingDocumentMimeTypes = new Set([
@@ -54,6 +61,18 @@ export function registerOrdersRoutes(app, deps) {
     'image/heic',
     'image/heif',
   ])
+  const fixedOrderProgressStages = [
+    { key: 'design', label: 'Design' },
+    { key: 'baseform', label: 'Base/Form' },
+    { key: 'build', label: 'Build' },
+    { key: 'sandorlam', label: 'Sand or lam' },
+    { key: 'sealer', label: 'Sealer' },
+    { key: 'lacquer', label: 'Lacquer' },
+    { key: 'ready', label: 'Ready' },
+  ]
+  const fixedOrderProgressStageKeySet = new Set(
+    fixedOrderProgressStages.map((stage) => stage.key),
+  )
 
   function sanitizeQuickBooksTokenText(value, maxLength = 8000) {
     return String(value ?? '').trim().slice(0, maxLength)
@@ -130,6 +149,205 @@ export function registerOrdersRoutes(app, deps) {
     }
 
     return `${safeName}.${extensionForShippingDocumentMimeType(mimeType)}`
+  }
+
+  function normalizeIsoDateInput(value) {
+    const normalized = String(value ?? '').trim()
+
+    if (!normalized) {
+      return ''
+    }
+
+    const matched = normalized.match(/^(\d{4})-(\d{2})-(\d{2})/)
+
+    if (!matched) {
+      return ''
+    }
+
+    const [, year, month, day] = matched
+
+    return `${year}-${month}-${day}`
+  }
+
+  function hasOwnField(source, fieldName) {
+    return Boolean(source && Object.prototype.hasOwnProperty.call(source, fieldName))
+  }
+
+  function toIsoDateOnlyOrNull(value) {
+    return normalizeIsoDateInput(value) || null
+  }
+
+  function toUtcDateFromIsoDateOnly(value) {
+    const normalized = toIsoDateOnlyOrNull(value)
+
+    if (!normalized) {
+      return null
+    }
+
+    const parsed = Date.parse(`${normalized}T00:00:00.000Z`)
+
+    return Number.isFinite(parsed) ? parsed : null
+  }
+
+  function calculateDateDifferenceDays(startDate, endDate) {
+    const startMs = toUtcDateFromIsoDateOnly(startDate)
+    const endMs = toUtcDateFromIsoDateOnly(endDate)
+
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) {
+      return null
+    }
+
+    return Math.round((endMs - startMs) / (24 * 60 * 60 * 1000))
+  }
+
+  function mapWarrantyStateFromOrderDocument(orderDocument) {
+    const durationDays = Number(orderDocument?.warranty_last_completed_duration_days)
+    const leadTimeVarianceDays = Number(orderDocument?.warranty_last_completed_lead_time_variance_days)
+
+    return {
+      warrantyIssueActive: Boolean(orderDocument?.warranty_issue_active),
+      warrantyIssueDescription:
+        normalizeOptionalShortText(orderDocument?.warranty_issue_description, 2000) || null,
+      warrantyIssueReportedAt:
+        normalizeOptionalShortText(orderDocument?.warranty_issue_reported_at, 80) || null,
+      warrantyIssueLeadTimeDate:
+        normalizeIsoDateInput(orderDocument?.warranty_issue_lead_time_date) || null,
+      warrantyIssueDoneAt:
+        normalizeOptionalShortText(orderDocument?.warranty_issue_done_at, 80) || null,
+      warrantyLastCompletedDescription:
+        normalizeOptionalShortText(orderDocument?.warranty_last_completed_description, 2000) || null,
+      warrantyLastCompletedReportedAt:
+        normalizeOptionalShortText(orderDocument?.warranty_last_completed_reported_at, 80) || null,
+      warrantyLastCompletedLeadTimeDate:
+        normalizeIsoDateInput(orderDocument?.warranty_last_completed_lead_time_date) || null,
+      warrantyLastCompletedDoneAt:
+        normalizeOptionalShortText(orderDocument?.warranty_last_completed_done_at, 80) || null,
+      warrantyLastCompletedDurationDays:
+        Number.isFinite(durationDays) ? durationDays : null,
+      warrantyLastCompletedLeadTimeVarianceDays:
+        Number.isFinite(leadTimeVarianceDays) ? leadTimeVarianceDays : null,
+    }
+  }
+
+  function buildWarrantyRouteOrderPayload({ orderDocument, mondayItemId }) {
+    return {
+      mondayItemId: String(mondayItemId ?? '').trim(),
+      orderNumber: normalizeOptionalShortText(orderDocument?.order_number, 120) || null,
+      isShipped: Boolean(orderDocument?.is_shipped),
+      ...mapWarrantyStateFromOrderDocument(orderDocument),
+    }
+  }
+
+  async function updateMondayDateColumnValue({
+    boardId,
+    itemId,
+    columnId,
+    dateValue,
+  }) {
+    const normalizedDateValue = normalizeIsoDateInput(dateValue)
+
+    if (!normalizedDateValue) {
+      await updateMondayItemTextColumn({
+        boardId,
+        itemId,
+        columnId,
+        textValue: '',
+      })
+      return
+    }
+
+    try {
+      await updateMondayItemJsonColumn({
+        boardId,
+        itemId,
+        columnId,
+        jsonValue: {
+          date: normalizedDateValue,
+        },
+      })
+      return
+    } catch {
+      await updateMondayItemTextColumn({
+        boardId,
+        itemId,
+        columnId,
+        textValue: normalizedDateValue,
+      })
+    }
+  }
+
+  async function updateMondayLinkColumnValue({
+    boardId,
+    itemId,
+    columnId,
+    urlValue,
+    linkText,
+  }) {
+    const normalizedUrlValue = String(urlValue ?? '').trim()
+    const normalizedLinkText = String(linkText ?? '').trim() || normalizedUrlValue || 'Shop drawing'
+
+    if (!normalizedUrlValue) {
+      try {
+        await updateMondayItemJsonColumn({
+          boardId,
+          itemId,
+          columnId,
+          jsonValue: {
+            clear_all: true,
+          },
+        })
+        return
+      } catch {
+        await updateMondayItemTextColumn({
+          boardId,
+          itemId,
+          columnId,
+          textValue: '',
+        })
+        return
+      }
+    }
+
+    try {
+      await updateMondayItemJsonColumn({
+        boardId,
+        itemId,
+        columnId,
+        jsonValue: {
+          url: normalizedUrlValue,
+          text: normalizedLinkText,
+        },
+      })
+      return
+    } catch {
+      await updateMondayItemTextColumn({
+        boardId,
+        itemId,
+        columnId,
+        textValue: normalizedUrlValue,
+      })
+    }
+  }
+
+  async function clearMondayColumnValue({ boardId, itemId, columnId }) {
+    try {
+      await updateMondayItemJsonColumn({
+        boardId,
+        itemId,
+        columnId,
+        jsonValue: {
+          clear_all: true,
+        },
+      })
+      return
+    } catch {
+      await updateMondayItemTextColumn({
+        boardId,
+        itemId,
+        columnId,
+        textValue: '',
+      })
+    }
   }
 
   function buildOrderIdentityFilter({
@@ -667,7 +885,208 @@ export function registerOrdersRoutes(app, deps) {
     })
   }
 
-  function resolveRowStatusLabel({ hasMondayRecord, inDesign, isShipped, mondayStatus }) {
+  function normalizeProgressStageKey(value) {
+    return String(value ?? '')
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '')
+  }
+
+  function normalizeWebsiteProgressStatus(value) {
+    const normalized = String(value ?? '')
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+
+    if (!normalized) {
+      return null
+    }
+
+    if (normalized === 'working on it' || normalized === 'working') {
+      return 'working'
+    }
+
+    if (normalized === 'done' || normalized === 'ready') {
+      return 'done'
+    }
+
+    if (normalized === 'stuck' || normalized === 'stock') {
+      return 'stuck'
+    }
+
+    return null
+  }
+
+  function resolveMondayProgressStatusLabel({
+    status,
+    columnId,
+    optionsByColumnId,
+  }) {
+    const requestedStatus = String(status ?? '').trim()
+
+    if (!requestedStatus) {
+      return {
+        ok: true,
+        statusLabel: '',
+      }
+    }
+
+    const allowedOptions = normalizeProgressDetailOptions(optionsByColumnId?.[columnId])
+
+    if (allowedOptions.length === 0) {
+      return {
+        ok: false,
+        error: 'This stage does not expose status options in Monday.',
+      }
+    }
+
+    const normalizeStatusMatchKey = (value) => String(value ?? '')
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+
+    const normalizedRequestedStatus = normalizeStatusMatchKey(requestedStatus)
+    const directMatchedOption = allowedOptions.find((option) => (
+      normalizeStatusMatchKey(option) === normalizedRequestedStatus
+    ))
+
+    if (directMatchedOption) {
+      return {
+        ok: true,
+        statusLabel: directMatchedOption,
+      }
+    }
+
+    const normalizedWebsiteStatus = normalizeWebsiteProgressStatus(requestedStatus)
+    const websiteMatchedOption = normalizedWebsiteStatus
+      ? allowedOptions.find((option) => (
+        normalizeWebsiteProgressStatus(option) === normalizedWebsiteStatus
+      ))
+      : ''
+
+    if (websiteMatchedOption) {
+      return {
+        ok: true,
+        statusLabel: websiteMatchedOption,
+      }
+    }
+
+    const allowedOptionsPreview = allowedOptions
+      .slice(0, 8)
+      .join(', ')
+    const hasMoreOptions = allowedOptions.length > 8
+      ? ', ...'
+      : ''
+
+    return {
+      ok: false,
+      error: `Selected status is not valid for this stage. Use one of: ${allowedOptionsPreview}${hasMoreOptions}`,
+    }
+  }
+
+  function buildProgressStatusQueueRequestKey(mondayItemId, columnId) {
+    return `${String(mondayItemId ?? '').trim()}:${String(columnId ?? '').trim()}`
+  }
+
+  function normalizeQueuedProgressStatusValue(value) {
+    return String(value ?? '').trim()
+  }
+
+  function computeQueuedProgressStatusRetryAt(attemptNumber) {
+    const attemptIndex = Math.max(0, Math.min(
+      ordersProgressStatusQueueRetryDelaysSeconds.length - 1,
+      Number(attemptNumber) - 1,
+    ))
+    const delaySeconds = ordersProgressStatusQueueRetryDelaysSeconds[attemptIndex]
+
+    return new Date(Date.now() + delaySeconds * 1000).toISOString()
+  }
+
+  function buildTrackedProgressStageStates(progressStatusDetails) {
+    const statusByStageKey = new Map()
+
+    ;(Array.isArray(progressStatusDetails) ? progressStatusDetails : []).forEach((entry) => {
+      const normalizedStatus = normalizeWebsiteProgressStatus(entry?.status)
+
+      if (!normalizedStatus) {
+        return
+      }
+
+      const candidateKeys = [
+        normalizeProgressStageKey(entry?.key),
+        normalizeProgressStageKey(entry?.label),
+      ]
+
+      candidateKeys.forEach((candidateKey) => {
+        if (!candidateKey || !fixedOrderProgressStageKeySet.has(candidateKey) || statusByStageKey.has(candidateKey)) {
+          return
+        }
+
+        statusByStageKey.set(candidateKey, normalizedStatus)
+      })
+    })
+
+    return fixedOrderProgressStages
+      .map((stage, index) => {
+        const status = statusByStageKey.get(stage.key)
+
+        if (!status) {
+          return null
+        }
+
+        return {
+          key: stage.key,
+          label: stage.label,
+          index,
+          status,
+        }
+      })
+      .filter(Boolean)
+  }
+
+  function resolveNewestTrackedProgressStage(progressStatusDetails) {
+    const trackedStages = buildTrackedProgressStageStates(progressStatusDetails)
+
+    if (trackedStages.length === 0) {
+      return null
+    }
+
+    return trackedStages[trackedStages.length - 1]
+  }
+
+  function buildTrackedProgressRowStatusLabel(progressStatusDetails) {
+    const latestTrackedStage = resolveNewestTrackedProgressStage(progressStatusDetails)
+
+    if (!latestTrackedStage) {
+      return null
+    }
+
+    if (latestTrackedStage.key === 'ready' && latestTrackedStage.status === 'done') {
+      return 'Ready'
+    }
+
+    if (latestTrackedStage.status === 'done') {
+      return `${latestTrackedStage.label} ready`
+    }
+
+    if (latestTrackedStage.status === 'working') {
+      return `${latestTrackedStage.label} working on it`
+    }
+
+    if (latestTrackedStage.status === 'stuck') {
+      return `${latestTrackedStage.label} stuck`
+    }
+
+    return null
+  }
+
+  function resolveRowStatusLabel({
+    hasMondayRecord,
+    inDesign,
+    isShipped,
+    mondayStatus,
+    progressStatusDetails,
+  }) {
     if (!hasMondayRecord && !inDesign) {
       return 'Not in Monday'
     }
@@ -678,6 +1097,12 @@ export function registerOrdersRoutes(app, deps) {
 
     if (inDesign) {
       return 'In Design'
+    }
+
+    const trackedProgressStatusLabel = buildTrackedProgressRowStatusLabel(progressStatusDetails)
+
+    if (trackedProgressStatusLabel) {
+      return trackedProgressStatusLabel
     }
 
     return String(mondayStatus ?? '').trim() || 'Open'
@@ -816,6 +1241,35 @@ export function registerOrdersRoutes(app, deps) {
     }
 
     return ordersChatsCollection
+  }
+
+  async function getOrdersProgressStatusQueueCollection(collectionsFromCaller = null) {
+    const collections = collectionsFromCaller ?? await getCollections()
+    const ordersDatabase = collections?.databasesByDomain?.orders
+
+    if (!ordersDatabase) {
+      throw new Error('Orders database is unavailable.')
+    }
+
+    const queueCollection = ordersDatabase.collection(ordersProgressStatusQueueCollectionName)
+
+    if (!ordersProgressStatusQueueIndexesPromise) {
+      ordersProgressStatusQueueIndexesPromise = Promise.all([
+        queueCollection.createIndex({ id: 1 }, { unique: true }),
+        queueCollection.createIndex({ requestKey: 1 }, { unique: true }),
+        queueCollection.createIndex({ statusState: 1, nextAttemptAt: 1, queuedAt: 1 }),
+        queueCollection.createIndex({ mondayItemId: 1, updatedAt: -1 }),
+      ])
+    }
+
+    try {
+      await ordersProgressStatusQueueIndexesPromise
+    } catch (error) {
+      ordersProgressStatusQueueIndexesPromise = undefined
+      throw error
+    }
+
+    return queueCollection
   }
 
   function canManageOrderChatMessage({ publicUser, authUser, chatMessage }) {
@@ -1289,6 +1743,8 @@ export function registerOrdersRoutes(app, deps) {
     const mondayStatus = String(liveOrder?.statusLabel ?? '').trim() || null
     const mondayUpdatedAt = String(liveOrder?.updatedAt ?? '').trim() || now
     const isShipped = Boolean(liveOrder?.isDone || liveOrder?.shippedAt)
+    const isProductionStarted = Boolean(isShipped || liveOrder?.isProductionStarted)
+    const scheduleEligible = isShipped || isProductionStarted
     const liveShippedAt = String(liveOrder?.shippedAt ?? '').trim() || null
     const shippedSetFields = liveShippedAt
       ? {
@@ -1321,14 +1777,19 @@ export function registerOrdersRoutes(app, deps) {
               ? Number(liveOrder.progressPercent)
               : null,
             orderDate: String(liveOrder?.orderDate ?? '').trim() || null,
-            dueDate: String(liveOrder?.dueDate ?? '').trim() || null,
-            computedDueDate: String(liveOrder?.computedDueDate ?? '').trim() || null,
-            effectiveDueDate: String(liveOrder?.effectiveDueDate ?? '').trim() || null,
-            leadTimeDays: Number.isFinite(Number(liveOrder?.leadTimeDays))
+            dueDate: scheduleEligible ? (String(liveOrder?.dueDate ?? '').trim() || null) : null,
+            computedDueDate: scheduleEligible
+              ? (String(liveOrder?.computedDueDate ?? '').trim() || null)
+              : null,
+            effectiveDueDate: scheduleEligible
+              ? (String(liveOrder?.effectiveDueDate ?? '').trim() || null)
+              : null,
+            leadTimeDays: scheduleEligible && Number.isFinite(Number(liveOrder?.leadTimeDays))
               ? Number(liveOrder.leadTimeDays)
               : null,
             shippedAt: String(liveOrder?.shippedAt ?? '').trim() || null,
             isDone: isShipped,
+            isProductionStarted,
             isLate: Boolean(liveOrder?.isLate),
             daysLate: Number.isFinite(Number(liveOrder?.daysLate))
               ? Number(liveOrder.daysLate)
@@ -1355,13 +1816,12 @@ export function registerOrdersRoutes(app, deps) {
             Monday_url: String(liveOrder?.itemUrl ?? '').trim() || null,
             Monday_status: isShipped ? 'Shipped' : mondayStatus,
             is_shipped: isShipped,
+            is_production_started: isProductionStarted,
             ...shippedSetFields,
-            Due_date:
-              String(liveOrder?.effectiveDueDate ?? '').trim()
-              || String(liveOrder?.dueDate ?? '').trim()
-              || String(liveOrder?.computedDueDate ?? '').trim()
-              || null,
-            Lead_time_days: Number.isFinite(Number(liveOrder?.leadTimeDays))
+            Due_date: scheduleEligible
+              ? (String(liveOrder?.dueDate ?? '').trim() || null)
+              : null,
+            Lead_time_days: scheduleEligible && Number.isFinite(Number(liveOrder?.leadTimeDays))
               ? Number(liveOrder.leadTimeDays)
               : null,
             progress_percent: Number.isFinite(Number(liveOrder?.progressPercent))
@@ -1404,6 +1864,7 @@ export function registerOrdersRoutes(app, deps) {
           inDesign,
           isShipped,
           mondayStatus,
+          progressStatusDetails,
         }),
         progressPercent: Number.isFinite(Number(liveOrder?.progressPercent))
           ? Number(liveOrder.progressPercent)
@@ -1411,6 +1872,283 @@ export function registerOrdersRoutes(app, deps) {
         progressStatusDetails,
         mondayUpdatedAt,
       },
+    }
+  }
+
+  async function processQueuedMondayProgressStatusUpdates(options = {}) {
+    const maxJobsInput = Number(options?.maxJobs)
+    const maxJobs = Number.isFinite(maxJobsInput)
+      ? Math.min(250, Math.max(1, Math.floor(maxJobsInput)))
+      : ordersProgressStatusQueueDefaultBatchSize
+    const processorSource = String(options?.source ?? '').trim() || 'internal'
+
+    if (ordersProgressStatusQueueInFlight) {
+      return ordersProgressStatusQueueInFlight
+    }
+
+    const processorPromise = (async () => {
+      const collections = await getCollections()
+      const {
+        mondayOrdersCollection,
+        ordersUnifiedCollection,
+      } = collections
+      const queueCollection = await getOrdersProgressStatusQueueCollection(collections)
+      const contextByItemId = new Map()
+      const optionsByBoardAndColumn = new Map()
+      const touchedOrders = new Map()
+      const syncWarnings = []
+
+      let processedCount = 0
+      let syncedCount = 0
+      let requeuedCount = 0
+      let failedCount = 0
+
+      while (processedCount < maxJobs) {
+        const nowIso = new Date().toISOString()
+        const claimedJob = await queueCollection.findOneAndUpdate(
+          {
+            statusState: 'queued',
+            nextAttemptAt: {
+              $lte: nowIso,
+            },
+          },
+          {
+            $set: {
+              statusState: 'processing',
+              processingSource: processorSource,
+              processingStartedAt: nowIso,
+              updatedAt: nowIso,
+            },
+          },
+          {
+            sort: {
+              nextAttemptAt: 1,
+              queuedAt: 1,
+              createdAt: 1,
+            },
+            returnDocument: 'after',
+            projection: {
+              _id: 0,
+            },
+          },
+        )
+
+        if (!claimedJob) {
+          break
+        }
+
+        processedCount += 1
+
+        const jobId = String(claimedJob?.id ?? '').trim()
+        const mondayItemId = String(claimedJob?.mondayItemId ?? '').trim()
+        const columnId = String(claimedJob?.columnId ?? '').trim()
+        const queuedStatus = normalizeQueuedProgressStatusValue(claimedJob?.status)
+        const previousAttempts = Number.isFinite(Number(claimedJob?.attempts))
+          ? Number(claimedJob.attempts)
+          : 0
+
+        const finalizeQueueFailure = async (message, options = {}) => {
+          const retryable = options.retryable !== false
+          const normalizedMessage = normalizeOptionalShortText(message, 280)
+            || 'Could not process queued Monday status update.'
+          const nextAttemptNumber = previousAttempts + 1
+          const now = new Date().toISOString()
+
+          if (retryable && nextAttemptNumber < ordersProgressStatusQueueMaxAttempts) {
+            await queueCollection.updateOne(
+              { id: jobId },
+              {
+                $set: {
+                  statusState: 'queued',
+                  attempts: nextAttemptNumber,
+                  nextAttemptAt: computeQueuedProgressStatusRetryAt(nextAttemptNumber),
+                  lastError: normalizedMessage,
+                  updatedAt: now,
+                },
+              },
+            )
+            requeuedCount += 1
+            return
+          }
+
+          await queueCollection.updateOne(
+            { id: jobId },
+            {
+              $set: {
+                statusState: 'failed',
+                attempts: nextAttemptNumber,
+                failedAt: now,
+                lastError: normalizedMessage,
+                updatedAt: now,
+              },
+            },
+          )
+          failedCount += 1
+        }
+
+        if (!jobId || !mondayItemId || !columnId) {
+          await finalizeQueueFailure('Queued status update is missing required fields.', {
+            retryable: false,
+          })
+          continue
+        }
+
+        let context = contextByItemId.has(mondayItemId)
+          ? contextByItemId.get(mondayItemId)
+          : undefined
+
+        if (context === undefined) {
+          try {
+            context = await resolveMondayOrderContext({
+              mondayItemId,
+              mondayOrdersCollection,
+              ordersUnifiedCollection,
+            })
+          } catch (contextError) {
+            await finalizeQueueFailure(contextError?.message, { retryable: true })
+            continue
+          }
+
+          contextByItemId.set(mondayItemId, context ?? null)
+        }
+
+        if (!context?.boardId) {
+          await finalizeQueueFailure('Could not resolve Monday board for this order.', {
+            retryable: false,
+          })
+          continue
+        }
+
+        const knownColumnIds = extractProgressStatusColumnIds(context.rawProgressStatusDetails)
+
+        if (knownColumnIds.length > 0 && !knownColumnIds.includes(columnId)) {
+          await finalizeQueueFailure(
+            'Column is not part of this order\'s tracked Monday status columns.',
+            { retryable: false },
+          )
+          continue
+        }
+
+        let resolvedStatusLabel = ''
+
+        if (queuedStatus) {
+          const optionsKey = `${context.boardId}:${columnId}`
+          let optionsForColumn = optionsByBoardAndColumn.get(optionsKey)
+
+          if (!optionsForColumn) {
+            try {
+              const optionsPayload = await fetchMondayStatusColumnOptions({
+                boardId: context.boardId,
+                columnIds: [columnId],
+              })
+              optionsForColumn = normalizeProgressDetailOptions(optionsPayload?.[columnId])
+              optionsByBoardAndColumn.set(optionsKey, optionsForColumn)
+            } catch (optionsError) {
+              await finalizeQueueFailure(optionsError?.message, { retryable: true })
+              continue
+            }
+          }
+
+          const resolvedStatusResult = resolveMondayProgressStatusLabel({
+            status: queuedStatus,
+            columnId,
+            optionsByColumnId: {
+              [columnId]: optionsForColumn,
+            },
+          })
+
+          if (!resolvedStatusResult.ok) {
+            await finalizeQueueFailure(resolvedStatusResult.error, { retryable: false })
+            continue
+          }
+
+          resolvedStatusLabel = resolvedStatusResult.statusLabel
+        }
+
+        try {
+          await updateMondayItemStatusColumn({
+            boardId: context.boardId,
+            itemId: mondayItemId,
+            columnId,
+            statusLabel: resolvedStatusLabel,
+          })
+
+          const syncedAt = new Date().toISOString()
+
+          await queueCollection.updateOne(
+            { id: jobId },
+            {
+              $set: {
+                statusState: 'synced',
+                resolvedStatusLabel,
+                syncedAt,
+                lastError: null,
+                updatedAt: syncedAt,
+              },
+            },
+          )
+
+          touchedOrders.set(mondayItemId, context)
+          syncedCount += 1
+        } catch (updateError) {
+          await finalizeQueueFailure(updateError?.message, { retryable: true })
+        }
+      }
+
+      let collectionSyncCount = 0
+
+      for (const [mondayItemId, context] of touchedOrders.entries()) {
+        try {
+          const {
+            liveOrder,
+            resolvedBoardName,
+            resolvedBoardUrl,
+            progressStatusDetails,
+          } = await pullLiveMondayProgressDetails({
+            boardId: context.boardId,
+            boardName: context.boardName,
+            boardUrl: context.boardUrl,
+            mondayItemId,
+          })
+
+          await syncMondayProgressDetailsToCollections({
+            mondayItemId,
+            boardId: context.boardId,
+            boardName: resolvedBoardName,
+            boardUrl: resolvedBoardUrl,
+            liveOrder,
+            progressStatusDetails,
+            mondayOrdersCollection,
+            ordersUnifiedCollection,
+          })
+
+          collectionSyncCount += 1
+        } catch (syncError) {
+          syncWarnings.push(
+            normalizeOptionalShortText(syncError?.message, 280)
+            || `Queued status sync applied in Monday for ${mondayItemId}, but local DB sync failed.`,
+          )
+        }
+      }
+
+      return {
+        processedCount,
+        syncedCount,
+        requeuedCount,
+        failedCount,
+        collectionSyncCount,
+        syncWarnings,
+      }
+    })()
+
+    ordersProgressStatusQueueInFlight = processorPromise
+
+    try {
+      return await processorPromise
+    } finally {
+      if (ordersProgressStatusQueueInFlight === processorPromise) {
+        ordersProgressStatusQueueInFlight = null
+      }
     }
   }
 
@@ -1488,7 +2226,13 @@ export function registerOrdersRoutes(app, deps) {
         : Number.isFinite(amountOwed)
           ? amountOwed <= 0.004
           : null
-    const rowStatus = resolveRowStatusLabel({ hasMondayRecord, inDesign, isShipped, mondayStatus })
+    const rowStatus = resolveRowStatusLabel({
+      hasMondayRecord,
+      inDesign,
+      isShipped,
+      mondayStatus,
+      progressStatusDetails,
+    })
     const laborCandidates = buildJobLookupValues([
       resolvedOrderNumber,
       String(orderDocument?.order_name ?? '').trim(),
@@ -1568,6 +2312,7 @@ export function registerOrdersRoutes(app, deps) {
         typeof orderDocument?.shipped_at_inferred === 'boolean'
           ? Boolean(orderDocument.shipped_at_inferred)
           : null,
+      ...mapWarrantyStateFromOrderDocument(orderDocument),
       mondayBoardId: String(orderDocument?.monday_board_id ?? '').trim() || null,
       mondayBoardName: String(orderDocument?.monday_board_name ?? '').trim() || null,
       mondayUpdatedAt: String(orderDocument?.monday_updated_at ?? '').trim() || null,
@@ -1659,6 +2404,17 @@ export function registerOrdersRoutes(app, deps) {
               poAmount: 1,
               shipped_at: 1,
               shipped_at_inferred: 1,
+              warranty_issue_active: 1,
+              warranty_issue_description: 1,
+              warranty_issue_reported_at: 1,
+              warranty_issue_lead_time_date: 1,
+              warranty_issue_done_at: 1,
+              warranty_last_completed_description: 1,
+              warranty_last_completed_reported_at: 1,
+              warranty_last_completed_lead_time_date: 1,
+              warranty_last_completed_done_at: 1,
+              warranty_last_completed_duration_days: 1,
+              warranty_last_completed_lead_time_variance_days: 1,
               has_monday_record: 1,
               has_quickbooks_record: 1,
               in_design: 1,
@@ -2161,7 +2917,13 @@ export function registerOrdersRoutes(app, deps) {
       try {
         const mondayItemId = String(req.body?.mondayItemId ?? '').trim()
         const columnId = String(req.body?.columnId ?? '').trim()
-        const status = String(req.body?.status ?? '').trim()
+        const hasStatusField = Boolean(
+          req.body
+          && Object.prototype.hasOwnProperty.call(req.body, 'status'),
+        )
+        const status = hasStatusField
+          ? String(req.body?.status ?? '').trim()
+          : ''
 
         if (!mondayItemId) {
           return res.status(400).json({ error: 'mondayItemId is required.' })
@@ -2171,7 +2933,7 @@ export function registerOrdersRoutes(app, deps) {
           return res.status(400).json({ error: 'columnId is required.' })
         }
 
-        if (!status) {
+        if (!hasStatusField) {
           return res.status(400).json({ error: 'status is required.' })
         }
 
@@ -2204,19 +2966,29 @@ export function registerOrdersRoutes(app, deps) {
           boardId: context.boardId,
           columnIds: [columnId],
         })
-        const allowedOptions = normalizeProgressDetailOptions(optionsByColumnId?.[columnId])
+        let resolvedStatusLabel = ''
 
-        if (allowedOptions.length > 0 && !allowedOptions.includes(status)) {
-          return res.status(400).json({
-            error: 'Selected status is not valid for this Monday column.',
+        if (status) {
+          const resolvedStatusResult = resolveMondayProgressStatusLabel({
+            status,
+            columnId,
+            optionsByColumnId,
           })
+
+          if (!resolvedStatusResult.ok) {
+            return res.status(400).json({
+              error: resolvedStatusResult.error,
+            })
+          }
+
+          resolvedStatusLabel = resolvedStatusResult.statusLabel
         }
 
         await updateMondayItemStatusColumn({
           boardId: context.boardId,
           itemId: mondayItemId,
           columnId,
-          statusLabel: status,
+          statusLabel: resolvedStatusLabel,
         })
 
         const {
@@ -2261,12 +3033,222 @@ export function registerOrdersRoutes(app, deps) {
     },
   )
 
+  // POST /api/orders/monday/progress-status/bulk — queue many Monday status
+  // updates quickly, then sync to Monday in background.
+  app.post(
+    '/api/orders/monday/progress-status/bulk',
+    requireFirebaseAuth,
+    requireManagerOrAdminRole,
+    async (req, res, next) => {
+      try {
+        const rawUpdates = Array.isArray(req.body?.updates)
+          ? req.body.updates
+          : []
+
+        if (rawUpdates.length === 0) {
+          return res.status(400).json({ error: 'updates is required.' })
+        }
+
+        if (rawUpdates.length > 250) {
+          return res.status(400).json({
+            error: 'Too many updates in one request. Maximum is 250.',
+          })
+        }
+
+        const updates = rawUpdates.map((entry) => {
+          const hasStatusField = Boolean(
+            entry && Object.prototype.hasOwnProperty.call(entry, 'status'),
+          )
+
+          return {
+            mondayItemId: String(entry?.mondayItemId ?? '').trim(),
+            columnId: String(entry?.columnId ?? '').trim(),
+            hasStatusField,
+            status: hasStatusField
+              ? String(entry?.status ?? '').trim()
+              : '',
+          }
+        })
+
+        const malformedUpdateIndex = updates.findIndex((entry) => (
+          !entry.mondayItemId
+          || !entry.columnId
+          || !entry.hasStatusField
+        ))
+
+        if (malformedUpdateIndex >= 0) {
+          return res.status(400).json({
+            error: `Invalid update at index ${malformedUpdateIndex}. mondayItemId, columnId, and status are required.`,
+          })
+        }
+
+        const collections = await getCollections()
+        const {
+          mondayOrdersCollection,
+          ordersUnifiedCollection,
+        } = collections
+        const queueCollection = await getOrdersProgressStatusQueueCollection(collections)
+        const contextByItemId = new Map()
+        const acceptedUpdates = []
+        const failedUpdates = []
+
+        for (const update of updates) {
+          const mondayItemId = update.mondayItemId
+          const columnId = update.columnId
+          const status = normalizeQueuedProgressStatusValue(update.status)
+          let context = contextByItemId.has(mondayItemId)
+            ? contextByItemId.get(mondayItemId)
+            : undefined
+
+          if (context === undefined) {
+            try {
+              context = await resolveMondayOrderContext({
+                mondayItemId,
+                mondayOrdersCollection,
+                ordersUnifiedCollection,
+              })
+            } catch (contextError) {
+              failedUpdates.push({
+                mondayItemId,
+                columnId,
+                status,
+                error:
+                  normalizeOptionalShortText(contextError?.message, 280)
+                  || 'Could not resolve Monday board for this order.',
+              })
+              continue
+            }
+
+            contextByItemId.set(mondayItemId, context ?? null)
+          }
+
+          if (!context?.boardId) {
+            failedUpdates.push({
+              mondayItemId,
+              columnId,
+              status,
+              error: 'Could not resolve Monday board for this order.',
+            })
+            continue
+          }
+
+          const knownColumnIds = extractProgressStatusColumnIds(context.rawProgressStatusDetails)
+
+          if (knownColumnIds.length > 0 && !knownColumnIds.includes(columnId)) {
+            failedUpdates.push({
+              mondayItemId,
+              columnId,
+              status,
+              error: 'Column is not part of this order\'s tracked Monday status columns.',
+            })
+            continue
+          }
+
+          acceptedUpdates.push({
+            mondayItemId,
+            columnId,
+            status,
+          })
+        }
+
+        const now = new Date().toISOString()
+        const queuedByUid = String(req.authUser?.uid ?? '').trim() || null
+        const queuedByEmail = normalizeEmail(req.authUser?.email) || null
+        const latestUpdateByRequestKey = new Map()
+
+        acceptedUpdates.forEach((entry) => {
+          const requestKey = buildProgressStatusQueueRequestKey(
+            entry.mondayItemId,
+            entry.columnId,
+          )
+
+          latestUpdateByRequestKey.set(requestKey, {
+            requestKey,
+            mondayItemId: entry.mondayItemId,
+            columnId: entry.columnId,
+            status: entry.status,
+          })
+        })
+
+        const queuedUpdates = [...latestUpdateByRequestKey.values()]
+
+        if (queuedUpdates.length > 0) {
+          const queueOps = queuedUpdates.map((entry) => ({
+            updateOne: {
+              filter: {
+                requestKey: entry.requestKey,
+              },
+              update: {
+                $set: {
+                  requestKey: entry.requestKey,
+                  mondayItemId: entry.mondayItemId,
+                  columnId: entry.columnId,
+                  status: entry.status,
+                  statusState: 'queued',
+                  attempts: 0,
+                  queuedAt: now,
+                  nextAttemptAt: now,
+                  queuedByUid,
+                  queuedByEmail,
+                  lastError: null,
+                  resolvedStatusLabel: null,
+                  syncedAt: null,
+                  failedAt: null,
+                  updatedAt: now,
+                },
+                $setOnInsert: {
+                  id: randomUUID(),
+                  createdAt: now,
+                },
+              },
+              upsert: true,
+            },
+          }))
+
+          await queueCollection.bulkWrite(queueOps, {
+            ordered: false,
+          })
+
+          void processQueuedMondayProgressStatusUpdates({
+            maxJobs: Math.max(1, queuedUpdates.length),
+            source: 'bulk_enqueue',
+          }).catch((queueError) => {
+            console.error('orders progress-status queue processor failed after enqueue.', queueError)
+          })
+        }
+
+        const warningMessage = queuedUpdates.length > 0
+          ? 'Saved to backend. Monday sync is running in the background and may take a little time.'
+          : null
+        const warnings = warningMessage ? [warningMessage] : []
+
+        return res.json({
+          ok: failedUpdates.length === 0,
+          updatedCount: queuedUpdates.length,
+          queuedCount: queuedUpdates.length,
+          failedCount: failedUpdates.length,
+          failedUpdates,
+          queuedUpdates: queuedUpdates.map((entry) => ({
+            mondayItemId: entry.mondayItemId,
+            columnId: entry.columnId,
+            status: entry.status,
+          })),
+          orders: [],
+          warnings,
+        })
+      } catch (error) {
+        next(error)
+      }
+    },
+  )
+
   // POST /api/orders/monday/order-number — update the Monday order number
   // (ack column when available; fallback to item name). Non-admin updates are
   // blocked when linked to timesheet history or QuickBooks.
   app.post(
     '/api/orders/monday/order-number',
     requireFirebaseAuth,
+    requireManagerOrAdminRole,
     async (req, res, next) => {
       try {
         const mondayItemId = String(req.body?.mondayItemId ?? '').trim()
@@ -2643,6 +3625,1602 @@ export function registerOrdersRoutes(app, deps) {
     },
   )
 
+  // POST /api/orders/monday/order-details — manager-only edit endpoint for
+  // key order fields that must write through to Monday first.
+  app.post(
+    '/api/orders/monday/order-details',
+    requireFirebaseAuth,
+    requireManagerOrAdminRole,
+    async (req, res, next) => {
+      try {
+        const mondayItemId = String(req.body?.mondayItemId ?? '').trim()
+        const hasOrderNameField = hasOwnField(req.body, 'orderName')
+        const hasPoNumberField = hasOwnField(req.body, 'poNumber')
+        const hasNotesField = hasOwnField(req.body, 'notes')
+        const hasDescriptionField = hasOwnField(req.body, 'description')
+        const hasOrderDateField = hasOwnField(req.body, 'orderDate')
+        const hasDueDateField =
+          hasOwnField(req.body, 'dueDate')
+          || hasOwnField(req.body, 'leadTime')
+          || hasOwnField(req.body, 'leadTimeDate')
+        const hasLeadTimeDaysField = hasOwnField(req.body, 'leadTimeDays')
+        const hasPodDateField = hasOwnField(req.body, 'podDate')
+
+        if (!mondayItemId) {
+          return res.status(400).json({ error: 'mondayItemId is required.' })
+        }
+
+        if (
+          !hasOrderNameField
+          && !hasPoNumberField
+          && !hasNotesField
+          && !hasDescriptionField
+          && !hasOrderDateField
+          && !hasDueDateField
+          && !hasLeadTimeDaysField
+          && !hasPodDateField
+        ) {
+          return res.status(400).json({
+            error: 'At least one editable field is required.',
+          })
+        }
+
+        const rawOrderNameInput = String(req.body?.orderName ?? '').trim()
+        const rawPoNumberInput = String(req.body?.poNumber ?? '').trim()
+  const rawNotesInput = String(req.body?.notes ?? '').trim()
+        const rawDescriptionInput = String(req.body?.description ?? '').trim()
+        const rawOrderDateInput = String(req.body?.orderDate ?? '').trim()
+        const rawDueDateInput = String(
+          hasOwnField(req.body, 'dueDate')
+            ? req.body?.dueDate
+            : hasOwnField(req.body, 'leadTimeDate')
+              ? req.body?.leadTimeDate
+              : req.body?.leadTime,
+        ).trim()
+        const rawPodDateInput = String(req.body?.podDate ?? '').trim()
+        const rawLeadTimeDaysInput = String(req.body?.leadTimeDays ?? '').trim()
+
+        const requestedOrderName = normalizeOptionalShortText(rawOrderNameInput, 250)
+        const requestedPoNumber = normalizeOptionalShortText(rawPoNumberInput, 120) || ''
+  const requestedNotes = normalizeOptionalShortText(rawNotesInput, 2000) || ''
+        const requestedDescription = normalizeOptionalShortText(rawDescriptionInput, 2000) || ''
+        const requestedOrderDate = normalizeIsoDateInput(rawOrderDateInput)
+        const requestedDueDate = normalizeIsoDateInput(rawDueDateInput)
+        const requestedPodDate = normalizeIsoDateInput(rawPodDateInput)
+
+        if (hasOrderNameField && !requestedOrderName) {
+          return res.status(400).json({ error: 'orderName is required.' })
+        }
+
+        if (hasOrderDateField && rawOrderDateInput && !requestedOrderDate) {
+          return res.status(400).json({ error: 'orderDate must be YYYY-MM-DD.' })
+        }
+
+        if (hasDueDateField && rawDueDateInput && !requestedDueDate) {
+          return res.status(400).json({ error: 'leadTime must be YYYY-MM-DD.' })
+        }
+
+        if (hasPodDateField && rawPodDateInput && !requestedPodDate) {
+          return res.status(400).json({ error: 'podDate must be YYYY-MM-DD.' })
+        }
+
+        let requestedLeadTimeDaysText = ''
+
+        if (hasLeadTimeDaysField) {
+          if (rawLeadTimeDaysInput) {
+            const parsedLeadTimeDays = Number(rawLeadTimeDaysInput)
+
+            if (!Number.isFinite(parsedLeadTimeDays) || parsedLeadTimeDays < 0) {
+              return res.status(400).json({
+                error: 'leadTimeDays must be a non-negative number.',
+              })
+            }
+
+            requestedLeadTimeDaysText = String(Number(parsedLeadTimeDays.toFixed(2)))
+          }
+        }
+
+        const {
+          mondayOrdersCollection,
+          ordersUnifiedCollection,
+        } = await getCollections()
+
+        const context = await resolveMondayOrderContext({
+          mondayItemId,
+          mondayOrdersCollection,
+          ordersUnifiedCollection,
+        })
+
+        if (!context?.boardId) {
+          return res.status(404).json({
+            error: 'Could not resolve Monday board for this order.',
+          })
+        }
+
+        const snapshot = await fetchMondayBoardItemsByIds({
+          boardId: context.boardId,
+          boardName: context.boardName,
+          boardUrl: context.boardUrl,
+          itemIds: [mondayItemId],
+        })
+        const liveOrder = Array.isArray(snapshot?.orders)
+          ? snapshot.orders[0]
+          : null
+
+        if (!liveOrder) {
+          return res.status(404).json({
+            error: 'Monday item was not found on the configured board.',
+          })
+        }
+
+        const poNumberColumnId = String(snapshot?.columnDetection?.poNumberColumnId ?? '').trim()
+  const notesColumnId = String(snapshot?.columnDetection?.notesColumnId ?? '').trim()
+        const descriptionColumnId = String(snapshot?.columnDetection?.descriptionColumnId ?? '').trim()
+        const orderDateColumnId = String(snapshot?.columnDetection?.orderDateColumnId ?? '').trim()
+        const dueDateColumnId = String(snapshot?.columnDetection?.dueDateColumnId ?? '').trim()
+        const leadTimeColumnId = String(snapshot?.columnDetection?.leadTimeColumnId ?? '').trim()
+        const shipDateColumnId = String(snapshot?.columnDetection?.shipDateColumnId ?? '').trim()
+
+        if (hasOrderNameField) {
+          await updateMondayItemName({
+            boardId: context.boardId,
+            itemId: mondayItemId,
+            itemName: requestedOrderName,
+          })
+        }
+
+        if (hasPoNumberField) {
+          if (!poNumberColumnId) {
+            return res.status(409).json({
+              error: 'PO number column could not be resolved for this board.',
+            })
+          }
+
+          await updateMondayItemTextColumn({
+            boardId: context.boardId,
+            itemId: mondayItemId,
+            columnId: poNumberColumnId,
+            textValue: requestedPoNumber,
+          })
+        }
+
+        if (hasNotesField) {
+          if (!notesColumnId) {
+            return res.status(409).json({
+              error: 'Notes column could not be resolved for this board.',
+            })
+          }
+
+          await updateMondayItemTextColumn({
+            boardId: context.boardId,
+            itemId: mondayItemId,
+            columnId: notesColumnId,
+            textValue: requestedNotes,
+          })
+        }
+
+        if (hasDescriptionField) {
+          if (!descriptionColumnId) {
+            return res.status(409).json({
+              error: 'Description column could not be resolved for this board.',
+            })
+          }
+
+          await updateMondayItemTextColumn({
+            boardId: context.boardId,
+            itemId: mondayItemId,
+            columnId: descriptionColumnId,
+            textValue: requestedDescription,
+          })
+        }
+
+        if (hasOrderDateField) {
+          if (!orderDateColumnId) {
+            return res.status(409).json({
+              error: 'Order date column could not be resolved for this board.',
+            })
+          }
+
+          await updateMondayDateColumnValue({
+            boardId: context.boardId,
+            itemId: mondayItemId,
+            columnId: orderDateColumnId,
+            dateValue: requestedOrderDate,
+          })
+        }
+
+        if (hasDueDateField) {
+          const targetDueDateColumnId = dueDateColumnId || leadTimeColumnId
+
+          if (!targetDueDateColumnId) {
+            return res.status(409).json({
+              error: 'Lead time column could not be resolved for this board.',
+            })
+          }
+
+          await updateMondayDateColumnValue({
+            boardId: context.boardId,
+            itemId: mondayItemId,
+            columnId: targetDueDateColumnId,
+            dateValue: requestedDueDate,
+          })
+        }
+
+        if (hasLeadTimeDaysField) {
+          if (!leadTimeColumnId) {
+            return res.status(409).json({
+              error: 'Lead time days column could not be resolved for this board.',
+            })
+          }
+
+          await updateMondayItemTextColumn({
+            boardId: context.boardId,
+            itemId: mondayItemId,
+            columnId: leadTimeColumnId,
+            textValue: requestedLeadTimeDaysText,
+          })
+        }
+
+        if (hasPodDateField) {
+          if (!shipDateColumnId) {
+            return res.status(409).json({
+              error: 'POD date column could not be resolved for this board.',
+            })
+          }
+
+          await updateMondayDateColumnValue({
+            boardId: context.boardId,
+            itemId: mondayItemId,
+            columnId: shipDateColumnId,
+            dateValue: requestedPodDate,
+          })
+        }
+
+        const {
+          liveOrder: refreshedLiveOrder,
+          resolvedBoardName,
+          resolvedBoardUrl,
+          progressStatusDetails,
+        } = await pullLiveMondayProgressDetails({
+          boardId: context.boardId,
+          boardName: context.boardName,
+          boardUrl: context.boardUrl,
+          mondayItemId,
+        })
+
+        const syncResult = await syncMondayProgressDetailsToCollections({
+          mondayItemId,
+          boardId: context.boardId,
+          boardName: resolvedBoardName,
+          boardUrl: resolvedBoardUrl,
+          liveOrder: refreshedLiveOrder,
+          progressStatusDetails,
+          mondayOrdersCollection,
+          ordersUnifiedCollection,
+        })
+
+        const now = new Date().toISOString()
+        const refreshedOrderName = normalizeOptionalShortText(refreshedLiveOrder?.name, 250) || null
+        const refreshedPoNumber = normalizeOptionalShortText(refreshedLiveOrder?.poNumber, 120) || null
+        const refreshedNotes = normalizeOptionalShortText(refreshedLiveOrder?.notes, 2000) || null
+        const refreshedDescription = normalizeOptionalShortText(refreshedLiveOrder?.description, 2000) || null
+        const refreshedOrderDate = normalizeIsoDateInput(refreshedLiveOrder?.orderDate) || null
+        const refreshedDueDate = normalizeIsoDateInput(refreshedLiveOrder?.dueDate) || null
+        const refreshedShippedAt = String(refreshedLiveOrder?.shippedAt ?? '').trim() || null
+        const refreshedLeadTimeDays = Number.isFinite(Number(refreshedLiveOrder?.leadTimeDays))
+          ? Number(refreshedLiveOrder.leadTimeDays)
+          : null
+
+        await Promise.all([
+          mondayOrdersCollection.updateOne(
+            { mondayItemId },
+            {
+              $set: {
+                mondayItemId,
+                mondayBoardId: context.boardId,
+                mondayBoardName: resolvedBoardName,
+                mondayBoardUrl: resolvedBoardUrl,
+                orderName: refreshedOrderName,
+                jobNumber: String(refreshedLiveOrder?.jobNumber ?? '').trim() || null,
+                poNumber: refreshedPoNumber,
+                notes: refreshedNotes,
+                description: refreshedDescription,
+                orderDate: refreshedOrderDate,
+                dueDate: refreshedDueDate,
+                leadTimeDays: refreshedLeadTimeDays,
+                shippedAt: refreshedShippedAt,
+                mondayUpdatedAt: syncResult.mondayUpdatedAt,
+                updatedAt: now,
+                lastSeenAt: now,
+              },
+            },
+            { upsert: true },
+          ),
+          ordersUnifiedCollection.updateOne(
+            { monday_item_id: mondayItemId },
+            {
+              $set: {
+                has_monday_record: true,
+                monday_item_id: mondayItemId,
+                monday_board_id: context.boardId,
+                monday_board_name: resolvedBoardName,
+                Monday_url:
+                  String(refreshedLiveOrder?.itemUrl ?? '').trim()
+                  || resolvedBoardUrl
+                  || null,
+                order_name: refreshedOrderName,
+                po_number: refreshedPoNumber,
+                monday_notes: refreshedNotes,
+                monday_description: refreshedDescription,
+                order_date: refreshedOrderDate,
+                Due_date: refreshedDueDate,
+                Lead_time_days: refreshedLeadTimeDays,
+                shipped_at: refreshedShippedAt,
+                monday_updated_at: syncResult.mondayUpdatedAt,
+                updatedAt: now,
+                lastSyncedAt: now,
+              },
+            },
+            { upsert: true },
+          ),
+        ])
+
+        let refreshWarning = null
+
+        try {
+          await refreshOrdersUnifiedCollection()
+        } catch (refreshError) {
+          refreshWarning = refreshError instanceof Error
+            ? refreshError.message
+            : 'Order saved to Monday, but unified refresh failed.'
+        }
+
+        const updatedOrderDocument = await ordersUnifiedCollection.findOne(
+          { monday_item_id: mondayItemId },
+          {
+            projection: {
+              _id: 0,
+              order_name: 1,
+              po_number: 1,
+              monday_notes: 1,
+              monday_description: 1,
+              order_date: 1,
+              Due_date: 1,
+              Lead_time_days: 1,
+              shipped_at: 1,
+              monday_updated_at: 1,
+            },
+          },
+        )
+
+        return res.json({
+          ok: true,
+          order: {
+            mondayItemId,
+            orderName: String(updatedOrderDocument?.order_name ?? '').trim() || refreshedOrderName,
+            poNumber: String(updatedOrderDocument?.po_number ?? '').trim() || refreshedPoNumber,
+            notes:
+              String(updatedOrderDocument?.monday_notes ?? '').trim()
+              || refreshedNotes,
+            description:
+              String(updatedOrderDocument?.monday_description ?? '').trim()
+              || refreshedDescription,
+            orderDate: String(updatedOrderDocument?.order_date ?? '').trim() || refreshedOrderDate,
+            dueDate: String(updatedOrderDocument?.Due_date ?? '').trim() || refreshedDueDate,
+            leadTimeDays: Number.isFinite(Number(updatedOrderDocument?.Lead_time_days))
+              ? Number(updatedOrderDocument.Lead_time_days)
+              : refreshedLeadTimeDays,
+            podDate: String(updatedOrderDocument?.shipped_at ?? '').trim() || refreshedShippedAt,
+            mondayUpdatedAt:
+              String(updatedOrderDocument?.monday_updated_at ?? '').trim()
+              || syncResult.mondayUpdatedAt,
+          },
+          warning: refreshWarning,
+        })
+      } catch (error) {
+        next(error)
+      }
+    },
+  )
+
+  // POST /api/orders/warranty/issue — create an active warranty issue.
+  app.post('/api/orders/warranty/issue', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const mondayItemId = String(req.body?.mondayItemId ?? '').trim()
+      const description = normalizeOptionalShortText(req.body?.description, 2000)
+      const requestedReportedDate = normalizeIsoDateInput(req.body?.reportedDate)
+
+      if (!mondayItemId) {
+        return res.status(400).json({ error: 'mondayItemId is required.' })
+      }
+
+      if (!description) {
+        return res.status(400).json({ error: 'description is required.' })
+      }
+
+      const { ordersUnifiedCollection } = await getCollections()
+      const currentOrderDocument = await ordersUnifiedCollection.findOne(
+        { monday_item_id: mondayItemId },
+        {
+          projection: {
+            _id: 0,
+            monday_item_id: 1,
+            order_number: 1,
+            is_shipped: 1,
+            warranty_issue_active: 1,
+            warranty_issue_description: 1,
+            warranty_issue_reported_at: 1,
+            warranty_issue_lead_time_date: 1,
+            warranty_issue_done_at: 1,
+            warranty_last_completed_description: 1,
+            warranty_last_completed_reported_at: 1,
+            warranty_last_completed_lead_time_date: 1,
+            warranty_last_completed_done_at: 1,
+            warranty_last_completed_duration_days: 1,
+            warranty_last_completed_lead_time_variance_days: 1,
+          },
+        },
+      )
+
+      if (!currentOrderDocument) {
+        return res.status(404).json({ error: 'Order was not found for this Monday item.' })
+      }
+
+      if (!Boolean(currentOrderDocument?.is_shipped)) {
+        return res.status(409).json({
+          error: 'Warranty issues can only be opened after the order is shipped.',
+        })
+      }
+
+      if (Boolean(currentOrderDocument?.warranty_issue_active)) {
+        return res.status(409).json({
+          error: 'This order already has an active warranty issue.',
+        })
+      }
+
+      const now = new Date().toISOString()
+      const reportedDate = requestedReportedDate || now.slice(0, 10)
+
+      await ordersUnifiedCollection.updateOne(
+        { monday_item_id: mondayItemId },
+        {
+          $set: {
+            warranty_issue_active: true,
+            warranty_issue_description: description,
+            warranty_issue_reported_at: reportedDate,
+            warranty_issue_lead_time_date: null,
+            warranty_issue_done_at: null,
+            updatedAt: now,
+            lastSyncedAt: now,
+          },
+        },
+      )
+
+      const updatedOrderDocument = await ordersUnifiedCollection.findOne(
+        { monday_item_id: mondayItemId },
+        {
+          projection: {
+            _id: 0,
+            order_number: 1,
+            is_shipped: 1,
+            warranty_issue_active: 1,
+            warranty_issue_description: 1,
+            warranty_issue_reported_at: 1,
+            warranty_issue_lead_time_date: 1,
+            warranty_issue_done_at: 1,
+            warranty_last_completed_description: 1,
+            warranty_last_completed_reported_at: 1,
+            warranty_last_completed_lead_time_date: 1,
+            warranty_last_completed_done_at: 1,
+            warranty_last_completed_duration_days: 1,
+            warranty_last_completed_lead_time_variance_days: 1,
+          },
+        },
+      )
+
+      return res.status(201).json({
+        ok: true,
+        order: buildWarrantyRouteOrderPayload({
+          orderDocument: updatedOrderDocument,
+          mondayItemId,
+        }),
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  // POST /api/orders/warranty/lead-time — set or clear lead-time date for
+  // an active warranty issue.
+  app.post('/api/orders/warranty/lead-time', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const mondayItemId = String(req.body?.mondayItemId ?? '').trim()
+      const rawLeadTimeDate = String(req.body?.leadTimeDate ?? '').trim()
+      const leadTimeDate = normalizeIsoDateInput(rawLeadTimeDate)
+
+      if (!mondayItemId) {
+        return res.status(400).json({ error: 'mondayItemId is required.' })
+      }
+
+      if (rawLeadTimeDate && !leadTimeDate) {
+        return res.status(400).json({ error: 'leadTimeDate must be YYYY-MM-DD.' })
+      }
+
+      const { ordersUnifiedCollection } = await getCollections()
+      const currentOrderDocument = await ordersUnifiedCollection.findOne(
+        { monday_item_id: mondayItemId },
+        {
+          projection: {
+            _id: 0,
+            order_number: 1,
+            is_shipped: 1,
+            warranty_issue_active: 1,
+            warranty_issue_description: 1,
+            warranty_issue_reported_at: 1,
+            warranty_issue_lead_time_date: 1,
+            warranty_issue_done_at: 1,
+            warranty_last_completed_description: 1,
+            warranty_last_completed_reported_at: 1,
+            warranty_last_completed_lead_time_date: 1,
+            warranty_last_completed_done_at: 1,
+            warranty_last_completed_duration_days: 1,
+            warranty_last_completed_lead_time_variance_days: 1,
+          },
+        },
+      )
+
+      if (!currentOrderDocument) {
+        return res.status(404).json({ error: 'Order was not found for this Monday item.' })
+      }
+
+      if (!Boolean(currentOrderDocument?.warranty_issue_active)) {
+        return res.status(409).json({ error: 'No active warranty issue was found for this order.' })
+      }
+
+      const now = new Date().toISOString()
+
+      await ordersUnifiedCollection.updateOne(
+        { monday_item_id: mondayItemId },
+        {
+          $set: {
+            warranty_issue_lead_time_date: leadTimeDate || null,
+            updatedAt: now,
+            lastSyncedAt: now,
+          },
+        },
+      )
+
+      const updatedOrderDocument = await ordersUnifiedCollection.findOne(
+        { monday_item_id: mondayItemId },
+        {
+          projection: {
+            _id: 0,
+            order_number: 1,
+            is_shipped: 1,
+            warranty_issue_active: 1,
+            warranty_issue_description: 1,
+            warranty_issue_reported_at: 1,
+            warranty_issue_lead_time_date: 1,
+            warranty_issue_done_at: 1,
+            warranty_last_completed_description: 1,
+            warranty_last_completed_reported_at: 1,
+            warranty_last_completed_lead_time_date: 1,
+            warranty_last_completed_done_at: 1,
+            warranty_last_completed_duration_days: 1,
+            warranty_last_completed_lead_time_variance_days: 1,
+          },
+        },
+      )
+
+      return res.json({
+        ok: true,
+        order: buildWarrantyRouteOrderPayload({
+          orderDocument: updatedOrderDocument,
+          mondayItemId,
+        }),
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  // POST /api/orders/warranty/done — close active warranty issue and retain
+  // completion history on the order.
+  app.post('/api/orders/warranty/done', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const mondayItemId = String(req.body?.mondayItemId ?? '').trim()
+      const rawDoneDate = String(req.body?.doneDate ?? '').trim()
+      const doneDate = normalizeIsoDateInput(rawDoneDate)
+
+      if (!mondayItemId) {
+        return res.status(400).json({ error: 'mondayItemId is required.' })
+      }
+
+      if (rawDoneDate && !doneDate) {
+        return res.status(400).json({ error: 'doneDate must be YYYY-MM-DD.' })
+      }
+
+      const { ordersUnifiedCollection } = await getCollections()
+      const currentOrderDocument = await ordersUnifiedCollection.findOne(
+        { monday_item_id: mondayItemId },
+        {
+          projection: {
+            _id: 0,
+            order_number: 1,
+            is_shipped: 1,
+            warranty_issue_active: 1,
+            warranty_issue_description: 1,
+            warranty_issue_reported_at: 1,
+            warranty_issue_lead_time_date: 1,
+            warranty_issue_done_at: 1,
+            warranty_last_completed_description: 1,
+            warranty_last_completed_reported_at: 1,
+            warranty_last_completed_lead_time_date: 1,
+            warranty_last_completed_done_at: 1,
+            warranty_last_completed_duration_days: 1,
+            warranty_last_completed_lead_time_variance_days: 1,
+          },
+        },
+      )
+
+      if (!currentOrderDocument) {
+        return res.status(404).json({ error: 'Order was not found for this Monday item.' })
+      }
+
+      if (!Boolean(currentOrderDocument?.warranty_issue_active)) {
+        return res.status(409).json({ error: 'No active warranty issue was found for this order.' })
+      }
+
+      const now = new Date().toISOString()
+      const resolvedDoneDate = doneDate || now.slice(0, 10)
+      const issueDescription = normalizeOptionalShortText(
+        currentOrderDocument?.warranty_issue_description,
+        2000,
+      ) || null
+      const reportedAt = normalizeIsoDateInput(currentOrderDocument?.warranty_issue_reported_at) || null
+      const leadTimeDate = normalizeIsoDateInput(currentOrderDocument?.warranty_issue_lead_time_date) || null
+      const durationDays = calculateDateDifferenceDays(reportedAt, resolvedDoneDate)
+      const leadTimeVarianceDays = calculateDateDifferenceDays(leadTimeDate, resolvedDoneDate)
+
+      await ordersUnifiedCollection.updateOne(
+        { monday_item_id: mondayItemId },
+        {
+          $set: {
+            warranty_issue_active: false,
+            warranty_issue_description: null,
+            warranty_issue_reported_at: null,
+            warranty_issue_lead_time_date: null,
+            warranty_issue_done_at: resolvedDoneDate,
+            warranty_last_completed_description: issueDescription,
+            warranty_last_completed_reported_at: reportedAt,
+            warranty_last_completed_lead_time_date: leadTimeDate,
+            warranty_last_completed_done_at: resolvedDoneDate,
+            warranty_last_completed_duration_days: durationDays,
+            warranty_last_completed_lead_time_variance_days: leadTimeVarianceDays,
+            updatedAt: now,
+            lastSyncedAt: now,
+          },
+        },
+      )
+
+      const updatedOrderDocument = await ordersUnifiedCollection.findOne(
+        { monday_item_id: mondayItemId },
+        {
+          projection: {
+            _id: 0,
+            order_number: 1,
+            is_shipped: 1,
+            warranty_issue_active: 1,
+            warranty_issue_description: 1,
+            warranty_issue_reported_at: 1,
+            warranty_issue_lead_time_date: 1,
+            warranty_issue_done_at: 1,
+            warranty_last_completed_description: 1,
+            warranty_last_completed_reported_at: 1,
+            warranty_last_completed_lead_time_date: 1,
+            warranty_last_completed_done_at: 1,
+            warranty_last_completed_duration_days: 1,
+            warranty_last_completed_lead_time_variance_days: 1,
+          },
+        },
+      )
+
+      return res.json({
+        ok: true,
+        order: buildWarrantyRouteOrderPayload({
+          orderDocument: updatedOrderDocument,
+          mondayItemId,
+        }),
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  // POST /api/orders/monday/shop-drawing/upload — manager-only replace flow
+  // for shop drawings with Monday write-through.
+  app.post(
+    '/api/orders/monday/shop-drawing/upload',
+    requireFirebaseAuth,
+    requireManagerOrAdminRole,
+    async (req, res, next) => {
+      try {
+        const mondayItemId = String(req.body?.mondayItemId ?? '').trim()
+        const mimeType = String(req.body?.mimeType ?? 'application/pdf')
+          .trim()
+          .toLowerCase()
+        const requestedFileName = String(req.body?.fileName ?? '').trim()
+        const base64Payload = req.body?.fileBase64
+          ?? req.body?.fileData
+          ?? req.body?.data
+          ?? null
+
+        if (!mondayItemId) {
+          return res.status(400).json({ error: 'mondayItemId is required.' })
+        }
+
+        if (!requestedFileName) {
+          return res.status(400).json({ error: 'fileName is required.' })
+        }
+
+        if (!shippingDocumentMimeTypes.has(mimeType)) {
+          return res.status(400).json({ error: 'Unsupported document mimeType.' })
+        }
+
+        const fileBuffer = decodeBase64Image(base64Payload)
+
+        if (!fileBuffer || fileBuffer.length <= 0) {
+          return res.status(400).json({ error: 'fileBase64 is required.' })
+        }
+
+        if (fileBuffer.length > 10 * 1024 * 1024) {
+          return res.status(400).json({ error: 'File exceeds 10MB limit.' })
+        }
+
+        const {
+          mondayOrdersCollection,
+          ordersUnifiedCollection,
+        } = await getCollections()
+
+        const context = await resolveMondayOrderContext({
+          mondayItemId,
+          mondayOrdersCollection,
+          ordersUnifiedCollection,
+        })
+
+        if (!context?.boardId) {
+          return res.status(404).json({
+            error: 'Could not resolve Monday board for this order.',
+          })
+        }
+
+        const snapshot = await fetchMondayBoardItemsByIds({
+          boardId: context.boardId,
+          boardName: context.boardName,
+          boardUrl: context.boardUrl,
+          itemIds: [mondayItemId],
+        })
+        const liveOrder = Array.isArray(snapshot?.orders)
+          ? snapshot.orders[0]
+          : null
+
+        if (!liveOrder) {
+          return res.status(404).json({
+            error: 'Monday item was not found on the configured board.',
+          })
+        }
+
+        const shopDrawingColumnId = String(snapshot?.columnDetection?.shopDrawingColumnId ?? '').trim()
+
+        if (!shopDrawingColumnId) {
+          return res.status(409).json({
+            error: 'Shop drawing column could not be resolved for this board.',
+          })
+        }
+
+        const bucket = typeof getOrderPhotosBucket === 'function'
+          ? getOrderPhotosBucket()
+          : null
+
+        if (!bucket) {
+          throw Object.assign(new Error('Order photo storage bucket is unavailable.'), { status: 500 })
+        }
+
+        const orderDocument = await ordersUnifiedCollection.findOne(
+          { monday_item_id: mondayItemId },
+          {
+            projection: {
+              _id: 0,
+              order_number: 1,
+              order_name: 1,
+            },
+          },
+        )
+
+        const storageOrderId = sanitizeStorageSegment(
+          orderDocument?.order_number || mondayItemId,
+          'order',
+        )
+        const storedFileName = ensureShippingDocumentFileName(
+          requestedFileName,
+          mimeType,
+          `${storageOrderId}-shop-drawing.pdf`,
+        )
+        const storagePath = `orders-shop-drawings/${storageOrderId}/${Date.now()}-${storedFileName}`
+        const downloadToken = typeof randomUUID === 'function'
+          ? randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`
+        const now = new Date().toISOString()
+
+        await bucket.file(storagePath).save(fileBuffer, {
+          resumable: false,
+          metadata: {
+            contentType: mimeType,
+            metadata: {
+              firebaseStorageDownloadTokens: downloadToken,
+              mondayItemId,
+              orderNumber: String(orderDocument?.order_number ?? '').trim() || null,
+              uploadedAt: now,
+            },
+          },
+        })
+
+        const downloadUrl = buildFirebaseStorageDownloadUrl(bucket.name, storagePath, downloadToken)
+
+        await updateMondayLinkColumnValue({
+          boardId: context.boardId,
+          itemId: mondayItemId,
+          columnId: shopDrawingColumnId,
+          urlValue: downloadUrl,
+          linkText: storedFileName,
+        })
+
+        const {
+          liveOrder: refreshedLiveOrder,
+          resolvedBoardName,
+          resolvedBoardUrl,
+          progressStatusDetails,
+        } = await pullLiveMondayProgressDetails({
+          boardId: context.boardId,
+          boardName: context.boardName,
+          boardUrl: context.boardUrl,
+          mondayItemId,
+        })
+
+        const syncResult = await syncMondayProgressDetailsToCollections({
+          mondayItemId,
+          boardId: context.boardId,
+          boardName: resolvedBoardName,
+          boardUrl: resolvedBoardUrl,
+          liveOrder: refreshedLiveOrder,
+          progressStatusDetails,
+          mondayOrdersCollection,
+          ordersUnifiedCollection,
+        })
+
+        const refreshedShopDrawingUrl =
+          normalizeOptionalShortText(refreshedLiveOrder?.shopDrawingUrl, 800)
+          || downloadUrl
+
+        await Promise.all([
+          mondayOrdersCollection.updateOne(
+            { mondayItemId },
+            {
+              $set: {
+                mondayItemId,
+                shopDrawingStoragePath: storagePath,
+                shopDrawingDownloadUrl: downloadUrl,
+                shopDrawingContentType: mimeType,
+                shopDrawingCachedAt: now,
+                shopDrawingCacheStatus: 'ready',
+                shopDrawingCacheError: null,
+                shopDrawingFileName: storedFileName,
+                shopDrawingSourceAssetId: null,
+                shopDrawingSourceUrl: null,
+                shopDrawingResolvedUrl: null,
+                shopDrawingUrl: null,
+                mondayUpdatedAt: syncResult.mondayUpdatedAt,
+                updatedAt: now,
+                lastSeenAt: now,
+              },
+            },
+            { upsert: true },
+          ),
+          ordersUnifiedCollection.updateOne(
+            { monday_item_id: mondayItemId },
+            {
+              $set: {
+                has_monday_record: true,
+                monday_item_id: mondayItemId,
+                monday_board_id: context.boardId,
+                monday_board_name: resolvedBoardName,
+                Shop_drawing_cached: downloadUrl,
+                Shop_drawing_source: refreshedShopDrawingUrl,
+                Shop_drawing: downloadUrl,
+                monday_updated_at: syncResult.mondayUpdatedAt,
+                updatedAt: now,
+                lastSyncedAt: now,
+              },
+            },
+            { upsert: true },
+          ),
+        ])
+
+        let refreshWarning = null
+
+        try {
+          await refreshOrdersUnifiedCollection()
+        } catch (refreshError) {
+          refreshWarning = refreshError instanceof Error
+            ? refreshError.message
+            : 'Shop drawing saved to Monday, but unified refresh failed.'
+        }
+
+        const updatedOrderDocument = await ordersUnifiedCollection.findOne(
+          { monday_item_id: mondayItemId },
+          {
+            projection: {
+              _id: 0,
+              order_number: 1,
+              Shop_drawing_cached: 1,
+              Shop_drawing_source: 1,
+              monday_updated_at: 1,
+            },
+          },
+        )
+
+        return res.status(201).json({
+          ok: true,
+          document: {
+            fileName: storedFileName,
+            mimeType,
+            url: downloadUrl,
+            uploadedAt: now,
+          },
+          order: {
+            mondayItemId,
+            orderNumber: String(updatedOrderDocument?.order_number ?? '').trim() || null,
+            shopDrawingCachedUrl:
+              String(updatedOrderDocument?.Shop_drawing_cached ?? '').trim()
+              || downloadUrl,
+            shopDrawingUrl:
+              String(updatedOrderDocument?.Shop_drawing_source ?? '').trim()
+              || refreshedShopDrawingUrl
+              || null,
+            mondayUpdatedAt:
+              String(updatedOrderDocument?.monday_updated_at ?? '').trim()
+              || syncResult.mondayUpdatedAt,
+          },
+          warning: refreshWarning,
+        })
+      } catch (error) {
+        next(error)
+      }
+    },
+  )
+
+  // POST /api/orders/monday/shop-drawing/delete — manager-only clear flow
+  // for shop drawings with Monday write-through.
+  app.post(
+    '/api/orders/monday/shop-drawing/delete',
+    requireFirebaseAuth,
+    requireManagerOrAdminRole,
+    async (req, res, next) => {
+      try {
+        const mondayItemId = String(req.body?.mondayItemId ?? '').trim()
+
+        if (!mondayItemId) {
+          return res.status(400).json({ error: 'mondayItemId is required.' })
+        }
+
+        const {
+          mondayOrdersCollection,
+          ordersUnifiedCollection,
+        } = await getCollections()
+
+        const context = await resolveMondayOrderContext({
+          mondayItemId,
+          mondayOrdersCollection,
+          ordersUnifiedCollection,
+        })
+
+        if (!context?.boardId) {
+          return res.status(404).json({
+            error: 'Could not resolve Monday board for this order.',
+          })
+        }
+
+        const snapshot = await fetchMondayBoardItemsByIds({
+          boardId: context.boardId,
+          boardName: context.boardName,
+          boardUrl: context.boardUrl,
+          itemIds: [mondayItemId],
+        })
+        const liveOrder = Array.isArray(snapshot?.orders)
+          ? snapshot.orders[0]
+          : null
+
+        if (!liveOrder) {
+          return res.status(404).json({
+            error: 'Monday item was not found on the configured board.',
+          })
+        }
+
+        const shopDrawingColumnId = String(snapshot?.columnDetection?.shopDrawingColumnId ?? '').trim()
+
+        if (!shopDrawingColumnId) {
+          return res.status(409).json({
+            error: 'Shop drawing column could not be resolved for this board.',
+          })
+        }
+
+        await clearMondayColumnValue({
+          boardId: context.boardId,
+          itemId: mondayItemId,
+          columnId: shopDrawingColumnId,
+        })
+
+        const {
+          liveOrder: refreshedLiveOrder,
+          resolvedBoardName,
+          resolvedBoardUrl,
+          progressStatusDetails,
+        } = await pullLiveMondayProgressDetails({
+          boardId: context.boardId,
+          boardName: context.boardName,
+          boardUrl: context.boardUrl,
+          mondayItemId,
+        })
+
+        const syncResult = await syncMondayProgressDetailsToCollections({
+          mondayItemId,
+          boardId: context.boardId,
+          boardName: resolvedBoardName,
+          boardUrl: resolvedBoardUrl,
+          liveOrder: refreshedLiveOrder,
+          progressStatusDetails,
+          mondayOrdersCollection,
+          ordersUnifiedCollection,
+        })
+
+        const now = new Date().toISOString()
+        const refreshedShopDrawingUrl =
+          normalizeOptionalShortText(refreshedLiveOrder?.shopDrawingUrl, 800)
+          || null
+
+        await Promise.all([
+          mondayOrdersCollection.updateOne(
+            { mondayItemId },
+            {
+              $set: {
+                mondayItemId,
+                shopDrawingStoragePath: null,
+                shopDrawingDownloadUrl: null,
+                shopDrawingContentType: null,
+                shopDrawingCachedAt: null,
+                shopDrawingCacheStatus: refreshedShopDrawingUrl ? 'ready' : 'cleared',
+                shopDrawingCacheError: null,
+                shopDrawingFileName: null,
+                shopDrawingSourceAssetId: null,
+                shopDrawingSourceUrl: null,
+                shopDrawingResolvedUrl: null,
+                shopDrawingUrl: null,
+                mondayUpdatedAt: syncResult.mondayUpdatedAt,
+                updatedAt: now,
+                lastSeenAt: now,
+              },
+            },
+            { upsert: true },
+          ),
+          ordersUnifiedCollection.updateOne(
+            { monday_item_id: mondayItemId },
+            {
+              $set: {
+                has_monday_record: true,
+                monday_item_id: mondayItemId,
+                monday_board_id: context.boardId,
+                monday_board_name: resolvedBoardName,
+                Shop_drawing_cached: null,
+                Shop_drawing_source: refreshedShopDrawingUrl,
+                Shop_drawing: refreshedShopDrawingUrl,
+                monday_updated_at: syncResult.mondayUpdatedAt,
+                updatedAt: now,
+                lastSyncedAt: now,
+              },
+            },
+            { upsert: true },
+          ),
+        ])
+
+        let refreshWarning = null
+
+        try {
+          await refreshOrdersUnifiedCollection()
+        } catch (refreshError) {
+          refreshWarning = refreshError instanceof Error
+            ? refreshError.message
+            : 'Shop drawing saved to Monday, but unified refresh failed.'
+        }
+
+        const updatedOrderDocument = await ordersUnifiedCollection.findOne(
+          { monday_item_id: mondayItemId },
+          {
+            projection: {
+              _id: 0,
+              order_number: 1,
+              Shop_drawing_cached: 1,
+              Shop_drawing_source: 1,
+              monday_updated_at: 1,
+            },
+          },
+        )
+
+        return res.json({
+          ok: true,
+          order: {
+            mondayItemId,
+            orderNumber: String(updatedOrderDocument?.order_number ?? '').trim() || null,
+            shopDrawingCachedUrl:
+              String(updatedOrderDocument?.Shop_drawing_cached ?? '').trim()
+              || null,
+            shopDrawingUrl:
+              String(updatedOrderDocument?.Shop_drawing_source ?? '').trim()
+              || refreshedShopDrawingUrl
+              || null,
+            mondayUpdatedAt:
+              String(updatedOrderDocument?.monday_updated_at ?? '').trim()
+              || syncResult.mondayUpdatedAt,
+          },
+          warning: refreshWarning,
+        })
+      } catch (error) {
+        next(error)
+      }
+    },
+  )
+
+  // POST /api/orders/monday/cut-list/upload — manager-only replace flow
+  // for cut lists with Monday write-through.
+  app.post(
+    '/api/orders/monday/cut-list/upload',
+    requireFirebaseAuth,
+    requireManagerOrAdminRole,
+    async (req, res, next) => {
+      try {
+        const mondayItemId = String(req.body?.mondayItemId ?? '').trim()
+        const mimeType = String(req.body?.mimeType ?? 'application/pdf')
+          .trim()
+          .toLowerCase()
+        const requestedFileName = String(req.body?.fileName ?? '').trim()
+        const base64Payload = req.body?.fileBase64
+          ?? req.body?.fileData
+          ?? req.body?.data
+          ?? null
+
+        if (!mondayItemId) {
+          return res.status(400).json({ error: 'mondayItemId is required.' })
+        }
+
+        if (!requestedFileName) {
+          return res.status(400).json({ error: 'fileName is required.' })
+        }
+
+        if (!shippingDocumentMimeTypes.has(mimeType)) {
+          return res.status(400).json({ error: 'Unsupported document mimeType.' })
+        }
+
+        const fileBuffer = decodeBase64Image(base64Payload)
+
+        if (!fileBuffer || fileBuffer.length <= 0) {
+          return res.status(400).json({ error: 'fileBase64 is required.' })
+        }
+
+        if (fileBuffer.length > 10 * 1024 * 1024) {
+          return res.status(400).json({ error: 'File exceeds 10MB limit.' })
+        }
+
+        const {
+          mondayOrdersCollection,
+          ordersUnifiedCollection,
+        } = await getCollections()
+
+        const context = await resolveMondayOrderContext({
+          mondayItemId,
+          mondayOrdersCollection,
+          ordersUnifiedCollection,
+        })
+
+        if (!context?.boardId) {
+          return res.status(404).json({
+            error: 'Could not resolve Monday board for this order.',
+          })
+        }
+
+        const snapshot = await fetchMondayBoardItemsByIds({
+          boardId: context.boardId,
+          boardName: context.boardName,
+          boardUrl: context.boardUrl,
+          itemIds: [mondayItemId],
+        })
+        const liveOrder = Array.isArray(snapshot?.orders)
+          ? snapshot.orders[0]
+          : null
+
+        if (!liveOrder) {
+          return res.status(404).json({
+            error: 'Monday item was not found on the configured board.',
+          })
+        }
+
+        const cutListColumnId = String(snapshot?.columnDetection?.cutListColumnId ?? '').trim()
+
+        if (!cutListColumnId) {
+          return res.status(409).json({
+            error: 'Cut list column could not be resolved for this board.',
+          })
+        }
+
+        const bucket = typeof getOrderPhotosBucket === 'function'
+          ? getOrderPhotosBucket()
+          : null
+
+        if (!bucket) {
+          throw Object.assign(new Error('Order photo storage bucket is unavailable.'), { status: 500 })
+        }
+
+        const orderDocument = await ordersUnifiedCollection.findOne(
+          { monday_item_id: mondayItemId },
+          {
+            projection: {
+              _id: 0,
+              order_number: 1,
+              order_name: 1,
+            },
+          },
+        )
+
+        const storageOrderId = sanitizeStorageSegment(
+          orderDocument?.order_number || mondayItemId,
+          'order',
+        )
+        const storedFileName = ensureShippingDocumentFileName(
+          requestedFileName,
+          mimeType,
+          `${storageOrderId}-cut-list.pdf`,
+        )
+        const storagePath = `orders-cut-lists/${storageOrderId}/${Date.now()}-${storedFileName}`
+        const downloadToken = typeof randomUUID === 'function'
+          ? randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`
+        const now = new Date().toISOString()
+
+        await bucket.file(storagePath).save(fileBuffer, {
+          resumable: false,
+          metadata: {
+            contentType: mimeType,
+            metadata: {
+              firebaseStorageDownloadTokens: downloadToken,
+              mondayItemId,
+              orderNumber: String(orderDocument?.order_number ?? '').trim() || null,
+              uploadedAt: now,
+            },
+          },
+        })
+
+        const downloadUrl = buildFirebaseStorageDownloadUrl(bucket.name, storagePath, downloadToken)
+
+        await updateMondayLinkColumnValue({
+          boardId: context.boardId,
+          itemId: mondayItemId,
+          columnId: cutListColumnId,
+          urlValue: downloadUrl,
+          linkText: storedFileName,
+        })
+
+        const {
+          liveOrder: refreshedLiveOrder,
+          resolvedBoardName,
+          resolvedBoardUrl,
+          progressStatusDetails,
+        } = await pullLiveMondayProgressDetails({
+          boardId: context.boardId,
+          boardName: context.boardName,
+          boardUrl: context.boardUrl,
+          mondayItemId,
+        })
+
+        const syncResult = await syncMondayProgressDetailsToCollections({
+          mondayItemId,
+          boardId: context.boardId,
+          boardName: resolvedBoardName,
+          boardUrl: resolvedBoardUrl,
+          liveOrder: refreshedLiveOrder,
+          progressStatusDetails,
+          mondayOrdersCollection,
+          ordersUnifiedCollection,
+        })
+
+        const refreshedCutListUrl =
+          normalizeOptionalShortText(refreshedLiveOrder?.cutListUrl, 800)
+          || downloadUrl
+
+        await Promise.all([
+          mondayOrdersCollection.updateOne(
+            { mondayItemId },
+            {
+              $set: {
+                mondayItemId,
+                cutListStoragePath: storagePath,
+                cutListDownloadUrl: downloadUrl,
+                cutListContentType: mimeType,
+                cutListCachedAt: now,
+                cutListCacheStatus: 'ready',
+                cutListCacheError: null,
+                cutListFileName: storedFileName,
+                cutListSourceAssetId: null,
+                cutListSourceUrl: null,
+                cutListResolvedUrl: null,
+                cutListUrl: null,
+                mondayUpdatedAt: syncResult.mondayUpdatedAt,
+                updatedAt: now,
+                lastSeenAt: now,
+              },
+            },
+            { upsert: true },
+          ),
+          ordersUnifiedCollection.updateOne(
+            { monday_item_id: mondayItemId },
+            {
+              $set: {
+                has_monday_record: true,
+                monday_item_id: mondayItemId,
+                monday_board_id: context.boardId,
+                monday_board_name: resolvedBoardName,
+                Cut_list_cached: downloadUrl,
+                Cut_list_source: refreshedCutListUrl,
+                Cut_list: downloadUrl,
+                monday_updated_at: syncResult.mondayUpdatedAt,
+                updatedAt: now,
+                lastSyncedAt: now,
+              },
+            },
+            { upsert: true },
+          ),
+        ])
+
+        let refreshWarning = null
+
+        try {
+          await refreshOrdersUnifiedCollection()
+        } catch (refreshError) {
+          refreshWarning = refreshError instanceof Error
+            ? refreshError.message
+            : 'Cut list saved to Monday, but unified refresh failed.'
+        }
+
+        const updatedOrderDocument = await ordersUnifiedCollection.findOne(
+          { monday_item_id: mondayItemId },
+          {
+            projection: {
+              _id: 0,
+              order_number: 1,
+              Cut_list_cached: 1,
+              Cut_list_source: 1,
+              monday_updated_at: 1,
+            },
+          },
+        )
+
+        return res.status(201).json({
+          ok: true,
+          document: {
+            fileName: storedFileName,
+            mimeType,
+            url: downloadUrl,
+            uploadedAt: now,
+          },
+          order: {
+            mondayItemId,
+            orderNumber: String(updatedOrderDocument?.order_number ?? '').trim() || null,
+            cutListCachedUrl:
+              String(updatedOrderDocument?.Cut_list_cached ?? '').trim()
+              || downloadUrl,
+            cutListUrl:
+              String(updatedOrderDocument?.Cut_list_source ?? '').trim()
+              || refreshedCutListUrl
+              || null,
+            mondayUpdatedAt:
+              String(updatedOrderDocument?.monday_updated_at ?? '').trim()
+              || syncResult.mondayUpdatedAt,
+          },
+          warning: refreshWarning,
+        })
+      } catch (error) {
+        next(error)
+      }
+    },
+  )
+
+  // POST /api/orders/monday/cut-list/delete — manager-only clear flow
+  // for cut lists with Monday write-through.
+  app.post(
+    '/api/orders/monday/cut-list/delete',
+    requireFirebaseAuth,
+    requireManagerOrAdminRole,
+    async (req, res, next) => {
+      try {
+        const mondayItemId = String(req.body?.mondayItemId ?? '').trim()
+
+        if (!mondayItemId) {
+          return res.status(400).json({ error: 'mondayItemId is required.' })
+        }
+
+        const {
+          mondayOrdersCollection,
+          ordersUnifiedCollection,
+        } = await getCollections()
+
+        const context = await resolveMondayOrderContext({
+          mondayItemId,
+          mondayOrdersCollection,
+          ordersUnifiedCollection,
+        })
+
+        if (!context?.boardId) {
+          return res.status(404).json({
+            error: 'Could not resolve Monday board for this order.',
+          })
+        }
+
+        const snapshot = await fetchMondayBoardItemsByIds({
+          boardId: context.boardId,
+          boardName: context.boardName,
+          boardUrl: context.boardUrl,
+          itemIds: [mondayItemId],
+        })
+        const liveOrder = Array.isArray(snapshot?.orders)
+          ? snapshot.orders[0]
+          : null
+
+        if (!liveOrder) {
+          return res.status(404).json({
+            error: 'Monday item was not found on the configured board.',
+          })
+        }
+
+        const cutListColumnId = String(snapshot?.columnDetection?.cutListColumnId ?? '').trim()
+
+        if (!cutListColumnId) {
+          return res.status(409).json({
+            error: 'Cut list column could not be resolved for this board.',
+          })
+        }
+
+        await clearMondayColumnValue({
+          boardId: context.boardId,
+          itemId: mondayItemId,
+          columnId: cutListColumnId,
+        })
+
+        const {
+          liveOrder: refreshedLiveOrder,
+          resolvedBoardName,
+          resolvedBoardUrl,
+          progressStatusDetails,
+        } = await pullLiveMondayProgressDetails({
+          boardId: context.boardId,
+          boardName: context.boardName,
+          boardUrl: context.boardUrl,
+          mondayItemId,
+        })
+
+        const syncResult = await syncMondayProgressDetailsToCollections({
+          mondayItemId,
+          boardId: context.boardId,
+          boardName: resolvedBoardName,
+          boardUrl: resolvedBoardUrl,
+          liveOrder: refreshedLiveOrder,
+          progressStatusDetails,
+          mondayOrdersCollection,
+          ordersUnifiedCollection,
+        })
+
+        const now = new Date().toISOString()
+        const refreshedCutListUrl =
+          normalizeOptionalShortText(refreshedLiveOrder?.cutListUrl, 800)
+          || null
+
+        await Promise.all([
+          mondayOrdersCollection.updateOne(
+            { mondayItemId },
+            {
+              $set: {
+                mondayItemId,
+                cutListStoragePath: null,
+                cutListDownloadUrl: null,
+                cutListContentType: null,
+                cutListCachedAt: null,
+                cutListCacheStatus: refreshedCutListUrl ? 'ready' : 'cleared',
+                cutListCacheError: null,
+                cutListFileName: null,
+                cutListSourceAssetId: null,
+                cutListSourceUrl: null,
+                cutListResolvedUrl: null,
+                cutListUrl: null,
+                mondayUpdatedAt: syncResult.mondayUpdatedAt,
+                updatedAt: now,
+                lastSeenAt: now,
+              },
+            },
+            { upsert: true },
+          ),
+          ordersUnifiedCollection.updateOne(
+            { monday_item_id: mondayItemId },
+            {
+              $set: {
+                has_monday_record: true,
+                monday_item_id: mondayItemId,
+                monday_board_id: context.boardId,
+                monday_board_name: resolvedBoardName,
+                Cut_list_cached: null,
+                Cut_list_source: refreshedCutListUrl,
+                Cut_list: refreshedCutListUrl,
+                monday_updated_at: syncResult.mondayUpdatedAt,
+                updatedAt: now,
+                lastSyncedAt: now,
+              },
+            },
+            { upsert: true },
+          ),
+        ])
+
+        let refreshWarning = null
+
+        try {
+          await refreshOrdersUnifiedCollection()
+        } catch (refreshError) {
+          refreshWarning = refreshError instanceof Error
+            ? refreshError.message
+            : 'Cut list saved to Monday, but unified refresh failed.'
+        }
+
+        const updatedOrderDocument = await ordersUnifiedCollection.findOne(
+          { monday_item_id: mondayItemId },
+          {
+            projection: {
+              _id: 0,
+              order_number: 1,
+              Cut_list_cached: 1,
+              Cut_list_source: 1,
+              monday_updated_at: 1,
+            },
+          },
+        )
+
+        return res.json({
+          ok: true,
+          order: {
+            mondayItemId,
+            orderNumber: String(updatedOrderDocument?.order_number ?? '').trim() || null,
+            cutListCachedUrl:
+              String(updatedOrderDocument?.Cut_list_cached ?? '').trim()
+              || null,
+            cutListUrl:
+              String(updatedOrderDocument?.Cut_list_source ?? '').trim()
+              || refreshedCutListUrl
+              || null,
+            mondayUpdatedAt:
+              String(updatedOrderDocument?.monday_updated_at ?? '').trim()
+              || syncResult.mondayUpdatedAt,
+          },
+          warning: refreshWarning,
+        })
+      } catch (error) {
+        next(error)
+      }
+    },
+  )
+
   // POST /api/orders/documents/upload — upload shipping documents to Firebase
   // Storage, then persist the URL on the unified order row.
   app.post(
@@ -2825,6 +5403,161 @@ export function registerOrdersRoutes(app, deps) {
             mimeType,
             url: downloadUrl,
             uploadedAt: now,
+          },
+          order: {
+            orderKey: String(refreshedOrderDocument?.orderKey ?? '').trim() || null,
+            mondayItemId: String(refreshedOrderDocument?.monday_item_id ?? '').trim() || null,
+            orderNumber: String(refreshedOrderDocument?.order_number ?? '').trim() || null,
+            isShipped: Boolean(refreshedOrderDocument?.is_shipped),
+            signedBol: String(refreshedOrderDocument?.signed_bol ?? '').trim() || null,
+            signedBolUrl:
+              String(refreshedOrderDocument?.Signed_BOL_source ?? '').trim()
+              || String(refreshedOrderDocument?.Signed_BOL ?? '').trim()
+              || null,
+            inspectionSheet: String(refreshedOrderDocument?.inspection_sheet ?? '').trim() || null,
+            inspectionSheetUrl:
+              String(refreshedOrderDocument?.Inspection_sheet_source ?? '').trim()
+              || String(refreshedOrderDocument?.Inspection_sheet ?? '').trim()
+              || null,
+          },
+        })
+      } catch (error) {
+        next(error)
+      }
+    },
+  )
+
+  // POST /api/orders/ship — move an order from Order Track to Shipped in
+  // Monday after required website shipping docs are uploaded.
+  app.post(
+    '/api/orders/documents/delete',
+    requireFirebaseAuth,
+    requireManagerOrAdminRole,
+    async (req, res, next) => {
+      try {
+        const documentType = normalizeShippingDocumentType(req.body?.documentType)
+        const orderIdentityFilter = buildOrderIdentityFilter({
+          orderKey: req.body?.orderKey,
+          mondayItemId: req.body?.mondayItemId,
+          orderNumber: req.body?.orderNumber,
+        })
+
+        if (!orderIdentityFilter) {
+          return res.status(400).json({
+            error: 'orderKey, mondayItemId, or orderNumber is required.',
+          })
+        }
+
+        if (!documentType) {
+          return res.status(400).json({
+            error: 'documentType must be signed_bol or inspection_sheet.',
+          })
+        }
+
+        const {
+          ordersUnifiedCollection,
+        } = await getCollections()
+        const bucket = typeof getOrderPhotosBucket === 'function'
+          ? getOrderPhotosBucket()
+          : null
+
+        const orderDocument = await ordersUnifiedCollection.findOne(
+          orderIdentityFilter,
+          {
+            projection: {
+              _id: 0,
+              orderKey: 1,
+              monday_item_id: 1,
+              order_number: 1,
+              is_shipped: 1,
+              signed_bol: 1,
+              Signed_BOL_source: 1,
+              Signed_BOL: 1,
+              signed_bol_storage_path: 1,
+              inspection_sheet: 1,
+              Inspection_sheet_source: 1,
+              Inspection_sheet: 1,
+              inspection_sheet_storage_path: 1,
+            },
+          },
+        )
+
+        if (!orderDocument) {
+          return res.status(404).json({
+            error: 'Order was not found.',
+          })
+        }
+
+        const documentFields = resolveShippingDocumentFieldNames(documentType)
+        const currentStoragePath = String(orderDocument?.[documentFields.storagePathField] ?? '').trim()
+
+        if (currentStoragePath && bucket) {
+          try {
+            await bucket.file(currentStoragePath).delete({ ignoreNotFound: true })
+          } catch (storageDeleteError) {
+            const storageErrorCode = Number(storageDeleteError?.code)
+
+            if (storageErrorCode !== 404) {
+              throw storageDeleteError
+            }
+          }
+        }
+
+        const updateFilter = buildOrderIdentityFilter({
+          orderKey: orderDocument?.orderKey,
+          mondayItemId: orderDocument?.monday_item_id,
+          orderNumber: orderDocument?.order_number,
+        })
+
+        if (!updateFilter) {
+          return res.status(409).json({
+            error: 'Could not resolve order identity for document delete.',
+          })
+        }
+
+        const now = new Date().toISOString()
+
+        await ordersUnifiedCollection.updateOne(
+          updateFilter,
+          {
+            $set: {
+              [documentFields.fileNameField]: null,
+              [documentFields.urlFieldPrimary]: null,
+              [documentFields.urlFieldLegacy]: null,
+              [documentFields.uploadedAtField]: null,
+              [documentFields.storagePathField]: null,
+              [documentFields.mimeTypeField]: null,
+              updatedAt: now,
+              lastSyncedAt: now,
+            },
+          },
+        )
+
+        const refreshedOrderDocument = await ordersUnifiedCollection.findOne(
+          updateFilter,
+          {
+            projection: {
+              _id: 0,
+              orderKey: 1,
+              monday_item_id: 1,
+              order_number: 1,
+              is_shipped: 1,
+              signed_bol: 1,
+              Signed_BOL_source: 1,
+              Signed_BOL: 1,
+              inspection_sheet: 1,
+              Inspection_sheet_source: 1,
+              Inspection_sheet: 1,
+            },
+          },
+        )
+
+        return res.json({
+          ok: true,
+          document: {
+            type: documentType,
+            label: documentFields.documentLabel,
+            deletedAt: now,
           },
           order: {
             orderKey: String(refreshedOrderDocument?.orderKey ?? '').trim() || null,
@@ -3041,11 +5774,7 @@ export function registerOrdersRoutes(app, deps) {
                 is_shipped: true,
                 shipped_at: shippedAt,
                 shipped_at_inferred: String(movedOrder?.shippedAt ?? '').trim() ? false : true,
-                Due_date:
-                  String(movedOrder?.effectiveDueDate ?? '').trim()
-                  || String(movedOrder?.dueDate ?? '').trim()
-                  || String(movedOrder?.computedDueDate ?? '').trim()
-                  || null,
+                Due_date: String(movedOrder?.dueDate ?? '').trim() || null,
                 Lead_time_days: Number.isFinite(Number(movedOrder?.leadTimeDays))
                   ? Number(movedOrder.leadTimeDays)
                   : null,
@@ -3899,4 +6628,8 @@ export function registerOrdersRoutes(app, deps) {
       }
     },
   )
+
+  return {
+    processQueuedMondayProgressStatusUpdates,
+  }
 }

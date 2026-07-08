@@ -1,6 +1,7 @@
 import AdminPanelSettingsRoundedIcon from '@mui/icons-material/AdminPanelSettingsRounded'
 import ApiRoundedIcon from '@mui/icons-material/ApiRounded'
 import DashboardRoundedIcon from '@mui/icons-material/DashboardRounded'
+import ForumRoundedIcon from '@mui/icons-material/ForumRounded'
 import Inventory2RoundedIcon from '@mui/icons-material/Inventory2Rounded'
 import MarkEmailUnreadRoundedIcon from '@mui/icons-material/MarkEmailUnreadRounded'
 import NotificationsActiveRoundedIcon from '@mui/icons-material/NotificationsActiveRounded'
@@ -75,6 +76,13 @@ export const navItems: NavItem[] = [
     path: '/admin/settings',
     icon: AdminPanelSettingsRoundedIcon,
     adminOnly: true,
+  },
+  {
+    label: 'AI Council',
+    path: '/admin/settings?tab=ai-council',
+    icon: ForumRoundedIcon,
+    adminOnly: true,
+    adminSection: true,
   },
   {
     label: 'Admin Email',

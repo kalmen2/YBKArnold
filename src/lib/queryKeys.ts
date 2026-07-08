@@ -102,6 +102,12 @@ export const QUERY_KEYS = {
   ) => ['admin', 'email', 'review', 'list', status, provider, limit, offset] as const,
   adminSmsBridgeLogs: (limit: number) =>
     ['admin', 'sms-bridge', 'logs', limit] as const,
+  aiCouncilStatus: ['admin', 'ai-council', 'status'] as const,
+  aiCouncilRules: ['admin', 'ai-council', 'rules'] as const,
+  aiCouncilChats: (chatType: 'council' | 'direct' | 'all', targetMember: 'chatgpt' | 'claude' | 'all' = 'all') =>
+    ['admin', 'ai-council', 'chats', chatType, targetMember] as const,
+  aiCouncilMessages: (chatId: string) =>
+    ['admin', 'ai-council', 'messages', chatId] as const,
 
   // Pictures
   photosIndex: ['pictures', 'photos-index'] as const,

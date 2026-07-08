@@ -749,15 +749,9 @@ query GetBoardStatusColumnOptions($boardId: ID!, $columnIds: [String!]) {
       }
     }
 
-    if (!normalizedStatusLabel) {
-      throw {
-        status: 400,
-        message: 'Missing Monday status label for status update.',
-      }
-    }
-
-    await callMondayGraphql(
-      `
+    if (normalizedStatusLabel) {
+      await callMondayGraphql(
+        `
 mutation UpdateMondayItemStatusColumn($boardId: ID!, $itemId: ID!, $columnId: String!, $value: JSON!) {
   change_column_value(
     board_id: $boardId,
@@ -769,19 +763,41 @@ mutation UpdateMondayItemStatusColumn($boardId: ID!, $itemId: ID!, $columnId: St
   }
 }
 `,
-      {
-        boardId: normalizedBoardId,
-        itemId: normalizedItemId,
-        columnId: normalizedColumnId,
-        value: JSON.stringify({ label: normalizedStatusLabel }),
-      },
-    )
+        {
+          boardId: normalizedBoardId,
+          itemId: normalizedItemId,
+          columnId: normalizedColumnId,
+          value: JSON.stringify({ label: normalizedStatusLabel }),
+        },
+      )
+    } else {
+      await callMondayGraphql(
+        `
+mutation ClearMondayItemStatusColumn($boardId: ID!, $itemId: ID!, $columnId: String!, $value: String!) {
+  change_simple_column_value(
+    board_id: $boardId,
+    item_id: $itemId,
+    column_id: $columnId,
+    value: $value
+  ) {
+    id
+  }
+}
+`,
+        {
+          boardId: normalizedBoardId,
+          itemId: normalizedItemId,
+          columnId: normalizedColumnId,
+          value: '',
+        },
+      )
+    }
 
     return {
       boardId: normalizedBoardId,
       itemId: normalizedItemId,
       columnId: normalizedColumnId,
-      statusLabel: normalizedStatusLabel,
+      statusLabel: normalizedStatusLabel || null,
     }
   }
 
@@ -814,13 +830,6 @@ mutation UpdateMondayItemStatusColumn($boardId: ID!, $itemId: ID!, $columnId: St
       }
     }
 
-    if (!normalizedTextValue) {
-      throw {
-        status: 400,
-        message: 'Missing Monday text value for text update.',
-      }
-    }
-
     await callMondayGraphql(
       `
 mutation UpdateMondayItemTextColumn($boardId: ID!, $itemId: ID!, $columnId: String!, $value: String!) {
@@ -847,6 +856,81 @@ mutation UpdateMondayItemTextColumn($boardId: ID!, $itemId: ID!, $columnId: Stri
       itemId: normalizedItemId,
       columnId: normalizedColumnId,
       textValue: normalizedTextValue,
+    }
+  }
+
+  async function updateMondayItemJsonColumn({ boardId, itemId, columnId, jsonValue }) {
+    ensureMondayConfiguration()
+
+    const normalizedBoardId = String(boardId ?? '').trim()
+    const normalizedItemId = String(itemId ?? '').trim()
+    const normalizedColumnId = String(columnId ?? '').trim()
+
+    if (!normalizedBoardId) {
+      throw {
+        status: 500,
+        message: 'Missing Monday board id for JSON update.',
+      }
+    }
+
+    if (!normalizedItemId) {
+      throw {
+        status: 400,
+        message: 'Missing Monday item id for JSON update.',
+      }
+    }
+
+    if (!normalizedColumnId) {
+      throw {
+        status: 400,
+        message: 'Missing Monday column id for JSON update.',
+      }
+    }
+
+    if (jsonValue === undefined || jsonValue === null) {
+      throw {
+        status: 400,
+        message: 'Missing Monday JSON value for JSON update.',
+      }
+    }
+
+    const serializedValue = typeof jsonValue === 'string'
+      ? String(jsonValue).trim()
+      : JSON.stringify(jsonValue)
+
+    if (!serializedValue) {
+      throw {
+        status: 400,
+        message: 'Missing Monday JSON value for JSON update.',
+      }
+    }
+
+    await callMondayGraphql(
+      `
+mutation UpdateMondayItemJsonColumn($boardId: ID!, $itemId: ID!, $columnId: String!, $value: JSON!) {
+  change_column_value(
+    board_id: $boardId,
+    item_id: $itemId,
+    column_id: $columnId,
+    value: $value
+  ) {
+    id
+  }
+}
+`,
+      {
+        boardId: normalizedBoardId,
+        itemId: normalizedItemId,
+        columnId: normalizedColumnId,
+        value: serializedValue,
+      },
+    )
+
+    return {
+      boardId: normalizedBoardId,
+      itemId: normalizedItemId,
+      columnId: normalizedColumnId,
+      value: serializedValue,
     }
   }
 
@@ -1312,6 +1396,7 @@ query GetItemsByIds($itemIds: [ID!]!) {
     fetchMondayStatusColumnOptions,
     invalidateMondayBoardNamesCache,
     moveMondayItemToBoard,
+    updateMondayItemJsonColumn,
     updateMondayItemName,
     updateMondayItemStatusColumn,
     updateMondayItemTextColumn,

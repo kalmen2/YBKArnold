@@ -1,8 +1,10 @@
 import {
   Alert,
   Box,
+  Button,
   CircularProgress,
   Dialog,
+  DialogActions,
   DialogContent,
   DialogTitle,
   Paper,
@@ -10,9 +12,16 @@ import {
   Stack,
   Typography,
 } from '@mui/material'
+import { useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAuth } from '../../auth/useAuth'
-import type { OrdersOverviewOrder } from '../../features/orders/api'
+import {
+  postOrdersShopDrawingDelete,
+  postOrdersShopDrawingUpload,
+  type OrdersShopDrawingManageResponse,
+  type OrdersOverviewOrder,
+} from '../../features/orders/api'
+import { QUERY_KEYS } from '../../lib/queryKeys'
 import { resolveShopDrawingUrl } from './shopDrawingUrl'
 
 const HOVER_OPEN_DELAY_MS = 220
@@ -32,7 +41,8 @@ type ShopDrawingPreviewProps = {
 }
 
 export function ShopDrawingPreview({ onError, bind }: ShopDrawingPreviewProps) {
-  const { getIdToken } = useAuth()
+  const { appUser, getIdToken } = useAuth()
+  const queryClient = useQueryClient()
 
   const [hoverOpen, setHoverOpen] = useState(false)
   const [hoverAnchorEl, setHoverAnchorEl] = useState<HTMLElement | null>(null)
@@ -43,14 +53,102 @@ export function ShopDrawingPreview({ onError, bind }: ShopDrawingPreviewProps) {
   const [dialogOrder, setDialogOrder] = useState<OrdersOverviewOrder | null>(null)
   const [dialogSrc, setDialogSrc] = useState('')
   const [dialogLoading, setDialogLoading] = useState(false)
+  const [dialogActionError, setDialogActionError] = useState<string | null>(null)
+  const [dialogActionSuccess, setDialogActionSuccess] = useState<string | null>(null)
+  const [isReplacingDrawing, setIsReplacingDrawing] = useState(false)
+  const [isDeletingDrawing, setIsDeletingDrawing] = useState(false)
 
   const objectUrlRef = useRef<string | null>(null)
   const hoverObjectUrlsRef = useRef<Map<string, string>>(new Map())
+  const hoverPendingRequestsRef = useRef<Map<string, Promise<string | null>>>(new Map())
   const openTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const hoverRequestSeqRef = useRef(0)
   const overTriggerRef = useRef(false)
   const overPopoverRef = useRef(false)
+  const replaceFileInputRef = useRef<HTMLInputElement | null>(null)
+
+  const canManageShopDrawing = appUser?.isAdmin === true || appUser?.isManager === true
+
+  const shopDrawingUploadSupportedMimeTypes = new Set([
+    'application/pdf',
+    'image/jpeg',
+    'image/png',
+    'image/webp',
+    'image/heic',
+    'image/heif',
+  ])
+
+  function inferShopDrawingMimeTypeFromFileName(fileName: string) {
+    const normalized = String(fileName ?? '').trim().toLowerCase()
+
+    if (normalized.endsWith('.pdf')) {
+      return 'application/pdf'
+    }
+
+    if (normalized.endsWith('.jpg') || normalized.endsWith('.jpeg')) {
+      return 'image/jpeg'
+    }
+
+    if (normalized.endsWith('.png')) {
+      return 'image/png'
+    }
+
+    if (normalized.endsWith('.webp')) {
+      return 'image/webp'
+    }
+
+    if (normalized.endsWith('.heic')) {
+      return 'image/heic'
+    }
+
+    if (normalized.endsWith('.heif')) {
+      return 'image/heif'
+    }
+
+    return ''
+  }
+
+  function resolveShopDrawingUploadMimeType(file: File) {
+    const fromFile = String(file?.type ?? '').trim().toLowerCase()
+
+    if (shopDrawingUploadSupportedMimeTypes.has(fromFile)) {
+      return fromFile
+    }
+
+    const fromName = inferShopDrawingMimeTypeFromFileName(file?.name ?? '')
+
+    if (shopDrawingUploadSupportedMimeTypes.has(fromName)) {
+      return fromName
+    }
+
+    return ''
+  }
+
+  function readFileAsDataUrl(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader()
+
+      reader.onload = () => {
+        const result = typeof reader.result === 'string'
+          ? reader.result
+          : ''
+
+        if (!result) {
+          reject(new Error('Could not read file data.'))
+          return
+        }
+
+        resolve(result)
+      }
+
+      reader.onerror = () => {
+        reject(new Error('Could not read file data.'))
+      }
+
+      reader.readAsDataURL(file)
+    })
+  }
 
   const clearObjectUrl = useCallback(() => {
     if (objectUrlRef.current) {
@@ -98,36 +196,53 @@ export function ShopDrawingPreview({ onError, bind }: ShopDrawingPreviewProps) {
       }
 
       const cachedObjectUrl = hoverObjectUrlsRef.current.get(orderId)
+
       if (cachedObjectUrl) {
         return cachedObjectUrl
       }
 
-      const idToken = await getIdToken()
-      const query = new URLSearchParams({ orderId })
-      const response = await fetch(
-        `/api/dashboard/monday/shop-drawing/download?${query.toString()}`,
-        {
-          headers: {
-            Authorization: `Bearer ${idToken}`,
-            'x-client-platform': 'web',
+      const inFlightRequest = hoverPendingRequestsRef.current.get(orderId)
+
+      if (inFlightRequest) {
+        return inFlightRequest
+      }
+
+      const requestPromise = (async () => {
+        const idToken = await getIdToken()
+        const query = new URLSearchParams({ orderId })
+        const response = await fetch(
+          `/api/dashboard/monday/shop-drawing/download?${query.toString()}`,
+          {
+            headers: {
+              Authorization: `Bearer ${idToken}`,
+              'x-client-platform': 'web',
+            },
           },
-        },
-      )
+        )
 
-      if (!response.ok) {
-        return null
+        if (!response.ok) {
+          return null
+        }
+
+        const blob = await response.blob()
+
+        if (!blob || blob.size <= 0) {
+          return null
+        }
+
+        const objectUrl = URL.createObjectURL(blob)
+        hoverObjectUrlsRef.current.set(orderId, objectUrl)
+
+        return objectUrl
+      })()
+
+      hoverPendingRequestsRef.current.set(orderId, requestPromise)
+
+      try {
+        return await requestPromise
+      } finally {
+        hoverPendingRequestsRef.current.delete(orderId)
       }
-
-      const blob = await response.blob()
-
-      if (!blob || blob.size <= 0) {
-        return null
-      }
-
-      const objectUrl = URL.createObjectURL(blob)
-      hoverObjectUrlsRef.current.set(orderId, objectUrl)
-
-      return objectUrl
     },
     [getIdToken],
   )
@@ -237,6 +352,8 @@ export function ShopDrawingPreview({ onError, bind }: ShopDrawingPreviewProps) {
       setDialogSrc('')
       setDialogLoading(true)
       setDialogOrder(order)
+      setDialogActionError(null)
+      setDialogActionSuccess(null)
 
       if (cachedUrl) {
         setDialogSrc(cachedUrl)
@@ -289,7 +406,182 @@ export function ShopDrawingPreview({ onError, bind }: ShopDrawingPreviewProps) {
     setDialogLoading(false)
     setDialogSrc('')
     setDialogOrder(null)
+    setDialogActionError(null)
+    setDialogActionSuccess(null)
+    setIsReplacingDrawing(false)
+    setIsDeletingDrawing(false)
+
+    if (replaceFileInputRef.current) {
+      replaceFileInputRef.current.value = ''
+    }
   }, [clearObjectUrl])
+
+  const applyShopDrawingOrderUpdate = useCallback((response: OrdersShopDrawingManageResponse) => {
+    const currentOrder = dialogOrder
+
+    if (!currentOrder) {
+      return
+    }
+
+    const normalizedItemId = String(response?.order?.mondayItemId ?? '').trim()
+    const currentItemId = String(currentOrder?.mondayItemId ?? '').trim()
+
+    if (!normalizedItemId || normalizedItemId !== currentItemId) {
+      return
+    }
+
+    const nextCachedUrl = String(response.order.shopDrawingCachedUrl ?? '').trim() || null
+    const nextSourceUrl = String(response.order.shopDrawingUrl ?? '').trim() || null
+    const nextPreviewUrl = nextCachedUrl || nextSourceUrl || ''
+
+    setDialogOrder((existing) => {
+      if (!existing || String(existing.mondayItemId ?? '').trim() !== normalizedItemId) {
+        return existing
+      }
+
+      return {
+        ...existing,
+        shopDrawingCachedUrl: nextCachedUrl,
+        shopDrawingUrl: nextSourceUrl,
+      }
+    })
+
+    const cachedHoverUrl = hoverObjectUrlsRef.current.get(normalizedItemId)
+
+    if (cachedHoverUrl) {
+      URL.revokeObjectURL(cachedHoverUrl)
+      hoverObjectUrlsRef.current.delete(normalizedItemId)
+    }
+
+    clearObjectUrl()
+    setDialogSrc(nextPreviewUrl)
+  }, [clearObjectUrl, dialogOrder])
+
+  const handleReplaceShopDrawingFile = useCallback(async (file: File) => {
+    const currentOrder = dialogOrder
+
+    if (!currentOrder || !canManageShopDrawing || isReplacingDrawing || isDeletingDrawing) {
+      return
+    }
+
+    const mondayItemId = String(currentOrder.mondayItemId ?? '').trim()
+
+    if (!mondayItemId) {
+      setDialogActionError('Monday item id is missing for this order.')
+      return
+    }
+
+    const mimeType = resolveShopDrawingUploadMimeType(file)
+
+    if (!mimeType) {
+      setDialogActionError('Only PDF/JPG/PNG/WEBP/HEIC/HEIF files are supported.')
+      return
+    }
+
+    if (file.size > 10 * 1024 * 1024) {
+      setDialogActionError('File exceeds 10MB limit.')
+      return
+    }
+
+    setIsReplacingDrawing(true)
+    setDialogActionError(null)
+    setDialogActionSuccess(null)
+
+    try {
+      const fileBase64 = await readFileAsDataUrl(file)
+      const response = await postOrdersShopDrawingUpload({
+        mondayItemId,
+        fileName: file.name,
+        mimeType,
+        fileBase64,
+      })
+
+      applyShopDrawingOrderUpdate(response)
+      setDialogActionSuccess('Shop drawing replaced successfully.')
+
+      if (response.warning) {
+        setDialogActionError(response.warning)
+      }
+
+      await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.ordersOverview })
+    } catch (error) {
+      const message = error instanceof Error
+        ? error.message
+        : 'Could not replace shop drawing.'
+
+      setDialogActionError(message)
+      onError(message)
+    } finally {
+      setIsReplacingDrawing(false)
+
+      if (replaceFileInputRef.current) {
+        replaceFileInputRef.current.value = ''
+      }
+    }
+  }, [
+    applyShopDrawingOrderUpdate,
+    canManageShopDrawing,
+    dialogOrder,
+    isDeletingDrawing,
+    isReplacingDrawing,
+    onError,
+    queryClient,
+  ])
+
+  const handleDeleteShopDrawing = useCallback(async () => {
+    const currentOrder = dialogOrder
+
+    if (!currentOrder || !canManageShopDrawing || isDeletingDrawing || isReplacingDrawing) {
+      return
+    }
+
+    const mondayItemId = String(currentOrder.mondayItemId ?? '').trim()
+
+    if (!mondayItemId) {
+      setDialogActionError('Monday item id is missing for this order.')
+      return
+    }
+
+    const shouldContinue = window.confirm('Delete this shop drawing from the website and Monday?')
+
+    if (!shouldContinue) {
+      return
+    }
+
+    setIsDeletingDrawing(true)
+    setDialogActionError(null)
+    setDialogActionSuccess(null)
+
+    try {
+      const response = await postOrdersShopDrawingDelete({ mondayItemId })
+
+      applyShopDrawingOrderUpdate(response)
+      setDialogActionSuccess('Shop drawing deleted successfully.')
+
+      if (response.warning) {
+        setDialogActionError(response.warning)
+      }
+
+      await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.ordersOverview })
+    } catch (error) {
+      const message = error instanceof Error
+        ? error.message
+        : 'Could not delete shop drawing.'
+
+      setDialogActionError(message)
+      onError(message)
+    } finally {
+      setIsDeletingDrawing(false)
+    }
+  }, [
+    applyShopDrawingOrderUpdate,
+    canManageShopDrawing,
+    dialogOrder,
+    isDeletingDrawing,
+    isReplacingDrawing,
+    onError,
+    queryClient,
+  ])
 
   // Bind imperative API to parent.
   useEffect(() => {
@@ -397,6 +689,18 @@ export function ShopDrawingPreview({ onError, bind }: ShopDrawingPreviewProps) {
             : 'Shop Drawing'}
         </DialogTitle>
         <DialogContent sx={{ p: 0, minHeight: 560 }}>
+          {dialogActionError ? (
+            <Alert severity="error" sx={{ mx: 2, mt: 2 }}>
+              {dialogActionError}
+            </Alert>
+          ) : null}
+
+          {dialogActionSuccess ? (
+            <Alert severity="success" sx={{ mx: 2, mt: dialogActionError ? 1 : 2 }}>
+              {dialogActionSuccess}
+            </Alert>
+          ) : null}
+
           {dialogLoading ? (
             <Stack alignItems="center" justifyContent="center" spacing={1.5} sx={{ py: 6 }}>
               <CircularProgress size={28} />
@@ -415,7 +719,49 @@ export function ShopDrawingPreview({ onError, bind }: ShopDrawingPreviewProps) {
             </Alert>
           )}
         </DialogContent>
+        <DialogActions sx={{ px: 2, py: 1.25 }}>
+          {canManageShopDrawing ? (
+            <>
+              <Button
+                variant="contained"
+                disabled={!dialogOrder || isReplacingDrawing || isDeletingDrawing}
+                onClick={() => {
+                  replaceFileInputRef.current?.click()
+                }}
+              >
+                {isReplacingDrawing ? 'Replacing...' : 'Replace'}
+              </Button>
+              <Button
+                color="error"
+                variant="outlined"
+                disabled={!dialogOrder || isReplacingDrawing || isDeletingDrawing}
+                onClick={() => {
+                  void handleDeleteShopDrawing()
+                }}
+              >
+                {isDeletingDrawing ? 'Deleting...' : 'Delete'}
+              </Button>
+            </>
+          ) : null}
+          <Button onClick={closeDialog}>Close</Button>
+        </DialogActions>
       </Dialog>
+
+      <input
+        ref={replaceFileInputRef}
+        type="file"
+        accept=".pdf,.jpg,.jpeg,.png,.webp,.heic,.heif,application/pdf,image/*"
+        style={{ display: 'none' }}
+        onChange={(event) => {
+          const file = event.target.files?.[0]
+
+          if (file) {
+            void handleReplaceShopDrawingFile(file)
+          }
+
+          event.currentTarget.value = ''
+        }}
+      />
     </>
   )
 }

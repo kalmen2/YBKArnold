@@ -8,6 +8,7 @@ import * as functions from 'firebase-functions/v1'
 import { getApps, initializeApp } from 'firebase-admin/app'
 import { getAuth } from 'firebase-admin/auth'
 import { registerAiRoutes } from './src/routes/ai-routes.mjs'
+import { registerAiCouncilRoutes } from './src/routes/ai-council-routes.mjs'
 import { registerAdminApiRoutes } from './src/routes/admin-api-routes.mjs'
 import { registerAlertsRoutes } from './src/routes/alerts-routes.mjs'
 import { registerAuthRoutes } from './src/routes/auth-routes.mjs'
@@ -40,6 +41,7 @@ import { createOrdersUnifiedService } from './src/services/orders-unified-servic
 import { createOrderPhotoService } from './src/services/order-photo-service.mjs'
 import { createPlatformConfigService } from './src/services/platform-config-service.mjs'
 import { createPushAlertService } from './src/services/push-alert-service.mjs'
+import { createAnthropicService } from './src/services/anthropic-service.mjs'
 import { createOpenAiService } from './src/services/openai-service.mjs'
 import { createZendeskDashboardService } from './src/services/zendesk-dashboard-service.mjs'
 import { createZendeskHelperService } from './src/services/zendesk-helper-service.mjs'
@@ -225,6 +227,7 @@ const defaultMobileIosLatestBuild = Number(process.env.MOBILE_IOS_LATEST_BUILD ?
 const defaultMobileLatestVersion = String(process.env.MOBILE_LATEST_VERSION ?? '').trim()
 const expoPushApiUrl = 'https://exp.host/--/api/v2/push/send'
 const openAiApiKey = String(process.env.OPENAI_API_KEY ?? '').trim()
+const anthropicApiKey = String(process.env.ANTHROPIC_API_KEY ?? '').trim()
 const slackSigningSecret = String(process.env.SLACK_SIGNING_SECRET ?? '').trim()
 const slackBotToken = String(process.env.SLACK_BOT_TOKEN ?? '').trim()
 const slackAllowedChannelIds = String(process.env.SLACK_ALLOWED_CHANNEL_IDS ?? '').trim()
@@ -242,6 +245,12 @@ const crmReminderDispatchTimeZone =
 const emailIntakeSyncCron = String(process.env.EMAIL_INTAKE_SYNC_CRON ?? '*/10 * * * *').trim() || '*/10 * * * *'
 const emailIntakeSyncTimeZone =
   String(process.env.EMAIL_INTAKE_SYNC_TIMEZONE ?? authAccessTimeZoneNewJersey).trim()
+  || authAccessTimeZoneNewJersey
+const ordersProgressStatusQueueCron = String(
+  process.env.ORDERS_PROGRESS_STATUS_QUEUE_CRON ?? '*/1 * * * *',
+).trim() || '*/1 * * * *'
+const ordersProgressStatusQueueTimeZone =
+  String(process.env.ORDERS_PROGRESS_STATUS_QUEUE_TIMEZONE ?? authAccessTimeZoneNewJersey).trim()
   || authAccessTimeZoneNewJersey
 const emailIntakeScheduledSyncEnabled = /^(1|true|yes|on)$/i.test(
   String(process.env.EMAIL_INTAKE_SCHEDULED_SYNC_ENABLED ?? '').trim(),
@@ -435,6 +444,8 @@ const {
 })
 
 const {
+  callOpenAi,
+  callOpenAiWebSearch,
   generateSupportReply,
   generateSlackReply,
   classifyEmailIntakeSuggestion,
@@ -443,6 +454,10 @@ const {
   findExactItemPurchaseOptions,
   resolvePurchasingItemSearchMatches,
 } = createOpenAiService({ openAiApiKey })
+
+const {
+  callClaude,
+} = createAnthropicService({ anthropicApiKey })
 
 const {
   clearSupportSnapshotCache,
@@ -543,6 +558,7 @@ const {
   fetchMondayStatusColumnOptions,
   invalidateMondayBoardNamesCache,
   moveMondayItemToBoard,
+  updateMondayItemJsonColumn,
   updateMondayItemName,
   updateMondayItemStatusColumn,
   updateMondayItemTextColumn,
@@ -1608,6 +1624,9 @@ function listRegisteredApiRoutes() {
 
 const routeDeps = {
   batchSummarizeComments,
+  callClaude,
+  callOpenAi,
+  callOpenAiWebSearch,
   classifyEmailIntakeSuggestion,
   buildApiKeyPreview,
   chatForRules,
@@ -1701,6 +1720,7 @@ const routeDeps = {
   toNonNegativeInteger,
   toPublicAuthUser,
   toPublicMobileAlert,
+  updateMondayItemJsonColumn,
   updateMondayItemName,
   updateMondayItemStatusColumn,
   updateMondayItemTextColumn,
@@ -2196,11 +2216,12 @@ async function refreshDashboardSnapshotsAndTrackShippingMoves() {
 }
 
 registerAiRoutes(app, routeDeps)
+registerAiCouncilRoutes(app, routeDeps)
 registerAdminApiRoutes(app, routeDeps)
 registerAuthRoutes(app, routeDeps)
 registerAlertsRoutes(app, routeDeps)
 registerCrmRoutes(app, routeDeps)
-registerOrdersRoutes(app, routeDeps)
+const ordersRoutesRuntime = registerOrdersRoutes(app, routeDeps) || {}
 registerDashboardSupportRoutes(app, routeDeps)
 registerEmailRoutes(app, routeDeps)
 const { runEmailIntakeSyncCycle } = registerEmailIntakeRoutes(app, routeDeps)
@@ -2338,6 +2359,41 @@ export const scheduledEmailIntakeSync = functions
     })
 
     console.info('scheduledEmailIntakeSync completed.', summary)
+
+    return summary
+  })
+
+export const processOrdersProgressStatusQueue = functions
+  .region('us-central1')
+  .runWith({
+    timeoutSeconds: 540,
+    memory: '512MB',
+  })
+  .pubsub.schedule(ordersProgressStatusQueueCron)
+  .timeZone(ordersProgressStatusQueueTimeZone)
+  .onRun(async () => {
+    const processQueue = ordersRoutesRuntime?.processQueuedMondayProgressStatusUpdates
+
+    if (typeof processQueue !== 'function') {
+      const summary = {
+        skipped: true,
+        reason: 'Orders progress-status queue processor is unavailable.',
+        completedAt: new Date().toISOString(),
+      }
+
+      console.warn('processOrdersProgressStatusQueue skipped.', summary)
+
+      return summary
+    }
+
+    const summary = await processQueue({
+      maxJobs: 120,
+      source: 'scheduled',
+    })
+
+    if (Number(summary?.processedCount ?? 0) > 0 || Number(summary?.failedCount ?? 0) > 0) {
+      console.info('processOrdersProgressStatusQueue completed.', summary)
+    }
 
     return summary
   })

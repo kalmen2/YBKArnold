@@ -1,4 +1,5 @@
 import * as XLSX from 'xlsx'
+import { useQueryClient } from '@tanstack/react-query'
 import {
   Alert,
   Stack,
@@ -6,8 +7,11 @@ import {
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAuth } from '../auth/useAuth'
 import {
+  type OrdersMondayProgressStatusBulkQueuedRow,
   type OrdersOverviewOrder,
+  type OrdersOverviewResponse,
 } from '../features/orders/api'
+import { QUERY_KEYS } from '../lib/queryKeys'
 import {
   JobDetailsDialog,
   type JobDetailsMode,
@@ -32,13 +36,54 @@ import {
   ShopDrawingPreview,
   type ShopDrawingPreviewHandle,
 } from './orders/ShopDrawingPreview'
+import { UpdateOrdersDialog } from './orders/UpdateOrdersDialog'
 import { useOrdersOverview } from './orders/useOrdersOverview'
 
 const FEEDBACK_TOAST_MS = 2000
 const WARNING_TOAST_MS = 3000
 
+function applyQueuedProgressStatusUpdates(
+  order: OrdersOverviewOrder,
+  queuedUpdates: OrdersMondayProgressStatusBulkQueuedRow[],
+) {
+  const updatesByColumnId = new Map(
+    (Array.isArray(queuedUpdates) ? queuedUpdates : [])
+      .map((entry) => [
+        String(entry?.columnId ?? '').trim(),
+        String(entry?.status ?? '').trim(),
+      ] as const)
+      .filter(([columnId]) => Boolean(columnId)),
+  )
+
+  if (updatesByColumnId.size === 0 || !Array.isArray(order.progressStatusDetails)) {
+    return order
+  }
+
+  const nextProgressStatusDetails = order.progressStatusDetails.map((detail) => {
+    const columnId = String(detail?.columnId ?? '').trim()
+
+    if (!columnId || !updatesByColumnId.has(columnId)) {
+      return detail
+    }
+
+    const nextStatus = updatesByColumnId.get(columnId)
+
+    return {
+      ...detail,
+      status: nextStatus ? nextStatus : null,
+    }
+  })
+
+  return {
+    ...order,
+    progressStatusDetails: nextProgressStatusDetails,
+    mondayUpdatedAt: new Date().toISOString(),
+  }
+}
+
 export default function OrdersPage() {
   const { appUser, getIdToken } = useAuth()
+  const queryClient = useQueryClient()
   const overview = useOrdersOverview()
   const canUseAdminView = appUser?.isAdmin === true
   const canEditMondayStages = appUser?.isAdmin === true || appUser?.isManager === true
@@ -53,6 +98,7 @@ export default function OrdersPage() {
   const [quickBooksDialogOrder, setQuickBooksDialogOrder] = useState<OrdersOverviewOrder | null>(null)
   const [quickBooksDialogMetric, setQuickBooksDialogMetric] =
     useState<OrdersQuickBooksDrilldownMetric | null>(null)
+  const [updateOrdersDialogOpen, setUpdateOrdersDialogOpen] = useState(false)
 
   const shopDrawingHandle = useRef<ShopDrawingPreviewHandle | null>(null)
   const cutListHandle = useRef<CutListPreviewHandle | null>(null)
@@ -155,6 +201,34 @@ export default function OrdersPage() {
     setViewMode('standard')
   }, [canUseAdminView, viewMode])
 
+  useEffect(() => {
+    if (!selectedOrder) {
+      return
+    }
+
+    const refreshedSelectedOrder = overview.visibleOrders.find((order) => {
+      const selectedId = String(selectedOrder.id ?? '').trim()
+      const orderId = String(order.id ?? '').trim()
+      const selectedMondayItemId = String(selectedOrder.mondayItemId ?? '').trim()
+      const orderMondayItemId = String(order.mondayItemId ?? '').trim()
+
+      return (
+        (selectedId && orderId && selectedId === orderId)
+        || (selectedMondayItemId && orderMondayItemId && selectedMondayItemId === orderMondayItemId)
+      )
+    })
+
+    if (!refreshedSelectedOrder) {
+      return
+    }
+
+    if (refreshedSelectedOrder === selectedOrder) {
+      return
+    }
+
+    setSelectedOrder(refreshedSelectedOrder)
+  }, [overview.visibleOrders, selectedOrder])
+
   const handleRefresh = useCallback(async () => {
     setErrorMessage(null)
     try {
@@ -170,7 +244,7 @@ export default function OrdersPage() {
   }, [overview])
 
   const handleOpenJobDialog = useCallback((order: OrdersOverviewOrder, mode: JobDetailsMode) => {
-    if (!order.hasMondayRecord) {
+    if (!order.hasMondayRecord && !order.inDesign) {
       setErrorMessage('This QuickBooks project is not linked to a Monday order yet.')
       return
     }
@@ -242,6 +316,92 @@ export default function OrdersPage() {
     setQuickBooksDialogOrder(null)
     setQuickBooksDialogMetric(null)
   }, [])
+
+  const handleOpenUpdateOrdersDialog = useCallback(() => {
+    setUpdateOrdersDialogOpen(true)
+  }, [])
+
+  const handleCloseUpdateOrdersDialog = useCallback(() => {
+    setUpdateOrdersDialogOpen(false)
+  }, [])
+
+  const handleSavedBulkOrderUpdates = useCallback((summary: {
+    updatedCount: number
+    queuedCount: number
+    failedCount: number
+    queuedUpdates: OrdersMondayProgressStatusBulkQueuedRow[]
+    warnings: string[]
+  }) => {
+    const warningMessages = (Array.isArray(summary.warnings) ? summary.warnings : [])
+      .map((entry) => String(entry ?? '').trim())
+      .filter(Boolean)
+    const queuedCount = Number.isFinite(Number(summary.queuedCount))
+      ? Number(summary.queuedCount)
+      : Number(summary.updatedCount ?? 0)
+
+    if (summary.failedCount > 0) {
+      setWarningMessage(`Saved ${queuedCount} updates to backend. ${summary.failedCount} failed.`)
+    } else if (warningMessages.length > 0) {
+      setWarningMessage(`Saved ${queuedCount} updates. ${warningMessages[0]}`)
+    } else {
+      setSuccessMessage(`Saved ${queuedCount} updates. Monday sync is running in the background.`)
+    }
+
+    const queuedUpdates = Array.isArray(summary.queuedUpdates)
+      ? summary.queuedUpdates
+      : []
+
+    if (queuedUpdates.length > 0) {
+      const updatesByItemId = queuedUpdates.reduce((accumulator, entry) => {
+        const mondayItemId = String(entry?.mondayItemId ?? '').trim()
+
+        if (!mondayItemId) {
+          return accumulator
+        }
+
+        if (!accumulator.has(mondayItemId)) {
+          accumulator.set(mondayItemId, [])
+        }
+
+        const queuedItemUpdates = accumulator.get(mondayItemId)
+
+        if (queuedItemUpdates) {
+          queuedItemUpdates.push(entry)
+        }
+
+        return accumulator
+      }, new Map<string, OrdersMondayProgressStatusBulkQueuedRow[]>())
+
+      queryClient.setQueryData<OrdersOverviewResponse>(
+        QUERY_KEYS.ordersOverview,
+        (current) => {
+          if (!current || !Array.isArray(current.orders) || updatesByItemId.size === 0) {
+            return current
+          }
+
+          const nextOrders = current.orders.map((order) => {
+            const queuedOrderUpdates = updatesByItemId.get(String(order.mondayItemId ?? '').trim())
+
+            if (!queuedOrderUpdates || queuedOrderUpdates.length === 0) {
+              return order
+            }
+
+            return applyQueuedProgressStatusUpdates(order, queuedOrderUpdates)
+          })
+
+          return {
+            ...current,
+            generatedAt: new Date().toISOString(),
+            orders: nextOrders,
+          }
+        },
+      )
+    }
+  }, [queryClient])
+
+  const bulkEditableOrders = overview.visibleOrders.filter(
+    (order) => order.hasMondayRecord && !order.isShipped,
+  )
 
   const handleOpenShopDrawingDocument = useCallback((order: OrdersOverviewOrder) => {
     if (!shopDrawingHandle.current) {
@@ -335,6 +495,9 @@ export default function OrdersPage() {
         viewMode={viewMode}
         onViewModeChange={setViewMode}
         canUseAdminView={canUseAdminView}
+        canOpenBulkUpdate={canEditMondayStages}
+        onOpenBulkUpdate={handleOpenUpdateOrdersDialog}
+        bulkUpdateDisabled={bulkEditableOrders.length === 0}
         searchText={overview.searchText}
         onSearchTextChange={overview.setSearchText}
         isRefreshing={overview.isRefreshing}
@@ -385,6 +548,14 @@ export default function OrdersPage() {
         order={quickBooksDialogOrder}
         metric={quickBooksDialogMetric}
         onClose={handleCloseQuickBooksDialog}
+      />
+
+      <UpdateOrdersDialog
+        open={updateOrdersDialogOpen}
+        orders={bulkEditableOrders}
+        shopDrawingHandle={shopDrawingHandle}
+        onClose={handleCloseUpdateOrdersDialog}
+        onSaved={handleSavedBulkOrderUpdates}
       />
     </Stack>
   )

@@ -1,4 +1,5 @@
 import AccessTimeRoundedIcon from '@mui/icons-material/AccessTimeRounded'
+import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded'
 import EngineeringRoundedIcon from '@mui/icons-material/EngineeringRounded'
 import ErrorOutlineRoundedIcon from '@mui/icons-material/ErrorOutlineRounded'
 import FactCheckRoundedIcon from '@mui/icons-material/FactCheckRounded'
@@ -43,6 +44,7 @@ type DrilldownKey =
   | 'lateOrders'
   | 'dueSoonOrders'
   | 'dueInTwoWeeksOrders'
+  | 'readyOrders'
   | 'activeOrders'
   | 'missingDueDateOrders'
 
@@ -59,22 +61,18 @@ const drilldownTitles: Record<DrilldownKey, string> = {
   lateOrders: 'Late Orders',
   dueSoonOrders: 'Due In Next 7 Days',
   dueInTwoWeeksOrders: 'Due In Days 8 to 14',
+  readyOrders: 'Ready Orders',
   activeOrders: 'Active Orders',
   missingDueDateOrders: 'Missing Due Date',
-}
-
-function formatUsd(value: number) {
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(value)
 }
 
 function dueLabel(order: DashboardOrder) {
   if (order.isDone) {
     return 'Shipped'
+  }
+
+  if (order.isProductionStarted === false) {
+    return 'Not in production'
   }
 
   if (typeof order.daysUntilDue !== 'number') {
@@ -97,6 +95,10 @@ function dueColor(order: DashboardOrder): 'error' | 'warning' | 'success' | 'def
     return 'success'
   }
 
+  if (order.isProductionStarted === false) {
+    return 'default'
+  }
+
   if (order.isLate) {
     return 'error'
   }
@@ -108,10 +110,30 @@ function dueColor(order: DashboardOrder): 'error' | 'warning' | 'success' | 'def
   return 'default'
 }
 
+function isReadyOrder(order: DashboardOrder) {
+  if (order.isDone) {
+    return false
+  }
+
+  const rowStatus = String(order.rowStatus ?? order.statusLabel ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+
+  if (!rowStatus) {
+    return false
+  }
+
+  return rowStatus === 'ready' || rowStatus.endsWith(' ready')
+}
+
 export default function DashboardPage() {
   const { getIdToken } = useAuth()
   const queryClient = useQueryClient()
   const [activeDrilldown, setActiveDrilldown] = useState<DrilldownKey | null>(null)
+  const [isRefreshing, setIsRefreshing] = useState(false)
+  const [refreshMessage, setRefreshMessage] = useState<string | null>(null)
+  const [refreshWarningMessage, setRefreshWarningMessage] = useState<string | null>(null)
   const [shopDrawingPreviewOrder, setShopDrawingPreviewOrder] = useState<DashboardOrder | null>(null)
   const [shopDrawingPreviewSrc, setShopDrawingPreviewSrc] = useState('')
   const [isShopDrawingPreviewLoading, setIsShopDrawingPreviewLoading] = useState(false)
@@ -131,17 +153,51 @@ export default function DashboardPage() {
 
   const handleRefresh = useCallback(() => {
     void (async () => {
-      await postOrdersRefresh()
+      setIsRefreshing(true)
+      setRefreshMessage(null)
+      setRefreshWarningMessage(null)
 
-      await queryClient.invalidateQueries({
-        queryKey: QUERY_KEYS.ordersOverview,
-      })
+      let ordersRefreshWarning: string | null = null
 
-      await queryClient.fetchQuery({
-        queryKey: QUERY_KEYS.dashboardBootstrap,
-        queryFn: () => fetchDashboardBootstrap({ refresh: true }),
-        staleTime: 0,
-      })
+      try {
+        await postOrdersRefresh()
+
+        await queryClient.invalidateQueries({
+          queryKey: QUERY_KEYS.ordersOverview,
+        })
+      } catch (ordersRefreshError) {
+        const warningMessage = ordersRefreshError instanceof Error
+          ? ordersRefreshError.message
+          : 'Orders sync failed. Dashboard will refresh from current merged records.'
+
+        ordersRefreshWarning = warningMessage
+      }
+
+      try {
+        await queryClient.fetchQuery({
+          queryKey: QUERY_KEYS.dashboardBootstrap,
+          queryFn: () => fetchDashboardBootstrap({ refresh: true }),
+          staleTime: 0,
+        })
+
+        if (ordersRefreshWarning) {
+          setRefreshWarningMessage(ordersRefreshWarning)
+        } else {
+          setRefreshMessage('Dashboard refreshed successfully.')
+        }
+      } catch (dashboardRefreshError) {
+        const dashboardMessage = dashboardRefreshError instanceof Error
+          ? dashboardRefreshError.message
+          : 'Could not refresh dashboard right now.'
+
+        setRefreshWarningMessage(
+          ordersRefreshWarning
+            ? `${dashboardMessage} Orders sync warning: ${ordersRefreshWarning}`
+            : dashboardMessage,
+        )
+      } finally {
+        setIsRefreshing(false)
+      }
     })()
   }, [queryClient])
 
@@ -226,10 +282,16 @@ export default function DashboardPage() {
   const dueInTwoWeeksOrders = useMemo(
     () => (snapshot?.orders ?? []).filter(
       (order) => !order.isDone
+        && order.isProductionStarted !== false
         && typeof order.daysUntilDue === 'number'
         && order.daysUntilDue >= 8
         && order.daysUntilDue <= 14,
     ),
+    [snapshot],
+  )
+
+  const readyOrders = useMemo(
+    () => (snapshot?.orders ?? []).filter(isReadyOrder),
     [snapshot],
   )
 
@@ -264,6 +326,14 @@ export default function DashboardPage() {
         color: '#00897b',
       },
       {
+        key: 'readyOrders',
+        label: 'Ready Orders',
+        value: readyOrders.length,
+        helper: 'Ready and not currently shipping',
+        icon: <CheckCircleRoundedIcon />,
+        color: '#2e7d32',
+      },
+      {
         key: 'activeOrders',
         label: 'In Progress',
         value: snapshot.metrics.activeOrders,
@@ -280,7 +350,7 @@ export default function DashboardPage() {
         color: '#6a1b9a',
       },
     ]
-  }, [snapshot, dueInTwoWeeksOrders])
+  }, [snapshot, dueInTwoWeeksOrders, readyOrders])
 
   const zendeskSummaryCards = useMemo<SummaryCard[]>(() => {
     if (!zendeskSnapshot) {
@@ -340,8 +410,12 @@ export default function DashboardPage() {
       return dueInTwoWeeksOrders
     }
 
+    if (activeDrilldown === 'readyOrders') {
+      return readyOrders
+    }
+
     return snapshot.details[activeDrilldown]
-  }, [activeDrilldown, dueInTwoWeeksOrders, snapshot])
+  }, [activeDrilldown, dueInTwoWeeksOrders, readyOrders, snapshot])
 
   return (
     <Stack spacing={2.5}>
@@ -369,15 +443,37 @@ export default function DashboardPage() {
             variant="contained"
             onClick={handleRefresh}
             startIcon={<RefreshRoundedIcon />}
-            disabled={bootstrapQuery.isFetching}
+            disabled={isRefreshing || bootstrapQuery.isFetching}
           >
-            Refresh
+            {isRefreshing ? 'Refreshing...' : 'Refresh'}
           </Button>
         </Stack>
       </Stack>
 
       {errorMessage ? (
         <Alert severity="error">{errorMessage}</Alert>
+      ) : null}
+
+      {refreshMessage ? (
+        <Alert
+          severity="success"
+          onClose={() => {
+            setRefreshMessage(null)
+          }}
+        >
+          {refreshMessage}
+        </Alert>
+      ) : null}
+
+      {refreshWarningMessage ? (
+        <Alert
+          severity="warning"
+          onClose={() => {
+            setRefreshWarningMessage(null)
+          }}
+        >
+          {refreshWarningMessage}
+        </Alert>
       ) : null}
 
       {shopDrawingErrorMessage ? (
@@ -438,7 +534,7 @@ export default function DashboardPage() {
                   gridTemplateColumns: {
                     xs: 'repeat(1, minmax(0, 1fr))',
                     sm: 'repeat(2, minmax(0, 1fr))',
-                    xl: 'repeat(5, minmax(0, 1fr))',
+                    xl: 'repeat(6, minmax(0, 1fr))',
                   },
                   gap: 1.5,
                 }}
@@ -514,16 +610,9 @@ export default function DashboardPage() {
                           isShopDrawingPreviewLoading
                           && shopDrawingPreviewOrder?.id === order.id,
                         )
-                        const invoiceNumber = String(order.invoiceNumber ?? '').trim()
-                        const hasInvoice = Boolean(invoiceNumber)
-                        const paidInFull = order.paidInFull === true
-                        const notPaidInFull = order.paidInFull === false
-                        const amountOwed = Number.isFinite(order.amountOwed)
-                          ? Number(order.amountOwed)
+                        const paidInFull = typeof order.paidInFull === 'boolean'
+                          ? order.paidInFull
                           : null
-                        const hasPositiveBalance = amountOwed !== null && amountOwed > 0
-                        const shouldShowNotPaidInFull = hasInvoice && (notPaidInFull || hasPositiveBalance)
-                        const shouldShowPaid = hasInvoice && !shouldShowNotPaidInFull && paidInFull
 
                         return (
                         <TableRow key={order.id} hover>
@@ -532,7 +621,10 @@ export default function DashboardPage() {
                           </TableCell>
                           <TableCell>{order.groupTitle}</TableCell>
                           <TableCell>
-                            <Chip size="small" label={order.statusLabel || 'Unspecified'} />
+                            <Chip
+                              size="small"
+                              label={order.rowStatus || order.statusLabel || 'Unspecified'}
+                            />
                           </TableCell>
                           <TableCell>
                             <Stack spacing={0.2}>
@@ -551,45 +643,15 @@ export default function DashboardPage() {
                             {typeof order.progressPercent === 'number' ? `${order.progressPercent}%` : '—'}
                           </TableCell>
                           <TableCell>
-                            {!hasInvoice ? (
-                              <Typography variant="body2" color="text.secondary">
-                                No invoice
-                              </Typography>
-                            ) : shouldShowNotPaidInFull ? (
-                              <Stack spacing={0.2}>
-                                <Typography variant="body2" color="warning.dark" fontWeight={700}>
-                                  Not paid in full
-                                </Typography>
-                                <Typography variant="caption" color="text.secondary">
-                                  Owed: {hasPositiveBalance ? formatUsd(amountOwed as number) : 'Unknown'}
-                                </Typography>
-                                <Typography variant="caption" color="text.secondary">
-                                  Invoice: {invoiceNumber}
-                                </Typography>
-                              </Stack>
-                            ) : shouldShowPaid ? (
-                              <Stack spacing={0.2}>
-                                <Typography variant="body2" color="success.main" fontWeight={700}>
-                                  Paid
-                                </Typography>
-                                <Typography variant="caption" color="text.secondary">
-                                  Invoice: {invoiceNumber}
-                                </Typography>
-                              </Stack>
+                            {paidInFull === null ? (
+                              '—'
                             ) : (
-                              <Stack spacing={0.2}>
-                                <Typography variant="body2" color="text.secondary" fontWeight={600}>
-                                  Invoice status unknown
-                                </Typography>
-                                <Typography variant="caption" color="text.secondary">
-                                  Invoice: {invoiceNumber}
-                                </Typography>
-                                {amountOwed !== null ? (
-                                  <Typography variant="caption" color="text.secondary">
-                                    Owed: {formatUsd(amountOwed)}
-                                  </Typography>
-                                ) : null}
-                              </Stack>
+                              <Chip
+                                size="small"
+                                label={paidInFull ? 'Yes' : 'No'}
+                                color={paidInFull ? 'success' : 'warning'}
+                                variant="outlined"
+                              />
                             )}
                           </TableCell>
                           <TableCell align="right">

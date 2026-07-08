@@ -250,6 +250,176 @@ export function registerDashboardSupportRoutes(app, deps) {
     return String(left.name ?? '').localeCompare(String(right.name ?? ''))
   }
 
+  const dashboardProgressStages = [
+    { key: 'design', label: 'Design' },
+    { key: 'baseform', label: 'Base/Form' },
+    { key: 'build', label: 'Build' },
+    { key: 'sandorlam', label: 'Sand or lam' },
+    { key: 'sealer', label: 'Sealer' },
+    { key: 'lacquer', label: 'Lacquer' },
+    { key: 'ready', label: 'Ready' },
+  ]
+  const dashboardProgressStageLabelByKey = new Map(
+    dashboardProgressStages.map((stage) => [stage.key, stage.label]),
+  )
+
+  function normalizeDashboardProgressKey(value) {
+    return String(value ?? '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '')
+      .trim()
+  }
+
+  function normalizeDashboardProgressStatus(value) {
+    const normalized = String(value ?? '')
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+
+    if (!normalized) {
+      return null
+    }
+
+    if (normalized === 'working on it' || normalized === 'working') {
+      return 'working'
+    }
+
+    if (normalized === 'done' || normalized === 'ready') {
+      return 'done'
+    }
+
+    if (normalized === 'stuck' || normalized === 'stock') {
+      return 'stuck'
+    }
+
+    return null
+  }
+
+  function buildDashboardTrackedProgressStageStates(progressStatusDetails) {
+    const details = Array.isArray(progressStatusDetails) ? progressStatusDetails : []
+    const statusByStage = new Map()
+
+    details.forEach((entry) => {
+      const normalizedStatus = normalizeDashboardProgressStatus(entry?.status)
+
+      if (!normalizedStatus) {
+        return
+      }
+
+      const entryKeys = [
+        normalizeDashboardProgressKey(entry?.key),
+        normalizeDashboardProgressKey(entry?.label),
+      ]
+
+      entryKeys.forEach((entryKey) => {
+        if (!entryKey || !dashboardProgressStageLabelByKey.has(entryKey) || statusByStage.has(entryKey)) {
+          return
+        }
+
+        statusByStage.set(entryKey, normalizedStatus)
+      })
+    })
+
+    return dashboardProgressStages
+      .map((stage, index) => {
+        const status = statusByStage.get(stage.key)
+
+        if (!status) {
+          return null
+        }
+
+        return {
+          key: stage.key,
+          label: stage.label,
+          index,
+          status,
+        }
+      })
+      .filter((stage) => Boolean(stage))
+  }
+
+  function resolveDashboardTrackedRowStatusLabel(progressStatusDetails) {
+    const trackedStages = buildDashboardTrackedProgressStageStates(progressStatusDetails)
+    const newestStage = trackedStages[trackedStages.length - 1]
+
+    if (!newestStage) {
+      return null
+    }
+
+    if (newestStage.status === 'working') {
+      return `${newestStage.label} working on it`
+    }
+
+    if (newestStage.status === 'stuck') {
+      return `${newestStage.label} stuck`
+    }
+
+    return newestStage.key === 'ready'
+      ? 'Ready'
+      : `${newestStage.label} ready`
+  }
+
+  function resolveDashboardReadyStageLabel(progressStatusDetails) {
+    const details = Array.isArray(progressStatusDetails) ? progressStatusDetails : []
+
+    for (const entry of details) {
+      const entryKey = normalizeDashboardProgressKey(entry?.key)
+      const entryLabel = normalizeDashboardProgressKey(entry?.label)
+
+      if (entryKey !== 'ready' && entryLabel !== 'ready') {
+        continue
+      }
+
+      const status = String(entry?.status ?? '').trim()
+
+      if (status) {
+        return status
+      }
+    }
+
+    return null
+  }
+
+  function resolveDashboardRowStatusLabel({
+    isDone,
+    mondayStatus,
+    progressStatusDetails,
+  }) {
+    if (isDone) {
+      return 'Shipped'
+    }
+
+    const trackedStatus = resolveDashboardTrackedRowStatusLabel(progressStatusDetails)
+
+    if (trackedStatus) {
+      return trackedStatus
+    }
+
+    return String(mondayStatus ?? '').trim() || 'Open'
+  }
+
+  function resolveDashboardProductionStarted({
+    isDone,
+    persistedValue,
+    progressStatusDetails,
+  }) {
+    if (isDone) {
+      return true
+    }
+
+    if (typeof persistedValue === 'boolean') {
+      return persistedValue
+    }
+
+    const trackedStages = buildDashboardTrackedProgressStageStates(progressStatusDetails)
+
+    if (trackedStages.length === 0) {
+      return false
+    }
+
+    return trackedStages.some((stage) => stage.index > 0)
+  }
+
   function buildDefaultColumnDetection(cachedSnapshot) {
     if (cachedSnapshot?.columnDetection && typeof cachedSnapshot.columnDetection === 'object') {
       return cachedSnapshot.columnDetection
@@ -327,15 +497,9 @@ export function registerDashboardSupportRoutes(app, deps) {
     const fallbackId = String(orderDocument?.orderKey ?? '').trim()
     const id = mondayItemId || orderNumber || quickBooksProjectId || fallbackId
 
-    const directDueDate = normalizeIsoDate(orderDocument?.Due_date)
+    const rawDueDate = normalizeIsoDate(orderDocument?.Due_date)
     const orderDate = normalizeIsoDate(orderDocument?.order_date)
-    const leadTimeDays = toFiniteNumber(orderDocument?.Lead_time_days)
-    const computedDueDate =
-      !directDueDate && orderDate && Number.isFinite(leadTimeDays)
-        ? addDaysToIsoDate(orderDate, Number(leadTimeDays))
-        : null
-    const effectiveDueDate = directDueDate || computedDueDate
-    const daysUntilDue = effectiveDueDate ? differenceInDaysFromToday(effectiveDueDate) : null
+    const rawLeadTimeDays = toFiniteNumber(orderDocument?.Lead_time_days)
 
     const statusLabel = String(orderDocument?.Monday_status ?? '').trim() || 'Open'
     const normalizedStatusLabel = statusLabel.toLowerCase()
@@ -344,18 +508,48 @@ export function registerDashboardSupportRoutes(app, deps) {
       || normalizedStatusLabel.includes('delivered')
       || normalizedStatusLabel.includes('complete')
       || normalizedStatusLabel === 'done'
-    const isLate = !isDone && typeof daysUntilDue === 'number' ? daysUntilDue < 0 : false
-    const daysLate = isLate && typeof daysUntilDue === 'number' ? Math.abs(daysUntilDue) : 0
 
     const progressPercentValue = toFiniteNumber(orderDocument?.progress_percent)
     const progressPercent = Number.isFinite(progressPercentValue)
       ? Math.max(0, Math.min(100, Math.round(Number(progressPercentValue))))
       : null
+    const progressStatusDetails = Array.isArray(orderDocument?.progress_status_details)
+      ? orderDocument.progress_status_details
+      : []
+    const rowStatus = resolveDashboardRowStatusLabel({
+      isDone,
+      mondayStatus: statusLabel,
+      progressStatusDetails,
+    })
+    const isProductionStarted = resolveDashboardProductionStarted({
+      isDone,
+      persistedValue:
+        typeof orderDocument?.is_production_started === 'boolean'
+          ? orderDocument.is_production_started
+          : null,
+      progressStatusDetails,
+    })
+    const scheduleEligible = isDone || isProductionStarted
+    const leadTimeDays = scheduleEligible && Number.isFinite(rawLeadTimeDays)
+      ? Number(rawLeadTimeDays)
+      : null
+    const directDueDate = scheduleEligible ? rawDueDate : null
+    const computedDueDate = null
+    const effectiveDueDate = directDueDate || computedDueDate
+    const daysUntilDue = effectiveDueDate ? differenceInDaysFromToday(effectiveDueDate) : null
+    const isLate = !isDone && isProductionStarted && typeof daysUntilDue === 'number'
+      ? daysUntilDue < 0
+      : false
+    const daysLate = isLate && typeof daysUntilDue === 'number' ? Math.abs(daysUntilDue) : 0
+    const readyStageLabel = resolveDashboardReadyStageLabel(progressStatusDetails)
+    const amountOwed = toFiniteNumber(orderDocument?.amountOwed)
 
     const paidInFull =
       typeof orderDocument?.paidInFull === 'boolean'
         ? Boolean(orderDocument.paidInFull)
-        : null
+        : Number.isFinite(amountOwed)
+          ? amountOwed <= 0.004
+          : null
 
     return {
       id,
@@ -367,8 +561,9 @@ export function registerDashboardSupportRoutes(app, deps) {
       movedToShippedAt: normalizeIsoDate(orderDocument?.shipped_at),
       groupTitle: String(orderDocument?.monday_board_name ?? '').trim() || 'Orders',
       statusLabel,
-      stageLabel: statusLabel,
-      readyLabel: progressPercent !== null ? `${progressPercent}%` : 'Unspecified',
+      rowStatus,
+      stageLabel: rowStatus,
+      readyLabel: readyStageLabel || (progressPercent !== null ? `${progressPercent}%` : 'Unspecified'),
       leadTimeDays: Number.isFinite(leadTimeDays) ? Number(leadTimeDays) : null,
       progressPercent,
       orderDate,
@@ -378,6 +573,7 @@ export function registerDashboardSupportRoutes(app, deps) {
       effectiveDueDate,
       daysUntilDue,
       isDone,
+      isProductionStarted,
       isLate,
       daysLate,
       updatedAt:
@@ -390,7 +586,7 @@ export function registerDashboardSupportRoutes(app, deps) {
       shopDrawingFileName: null,
       invoiceNumber: String(orderDocument?.invoiceNumber ?? '').trim() || null,
       paidInFull,
-      amountOwed: toFiniteNumber(orderDocument?.amountOwed),
+      amountOwed,
       poAmount: toFiniteNumber(orderDocument?.poAmount),
     }
   }
@@ -419,6 +615,7 @@ export function registerDashboardSupportRoutes(app, deps) {
             monday_board_name: 1,
             monday_updated_at: 1,
             updatedAt: 1,
+            is_production_started: 1,
             Monday_url: 1,
             Shop_drawing: 1,
             Shop_drawing_cached: 1,
@@ -428,6 +625,7 @@ export function registerDashboardSupportRoutes(app, deps) {
             amountOwed: 1,
             po_number: 1,
             poAmount: 1,
+            progress_status_details: 1,
           },
         },
       )
@@ -445,7 +643,10 @@ export function registerDashboardSupportRoutes(app, deps) {
     const completedOrders = orders.filter((order) => order.isDone)
     const lateOrders = activeOrders.filter((order) => order.isLate)
     const dueSoonOrders = activeOrders.filter((order) =>
-      typeof order.daysUntilDue === 'number' && order.daysUntilDue >= 0 && order.daysUntilDue <= 7,
+      order.isProductionStarted
+      && typeof order.daysUntilDue === 'number'
+      && order.daysUntilDue >= 0
+      && order.daysUntilDue <= 7,
     )
     const missingDueDateOrders = activeOrders.filter((order) => !order.effectiveDueDate)
 

@@ -61,7 +61,9 @@ export function createMondayDashboardService({
       'order date',
       'ordered',
       'po date',
+      'p o date',
       'purchase order date',
+      'date ordered',
       'received',
       'start',
     ]
@@ -85,7 +87,7 @@ export function createMondayDashboardService({
       )
     const shopDrawingColumnId = pickColumnId(
       columns,
-      ['shop drawing', 'shop drawings', 'drawing', 'drawings'],
+      ['shop drawing', 'shop drawings', 'drawing', 'drawings', 'chop drawing', 'chopped drawing', 'chopped drawings'],
       ['file', 'link', 'text', 'long-text'],
     )
     const cutListColumnId = pickColumnId(
@@ -138,14 +140,30 @@ export function createMondayDashboardService({
         ['file', 'link', 'text', 'long-text'],
       )
     const poNumberColumnId =
+      normalizeColumnOverrideId(columnOverrides.poNumberColumnId) ||
       pickColumnIdByExactTitle(columns, 'po number') ||
-      pickColumnId(columns, ['po number', 'purchase order number'], ['text', 'long-text', 'numbers', 'numeric'])
+      pickColumnIdByExactTitle(columns, 'purchase order number') ||
+      pickColumnIdByExactTitle(columns, 'po #') ||
+      pickColumnIdByExactTitle(columns, 'po no') ||
+      pickColumnIdByExactTitle(columns, 'po num') ||
+      pickColumnId(
+        columns,
+        ['po number', 'purchase order number', 'po #', 'po num', 'po no', 'customer po'],
+        ['text', 'long-text', 'numbers', 'numeric'],
+      )
     const notesColumnId =
       pickColumnIdByExactTitle(columns, 'notes') ||
       pickColumnId(columns, ['notes', 'order notes'], ['text', 'long-text'])
     const descriptionColumnId =
+      normalizeColumnOverrideId(columnOverrides.descriptionColumnId) ||
       pickColumnIdByExactTitle(columns, 'description') ||
-      pickColumnId(columns, ['description', 'order description'], ['text', 'long-text'])
+      pickColumnIdByExactTitle(columns, 'job description') ||
+      pickColumnIdByExactTitle(columns, 'project description') ||
+      pickColumnId(
+        columns,
+        ['description', 'order description', 'job description', 'project description', 'details'],
+        ['text', 'long-text'],
+      )
 
     if (orderDateColumnId && orderDateColumnId === dueDateColumnId) {
       dueDateColumnId = leadTimeColumnId && leadTimeColumnId !== orderDateColumnId
@@ -260,7 +278,15 @@ export function createMondayDashboardService({
       findColumnByKeywords(columnValues, ['lead time', 'due', 'ready by', 'need by', 'eta'])
     const shopDrawingColumn =
       findColumnById(columnValues, columnMap.shopDrawingColumnId) ||
-      findColumnByKeywords(columnValues, ['shop drawing', 'drawing'])
+      findColumnByKeywords(columnValues, [
+        'shop drawing',
+        'shop drawings',
+        'drawing',
+        'drawings',
+        'chop drawing',
+        'chopped drawing',
+        'chopped drawings',
+      ])
     const cutListColumn =
       findColumnById(columnValues, columnMap.cutListColumnId) ||
       findColumnByKeywords(columnValues, ['cut list', 'cutlist'])
@@ -295,38 +321,49 @@ export function createMondayDashboardService({
       ])
     const poNumberColumn =
       findColumnById(columnValues, columnMap.poNumberColumnId) ||
-      findColumnByKeywords(columnValues, ['po number', 'purchase order number'])
+      findColumnByKeywords(columnValues, [
+        'po number',
+        'purchase order number',
+        'po #',
+        'po no',
+        'po num',
+        'customer po',
+      ])
     const notesColumn =
       findColumnById(columnValues, columnMap.notesColumnId) ||
       findColumnByKeywords(columnValues, ['notes', 'order notes'])
     const descriptionColumn =
       findColumnById(columnValues, columnMap.descriptionColumnId) ||
-      findColumnByKeywords(columnValues, ['description', 'order description'])
+      findColumnByKeywords(columnValues, [
+        'description',
+        'order description',
+        'job description',
+        'project description',
+        'details',
+      ])
     const orderDateColumn =
       findColumnById(columnValues, columnMap.orderDateColumnId) ||
-      findColumnByKeywords(columnValues, ['order date', 'ordered', 'po date', 'purchase order date'])
+      findColumnByKeywords(columnValues, [
+        'order date',
+        'ordered',
+        'date ordered',
+        'po date',
+        'p o date',
+        'purchase order date',
+      ])
     const progressColumn =
       findColumnById(columnValues, columnMap.progressColumnId) ||
       findColumnByKeywords(columnValues, ['progress'])
     const acknowledgmentColumn = findColumnById(columnValues, columnMap.ackColumnId)
 
     const stageLabel = readTextFromColumn(statusColumn) || 'Unspecified'
-    const leadTimeDays = parseLeadTimeDays(
+    const rawLeadTimeDays = parseLeadTimeDays(
       readTextFromColumn(leadTimeColumn),
       leadTimeColumn?.value,
     )
     const shippedAt = parseDateFromColumn(shipDateColumn)
-    const leadTimeDate = parseDateFromColumn(leadTimeColumn)
-    const directDueDate = parseDateFromColumn(dueDateColumn) || leadTimeDate
+    const rawDueDate = parseDateFromColumn(dueDateColumn)
     const orderDate = parseDateFromColumn(orderDateColumn) || parseDateValue(item?.created_at)
-    const computedDueDate =
-      !directDueDate && orderDate && Number.isFinite(leadTimeDays)
-        ? addDaysToIsoDate(orderDate, Number(leadTimeDays))
-        : null
-    const effectiveDueDate = directDueDate || computedDueDate
-    const daysUntilDue = effectiveDueDate
-      ? differenceInDaysFromToday(effectiveDueDate)
-      : null
     const progressPercentFromColumn = parseProgressPercent(progressColumn)
     const progressPercent =
       progressPercentFromColumn !== null
@@ -340,6 +377,15 @@ export function createMondayDashboardService({
       progressStatusDetails.find((entry) => entry.key === 'ready')?.status ?? '',
     ).trim() || null
     const isDone = Boolean(shippedAt)
+    const isProductionStarted = resolveProductionStartedFromProgressDetails(progressStatusDetails)
+    const scheduleEligible = isDone || isProductionStarted
+    const leadTimeDays = scheduleEligible ? rawLeadTimeDays : null
+    const directDueDate = scheduleEligible ? rawDueDate : null
+    const computedDueDate = null
+    const effectiveDueDate = directDueDate || computedDueDate
+    const daysUntilDue = effectiveDueDate
+      ? differenceInDaysFromToday(effectiveDueDate)
+      : null
     const statusLabel = buildWorkflowStatusLabel({ isDone, progressPercent, stageLabel })
     const shopDrawing = parseShopDrawing(shopDrawingColumn)
     const cutList = parseShopDrawing(cutListColumn)
@@ -376,6 +422,7 @@ export function createMondayDashboardService({
       effectiveDueDate,
       daysUntilDue,
       isDone,
+      isProductionStarted,
       isLate,
       daysLate,
       updatedAt: parseDateValue(item?.updated_at),
@@ -418,6 +465,62 @@ export function createMondayDashboardService({
         status: status || null,
       }
     })
+  }
+
+  function normalizeProgressStageKey(value) {
+    return String(value ?? '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '')
+      .trim()
+  }
+
+  function normalizeProgressStageStatus(value) {
+    const normalized = String(value ?? '')
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+
+    if (!normalized) {
+      return null
+    }
+
+    if (normalized === 'working on it' || normalized === 'working') {
+      return 'working'
+    }
+
+    if (normalized === 'done' || normalized === 'ready') {
+      return 'done'
+    }
+
+    if (normalized === 'stuck' || normalized === 'stock') {
+      return 'stuck'
+    }
+
+    return null
+  }
+
+  function resolveProductionStartedFromProgressDetails(progressStatusDetails) {
+    const trackedStages = (Array.isArray(progressStatusDetails) ? progressStatusDetails : [])
+      .map((entry) => {
+        const key = normalizeProgressStageKey(entry?.key)
+        const status = normalizeProgressStageStatus(entry?.status)
+
+        if (!key || !status) {
+          return null
+        }
+
+        return {
+          key,
+          status,
+        }
+      })
+      .filter((entry) => Boolean(entry))
+
+    if (trackedStages.length === 0) {
+      return false
+    }
+
+    return trackedStages.some((stage) => stage.key !== 'design')
   }
 
   function findColumnById(columnValues, columnId) {

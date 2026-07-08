@@ -1,6 +1,7 @@
 import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded'
+import EditRoundedIcon from '@mui/icons-material/EditRounded'
 import {
   Button,
   Chip,
@@ -28,10 +29,14 @@ type OrdersToolbarProps = {
     orders: number
     design: number
     shipped: number
+    warranty: number
   }
   viewMode: OrdersViewMode
   onViewModeChange: (next: OrdersViewMode) => void
   canUseAdminView: boolean
+  canOpenBulkUpdate: boolean
+  onOpenBulkUpdate: () => void
+  bulkUpdateDisabled: boolean
   searchText: string
   onSearchTextChange: (next: string) => void
   isRefreshing: boolean
@@ -48,6 +53,9 @@ export function OrdersToolbar({
   viewMode,
   onViewModeChange,
   canUseAdminView,
+  canOpenBulkUpdate,
+  onOpenBulkUpdate,
+  bulkUpdateDisabled,
   searchText,
   onSearchTextChange,
   isRefreshing,
@@ -83,6 +91,7 @@ export function OrdersToolbar({
           <Tab value="orders" label={`Orders (${tabCounts.orders})`} />
           <Tab value="design" label={`Design (${tabCounts.design})`} />
           <Tab value="shipped" label={`Shipped (${tabCounts.shipped})`} />
+          <Tab value="warranty" label={`Warranty (${tabCounts.warranty})`} />
         </Tabs>
 
         <Stack
@@ -162,6 +171,19 @@ export function OrdersToolbar({
                 <ToggleButton value="standard">Standard View</ToggleButton>
                 <ToggleButton value="admin">Admin View</ToggleButton>
               </ToggleButtonGroup>
+            ) : null}
+
+            {canOpenBulkUpdate ? (
+              <Button
+                size="small"
+                variant="contained"
+                startIcon={<EditRoundedIcon fontSize="small" />}
+                onClick={onOpenBulkUpdate}
+                disabled={bulkUpdateDisabled}
+                sx={{ minWidth: 132 }}
+              >
+                Update orders
+              </Button>
             ) : null}
           </Stack>
         </Stack>

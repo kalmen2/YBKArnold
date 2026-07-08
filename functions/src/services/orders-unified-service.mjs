@@ -110,6 +110,62 @@ function normalizeProgressStatusDetails(details) {
   }))
 }
 
+function normalizeProgressStageKey(value) {
+  return String(value ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '')
+    .trim()
+}
+
+function normalizeProgressStageStatus(value) {
+  const normalized = String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+
+  if (!normalized) {
+    return null
+  }
+
+  if (normalized === 'working on it' || normalized === 'working') {
+    return 'working'
+  }
+
+  if (normalized === 'done' || normalized === 'ready') {
+    return 'done'
+  }
+
+  if (normalized === 'stuck' || normalized === 'stock') {
+    return 'stuck'
+  }
+
+  return null
+}
+
+function resolveProductionStartedFromProgressStatusDetails(progressStatusDetails) {
+  const trackedStages = (Array.isArray(progressStatusDetails) ? progressStatusDetails : [])
+    .map((entry) => {
+      const key = normalizeProgressStageKey(entry?.key)
+      const status = normalizeProgressStageStatus(entry?.status)
+
+      if (!key || !status) {
+        return null
+      }
+
+      return {
+        key,
+        status,
+      }
+    })
+    .filter((entry) => Boolean(entry))
+
+  if (trackedStages.length === 0) {
+    return false
+  }
+
+  return trackedStages.some((stage) => stage.key !== 'design')
+}
+
 function normalizeOrderProgressJobName(value) {
   return String(value ?? '')
     .trim()
@@ -236,6 +292,19 @@ export function createOrdersUnifiedService(deps) {
 
       const row = mergedByKey.get(orderKey) ?? createEmptyUnifiedOrder(orderKey)
       const progressStatusDetails = normalizeProgressStatusDetails(order?.progressStatusDetails)
+      const isShipped = isShippedOrderDocument(
+        {
+          mondayBoardId: order?.boardId,
+          movedToShippedAt: order?.movedToShippedAt,
+          statusLabel: order?.statusLabel,
+        },
+        normalizedShippedBoardId,
+      )
+      const isProductionStarted =
+        typeof order?.isProductionStarted === 'boolean'
+          ? order.isProductionStarted
+          : resolveProductionStartedFromProgressStatusDetails(progressStatusDetails)
+      const scheduleEligible = isShipped || isProductionStarted
       const incoming = {
         order_number: orderNumber,
         monday_item_id: mondayItemId,
@@ -254,19 +323,12 @@ export function createOrdersUnifiedService(deps) {
         po_number: normalizeText(order?.poNumber, 120) || null,
         monday_notes: normalizeText(order?.notes, 2000) || null,
         monday_description: normalizeText(order?.description, 2000) || null,
-        is_shipped: isShippedOrderDocument(
-          {
-            mondayBoardId: order?.boardId,
-            movedToShippedAt: order?.movedToShippedAt,
-            statusLabel: order?.statusLabel,
-          },
-          normalizedShippedBoardId,
-        ),
-        Due_date:
-          toIsoOrNull(order?.effectiveDueDate)
-          || toIsoOrNull(order?.dueDate)
-          || toIsoOrNull(order?.computedDueDate),
-        Lead_time_days: Number.isFinite(Number(order?.leadTimeDays))
+        is_shipped: isShipped,
+        is_production_started: isShipped || isProductionStarted,
+        Due_date: scheduleEligible
+          ? toIsoOrNull(order?.dueDate)
+          : null,
+        Lead_time_days: scheduleEligible && Number.isFinite(Number(order?.leadTimeDays))
           ? Number(order.leadTimeDays)
           : null,
         progress_percent: Number.isFinite(Number(order?.progressPercent))
@@ -326,8 +388,9 @@ export function createOrdersUnifiedService(deps) {
           po_number: incoming.po_number || row.po_number,
           monday_notes: incoming.monday_notes || row.monday_notes,
           monday_description: incoming.monday_description || row.monday_description,
-          Due_date: incoming.Due_date || row.Due_date,
-          Lead_time_days: incoming.Lead_time_days ?? row.Lead_time_days,
+          is_production_started: incoming.is_production_started,
+          Due_date: incoming.Due_date,
+          Lead_time_days: incoming.Lead_time_days,
           progress_percent: incoming.progress_percent ?? row.progress_percent,
           progress_status_details:
             incoming.progress_status_details.length > 0
@@ -352,6 +415,9 @@ export function createOrdersUnifiedService(deps) {
       }
 
       row.is_shipped = row.is_shipped || incoming.is_shipped
+      row.is_production_started = Boolean(
+        row.is_production_started || incoming.is_production_started || row.is_shipped,
+      )
       row.has_monday_record = true
       mergedByKey.set(orderKey, row)
     })
@@ -487,7 +553,11 @@ export function createOrdersUnifiedService(deps) {
   async function flagDesignBoardMatches(mergedByKey, warnings) {
     const designBoardId = normalizeText(mondayPreproductionBoardId, 120)
     if (!designBoardId) {
-      return { candidateCount: 0, matchedCount: 0 }
+      return {
+        candidateCount: 0,
+        matchedCount: 0,
+        matchedRowsByItemId: new Map(),
+      }
     }
 
     const candidates = []
@@ -498,7 +568,11 @@ export function createOrdersUnifiedService(deps) {
     })
 
     if (candidates.length === 0) {
-      return { candidateCount: 0, matchedCount: 0 }
+      return {
+        candidateCount: 0,
+        matchedCount: 0,
+        matchedRowsByItemId: new Map(),
+      }
     }
 
     let snapshot = null
@@ -510,26 +584,174 @@ export function createOrdersUnifiedService(deps) {
       })
     } catch (error) {
       warnings.push(`Design board lookup failed: ${normalizeText(error?.message, 400) || 'unknown error'}`)
-      return { candidateCount: candidates.length, matchedCount: 0 }
+      return {
+        candidateCount: candidates.length,
+        matchedCount: 0,
+        matchedRowsByItemId: new Map(),
+      }
     }
 
     const lookup = buildNameLookupFromMondayItems(snapshot.items)
+    const matchedRowsByItemId = new Map()
     let matchedCount = 0
 
     candidates.forEach((row) => {
       const match = findNameLookupMatch(row, lookup)
+
       if (!match) {
         return
       }
+
+      const matchedItemId = normalizeText(match?.id, 120)
+
+      if (!matchedItemId) {
+        return
+      }
+
       row.in_design = true
       row.Monday_status = 'In Design'
-      row.monday_item_id = row.monday_item_id || match.id
+      row.monday_item_id = row.monday_item_id || matchedItemId
       row.monday_board_id = designBoardId
       row.monday_board_name = snapshot.board?.name || row.monday_board_name
+
+      if (!matchedRowsByItemId.has(matchedItemId)) {
+        matchedRowsByItemId.set(matchedItemId, row)
+      }
+
       matchedCount += 1
     })
 
-    return { candidateCount: candidates.length, matchedCount }
+    return {
+      candidateCount: candidates.length,
+      matchedCount,
+      matchedRowsByItemId,
+    }
+  }
+
+  async function enrichMatchedDesignRows({ matchedRowsByItemId, warnings }) {
+    const designBoardId = normalizeText(mondayPreproductionBoardId, 120)
+
+    if (!designBoardId || matchedRowsByItemId.size === 0 || typeof fetchMondayBoardItemsByIds !== 'function') {
+      return 0
+    }
+
+    try {
+      const matchedItemIds = [...matchedRowsByItemId.keys()]
+      const snapshot = await fetchMondayBoardItemsByIds({
+        boardId: designBoardId,
+        boardUrl: normalizeText(mondayPreproductionBoardUrl, 400) || null,
+        boardName: 'Pre-Production / Design AKF',
+        itemIds: matchedItemIds,
+      })
+      const detailRowsByItemId = new Map(
+        (Array.isArray(snapshot?.orders) ? snapshot.orders : [])
+          .map((order) => [normalizeText(order?.id, 120), order]),
+      )
+      let enrichedCount = 0
+
+      matchedRowsByItemId.forEach((row, itemId) => {
+        const detail = detailRowsByItemId.get(itemId)
+
+        if (!detail) {
+          return
+        }
+
+        row.in_design = true
+        row.has_monday_record = true
+        row.monday_item_id = itemId
+        row.monday_board_id = designBoardId
+        row.monday_board_name = normalizeText(snapshot?.board?.name, 260)
+          || row.monday_board_name
+          || 'Pre-Production / Design AKF'
+        row.order_name = normalizeText(detail?.name, 260) || row.order_name
+        row.Monday_status = normalizeText(detail?.statusLabel, 260) || row.Monday_status || 'In Design'
+        row.ship_to = normalizeText(detail?.shipTo, 500) || row.ship_to
+        row.ship_notes = normalizeText(detail?.shipNotes, 2000) || row.ship_notes
+        row.bol = normalizeText(detail?.bol, 200) || row.bol
+        row.signed_bol = normalizeText(detail?.signedBol, 200) || row.signed_bol
+        row.inspection_sheet = normalizeText(detail?.inspectionSheet, 200) || row.inspection_sheet
+        row.po_number = normalizeText(detail?.poNumber, 120) || row.po_number
+        row.monday_notes = normalizeText(detail?.notes, 2000) || row.monday_notes
+        row.monday_description = normalizeText(detail?.description, 2000) || row.monday_description
+        row.Monday_url = normalizeText(detail?.itemUrl, 500) || row.Monday_url
+        row.order_date = toIsoOrNull(detail?.orderDate) || row.order_date
+        row.monday_updated_at = toIsoOrNull(detail?.updatedAt) || row.monday_updated_at
+
+        const progressStatusDetails = normalizeProgressStatusDetails(detail?.progressStatusDetails)
+        const isProductionStarted =
+          typeof detail?.isProductionStarted === 'boolean'
+            ? detail.isProductionStarted
+            : resolveProductionStartedFromProgressStatusDetails(progressStatusDetails)
+        const scheduleEligible = row.is_shipped || isProductionStarted
+
+        row.is_production_started = Boolean(scheduleEligible)
+        row.Due_date = scheduleEligible
+          ? toIsoOrNull(detail?.dueDate)
+          : null
+
+        const leadTimeDays = Number(detail?.leadTimeDays)
+
+        if (scheduleEligible && Number.isFinite(leadTimeDays)) {
+          row.Lead_time_days = leadTimeDays
+        } else if (!scheduleEligible) {
+          row.Lead_time_days = null
+        }
+
+        const progressPercent = Number(detail?.progressPercent)
+
+        if (Number.isFinite(progressPercent)) {
+          row.progress_percent = progressPercent
+        }
+
+        if (progressStatusDetails.length > 0) {
+          row.progress_status_details = progressStatusDetails
+        }
+
+        const sourceDrawingUrl = normalizeText(detail?.shopDrawingUrl, 800) || null
+
+        if (sourceDrawingUrl) {
+          row.Shop_drawing_source = sourceDrawingUrl
+          row.Shop_drawing = row.Shop_drawing_cached || row.Shop_drawing_source || row.Shop_drawing
+        }
+
+        const sourceCutListUrl = normalizeText(detail?.cutListUrl, 800) || null
+
+        if (sourceCutListUrl) {
+          row.Cut_list_source = sourceCutListUrl
+          row.Cut_list = row.Cut_list_cached || row.Cut_list_source || row.Cut_list
+        }
+
+        const sourceBolUrl = normalizeText(detail?.bolUrl, 800) || null
+
+        if (sourceBolUrl) {
+          row.BOL_source = sourceBolUrl
+          row.BOL = row.BOL_cached || row.BOL_source || row.BOL
+        }
+
+        const sourceSignedBolUrl = normalizeText(detail?.signedBolUrl, 800) || null
+
+        if (sourceSignedBolUrl) {
+          row.Signed_BOL_source = sourceSignedBolUrl
+          row.Signed_BOL = row.Signed_BOL_source || row.Signed_BOL
+        }
+
+        const sourceInspectionSheetUrl = normalizeText(detail?.inspectionSheetUrl, 800) || null
+
+        if (sourceInspectionSheetUrl) {
+          row.Inspection_sheet_source = sourceInspectionSheetUrl
+          row.Inspection_sheet = row.Inspection_sheet_source || row.Inspection_sheet
+        }
+
+        row.hazard_reason = null
+        enrichedCount += 1
+      })
+
+      return enrichedCount
+    } catch (error) {
+      warnings.push(`Design detail lookup failed: ${normalizeText(error?.message, 400) || 'unknown error'}`)
+
+      return 0
+    }
   }
 
   async function checkShippedBoardForMissing(carryoverRows, warnings) {
@@ -610,7 +832,7 @@ export function createOrdersUnifiedService(deps) {
             row.shipped_at_inferred = true
           }
         }
-        row.Due_date = toIsoOrNull(detail?.effectiveDueDate) || row.Due_date
+        row.Due_date = toIsoOrNull(detail?.dueDate)
         row.order_date = toIsoOrNull(detail?.orderDate) || row.order_date
         row.monday_updated_at = toIsoOrNull(detail?.updatedAt) || row.monday_updated_at
 
@@ -890,6 +1112,13 @@ export function createOrdersUnifiedService(deps) {
 
     // Targeted design-board lookup for QB-only non-shipped rows.
     const designStats = await flagDesignBoardMatches(mergedByKey, warnings)
+    const designDetailEnrichedCount = await enrichMatchedDesignRows({
+      matchedRowsByItemId:
+        designStats?.matchedRowsByItemId instanceof Map
+          ? designStats.matchedRowsByItemId
+          : new Map(),
+      warnings,
+    })
 
     // Carryover: rows in DB (non-shipped) that didn't show up in this pull.
     const carryoverCandidates = []
@@ -1144,6 +1373,7 @@ export function createOrdersUnifiedService(deps) {
       orderTrackOrderCount: orderTrackOrders(orderTrackSnapshot).length,
       designBoardCandidateCount: designStats.candidateCount,
       designBoardMatchedCount: designStats.matchedCount,
+      designDetailEnrichedCount,
       carryoverCheckedCount: carryoverCandidates.length,
       carryoverMarkedShippedCount,
       carryoverHazardCount,

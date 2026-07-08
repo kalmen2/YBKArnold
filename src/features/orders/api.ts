@@ -41,6 +41,30 @@ export type OrdersMondayProgressStatusUpdateResponse = OrdersMondayProgressDetai
   ok: boolean
 }
 
+export type OrdersMondayProgressStatusBulkUpdateFailedRow = {
+  mondayItemId: string
+  columnId: string
+  status: string
+  error: string
+}
+
+export type OrdersMondayProgressStatusBulkQueuedRow = {
+  mondayItemId: string
+  columnId: string
+  status: string
+}
+
+export type OrdersMondayProgressStatusBulkUpdateResponse = {
+  ok: boolean
+  updatedCount: number
+  queuedCount: number
+  failedCount: number
+  failedUpdates: OrdersMondayProgressStatusBulkUpdateFailedRow[]
+  queuedUpdates: OrdersMondayProgressStatusBulkQueuedRow[]
+  orders?: OrdersMondayProgressDetailsOrder[]
+  warnings: string[]
+}
+
 export type OrdersOrderNumberUpdateResponse = {
   ok: boolean
   noChange?: boolean
@@ -59,6 +83,79 @@ export type OrdersOrderNumberContactAdminResponse = {
   alert?: unknown
 }
 
+export type OrdersOrderDetailsUpdateResponse = {
+  ok: boolean
+  order: {
+    mondayItemId: string
+    orderName: string | null
+    poNumber: string | null
+    notes: string | null
+    description: string | null
+    orderDate: string | null
+    dueDate: string | null
+    leadTimeDays: number | null
+    podDate: string | null
+    mondayUpdatedAt: string | null
+  }
+  warning?: string | null
+}
+
+export type OrdersShopDrawingManageResponse = {
+  ok: boolean
+  document?: {
+    fileName: string
+    mimeType: string
+    url: string
+    uploadedAt: string
+  }
+  order: {
+    mondayItemId: string
+    orderNumber: string | null
+    shopDrawingCachedUrl: string | null
+    shopDrawingUrl: string | null
+    mondayUpdatedAt: string | null
+  }
+  warning?: string | null
+}
+
+export type OrdersCutListManageResponse = {
+  ok: boolean
+  document?: {
+    fileName: string
+    mimeType: string
+    url: string
+    uploadedAt: string
+  }
+  order: {
+    mondayItemId: string
+    orderNumber: string | null
+    cutListCachedUrl: string | null
+    cutListUrl: string | null
+    mondayUpdatedAt: string | null
+  }
+  warning?: string | null
+}
+
+export type OrdersWarrantyManageResponse = {
+  ok: boolean
+  order: {
+    mondayItemId: string
+    orderNumber: string | null
+    isShipped: boolean
+    warrantyIssueActive: boolean
+    warrantyIssueDescription: string | null
+    warrantyIssueReportedAt: string | null
+    warrantyIssueLeadTimeDate: string | null
+    warrantyIssueDoneAt: string | null
+    warrantyLastCompletedDescription: string | null
+    warrantyLastCompletedReportedAt: string | null
+    warrantyLastCompletedLeadTimeDate: string | null
+    warrantyLastCompletedDoneAt: string | null
+    warrantyLastCompletedDurationDays: number | null
+    warrantyLastCompletedLeadTimeVarianceDays: number | null
+  }
+}
+
 export type OrdersShippingDocumentType = 'signed_bol' | 'inspection_sheet'
 
 export type OrdersShippingDocumentUploadResponse = {
@@ -70,6 +167,25 @@ export type OrdersShippingDocumentUploadResponse = {
     mimeType: string
     url: string
     uploadedAt: string
+  }
+  order: {
+    orderKey: string | null
+    mondayItemId: string | null
+    orderNumber: string | null
+    isShipped: boolean
+    signedBol: string | null
+    signedBolUrl: string | null
+    inspectionSheet: string | null
+    inspectionSheetUrl: string | null
+  }
+}
+
+export type OrdersShippingDocumentDeleteResponse = {
+  ok: boolean
+  document: {
+    type: OrdersShippingDocumentType
+    label: string
+    deletedAt: string
   }
   order: {
     orderKey: string | null
@@ -216,6 +332,17 @@ export type OrdersOverviewOrder = {
   isShipped: boolean
   shippedAt: string | null
   shippedAtInferred: boolean | null
+  warrantyIssueActive: boolean
+  warrantyIssueDescription: string | null
+  warrantyIssueReportedAt: string | null
+  warrantyIssueLeadTimeDate: string | null
+  warrantyIssueDoneAt: string | null
+  warrantyLastCompletedDescription: string | null
+  warrantyLastCompletedReportedAt: string | null
+  warrantyLastCompletedLeadTimeDate: string | null
+  warrantyLastCompletedDoneAt: string | null
+  warrantyLastCompletedDurationDays: number | null
+  warrantyLastCompletedLeadTimeVarianceDays: number | null
   mondayBoardId: string | null
   mondayBoardName: string | null
   mondayUpdatedAt: string | null
@@ -421,7 +548,15 @@ export function fetchOrdersMondayProgressDetails(mondayItemId: string) {
 type UpdateOrdersMondayProgressStatusInput = {
   mondayItemId: string
   columnId: string
-  status: string
+  status?: string | null
+}
+
+type BulkUpdateOrdersMondayProgressStatusInput = {
+  updates: Array<{
+    mondayItemId: string
+    columnId: string
+    status?: string | null
+  }>
 }
 
 export function postOrdersMondayProgressStatusUpdate(input: UpdateOrdersMondayProgressStatusInput) {
@@ -437,16 +572,39 @@ export function postOrdersMondayProgressStatusUpdate(input: UpdateOrdersMondayPr
     throw new Error('columnId is required.')
   }
 
-  if (!status) {
-    throw new Error('status is required.')
-  }
-
   return apiRequest<OrdersMondayProgressStatusUpdateResponse>(
     '/api/orders/monday/progress-status',
     {
       method: 'POST',
       body: JSON.stringify({ mondayItemId, columnId, status }),
     },
+  )
+}
+
+export function postOrdersMondayProgressStatusBulkUpdate(
+  input: BulkUpdateOrdersMondayProgressStatusInput,
+) {
+  const updates = Array.isArray(input?.updates)
+    ? input.updates
+      .map((entry) => ({
+        mondayItemId: String(entry?.mondayItemId ?? '').trim(),
+        columnId: String(entry?.columnId ?? '').trim(),
+        status: String(entry?.status ?? '').trim(),
+      }))
+      .filter((entry) => entry.mondayItemId && entry.columnId)
+    : []
+
+  if (updates.length === 0) {
+    throw new Error('updates is required.')
+  }
+
+  return apiRequest<OrdersMondayProgressStatusBulkUpdateResponse>(
+    '/api/orders/monday/progress-status/bulk',
+    {
+      method: 'POST',
+      body: JSON.stringify({ updates }),
+    },
+    { timeoutMs: 120_000 },
   )
 }
 
@@ -514,6 +672,273 @@ export function postOrdersOrderNumberContactAdmin(input: ContactAdminForOrderNum
   )
 }
 
+type UpdateOrdersOrderDetailsInput = {
+  mondayItemId: string
+  orderName?: string | null
+  poNumber?: string | null
+  notes?: string | null
+  description?: string | null
+  orderDate?: string | null
+  dueDate?: string | null
+  leadTimeDays?: number | string | null
+  podDate?: string | null
+}
+
+export function postOrdersOrderDetailsUpdate(input: UpdateOrdersOrderDetailsInput) {
+  const mondayItemId = String(input?.mondayItemId ?? '').trim()
+
+  if (!mondayItemId) {
+    throw new Error('mondayItemId is required.')
+  }
+
+  const payload: Record<string, unknown> = {
+    mondayItemId,
+  }
+
+  if (Object.prototype.hasOwnProperty.call(input, 'orderName')) {
+    payload.orderName = input.orderName ?? ''
+  }
+
+  if (Object.prototype.hasOwnProperty.call(input, 'poNumber')) {
+    payload.poNumber = input.poNumber ?? ''
+  }
+
+  if (Object.prototype.hasOwnProperty.call(input, 'notes')) {
+    payload.notes = input.notes ?? ''
+  }
+
+  if (Object.prototype.hasOwnProperty.call(input, 'description')) {
+    payload.description = input.description ?? ''
+  }
+
+  if (Object.prototype.hasOwnProperty.call(input, 'orderDate')) {
+    payload.orderDate = input.orderDate ?? ''
+  }
+
+  if (Object.prototype.hasOwnProperty.call(input, 'dueDate')) {
+    payload.dueDate = input.dueDate ?? ''
+  }
+
+  if (Object.prototype.hasOwnProperty.call(input, 'leadTimeDays')) {
+    const value = input.leadTimeDays
+    payload.leadTimeDays = value === null || value === undefined ? '' : value
+  }
+
+  if (Object.prototype.hasOwnProperty.call(input, 'podDate')) {
+    payload.podDate = input.podDate ?? ''
+  }
+
+  return apiRequest<OrdersOrderDetailsUpdateResponse>(
+    '/api/orders/monday/order-details',
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  )
+}
+
+type UploadOrdersShopDrawingInput = {
+  mondayItemId: string
+  fileName: string
+  mimeType: string
+  fileBase64: string
+}
+
+export function postOrdersShopDrawingUpload(input: UploadOrdersShopDrawingInput) {
+  const mondayItemId = String(input?.mondayItemId ?? '').trim()
+  const fileName = String(input?.fileName ?? '').trim()
+  const mimeType = String(input?.mimeType ?? '').trim().toLowerCase()
+  const fileBase64 = String(input?.fileBase64 ?? '').trim()
+
+  if (!mondayItemId) {
+    throw new Error('mondayItemId is required.')
+  }
+
+  if (!fileName) {
+    throw new Error('fileName is required.')
+  }
+
+  if (!mimeType) {
+    throw new Error('mimeType is required.')
+  }
+
+  if (!fileBase64) {
+    throw new Error('fileBase64 is required.')
+  }
+
+  return apiRequest<OrdersShopDrawingManageResponse>(
+    '/api/orders/monday/shop-drawing/upload',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        mondayItemId,
+        fileName,
+        mimeType,
+        fileBase64,
+      }),
+    },
+    { timeoutMs: 90_000 },
+  )
+}
+
+export function postOrdersShopDrawingDelete(input: { mondayItemId: string }) {
+  const mondayItemId = String(input?.mondayItemId ?? '').trim()
+
+  if (!mondayItemId) {
+    throw new Error('mondayItemId is required.')
+  }
+
+  return apiRequest<OrdersShopDrawingManageResponse>(
+    '/api/orders/monday/shop-drawing/delete',
+    {
+      method: 'POST',
+      body: JSON.stringify({ mondayItemId }),
+    },
+  )
+}
+
+type UploadOrdersCutListInput = {
+  mondayItemId: string
+  fileName: string
+  mimeType: string
+  fileBase64: string
+}
+
+export function postOrdersCutListUpload(input: UploadOrdersCutListInput) {
+  const mondayItemId = String(input?.mondayItemId ?? '').trim()
+  const fileName = String(input?.fileName ?? '').trim()
+  const mimeType = String(input?.mimeType ?? '').trim().toLowerCase()
+  const fileBase64 = String(input?.fileBase64 ?? '').trim()
+
+  if (!mondayItemId) {
+    throw new Error('mondayItemId is required.')
+  }
+
+  if (!fileName) {
+    throw new Error('fileName is required.')
+  }
+
+  if (!mimeType) {
+    throw new Error('mimeType is required.')
+  }
+
+  if (!fileBase64) {
+    throw new Error('fileBase64 is required.')
+  }
+
+  return apiRequest<OrdersCutListManageResponse>(
+    '/api/orders/monday/cut-list/upload',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        mondayItemId,
+        fileName,
+        mimeType,
+        fileBase64,
+      }),
+    },
+    { timeoutMs: 90_000 },
+  )
+}
+
+export function postOrdersCutListDelete(input: { mondayItemId: string }) {
+  const mondayItemId = String(input?.mondayItemId ?? '').trim()
+
+  if (!mondayItemId) {
+    throw new Error('mondayItemId is required.')
+  }
+
+  return apiRequest<OrdersCutListManageResponse>(
+    '/api/orders/monday/cut-list/delete',
+    {
+      method: 'POST',
+      body: JSON.stringify({ mondayItemId }),
+    },
+  )
+}
+
+type CreateOrdersWarrantyIssueInput = {
+  mondayItemId: string
+  description: string
+  reportedDate?: string | null
+}
+
+export function postOrdersWarrantyIssueCreate(input: CreateOrdersWarrantyIssueInput) {
+  const mondayItemId = String(input?.mondayItemId ?? '').trim()
+  const description = String(input?.description ?? '').trim()
+  const reportedDate = String(input?.reportedDate ?? '').trim()
+
+  if (!mondayItemId) {
+    throw new Error('mondayItemId is required.')
+  }
+
+  if (!description) {
+    throw new Error('description is required.')
+  }
+
+  return apiRequest<OrdersWarrantyManageResponse>(
+    '/api/orders/warranty/issue',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        mondayItemId,
+        description,
+        reportedDate: reportedDate || undefined,
+      }),
+    },
+  )
+}
+
+type UpdateOrdersWarrantyLeadTimeInput = {
+  mondayItemId: string
+  leadTimeDate?: string | null
+}
+
+export function postOrdersWarrantyLeadTimeUpdate(input: UpdateOrdersWarrantyLeadTimeInput) {
+  const mondayItemId = String(input?.mondayItemId ?? '').trim()
+  const leadTimeDate = String(input?.leadTimeDate ?? '').trim()
+
+  if (!mondayItemId) {
+    throw new Error('mondayItemId is required.')
+  }
+
+  return apiRequest<OrdersWarrantyManageResponse>(
+    '/api/orders/warranty/lead-time',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        mondayItemId,
+        leadTimeDate,
+      }),
+    },
+  )
+}
+
+type MarkOrdersWarrantyDoneInput = {
+  mondayItemId: string
+  doneDate?: string | null
+}
+
+export function postOrdersWarrantyMarkDone(input: MarkOrdersWarrantyDoneInput) {
+  const mondayItemId = String(input?.mondayItemId ?? '').trim()
+  const doneDate = String(input?.doneDate ?? '').trim()
+
+  if (!mondayItemId) {
+    throw new Error('mondayItemId is required.')
+  }
+
+  return apiRequest<OrdersWarrantyManageResponse>(
+    '/api/orders/warranty/done',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        mondayItemId,
+        doneDate: doneDate || undefined,
+      }),
+    },
+  )
+}
+
 type UploadOrdersShippingDocumentInput = {
   documentType: OrdersShippingDocumentType
   fileName: string
@@ -565,6 +990,42 @@ export function postOrdersShippingDocumentUpload(input: UploadOrdersShippingDocu
         fileName,
         mimeType,
         fileBase64,
+      }),
+    },
+    { timeoutMs: 90_000 },
+  )
+}
+
+type DeleteOrdersShippingDocumentInput = {
+  documentType: OrdersShippingDocumentType
+  orderKey?: string | null
+  mondayItemId?: string | null
+  orderNumber?: string | null
+}
+
+export function postOrdersShippingDocumentDelete(input: DeleteOrdersShippingDocumentInput) {
+  const orderKey = String(input?.orderKey ?? '').trim()
+  const mondayItemId = String(input?.mondayItemId ?? '').trim()
+  const orderNumber = String(input?.orderNumber ?? '').trim()
+  const documentType = String(input?.documentType ?? '').trim().toLowerCase()
+
+  if (!orderKey && !mondayItemId && !orderNumber) {
+    throw new Error('orderKey, mondayItemId, or orderNumber is required.')
+  }
+
+  if (documentType !== 'signed_bol' && documentType !== 'inspection_sheet') {
+    throw new Error('documentType must be signed_bol or inspection_sheet.')
+  }
+
+  return apiRequest<OrdersShippingDocumentDeleteResponse>(
+    '/api/orders/documents/delete',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        orderKey: orderKey || undefined,
+        mondayItemId: mondayItemId || undefined,
+        orderNumber: orderNumber || undefined,
+        documentType,
       }),
     },
     { timeoutMs: 90_000 },

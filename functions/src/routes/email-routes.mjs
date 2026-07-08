@@ -30,6 +30,7 @@ const googleRequiredScopes = [
   'https://www.googleapis.com/auth/gmail.readonly',
   'https://www.googleapis.com/auth/gmail.settings.basic',
   'https://www.googleapis.com/auth/contacts.readonly',
+  'https://www.googleapis.com/auth/drive.readonly',
 ]
 const microsoftRequiredScopes = [
   'openid',

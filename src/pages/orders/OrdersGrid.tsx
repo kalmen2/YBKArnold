@@ -58,14 +58,301 @@ const mondayProgressBreakdownConfig = [
   { key: 'sealer', label: 'Sealer', weight: 12 },
   { key: 'lacquer', label: 'Lacquer', weight: 12 },
   { key: 'ready', label: 'Ready', weight: 12 },
-  { key: 'invoiced', label: 'Invoiced', weight: 12 },
 ] as const
+
+type WebsiteProgressStatusKey = 'working' | 'done' | 'stuck'
+
+type TrackedProgressStageState = {
+  key: (typeof mondayProgressBreakdownConfig)[number]['key']
+  label: (typeof mondayProgressBreakdownConfig)[number]['label']
+  index: number
+  status: WebsiteProgressStatusKey
+}
+
+const mondayProgressStageLabelByKey = new Map<string, string>(
+  mondayProgressBreakdownConfig.map((stage) => [stage.key, stage.label]),
+)
 
 function normalizeProgressStatusKey(value: string | null | undefined) {
   return String(value ?? '')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '')
     .trim()
+}
+
+function normalizeWebsiteProgressStatusKey(
+  value: string | null | undefined,
+): WebsiteProgressStatusKey | null {
+  const normalized = String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+
+  if (!normalized) {
+    return null
+  }
+
+  if (normalized === 'working on it' || normalized === 'working') {
+    return 'working'
+  }
+
+  if (normalized === 'done' || normalized === 'ready') {
+    return 'done'
+  }
+
+  if (normalized === 'stuck' || normalized === 'stock') {
+    return 'stuck'
+  }
+
+  return null
+}
+
+function normalizeWebsiteProgressStatusOptions(options: unknown) {
+  return normalizeProgressStatusOptions(options)
+}
+
+function buildTrackedProgressStageStates(
+  progressStatusDetails: OrdersOverviewOrder['progressStatusDetails'] | null | undefined,
+) {
+  const statusByStage = new Map<string, WebsiteProgressStatusKey>()
+
+  ;(Array.isArray(progressStatusDetails) ? progressStatusDetails : []).forEach((entry) => {
+    const normalizedStatus = normalizeWebsiteProgressStatusKey(entry?.status)
+
+    if (!normalizedStatus) {
+      return
+    }
+
+    const candidateKeys = [
+      normalizeProgressStatusKey(entry?.key),
+      normalizeProgressStatusKey(entry?.label),
+    ]
+
+    candidateKeys.forEach((candidateKey) => {
+      if (!candidateKey || !mondayProgressStageLabelByKey.has(candidateKey) || statusByStage.has(candidateKey)) {
+        return
+      }
+
+      statusByStage.set(candidateKey, normalizedStatus)
+    })
+  })
+
+  return mondayProgressBreakdownConfig
+    .map((stage, index) => {
+      const status = statusByStage.get(stage.key)
+
+      if (!status) {
+        return null
+      }
+
+      return {
+        key: stage.key,
+        label: stage.label,
+        index,
+        status,
+      }
+    })
+    .filter((stage): stage is TrackedProgressStageState => Boolean(stage))
+}
+
+function resolveNewestTrackedStuckStageLabel(
+  progressStatusDetails: OrdersOverviewOrder['progressStatusDetails'] | null | undefined,
+) {
+  const stuckStages = buildTrackedProgressStageStates(progressStatusDetails)
+    .filter((stage) => stage.status === 'stuck')
+
+  if (stuckStages.length === 0) {
+    return null
+  }
+
+  return stuckStages[stuckStages.length - 1]?.label ?? null
+}
+
+function resolveNewestTrackedRowStatusLabel(
+  progressStatusDetails: OrdersOverviewOrder['progressStatusDetails'] | null | undefined,
+) {
+  const trackedStages = buildTrackedProgressStageStates(progressStatusDetails)
+  const newestStage = trackedStages[trackedStages.length - 1]
+
+  if (!newestStage) {
+    return null
+  }
+
+  if (newestStage.status === 'working') {
+    return `${newestStage.label} working on it`
+  }
+
+  if (newestStage.status === 'stuck') {
+    return `${newestStage.label} stuck`
+  }
+
+  return newestStage.key === 'ready'
+    ? 'Ready'
+    : `${newestStage.label} ready`
+}
+
+function resolveDesignStageStatusLabel(
+  progressStatusDetails: OrdersOverviewOrder['progressStatusDetails'] | null | undefined,
+) {
+  const details = Array.isArray(progressStatusDetails) ? progressStatusDetails : []
+
+  for (const entry of details) {
+    const entryKey = normalizeProgressStatusKey(entry?.key)
+    const entryLabel = normalizeProgressStatusKey(entry?.label)
+
+    if (entryKey !== 'design' && entryLabel !== 'design') {
+      continue
+    }
+
+    const status = String(entry?.status ?? '').trim()
+
+    if (status) {
+      return status
+    }
+  }
+
+  return null
+}
+
+function resolveDesignStageProgressEntry(
+  progressStatusDetails: OrdersOverviewOrder['progressStatusDetails'] | null | undefined,
+) {
+  const details = Array.isArray(progressStatusDetails) ? progressStatusDetails : []
+  let fallbackEntry: {
+    status: string | null
+    optionStyles: Array<{
+      label: string
+      color: string | null
+      border: string | null
+      varName: string | null
+    }>
+  } | null = null
+
+  for (const entry of details) {
+    const entryStatus = String(entry?.status ?? '').trim() || null
+    const entryOptionStyles = normalizeProgressStatusOptionStyles(entry?.optionStyles)
+    const entryData = {
+      status: entryStatus,
+      optionStyles: entryOptionStyles,
+    }
+    const entryKey = normalizeProgressStatusKey(entry?.key)
+    const entryLabel = normalizeProgressStatusKey(entry?.label)
+
+    if (!fallbackEntry && (entryStatus || entryOptionStyles.length > 0)) {
+      fallbackEntry = entryData
+    }
+
+    if (entryKey === 'design' || entryLabel === 'design') {
+      return entryData
+    }
+  }
+
+  return fallbackEntry
+}
+
+type RowStatusVisualTone = 'working' | 'stuck' | 'stageReady' | 'finalReady' | 'neutral'
+
+function resolveRowStatusVisual(rowStatus: string | null | undefined) {
+  const rawStatus = String(rowStatus ?? '').trim()
+  const normalizedStatus = rawStatus.toLowerCase()
+
+  if (!rawStatus) {
+    return {
+      tone: 'neutral' as RowStatusVisualTone,
+      topLabel: 'Status',
+      stageLabel: 'Open',
+      isFinalReady: false,
+    }
+  }
+
+  if (normalizedStatus === 'ready') {
+    return {
+      tone: 'finalReady' as RowStatusVisualTone,
+      topLabel: 'Ready',
+      stageLabel: 'Ready',
+      isFinalReady: true,
+    }
+  }
+
+  if (normalizedStatus.endsWith(' working on it')) {
+    const stageLabel = rawStatus
+      .slice(0, rawStatus.length - ' working on it'.length)
+      .trim()
+
+    return {
+      tone: 'working' as RowStatusVisualTone,
+      topLabel: 'Working on it',
+      stageLabel: stageLabel || rawStatus,
+      isFinalReady: false,
+    }
+  }
+
+  if (normalizedStatus.endsWith(' stuck') || normalizedStatus.endsWith(' stock')) {
+    const stuckSuffix = normalizedStatus.endsWith(' stock')
+      ? ' stock'
+      : ' stuck'
+    const stageLabel = rawStatus
+      .slice(0, rawStatus.length - stuckSuffix.length)
+      .trim()
+
+    return {
+      tone: 'stuck' as RowStatusVisualTone,
+      topLabel: 'Stuck',
+      stageLabel: stageLabel || rawStatus,
+      isFinalReady: false,
+    }
+  }
+
+  if (normalizedStatus.endsWith(' ready')) {
+    const stageLabel = rawStatus
+      .slice(0, rawStatus.length - ' ready'.length)
+      .trim()
+
+    return {
+      tone: 'stageReady' as RowStatusVisualTone,
+      topLabel: 'Ready',
+      stageLabel: stageLabel || rawStatus,
+      isFinalReady: false,
+    }
+  }
+
+  return {
+    tone: 'neutral' as RowStatusVisualTone,
+    topLabel: 'Status',
+    stageLabel: rawStatus,
+    isFinalReady: false,
+  }
+}
+
+function resolveRowStatusPalette(tone: RowStatusVisualTone) {
+  const defaultYellowPalette = {
+    stageBg: 'rgba(249, 168, 37, 0.12)',
+    stageBorder: '#f9a825',
+    stageText: '#f9a825',
+  }
+
+  const redPalette = {
+    stageBg: 'rgba(220, 38, 38, 0.16)',
+    stageBorder: '#dc2626',
+    stageText: '#b91c1c',
+  }
+
+  const greenPalette = {
+    stageBg: 'rgba(34, 197, 94, 0.16)',
+    stageBorder: '#22c55e',
+    stageText: '#15803d',
+  }
+
+  const stagePalette = tone === 'stuck'
+    ? redPalette
+    : tone === 'finalReady'
+      ? greenPalette
+      : defaultYellowPalette
+
+  return {
+    topText: '#1976d2',
+    ...stagePalette,
+  }
 }
 
 function normalizeProgressStatusOptions(options: unknown) {
@@ -165,6 +452,59 @@ function resolveReadableTextColor(hexColor: string | null | undefined) {
   return luminance > 0.65 ? 'rgba(15, 23, 42, 0.92)' : '#ffffff'
 }
 
+function resolveFallbackProgressStatusColor(statusLabel: string | null | undefined) {
+  const normalized = String(statusLabel ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+
+  if (!normalized) {
+    return null
+  }
+
+  if (normalized.includes('stuck') || normalized.includes('stock')) {
+    return '#e2445c'
+  }
+
+  if (normalized.includes('working on it') || normalized === 'working') {
+    return '#fdab3d'
+  }
+
+  if (normalized.includes('waiting for approval')) {
+    return '#0086c0'
+  }
+
+  if (normalized.includes('approved')) {
+    return '#00c875'
+  }
+
+  if (normalized.includes('waiting on deposit')) {
+    return '#fd6f3a'
+  }
+
+  if (normalized.includes('deposit received')) {
+    return '#9e9e9e'
+  }
+
+  if (normalized.includes('no deposit required')) {
+    return '#ff007f'
+  }
+
+  if (normalized.includes('cancel order')) {
+    return '#a25ddc'
+  }
+
+  if (normalized.includes('cancel')) {
+    return '#ffcb00'
+  }
+
+  if (normalized.includes('ready') || normalized.includes('done')) {
+    return '#00c875'
+  }
+
+  return null
+}
+
 function resolveProgressStatusVisual(
   statusLabel: string | null | undefined,
   optionStyles: unknown,
@@ -177,24 +517,28 @@ function resolveProgressStatusVisual(
   )
 
   const mondayColor = matchingStyle?.color || null
-  const mondayBorder = matchingStyle?.border || mondayColor
+  const fallbackColor = resolveFallbackProgressStatusColor(normalizedStatusLabel)
+  const effectiveColor = mondayColor || fallbackColor
+  const mondayBorder = matchingStyle?.border || effectiveColor
 
-  if (!mondayColor) {
+  if (!effectiveColor) {
     return {
       borderColor: 'rgba(15, 23, 42, 0.18)',
-      panelBg: 'rgba(15, 23, 42, 0.02)',
+      panelBg: 'rgba(15, 23, 42, 0.08)',
       selectBg: 'rgba(248, 250, 252, 0.85)',
       textColor: 'rgba(15, 23, 42, 0.9)',
       accentColor: 'rgba(15, 23, 42, 0.35)',
+      solidBg: 'rgba(226, 232, 240, 0.95)',
     }
   }
 
   return {
     borderColor: mondayBorder || 'rgba(15, 23, 42, 0.25)',
-    panelBg: hexToRgba(mondayColor, 0.14) || 'rgba(15, 23, 42, 0.03)',
-    selectBg: hexToRgba(mondayColor, 0.22) || 'rgba(241, 245, 249, 0.9)',
-    textColor: resolveReadableTextColor(mondayColor),
-    accentColor: mondayBorder || mondayColor,
+    panelBg: hexToRgba(effectiveColor, 0.26) || 'rgba(15, 23, 42, 0.08)',
+    selectBg: hexToRgba(effectiveColor, 0.42) || 'rgba(241, 245, 249, 0.9)',
+    textColor: resolveReadableTextColor(effectiveColor),
+    accentColor: mondayBorder || effectiveColor,
+    solidBg: effectiveColor,
   }
 }
 
@@ -214,25 +558,9 @@ function resolveSourceLabel(order: OrdersOverviewOrder) {
 }
 
 // "When does this order have to be ready?"
-//  - if the row already has an explicit due date (from Monday), show that
-//  - otherwise, derive from order date + lead time days
+//  - use only the explicit due date from Monday
 function resolveLeadTimeDueDate(order: OrdersOverviewOrder) {
-  if (order.dueDate) {
-    return order.dueDate
-  }
-  if (!order.orderDate || !Number.isFinite(Number(order.leadTimeDays))) {
-    return null
-  }
-  const [y, m, d] = order.orderDate.split('-').map(Number)
-  if (!y || !m || !d) {
-    return null
-  }
-  const target = new Date(y, m - 1, d)
-  target.setDate(target.getDate() + Number(order.leadTimeDays))
-  const yy = target.getFullYear()
-  const mm = String(target.getMonth() + 1).padStart(2, '0')
-  const dd = String(target.getDate()).padStart(2, '0')
-  return `${yy}-${mm}-${dd}`
+  return order.dueDate || null
 }
 
 function daysUntil(isoDate: string | null) {
@@ -391,7 +719,11 @@ export function OrdersGrid({
   onMissingMondayLink,
 }: OrdersGridProps) {
   const queryClient = useQueryClient()
-  const statusColumnHeader = activeTab === 'shipped' ? 'Ship Date' : 'Monday Status'
+  const statusColumnHeader = activeTab === 'shipped'
+    ? 'Ship Date'
+    : activeTab === 'warranty'
+      ? 'Warranty'
+      : 'Monday Status'
   const [rowSelectionModel, setRowSelectionModel] = useState<GridRowSelectionModel>({
     type: 'include',
     ids: new Set(),
@@ -594,9 +926,16 @@ export function OrdersGrid({
   // Prefetch job details on row hover so clicking the Order # / Status History
   // button shows the dialog instantly out of the React Query cache.
   const prefetchJobDetails = (order: OrdersOverviewOrder) => {
-    if (!order.hasMondayRecord) {
+    const hasLookupKey = Boolean(
+      String(order.mondayItemId ?? '').trim()
+      || String(order.jobNumber ?? '').trim()
+      || String(order.orderName ?? '').trim(),
+    )
+
+    if (!hasLookupKey) {
       return
     }
+
     void queryClient.prefetchQuery({
       queryKey: ordersJobDetailsQueryKey({
         mondayItemId: order.mondayItemId,
@@ -652,9 +991,12 @@ export function OrdersGrid({
       field: 'orderNumber',
       headerName: 'Order #',
       minWidth: 190,
-      renderCell: ({ row }) => (
-        <Stack direction="row" spacing={0.5} alignItems="center" sx={{ width: 'fit-content' }}>
-          {row.hasMondayRecord ? (
+      renderCell: ({ row }) => {
+        const canOpenDetails = row.hasMondayRecord || activeTab === 'design'
+
+        return (
+          <Stack direction="row" spacing={0.5} alignItems="center" sx={{ width: 'fit-content' }}>
+          {canOpenDetails ? (
             <Button
               size="small"
               variant="text"
@@ -666,13 +1008,7 @@ export function OrdersGrid({
                 color: row.hasQuickBooksRecord ? 'success.main' : 'error.main',
               }}
               onMouseEnter={() => prefetchJobDetails(row)}
-              onClick={() => {
-                if (!row.hasMondayRecord) {
-                  onMissingMondayLink()
-                  return
-                }
-                onOpenJobDialog(row, 'details')
-              }}
+              onClick={() => onOpenJobDialog(row, 'details')}
             >
               {row.orderNumber}
             </Button>
@@ -705,8 +1041,9 @@ export function OrdersGrid({
           >
             <ChatBubbleOutlineRoundedIcon sx={{ fontSize: '1.18rem' }} />
           </IconButton>
-        </Stack>
-      ),
+          </Stack>
+        )
+      },
     },
     {
       field: 'orderName',
@@ -737,6 +1074,22 @@ export function OrdersGrid({
           title={row.poNumber ?? ''}
         >
           {row.poNumber || '—'}
+        </Typography>
+      ),
+    },
+    {
+      field: 'mondayStatus',
+      headerName: 'Monday Status',
+      minWidth: 170,
+      width: 190,
+      sortable: false,
+      renderCell: ({ row }) => (
+        <Typography
+          variant="body2"
+          sx={{ fontSize: '0.78rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+          title={row.mondayStatus ?? ''}
+        >
+          {row.mondayStatus || '—'}
         </Typography>
       ),
     },
@@ -797,6 +1150,59 @@ export function OrdersGrid({
           >
             {content}
           </Button>
+        )
+      },
+    },
+    {
+      field: 'warrantyIssueDescription',
+      headerName: 'Warranty Issue',
+      minWidth: 220,
+      width: 280,
+      sortable: false,
+      renderCell: ({ row }) => {
+        const content = String(row.warrantyIssueDescription ?? '').trim()
+
+        if (!content) {
+          return <Typography variant="body2" color="text.secondary">—</Typography>
+        }
+
+        return (
+          <Typography
+            variant="body2"
+            sx={{ fontSize: '0.78rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+            title={content}
+          >
+            {content}
+          </Typography>
+        )
+      },
+    },
+    {
+      field: 'warrantyIssueLeadTimeDate',
+      headerName: 'Warranty Lead Time',
+      minWidth: 150,
+      width: 165,
+      type: 'date',
+      valueGetter: (_value, row) => {
+        if (!row.warrantyIssueLeadTimeDate) {
+          return null
+        }
+
+        const parsed = Date.parse(row.warrantyIssueLeadTimeDate)
+
+        return Number.isFinite(parsed) ? new Date(parsed) : null
+      },
+      renderCell: ({ row }) => {
+        const dateValue = String(row.warrantyIssueLeadTimeDate ?? '').trim()
+
+        if (!dateValue) {
+          return <Typography variant="body2" color="text.secondary">—</Typography>
+        }
+
+        return (
+          <Typography variant="body2" fontWeight={700} color="warning.dark">
+            {formatDate(dateValue)}
+          </Typography>
         )
       },
     },
@@ -993,22 +1399,64 @@ export function OrdersGrid({
       minWidth: 170,
       sortable: false,
       renderCell: ({ row }) => {
+        if (activeTab === 'warranty') {
+          const leadTimeDate = String(row.warrantyIssueLeadTimeDate ?? '').trim()
+          const warrantyLabel = row.warrantyIssueActive
+            ? leadTimeDate
+              ? `Due ${formatDate(leadTimeDate)}`
+              : 'In progress'
+            : 'Done'
+
+          return (
+            <Chip
+              size="small"
+              label={warrantyLabel}
+              color={row.warrantyIssueActive ? 'warning' : 'success'}
+              variant="filled"
+            />
+          )
+        }
+
         const hasShippedDate = Boolean(row.shippedAt)
         const missingShipDate = row.isShipped && !hasShippedDate
         const inferredShippedDate = row.isShipped && row.shippedAtInferred === true
         const isWarningShippedDate = missingShipDate || inferredShippedDate
         const shippedDateLabel = hasShippedDate ? formatDate(row.shippedAt) : null
+        const showStageChrome = activeTab !== 'design'
+        const designStageProgressEntry = row.isShipped || activeTab !== 'design'
+          ? null
+          : resolveDesignStageProgressEntry(row.progressStatusDetails)
+        const designStageStatusLabel = row.isShipped || activeTab !== 'design'
+          ? null
+          : designStageProgressEntry?.status || resolveDesignStageStatusLabel(row.progressStatusDetails)
+
+        const newestTrackedRowStatusLabel = row.isShipped
+          || activeTab === 'design'
+          ? null
+          : resolveNewestTrackedRowStatusLabel(row.progressStatusDetails)
+        const resolvedRowStatusLabel = activeTab === 'design'
+          ? designStageStatusLabel || row.rowStatus
+          : newestTrackedRowStatusLabel || row.rowStatus
 
         const statusLabel = row.isShipped
           ? hasShippedDate
             ? shippedDateLabel
             : 'No Ship Date'
-          : row.rowStatus
-
-        const statusChipColor = row.isShipped
-          ? isWarningShippedDate ? 'warning' : 'success'
-          : 'default'
-        const statusChipVariant = row.isShipped ? 'filled' : 'outlined'
+          : resolvedRowStatusLabel
+        const rowStatusVisual = resolveRowStatusVisual(resolvedRowStatusLabel)
+        const rowStatusPalette = resolveRowStatusPalette(rowStatusVisual.tone)
+        const designStatusVisual = activeTab === 'design'
+          ? resolveProgressStatusVisual(
+            resolvedRowStatusLabel,
+            designStageProgressEntry?.optionStyles ?? [],
+          )
+          : null
+        const newestTrackedStuckStageLabel = row.isShipped
+          || activeTab === 'design'
+          ? null
+          : resolveNewestTrackedStuckStageLabel(row.progressStatusDetails)
+        const stuckStageLabel = newestTrackedStuckStageLabel
+          || (rowStatusVisual.tone === 'stuck' ? rowStatusVisual.stageLabel : null)
 
         const tooltipTitle = row.isShipped && isWarningShippedDate
           ? shippedDateLabel
@@ -1016,13 +1464,123 @@ export function OrdersGrid({
             : 'Ship Date is missing in Monday.'
           : null
 
+        if (!row.isShipped) {
+          return (
+            <Box
+              role={row.hasMondayRecord ? 'button' : undefined}
+              tabIndex={row.hasMondayRecord ? 0 : -1}
+              onClick={(event) => {
+                if (!row.hasMondayRecord) {
+                  return
+                }
+                handleOpenStatusPopover(event as unknown as React.MouseEvent<HTMLElement>, row)
+              }}
+              onKeyDown={(event) => {
+                if (!row.hasMondayRecord) {
+                  return
+                }
+
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault()
+                  handleOpenStatusPopover(event as unknown as React.MouseEvent<HTMLElement>, row)
+                }
+              }}
+              sx={{
+                position: 'relative',
+                width: '100%',
+                minWidth: 132,
+                minHeight: showStageChrome
+                  ? (rowStatusVisual.isFinalReady ? 50 : 45)
+                  : 34,
+                pt: showStageChrome ? 0.9 : 0,
+                pb: showStageChrome ? 0.1 : 0,
+                px: showStageChrome ? 0 : 0.35,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: row.hasMondayRecord ? 'pointer' : 'default',
+                ...(showStageChrome
+                  ? {}
+                  : {
+                    borderRadius: 1,
+                    border: `1px solid ${designStatusVisual?.borderColor || 'rgba(15, 23, 42, 0.18)'}`,
+                    bgcolor: designStatusVisual?.solidBg || designStatusVisual?.panelBg || 'rgba(15, 23, 42, 0.08)',
+                  }),
+              }}
+            >
+              {showStageChrome ? (
+                <Typography
+                  variant="caption"
+                  sx={{
+                    position: 'absolute',
+                    top: 0.02,
+                    left: 6,
+                    fontSize: '0.62rem',
+                    fontWeight: 800,
+                    color: rowStatusPalette.topText,
+                    lineHeight: 1,
+                    px: 0.35,
+                    py: 0.05,
+                    borderRadius: 0.7,
+                    bgcolor: 'background.paper',
+                  }}
+                >
+                  {rowStatusVisual.topLabel}
+                </Typography>
+              ) : null}
+
+              {showStageChrome && stuckStageLabel ? (
+                <Tooltip title={`${stuckStageLabel} stuck`}>
+                  <WarningAmberRoundedIcon
+                    sx={{
+                      position: 'absolute',
+                      top: 0.02,
+                      right: 6,
+                      color: 'error.main',
+                      fontSize: '0.72rem',
+                    }}
+                  />
+                </Tooltip>
+              ) : null}
+
+              <Typography
+                component="span"
+                variant="body2"
+                sx={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  px: showStageChrome ? 1.05 : 0.35,
+                  py: showStageChrome ? 0.16 : 0.45,
+                  width: showStageChrome ? 'auto' : '100%',
+                  borderRadius: showStageChrome ? 999 : 0.8,
+                  border: showStageChrome
+                    ? `1px solid ${rowStatusPalette.stageBorder}`
+                    : 'none',
+                  bgcolor: showStageChrome
+                    ? rowStatusPalette.stageBg
+                    : 'transparent',
+                  color: showStageChrome
+                    ? rowStatusPalette.stageText
+                    : (designStatusVisual?.textColor || '#ffffff'),
+                  fontSize: rowStatusVisual.isFinalReady ? '0.96rem' : '0.84rem',
+                  fontWeight: 900,
+                  lineHeight: 1.08,
+                }}
+              >
+                {rowStatusVisual.stageLabel}
+              </Typography>
+            </Box>
+          )
+        }
+
         return (
           <Tooltip title={tooltipTitle ?? ''} disableHoverListener={!tooltipTitle}>
             <Chip
               size="small"
               label={statusLabel}
-              color={statusChipColor}
-              variant={statusChipVariant}
+              color={isWarningShippedDate ? 'warning' : 'success'}
+              variant="filled"
               onClick={(event) => {
                 if (!row.hasMondayRecord) {
                   return
@@ -1328,6 +1886,7 @@ export function OrdersGrid({
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
   ], [
+    activeTab,
     statusColumnHeader,
     lastRefreshedAt,
     shopDrawingHandle,
@@ -1341,18 +1900,38 @@ export function OrdersGrid({
   ])
 
   const standardColumns = useMemo<GridColDef<OrdersOverviewOrder>[]>(() => {
-    const standardColumnSpecs = [
-      { field: 'orderNumber', label: 'Order' },
-      { field: 'orderName', label: 'Order Name' },
-      { field: 'poNumber', label: 'PO Number' },
-      { field: 'shopDrawingUrl', label: 'Drawings' },
-      { field: 'rowStatus', label: statusColumnHeader },
-      { field: 'managerReadyPercent', label: 'Status History' },
-      { field: 'leadTimeDays', label: 'Lead Time' },
-      { field: 'orderDate', label: 'Order Date' },
-      { field: 'paidInFull', label: 'Paid' },
-      { field: 'mondayLink', label: 'Monday' },
-    ] as const
+    const standardColumnSpecs = activeTab === 'design'
+      ? [
+        { field: 'orderNumber', label: 'Order #' },
+        { field: 'orderName', label: 'Name' },
+        { field: 'rowStatus', label: 'Design' },
+        { field: 'orderDate', label: 'PO Date' },
+        { field: 'poNumber', label: 'PO Number' },
+        { field: 'description', label: 'Description' },
+        { field: 'shopDrawingUrl', label: 'Shop Drawings' },
+      ] as const
+      : activeTab === 'warranty'
+        ? [
+          { field: 'orderNumber', label: 'Order #' },
+          { field: 'orderName', label: 'Order Name' },
+          { field: 'warrantyIssueDescription', label: 'Issue' },
+          { field: 'warrantyIssueLeadTimeDate', label: 'Lead Time' },
+          { field: 'rowStatus', label: 'Warranty Status' },
+          { field: 'orderDate', label: 'Order Date' },
+          { field: 'mondayLink', label: 'Monday' },
+        ] as const
+      : [
+        { field: 'orderNumber', label: 'Order' },
+        { field: 'orderName', label: 'Order Name' },
+        { field: 'poNumber', label: 'PO Number' },
+        { field: 'shopDrawingUrl', label: 'Drawings' },
+        { field: 'rowStatus', label: statusColumnHeader },
+        { field: 'managerReadyPercent', label: 'Status History' },
+        { field: 'leadTimeDays', label: 'Lead Time' },
+        { field: 'orderDate', label: 'Order Date' },
+        { field: 'paidInFull', label: 'Paid' },
+        { field: 'mondayLink', label: 'Monday' },
+      ] as const
 
     const adminColumnsByField = new Map(
       adminColumns.map((column) => [String(column.field), column]),
@@ -1374,7 +1953,7 @@ export function OrdersGrid({
     })
 
     return orderedColumns
-  }, [adminColumns, statusColumnHeader])
+  }, [activeTab, adminColumns, statusColumnHeader])
 
   const adminColumnGroupingModel = useMemo<GridColumnGroupingModel>(
     () => [
@@ -1490,14 +2069,49 @@ export function OrdersGrid({
       })
     })
 
-    return mondayProgressBreakdownConfig.map((config) => ({
+    const breakdown = mondayProgressBreakdownConfig.map((config) => ({
       ...config,
       status: byKey.get(config.key)?.status ?? null,
       columnId: byKey.get(config.key)?.columnId ?? null,
       options: byKey.get(config.key)?.options ?? [],
       optionStyles: byKey.get(config.key)?.optionStyles ?? [],
     }))
-  }, [statusPopoverOrder])
+
+    if (activeTab !== 'design') {
+      return breakdown
+    }
+
+    const designEntry = breakdown.find((entry) => entry.key === 'design') ?? null
+    const hasUsableDesignEntry = Boolean(
+      designEntry
+      && (
+        designEntry.columnId
+        || designEntry.options.length > 0
+        || String(designEntry.status ?? '').trim()
+      ),
+    )
+    const fallbackEntry = breakdown.find((entry) => (
+      entry.columnId
+      || entry.options.length > 0
+      || String(entry.status ?? '').trim()
+    )) ?? null
+    const selectedEntry = hasUsableDesignEntry ? designEntry : fallbackEntry
+
+    if (!selectedEntry) {
+      return []
+    }
+
+    return [{
+      ...selectedEntry,
+      label: 'Design',
+      weight: 100,
+    }]
+  }, [activeTab, statusPopoverOrder])
+
+  const isDesignStatusPopoverMode = activeTab === 'design'
+  const statusPopoverStatusLabel = isDesignStatusPopoverMode
+    ? String(statusPopoverBreakdown[0]?.status ?? '').trim() || statusPopoverOrder?.rowStatus || '—'
+    : statusPopoverOrder?.rowStatus || '—'
 
   const prioritizedRows = useMemo(() => {
     if (orders.length < 2) {
@@ -1659,7 +2273,7 @@ export function OrdersGrid({
         <Stack spacing={1.15}>
           <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" alignItems="center">
             <Typography variant="subtitle2" fontWeight={800}>
-              Monday Stage Breakdown
+              {isDesignStatusPopoverMode ? 'Monday Design Status' : 'Monday Stage Breakdown'}
             </Typography>
             <Chip
               size="small"
@@ -1669,7 +2283,7 @@ export function OrdersGrid({
             />
             <Chip
               size="small"
-              label={`Status: ${statusPopoverOrder?.rowStatus || '—'}`}
+              label={`Status: ${statusPopoverStatusLabel}`}
               variant="outlined"
             />
           </Stack>
@@ -1684,7 +2298,9 @@ export function OrdersGrid({
             <Stack direction="row" spacing={0.8} alignItems="center">
               <CircularProgress size={16} />
               <Typography variant="caption" color="text.secondary">
-                Loading live Monday stage values...
+                {isDesignStatusPopoverMode
+                  ? 'Loading live Monday design status...'
+                  : 'Loading live Monday stage values...'}
               </Typography>
             </Stack>
           ) : null}
@@ -1692,13 +2308,20 @@ export function OrdersGrid({
           <Box
             sx={{
               display: 'grid',
-              gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', md: 'repeat(4, minmax(0, 1fr))' },
+              gridTemplateColumns: isDesignStatusPopoverMode
+                ? 'minmax(0, 1fr)'
+                : { xs: 'repeat(2, minmax(0, 1fr))', md: 'repeat(4, minmax(0, 1fr))' },
               gap: 1,
             }}
           >
             {statusPopoverBreakdown.map((entry) => {
               const selectedStatus = String(entry.status ?? '').trim()
-              const options = normalizeProgressStatusOptions(entry.options)
+              const editableOptions = normalizeWebsiteProgressStatusOptions(entry.options)
+              const normalizedSelectedStatus = normalizeProgressStatusKey(selectedStatus)
+              const selectedStatusIsEditable = editableOptions.some((option) => (
+                normalizeProgressStatusKey(option) === normalizedSelectedStatus
+              ))
+              const selectedValue = selectedStatusIsEditable ? selectedStatus : ''
               const optionStyles = normalizeProgressStatusOptionStyles(entry.optionStyles)
               const statusColumnId = String(entry.columnId ?? '').trim() || null
               const visual = resolveProgressStatusVisual(selectedStatus, optionStyles)
@@ -1707,7 +2330,7 @@ export function OrdersGrid({
                 !canEditMondayStages
                 || isStatusPopoverLoading
                 || !statusColumnId
-                || options.length === 0
+                || editableOptions.length === 0
                 || Boolean(updatingStatusColumnKey)
 
               return (
@@ -1728,13 +2351,15 @@ export function OrdersGrid({
                       <Typography variant="caption" fontWeight={800}>
                         {entry.label}
                       </Typography>
-                      <Typography variant="caption" color="text.secondary" fontWeight={700}>
-                        {entry.weight}%
-                      </Typography>
+                      {!isDesignStatusPopoverMode ? (
+                        <Typography variant="caption" color="text.secondary" fontWeight={700}>
+                          {entry.weight}%
+                        </Typography>
+                      ) : null}
                     </Stack>
                     <FormControl size="small" fullWidth>
                       <Select
-                        value={selectedStatus}
+                        value={selectedValue}
                         displayEmpty
                         disabled={dropdownDisabled}
                         onChange={(event) => {
@@ -1749,14 +2374,23 @@ export function OrdersGrid({
                               key: entry.key,
                               columnId: statusColumnId,
                               status: selectedStatus || null,
-                              options,
+                              options: editableOptions,
                             },
                             nextStatus,
                           )
                         }}
                         renderValue={(value) => {
                           const normalizedValue = String(value ?? '').trim()
-                          return normalizedValue || 'No value'
+
+                          if (normalizedValue) {
+                            return normalizedValue
+                          }
+
+                          if (selectedStatus) {
+                            return selectedStatus
+                          }
+
+                          return 'No value'
                         }}
                         sx={{
                           minHeight: 33,
@@ -1777,28 +2411,54 @@ export function OrdersGrid({
                         }}
                       >
                         <MenuItem value="" disabled>
-                          {options.length > 0 ? 'Select status' : 'No options available'}
+                          {editableOptions.length > 0 ? 'Select status' : 'No options available'}
                         </MenuItem>
-                        {selectedStatus && !options.includes(selectedStatus) ? (
-                          <MenuItem value={selectedStatus}>{selectedStatus}</MenuItem>
+                        {selectedStatus && !selectedStatusIsEditable ? (
+                          <MenuItem value="" disabled>{selectedStatus}</MenuItem>
                         ) : null}
-                        {options.map((option) => {
+                        {editableOptions.map((option) => {
                           const optionStyle = optionStyles.find(
                             (style) => style.label.toLowerCase() === option.toLowerCase(),
                           )
                           const optionAccent = optionStyle?.border || optionStyle?.color
+                          const optionBg = optionStyle?.color
+                            ? hexToRgba(optionStyle.color, 0.18)
+                            : null
+                          const optionHoverBg = optionStyle?.color
+                            ? hexToRgba(optionStyle.color, 0.28)
+                            : null
+                          const optionTextColor = optionStyle?.color
+                            ? resolveReadableTextColor(optionStyle.color)
+                            : null
 
                           return (
                             <MenuItem
                               key={`${entry.key}-${option}`}
                               value={option}
-                              sx={
-                                optionAccent
+                              sx={{
+                                ...(optionAccent
                                   ? {
                                     borderLeft: `3px solid ${optionAccent}`,
                                   }
-                                  : undefined
-                              }
+                                  : {}),
+                                ...(optionBg
+                                  ? {
+                                    bgcolor: optionBg,
+                                  }
+                                  : {}),
+                                ...(optionTextColor
+                                  ? {
+                                    color: optionTextColor,
+                                  }
+                                  : {}),
+                                ...(optionHoverBg
+                                  ? {
+                                    '&:hover': {
+                                      bgcolor: optionHoverBg,
+                                    },
+                                  }
+                                  : {}),
+                              }}
                             >
                               {option}
                             </MenuItem>
