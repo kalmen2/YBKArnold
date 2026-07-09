@@ -31,7 +31,7 @@ import {
 } from '@mui/material'
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useAuth } from '../auth/useAuth'
+import { apiFetch } from '../features/api-client'
 import {
   fetchDashboardBootstrap,
   type DashboardOrder,
@@ -128,7 +128,6 @@ function isReadyOrder(order: DashboardOrder) {
 }
 
 export default function DashboardPage() {
-  const { getIdToken } = useAuth()
   const queryClient = useQueryClient()
   const [activeDrilldown, setActiveDrilldown] = useState<DrilldownKey | null>(null)
   const [isRefreshing, setIsRefreshing] = useState(false)
@@ -243,26 +242,8 @@ export default function DashboardPage() {
     }
 
     try {
-      const idToken = await getIdToken()
       const query = new URLSearchParams({ orderId })
-      const response = await fetch(
-        `/api/dashboard/monday/shop-drawing/download?${query.toString()}`,
-        {
-          headers: {
-            Authorization: `Bearer ${idToken}`,
-            'x-client-platform': 'web',
-          },
-        },
-      )
-
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({}))
-        const message = typeof payload?.error === 'string'
-          ? payload.error
-          : 'Could not load shop drawing preview.'
-        throw new Error(message)
-      }
-
+      const response = await apiFetch(`/api/dashboard/monday/shop-drawing/download?${query.toString()}`)
       const blob = await response.blob()
       const objectUrl = URL.createObjectURL(blob)
       shopDrawingPreviewObjectUrlRef.current = objectUrl
@@ -277,7 +258,7 @@ export default function DashboardPage() {
           : 'Could not load shop drawing preview.',
       )
     }
-  }, [clearShopDrawingPreviewObjectUrl, getIdToken])
+  }, [clearShopDrawingPreviewObjectUrl])
 
   const dueInTwoWeeksOrders = useMemo(
     () => (snapshot?.orders ?? []).filter(

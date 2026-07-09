@@ -22,12 +22,19 @@ import {
   type OrdersOverviewOrder,
   type OrdersProgressStatusDetail,
 } from '../../features/orders/api'
+import {
+  ORDER_PROGRESS_STAGES,
+  normalizeProgressStageKey,
+  normalizeProgressStageStatus,
+  type OrderProgressStageKey,
+  type OrderProgressStatusKey,
+} from '../../features/orders/stage-registry'
 import { resolveShopDrawingUrl } from './shopDrawingUrl'
 import type { ShopDrawingPreviewHandle } from './ShopDrawingPreview'
 
-type StageStatusKey = 'working' | 'done' | 'stuck'
+type StageStatusKey = OrderProgressStatusKey
 
-type StageKey = 'design' | 'baseform' | 'build' | 'sandorlam' | 'sealer' | 'lacquer' | 'ready'
+type StageKey = OrderProgressStageKey
 
 type BulkEditRow = {
   id: string
@@ -40,18 +47,7 @@ type BulkEditRow = {
   }>
 }
 
-const stageConfig: Array<{
-  key: StageKey
-  label: string
-}> = [
-  { key: 'design', label: 'Design' },
-  { key: 'baseform', label: 'Base/Form' },
-  { key: 'build', label: 'Build' },
-  { key: 'sandorlam', label: 'Sand or lam' },
-  { key: 'sealer', label: 'Sealer' },
-  { key: 'lacquer', label: 'Lacquer' },
-  { key: 'ready', label: 'Ready' },
-]
+const stageConfig = ORDER_PROGRESS_STAGES
 
 const editableStatusOptions: Array<{
   key: StageStatusKey
@@ -62,37 +58,9 @@ const editableStatusOptions: Array<{
   { key: 'stuck', label: 'Stuck' },
 ]
 
-function normalizeProgressStatusKey(value: string | null | undefined) {
-  return String(value ?? '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '')
-    .trim()
-}
+const normalizeProgressStatusKey = normalizeProgressStageKey
 
-function normalizeStageStatusKey(value: string | null | undefined): StageStatusKey | null {
-  const normalized = String(value ?? '')
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, ' ')
-
-  if (!normalized) {
-    return null
-  }
-
-  if (normalized === 'working on it' || normalized === 'working') {
-    return 'working'
-  }
-
-  if (normalized === 'done' || normalized === 'ready') {
-    return 'done'
-  }
-
-  if (normalized === 'stuck' || normalized === 'stock') {
-    return 'stuck'
-  }
-
-  return null
-}
+const normalizeStageStatusKey = normalizeProgressStageStatus
 
 function toMondayStatusLabel(statusKey: StageStatusKey | null) {
   if (!statusKey) {
@@ -614,7 +582,7 @@ export function UpdateOrdersDialog({
   return (
     <Dialog
       open={open}
-      onClose={(_event, _reason) => {
+      onClose={() => {
         handleRequestClose()
       }}
       fullWidth

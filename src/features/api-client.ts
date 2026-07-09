@@ -61,11 +61,12 @@ type ApiRequestError = Error & {
   payload?: unknown
 }
 
-export async function apiRequest<T>(
+async function requestWithAuth(
   path: string,
-  options: RequestInit = {},
-  requestOptions: ApiRequestOptions = {},
-): Promise<T> {
+  options: RequestInit,
+  requestOptions: ApiRequestOptions,
+  defaultHeaders: Record<string, string>,
+): Promise<Response> {
   async function send(forceRefresh = false) {
     const authHeaders = await getAuthHeaders(forceRefresh)
     const timeoutMs = Number(requestOptions.timeoutMs)
@@ -94,8 +95,7 @@ export async function apiRequest<T>(
         ...options,
         signal: abortController?.signal ?? options.signal,
         headers: {
-          'Content-Type': 'application/json',
-          'x-client-platform': 'web',
+          ...defaultHeaders,
           ...authHeaders,
           ...(options.headers ?? {}),
         },
@@ -114,21 +114,33 @@ export async function apiRequest<T>(
   }
 
   let response = await send()
-  let payload = await response.json().catch(() => ({}))
 
   if (response.status === 401 && firebaseAuth.currentUser) {
     clearCachedToken()
     response = await send(true)
-    payload = await response.json().catch(() => ({}))
   }
 
-  if (!response.ok) {
-    // If the server says the token is invalid, clear our cache so the next
-    // request gets a fresh token.
-    if (response.status === 401) {
-      clearCachedToken()
-    }
+  // If the server says the token is invalid, clear our cache so the next
+  // request gets a fresh token.
+  if (response.status === 401) {
+    clearCachedToken()
+  }
 
+  return response
+}
+
+export async function apiRequest<T>(
+  path: string,
+  options: RequestInit = {},
+  requestOptions: ApiRequestOptions = {},
+): Promise<T> {
+  const response = await requestWithAuth(path, options, requestOptions, {
+    'Content-Type': 'application/json',
+    'x-client-platform': 'web',
+  })
+  const payload = await response.json().catch(() => ({}))
+
+  if (!response.ok) {
     const requestError: ApiRequestError = new Error(payload.error ?? 'Request failed.')
     requestError.status = response.status
     requestError.payload = payload
@@ -136,4 +148,32 @@ export async function apiRequest<T>(
   }
 
   return payload as T
+}
+
+// Authenticated fetch for non-JSON responses (file/blob downloads). Shares the
+// cached-token and 401-retry behavior of apiRequest but returns the raw
+// Response so the caller can stream or read a blob. Throws the same shaped
+// error as apiRequest on non-OK responses.
+export async function apiFetch(
+  path: string,
+  options: RequestInit = {},
+  requestOptions: ApiRequestOptions = {},
+): Promise<Response> {
+  const response = await requestWithAuth(path, options, requestOptions, {
+    'x-client-platform': 'web',
+  })
+
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}))
+    const requestError: ApiRequestError = new Error(
+      typeof (payload as { error?: unknown }).error === 'string'
+        ? String((payload as { error?: unknown }).error)
+        : 'Request failed.',
+    )
+    requestError.status = response.status
+    requestError.payload = payload
+    throw requestError
+  }
+
+  return response
 }

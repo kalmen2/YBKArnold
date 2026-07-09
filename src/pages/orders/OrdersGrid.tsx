@@ -45,22 +45,21 @@ import { type ShopDrawingPreviewHandle } from './ShopDrawingPreview'
 import type { OrdersListTab } from './useOrdersOverview'
 import { resolveBolUrl } from './bolUrl'
 import { resolveShopDrawingUrl } from './shopDrawingUrl'
+import {
+  ORDER_PROGRESS_STAGES,
+  ORDER_PROGRESS_STAGE_LABEL_BY_KEY,
+  normalizeProgressStageKey,
+  normalizeProgressStageStatus,
+  type OrderProgressStatusKey,
+} from '../../features/orders/stage-registry'
 import { formatProgress, resolveOrderProjectIds } from './utils'
 
 export type OrdersQuickBooksDrilldownMetric = 'purchaseOrders' | 'bills' | 'invoices'
 export type OrdersViewMode = 'standard' | 'admin'
 
-const mondayProgressBreakdownConfig = [
-  { key: 'design', label: 'Design', weight: 13 },
-  { key: 'baseform', label: 'Base/Form', weight: 13 },
-  { key: 'build', label: 'Build', weight: 13 },
-  { key: 'sandorlam', label: 'Sand or lam', weight: 13 },
-  { key: 'sealer', label: 'Sealer', weight: 12 },
-  { key: 'lacquer', label: 'Lacquer', weight: 12 },
-  { key: 'ready', label: 'Ready', weight: 12 },
-] as const
+const mondayProgressBreakdownConfig = ORDER_PROGRESS_STAGES
 
-type WebsiteProgressStatusKey = 'working' | 'done' | 'stuck'
+type WebsiteProgressStatusKey = OrderProgressStatusKey
 
 type TrackedProgressStageState = {
   key: (typeof mondayProgressBreakdownConfig)[number]['key']
@@ -69,43 +68,11 @@ type TrackedProgressStageState = {
   status: WebsiteProgressStatusKey
 }
 
-const mondayProgressStageLabelByKey = new Map<string, string>(
-  mondayProgressBreakdownConfig.map((stage) => [stage.key, stage.label]),
-)
+const mondayProgressStageLabelByKey = ORDER_PROGRESS_STAGE_LABEL_BY_KEY
 
-function normalizeProgressStatusKey(value: string | null | undefined) {
-  return String(value ?? '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '')
-    .trim()
-}
+const normalizeProgressStatusKey = normalizeProgressStageKey
 
-function normalizeWebsiteProgressStatusKey(
-  value: string | null | undefined,
-): WebsiteProgressStatusKey | null {
-  const normalized = String(value ?? '')
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, ' ')
-
-  if (!normalized) {
-    return null
-  }
-
-  if (normalized === 'working on it' || normalized === 'working') {
-    return 'working'
-  }
-
-  if (normalized === 'done' || normalized === 'ready') {
-    return 'done'
-  }
-
-  if (normalized === 'stuck' || normalized === 'stock') {
-    return 'stuck'
-  }
-
-  return null
-}
+const normalizeWebsiteProgressStatusKey = normalizeProgressStageStatus
 
 function normalizeWebsiteProgressStatusOptions(options: unknown) {
   return normalizeProgressStatusOptions(options)

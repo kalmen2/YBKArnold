@@ -15,6 +15,7 @@ import {
 import { useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAuth } from '../../auth/useAuth'
+import { apiFetch } from '../../features/api-client'
 import {
   postOrdersShopDrawingDelete,
   postOrdersShopDrawingUpload,
@@ -41,7 +42,7 @@ type ShopDrawingPreviewProps = {
 }
 
 export function ShopDrawingPreview({ onError, bind }: ShopDrawingPreviewProps) {
-  const { appUser, getIdToken } = useAuth()
+  const { appUser } = useAuth()
   const queryClient = useQueryClient()
 
   const [hoverOpen, setHoverOpen] = useState(false)
@@ -208,19 +209,12 @@ export function ShopDrawingPreview({ onError, bind }: ShopDrawingPreviewProps) {
       }
 
       const requestPromise = (async () => {
-        const idToken = await getIdToken()
         const query = new URLSearchParams({ orderId })
-        const response = await fetch(
-          `/api/dashboard/monday/shop-drawing/download?${query.toString()}`,
-          {
-            headers: {
-              Authorization: `Bearer ${idToken}`,
-              'x-client-platform': 'web',
-            },
-          },
-        )
+        let response: Response
 
-        if (!response.ok) {
+        try {
+          response = await apiFetch(`/api/dashboard/monday/shop-drawing/download?${query.toString()}`)
+        } catch {
           return null
         }
 
@@ -244,7 +238,7 @@ export function ShopDrawingPreview({ onError, bind }: ShopDrawingPreviewProps) {
         hoverPendingRequestsRef.current.delete(orderId)
       }
     },
-    [getIdToken],
+    [],
   )
 
   const closeHover = useCallback(() => {
@@ -362,26 +356,8 @@ export function ShopDrawingPreview({ onError, bind }: ShopDrawingPreviewProps) {
       }
 
       try {
-        const idToken = await getIdToken()
         const query = new URLSearchParams({ orderId })
-        const response = await fetch(
-          `/api/dashboard/monday/shop-drawing/download?${query.toString()}`,
-          {
-            headers: {
-              Authorization: `Bearer ${idToken}`,
-              'x-client-platform': 'web',
-            },
-          },
-        )
-
-        if (!response.ok) {
-          const payload = await response.json().catch(() => ({}))
-          const message = typeof payload?.error === 'string'
-            ? payload.error
-            : 'Could not load shop drawing preview.'
-          throw new Error(message)
-        }
-
+        const response = await apiFetch(`/api/dashboard/monday/shop-drawing/download?${query.toString()}`)
         const blob = await response.blob()
         const objectUrl = URL.createObjectURL(blob)
         objectUrlRef.current = objectUrl
@@ -398,7 +374,7 @@ export function ShopDrawingPreview({ onError, bind }: ShopDrawingPreviewProps) {
         )
       }
     },
-    [clearObjectUrl, getIdToken, onError],
+    [clearObjectUrl, onError],
   )
 
   const closeDialog = useCallback(() => {

@@ -1,359 +1,60 @@
+import { buildDetectedColumnsForBoard } from '../orders/monday-board-map.mjs'
+
 export function createMondayDashboardService({
   columnOverrides = {},
   mondayBoardUrl,
   normalizeLookupValue,
 }) {
-  const progressStatusConfig = [
-    { key: 'design', label: 'Design', titleKeywords: ['design'], weight: 13 },
-    { key: 'baseForm', label: 'Base/Form', titleKeywords: ['base/form', 'base form'], weight: 13 },
-    { key: 'build', label: 'Build', titleKeywords: ['build'], weight: 13 },
-    { key: 'sandOrLam', label: 'Sand or lam', titleKeywords: ['sand or lam', 'sand', 'lam'], weight: 13 },
-    { key: 'sealer', label: 'Sealer', titleKeywords: ['sealer'], weight: 12 },
-    { key: 'lacquer', label: 'Lacquer', titleKeywords: ['lacquer'], weight: 12 },
-    { key: 'ready', label: 'Ready', titleKeywords: ['ready'], weight: 12 },
-    { key: 'invoiced', label: 'Invoiced', titleKeywords: ['invoiced'], weight: 12 },
-  ]
+  // Columns resolve exclusively from the exact IDs in monday-board-map.mjs.
+  // An unmapped board fails loudly instead of guessing from column titles:
+  // update the map when boards change.
+  function detectMondayColumns(_items, boardId = null) {
+    const mappedColumns = buildDetectedColumnsForBoard(boardId, columnOverrides)
 
-  function detectMondayColumns(items) {
-    const sampleItems = items.slice(0, 50)
-    const columns = []
-    const seen = new Set()
-
-    sampleItems.forEach((item) => {
-      const values = Array.isArray(item?.column_values) ? item.column_values : []
-
-      values.forEach((value) => {
-        const id = String(value?.id ?? '')
-
-        if (!id || seen.has(id)) {
-          return
-        }
-
-        seen.add(id)
-        columns.push({
-          id,
-          title: String(value?.column?.title ?? ''),
-          type: String(value?.type ?? ''),
-        })
-      })
-    })
-
-    const statusColumnId = pickColumnId(
-      columns,
-      ['design', 'stage', 'state'],
-      ['status', 'color'],
-    )
-    const shipDateColumnId =
-      normalizeColumnOverrideId(columnOverrides.shipDateColumnId) ||
-      pickColumnId(
-      columns,
-      ['ship date', 'date shipped', 'shipped date', 'shipped on', 'shipping date'],
-      ['date', 'timeline'],
-      )
-    const leadTimeColumnId =
-      normalizeColumnOverrideId(columnOverrides.leadTimeColumnId) ||
-      pickColumnId(
-      columns,
-      ['lead time', 'leadtime', 'lead', 'production time'],
-      ['numbers', 'numeric', 'text', 'long-text', 'date', 'timeline'],
-      )
-    const orderDateKeywords = [
-      'order date',
-      'ordered',
-      'po date',
-      'p o date',
-      'purchase order date',
-      'date ordered',
-      'received',
-      'start',
-    ]
-    // Business rules for this board:
-    // - PO Date is the order start date.
-    // - Lead Time is the ready/due date when available.
-    const orderDateColumnId =
-      normalizeColumnOverrideId(columnOverrides.orderDateColumnId) ||
-      pickColumnIdByExactTitle(columns, 'po date') ||
-      pickColumnIdByExactTitle(columns, 'purchase order date') ||
-      pickColumnId(columns, orderDateKeywords, ['date', 'timeline'])
-    let dueDateColumnId =
-      normalizeColumnOverrideId(columnOverrides.dueDateColumnId) ||
-      pickColumnIdByExactTitle(columns, 'lead time') ||
-      pickColumnIdByExactTitle(columns, 'ready by') ||
-      pickColumnIdByExactTitle(columns, 'need by') ||
-      pickColumnId(
-        columns,
-        ['lead time', 'leadtime', 'ready by', 'need by', 'due', 'delivery', 'target', 'eta'],
-        ['date', 'timeline'],
-      )
-    const shopDrawingColumnId = pickColumnId(
-      columns,
-      ['shop drawing', 'shop drawings', 'drawing', 'drawings', 'chop drawing', 'chopped drawing', 'chopped drawings'],
-      ['file', 'link', 'text', 'long-text'],
-    )
-    const cutListColumnId = pickColumnId(
-      columns,
-      ['cut list', 'cutlist'],
-      ['file', 'link', 'text', 'long-text'],
-    )
-    const shipToColumnId =
-      pickColumnIdByExactTitle(columns, 'ship to') ||
-      pickColumnId(columns, ['ship to', 'shipping to'], ['text', 'long-text'])
-    const shipNotesColumnId =
-      pickColumnIdByExactTitle(columns, 'ship notes') ||
-      pickColumnIdByExactTitle(columns, 'ship note') ||
-      pickColumnIdByExactTitle(columns, 'shipping notes') ||
-      pickColumnIdByExactTitle(columns, 'shipping note') ||
-      pickColumnId(
-        columns,
-        [
-          'ship notes',
-          'ship note',
-          'shipping notes',
-          'shipping note',
-          'shipping instructions',
-          'ship instructions',
-          'notes for shipping',
-        ],
-        ['text', 'long-text', 'mirror', 'formula'],
-      )
-    const bolColumnId =
-      pickColumnIdByExactTitle(columns, 'bol') ||
-      pickColumnId(columns, ['bol', 'bill of lading'], ['text', 'long-text', 'numbers', 'numeric'])
-    const signedBolColumnId =
-      pickColumnIdByExactTitle(columns, 'signed bol') ||
-      pickColumnId(
-        columns,
-        ['signed bol', 'signed bill of lading', 'signed b.o.l'],
-        ['file', 'link', 'text', 'long-text'],
-      )
-    const inspectionSheetColumnId =
-      pickColumnIdByExactTitle(columns, 'inspection sheet') ||
-      pickColumnId(
-        columns,
-        [
-          'inspection sheet',
-          'inspection and release',
-          'inspection',
-          'release certificate',
-          'order inspection',
-        ],
-        ['file', 'link', 'text', 'long-text'],
-      )
-    const poNumberColumnId =
-      normalizeColumnOverrideId(columnOverrides.poNumberColumnId) ||
-      pickColumnIdByExactTitle(columns, 'po number') ||
-      pickColumnIdByExactTitle(columns, 'purchase order number') ||
-      pickColumnIdByExactTitle(columns, 'po #') ||
-      pickColumnIdByExactTitle(columns, 'po no') ||
-      pickColumnIdByExactTitle(columns, 'po num') ||
-      pickColumnId(
-        columns,
-        ['po number', 'purchase order number', 'po #', 'po num', 'po no', 'customer po'],
-        ['text', 'long-text', 'numbers', 'numeric'],
-      )
-    const notesColumnId =
-      pickColumnIdByExactTitle(columns, 'notes') ||
-      pickColumnId(columns, ['notes', 'order notes'], ['text', 'long-text'])
-    const descriptionColumnId =
-      normalizeColumnOverrideId(columnOverrides.descriptionColumnId) ||
-      pickColumnIdByExactTitle(columns, 'description') ||
-      pickColumnIdByExactTitle(columns, 'job description') ||
-      pickColumnIdByExactTitle(columns, 'project description') ||
-      pickColumnId(
-        columns,
-        ['description', 'order description', 'job description', 'project description', 'details'],
-        ['text', 'long-text'],
-      )
-
-    if (orderDateColumnId && orderDateColumnId === dueDateColumnId) {
-      dueDateColumnId = leadTimeColumnId && leadTimeColumnId !== orderDateColumnId
-        ? leadTimeColumnId
-        : null
+    if (mappedColumns) {
+      return mappedColumns
     }
 
-    const progressColumnId = pickColumnId(
-      columns,
-      ['progress', 'percent complete', 'completion'],
-      ['numbers', 'numeric', 'progress', 'formula'],
-      ['date', 'timeline'],
-    )
-    const progressStatusColumns = progressStatusConfig
-      .map((config) => ({
-        key: config.key,
-        label: config.label,
-        weight: config.weight,
-        columnId: pickColumnId(columns, config.titleKeywords, ['status', 'color']),
-      }))
-      .filter((entry) => Boolean(entry.columnId))
-    const ackColumnId = pickColumnIdByExactTitle(columns, 'ack')
-
-    return {
-      statusColumnId,
-      shipDateColumnId,
-      leadTimeColumnId,
-      dueDateColumnId,
-      shopDrawingColumnId,
-      cutListColumnId,
-      shipToColumnId,
-      shipNotesColumnId,
-      bolColumnId,
-      signedBolColumnId,
-      inspectionSheetColumnId,
-      poNumberColumnId,
-      notesColumnId,
-      descriptionColumnId,
-      orderDateColumnId,
-      progressColumnId,
-      progressStatusColumns,
-      ackColumnId,
+    throw {
+      status: 500,
+      message: `Monday board ${boardId || '(unknown)'} is not in monday-board-map.mjs. Add its columns to the map to sync it.`,
     }
-  }
-
-  function pickColumnIdByExactTitle(columns, title) {
-    const normalizedTitle = normalizeLookupValue(title)
-    const match = columns.find(
-      (column) => normalizeLookupValue(column?.title) === normalizedTitle,
-    )
-
-    return match ? String(match.id ?? '').trim() || null : null
-  }
-
-  function normalizeColumnOverrideId(value) {
-    const normalized = String(value ?? '').trim()
-    return normalized || null
-  }
-
-  function pickColumnId(columns, keywords, preferredTypes = [], disallowedTypes = []) {
-    const normalizedKeywords = (Array.isArray(keywords) ? keywords : [])
-      .map((keyword) => normalizeLookupValue(keyword))
-      .filter(Boolean)
-    let bestId = null
-    let bestScore = 0
-
-    columns.forEach((column) => {
-      if (disallowedTypes.includes(column.type)) {
-        return
-      }
-
-      const haystack = normalizeLookupValue(`${column.title} ${column.id}`)
-
-      let score = 0
-
-      normalizedKeywords.forEach((normalizedKeyword) => {
-        if (haystack.includes(normalizedKeyword)) {
-          score += normalizedKeyword.length + 3
-        }
-      })
-
-      if (preferredTypes.includes(column.type)) {
-        score += 4
-      }
-
-      if (score > bestScore) {
-        bestScore = score
-        bestId = column.id
-      }
-    })
-
-    if (bestScore < 6) {
-      return null
-    }
-
-    return bestId
   }
 
   function normalizeMondayOrder(item, columnMap, options = {}) {
     const columnValues = Array.isArray(item?.column_values) ? item.column_values : []
     const statusColumn =
-      findColumnById(columnValues, columnMap.statusColumnId) ||
-      findColumnByKeywords(columnValues, ['design', 'stage'])
+      findColumnById(columnValues, columnMap.statusColumnId)
     const shipDateColumn =
-      findColumnById(columnValues, columnMap.shipDateColumnId) ||
-      findColumnByKeywords(columnValues, ['ship date', 'date shipped', 'shipped date', 'shipped on', 'shipping date'])
+      findColumnById(columnValues, columnMap.shipDateColumnId)
     const leadTimeColumn =
-      findColumnById(columnValues, columnMap.leadTimeColumnId) ||
-      findColumnByKeywords(columnValues, ['lead'])
+      findColumnById(columnValues, columnMap.leadTimeColumnId)
     const dueDateColumn =
-      findColumnById(columnValues, columnMap.dueDateColumnId) ||
-      findColumnByKeywords(columnValues, ['lead time', 'due', 'ready by', 'need by', 'eta'])
+      findColumnById(columnValues, columnMap.dueDateColumnId)
     const shopDrawingColumn =
-      findColumnById(columnValues, columnMap.shopDrawingColumnId) ||
-      findColumnByKeywords(columnValues, [
-        'shop drawing',
-        'shop drawings',
-        'drawing',
-        'drawings',
-        'chop drawing',
-        'chopped drawing',
-        'chopped drawings',
-      ])
+      findColumnById(columnValues, columnMap.shopDrawingColumnId)
     const cutListColumn =
-      findColumnById(columnValues, columnMap.cutListColumnId) ||
-      findColumnByKeywords(columnValues, ['cut list', 'cutlist'])
+      findColumnById(columnValues, columnMap.cutListColumnId)
     const shipToColumn =
-      findColumnById(columnValues, columnMap.shipToColumnId) ||
-      findColumnByKeywords(columnValues, ['ship to', 'shipping to'])
+      findColumnById(columnValues, columnMap.shipToColumnId)
     const shipNotesColumn =
-      findColumnById(columnValues, columnMap.shipNotesColumnId) ||
-      findColumnByKeywords(columnValues, [
-        'ship notes',
-        'ship note',
-        'shipping notes',
-        'shipping note',
-        'shipping instructions',
-        'ship instructions',
-        'notes for shipping',
-      ])
+      findColumnById(columnValues, columnMap.shipNotesColumnId)
     const bolColumn =
-      findColumnById(columnValues, columnMap.bolColumnId) ||
-      findColumnByKeywords(columnValues, ['bol', 'bill of lading'])
+      findColumnById(columnValues, columnMap.bolColumnId)
     const signedBolColumn =
-      findColumnById(columnValues, columnMap.signedBolColumnId) ||
-      findColumnByKeywords(columnValues, ['signed bol', 'signed bill of lading', 'signed b.o.l'])
+      findColumnById(columnValues, columnMap.signedBolColumnId)
     const inspectionSheetColumn =
-      findColumnById(columnValues, columnMap.inspectionSheetColumnId) ||
-      findColumnByKeywords(columnValues, [
-        'inspection sheet',
-        'inspection and release',
-        'inspection',
-        'release certificate',
-        'order inspection',
-      ])
+      findColumnById(columnValues, columnMap.inspectionSheetColumnId)
     const poNumberColumn =
-      findColumnById(columnValues, columnMap.poNumberColumnId) ||
-      findColumnByKeywords(columnValues, [
-        'po number',
-        'purchase order number',
-        'po #',
-        'po no',
-        'po num',
-        'customer po',
-      ])
+      findColumnById(columnValues, columnMap.poNumberColumnId)
     const notesColumn =
-      findColumnById(columnValues, columnMap.notesColumnId) ||
-      findColumnByKeywords(columnValues, ['notes', 'order notes'])
+      findColumnById(columnValues, columnMap.notesColumnId)
     const descriptionColumn =
-      findColumnById(columnValues, columnMap.descriptionColumnId) ||
-      findColumnByKeywords(columnValues, [
-        'description',
-        'order description',
-        'job description',
-        'project description',
-        'details',
-      ])
+      findColumnById(columnValues, columnMap.descriptionColumnId)
     const orderDateColumn =
-      findColumnById(columnValues, columnMap.orderDateColumnId) ||
-      findColumnByKeywords(columnValues, [
-        'order date',
-        'ordered',
-        'date ordered',
-        'po date',
-        'p o date',
-        'purchase order date',
-      ])
+      findColumnById(columnValues, columnMap.orderDateColumnId)
     const progressColumn =
-      findColumnById(columnValues, columnMap.progressColumnId) ||
-      findColumnByKeywords(columnValues, ['progress'])
+      findColumnById(columnValues, columnMap.progressColumnId)
     const acknowledgmentColumn = findColumnById(columnValues, columnMap.ackColumnId)
 
     const stageLabel = readTextFromColumn(statusColumn) || 'Unspecified'
@@ -529,20 +230,6 @@ export function createMondayDashboardService({
     }
 
     return columnValues.find((columnValue) => columnValue?.id === columnId) ?? null
-  }
-
-  function findColumnByKeywords(columnValues, keywords) {
-    const normalizedKeywords = keywords.map((keyword) => normalizeLookupValue(keyword))
-
-    return (
-      columnValues.find((columnValue) => {
-        const haystack = normalizeLookupValue(
-          `${columnValue?.column?.title ?? ''} ${columnValue?.id ?? ''}`,
-        )
-
-        return normalizedKeywords.some((keyword) => haystack.includes(keyword))
-      }) ?? null
-    )
   }
 
   function parseJsonValue(rawValue) {

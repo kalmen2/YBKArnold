@@ -39,6 +39,10 @@ export type OrdersMondayProgressDetailsResponse = {
 
 export type OrdersMondayProgressStatusUpdateResponse = OrdersMondayProgressDetailsResponse & {
   ok: boolean
+  // Set when Monday was unreachable: the edit is saved on the website and
+  // queued to sync to Monday automatically.
+  queued?: boolean
+  warning?: string | null
 }
 
 export type OrdersMondayProgressStatusBulkUpdateFailedRow = {
@@ -361,6 +365,40 @@ export type OrdersOverviewOrder = {
   quickBooksProjectIds: string[]
   quickBooksProjectNames: string[]
   hazardReason: string | null
+  parentOrderNumber: string | null
+  familyRollup?: OrdersFamilyRollup | null
+}
+
+// Present on a main order that has linked sub-orders: the combined money and
+// labor view of the whole order family (main + sub-orders).
+export type OrdersFamilyRollup = {
+  orderNumbers: string[]
+  subOrderCount: number
+  totalHours: number | null
+  totalLaborCost: number | null
+  poAmount: number | null
+  billedAmount: number | null
+  invoiceAmount: number | null
+  amountOwed: number | null
+  billBalanceAmount: number | null
+}
+
+export type OrdersSubOrderLinkResponse = {
+  ok: boolean
+  orderNumber: string | null
+  parentOrderNumber: string | null
+}
+
+export function postOrdersSubOrderLink(input: {
+  orderKey?: string | null
+  mondayItemId?: string | null
+  orderNumber?: string | null
+  parentOrderNumber: string | null
+}) {
+  return apiRequest<OrdersSubOrderLinkResponse>('/api/orders/suborder-link', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
 }
 
 export type OrdersOverviewResponse = {

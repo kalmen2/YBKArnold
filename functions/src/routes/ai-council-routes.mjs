@@ -1,10 +1,16 @@
+import { randomUUID } from 'node:crypto'
 import {
-  createCipheriv,
-  createDecipheriv,
-  createHash,
-  randomBytes,
-  randomUUID,
-} from 'node:crypto'
+  createTokenCryptoService,
+  resolveTokenEncryptionSecret,
+} from '../services/token-crypto-service.mjs'
+import { AppError } from '../utils/app-error.mjs'
+import {
+  isExpiredAt,
+  normalizeInlineText,
+  toBoundedInteger,
+  normalizeText as normalizeTrimmedText,
+  nowIso,
+} from '../utils/value-utils.mjs'
 
 const aiCouncilMembers = ['chatgpt', 'claude']
 const ruleMembers = ['chatgpt', 'claude', 'moderator']
@@ -17,9 +23,6 @@ const googleAccessTokenRefreshSkewMs = 2 * 60 * 1000
 const defaultDriveBrainFolderId = '1z1b8vec2vkuIqFAzTXKxKvP6xqmoXbMn'
 const maxDriveBrainFiles = 18
 const maxDriveBrainChars = 30000
-
-let cachedEncryptionSecret = ''
-let cachedEncryptionKey = null
 
 const defaultCouncilRules = {
   moderator: {
@@ -90,96 +93,35 @@ const defaultCouncilRules = {
 }
 
 function normalizeText(value, maxLength = 10000) {
-  return String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, maxLength)
+  return normalizeInlineText(value, maxLength)
 }
 
 function normalizeLongText(value, maxLength = 60000) {
-  return String(value ?? '').trim().slice(0, maxLength)
+  return normalizeTrimmedText(value, maxLength)
 }
 
-function nowIso() {
-  return new Date().toISOString()
-}
+const tokenCrypto = createTokenCryptoService({
+  missingSecretContext: 'Google token encryption',
+})
 
-function resolveTokenEncryptionSecret() {
-  return normalizeText(
-    process.env.EMAIL_OAUTH_TOKEN_ENCRYPTION_KEY || process.env.GOOGLE_OAUTH_TOKEN_ENCRYPTION_KEY,
-    4000,
-  )
-}
-
-function getEncryptionKey() {
-  const encryptionSecret = resolveTokenEncryptionSecret()
-
-  if (!encryptionSecret) {
-    throw {
-      status: 500,
-      message: 'Missing EMAIL_OAUTH_TOKEN_ENCRYPTION_KEY (or GOOGLE_OAUTH_TOKEN_ENCRYPTION_KEY) for Google token encryption.',
-    }
-  }
-
-  if (cachedEncryptionKey && cachedEncryptionSecret === encryptionSecret) {
-    return cachedEncryptionKey
-  }
-
-  cachedEncryptionSecret = encryptionSecret
-  cachedEncryptionKey = createHash('sha256').update(encryptionSecret).digest()
-  return cachedEncryptionKey
-}
-
+// AI Council treats unreadable stored tokens as "not connected" instead of
+// failing the request: empty or corrupt payloads decrypt to '' so callers fall
+// through to the refresh/reconnect paths. Missing-secret configuration errors
+// still surface as 500s.
 function encryptSecret(value) {
-  const normalizedValue = String(value ?? '')
-
-  if (!normalizedValue) {
-    return ''
-  }
-
-  const iv = randomBytes(12)
-  const cipher = createCipheriv('aes-256-gcm', getEncryptionKey(), iv)
-  const encrypted = Buffer.concat([
-    cipher.update(normalizedValue, 'utf8'),
-    cipher.final(),
-  ])
-  const authTag = cipher.getAuthTag()
-
-  return `${iv.toString('base64')}.${authTag.toString('base64')}.${encrypted.toString('base64')}`
+  return tokenCrypto.encryptSecret(value) ?? ''
 }
 
 function decryptSecret(value) {
-  const normalizedValue = normalizeText(value, 12000)
+  try {
+    return tokenCrypto.decryptSecret(value) ?? ''
+  } catch (error) {
+    if (error instanceof AppError) {
+      throw error
+    }
 
-  if (!normalizedValue) {
     return ''
   }
-
-  const [ivPart = '', authTagPart = '', encryptedPart = ''] = normalizedValue.split('.')
-
-  if (!ivPart || !authTagPart || !encryptedPart) {
-    return ''
-  }
-
-  const decipher = createDecipheriv(
-    'aes-256-gcm',
-    getEncryptionKey(),
-    Buffer.from(ivPart, 'base64'),
-  )
-  decipher.setAuthTag(Buffer.from(authTagPart, 'base64'))
-  const decrypted = Buffer.concat([
-    decipher.update(Buffer.from(encryptedPart, 'base64')),
-    decipher.final(),
-  ])
-
-  return decrypted.toString('utf8')
-}
-
-function isExpiredAt(value, skewMs = 0) {
-  const timestamp = Date.parse(String(value ?? ''))
-
-  if (!Number.isFinite(timestamp)) {
-    return true
-  }
-
-  return Date.now() >= timestamp - skewMs
 }
 
 function parseScopeSet(scopeValue) {

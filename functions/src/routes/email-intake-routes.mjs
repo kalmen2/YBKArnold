@@ -1,9 +1,4 @@
-import {
-  createCipheriv,
-  createDecipheriv,
-  createHash,
-  randomBytes,
-} from 'node:crypto'
+import { createTokenCryptoService } from '../services/token-crypto-service.mjs'
 import {
   isExpiredAt,
   normalizeText,
@@ -60,84 +55,7 @@ const emailIntakeSyncRunLogsMax = 600
 
 const timeZonePartsFormatterCache = new Map()
 
-let cachedEncryptionSecret = ''
-let cachedEncryptionKey = null
-
-function resolveTokenEncryptionSecret() {
-  return normalizeText(
-    process.env.EMAIL_OAUTH_TOKEN_ENCRYPTION_KEY || process.env.GOOGLE_OAUTH_TOKEN_ENCRYPTION_KEY,
-    4000,
-  )
-}
-
-function getTokenEncryptionKey() {
-  const encryptionSecret = resolveTokenEncryptionSecret()
-
-  if (!encryptionSecret) {
-    throw {
-      status: 500,
-      message: 'Missing EMAIL_OAUTH_TOKEN_ENCRYPTION_KEY (or GOOGLE_OAUTH_TOKEN_ENCRYPTION_KEY).',
-    }
-  }
-
-  if (cachedEncryptionKey && cachedEncryptionSecret === encryptionSecret) {
-    return cachedEncryptionKey
-  }
-
-  cachedEncryptionSecret = encryptionSecret
-  cachedEncryptionKey = createHash('sha256').update(encryptionSecret).digest()
-
-  return cachedEncryptionKey
-}
-
-function encryptSecret(value) {
-  const normalizedValue = String(value ?? '').trim()
-
-  if (!normalizedValue) {
-    return null
-  }
-
-  const key = getTokenEncryptionKey()
-  const iv = randomBytes(12)
-  const cipher = createCipheriv('aes-256-gcm', key, iv)
-  const encrypted = Buffer.concat([
-    cipher.update(normalizedValue, 'utf8'),
-    cipher.final(),
-  ])
-  const authTag = cipher.getAuthTag()
-
-  return `${iv.toString('base64')}.${authTag.toString('base64')}.${encrypted.toString('base64')}`
-}
-
-function decryptSecret(value) {
-  const normalizedValue = String(value ?? '').trim()
-
-  if (!normalizedValue) {
-    return null
-  }
-
-  const [ivPart = '', authTagPart = '', encryptedPart = ''] = normalizedValue.split('.')
-
-  if (!ivPart || !authTagPart || !encryptedPart) {
-    throw new Error('Stored token payload is malformed.')
-  }
-
-  const key = getTokenEncryptionKey()
-  const decipher = createDecipheriv(
-    'aes-256-gcm',
-    key,
-    Buffer.from(ivPart, 'base64'),
-  )
-
-  decipher.setAuthTag(Buffer.from(authTagPart, 'base64'))
-
-  const decrypted = Buffer.concat([
-    decipher.update(Buffer.from(encryptedPart, 'base64')),
-    decipher.final(),
-  ])
-
-  return decrypted.toString('utf8')
-}
+const { decryptSecret, encryptSecret } = createTokenCryptoService()
 
 function resolveGoogleServiceConfig() {
   const clientId = normalizeText(

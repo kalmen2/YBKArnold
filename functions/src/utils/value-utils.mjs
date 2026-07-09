@@ -5,6 +5,12 @@ export function normalizeText(value, maxLength = 500) {
   return String(value ?? '').trim().slice(0, maxLength)
 }
 
+// Like normalizeText, but also collapses internal whitespace runs to single
+// spaces. For single-line values (labels, chat/message text, config strings).
+export function normalizeInlineText(value, maxLength = 500) {
+  return String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, maxLength)
+}
+
 export function normalizeOptionalShortText(value, maxLength = 240) {
   const normalized = String(value ?? '').trim()
 

@@ -9,7 +9,7 @@ import {
   Typography,
 } from '@mui/material'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useAuth } from '../../auth/useAuth'
+import { apiFetch } from '../../features/api-client'
 import type { OrdersOverviewOrder } from '../../features/orders/api'
 
 type InvoicePreviewHandle = {
@@ -22,7 +22,6 @@ type InvoicePreviewProps = {
 }
 
 export function InvoicePreview({ onError, bind }: InvoicePreviewProps) {
-  const { getIdToken } = useAuth()
   const [dialogOrder, setDialogOrder] = useState<OrdersOverviewOrder | null>(null)
   const [dialogSrc, setDialogSrc] = useState('')
   const [dialogLoading, setDialogLoading] = useState(false)
@@ -57,7 +56,6 @@ export function InvoicePreview({ onError, bind }: InvoicePreviewProps) {
     setDialogLoading(true)
 
     try {
-      const idToken = await getIdToken()
       const query = new URLSearchParams()
 
       if (orderId) {
@@ -68,21 +66,7 @@ export function InvoicePreview({ onError, bind }: InvoicePreviewProps) {
         query.set('orderNumber', orderNumber)
       }
 
-      const response = await fetch(`/api/orders/invoice/download?${query.toString()}`, {
-        headers: {
-          Authorization: `Bearer ${idToken}`,
-          'x-client-platform': 'web',
-        },
-      })
-
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({}))
-        const message = typeof payload?.error === 'string'
-          ? payload.error
-          : 'Could not load invoice preview.'
-        throw new Error(message)
-      }
-
+      const response = await apiFetch(`/api/orders/invoice/download?${query.toString()}`)
       const blob = await response.blob()
 
       if (!blob || blob.size <= 0) {
@@ -103,7 +87,7 @@ export function InvoicePreview({ onError, bind }: InvoicePreviewProps) {
           : 'Could not load invoice preview.',
       )
     }
-  }, [clearObjectUrl, getIdToken, onError])
+  }, [clearObjectUrl, onError])
 
   const closeDialog = useCallback(() => {
     clearObjectUrl()

@@ -234,7 +234,9 @@ const slackAllowedChannelIds = String(process.env.SLACK_ALLOWED_CHANNEL_IDS ?? '
 const apiKeyPepper = String(process.env.API_KEY_PEPPER ?? '').trim()
 const zendeskTicketFieldCacheTtlMs = 30 * 60 * 1000
 const zendeskTicketFieldErrorCacheTtlMs = 5 * 60 * 1000
-const dashboardDailyRefreshCron = String(process.env.DASHBOARD_DAILY_REFRESH_CRON ?? '0 17 * * *').trim() || '0 17 * * *'
+// Orders/dashboard refresh pulls Monday + QuickBooks twice a day: 6 AM before
+// the shop starts, 3 PM mid-afternoon. Manual refresh stays available anytime.
+const dashboardDailyRefreshCron = String(process.env.DASHBOARD_DAILY_REFRESH_CRON ?? '0 6,15 * * *').trim() || '0 6,15 * * *'
 const dashboardDailyRefreshTimeZone =
   String(process.env.DASHBOARD_DAILY_REFRESH_TIMEZONE ?? authAccessTimeZoneNewJersey).trim()
   || authAccessTimeZoneNewJersey
@@ -1935,6 +1937,35 @@ async function dispatchDueChatRemindersForCollection({
   }
 }
 
+// Shared alert envelope for due chat reminders; CRM and orders reminders only
+// differ by the subject label in the title and their metadata payloads.
+function buildDueReminderAlert({ chatMessage, reminder, recipientUids, now, subjectLabel }) {
+  const actor = String(chatMessage.createdByName || chatMessage.createdByEmail || 'A teammate').trim()
+  const reminderNote = String(reminder.note ?? '').trim()
+
+  return {
+    id: randomUUID(),
+    title: `Reminder due today: ${subjectLabel}`,
+    message: reminderNote
+      ? `${actor} reminder is due today: ${reminderNote.slice(0, 300)}`
+      : `${actor} reminder is due today.`,
+    isUpdate: false,
+    targetMode: mobileAlertTargetModeSelected,
+    targetUserUids: recipientUids,
+    createdByUid: String(chatMessage.createdByUid ?? '').trim() || null,
+    createdByEmail: String(chatMessage.createdByEmail ?? '').trim() || null,
+    delivery: {
+      targetUserCount: recipientUids.length,
+      pushTokenCount: 0,
+      pushAcceptedCount: 0,
+      pushErrorCount: 0,
+      errorSamples: [],
+    },
+    createdAt: now,
+    updatedAt: now,
+  }
+}
+
 async function dispatchDueCrmChatReminders({ asOfDate }) {
   const { databasesByDomain, authUsersCollection, mobileAlertsCollection } = await getCollections()
   const crmAccountChatsCollection = databasesByDomain.crm.collection('crm_account_chats')
@@ -1957,32 +1988,13 @@ async function dispatchDueCrmChatReminders({ asOfDate }) {
         createdByName: 1,
         reminder: 1,
       },
-      buildAlert: ({ chatMessage, reminder, recipientUids }) => {
-        const actor = String(chatMessage.createdByName || chatMessage.createdByEmail || 'A teammate').trim()
-        const reminderNote = String(reminder.note ?? '').trim()
-
-        return {
-          id: randomUUID(),
-          title: `Reminder due today: ${String(chatMessage.dealerSourceId ?? '').trim() || 'Account'}`,
-          message: reminderNote
-            ? `${actor} reminder is due today: ${reminderNote.slice(0, 300)}`
-            : `${actor} reminder is due today.`,
-          isUpdate: false,
-          targetMode: mobileAlertTargetModeSelected,
-          targetUserUids: recipientUids,
-          createdByUid: String(chatMessage.createdByUid ?? '').trim() || null,
-          createdByEmail: String(chatMessage.createdByEmail ?? '').trim() || null,
-          delivery: {
-            targetUserCount: recipientUids.length,
-            pushTokenCount: 0,
-            pushAcceptedCount: 0,
-            pushErrorCount: 0,
-            errorSamples: [],
-          },
-          createdAt: now,
-          updatedAt: now,
-        }
-      },
+      buildAlert: ({ chatMessage, reminder, recipientUids }) => buildDueReminderAlert({
+        chatMessage,
+        reminder,
+        recipientUids,
+        now,
+        subjectLabel: String(chatMessage.dealerSourceId ?? '').trim() || 'Account',
+      }),
       buildMetadata: ({ chatMessage, reminder }) => ({
         source: 'crm_chat_reminder_due',
         dealerSourceId: String(chatMessage.dealerSourceId ?? '').trim() || null,
@@ -2009,36 +2021,16 @@ async function dispatchDueCrmChatReminders({ asOfDate }) {
         createdByName: 1,
         reminder: 1,
       },
-      buildAlert: ({ chatMessage, reminder, recipientUids }) => {
-        const actor = String(chatMessage.createdByName || chatMessage.createdByEmail || 'A teammate').trim()
-        const reminderNote = String(reminder.note ?? '').trim()
-        const orderLabel = String(chatMessage.orderNumber ?? '').trim()
+      buildAlert: ({ chatMessage, reminder, recipientUids }) => buildDueReminderAlert({
+        chatMessage,
+        reminder,
+        recipientUids,
+        now,
+        subjectLabel: String(chatMessage.orderNumber ?? '').trim()
           || String(chatMessage.orderName ?? '').trim()
           || String(chatMessage.orderId ?? '').trim()
-          || 'Order'
-
-        return {
-          id: randomUUID(),
-          title: `Reminder due today: ${orderLabel}`,
-          message: reminderNote
-            ? `${actor} reminder is due today: ${reminderNote.slice(0, 300)}`
-            : `${actor} reminder is due today.`,
-          isUpdate: false,
-          targetMode: mobileAlertTargetModeSelected,
-          targetUserUids: recipientUids,
-          createdByUid: String(chatMessage.createdByUid ?? '').trim() || null,
-          createdByEmail: String(chatMessage.createdByEmail ?? '').trim() || null,
-          delivery: {
-            targetUserCount: recipientUids.length,
-            pushTokenCount: 0,
-            pushAcceptedCount: 0,
-            pushErrorCount: 0,
-            errorSamples: [],
-          },
-          createdAt: now,
-          updatedAt: now,
-        }
-      },
+          || 'Order',
+      }),
       buildMetadata: ({ chatMessage, reminder }) => ({
         source: 'orders_chat_reminder_due',
         orderId: String(chatMessage.orderId ?? '').trim() || null,

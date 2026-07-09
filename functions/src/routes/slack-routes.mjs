@@ -1,11 +1,12 @@
 import { createHmac, timingSafeEqual } from 'node:crypto'
+import { normalizeInlineText } from '../utils/value-utils.mjs'
 
 const slackApiBaseUrl = 'https://slack.com/api'
 const processedEventIds = new Map()
 const processedEventTtlMs = 10 * 60 * 1000
 
 function normalizeText(value, maxLength = 4000) {
-  return String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, maxLength)
+  return normalizeInlineText(value, maxLength)
 }
 
 function parseAllowedChannelIds(value) {

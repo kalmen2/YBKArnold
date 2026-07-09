@@ -18,6 +18,10 @@
 // Targeted name-only lookups replace the old "pull the entire shipped board"
 // and "pull the entire pre-production board" patterns.
 
+import {
+  normalizeProgressStageKey,
+  normalizeProgressStageStatus,
+} from '../orders/stage-registry.mjs'
 import { createQuickBooksProjectsService } from './quickbooks-projects-service.mjs'
 import {
   buildNameLookupFromMondayItems,
@@ -108,38 +112,6 @@ function normalizeProgressStatusDetails(details) {
     options: normalizeOptions(entry?.options),
     optionStyles: normalizeOptionStyles(entry?.optionStyles),
   }))
-}
-
-function normalizeProgressStageKey(value) {
-  return String(value ?? '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '')
-    .trim()
-}
-
-function normalizeProgressStageStatus(value) {
-  const normalized = String(value ?? '')
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, ' ')
-
-  if (!normalized) {
-    return null
-  }
-
-  if (normalized === 'working on it' || normalized === 'working') {
-    return 'working'
-  }
-
-  if (normalized === 'done' || normalized === 'ready') {
-    return 'done'
-  }
-
-  if (normalized === 'stuck' || normalized === 'stock') {
-    return 'stuck'
-  }
-
-  return null
 }
 
 function resolveProductionStartedFromProgressStatusDetails(progressStatusDetails) {
@@ -1367,7 +1339,7 @@ export function createOrdersUnifiedService(deps) {
       staleQuickBooksDeletedCount = Number(deleteResult?.deletedCount ?? 0)
     }
 
-    return {
+    const summary = {
       refreshedAt,
       mergedOrderCount: mergedRows.length,
       orderTrackOrderCount: orderTrackOrders(orderTrackSnapshot).length,
@@ -1393,6 +1365,30 @@ export function createOrdersUnifiedService(deps) {
       quickBooksSyncedAt: quickBooksData?.generatedAt || null,
       warnings,
     }
+
+    // Persist the refresh summary where the Orders page reads "last refreshed"
+    // from, so scheduled refreshes update it the same way manual ones do.
+    try {
+      const { dashboardSnapshotsCollection } = await getCollections()
+
+      await dashboardSnapshotsCollection.updateOne(
+        { snapshotKey: 'orders_unified_refresh' },
+        {
+          $set: {
+            snapshotKey: 'orders_unified_refresh',
+            snapshot: summary,
+            updatedAt: new Date().toISOString(),
+          },
+        },
+        { upsert: true },
+      )
+    } catch (error) {
+      warnings.push(
+        `Refresh summary persistence failed: ${normalizeText(error?.message, 400) || 'unknown error'}`,
+      )
+    }
+
+    return summary
   }
 
   function orderTrackOrders(snapshot) {

@@ -413,7 +413,7 @@ export function createMondaySnapshotService({
         pageCount += 1
 
         if (!knownColumnIds) {
-          const detectedFromPage = detectMondayColumns(pageItems)
+          const detectedFromPage = detectMondayColumns(pageItems, boardId)
           const detectedIds = collectColumnIdsFromMap(detectedFromPage)
 
           if (detectedIds.length > 0) {
@@ -448,7 +448,7 @@ export function createMondaySnapshotService({
       }
 
       const uniqueRawItems = dedupeMondayItems(rawItems)
-      const columnMap = detectMondayColumns(uniqueRawItems)
+      const columnMap = detectMondayColumns(uniqueRawItems, boardId)
       const orders = uniqueRawItems
         .map((item) => normalizeMondayOrder(item, columnMap, { boardUrl }))
         .sort(compareOrdersByUrgency)
@@ -1328,7 +1328,7 @@ query GetAssetDownloadInfo($assetId: ID!) {
         },
         generatedAt: new Date().toISOString(),
         orders: [],
-        columnDetection: detectMondayColumns([]),
+        columnDetection: detectMondayColumns([], normalizedBoardId),
       }
     }
 
@@ -1375,7 +1375,7 @@ query GetItemsByIds($itemIds: [ID!]!) {
     }
 
     const uniqueRawItems = dedupeMondayItems(rawItems)
-    const columnMap = detectMondayColumns(uniqueRawItems)
+    const columnMap = detectMondayColumns(uniqueRawItems, normalizedBoardId)
     const orders = uniqueRawItems
       .map((item) => normalizeMondayOrder(item, columnMap, { boardUrl }))
       .sort(compareOrdersByUrgency)

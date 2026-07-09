@@ -46,6 +46,7 @@ import {
 } from '../features/quickbooks/api'
 import { splitQuickBooksProjectLabel } from '../features/quickbooks/utils'
 import { useAuth } from '../auth/useAuth'
+import { apiFetch } from '../features/api-client'
 import {
   createStage,
   deleteEntry,
@@ -684,7 +685,7 @@ function escapeHtml(value: string) {
 }
 
 export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPageProps) {
-  const { appUser, getIdToken } = useAuth()
+  const { appUser } = useAuth()
   const canAccessManagerSheet =
     appUser?.isManager === true
     || appUser?.isAdmin === true
@@ -4434,28 +4435,10 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     }
 
     try {
-      const idToken = await getIdToken()
       const query = new URLSearchParams({
         orderId: mondayOrderId,
       })
-      const response = await fetch(
-        `/api/dashboard/monday/shop-drawing/download?${query.toString()}`,
-        {
-          headers: {
-            Authorization: `Bearer ${idToken}`,
-            'x-client-platform': 'web',
-          },
-        },
-      )
-
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({}))
-        const message = typeof payload?.error === 'string'
-          ? payload.error
-          : 'Could not load shop drawing preview.'
-        throw new Error(message)
-      }
-
+      const response = await apiFetch(`/api/dashboard/monday/shop-drawing/download?${query.toString()}`)
       const blob = await response.blob()
       const objectUrl = URL.createObjectURL(blob)
       shopDrawingPreviewObjectUrlRef.current = objectUrl
@@ -4470,7 +4453,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
           : 'Could not load shop drawing preview.',
       )
     }
-  }, [clearShopDrawingPreviewObjectUrl, getIdToken])
+  }, [clearShopDrawingPreviewObjectUrl])
 
   const handleOpenManagerWorkersPopup = useCallback((row: ManagerProgressRow) => {
     if (row.workerHoursByWorker.length === 0) {

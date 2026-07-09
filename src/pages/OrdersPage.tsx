@@ -6,6 +6,7 @@ import {
 } from '@mui/material'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAuth } from '../auth/useAuth'
+import { apiFetch } from '../features/api-client'
 import {
   type OrdersMondayProgressStatusBulkQueuedRow,
   type OrdersOverviewOrder,
@@ -82,7 +83,7 @@ function applyQueuedProgressStatusUpdates(
 }
 
 export default function OrdersPage() {
-  const { appUser, getIdToken } = useAuth()
+  const { appUser } = useAuth()
   const queryClient = useQueryClient()
   const overview = useOrdersOverview()
   const canUseAdminView = appUser?.isAdmin === true
@@ -122,26 +123,8 @@ export default function OrdersPage() {
     }
 
     try {
-      const idToken = await getIdToken()
       const query = new URLSearchParams({ orderId })
-      const response = await fetch(
-        `/api/dashboard/monday/bol/download?${query.toString()}`,
-        {
-          headers: {
-            Authorization: `Bearer ${idToken}`,
-            'x-client-platform': 'web',
-          },
-        },
-      )
-
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({}))
-        const message = typeof payload?.error === 'string'
-          ? payload.error
-          : 'Could not open BOL document.'
-        throw new Error(message)
-      }
-
+      const response = await apiFetch(`/api/dashboard/monday/bol/download?${query.toString()}`)
       const blob = await response.blob()
 
       if (!blob || blob.size <= 0) {
@@ -158,7 +141,7 @@ export default function OrdersPage() {
           : 'Could not open BOL document.',
       )
     }
-  }, [getIdToken])
+  }, [])
 
   // Auto-dismiss success toasts so they don't stick forever.
   useEffect(() => {

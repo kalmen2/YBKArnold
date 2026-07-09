@@ -11,7 +11,7 @@ import {
   Typography,
 } from '@mui/material'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useAuth } from '../../auth/useAuth'
+import { apiFetch } from '../../features/api-client'
 import type { OrdersOverviewOrder } from '../../features/orders/api'
 import { resolveCutListUrl } from './cutListUrl'
 
@@ -32,8 +32,6 @@ type CutListPreviewProps = {
 }
 
 export function CutListPreview({ onError, bind }: CutListPreviewProps) {
-  const { getIdToken } = useAuth()
-
   const [hoverOpen, setHoverOpen] = useState(false)
   const [hoverAnchorEl, setHoverAnchorEl] = useState<HTMLElement | null>(null)
   const [hoverOrder, setHoverOrder] = useState<OrdersOverviewOrder | null>(null)
@@ -102,19 +100,12 @@ export function CutListPreview({ onError, bind }: CutListPreviewProps) {
         return cachedObjectUrl
       }
 
-      const idToken = await getIdToken()
       const query = new URLSearchParams({ orderId })
-      const response = await fetch(
-        `/api/dashboard/monday/cut-list/download?${query.toString()}`,
-        {
-          headers: {
-            Authorization: `Bearer ${idToken}`,
-            'x-client-platform': 'web',
-          },
-        },
-      )
+      let response: Response
 
-      if (!response.ok) {
+      try {
+        response = await apiFetch(`/api/dashboard/monday/cut-list/download?${query.toString()}`)
+      } catch {
         return null
       }
 
@@ -129,7 +120,7 @@ export function CutListPreview({ onError, bind }: CutListPreviewProps) {
 
       return objectUrl
     },
-    [getIdToken],
+    [],
   )
 
   const closeHover = useCallback(() => {
@@ -244,26 +235,8 @@ export function CutListPreview({ onError, bind }: CutListPreviewProps) {
       }
 
       try {
-        const idToken = await getIdToken()
         const query = new URLSearchParams({ orderId })
-        const response = await fetch(
-          `/api/dashboard/monday/cut-list/download?${query.toString()}`,
-          {
-            headers: {
-              Authorization: `Bearer ${idToken}`,
-              'x-client-platform': 'web',
-            },
-          },
-        )
-
-        if (!response.ok) {
-          const payload = await response.json().catch(() => ({}))
-          const message = typeof payload?.error === 'string'
-            ? payload.error
-            : 'Could not load cut list preview.'
-          throw new Error(message)
-        }
-
+        const response = await apiFetch(`/api/dashboard/monday/cut-list/download?${query.toString()}`)
         const blob = await response.blob()
         const objectUrl = URL.createObjectURL(blob)
         objectUrlRef.current = objectUrl
@@ -280,7 +253,7 @@ export function CutListPreview({ onError, bind }: CutListPreviewProps) {
         )
       }
     },
-    [clearObjectUrl, getIdToken, onError],
+    [clearObjectUrl, onError],
   )
 
   const closeDialog = useCallback(() => {
