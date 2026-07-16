@@ -18,6 +18,7 @@ export type DashboardOrder = {
   readyLabel: string
   leadTimeDays: number | null
   progressPercent: number | null
+  managerReadyPercent?: number | null
   orderDate: string | null
   shippedAt: string | null
   dueDate: string | null

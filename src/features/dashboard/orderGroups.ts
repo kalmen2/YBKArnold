@@ -13,15 +13,25 @@ function normalizeStatus(value: unknown) {
   return String(value ?? '').trim().toLowerCase().replace(/\s+/g, ' ')
 }
 
+function isReadyStatusLabel(status: string) {
+  return status === 'ready'
+    || status.startsWith('ready ')
+    || status === 'ready to ship'
+    || status === 'ready for shipping'
+}
+
 export function isReadyOrder(order: DashboardOrder) {
   if (order.isDone) {
     return false
   }
 
-  const status = normalizeStatus(order.rowStatus ?? order.statusLabel)
-  return status === 'ready'
-    || status === 'ready to ship'
-    || status === 'ready for shipping'
+  const statuses = [
+    normalizeStatus(order.rowStatus),
+    normalizeStatus(order.statusLabel),
+    normalizeStatus(order.stageLabel),
+  ].filter((status) => Boolean(status))
+
+  return statuses.some((status) => isReadyStatusLabel(status))
 }
 
 function isOpenProductionOrder(order: DashboardOrder) {

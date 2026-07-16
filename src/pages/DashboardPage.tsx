@@ -574,6 +574,12 @@ export default function DashboardPage() {
                         const paidInFull = typeof order.paidInFull === 'boolean'
                           ? order.paidInFull
                           : null
+                        const managerReadyPercent = typeof order.managerReadyPercent === 'number'
+                          ? Math.max(0, Math.min(100, Math.round(order.managerReadyPercent)))
+                          : null
+                        const displayProgressPercent = activeDrilldown === 'readyOrders'
+                          ? (managerReadyPercent ?? order.progressPercent)
+                          : order.progressPercent
 
                         return (
                         <TableRow key={order.id} hover>
@@ -601,7 +607,16 @@ export default function DashboardPage() {
                             </Stack>
                           </TableCell>
                           <TableCell>
-                            {typeof order.progressPercent === 'number' ? `${order.progressPercent}%` : '—'}
+                            {typeof displayProgressPercent === 'number' ? (
+                              <Button
+                                size="small"
+                                variant="text"
+                                sx={{ minWidth: 0, px: 0.5, textTransform: 'none' }}
+                                onClick={() => handleViewOrder(order)}
+                              >
+                                {`${displayProgressPercent}%`}
+                              </Button>
+                            ) : '—'}
                           </TableCell>
                           <TableCell>
                             {paidInFull === null ? (

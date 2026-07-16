@@ -250,6 +250,29 @@ export function registerDashboardSupportRoutes(app, deps) {
     return String(left.name ?? '').localeCompare(String(right.name ?? ''))
   }
 
+  function normalizeDashboardOrderStatus(value) {
+    return String(value ?? '').trim().toLowerCase().replace(/\s+/g, ' ')
+  }
+
+  function isDashboardReadyOrder(order) {
+    if (order?.isDone) {
+      return false
+    }
+
+    const statuses = [
+      normalizeDashboardOrderStatus(order?.rowStatus),
+      normalizeDashboardOrderStatus(order?.statusLabel),
+      normalizeDashboardOrderStatus(order?.stageLabel),
+    ].filter((status) => Boolean(status))
+
+    return statuses.some((status) =>
+      status === 'ready'
+      || status.startsWith('ready ')
+      || status === 'ready to ship'
+      || status === 'ready for shipping',
+    )
+  }
+
   const dashboardProgressStages = [
     { key: 'design', label: 'Design' },
     { key: 'baseform', label: 'Base/Form' },
@@ -513,6 +536,10 @@ export function registerDashboardSupportRoutes(app, deps) {
     const progressPercent = Number.isFinite(progressPercentValue)
       ? Math.max(0, Math.min(100, Math.round(Number(progressPercentValue))))
       : null
+    const managerReadyPercentValue = toFiniteNumber(orderDocument?.manager_ready_percent)
+    const managerReadyPercent = Number.isFinite(managerReadyPercentValue)
+      ? Math.max(0, Math.min(100, Math.round(Number(managerReadyPercentValue))))
+      : null
     const progressStatusDetails = Array.isArray(orderDocument?.progress_status_details)
       ? orderDocument.progress_status_details
       : []
@@ -566,6 +593,7 @@ export function registerDashboardSupportRoutes(app, deps) {
       readyLabel: readyStageLabel || (progressPercent !== null ? `${progressPercent}%` : 'Unspecified'),
       leadTimeDays: Number.isFinite(leadTimeDays) ? Number(leadTimeDays) : null,
       progressPercent,
+      managerReadyPercent,
       orderDate,
       shippedAt: normalizeIsoDate(orderDocument?.shipped_at),
       dueDate: directDueDate,
@@ -609,6 +637,7 @@ export function registerDashboardSupportRoutes(app, deps) {
             Due_date: 1,
             Lead_time_days: 1,
             progress_percent: 1,
+            manager_ready_percent: 1,
             order_date: 1,
             shipped_at: 1,
             monday_board_id: 1,
@@ -639,7 +668,7 @@ export function registerDashboardSupportRoutes(app, deps) {
       .filter((order) => String(order?.id ?? '').trim())
       .sort(compareOrdersByUrgency)
 
-    const activeOrders = orders.filter((order) => !order.isDone)
+    const activeOrders = orders.filter((order) => !order.isDone && !isDashboardReadyOrder(order))
     const completedOrders = orders.filter((order) => order.isDone)
     const lateOrders = activeOrders.filter((order) => order.isLate)
     const dueSoonOrders = activeOrders.filter((order) =>
