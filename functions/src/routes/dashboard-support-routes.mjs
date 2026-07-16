@@ -1705,7 +1705,10 @@ app.get('/api/support/tickets', requireFirebaseAuth, async (req, res, next) => {
   try {
     const refreshRequested = isDashboardRefreshRequested(req)
     const limit = toBoundedInteger(req.query?.limit, 10, 100, 50)
-    const snapshotKey = `support_tickets_${limit}`
+    const requestedStatus = String(req.query?.status ?? '').trim().toLowerCase()
+    const allowedStatuses = new Set(['new', 'open', 'in_progress', 'pending', 'solved'])
+    const status = allowedStatuses.has(requestedStatus) ? requestedStatus : ''
+    const snapshotKey = `support_tickets_${status || 'active'}_${limit}`
 
     if (!refreshRequested) {
       const cachedSnapshot = await getDashboardSnapshotFromCache(snapshotKey)
@@ -1715,7 +1718,7 @@ app.get('/api/support/tickets', requireFirebaseAuth, async (req, res, next) => {
       }
     }
 
-    const snapshot = await fetchZendeskSupportTicketsSnapshot(limit)
+    const snapshot = await fetchZendeskSupportTicketsSnapshot(limit, status)
     await setDashboardSnapshotCache(snapshotKey, snapshot)
     res.json(snapshot)
   } catch (error) {

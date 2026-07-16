@@ -201,6 +201,7 @@ export function useOrdersOverview() {
   const refresh = useCallback(() => refreshMutation.mutateAsync(), [refreshMutation])
 
   return {
+    allOrders,
     visibleOrders,
     counts,
     activeTab,

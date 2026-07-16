@@ -181,19 +181,36 @@ export function createZendeskDashboardService({
     }
   }
 
-  async function fetchZendeskSupportTicketsSnapshot(limit = 50) {
+  async function fetchZendeskSupportTicketsSnapshot(limit = 50, requestedStatus = '') {
     ensureZendeskConfiguration()
 
     const [statusContext, orderNumberFieldId] = await Promise.all([
       fetchZendeskStatusContext(),
       resolveZendeskOrderNumberFieldId(),
     ])
-    const tickets = await fetchZendeskSearchTickets('type:ticket status<solved', {
+    const {
+      inProgressQuery,
+      openCustomStatusQuery,
+      pendingQuery,
+      solvedQuery,
+    } = buildZendeskStatusQueries(statusContext)
+    const status = String(requestedStatus ?? '').trim().toLowerCase()
+    const queryByStatus = {
+      new: 'type:ticket status:new',
+      open: openCustomStatusQuery || 'type:ticket status:open',
+      in_progress: inProgressQuery,
+      pending: pendingQuery,
+      solved: solvedQuery,
+    }
+    const tickets = await fetchZendeskSearchTickets(
+      queryByStatus[status] || 'type:ticket status<solved',
+      {
       page: 1,
       perPage: toBoundedInteger(limit, 10, 100, 50),
       sortBy: 'updated_at',
       sortOrder: 'desc',
-    })
+      },
+    )
 
     const userIds = new Set()
 

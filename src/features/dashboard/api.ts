@@ -5,6 +5,9 @@ export type DashboardBucket = {
 
 export type DashboardOrder = {
   id: string
+  mondayItemId?: string | null
+  orderNumber?: string | null
+  poNumber?: string | null
   name: string
   mondaySourceBoardType?: 'orders_track' | 'shipped_orders'
   movedToShippedAt?: string | null

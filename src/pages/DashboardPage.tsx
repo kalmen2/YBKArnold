@@ -29,13 +29,19 @@ import {
   TableRow,
   Typography,
 } from '@mui/material'
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../features/api-client'
 import {
   fetchDashboardBootstrap,
   type DashboardOrder,
 } from '../features/dashboard/api'
+import {
+  DashboardMetricCard,
+  type DashboardMetricCardData,
+} from '../features/dashboard/DashboardMetricCard'
+import { buildDashboardOrderGroups } from '../features/dashboard/orderGroups'
 import { postOrdersRefresh } from '../features/orders/api'
 import { formatDateTime, formatDisplayDate } from '../lib/formatters'
 import { QUERY_KEYS } from '../lib/queryKeys'
@@ -47,15 +53,6 @@ type DrilldownKey =
   | 'readyOrders'
   | 'activeOrders'
   | 'missingDueDateOrders'
-
-type SummaryCard<K extends string = string> = {
-  key: K
-  label: string
-  value: number
-  helper: string
-  icon: ReactNode
-  color: string
-}
 
 const drilldownTitles: Record<DrilldownKey, string> = {
   lateOrders: 'Late Orders',
@@ -110,25 +107,9 @@ function dueColor(order: DashboardOrder): 'error' | 'warning' | 'success' | 'def
   return 'default'
 }
 
-function isReadyOrder(order: DashboardOrder) {
-  if (order.isDone) {
-    return false
-  }
-
-  const rowStatus = String(order.rowStatus ?? order.statusLabel ?? '')
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, ' ')
-
-  if (!rowStatus) {
-    return false
-  }
-
-  return rowStatus === 'ready' || rowStatus.endsWith(' ready')
-}
-
 export default function DashboardPage() {
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
   const [activeDrilldown, setActiveDrilldown] = useState<DrilldownKey | null>(null)
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [refreshMessage, setRefreshMessage] = useState<string | null>(null)
@@ -260,23 +241,12 @@ export default function DashboardPage() {
     }
   }, [clearShopDrawingPreviewObjectUrl])
 
-  const dueInTwoWeeksOrders = useMemo(
-    () => (snapshot?.orders ?? []).filter(
-      (order) => !order.isDone
-        && order.isProductionStarted !== false
-        && typeof order.daysUntilDue === 'number'
-        && order.daysUntilDue >= 8
-        && order.daysUntilDue <= 14,
-    ),
+  const orderGroups = useMemo(
+    () => buildDashboardOrderGroups(snapshot?.orders ?? []),
     [snapshot],
   )
 
-  const readyOrders = useMemo(
-    () => (snapshot?.orders ?? []).filter(isReadyOrder),
-    [snapshot],
-  )
-
-  const summaryCards = useMemo<SummaryCard<DrilldownKey>[]>(() => {
+  const summaryCards = useMemo<DashboardMetricCardData<DrilldownKey>[]>(() => {
     if (!snapshot) {
       return []
     }
@@ -285,55 +255,55 @@ export default function DashboardPage() {
       {
         key: 'lateOrders',
         label: 'Late Orders',
-        value: snapshot.metrics.lateOrders,
-        helper: 'Needs immediate action',
+        value: orderGroups.lateOrders.length,
+        helper: 'Past due · action required',
         icon: <ErrorOutlineRoundedIcon />,
         color: '#c62828',
       },
       {
         key: 'dueSoonOrders',
         label: 'Due This Week',
-        value: snapshot.metrics.dueSoonOrders,
-        helper: 'Upcoming within 7 days',
+        value: orderGroups.dueThisWeekOrders.length,
+        helper: 'Due today through day 7',
         icon: <ScheduleRoundedIcon />,
         color: '#ef6c00',
       },
       {
         key: 'dueInTwoWeeksOrders',
-        label: 'Due In 2 Weeks',
-        value: dueInTwoWeeksOrders.length,
-        helper: 'Upcoming in 8 to 14 days',
+        label: 'Due in 2 Weeks',
+        value: orderGroups.dueInTwoWeeksOrders.length,
+        helper: 'Due in 8 to 14 days',
         icon: <TaskAltRoundedIcon />,
         color: '#00897b',
       },
       {
         key: 'readyOrders',
         label: 'Ready Orders',
-        value: readyOrders.length,
-        helper: 'Ready and not currently shipping',
+        value: orderGroups.readyOrders.length,
+        helper: 'Production complete · ready to ship',
         icon: <CheckCircleRoundedIcon />,
         color: '#2e7d32',
       },
       {
         key: 'activeOrders',
         label: 'In Progress',
-        value: snapshot.metrics.activeOrders,
-        helper: 'Open production workload',
+        value: orderGroups.inProgressOrders.length,
+        helper: 'Active production · excludes ready',
         icon: <AccessTimeRoundedIcon />,
         color: '#1565c0',
       },
       {
         key: 'missingDueDateOrders',
         label: 'Missing Due Date',
-        value: snapshot.metrics.missingDueDateOrders,
-        helper: 'Cannot forecast lateness yet',
+        value: orderGroups.missingDueDateOrders.length,
+        helper: 'Schedule required',
         icon: <FactCheckRoundedIcon />,
         color: '#6a1b9a',
       },
     ]
-  }, [snapshot, dueInTwoWeeksOrders, readyOrders])
+  }, [orderGroups, snapshot])
 
-  const zendeskSummaryCards = useMemo<SummaryCard[]>(() => {
+  const zendeskSummaryCards = useMemo<DashboardMetricCardData[]>(() => {
     if (!zendeskSnapshot) {
       return []
     }
@@ -343,15 +313,15 @@ export default function DashboardPage() {
         key: 'newTickets',
         label: 'New',
         value: zendeskSnapshot.metrics.newTickets,
-        helper: 'Brand new tickets',
+        helper: 'Awaiting first review',
         icon: <MarkEmailUnreadRoundedIcon />,
         color: '#1e88e5',
       },
       {
         key: 'inProgressTickets',
-        label: 'In Process',
+        label: 'In Progress',
         value: zendeskSnapshot.metrics.inProgressTickets,
-        helper: 'Tickets with status In Progress',
+        helper: 'Actively being handled',
         icon: <EngineeringRoundedIcon />,
         color: '#5e35b1',
       },
@@ -359,7 +329,7 @@ export default function DashboardPage() {
         key: 'openTickets',
         label: 'Open',
         value: zendeskSnapshot.metrics.openTickets,
-        helper: 'Tickets with status open',
+        helper: 'Requires follow-up',
         icon: <AccessTimeRoundedIcon />,
         color: '#fb8c00',
       },
@@ -367,7 +337,7 @@ export default function DashboardPage() {
         key: 'pendingTickets',
         label: 'Pending',
         value: zendeskSnapshot.metrics.pendingTickets,
-        helper: 'Waiting for customer response',
+        helper: 'Waiting for a response',
         icon: <PendingActionsRoundedIcon />,
         color: '#8d6e63',
       },
@@ -375,7 +345,7 @@ export default function DashboardPage() {
         key: 'solvedTickets',
         label: 'Solved',
         value: zendeskSnapshot.metrics.solvedTickets,
-        helper: 'Done',
+        helper: 'Completed requests',
         icon: <TaskAltRoundedIcon />,
         color: '#2e7d32',
       },
@@ -388,15 +358,49 @@ export default function DashboardPage() {
     }
 
     if (activeDrilldown === 'dueInTwoWeeksOrders') {
-      return dueInTwoWeeksOrders
+      return orderGroups.dueInTwoWeeksOrders
     }
 
     if (activeDrilldown === 'readyOrders') {
-      return readyOrders
+      return orderGroups.readyOrders
     }
 
-    return snapshot.details[activeDrilldown]
-  }, [activeDrilldown, dueInTwoWeeksOrders, readyOrders, snapshot])
+    if (activeDrilldown === 'dueSoonOrders') {
+      return orderGroups.dueThisWeekOrders
+    }
+
+    if (activeDrilldown === 'activeOrders') {
+      return orderGroups.inProgressOrders
+    }
+
+    if (activeDrilldown === 'missingDueDateOrders') {
+      return orderGroups.missingDueDateOrders
+    }
+
+    return orderGroups.lateOrders
+  }, [activeDrilldown, orderGroups, snapshot])
+
+  const handleViewOrder = useCallback((order: DashboardOrder) => {
+    const orderId = String(order.mondayItemId ?? order.id ?? '').trim()
+
+    if (!orderId) {
+      return
+    }
+
+    navigate(`/orders?orderId=${encodeURIComponent(orderId)}`)
+  }, [navigate])
+
+  const handleOpenTicketQueue = useCallback((key: string) => {
+    const statusByMetric: Record<string, string> = {
+      newTickets: 'new',
+      inProgressTickets: 'in_progress',
+      openTickets: 'open',
+      pendingTickets: 'pending',
+      solvedTickets: 'solved',
+    }
+    const status = statusByMetric[key]
+    navigate(status ? `/support?status=${status}` : '/support')
+  }, [navigate])
 
   return (
     <Stack spacing={2.5}>
@@ -408,14 +412,14 @@ export default function DashboardPage() {
       >
         <Box>
           <Typography variant="h4" fontWeight={700}>
-            Order Dashboard
+            Operations Dashboard
           </Typography>
           {snapshot ? (
             <Typography color="text.secondary">
-              {snapshot.board.name} • Last sync {formatDateTime(snapshot.generatedAt)}
+              Production, shipping, and service performance · Updated {formatDateTime(snapshot.generatedAt)}
             </Typography>
           ) : (
-            <Typography color="text.secondary">Live monday.com board intelligence</Typography>
+            <Typography color="text.secondary">Production, shipping, and service performance</Typography>
           )}
         </Box>
 
@@ -479,7 +483,7 @@ export default function DashboardPage() {
 
       {snapshot ? (
         <>
-          <Paper variant="outlined" sx={{ p: 2.25 }}>
+          <Box component="section">
             <Stack spacing={1.5}>
               <Stack
                 direction={{ xs: 'column', md: 'row' }}
@@ -488,7 +492,7 @@ export default function DashboardPage() {
                 gap={1}
               >
                 <Typography variant="h6" fontWeight={700}>
-                  Order Progress
+                  Production Overview
                 </Typography>
 
                 {snapshot.board.url ? (
@@ -506,7 +510,7 @@ export default function DashboardPage() {
               </Stack>
 
               <Typography variant="body2" color="text.secondary">
-                Orders from Monday board: {snapshot.board.name}
+                Live workload from {snapshot.board.name}. Ready orders are excluded from upcoming work.
               </Typography>
 
               <Box
@@ -520,41 +524,16 @@ export default function DashboardPage() {
                   gap: 1.5,
                 }}
               >
-                {summaryCards.map((card) => (
-                  <Paper
-                    key={card.key}
-                    variant="outlined"
-                    onClick={() => setActiveDrilldown(card.key as DrilldownKey)}
-                    sx={{
-                      p: 2,
-                      borderLeft: `4px solid ${card.color}`,
-                      cursor: 'pointer',
-                      transition: 'transform 120ms ease, box-shadow 120ms ease',
-                      '&:hover': {
-                        transform: 'translateY(-2px)',
-                        boxShadow: 3,
-                      },
-                    }}
-                  >
-                    <Stack direction="row" justifyContent="space-between" alignItems="flex-start">
-                      <Box>
-                        <Typography variant="body2" color="text.secondary">
-                          {card.label}
-                        </Typography>
-                        <Typography variant="h4" fontWeight={800} lineHeight={1.1}>
-                          {card.value}
-                        </Typography>
-                        <Typography variant="caption" color="text.secondary">
-                          {card.helper}
-                        </Typography>
-                      </Box>
-                      <Box sx={{ color: card.color }}>{card.icon}</Box>
-                    </Stack>
-                  </Paper>
+                {summaryCards.map(({ key, ...card }) => (
+                  <DashboardMetricCard
+                    key={key}
+                    {...card}
+                    onClick={() => setActiveDrilldown(key)}
+                  />
                 ))}
               </Box>
             </Stack>
-          </Paper>
+          </Box>
 
           <Dialog
             open={Boolean(activeDrilldown)}
@@ -578,7 +557,8 @@ export default function DashboardPage() {
                         <TableCell>Progress</TableCell>
                         <TableCell>Paid</TableCell>
                         <TableCell align="right">Shop Drawing</TableCell>
-                        <TableCell align="right">Link</TableCell>
+                        <TableCell align="right">View</TableCell>
+                        <TableCell align="right">Monday</TableCell>
                       </TableRow>
                     </TableHead>
                     <TableBody>
@@ -657,6 +637,15 @@ export default function DashboardPage() {
                                 Not available
                               </Typography>
                             )}
+                          </TableCell>
+                          <TableCell align="right">
+                            <Button
+                              size="small"
+                              onClick={() => handleViewOrder(order)}
+                              endIcon={<VisibilityRoundedIcon sx={{ fontSize: 16 }} />}
+                            >
+                              Open
+                            </Button>
                           </TableCell>
                           <TableCell align="right">
                             {order.itemUrl ? (
@@ -757,7 +746,7 @@ export default function DashboardPage() {
       ) : null}
 
       {zendeskSnapshot ? (
-        <Paper variant="outlined" sx={{ p: 2.25 }}>
+        <Box component="section">
           <Stack spacing={1.5}>
             <Stack
               direction={{ xs: 'column', md: 'row' }}
@@ -767,10 +756,10 @@ export default function DashboardPage() {
             >
               <Box>
                 <Typography variant="h6" fontWeight={700}>
-                  Tickets Progress
+                  Support Overview
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
-                  Tickets from Zendesk helpdesk
+                  Live service workload from Zendesk
                 </Typography>
               </Box>
 
@@ -799,34 +788,16 @@ export default function DashboardPage() {
                 gap: 1.5,
               }}
             >
-              {zendeskSummaryCards.map((card) => (
-                <Paper
-                  key={card.key}
-                  variant="outlined"
-                  sx={{
-                    p: 2,
-                    borderLeft: `4px solid ${card.color}`,
-                  }}
-                >
-                  <Stack direction="row" justifyContent="space-between" alignItems="flex-start">
-                    <Box>
-                      <Typography variant="body2" color="text.secondary">
-                        {card.label}
-                      </Typography>
-                      <Typography variant="h4" fontWeight={800} lineHeight={1.1}>
-                        {card.value}
-                      </Typography>
-                      <Typography variant="caption" color="text.secondary">
-                        {card.helper}
-                      </Typography>
-                    </Box>
-                    <Box sx={{ color: card.color }}>{card.icon}</Box>
-                  </Stack>
-                </Paper>
+              {zendeskSummaryCards.map(({ key, ...card }) => (
+                <DashboardMetricCard
+                  key={key}
+                  {...card}
+                  onClick={() => handleOpenTicketQueue(key)}
+                />
               ))}
             </Box>
           </Stack>
-        </Paper>
+        </Box>
       ) : null}
     </Stack>
   )

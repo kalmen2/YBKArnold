@@ -85,9 +85,11 @@ export type ReplySupportTicketInput = {
 }
 
 export type SupportReplyStatus = 'open' | 'pending' | 'in_progress' | 'solved'
+export type SupportTicketStatusFilter = SupportReplyStatus | 'new'
 
 type SupportFetchOptions = {
   refresh?: boolean
+  status?: SupportTicketStatusFilter
 }
 
 import { apiRequest } from '../api-client'
@@ -117,8 +119,14 @@ export function fetchSupportAlertTickets(limitPerBucket = 100, options: SupportF
 }
 
 export function fetchSupportTickets(limit = 50, options: SupportFetchOptions = {}) {
+  const query = new URLSearchParams({ limit: String(limit) })
+
+  if (options.status) {
+    query.set('status', options.status)
+  }
+
   return apiRequest<SupportTicketsSnapshot>(
-    withRefreshQuery(`/api/support/tickets?limit=${limit}`, options.refresh === true),
+    withRefreshQuery(`/api/support/tickets?${query.toString()}`, options.refresh === true),
   )
 }
 

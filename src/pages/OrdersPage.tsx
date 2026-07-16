@@ -5,6 +5,7 @@ import {
   Stack,
 } from '@mui/material'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
 import { apiFetch } from '../features/api-client'
 import {
@@ -98,6 +99,9 @@ export default function OrdersPage() {
   const { appUser } = useAuth()
   const queryClient = useQueryClient()
   const overview = useOrdersOverview()
+  const { allOrders, setActiveTab, visibleOrders } = overview
+  const [searchParams] = useSearchParams()
+  const requestedOrderId = String(searchParams.get('orderId') ?? '').trim()
   const canUseAdminView = appUser?.isAdmin === true
   const canEditMondayStages = appUser?.isAdmin === true || appUser?.isManager === true
 
@@ -115,6 +119,7 @@ export default function OrdersPage() {
   const [addManualOrderDialogOpen, setAddManualOrderDialogOpen] = useState(false)
   const [isCreatingManualOrder, setIsCreatingManualOrder] = useState(false)
   const [deletingOrderKey, setDeletingOrderKey] = useState<string | null>(null)
+  const openedDeepLinkRef = useRef<string | null>(null)
 
   const shopDrawingHandle = useRef<ShopDrawingPreviewHandle | null>(null)
   const cutListHandle = useRef<CutListPreviewHandle | null>(null)
@@ -204,7 +209,7 @@ export default function OrdersPage() {
       return
     }
 
-    const refreshedSelectedOrder = overview.visibleOrders.find((order) => {
+    const refreshedSelectedOrder = visibleOrders.find((order) => {
       const selectedId = String(selectedOrder.id ?? '').trim()
       const orderId = String(order.id ?? '').trim()
       const selectedMondayItemId = String(selectedOrder.mondayItemId ?? '').trim()
@@ -225,7 +230,29 @@ export default function OrdersPage() {
     }
 
     setSelectedOrder(refreshedSelectedOrder)
-  }, [overview.visibleOrders, selectedOrder])
+  }, [selectedOrder, visibleOrders])
+
+  useEffect(() => {
+    if (!requestedOrderId || openedDeepLinkRef.current === requestedOrderId) {
+      return
+    }
+
+    const targetOrder = allOrders.find((order) => {
+      return [order.id, order.mondayItemId, order.orderNumber]
+        .map((value) => String(value ?? '').trim())
+        .some((value) => value === requestedOrderId)
+    })
+
+    if (!targetOrder) {
+      return
+    }
+
+    openedDeepLinkRef.current = requestedOrderId
+    setActiveTab(targetOrder.isShipped ? 'shipped' : targetOrder.inDesign ? 'design' : 'orders')
+    setJobDialogMode('details')
+    setJobDialogInitialTab('info')
+    setSelectedOrder(targetOrder)
+  }, [allOrders, requestedOrderId, setActiveTab])
 
   const handleRefresh = useCallback(async () => {
     setErrorMessage(null)

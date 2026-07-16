@@ -27,7 +27,7 @@ import {
   Typography,
 } from '@mui/material'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '../auth/useAuth'
 import { generateAiSupportReply, fetchCommentSummaries } from '../features/ai/api'
@@ -39,6 +39,7 @@ import {
   fetchSupportTicketConversation,
   fetchSupportTickets,
   type SupportReplyStatus,
+  type SupportTicketStatusFilter,
   type SupportTicketConversationSnapshot,
 } from '../features/support/api'
 
@@ -49,6 +50,14 @@ type AlertBucketKey =
   | 'pendingOver48Hours'
 
 type SupportReplyStatusOption = SupportReplyStatus | 'no_change'
+
+const supportStatusFilters = new Set<SupportTicketStatusFilter>([
+  'new',
+  'open',
+  'pending',
+  'in_progress',
+  'solved',
+])
 
 function statusChipColor(status: string): 'default' | 'warning' | 'info' | 'success' {
   const normalized = String(status).trim().toLowerCase()
@@ -66,6 +75,16 @@ function statusChipColor(status: string): 'default' | 'warning' | 'info' | 'succ
   }
 
   return 'default'
+}
+
+function ticketMatchesStatusFilter(status: string, filter: SupportTicketStatusFilter) {
+  const normalizedStatus = String(status ?? '').trim().toLowerCase()
+
+  if (filter === 'solved') {
+    return normalizedStatus === 'solved' || normalizedStatus === 'closed'
+  }
+
+  return normalizedStatus === filter
 }
 
 function normalizeCommentBody(body: string) {
@@ -406,6 +425,11 @@ export default function SupportPage() {
   const { appUser } = useAuth()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const requestedStatusValue = String(searchParams.get('status') ?? '').trim().toLowerCase()
+  const requestedStatus = supportStatusFilters.has(requestedStatusValue as SupportTicketStatusFilter)
+    ? requestedStatusValue as SupportTicketStatusFilter
+    : null
 
   const [selectedTicketId, setSelectedTicketId] = useState<number | null>(null)
   const [pendingSidebarTicketScrollId, setPendingSidebarTicketScrollId] = useState<number | null>(
@@ -440,8 +464,11 @@ export default function SupportPage() {
   })
 
   const ticketsQuery = useQuery({
-    queryKey: ['support', 'tickets', 100],
-    queryFn: () => fetchSupportTickets(100, { refresh: false }),
+    queryKey: ['support', 'tickets', 100, requestedStatus],
+    queryFn: () => fetchSupportTickets(100, {
+      refresh: false,
+      status: requestedStatus ?? undefined,
+    }),
     staleTime: 3 * 60 * 1000,
   })
 
@@ -566,8 +593,11 @@ export default function SupportPage() {
         staleTime: 0,
       }),
       queryClient.fetchQuery({
-        queryKey: ['support', 'tickets', 100],
-        queryFn: () => fetchSupportTickets(100, { refresh: true }),
+        queryKey: ['support', 'tickets', 100, requestedStatus],
+        queryFn: () => fetchSupportTickets(100, {
+          refresh: true,
+          status: requestedStatus ?? undefined,
+        }),
         staleTime: 0,
       }),
     ])
@@ -735,9 +765,10 @@ export default function SupportPage() {
   }, [alertTicketsSnapshot, selectedAlertBucket])
 
   const openTickets = useMemo(() => {
-    const filteredTickets = (ticketsSnapshot?.tickets ?? []).filter(
-      (ticket) => !['solved', 'closed'].includes(ticket.status),
-    )
+    const allTickets = ticketsSnapshot?.tickets ?? []
+    const filteredTickets = requestedStatus
+      ? allTickets.filter((ticket) => ticketMatchesStatusFilter(ticket.status, requestedStatus))
+      : allTickets.filter((ticket) => !['solved', 'closed'].includes(ticket.status))
 
     return [...filteredTickets].sort((left, right) => {
       const leftUpdatedAt = new Date(left.updatedAt).getTime()
@@ -749,7 +780,7 @@ export default function SupportPage() {
 
       return right.id - left.id
     })
-  }, [ticketsSnapshot])
+  }, [requestedStatus, ticketsSnapshot])
 
   const sidebarTickets = useMemo(() => {
     if (!selectedAlertTicketIds) {
@@ -1017,6 +1048,17 @@ export default function SupportPage() {
                   }}
                 />
               ) : null}
+              {requestedStatus ? (
+                <Chip
+                  label={requestedStatus === 'new' ? 'New' : formatReplyStatusLabel(requestedStatus)}
+                  size="small"
+                  color="info"
+                  variant="outlined"
+                  onDelete={() => {
+                    setSearchParams({})
+                  }}
+                />
+              ) : null}
             </Stack>
           </Box>
 
@@ -1247,6 +1289,8 @@ export default function SupportPage() {
                 <Typography variant="body2" color="text.secondary">
                   {activeAlertFilterLabel
                     ? `No tickets match ${activeAlertFilterLabel}.`
+                    : requestedStatus
+                      ? `No ${requestedStatus === 'in_progress' ? 'in progress' : requestedStatus} tickets.`
                     : 'No open tickets.'}
                 </Typography>
               </Box>
