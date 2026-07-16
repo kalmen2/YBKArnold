@@ -259,18 +259,8 @@ export function registerDashboardSupportRoutes(app, deps) {
       return false
     }
 
-    const statuses = [
-      normalizeDashboardOrderStatus(order?.rowStatus),
-      normalizeDashboardOrderStatus(order?.statusLabel),
-      normalizeDashboardOrderStatus(order?.stageLabel),
-    ].filter((status) => Boolean(status))
-
-    return statuses.some((status) =>
-      status === 'ready'
-      || status.startsWith('ready ')
-      || status === 'ready to ship'
-      || status === 'ready for shipping',
-    )
+    const status = normalizeDashboardOrderStatus(order?.rowStatus ?? order?.statusLabel)
+    return status === 'ready'
   }
 
   const dashboardProgressStages = [
