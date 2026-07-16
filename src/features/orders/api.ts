@@ -104,6 +104,81 @@ export type OrdersOrderDetailsUpdateResponse = {
   warning?: string | null
 }
 
+export type OrdersCreateResponse = {
+  ok: boolean
+  order: {
+    orderKey: string
+    mondayItemId: string
+    orderNumber: string
+    orderName: string | null
+    mondayItemUrl: string | null
+    poDate: string | null
+    poNumber: string | null
+    description: string | null
+    shipTo: string | null
+    notes: string | null
+    salesRep: string | null
+    orderValue: number | null
+    freightValue: number | null
+    mondayBoardId?: string | null
+    mondayBoardName?: string | null
+    mondayBoardYear?: number | null
+    mondayUpdatedAt: string | null
+  }
+  warnings: string[]
+}
+
+export type OrdersCreateBoardOption = {
+  id: string
+  name: string
+  year: number
+  isDefault: boolean
+  url: string | null
+}
+
+export type OrdersCreateBoardsResponse = {
+  ok: boolean
+  defaultYear: number
+  defaultBoardId: string
+  boards: OrdersCreateBoardOption[]
+}
+
+export type OrdersCreateBoardColumn = {
+  id: string
+  title: string | null
+  type: string | null
+}
+
+export type OrdersCreateBoardColumnsResponse = {
+  ok: boolean
+  board: {
+    id: string
+    name: string
+    year: number
+    isDefault: boolean
+    url: string | null
+  }
+  columns: OrdersCreateBoardColumn[]
+}
+
+export type OrdersDeleteResponse = {
+  ok: boolean
+  deleted: {
+    orderKey: string | null
+    orderNumber: string | null
+    orderName: string | null
+    mondayItemId: string | null
+    mondayDeleteMode: string | null
+  }
+  warning?: string | null
+  warnings?: string[]
+}
+
+export type OrdersDeleteRequestResponse = {
+  ok: boolean
+  alert?: unknown
+}
+
 export type OrdersShopDrawingManageResponse = {
   ok: boolean
   document?: {
@@ -771,6 +846,166 @@ export function postOrdersOrderDetailsUpdate(input: UpdateOrdersOrderDetailsInpu
     {
       method: 'POST',
       body: JSON.stringify(payload),
+    },
+  )
+}
+
+type CreateOrdersManualInput = {
+  name: string
+  acknowledgementNumber: string
+  boardId?: string | null
+  salesRep?: string | null
+  orderValue?: number | string | null
+  freightValue?: number | string | null
+  poDate?: string | null
+  poNumber?: string | null
+  description?: string | null
+  shipTo?: string | null
+  notes?: string | null
+}
+
+export function postOrdersCreate(input: CreateOrdersManualInput) {
+  const name = String(input?.name ?? '').trim()
+  const acknowledgementNumber = String(input?.acknowledgementNumber ?? '').trim()
+
+  if (!name) {
+    throw new Error('name is required.')
+  }
+
+  if (!acknowledgementNumber) {
+    throw new Error('acknowledgementNumber is required.')
+  }
+
+  const payload: Record<string, unknown> = {
+    name,
+    acknowledgementNumber,
+  }
+
+  if (Object.prototype.hasOwnProperty.call(input, 'boardId')) {
+    payload.boardId = input.boardId ?? ''
+  }
+
+  if (Object.prototype.hasOwnProperty.call(input, 'salesRep')) {
+    payload.salesRep = input.salesRep ?? ''
+  }
+
+  if (Object.prototype.hasOwnProperty.call(input, 'orderValue')) {
+    payload.orderValue = input.orderValue ?? ''
+  }
+
+  if (Object.prototype.hasOwnProperty.call(input, 'freightValue')) {
+    payload.freightValue = input.freightValue ?? ''
+  }
+
+  if (Object.prototype.hasOwnProperty.call(input, 'poDate')) {
+    payload.poDate = input.poDate ?? ''
+  }
+
+  if (Object.prototype.hasOwnProperty.call(input, 'poNumber')) {
+    payload.poNumber = input.poNumber ?? ''
+  }
+
+  if (Object.prototype.hasOwnProperty.call(input, 'description')) {
+    payload.description = input.description ?? ''
+  }
+
+  if (Object.prototype.hasOwnProperty.call(input, 'shipTo')) {
+    payload.shipTo = input.shipTo ?? ''
+  }
+
+  if (Object.prototype.hasOwnProperty.call(input, 'notes')) {
+    payload.notes = input.notes ?? ''
+  }
+
+  return apiRequest<OrdersCreateResponse>(
+    '/api/orders/create',
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  )
+}
+
+export function getOrdersCreateBoards(options: { refresh?: boolean } = {}) {
+  const shouldRefresh = options.refresh === true
+  const query = shouldRefresh
+    ? '?refresh=1'
+    : ''
+
+  return apiRequest<OrdersCreateBoardsResponse>(
+    `/api/orders/create/boards${query}`,
+    {
+      method: 'GET',
+    },
+  )
+}
+
+export function getOrdersCreateBoardColumns(boardId?: string | null) {
+  const normalizedBoardId = String(boardId ?? '').trim()
+  const query = normalizedBoardId
+    ? `?boardId=${encodeURIComponent(normalizedBoardId)}`
+    : ''
+
+  return apiRequest<OrdersCreateBoardColumnsResponse>(
+    `/api/orders/create/board-columns${query}`,
+    {
+      method: 'GET',
+    },
+  )
+}
+
+type DeleteOrdersInput = {
+  orderKey?: string | null
+  mondayItemId?: string | null
+  orderNumber?: string | null
+}
+
+export function postOrdersDelete(input: DeleteOrdersInput) {
+  const orderKey = String(input?.orderKey ?? '').trim()
+  const mondayItemId = String(input?.mondayItemId ?? '').trim()
+  const orderNumber = String(input?.orderNumber ?? '').trim()
+
+  if (!orderKey && !mondayItemId && !orderNumber) {
+    throw new Error('orderKey, mondayItemId, or orderNumber is required.')
+  }
+
+  return apiRequest<OrdersDeleteResponse>(
+    '/api/orders/delete',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        orderKey: orderKey || undefined,
+        mondayItemId: mondayItemId || undefined,
+        orderNumber: orderNumber || undefined,
+      }),
+    },
+  )
+}
+
+type DeleteOrdersRequestInput = DeleteOrdersInput & {
+  reason?: string | null
+}
+
+export function postOrdersDeleteRequest(input: DeleteOrdersRequestInput) {
+  const orderKey = String(input?.orderKey ?? '').trim()
+  const mondayItemId = String(input?.mondayItemId ?? '').trim()
+  const orderNumber = String(input?.orderNumber ?? '').trim()
+  const reason = String(input?.reason ?? '').trim()
+
+  if (!orderKey && !mondayItemId && !orderNumber) {
+    throw new Error('orderKey, mondayItemId, or orderNumber is required.')
+  }
+
+  return apiRequest<OrdersDeleteRequestResponse>(
+    '/api/orders/delete-request',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        orderKey: orderKey || undefined,
+        mondayItemId: mondayItemId || undefined,
+        orderNumber: orderNumber || undefined,
+        reason: reason || undefined,
+      }),
     },
   )
 }

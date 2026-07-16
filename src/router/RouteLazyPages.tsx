@@ -2,11 +2,11 @@ import { lazy, type ComponentType } from 'react'
 
 const RECOVERABLE_LAZY_IMPORT_MESSAGE = 'Lazy route module missing default export (likely stale chunk during deploy).'
 
-type LazyRouteModule<T extends ComponentType<any>> = {
+type LazyRouteModule<T extends ComponentType<object>> = {
 	default: T
 }
 
-function lazyRoute<T extends ComponentType<any>>(loader: () => Promise<LazyRouteModule<T>>) {
+function lazyRoute<T extends ComponentType<object>>(loader: () => Promise<LazyRouteModule<T>>) {
 	return lazy(async () => {
 		const module = await loader()
 
@@ -42,3 +42,4 @@ export const AdminSettingsPage = lazyRoute(() => import('../pages/AdminSettingsP
 export const SalesPage = lazyRoute(() => import('../pages/SalesPage'))
 export const PurchasingPage = lazyRoute(() => import('../pages/PurchasingPage'))
 export const OperatingCostsPage = lazyRoute(() => import('../pages/OperatingCostsPage'))
+export const ChatPage = lazyRoute(() => import('../pages/ChatPage'))

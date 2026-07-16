@@ -62,6 +62,13 @@ export function registerTimesheetRoutes(app, deps) {
       return normalized
     }
 
+    // Preserve explicit source date components before timezone conversion.
+    const sourceDateMatch = normalized.match(/^(\d{4}-\d{2}-\d{2})/)
+
+    if (sourceDateMatch) {
+      return sourceDateMatch[1]
+    }
+
     const parsedMs = Date.parse(normalized)
 
     if (!Number.isFinite(parsedMs)) {

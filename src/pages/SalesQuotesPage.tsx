@@ -6,10 +6,6 @@ import {
   Box,
   Button,
   Chip,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogTitle,
   IconButton,
   InputAdornment,
   Menu,
@@ -23,14 +19,11 @@ import { alpha } from '@mui/material/styles'
 import { DataGrid, type GridColDef } from '@mui/x-data-grid'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState, type MouseEvent } from 'react'
-import { useAuth } from '../auth/useAuth'
+import { useNavigate } from 'react-router-dom'
 import {
-  createCrmQuoteChatMessage,
-  fetchCrmQuoteChats,
   fetchCrmQuotes,
   updateCrmQuote,
   type CrmQuote,
-  type CrmQuoteChatMessage,
 } from '../features/crm/api'
 import { StatusAlerts } from '../components/StatusAlerts'
 import { useDebounceValue } from '../hooks/useDebounceValue'
@@ -81,25 +74,6 @@ function resolveLifecycleLabel(lifecycle: QuoteLifecycleView) {
   return 'All'
 }
 
-function formatQuoteChatTimestamp(value: string | null | undefined) {
-  const parsed = new Date(String(value || '').trim())
-
-  if (Number.isNaN(parsed.getTime())) {
-    return 'Unknown time'
-  }
-
-  return parsed.toLocaleString()
-}
-
-function resolveQuoteChatAuthorLabel(message: CrmQuoteChatMessage) {
-  return String(
-    message.createdByName
-    || message.createdByEmail
-    || message.createdByUid
-    || 'Unknown sender',
-  ).trim()
-}
-
 function resolveStatusChipColor(status: string) {
   const normalized = normalizeText(status)
 
@@ -119,7 +93,7 @@ function resolveStatusChipColor(status: string) {
 }
 
 export default function SalesQuotesPage() {
-  const { appUser } = useAuth()
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [searchInput, setSearchInput] = useState('')
   const [salesRepFilter, setSalesRepFilter] = useState('')
@@ -131,13 +105,8 @@ export default function SalesQuotesPage() {
   const [isMovingBackQuoteId, setIsMovingBackQuoteId] = useState<string | null>(null)
   const [actionErrorMessage, setActionErrorMessage] = useState<string | null>(null)
   const [actionSuccessMessage, setActionSuccessMessage] = useState<string | null>(null)
-  const [selectedQuote, setSelectedQuote] = useState<CrmQuote | null>(null)
-  const [quoteChatDraft, setQuoteChatDraft] = useState('')
-  const [isSendingQuoteChat, setIsSendingQuoteChat] = useState(false)
 
   const debouncedSearch = useDebounceValue(searchInput, 250)
-  const canManage = Boolean(appUser?.uid)
-  const selectedQuoteId = selectedQuote?.id ?? ''
   const lifecycleQueryValue = lifecycleView === 'declined' ? 'rejected' : lifecycleView
 
   const quotesQuery = useQuery({
@@ -184,16 +153,6 @@ export default function SalesQuotesPage() {
     staleTime: 5 * 60 * 1000,
   })
 
-  const selectedQuoteChatsQuery = useQuery({
-    queryKey: QUERY_KEYS.crmQuoteChats(selectedQuoteId),
-    queryFn: () => fetchCrmQuoteChats(selectedQuoteId, {
-      limit: 250,
-      offset: 0,
-    }),
-    enabled: Boolean(selectedQuoteId),
-    staleTime: 20 * 1000,
-  })
-
   const rows = useMemo(
     () => (Array.isArray(quotesQuery.data?.quotes) ? quotesQuery.data?.quotes : []),
     [quotesQuery.data?.quotes],
@@ -214,27 +173,6 @@ export default function SalesQuotesPage() {
     () => (Array.isArray(countsQuery.data?.quotes) ? countsQuery.data?.quotes : []),
     [countsQuery.data?.quotes],
   )
-
-  const selectedQuoteFromData = useMemo(() => {
-    if (!selectedQuote) {
-      return null
-    }
-
-    return quoteUniverse.find((entry) => entry.id === selectedQuote.id)
-      || rows.find((entry) => entry.id === selectedQuote.id)
-      || selectedQuote
-  }, [quoteUniverse, rows, selectedQuote])
-
-  const selectedQuoteChatMessages = useMemo(
-    () => (Array.isArray(selectedQuoteChatsQuery.data?.messages)
-      ? selectedQuoteChatsQuery.data.messages
-      : []),
-    [selectedQuoteChatsQuery.data?.messages],
-  )
-
-  const selectedQuoteChatErrorMessage = selectedQuoteChatsQuery.error instanceof Error
-    ? selectedQuoteChatsQuery.error.message
-    : null
 
   const salesRepOptions = useMemo(() => {
     return [...new Set(
@@ -312,47 +250,15 @@ export default function SalesQuotesPage() {
   }
 
   const handleOpenQuoteDetails = (quote: CrmQuote) => {
-    setActionErrorMessage(null)
-    setActionSuccessMessage(null)
-    setSelectedQuote(quote)
-    setQuoteChatDraft('')
-  }
+    const quoteId = String(quote?.id ?? '').trim()
 
-  const handleCloseQuoteDetails = () => {
-    if (isSendingQuoteChat) {
-      return
-    }
-
-    setSelectedQuote(null)
-    setQuoteChatDraft('')
-  }
-
-  const handleSendQuoteChat = async () => {
-    const nextMessage = quoteChatDraft.trim()
-
-    if (!selectedQuoteId || !nextMessage) {
-      return
-    }
-
-    if (!canManage) {
-      setActionErrorMessage('You do not have permission to post quote chat messages.')
+    if (!quoteId) {
       return
     }
 
     setActionErrorMessage(null)
     setActionSuccessMessage(null)
-    setIsSendingQuoteChat(true)
-
-    try {
-      await createCrmQuoteChatMessage(selectedQuoteId, nextMessage)
-      setQuoteChatDraft('')
-      await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.crmQuoteChats(selectedQuoteId) })
-      setActionSuccessMessage('Quote chat message sent.')
-    } catch (error) {
-      setActionErrorMessage(error instanceof Error ? error.message : 'Failed to send quote chat message.')
-    } finally {
-      setIsSendingQuoteChat(false)
-    }
+    navigate(`/sales?tab=opportunities&quoteId=${encodeURIComponent(quoteId)}`)
   }
 
   const handleMoveBackQuote = async () => {
@@ -715,139 +621,6 @@ export default function SalesQuotesPage() {
           Move back
         </MenuItem>
       </Menu>
-
-      <Dialog
-        open={Boolean(selectedQuoteFromData)}
-        onClose={handleCloseQuoteDetails}
-        maxWidth="md"
-        fullWidth
-      >
-        <DialogTitle>Quote Details & Chat</DialogTitle>
-        <DialogContent dividers>
-          {selectedQuoteFromData ? (
-            <Stack spacing={1.1} sx={{ mt: 0.2 }}>
-              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
-                <TextField
-                  label="Quote"
-                  value={selectedQuoteFromData.quoteNumber || selectedQuoteFromData.id.slice(0, 8).toUpperCase()}
-                  InputProps={{ readOnly: true }}
-                  sx={{ flex: 1 }}
-                />
-                <TextField
-                  label="Status"
-                  value={formatStatusLabel(String(selectedQuoteFromData.status || 'unknown'))}
-                  InputProps={{ readOnly: true }}
-                  sx={{ flex: 1 }}
-                />
-              </Stack>
-
-              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
-                <TextField
-                  label="Project"
-                  value={String(selectedQuoteFromData.title || '-')}
-                  InputProps={{ readOnly: true }}
-                  sx={{ flex: 1 }}
-                />
-                <TextField
-                  label="Dealer"
-                  value={String(selectedQuoteFromData.dealerName || selectedQuoteFromData.companyName || '-')}
-                  InputProps={{ readOnly: true }}
-                  sx={{ flex: 1 }}
-                />
-              </Stack>
-
-              <Stack spacing={0.75}>
-                <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
-                  Quote Chat
-                </Typography>
-
-                <Paper
-                  variant="outlined"
-                  sx={{
-                    p: 1,
-                    borderRadius: 1,
-                    borderColor: alpha('#0f4c81', 0.22),
-                    backgroundColor: '#ffffff',
-                    maxHeight: 280,
-                    overflowY: 'auto',
-                  }}
-                >
-                  {selectedQuoteChatsQuery.isLoading ? (
-                    <Typography variant="caption" color="text.secondary">
-                      Loading chat...
-                    </Typography>
-                  ) : selectedQuoteChatMessages.length === 0 ? (
-                    <Typography variant="caption" color="text.secondary">
-                      No messages yet.
-                    </Typography>
-                  ) : (
-                    <Stack spacing={0.75}>
-                      {selectedQuoteChatMessages.map((message) => (
-                        <Box
-                          key={message.id}
-                          sx={{
-                            px: 0.8,
-                            py: 0.65,
-                            borderRadius: 0.9,
-                            border: `1px solid ${alpha('#0f4c81', 0.16)}`,
-                            backgroundColor: alpha('#0f4c81', 0.03),
-                          }}
-                        >
-                          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.2 }}>
-                            {resolveQuoteChatAuthorLabel(message)} • {formatQuoteChatTimestamp(message.createdAt)}
-                          </Typography>
-                          <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
-                            {String(message.message || '').trim()}
-                          </Typography>
-                        </Box>
-                      ))}
-                    </Stack>
-                  )}
-                </Paper>
-
-                {selectedQuoteChatErrorMessage ? (
-                  <Typography variant="caption" color="error">
-                    {selectedQuoteChatErrorMessage}
-                  </Typography>
-                ) : null}
-
-                <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.8} alignItems={{ xs: 'stretch', sm: 'flex-end' }}>
-                  <TextField
-                    label="New message"
-                    value={quoteChatDraft}
-                    onChange={(event) => {
-                      setQuoteChatDraft(event.target.value)
-                    }}
-                    disabled={!canManage || isSendingQuoteChat}
-                    multiline
-                    minRows={2}
-                    placeholder="Add a message that stays with this quote"
-                    sx={{ flex: 1 }}
-                  />
-                  <Button
-                    variant="contained"
-                    disabled={
-                      !canManage
-                      || isSendingQuoteChat
-                      || quoteChatDraft.trim().length === 0
-                    }
-                    onClick={() => {
-                      void handleSendQuoteChat()
-                    }}
-                  >
-                    {isSendingQuoteChat ? 'Sending...' : 'Send'}
-                  </Button>
-                </Stack>
-              </Stack>
-            </Stack>
-          ) : null}
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={handleCloseQuoteDetails} disabled={isSendingQuoteChat}>
-            Close
-          </Button>
-        </DialogActions>
-      </Dialog>
     </Stack>
   )
 }

@@ -8,6 +8,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAuth } from '../auth/useAuth'
 import { apiFetch } from '../features/api-client'
 import {
+  postOrdersCreate,
+  postOrdersDelete,
+  postOrdersDeleteRequest,
   type OrdersMondayProgressStatusBulkQueuedRow,
   type OrdersOverviewOrder,
   type OrdersOverviewResponse,
@@ -23,6 +26,10 @@ import {
   type OrdersQuickBooksDrilldownMetric,
   type OrdersViewMode,
 } from './orders/OrdersGrid'
+import {
+  AddManualOrderDialog,
+  type AddManualOrderDialogForm,
+} from './orders/AddManualOrderDialog'
 import { OrdersToolbar } from './orders/OrdersToolbar'
 import { QuickBooksProjectDialog } from './orders/QuickBooksProjectDialog'
 import {
@@ -42,6 +49,11 @@ import { useOrdersOverview } from './orders/useOrdersOverview'
 
 const FEEDBACK_TOAST_MS = 2000
 const WARNING_TOAST_MS = 3000
+
+type ApiRequestError = Error & {
+  status?: number
+  payload?: unknown
+}
 
 function applyQueuedProgressStatusUpdates(
   order: OrdersOverviewOrder,
@@ -100,6 +112,9 @@ export default function OrdersPage() {
   const [quickBooksDialogMetric, setQuickBooksDialogMetric] =
     useState<OrdersQuickBooksDrilldownMetric | null>(null)
   const [updateOrdersDialogOpen, setUpdateOrdersDialogOpen] = useState(false)
+  const [addManualOrderDialogOpen, setAddManualOrderDialogOpen] = useState(false)
+  const [isCreatingManualOrder, setIsCreatingManualOrder] = useState(false)
+  const [deletingOrderKey, setDeletingOrderKey] = useState<string | null>(null)
 
   const shopDrawingHandle = useRef<ShopDrawingPreviewHandle | null>(null)
   const cutListHandle = useRef<CutListPreviewHandle | null>(null)
@@ -308,6 +323,167 @@ export default function OrdersPage() {
     setUpdateOrdersDialogOpen(false)
   }, [])
 
+  const handleOpenAddManualOrderDialog = useCallback(() => {
+    setAddManualOrderDialogOpen(true)
+  }, [])
+
+  const handleCloseAddManualOrderDialog = useCallback(() => {
+    if (isCreatingManualOrder) {
+      return
+    }
+
+    setAddManualOrderDialogOpen(false)
+  }, [isCreatingManualOrder])
+
+  const handleCreateManualOrder = useCallback(async (form: AddManualOrderDialogForm) => {
+    if (isCreatingManualOrder) {
+      return
+    }
+
+    setErrorMessage(null)
+    setWarningMessage(null)
+    setIsCreatingManualOrder(true)
+
+    try {
+      const response = await postOrdersCreate({
+        boardId: form.boardId,
+        name: form.name,
+        acknowledgementNumber: form.acknowledgementNumber,
+        salesRep: form.salesRep || undefined,
+        orderValue: form.orderValue || undefined,
+        freightValue: form.freightValue || undefined,
+        poDate: form.poDate || undefined,
+        poNumber: form.poNumber || undefined,
+        description: form.description || undefined,
+        shipTo: form.shipTo || undefined,
+        notes: form.notes || undefined,
+      })
+
+      await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.ordersOverview })
+      setAddManualOrderDialogOpen(false)
+      setSuccessMessage(`Created order ${response.order.orderNumber}.`)
+
+      const warningText = (Array.isArray(response.warnings) ? response.warnings : [])
+        .map((entry) => String(entry ?? '').trim())
+        .filter(Boolean)
+        .join(' ')
+
+      if (warningText) {
+        setWarningMessage(warningText)
+      }
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error
+          ? error.message
+          : 'Could not create manual order.',
+      )
+    } finally {
+      setIsCreatingManualOrder(false)
+    }
+  }, [isCreatingManualOrder, queryClient])
+
+  const handleDeleteOrder = useCallback(async (order: OrdersOverviewOrder) => {
+    const orderKey = String(order?.id ?? '').trim()
+    const mondayItemId = String(order?.mondayItemId ?? '').trim()
+    const orderNumber = String(order?.orderNumber ?? '').trim()
+    const orderLabel = orderNumber || String(order?.orderName ?? '').trim() || mondayItemId || 'this order'
+    const requestPayload = {
+      orderKey: orderKey || undefined,
+      mondayItemId: mondayItemId || undefined,
+      orderNumber: orderNumber || undefined,
+    }
+
+    if (!requestPayload.orderKey && !requestPayload.mondayItemId && !requestPayload.orderNumber) {
+      setErrorMessage('Could not determine which order to delete.')
+      return
+    }
+
+    if (deletingOrderKey) {
+      return
+    }
+
+    const pendingKey = orderKey || mondayItemId || orderNumber || 'order-delete'
+    const sendDeleteRequest = async () => {
+      setDeletingOrderKey(pendingKey)
+
+      try {
+        await postOrdersDeleteRequest(requestPayload)
+        setSuccessMessage(`Delete request sent to admin for order ${orderLabel}.`)
+      } catch (requestError) {
+        setErrorMessage(
+          requestError instanceof Error
+            ? requestError.message
+            : 'Could not send delete request to admin.',
+        )
+      } finally {
+        setDeletingOrderKey(null)
+      }
+    }
+
+    setErrorMessage(null)
+
+    if (order.hasQuickBooksRecord) {
+      const shouldRequest = window.confirm(
+        `Order ${orderLabel} is linked to QuickBooks and cannot be deleted directly. Send delete request to admin?`,
+      )
+
+      if (!shouldRequest) {
+        return
+      }
+
+      await sendDeleteRequest()
+      return
+    }
+
+    const shouldDelete = window.confirm(
+      `Delete order ${orderLabel} from website and Monday? This action cannot be undone.`,
+    )
+
+    if (!shouldDelete) {
+      return
+    }
+
+    setDeletingOrderKey(pendingKey)
+
+    try {
+      const response = await postOrdersDelete(requestPayload)
+
+      await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.ordersOverview })
+      setSuccessMessage(`Deleted order ${orderLabel}.`)
+
+      const warningText = String(response?.warning ?? '').trim()
+
+      if (warningText) {
+        setWarningMessage(warningText)
+      }
+    } catch (deleteError) {
+      const requestError = deleteError as ApiRequestError
+      const payload = requestError?.payload && typeof requestError.payload === 'object'
+        ? requestError.payload as Record<string, unknown>
+        : {}
+      const requiresAdminRequest = Boolean(payload?.requiresAdminRequest)
+
+      if (Number(requestError?.status) === 409 && requiresAdminRequest) {
+        const shouldRequest = window.confirm(
+          `${requestError.message} Send delete request to admin now?`,
+        )
+
+        if (shouldRequest) {
+          await sendDeleteRequest()
+          return
+        }
+      }
+
+      setErrorMessage(
+        requestError instanceof Error
+          ? requestError.message
+          : 'Could not delete order.',
+      )
+    } finally {
+      setDeletingOrderKey(null)
+    }
+  }, [deletingOrderKey, queryClient])
+
   const handleSavedBulkOrderUpdates = useCallback((summary: {
     updatedCount: number
     queuedCount: number
@@ -481,6 +657,9 @@ export default function OrdersPage() {
         canOpenBulkUpdate={canEditMondayStages}
         onOpenBulkUpdate={handleOpenUpdateOrdersDialog}
         bulkUpdateDisabled={bulkEditableOrders.length === 0}
+        canAddOrder={canEditMondayStages}
+        onAddOrder={handleOpenAddManualOrderDialog}
+        addOrderDisabled={isCreatingManualOrder || Boolean(deletingOrderKey)}
         searchText={overview.searchText}
         onSearchTextChange={overview.setSearchText}
         isRefreshing={overview.isRefreshing}
@@ -506,6 +685,8 @@ export default function OrdersPage() {
         onOpenQuickBooksDialog={handleOpenQuickBooksDialog}
         onCopyOrderNumber={handleCopyOrderNumber}
         onOpenOrderChat={handleOpenOrderChat}
+        canDeleteOrders={canEditMondayStages}
+        onDeleteOrder={handleDeleteOrder}
         onMissingMondayLink={handleMissingMondayLink}
       />
 
@@ -539,6 +720,13 @@ export default function OrdersPage() {
         shopDrawingHandle={shopDrawingHandle}
         onClose={handleCloseUpdateOrdersDialog}
         onSaved={handleSavedBulkOrderUpdates}
+      />
+
+      <AddManualOrderDialog
+        open={addManualOrderDialogOpen}
+        isSubmitting={isCreatingManualOrder}
+        onClose={handleCloseAddManualOrderDialog}
+        onSubmit={handleCreateManualOrder}
       />
     </Stack>
   )

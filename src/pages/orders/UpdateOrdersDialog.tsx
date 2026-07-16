@@ -15,7 +15,7 @@ import {
   Typography,
 } from '@mui/material'
 import { DataGrid, type GridColDef } from '@mui/x-data-grid'
-import { type MutableRefObject, useCallback, useEffect, useMemo, useState } from 'react'
+import { type MutableRefObject, useCallback, useMemo, useState } from 'react'
 import {
   postOrdersMondayProgressStatusBulkUpdate,
   type OrdersMondayProgressStatusBulkQueuedRow,
@@ -194,15 +194,11 @@ export function UpdateOrdersDialog({
     [draftStatuses],
   )
 
-  useEffect(() => {
-    if (!open) {
-      return
-    }
-
+  const resetDialogState = useCallback(() => {
     setDraftStatuses({})
     setIsSaving(false)
     setErrorMessage(null)
-  }, [open])
+  }, [])
 
   const resolveEffectiveStatus = useCallback((row: BulkEditRow, stageKey: StageKey) => {
     const draftKey = buildStageCellKey(row.mondayItemId, stageKey)
@@ -250,8 +246,9 @@ export function UpdateOrdersDialog({
       }
     }
 
+    resetDialogState()
     onClose()
-  }, [isSaving, onClose, pendingEditsCount])
+  }, [isSaving, onClose, pendingEditsCount, resetDialogState])
 
   const handleSave = useCallback(async () => {
     if (isSaving) {
@@ -402,7 +399,7 @@ export function UpdateOrdersDialog({
         return
       }
 
-      onClose()
+      handleRequestClose({ skipUnsavedCheck: true })
     } catch (saveError) {
       setIsSaving(false)
       setErrorMessage(

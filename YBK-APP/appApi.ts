@@ -1,13 +1,31 @@
 export const API_BASE_URL = 'https://us-central1-ybkarnold-b7ec0.cloudfunctions.net/apiV1'
 const API_REQUEST_TIMEOUT_MS = 15000
+const API_FALLBACK_BASE_URLS = [
+  'https://ybkarnold-b7ec0.web.app',
+  'https://ybkarnold-b7ec0.firebaseapp.com',
+] as const
 
-function withRefreshQuery(path: string, refreshRequested: boolean) {
+function withRefreshQuery(baseUrl: string, path: string, refreshRequested: boolean) {
+  const normalizedBaseUrl = String(baseUrl ?? '').trim().replace(/\/+$/, '')
+  const normalizedPath = String(path ?? '').trim().startsWith('/')
+    ? String(path ?? '').trim()
+    : `/${String(path ?? '').trim()}`
+  const requestUrl = `${normalizedBaseUrl}${normalizedPath}`
+
   if (!refreshRequested) {
-    return `${API_BASE_URL}${path}`
+    return requestUrl
   }
 
-  const separator = path.includes('?') ? '&' : '?'
-  return `${API_BASE_URL}${path}${separator}refresh=1`
+  const separator = requestUrl.includes('?') ? '&' : '?'
+  return `${requestUrl}${separator}refresh=1`
+}
+
+function isRetryableNetworkError(error: unknown) {
+  if (error instanceof TypeError) {
+    return true
+  }
+
+  return error instanceof Error && error.name === 'AbortError'
 }
 
 export async function request<T>(
@@ -15,51 +33,75 @@ export async function request<T>(
   refreshRequested = false,
   init: RequestInit = {},
 ) {
-  const timeoutController = init.signal ? null : new AbortController()
-  const timeoutId = timeoutController
-    ? setTimeout(() => {
-        timeoutController.abort()
-      }, API_REQUEST_TIMEOUT_MS)
-    : null
+  const baseUrlsToTry = [API_BASE_URL, ...API_FALLBACK_BASE_URLS]
+  let lastError: unknown = null
 
-  let response: Response
-  let payload: unknown = {}
+  for (let index = 0; index < baseUrlsToTry.length; index += 1) {
+    const timeoutController = init.signal ? null : new AbortController()
+    const timeoutId = timeoutController
+      ? setTimeout(() => {
+          timeoutController.abort()
+        }, API_REQUEST_TIMEOUT_MS)
+      : null
 
-  try {
-    response = await fetch(withRefreshQuery(path, refreshRequested), {
-      ...init,
-      signal: init.signal ?? timeoutController?.signal,
-      headers: {
-        'Content-Type': 'application/json',
-        ...(init.headers ?? {}),
-      },
-    })
-    payload = await response.json().catch(() => ({}))
-  } catch (error) {
-    if (timeoutId) {
-      clearTimeout(timeoutId)
+    try {
+      const response = await fetch(withRefreshQuery(baseUrlsToTry[index], path, refreshRequested), {
+        ...init,
+        signal: init.signal ?? timeoutController?.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          ...(init.headers ?? {}),
+        },
+      })
+      const payload = await response.json().catch(() => ({}))
+
+      if (!response.ok) {
+        const requestError = new Error(
+          String((payload as { error?: string }).error ?? 'Request failed.'),
+        ) as Error & { status?: number }
+        requestError.status = response.status
+
+        const shouldRetryWithFallback =
+          response.status >= 500
+          && index < baseUrlsToTry.length - 1
+
+        if (shouldRetryWithFallback) {
+          lastError = requestError
+          continue
+        }
+
+        throw requestError
+      }
+
+      return payload as T
+    } catch (error) {
+      const shouldRetryWithFallback =
+        isRetryableNetworkError(error)
+        && !init.signal
+        && index < baseUrlsToTry.length - 1
+
+      if (shouldRetryWithFallback) {
+        lastError = error
+        continue
+      }
+
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new Error('Request timed out. Check your network connection and try again.')
+      }
+
+      throw error
+    } finally {
+      if (timeoutId) {
+        clearTimeout(timeoutId)
+      }
     }
-
-    if (error instanceof Error && error.name === 'AbortError') {
-      throw new Error('Request timed out. Check your network connection and try again.')
-    }
-
-    throw error
   }
 
-  if (timeoutId) {
-    clearTimeout(timeoutId)
+  if (lastError instanceof Error && lastError.name === 'AbortError') {
+    throw new Error('Request timed out. Check your network connection and try again.')
   }
 
-  if (!response.ok) {
-    const requestError = new Error(
-      String((payload as { error?: string }).error ?? 'Request failed.'),
-    ) as Error & { status?: number }
-    requestError.status = response.status
-    throw requestError
-  }
-
-  return payload as T
+  throw (lastError instanceof Error ? lastError : new Error('Request failed.'))
 }
 
 export function withBuildQuery(updateUrl: string, buildNumber: number) {

@@ -15,7 +15,7 @@ import {
   TextField,
   Typography,
 } from '@mui/material'
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   chatForAiRules,
@@ -191,8 +191,7 @@ export default function AdminEmailAiConfigPage() {
   const [chatError, setChatError] = useState<string | null>(null)
   const [saveSuccess, setSaveSuccess] = useState<string | null>(null)
   const [saveError, setSaveError] = useState<string | null>(null)
-  const [editedRules, setEditedRules] = useState('')
-  const [rulesInitialized, setRulesInitialized] = useState(false)
+  const [editedRules, setEditedRules] = useState<string | null>(null)
   const [proposal, setProposal] = useState<RulesProposal | null>(null)
 
   const rulesQuery = useQuery({
@@ -201,12 +200,7 @@ export default function AdminEmailAiConfigPage() {
     staleTime: 5 * 60 * 1000,
   })
 
-  useEffect(() => {
-    if (!rulesInitialized && rulesQuery.data) {
-      setEditedRules(rulesQuery.data.content ?? '')
-      setRulesInitialized(true)
-    }
-  }, [rulesInitialized, rulesQuery.data])
+  const activeRules = editedRules ?? (rulesQuery.data?.content ?? '')
 
   const chatMutation = useMutation({
     mutationFn: async (input: { prompt: string; baseRules: string }) => {
@@ -242,11 +236,11 @@ export default function AdminEmailAiConfigPage() {
   })
 
   const saveMutation = useMutation({
-    mutationFn: () => saveAiRules('email_intake', editedRules),
+    mutationFn: () => saveAiRules('email_intake', activeRules),
     onSuccess: () => {
       queryClient.setQueryData(['ai', 'rules', 'email_intake'], {
         category: 'email_intake',
-        content: editedRules,
+        content: activeRules,
       })
       setSaveSuccess('Rules saved.')
       setSaveError(null)
@@ -259,7 +253,7 @@ export default function AdminEmailAiConfigPage() {
   })
 
   const savedRulesContent = rulesQuery.data?.content ?? ''
-  const hasUnsavedChanges = rulesInitialized && editedRules !== savedRulesContent
+  const hasUnsavedChanges = editedRules !== null && activeRules !== savedRulesContent
 
   const acceptedCount = proposal?.acceptedHunkIds.length ?? 0
   const proposalEditCount = proposal?.hunks.length ?? 0
@@ -282,7 +276,7 @@ export default function AdminEmailAiConfigPage() {
 
     chatMutation.mutate({
       prompt: trimmed,
-      baseRules: editedRules,
+      baseRules: activeRules,
     })
   }
 
@@ -401,7 +395,7 @@ export default function AdminEmailAiConfigPage() {
                 minRows={14}
                 maxRows={32}
                 fullWidth
-                value={editedRules}
+                value={activeRules}
                 placeholder="Add concise routing and summary rules for email intake..."
                 onChange={(event) => {
                   setEditedRules(event.target.value)
@@ -412,7 +406,7 @@ export default function AdminEmailAiConfigPage() {
                 }}
                 disabled={saveMutation.isPending}
                 inputProps={{ maxLength: EMAIL_RULES_LIMIT }}
-                helperText={`${editedRules.length} / ${EMAIL_RULES_LIMIT.toLocaleString()} characters`}
+                helperText={`${activeRules.length} / ${EMAIL_RULES_LIMIT.toLocaleString()} characters`}
                 sx={{ '& .MuiInputBase-root': { fontFamily: 'monospace', fontSize: '0.85rem' } }}
               />
 

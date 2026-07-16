@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
 import { isRouteErrorResponse, useRouteError } from 'react-router-dom'
 
 const dynamicImportReloadKey = 'ybk-last-dynamic-import-reload-at'
@@ -53,16 +53,10 @@ export default function RouteErrorBoundary() {
   const routeErrorResponse = isRouteErrorResponse(error)
   const message = routeErrorResponse ? '' : toErrorMessage(error)
   const dynamicImportFailure = !routeErrorResponse && isDynamicImportFailure(message)
-  const [isAutoRecovering, setIsAutoRecovering] = useState(false)
 
   useEffect(() => {
-    if (!dynamicImportFailure) {
-      setIsAutoRecovering(false)
-      return
-    }
-
-    if (reloadOnceForDynamicImportFailure()) {
-      setIsAutoRecovering(true)
+    if (dynamicImportFailure) {
+      reloadOnceForDynamicImportFailure()
     }
   }, [dynamicImportFailure])
 
@@ -76,19 +70,6 @@ export default function RouteErrorBoundary() {
           </p>
           <p style={{ margin: 0, color: '#4b5563' }}>
             {typeof error.data === 'string' && error.data ? error.data : 'Please try again.'}
-          </p>
-        </section>
-      </main>
-    )
-  }
-
-  if (dynamicImportFailure && isAutoRecovering) {
-    return (
-      <main style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 20 }}>
-        <section style={{ width: '100%', maxWidth: 760 }}>
-          <h1 style={{ margin: '0 0 8px' }}>Updating App...</h1>
-          <p style={{ margin: 0, color: '#4b5563' }}>
-            Reloading to recover from a temporary update mismatch.
           </p>
         </section>
       </main>

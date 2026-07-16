@@ -1,5 +1,6 @@
 import AdminPanelSettingsRoundedIcon from '@mui/icons-material/AdminPanelSettingsRounded'
 import ApiRoundedIcon from '@mui/icons-material/ApiRounded'
+import ChatRoundedIcon from '@mui/icons-material/ChatRounded'
 import DashboardRoundedIcon from '@mui/icons-material/DashboardRounded'
 import ForumRoundedIcon from '@mui/icons-material/ForumRounded'
 import Inventory2RoundedIcon from '@mui/icons-material/Inventory2Rounded'
@@ -60,6 +61,11 @@ export const navItems: NavItem[] = [
     label: 'Notifications',
     path: '/notifications',
     icon: NotificationsActiveRoundedIcon,
+  },
+  {
+    label: 'Chat',
+    path: '/chat',
+    icon: ChatRoundedIcon,
   },
   {
     label: 'Support',

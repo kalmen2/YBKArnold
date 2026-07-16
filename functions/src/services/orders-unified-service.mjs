@@ -156,6 +156,14 @@ function toIsoDateOnly(value) {
     return normalized
   }
 
+  // Preserve explicit source date components (e.g. 2026-06-30T23:00:00-05:00)
+  // so month/day are not shifted by timezone conversion.
+  const sourceDateMatch = normalized.match(/^(\d{4}-\d{2}-\d{2})/)
+
+  if (sourceDateMatch) {
+    return sourceDateMatch[1]
+  }
+
   const parsedMs = Date.parse(normalized)
 
   if (!Number.isFinite(parsedMs)) {
@@ -191,6 +199,43 @@ function shouldFlagOrderAsMovedToShippedOutsideWebsite(row, orderTrackBoardId) {
   }
 
   return previousBoardId === orderTrackBoardId
+}
+
+function isNewOrdersBoardName(value) {
+  const normalizedBoardName = normalizeText(value, 260).toLowerCase()
+
+  if (!normalizedBoardName) {
+    return false
+  }
+
+  return /^new\s+orders\s+\d{4}$/i.test(normalizedBoardName)
+}
+
+function isPendingManualPlacementRow(row, {
+  orderTrackBoardId,
+  designBoardId,
+  shippedBoardId,
+}) {
+  if (!row || row.is_shipped) {
+    return false
+  }
+
+  if (!row.has_monday_record || !row.in_design) {
+    return false
+  }
+
+  const boardId = normalizeText(row?.monday_board_id, 120)
+  const boardName = normalizeText(row?.monday_board_name, 260)
+
+  if (!isNewOrdersBoardName(boardName)) {
+    return false
+  }
+
+  if (boardId && [orderTrackBoardId, designBoardId, shippedBoardId].includes(boardId)) {
+    return false
+  }
+
+  return true
 }
 
 export function createOrdersUnifiedService(deps) {
@@ -726,6 +771,82 @@ export function createOrdersUnifiedService(deps) {
     }
   }
 
+  async function flagPendingManualRowsOnDesignBoard({ pendingRows, warnings }) {
+    const designBoardId = normalizeText(mondayPreproductionBoardId, 120)
+
+    if (!designBoardId) {
+      return {
+        candidateCount: 0,
+        matchedCount: 0,
+        matchedRowsByItemId: new Map(),
+      }
+    }
+
+    const candidates = (Array.isArray(pendingRows) ? pendingRows : [])
+      .filter((row) => Boolean(row))
+
+    if (candidates.length === 0) {
+      return {
+        candidateCount: 0,
+        matchedCount: 0,
+        matchedRowsByItemId: new Map(),
+      }
+    }
+
+    let snapshot = null
+    try {
+      snapshot = await fetchMondayBoardItemNames({
+        boardId: designBoardId,
+        boardUrl: normalizeText(mondayPreproductionBoardUrl, 400) || null,
+        boardName: 'Pre-Production / Design AKF',
+      })
+    } catch (error) {
+      warnings.push(`Pending design lookup failed: ${normalizeText(error?.message, 400) || 'unknown error'}`)
+      return {
+        candidateCount: candidates.length,
+        matchedCount: 0,
+        matchedRowsByItemId: new Map(),
+      }
+    }
+
+    const lookup = buildNameLookupFromMondayItems(snapshot.items)
+    const matchedRowsByItemId = new Map()
+    let matchedCount = 0
+
+    candidates.forEach((row) => {
+      const match = findNameLookupMatch(row, lookup)
+
+      if (!match) {
+        return
+      }
+
+      const matchedItemId = normalizeText(match?.id, 120)
+
+      if (!matchedItemId) {
+        return
+      }
+
+      row.in_design = true
+      row.hazard_reason = null
+      row.Monday_status = 'In Design'
+      row.monday_item_id = row.monday_item_id || matchedItemId
+      row.monday_board_id = designBoardId
+      row.monday_board_name = snapshot.board?.name || row.monday_board_name
+
+      if (!matchedRowsByItemId.has(matchedItemId)) {
+        matchedRowsByItemId.set(matchedItemId, row)
+      }
+
+      matchedCount += 1
+    })
+
+    return {
+      candidateCount: candidates.length,
+      matchedCount,
+      matchedRowsByItemId,
+    }
+  }
+
   async function checkShippedBoardForMissing(carryoverRows, warnings) {
     const shippedBoardId = normalizeText(mondayShippedBoardId, 120)
     if (!shippedBoardId || carryoverRows.length === 0) {
@@ -1119,13 +1240,58 @@ export function createOrdersUnifiedService(deps) {
       carryoverCandidates.push(row)
     })
 
+    const designBoardId = normalizeText(mondayPreproductionBoardId, 120)
+    const pendingManualPlacementRows = carryoverCandidates.filter((row) => isPendingManualPlacementRow(row, {
+      orderTrackBoardId,
+      designBoardId,
+      shippedBoardId,
+    }))
+    const pendingManualPlacementOrderKeys = new Set(
+      pendingManualPlacementRows
+        .map((row) => normalizeText(row?.orderKey, 200))
+        .filter(Boolean),
+    )
+    const pendingDesignStats = await flagPendingManualRowsOnDesignBoard({
+      pendingRows: pendingManualPlacementRows,
+      warnings,
+    })
+    const pendingDesignMatchedRowsByItemId =
+      pendingDesignStats?.matchedRowsByItemId instanceof Map
+        ? pendingDesignStats.matchedRowsByItemId
+        : new Map()
+    const pendingDesignMatchedOrderKeys = new Set(
+      [...pendingDesignMatchedRowsByItemId.values()]
+        .map((row) => normalizeText(row?.orderKey, 200))
+        .filter(Boolean),
+    )
+
+    pendingDesignMatchedRowsByItemId.forEach((row) => {
+      const orderKey = normalizeText(row?.orderKey, 200)
+
+      if (!orderKey) {
+        return
+      }
+
+      mergedByKey.set(orderKey, row)
+    })
+
+    const pendingDesignDetailEnrichedCount = await enrichMatchedDesignRows({
+      matchedRowsByItemId: pendingDesignMatchedRowsByItemId,
+      warnings,
+    })
+
     const quickBooksOnlyCandidates = []
     mergedByKey.forEach((row) => {
       if (row.has_quickbooks_record && !row.has_monday_record && !row.is_shipped) {
         quickBooksOnlyCandidates.push(row)
       }
     })
-    const rowsToCheckOnShipped = [...quickBooksOnlyCandidates, ...carryoverCandidates]
+    const rowsToCheckOnShipped = [
+      ...quickBooksOnlyCandidates,
+      ...carryoverCandidates.filter(
+        (row) => !pendingDesignMatchedOrderKeys.has(normalizeText(row?.orderKey, 200)),
+      ),
+    ]
     const carryoverOrderKeys = new Set(carryoverCandidates.map((row) => row.orderKey))
     const { lookup: shippedLookup } = await checkShippedBoardForMissing(rowsToCheckOnShipped, warnings)
 
@@ -1170,6 +1336,15 @@ export function createOrdersUnifiedService(deps) {
           quickBooksOnlyMarkedShippedCount += 1
         }
       } else if (carryoverOrderKeys.has(row.orderKey)) {
+        if (pendingManualPlacementOrderKeys.has(normalizeText(row?.orderKey, 200))) {
+          row.in_design = true
+          row.Monday_status = normalizeText(row?.Monday_status, 260) || 'Pending placement'
+          row.hazard_reason = 'Pending: created in New Orders and not found yet in Design or Orders.'
+          carryoverHazardCount += 1
+          mergedByKey.set(row.orderKey, row)
+          return
+        }
+
         if (quickBooksSucceeded && row.has_quickbooks_record) {
           staleQuickBooksOrderKeysToDelete.add(row.orderKey)
           mergedByKey.delete(row.orderKey)
@@ -1283,10 +1458,12 @@ export function createOrdersUnifiedService(deps) {
       //   - Order Track has it but QB doesn't  → real hazard (must be fixed)
       //   - QB has it but Order Track doesn't, and we found it in design → not a hazard
       //   - QB has it but Order Track doesn't, and design didn't match   → hazard
+      //   - Design rows (including pending New Orders placement) should not
+      //     receive the generic "missing from QuickBooks" hazard
       //   - QB outage → don't fabricate "missing from QuickBooks" hazards
       if (existingHazard) {
         row.hazard_reason = existingHazard
-      } else if (hasMonday && !hasQB && quickBooksSucceeded) {
+      } else if (hasMonday && !hasQB && quickBooksSucceeded && !row.in_design) {
         row.hazard_reason = 'Order Track item not found in QuickBooks projects.'
       } else if (hasQB && !hasMonday && !row.in_design) {
         row.hazard_reason = 'QuickBooks project not found in Order Track or Design.'
@@ -1346,6 +1523,9 @@ export function createOrdersUnifiedService(deps) {
       designBoardCandidateCount: designStats.candidateCount,
       designBoardMatchedCount: designStats.matchedCount,
       designDetailEnrichedCount,
+      pendingDesignCandidateCount: pendingDesignStats.candidateCount,
+      pendingDesignMatchedCount: pendingDesignStats.matchedCount,
+      pendingDesignDetailEnrichedCount,
       carryoverCheckedCount: carryoverCandidates.length,
       carryoverMarkedShippedCount,
       carryoverHazardCount,

@@ -5,6 +5,7 @@ import LocalShippingRoundedIcon from '@mui/icons-material/LocalShippingRounded'
 import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded'
 import ChatBubbleOutlineRoundedIcon from '@mui/icons-material/ChatBubbleOutlineRounded'
 import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded'
+import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
 import {
   Alert,
   Box,
@@ -667,6 +668,8 @@ type OrdersGridProps = {
   ) => void
   onCopyOrderNumber: (orderNumber: string) => void
   onOpenOrderChat: (order: OrdersOverviewOrder) => void
+  canDeleteOrders: boolean
+  onDeleteOrder: (order: OrdersOverviewOrder) => void
   onMissingMondayLink: () => void
 }
 
@@ -683,6 +686,8 @@ export function OrdersGrid({
   onOpenQuickBooksDialog,
   onCopyOrderNumber,
   onOpenOrderChat,
+  canDeleteOrders,
+  onDeleteOrder,
   onMissingMondayLink,
 }: OrdersGridProps) {
   const queryClient = useQueryClient()
@@ -1008,6 +1013,17 @@ export function OrdersGrid({
           >
             <ChatBubbleOutlineRoundedIcon sx={{ fontSize: '1.18rem' }} />
           </IconButton>
+          {canDeleteOrders ? (
+            <IconButton
+              size="small"
+              aria-label="Delete order"
+              title="Delete order"
+              onClick={() => onDeleteOrder(row)}
+              sx={{ p: 0.2, color: 'error.main' }}
+            >
+              <DeleteOutlineRoundedIcon sx={{ fontSize: '1.08rem' }} />
+            </IconButton>
+          ) : null}
           </Stack>
         )
       },
@@ -1862,6 +1878,8 @@ export function OrdersGrid({
     onOpenQuickBooksDialog,
     onCopyOrderNumber,
     onOpenOrderChat,
+    canDeleteOrders,
+    onDeleteOrder,
     onMissingMondayLink,
     handleOpenStatusPopover,
   ])

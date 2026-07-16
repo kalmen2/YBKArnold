@@ -1,5 +1,7 @@
 const mondayItemsPageLimit = 200
 const mondayItemsMaxPages = 10
+const mondayBoardsPageLimit = 100
+const mondayBoardsMaxPages = 25
 const mondayMaxRetryAttempts = 5
 const mondayBaseRetryDelayMs = 750
 const mondayMaxRetryDelayMs = 15_000
@@ -285,6 +287,8 @@ export function createMondaySnapshotService({
   let mondayRequestQueueTail = Promise.resolve()
   const inFlightSnapshotByBoard = new Map()
   const cachedColumnIdsByBoard = new Map()
+  const boardCatalogCacheTtlMs = 5 * 60 * 1000
+  let cachedBoardsCatalogSnapshot = null
 
   const buildItemsPageQuery = typeof buildMondayItemsPageQuery === 'function'
     ? buildMondayItemsPageQuery
@@ -720,6 +724,118 @@ query GetBoardStatusColumnOptions($boardId: ID!, $columnIds: [String!]) {
     return optionsByColumnId
   }
 
+  async function createMondayItem({ boardId, itemName }) {
+    ensureMondayConfiguration()
+
+    const normalizedBoardId = String(boardId ?? '').trim()
+    const normalizedItemName = String(itemName ?? '').trim()
+
+    if (!normalizedBoardId) {
+      throw {
+        status: 500,
+        message: 'Missing Monday board id for item create.',
+      }
+    }
+
+    if (!normalizedItemName) {
+      throw {
+        status: 400,
+        message: 'Missing Monday item name for item create.',
+      }
+    }
+
+    const data = await callMondayGraphql(
+      `
+mutation CreateMondayItem($boardId: ID!, $itemName: String!) {
+  create_item(
+    board_id: $boardId,
+    item_name: $itemName
+  ) {
+    id
+    name
+  }
+}
+`,
+      {
+        boardId: normalizedBoardId,
+        itemName: normalizedItemName,
+      },
+    )
+
+    const createdItem = data?.create_item ?? null
+    const itemId = String(createdItem?.id ?? '').trim()
+
+    if (!itemId) {
+      throw {
+        status: 502,
+        message: 'Monday did not return a created item id.',
+      }
+    }
+
+    invalidateMondayBoardNamesCache(normalizedBoardId)
+
+    return {
+      boardId: normalizedBoardId,
+      itemId,
+      itemName: String(createdItem?.name ?? '').trim() || normalizedItemName,
+    }
+  }
+
+  async function deleteMondayItem({ itemId, boardId = null }) {
+    ensureMondayConfiguration()
+
+    const normalizedItemId = String(itemId ?? '').trim()
+    const normalizedBoardId = String(boardId ?? '').trim()
+
+    if (!normalizedItemId) {
+      throw {
+        status: 400,
+        message: 'Missing Monday item id for item delete.',
+      }
+    }
+
+    let mode = 'delete'
+
+    try {
+      await callMondayGraphql(
+        `
+mutation DeleteMondayItem($itemId: ID!) {
+  delete_item(item_id: $itemId) {
+    id
+  }
+}
+`,
+        {
+          itemId: normalizedItemId,
+        },
+      )
+    } catch (deleteError) {
+      await callMondayGraphql(
+        `
+mutation ArchiveMondayItem($itemId: ID!) {
+  archive_item(item_id: $itemId) {
+    id
+  }
+}
+`,
+        {
+          itemId: normalizedItemId,
+        },
+      )
+      mode = 'archive'
+    }
+
+    if (normalizedBoardId) {
+      invalidateMondayBoardNamesCache(normalizedBoardId)
+    }
+
+    return {
+      itemId: normalizedItemId,
+      boardId: normalizedBoardId || null,
+      mode,
+    }
+  }
+
   async function updateMondayItemStatusColumn({ boardId, itemId, columnId, statusLabel }) {
     ensureMondayConfiguration()
 
@@ -1152,6 +1268,146 @@ mutation MoveMondayItemToBoardFallback($itemId: ID!, $boardId: ID!, $groupId: ID
     }
   }
 
+  async function fetchMondayBoardsCatalog({ forceRefresh = false } = {}) {
+    ensureMondayConfiguration()
+
+    if (
+      !forceRefresh
+      && cachedBoardsCatalogSnapshot
+      && Date.now() - cachedBoardsCatalogSnapshot.fetchedAt < boardCatalogCacheTtlMs
+    ) {
+      return cachedBoardsCatalogSnapshot.boards
+    }
+
+    const boardsQuery = `
+query ListMondayBoards($limit: Int!, $page: Int!) {
+  boards(limit: $limit, page: $page, state: active) {
+    id
+    name
+  }
+}
+`
+
+    const boardsById = new Map()
+    let page = 1
+
+    while (page <= mondayBoardsMaxPages) {
+      const data = await callMondayGraphql(boardsQuery, {
+        limit: mondayBoardsPageLimit,
+        page,
+      })
+
+      const pageBoards = Array.isArray(data?.boards)
+        ? data.boards
+        : []
+
+      pageBoards.forEach((board) => {
+        const boardId = String(board?.id ?? '').trim()
+
+        if (!boardId || boardsById.has(boardId)) {
+          return
+        }
+
+        boardsById.set(boardId, {
+          id: boardId,
+          name: String(board?.name ?? '').trim() || null,
+        })
+      })
+
+      if (pageBoards.length < mondayBoardsPageLimit) {
+        break
+      }
+
+      page += 1
+    }
+
+    const boards = [...boardsById.values()].sort((left, right) => {
+      const leftName = String(left?.name ?? '').trim().toLowerCase()
+      const rightName = String(right?.name ?? '').trim().toLowerCase()
+      const byName = leftName.localeCompare(rightName)
+
+      if (byName !== 0) {
+        return byName
+      }
+
+      return String(left?.id ?? '').localeCompare(String(right?.id ?? ''))
+    })
+
+    cachedBoardsCatalogSnapshot = {
+      fetchedAt: Date.now(),
+      boards,
+    }
+
+    return boards
+  }
+
+  async function fetchMondayBoardColumns({ boardId }) {
+    ensureMondayConfiguration()
+
+    const normalizedBoardId = String(boardId ?? '').trim()
+
+    if (!normalizedBoardId) {
+      throw {
+        status: 400,
+        message: 'Missing Monday board id for board-columns lookup.',
+      }
+    }
+
+    const data = await callMondayGraphql(
+      `
+query GetMondayBoardColumns($boardId: ID!) {
+  boards(ids: [$boardId]) {
+    id
+    name
+    columns {
+      id
+      title
+      type
+    }
+  }
+}
+`,
+      {
+        boardId: normalizedBoardId,
+      },
+    )
+
+    const board = Array.isArray(data?.boards)
+      ? data.boards[0]
+      : null
+
+    if (!board) {
+      throw {
+        status: 404,
+        message: `Monday board ${normalizedBoardId} was not found.`,
+      }
+    }
+
+    const columns = (Array.isArray(board?.columns) ? board.columns : [])
+      .map((column) => {
+        const columnId = String(column?.id ?? '').trim()
+
+        if (!columnId) {
+          return null
+        }
+
+        return {
+          id: columnId,
+          title: String(column?.title ?? '').trim() || null,
+          type: String(column?.type ?? '').trim() || null,
+        }
+      })
+      .filter(Boolean)
+
+    return {
+      board: {
+        id: String(board?.id ?? normalizedBoardId).trim() || normalizedBoardId,
+        name: String(board?.name ?? '').trim() || null,
+      },
+      columns,
+    }
+  }
+
   // Targeted name-only fetch: pull every item on a board with just id+name
   // (no column_values block). Used for "is this order on the Shipped board?" /
   // "is this order on the Design board?" without paying for the full column
@@ -1389,9 +1645,13 @@ query GetItemsByIds($itemIds: [ID!]!) {
   }
 
   return {
+    createMondayItem,
+    deleteMondayItem,
     fetchMondayAssetDownloadInfo,
+    fetchMondayBoardColumns,
     fetchMondayBoardItemNames,
     fetchMondayBoardItemsByIds,
+    fetchMondayBoardsCatalog,
     fetchMondayDashboardSnapshot,
     fetchMondayStatusColumnOptions,
     invalidateMondayBoardNamesCache,

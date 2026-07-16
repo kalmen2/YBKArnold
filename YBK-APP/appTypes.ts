@@ -132,6 +132,63 @@ export type MobileAlert = {
   readAt?: string | null
 }
 
+export type MobileChatUser = {
+  uid: string
+  email: string
+  displayName: string | null
+  isAdmin: boolean
+  isManager: boolean
+  isSalesRep: boolean
+  hasWebAccess: boolean
+  hasAppAccess: boolean
+}
+
+export type MobileChatAttachment = {
+  kind: 'image' | 'voice'
+  mimeType: string | null
+  fileName: string | null
+  sizeBytes: number | null
+  dataUrl: string | null
+  deletedAt: string | null
+  deletedByUid: string | null
+  deletedByEmail: string | null
+} | null
+
+export type MobileChatThread = {
+  id: string
+  type: 'direct' | 'group'
+  name: string | null
+  memberUids: string[]
+  memberProfiles: MobileChatUser[]
+  createdAt: string | null
+  updatedAt: string | null
+  lastMessageAt: string | null
+  lastMessagePreview: string | null
+  lastMessageType: 'text' | 'image' | 'voice' | 'mixed' | 'deleted'
+  createdByUid: string | null
+  createdByEmail: string | null
+  createdByName: string | null
+}
+
+export type MobileChatMessage = {
+  id: string
+  chatId: string
+  text: string | null
+  messageType: 'text' | 'image' | 'voice' | 'mixed' | 'deleted'
+  attachment: MobileChatAttachment
+  createdAt: string | null
+  createdByUid: string | null
+  createdByEmail: string | null
+  createdByName: string | null
+  updatedAt: string | null
+  updatedByUid: string | null
+  updatedByEmail: string | null
+  updatedByName: string | null
+  deletedAt: string | null
+  deletedByUid: string | null
+  deletedByEmail: string | null
+}
+
 export type OrderJobDetailsSnapshot = {
   generatedAt: string
   order?: {
@@ -267,7 +324,7 @@ export type MetricTone = {
   valueColor: string
 }
 
-export type AppScreen = 'dashboard' | 'orders' | 'pictures' | 'timesheet' | 'manager' | 'alerts' | 'admin' | 'settings'
+export type AppScreen = 'dashboard' | 'orders' | 'pictures' | 'timesheet' | 'manager' | 'alerts' | 'chat' | 'admin' | 'settings'
 export type AppLanguage = 'en' | 'es' | 'he'
 
 export type OrderMetricKey =

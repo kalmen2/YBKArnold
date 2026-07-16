@@ -12,6 +12,7 @@ import { registerAiCouncilRoutes } from './src/routes/ai-council-routes.mjs'
 import { registerAdminApiRoutes } from './src/routes/admin-api-routes.mjs'
 import { registerAlertsRoutes } from './src/routes/alerts-routes.mjs'
 import { registerAuthRoutes } from './src/routes/auth-routes.mjs'
+import { registerChatRoutes } from './src/routes/chat-routes.mjs'
 import { registerCrmRoutes } from './src/routes/crm-routes.mjs'
 import { registerEmailIntakeRoutes } from './src/routes/email-intake-routes.mjs'
 import { registerDashboardSupportRoutes } from './src/routes/dashboard-support-routes.mjs'
@@ -553,9 +554,13 @@ query GetBoardItems($boardId: ID!, $limit: Int!, $cursor: String) {
 }
 
 const {
+  createMondayItem,
+  deleteMondayItem,
   fetchMondayAssetDownloadInfo,
+  fetchMondayBoardColumns,
   fetchMondayBoardItemNames,
   fetchMondayBoardItemsByIds,
+  fetchMondayBoardsCatalog,
   fetchMondayDashboardSnapshot,
   fetchMondayStatusColumnOptions,
   invalidateMondayBoardNamesCache,
@@ -736,6 +741,7 @@ function listRegisteredApiRoutes() {
     'src/routes/admin-api-routes.mjs',
     'src/routes/alerts-routes.mjs',
     'src/routes/auth-routes.mjs',
+    'src/routes/chat-routes.mjs',
     'src/routes/crm-routes.mjs',
     'src/routes/dashboard-support-routes.mjs',
     'src/routes/email-routes.mjs',
@@ -1649,6 +1655,7 @@ const routeDeps = {
   authRoleStandard,
   buildOrderPhotoDownloadFileName,
   clearSupportSnapshotCache,
+  createMondayItem,
   createZendeskTicketReply,
   createZendeskSupportTicket,
   decodeBase64Image,
@@ -1657,6 +1664,7 @@ const routeDeps = {
   defaultMobileIosLatestBuild,
   defaultMobileIosUpdateUrl,
   defaultMobileLatestVersion,
+  deleteMondayItem,
   deleteOrderPhotoRecord,
   ensureEntriesHavePayRates,
   ensureWorkersHaveWorkerNumbers,
@@ -1664,7 +1672,9 @@ const routeDeps = {
   extractRequestLocalIpAddress,
   extractRequestUserAgent,
   fetchMondayAssetDownloadInfo,
+  fetchMondayBoardColumns,
   fetchMondayBoardItemsByIds,
+  fetchMondayBoardsCatalog,
   fetchMondayStatusColumnOptions,
   fetchZendeskSupportAgentById,
   fetchZendeskSupportAgents,
@@ -2212,6 +2222,7 @@ registerAiCouncilRoutes(app, routeDeps)
 registerAdminApiRoutes(app, routeDeps)
 registerAuthRoutes(app, routeDeps)
 registerAlertsRoutes(app, routeDeps)
+registerChatRoutes(app, routeDeps)
 registerCrmRoutes(app, routeDeps)
 const ordersRoutesRuntime = registerOrdersRoutes(app, routeDeps) || {}
 registerDashboardSupportRoutes(app, routeDeps)

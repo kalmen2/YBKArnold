@@ -28,6 +28,61 @@ import { resolveShopDrawingUrl } from './shopDrawingUrl'
 const HOVER_OPEN_DELAY_MS = 220
 const HOVER_CLOSE_DELAY_MS = 650
 
+const SHOP_DRAWING_UPLOAD_SUPPORTED_MIME_TYPES = new Set([
+  'application/pdf',
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/heic',
+  'image/heif',
+])
+
+function inferShopDrawingMimeTypeFromFileName(fileName: string) {
+  const normalized = String(fileName ?? '').trim().toLowerCase()
+
+  if (normalized.endsWith('.pdf')) {
+    return 'application/pdf'
+  }
+
+  if (normalized.endsWith('.jpg') || normalized.endsWith('.jpeg')) {
+    return 'image/jpeg'
+  }
+
+  if (normalized.endsWith('.png')) {
+    return 'image/png'
+  }
+
+  if (normalized.endsWith('.webp')) {
+    return 'image/webp'
+  }
+
+  if (normalized.endsWith('.heic')) {
+    return 'image/heic'
+  }
+
+  if (normalized.endsWith('.heif')) {
+    return 'image/heif'
+  }
+
+  return ''
+}
+
+function resolveShopDrawingUploadMimeType(file: File) {
+  const fromFile = String(file?.type ?? '').trim().toLowerCase()
+
+  if (SHOP_DRAWING_UPLOAD_SUPPORTED_MIME_TYPES.has(fromFile)) {
+    return fromFile
+  }
+
+  const fromName = inferShopDrawingMimeTypeFromFileName(file?.name ?? '')
+
+  if (SHOP_DRAWING_UPLOAD_SUPPORTED_MIME_TYPES.has(fromName)) {
+    return fromName
+  }
+
+  return ''
+}
+
 type ShopDrawingPreviewHandle = {
   openHover: (event: React.MouseEvent<HTMLElement>, order: OrdersOverviewOrder) => void
   closeHover: () => void
@@ -70,61 +125,6 @@ export function ShopDrawingPreview({ onError, bind }: ShopDrawingPreviewProps) {
   const replaceFileInputRef = useRef<HTMLInputElement | null>(null)
 
   const canManageShopDrawing = appUser?.isAdmin === true || appUser?.isManager === true
-
-  const shopDrawingUploadSupportedMimeTypes = new Set([
-    'application/pdf',
-    'image/jpeg',
-    'image/png',
-    'image/webp',
-    'image/heic',
-    'image/heif',
-  ])
-
-  function inferShopDrawingMimeTypeFromFileName(fileName: string) {
-    const normalized = String(fileName ?? '').trim().toLowerCase()
-
-    if (normalized.endsWith('.pdf')) {
-      return 'application/pdf'
-    }
-
-    if (normalized.endsWith('.jpg') || normalized.endsWith('.jpeg')) {
-      return 'image/jpeg'
-    }
-
-    if (normalized.endsWith('.png')) {
-      return 'image/png'
-    }
-
-    if (normalized.endsWith('.webp')) {
-      return 'image/webp'
-    }
-
-    if (normalized.endsWith('.heic')) {
-      return 'image/heic'
-    }
-
-    if (normalized.endsWith('.heif')) {
-      return 'image/heif'
-    }
-
-    return ''
-  }
-
-  function resolveShopDrawingUploadMimeType(file: File) {
-    const fromFile = String(file?.type ?? '').trim().toLowerCase()
-
-    if (shopDrawingUploadSupportedMimeTypes.has(fromFile)) {
-      return fromFile
-    }
-
-    const fromName = inferShopDrawingMimeTypeFromFileName(file?.name ?? '')
-
-    if (shopDrawingUploadSupportedMimeTypes.has(fromName)) {
-      return fromName
-    }
-
-    return ''
-  }
 
   function readFileAsDataUrl(file: File): Promise<string> {
     return new Promise((resolve, reject) => {
@@ -334,10 +334,9 @@ export function ShopDrawingPreview({ onError, bind }: ShopDrawingPreviewProps) {
   const openDialog = useCallback(
     async (order: OrdersOverviewOrder) => {
       const orderId = String(order?.mondayItemId ?? '').trim()
-      const cachedUrl = String(order?.shopDrawingCachedUrl ?? '').trim()
       const sourceUrl = resolveShopDrawingUrl(order)
 
-      if (!orderId || (!cachedUrl && !sourceUrl)) {
+      if (!orderId || !sourceUrl) {
         onError('No shop drawing is available for this order yet.')
         return
       }
@@ -348,12 +347,6 @@ export function ShopDrawingPreview({ onError, bind }: ShopDrawingPreviewProps) {
       setDialogOrder(order)
       setDialogActionError(null)
       setDialogActionSuccess(null)
-
-      if (cachedUrl) {
-        setDialogSrc(cachedUrl)
-        setDialogLoading(false)
-        return
-      }
 
       try {
         const query = new URLSearchParams({ orderId })

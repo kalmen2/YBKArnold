@@ -278,7 +278,6 @@ export function OrdersSection({
   onOrderViewFilterChange,
   poNumberByOrderId,
   ordersCardHeight,
-  hasManagerInsights,
   managerInsightsByOrderId,
   ordersPage,
   ordersTotalPages,
@@ -300,7 +299,6 @@ export function OrdersSection({
   onOrderViewFilterChange: (value: 'orders' | 'shipped' | 'design') => void
   poNumberByOrderId: Record<string, string | null>
   ordersCardHeight: number
-  hasManagerInsights: boolean
   managerInsightsByOrderId: Record<string, {
     readyPercent: number | null
     workerCount: number
@@ -455,7 +453,7 @@ export function OrdersSection({
                       || /\b\d{6}\b/.exec(String(order.id ?? ''))?.[0]
                       || /\b\d{6}\b/.exec(String(order.name ?? ''))?.[0]
                       || String(order.id ?? '').trim()
-                    const poFromNameMatch = /\bP\.?\s*O\.?\s*#?\s*[:\-]?\s*([A-Za-z0-9\-]+)/i.exec(String(order.name ?? ''))
+                    const poFromNameMatch = /\bP\.?\s*O\.?\s*#?\s*[:-]?\s*([A-Za-z0-9-]+)/i.exec(String(order.name ?? ''))
                     const poFromName = String(poFromNameMatch?.[1] ?? '').trim()
                     const resolvedPoNumber = cachedPoNumber || inlinePoNumber || poFromName || ''
                     const descriptionText = String(order.name ?? '').trim() || `${t('Order', 'Orden')} ${String(order.id ?? '').trim()}`

@@ -215,10 +215,9 @@ export function CutListPreview({ onError, bind }: CutListPreviewProps) {
   const openDialog = useCallback(
     async (order: OrdersOverviewOrder) => {
       const orderId = String(order?.mondayItemId ?? '').trim()
-      const cachedUrl = String(order?.cutListCachedUrl ?? '').trim()
       const sourceUrl = resolveCutListUrl(order)
 
-      if (!orderId || (!cachedUrl && !sourceUrl)) {
+      if (!orderId || !sourceUrl) {
         onError('No cut list is available for this order yet.')
         return
       }
@@ -227,12 +226,6 @@ export function CutListPreview({ onError, bind }: CutListPreviewProps) {
       setDialogSrc('')
       setDialogLoading(true)
       setDialogOrder(order)
-
-      if (cachedUrl) {
-        setDialogSrc(cachedUrl)
-        setDialogLoading(false)
-        return
-      }
 
       try {
         const query = new URLSearchParams({ orderId })

@@ -73,5 +73,6 @@ export const SIDEBAR_ITEMS: Array<{ id: AppScreen; shortLabel: string }> = [
   { id: 'timesheet', shortLabel: 'TS' },
   { id: 'manager', shortLabel: 'MG' },
   { id: 'alerts', shortLabel: 'NT' },
+  { id: 'chat', shortLabel: 'CH' },
   { id: 'settings', shortLabel: 'ST' },
 ]

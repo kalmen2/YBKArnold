@@ -55,8 +55,12 @@ export function registerOrdersRoutes(app, deps) {
   const {
     authApprovalApproved,
     authRoleAdmin,
+    createMondayItem,
+    deleteMondayItem,
     decodeBase64Image,
+    fetchMondayBoardColumns,
     fetchMondayBoardItemsByIds,
+    fetchMondayBoardsCatalog,
     fetchMondayStatusColumnOptions,
     getCollections,
     getOrderPhotosBucket,
@@ -657,7 +661,7 @@ export function registerOrdersRoutes(app, deps) {
     const hazardReason = String(orderDocument?.hazard_reason ?? '').trim()
       || (!hasMondayRecord && !inDesign
         ? 'Not found in Monday Order Track.'
-        : !hasQuickBooksRecord
+        : !hasQuickBooksRecord && !inDesign
           ? 'Not found in QuickBooks projects.'
           : null)
     const amountOwed = Number.isFinite(Number(orderDocument?.amountOwed))
@@ -1404,13 +1408,25 @@ export function registerOrdersRoutes(app, deps) {
   })
 
   registerOrderShippingRoutes(app, {
+    authApprovalApproved,
+    createMondayItem,
+    deleteMondayItem,
+    fetchMondayBoardColumns,
     fetchMondayBoardItemsByIds,
+    fetchMondayBoardsCatalog,
     getCollections,
+    mobileAlertTargetModeSelected,
     moveMondayItemToBoard,
     normalizeEmail,
+    randomUUID,
+    refreshOrdersUnifiedCollection,
     requireFirebaseAuth,
     requireManagerOrAdminRole,
     toPublicAuthUser,
+    toPublicMobileAlert,
+    updateMondayItemJsonColumn,
+    updateMondayItemName,
+    updateMondayItemTextColumn,
   })
 
   registerOrderChatRoutes(app, {

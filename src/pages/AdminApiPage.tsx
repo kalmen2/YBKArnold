@@ -212,9 +212,11 @@ export default function AdminApiPage() {
     },
   })
 
-  const endpoints = Array.isArray(docsQuery.data?.endpoints)
-    ? docsQuery.data.endpoints
-    : []
+  const endpoints = useMemo<AdminApiEndpointDoc[]>(() => {
+    return Array.isArray(docsQuery.data?.endpoints)
+      ? docsQuery.data.endpoints
+      : []
+  }, [docsQuery.data?.endpoints])
   const docsSections = useMemo<AdminApiDocsSection[]>(() => {
     const sectionMap = new Map<string, AdminApiDocsSection>()
     const declaredSections = Array.isArray(docsQuery.data?.sections)

@@ -4,9 +4,11 @@ import { GoogleSignin, isErrorWithCode, isSuccessResponse, statusCodes } from '@
 import * as AppleAuthentication from 'expo-apple-authentication'
 import * as Application from 'expo-application'
 import * as Crypto from 'expo-crypto'
+import { Audio } from 'expo-av'
 import Constants from 'expo-constants'
 import { Ionicons } from '@expo/vector-icons'
 import { StatusBar } from 'expo-status-bar'
+import * as FileSystem from 'expo-file-system'
 import * as ImagePicker from 'expo-image-picker'
 import * as LocalAuthentication from 'expo-local-authentication'
 import * as Notifications from 'expo-notifications'
@@ -14,6 +16,8 @@ import * as WebBrowser from 'expo-web-browser'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
+  ActionSheetIOS,
+  Alert,
   AppState,
   Image,
   Linking,
@@ -46,6 +50,9 @@ import type {
   MondayDashboardSnapshot,
   MobileAlert,
   MobileAuthUser,
+  MobileChatMessage,
+  MobileChatThread,
+  MobileChatUser,
   MobileManagerOrderProgress,
   MobileTimesheetEntry,
   MobileTimesheetStage,
@@ -65,6 +72,7 @@ import {
 } from './appUtils'
 import { API_BASE_URL, request, withBuildQuery } from './appApi'
 import { styles } from './appStyles'
+import { ChatSection } from './components/ChatSection'
 import {
   AlertsSection,
   AuthButton,
@@ -93,6 +101,8 @@ const MOBILE_NOTIFICATIONS_ENABLED_KEY = 'ybk.mobile.notifications.enabled'
 const GOOGLE_WEB_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID ?? ''
 const GOOGLE_IOS_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID ?? ''
 const ORDERS_PAGE_SIZE = 30
+const CHAT_MAX_ATTACHMENT_BYTES = 6 * 1024 * 1024
+const CHAT_OWNER_EMAIL = 'cal@arnoldcontract.us'
 const ADMIN_PORTAL_PAGES = [
   { path: '/admin/cash', labelEn: 'Cash Accounts', labelEs: 'Cuentas de caja', icon: 'cash-outline' as const },
   { path: '/admin/reports', labelEn: 'Reports', labelEs: 'Reportes', icon: 'bar-chart-outline' as const },
@@ -103,6 +113,7 @@ const HEBREW_TRANSLATIONS: Record<string, string> = {
   Orders: 'הזמנות',
   Pictures: 'תמונות',
   Notifications: 'התראות',
+  Chat: 'צ׳אט',
   Admin: 'ניהול',
   'Manager Sheet': 'דף מנהל',
   'Time Sheet': 'גיליון שעות',
@@ -244,7 +255,15 @@ type AdminWorkspaceUserRecord = {
 }
 
 type SettingsMenuId = 'security' | 'language' | 'notifications' | 'updates' | 'admin' | 'account'
-type BottomNavScreen = 'orders' | 'pictures' | 'timesheet' | 'manager' | 'alerts' | 'admin'
+type BottomNavScreen = 'orders' | 'pictures' | 'timesheet' | 'manager' | 'alerts' | 'chat' | 'admin'
+
+type ChatAttachmentDraft = {
+  kind: 'image' | 'voice'
+  dataUrl: string
+  mimeType: string
+  fileName: string
+  sizeBytes: number
+}
 
 function normalizeJobName(value: string) {
   return String(value ?? '')
@@ -587,6 +606,24 @@ function normalizeTextValue(value: unknown) {
   return String(value ?? '').trim()
 }
 
+function isChatOwnerEmail(value: unknown) {
+  return normalizeTextValue(value).toLowerCase() === CHAT_OWNER_EMAIL
+}
+
+function isOwnerDirectThread(thread: MobileChatThread | null | undefined, requesterUid: string) {
+  if (!thread || thread.type !== 'direct') {
+    return false
+  }
+
+  return thread.memberProfiles.some((member) => {
+    if (normalizeTextValue(member.uid) === requesterUid) {
+      return false
+    }
+
+    return isChatOwnerEmail(member.email)
+  })
+}
+
 function toCountValue(value: unknown) {
   const parsed = Number(value)
 
@@ -706,6 +743,8 @@ export default function App() {
   const [dashboardMetricZoomOrderId, setDashboardMetricZoomOrderId] = useState<string | null>(null)
   const dashboardMetricZoomTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const screenScrollRef = useRef<ScrollView | null>(null)
+  const activeVoiceRecordingRef = useRef<Audio.Recording | null>(null)
+  const activeVoiceSoundRef = useRef<Audio.Sound | null>(null)
   const [adminPortalRoutePath, setAdminPortalRoutePath] = useState<AdminWorkspacePagePath | null>(null)
 
   const [selectedPictureOrderId, setSelectedPictureOrderId] = useState<string | null>(null)
@@ -760,6 +799,19 @@ export default function App() {
   const [alertsMessage, setAlertsMessage] = useState<string | null>(null)
   const [alertsUnreadCount, setAlertsUnreadCount] = useState(0)
   const [showReadAlerts, setShowReadAlerts] = useState(false)
+  const [chatThreads, setChatThreads] = useState<MobileChatThread[]>([])
+  const [chatMessagesByThreadId, setChatMessagesByThreadId] = useState<Record<string, MobileChatMessage[]>>({})
+  const [chatSelectedThreadId, setChatSelectedThreadId] = useState<string | null>(null)
+  const [chatViewMode, setChatViewMode] = useState<'list' | 'thread'>('list')
+  const [chatComposerText, setChatComposerText] = useState('')
+  const [chatAttachmentDraft, setChatAttachmentDraft] = useState<ChatAttachmentDraft | null>(null)
+  const [isChatLoading, setIsChatLoading] = useState(false)
+  const [isChatMessagesLoading, setIsChatMessagesLoading] = useState(false)
+  const [isChatSendingMessage, setIsChatSendingMessage] = useState(false)
+  const [isChatRecordingVoice, setIsChatRecordingVoice] = useState(false)
+  const [isChatProcessingVoice, setIsChatProcessingVoice] = useState(false)
+  const [chatPlayingMessageId, setChatPlayingMessageId] = useState<string | null>(null)
+  const [chatMessage, setChatMessage] = useState<string | null>(null)
   const [registeredPushToken, setRegisteredPushToken] = useState<string | null>(null)
   const [isNotificationsEnabled, setIsNotificationsEnabled] = useState(true)
   const [updateMessage, setUpdateMessage] = useState<string | null>(null)
@@ -855,6 +907,7 @@ export default function App() {
       return [
         { id: 'orders', label: t('Orders', 'Ordenes'), icon: 'receipt-outline' },
         { id: 'pictures', label: t('Pictures', 'Fotos'), icon: 'images-outline' },
+        { id: 'chat', label: t('Chat', 'Chat'), icon: 'chatbubble-ellipses-outline' },
         { id: 'alerts', label: t('Notifications', 'Notificaciones'), icon: 'notifications-outline' },
         { id: 'admin', label: t('Admin', 'Admin'), icon: 'settings-outline' },
       ]
@@ -865,6 +918,7 @@ export default function App() {
         { id: 'orders', label: t('Orders', 'Ordenes'), icon: 'receipt-outline' },
         { id: 'pictures', label: t('Pictures', 'Fotos'), icon: 'images-outline' },
         { id: 'manager', label: t('Manager Sheet', 'Hoja gerente'), icon: 'clipboard-outline' },
+        { id: 'chat', label: t('Chat', 'Chat'), icon: 'chatbubble-ellipses-outline' },
         { id: 'alerts', label: t('Notifications', 'Notificaciones'), icon: 'notifications-outline' },
       ]
     }
@@ -873,9 +927,90 @@ export default function App() {
       { id: 'orders', label: t('Orders', 'Ordenes'), icon: 'receipt-outline' },
       { id: 'pictures', label: t('Pictures', 'Fotos'), icon: 'images-outline' },
       { id: 'timesheet', label: t('Time Sheet', 'Horas'), icon: 'time-outline' },
+      { id: 'chat', label: t('Chat', 'Chat'), icon: 'chatbubble-ellipses-outline' },
       { id: 'alerts', label: t('Notifications', 'Notificaciones'), icon: 'notifications-outline' },
     ]
   }, [hasManagerSheetAccess, isAdminUser, t])
+
+  const sortedChatThreads = useMemo(() => {
+    const orderedThreads = [...chatThreads].sort((left, right) => {
+      const leftSort = String(left.lastMessageAt ?? left.updatedAt ?? left.createdAt ?? '')
+      const rightSort = String(right.lastMessageAt ?? right.updatedAt ?? right.createdAt ?? '')
+
+      return rightSort.localeCompare(leftSort)
+    })
+    const requesterUid = normalizeTextValue(firebaseUser?.uid)
+
+    if (!requesterUid || isAdminUser) {
+      return orderedThreads
+    }
+
+    const ownerThreads = orderedThreads.filter((thread) => isOwnerDirectThread(thread, requesterUid))
+
+    if (ownerThreads.length === 0) {
+      return orderedThreads
+    }
+
+    const ownerThreadIdSet = new Set(ownerThreads.map((thread) => thread.id))
+
+    return [
+      ...ownerThreads,
+      ...orderedThreads.filter((thread) => !ownerThreadIdSet.has(thread.id)),
+    ]
+  }, [chatThreads, firebaseUser?.uid, isAdminUser])
+
+  const selectedChatThread = useMemo(
+    () => sortedChatThreads.find((thread) => thread.id === chatSelectedThreadId) ?? null,
+    [chatSelectedThreadId, sortedChatThreads],
+  )
+
+  const selectedChatMessages = useMemo(
+    () => (selectedChatThread ? (chatMessagesByThreadId[selectedChatThread.id] ?? []) : []),
+    [chatMessagesByThreadId, selectedChatThread],
+  )
+
+  const resolveChatThreadTitle = useCallback((thread: MobileChatThread | null) => {
+    if (!thread) {
+      return t('Chat', 'Chat')
+    }
+
+    if (thread.type === 'group') {
+      return thread.name || t('Group chat', 'Chat grupal')
+    }
+
+    const requesterUid = String(firebaseUser?.uid ?? '').trim()
+    const peer = thread.memberProfiles.find((member) => member.uid !== requesterUid) || thread.memberProfiles[0]
+
+    if (!peer) {
+      return t('Direct chat', 'Chat directo')
+    }
+
+    if (isChatOwnerEmail(peer.email)) {
+      return t('KAL', 'KAL')
+    }
+
+    return peer.displayName || peer.email || t('Direct chat', 'Chat directo')
+  }, [firebaseUser?.uid, t])
+
+  const resolveChatThreadSubtitle = useCallback((thread: MobileChatThread | null) => {
+    if (!thread) {
+      return ''
+    }
+
+    if (thread.type === 'group') {
+      const memberCount = thread.memberUids.length
+
+      return t(
+        `${memberCount} members`,
+        `${memberCount} miembros`,
+      )
+    }
+
+    const requesterUid = String(firebaseUser?.uid ?? '').trim()
+    const peer = thread.memberProfiles.find((member) => member.uid !== requesterUid) || thread.memberProfiles[0]
+
+    return peer?.email ?? t('Direct chat', 'Chat directo')
+  }, [firebaseUser?.uid, t])
 
   const dashboardUnreadSummary = useMemo(() => {
     if (alertsUnreadCount <= 0) {
@@ -3633,6 +3768,606 @@ export default function App() {
     }
   }, [getErrorMessage, requestWithSession])
 
+  const unloadActiveVoiceSound = useCallback(async () => {
+    const activeSound = activeVoiceSoundRef.current
+
+    if (!activeSound) {
+      return
+    }
+
+    activeVoiceSoundRef.current = null
+
+    try {
+      await activeSound.stopAsync()
+    } catch {
+      // Ignore stop failures during cleanup.
+    }
+
+    try {
+      await activeSound.unloadAsync()
+    } catch {
+      // Ignore unload failures during cleanup.
+    }
+
+    setChatPlayingMessageId(null)
+  }, [])
+
+  const loadChatState = useCallback(async (refreshRequested = false) => {
+    if (refreshRequested) {
+      setIsRefreshing(true)
+    }
+
+    setIsChatLoading(true)
+
+    try {
+      const [usersPayload, threadsPayload] = await Promise.all([
+        requestWithSession<{ users?: MobileChatUser[] }>(
+          '/api/chat/users',
+          refreshRequested,
+        ),
+        requestWithSession<{ threads?: MobileChatThread[] }>(
+          '/api/chat/threads',
+          refreshRequested,
+        ),
+      ])
+
+      const nextUsers = Array.isArray(usersPayload.users) ? usersPayload.users : []
+      const nextThreads = Array.isArray(threadsPayload.threads) ? threadsPayload.threads : []
+      const requesterUid = normalizeTextValue(firebaseUser?.uid)
+      const requesterEmail = normalizeTextValue(firebaseUser?.email).toLowerCase()
+      let resolvedThreads = nextThreads
+
+      if (!isAdminUser && requesterUid && !isChatOwnerEmail(requesterEmail)) {
+        const ownerUser = nextUsers.find((user) => isChatOwnerEmail(user.email))
+        const hasOwnerThread = resolvedThreads.some((thread) => isOwnerDirectThread(thread, requesterUid))
+
+        if (ownerUser?.uid && !hasOwnerThread) {
+          await requestWithSession(
+            '/api/chat/threads/direct',
+            false,
+            {
+              method: 'POST',
+              body: JSON.stringify({
+                targetUid: ownerUser.uid,
+              }),
+            },
+          )
+
+          const refreshedThreadsPayload = await requestWithSession<{ threads?: MobileChatThread[] }>(
+            '/api/chat/threads',
+            false,
+          )
+
+          resolvedThreads = Array.isArray(refreshedThreadsPayload.threads)
+            ? refreshedThreadsPayload.threads
+            : []
+        }
+      }
+
+      setChatThreads(resolvedThreads)
+      setChatMessage(null)
+      setChatSelectedThreadId((current) => {
+        if (current && resolvedThreads.some((thread) => thread.id === current)) {
+          return current
+        }
+
+        if (!isAdminUser && requesterUid) {
+          const ownerThread = resolvedThreads.find((thread) => isOwnerDirectThread(thread, requesterUid))
+
+          if (ownerThread) {
+            return ownerThread.id
+          }
+        }
+
+        return resolvedThreads[0]?.id ?? null
+      })
+    } catch (error) {
+      setChatThreads([])
+      setChatSelectedThreadId(null)
+      setChatMessage(
+        getErrorMessage(
+          error,
+          'Could not load chat threads.',
+          'No se pudieron cargar los chats.',
+        ),
+      )
+    } finally {
+      setIsChatLoading(false)
+      setIsRefreshing(false)
+    }
+  }, [firebaseUser?.email, firebaseUser?.uid, getErrorMessage, isAdminUser, requestWithSession])
+
+  const loadChatMessages = useCallback(async (threadId: string, refreshRequested = false) => {
+    const normalizedThreadId = String(threadId ?? '').trim()
+
+    if (!normalizedThreadId) {
+      return
+    }
+
+    if (refreshRequested) {
+      setIsRefreshing(true)
+    }
+
+    setIsChatMessagesLoading(true)
+
+    try {
+      const payload = await requestWithSession<{
+        messages?: MobileChatMessage[]
+      }>(
+        `/api/chat/threads/${encodeURIComponent(normalizedThreadId)}/messages?limit=160&offset=0`,
+        refreshRequested,
+      )
+      const nextMessages = Array.isArray(payload.messages) ? payload.messages : []
+
+      setChatMessagesByThreadId((previous) => ({
+        ...previous,
+        [normalizedThreadId]: nextMessages,
+      }))
+      setChatMessage(null)
+    } catch (error) {
+      setChatMessage(
+        getErrorMessage(
+          error,
+          'Could not load chat messages.',
+          'No se pudieron cargar los mensajes de chat.',
+        ),
+      )
+    } finally {
+      setIsChatMessagesLoading(false)
+      setIsRefreshing(false)
+    }
+  }, [getErrorMessage, requestWithSession])
+
+  const submitChatMessage = useCallback(async (
+    thread: MobileChatThread,
+    input: {
+      text?: string
+      attachment?: ChatAttachmentDraft | null
+    },
+  ) => {
+    const normalizedText = String(input.text ?? '').trim()
+    const attachmentDraft = input.attachment ?? null
+
+    if (!normalizedText && !attachmentDraft) {
+      return
+    }
+
+    await requestWithSession(
+      `/api/chat/threads/${encodeURIComponent(thread.id)}/messages`,
+      false,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          ...(normalizedText
+            ? {
+                text: normalizedText,
+              }
+            : {}),
+          ...(attachmentDraft
+            ? {
+                attachment: {
+                  kind: attachmentDraft.kind,
+                  dataUrl: attachmentDraft.dataUrl,
+                  mimeType: attachmentDraft.mimeType,
+                  fileName: attachmentDraft.fileName,
+                },
+              }
+            : {}),
+        }),
+      },
+    )
+  }, [requestWithSession])
+
+  const handleSendChatMessage = useCallback(async (overrideText?: string) => {
+    if (!selectedChatThread || isChatSendingMessage) {
+      return
+    }
+
+    const normalizedText = String(overrideText ?? chatComposerText ?? '').trim()
+
+    if (!normalizedText && !chatAttachmentDraft) {
+      return
+    }
+
+    setIsChatSendingMessage(true)
+    setChatMessage(null)
+
+    try {
+      await submitChatMessage(selectedChatThread, {
+        text: normalizedText,
+        attachment: chatAttachmentDraft,
+      })
+
+      setChatComposerText('')
+      setChatAttachmentDraft(null)
+      await Promise.all([
+        loadChatMessages(selectedChatThread.id, false),
+        loadChatState(false),
+      ])
+    } catch (error) {
+      setChatMessage(
+        getErrorMessage(
+          error,
+          'Could not send your chat message.',
+          'No se pudo enviar tu mensaje de chat.',
+        ),
+      )
+    } finally {
+      setIsChatSendingMessage(false)
+    }
+  }, [
+    chatAttachmentDraft,
+    chatComposerText,
+    getErrorMessage,
+    isChatSendingMessage,
+    loadChatMessages,
+    loadChatState,
+    selectedChatThread,
+    submitChatMessage,
+  ])
+
+  const handleDeleteChatMessage = useCallback(async (messageId: string) => {
+    const normalizedMessageId = String(messageId ?? '').trim()
+
+    if (!selectedChatThread || !normalizedMessageId) {
+      return
+    }
+
+    try {
+      await requestWithSession(
+        `/api/chat/messages/${encodeURIComponent(normalizedMessageId)}`,
+        false,
+        {
+          method: 'DELETE',
+        },
+      )
+
+      await Promise.all([
+        loadChatMessages(selectedChatThread.id, false),
+        loadChatState(false),
+      ])
+    } catch (error) {
+      setChatMessage(
+        getErrorMessage(
+          error,
+          'Could not delete this message.',
+          'No se pudo borrar este mensaje.',
+        ),
+      )
+    }
+  }, [getErrorMessage, loadChatMessages, loadChatState, requestWithSession, selectedChatThread])
+
+  const handleAttachChatImage = useCallback(async (source: 'library' | 'camera' = 'library') => {
+    try {
+      const permissionResult = source === 'camera'
+        ? await ImagePicker.requestCameraPermissionsAsync()
+        : await ImagePicker.requestMediaLibraryPermissionsAsync()
+
+      if (permissionResult.status !== 'granted') {
+        setChatMessage(
+          source === 'camera'
+            ? t(
+              'Camera permission is required to take photos.',
+              'Se requiere permiso de camara para tomar fotos.',
+            )
+            : t(
+              'Media permission is required to attach photos.',
+              'Se requiere permiso multimedia para adjuntar fotos.',
+            ),
+        )
+        return
+      }
+
+      const result = source === 'camera'
+        ? await ImagePicker.launchCameraAsync({
+          mediaTypes: ['images'],
+          quality: 0.6,
+          base64: true,
+        })
+        : await ImagePicker.launchImageLibraryAsync({
+          mediaTypes: ['images'],
+          quality: 0.6,
+          base64: true,
+        })
+
+      if (result.canceled || result.assets.length === 0) {
+        return
+      }
+
+      const selectedAsset = result.assets[0]
+
+      if (!selectedAsset.base64) {
+        setChatMessage(
+          t(
+            'Could not prepare selected image.',
+            'No se pudo preparar la imagen seleccionada.',
+          ),
+        )
+        return
+      }
+
+      const mimeType = String(selectedAsset.mimeType ?? 'image/jpeg').trim() || 'image/jpeg'
+      const estimatedBytes = Math.floor((selectedAsset.base64.length * 3) / 4)
+
+      if (estimatedBytes > CHAT_MAX_ATTACHMENT_BYTES) {
+        setChatMessage(
+          t(
+            'Image is too large. Maximum size is 6 MB.',
+            'La imagen es demasiado grande. El maximo es 6 MB.',
+          ),
+        )
+        return
+      }
+
+      setChatAttachmentDraft({
+        kind: 'image',
+        dataUrl: `data:${mimeType};base64,${selectedAsset.base64}`,
+        mimeType,
+        fileName: String(
+          selectedAsset.fileName
+          ?? (source === 'camera' ? `chat-camera-${Date.now()}.jpg` : 'chat-image.jpg'),
+        ).trim() || 'chat-image.jpg',
+        sizeBytes: estimatedBytes,
+      })
+      setChatMessage(null)
+    } catch (error) {
+      setChatMessage(
+        getErrorMessage(
+          error,
+          'Could not attach image.',
+          'No se pudo adjuntar la imagen.',
+        ),
+      )
+    }
+  }, [getErrorMessage, t])
+
+  const handleOpenChatAttachmentMenu = useCallback(() => {
+    const uploadLabel = t('Upload from device', 'Subir desde dispositivo')
+    const takePhotoLabel = t('Take photo', 'Tomar foto')
+
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          options: [
+            t('Cancel', 'Cancelar'),
+            uploadLabel,
+            takePhotoLabel,
+          ],
+          cancelButtonIndex: 0,
+        },
+        (selectedIndex) => {
+          if (selectedIndex === 1) {
+            void handleAttachChatImage('library')
+            return
+          }
+
+          if (selectedIndex === 2) {
+            void handleAttachChatImage('camera')
+          }
+        },
+      )
+
+      return
+    }
+
+    Alert.alert(
+      t('Add photo', 'Agregar foto'),
+      t('Choose photo source.', 'Elige origen de foto.'),
+      [
+        {
+          text: t('Cancel', 'Cancelar'),
+          style: 'cancel',
+        },
+        {
+          text: uploadLabel,
+          onPress: () => {
+            void handleAttachChatImage('library')
+          },
+        },
+        {
+          text: takePhotoLabel,
+          onPress: () => {
+            void handleAttachChatImage('camera')
+          },
+        },
+      ],
+    )
+  }, [handleAttachChatImage, t])
+
+  const handleStartVoiceNoteRecording = useCallback(async () => {
+    if (!selectedChatThread || isChatSendingMessage || isChatRecordingVoice || isChatProcessingVoice) {
+      return
+    }
+
+    setChatMessage(null)
+
+    try {
+      const permissionResult = await Audio.requestPermissionsAsync()
+
+      if (permissionResult.status !== 'granted') {
+        setChatMessage(
+          t(
+            'Microphone permission is required for voice notes.',
+            'Se requiere permiso de microfono para notas de voz.',
+          ),
+        )
+        return
+      }
+
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        playsInSilentModeIOS: true,
+        shouldDuckAndroid: true,
+        playThroughEarpieceAndroid: false,
+      })
+
+      const recording = new Audio.Recording()
+
+      await recording.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY)
+      await recording.startAsync()
+
+      activeVoiceRecordingRef.current = recording
+      setIsChatRecordingVoice(true)
+    } catch (error) {
+      activeVoiceRecordingRef.current = null
+      setIsChatRecordingVoice(false)
+      setChatMessage(
+        getErrorMessage(
+          error,
+          'Could not start voice recording.',
+          'No se pudo iniciar la grabacion de voz.',
+        ),
+      )
+    }
+  }, [getErrorMessage, isChatProcessingVoice, isChatRecordingVoice, isChatSendingMessage, selectedChatThread, t])
+
+  const handleStopVoiceNoteRecording = useCallback(async (sendImmediately = false) => {
+    const activeRecording = activeVoiceRecordingRef.current
+
+    if (!activeRecording || isChatProcessingVoice) {
+      return
+    }
+
+    setIsChatProcessingVoice(true)
+    let sentImmediately = false
+
+    try {
+      await activeRecording.stopAndUnloadAsync()
+      const audioUri = activeRecording.getURI()
+
+      if (!audioUri) {
+        throw new Error('Recorded file is unavailable.')
+      }
+
+      const base64Audio = await FileSystem.readAsStringAsync(audioUri, {
+        encoding: 'base64',
+      })
+
+      const estimatedBytes = Math.floor((String(base64Audio).length * 3) / 4)
+
+      if (!base64Audio || estimatedBytes <= 0) {
+        throw new Error('Voice note is empty.')
+      }
+
+      if (estimatedBytes > CHAT_MAX_ATTACHMENT_BYTES) {
+        setChatMessage(
+          t(
+            'Voice note is too large. Maximum size is 6 MB.',
+            'La nota de voz es demasiado grande. El maximo es 6 MB.',
+          ),
+        )
+        return
+      }
+
+      const mimeType = Platform.OS === 'ios' ? 'audio/x-m4a' : 'audio/mp4'
+
+      const voiceAttachmentDraft: ChatAttachmentDraft = {
+        kind: 'voice',
+        dataUrl: `data:${mimeType};base64,${base64Audio}`,
+        mimeType,
+        fileName: `voice-note-${Date.now()}.m4a`,
+        sizeBytes: estimatedBytes,
+      }
+
+      if (sendImmediately && selectedChatThread && !isChatSendingMessage) {
+        sentImmediately = true
+        setIsChatSendingMessage(true)
+        await submitChatMessage(selectedChatThread, {
+          attachment: voiceAttachmentDraft,
+        })
+        setChatComposerText('')
+        setChatAttachmentDraft(null)
+        await Promise.all([
+          loadChatMessages(selectedChatThread.id, false),
+          loadChatState(false),
+        ])
+      } else {
+        setChatAttachmentDraft(voiceAttachmentDraft)
+      }
+
+      setChatMessage(null)
+    } catch (error) {
+      setChatMessage(
+        getErrorMessage(
+          error,
+          'Could not prepare voice note.',
+          'No se pudo preparar la nota de voz.',
+        ),
+      )
+    } finally {
+      activeVoiceRecordingRef.current = null
+      setIsChatRecordingVoice(false)
+      setIsChatProcessingVoice(false)
+
+      if (sentImmediately) {
+        setIsChatSendingMessage(false)
+      }
+
+      try {
+        await Audio.setAudioModeAsync({
+          allowsRecordingIOS: false,
+          playsInSilentModeIOS: true,
+          shouldDuckAndroid: true,
+          playThroughEarpieceAndroid: false,
+        })
+      } catch {
+        // Ignore audio mode reset failures.
+      }
+    }
+  }, [
+    getErrorMessage,
+    isChatProcessingVoice,
+    isChatSendingMessage,
+    loadChatMessages,
+    loadChatState,
+    selectedChatThread,
+    submitChatMessage,
+    t,
+  ])
+
+  const handleToggleVoicePlayback = useCallback(async (messageId: string, dataUrl: string) => {
+    const normalizedMessageId = String(messageId ?? '').trim()
+    const normalizedDataUrl = String(dataUrl ?? '').trim()
+
+    if (!normalizedMessageId || !normalizedDataUrl) {
+      return
+    }
+
+    if (chatPlayingMessageId === normalizedMessageId) {
+      await unloadActiveVoiceSound()
+      return
+    }
+
+    try {
+      await unloadActiveVoiceSound()
+      const createdSound = await Audio.Sound.createAsync(
+        { uri: normalizedDataUrl },
+        { shouldPlay: true },
+      )
+      const sound = createdSound.sound
+
+      activeVoiceSoundRef.current = sound
+      setChatPlayingMessageId(normalizedMessageId)
+      sound.setOnPlaybackStatusUpdate((status) => {
+        if (!status.isLoaded) {
+          return
+        }
+
+        if (status.didJustFinish) {
+          void unloadActiveVoiceSound()
+        }
+      })
+    } catch (error) {
+      setChatMessage(
+        getErrorMessage(
+          error,
+          'Could not play voice note.',
+          'No se pudo reproducir la nota de voz.',
+        ),
+      )
+    }
+  }, [chatPlayingMessageId, getErrorMessage, unloadActiveVoiceSound])
+
   const resolveNotificationTargetScreen = useCallback((rawData: unknown): AppScreen => {
     if (!rawData || typeof rawData !== 'object') {
       return 'alerts'
@@ -3651,6 +4386,10 @@ export default function App() {
       return 'settings'
     }
 
+    if (route === 'chat' || type === 'chat_message') {
+      return 'chat'
+    }
+
     return 'alerts'
   }, [])
 
@@ -3666,6 +4405,73 @@ export default function App() {
     hasApprovedSessionAccess,
     loadAlerts,
   ])
+
+  useEffect(() => {
+    if (activeScreen !== 'chat' || !hasApprovedSessionAccess) {
+      return
+    }
+
+    void loadChatState(false)
+  }, [activeScreen, hasApprovedSessionAccess, loadChatState])
+
+  useEffect(() => {
+    if (activeScreen !== 'chat' || !hasApprovedSessionAccess || !chatSelectedThreadId) {
+      return
+    }
+
+    void loadChatMessages(chatSelectedThreadId, false)
+  }, [activeScreen, chatSelectedThreadId, hasApprovedSessionAccess, loadChatMessages])
+
+  useEffect(() => {
+    if (activeScreen !== 'chat' || !hasApprovedSessionAccess) {
+      return
+    }
+
+    const refreshInterval = setInterval(() => {
+      void loadChatState(false)
+    }, 12000)
+
+    return () => {
+      clearInterval(refreshInterval)
+    }
+  }, [activeScreen, hasApprovedSessionAccess, loadChatState])
+
+  useEffect(() => {
+    if (activeScreen !== 'chat' || !hasApprovedSessionAccess || !chatSelectedThreadId) {
+      return
+    }
+
+    const refreshInterval = setInterval(() => {
+      void loadChatMessages(chatSelectedThreadId, false)
+    }, 5000)
+
+    return () => {
+      clearInterval(refreshInterval)
+    }
+  }, [activeScreen, chatSelectedThreadId, hasApprovedSessionAccess, loadChatMessages])
+
+  useEffect(() => {
+    if (activeScreen === 'chat') {
+      return
+    }
+
+    void unloadActiveVoiceSound()
+    setIsChatRecordingVoice(false)
+  }, [activeScreen, unloadActiveVoiceSound])
+
+  useEffect(() => {
+    return () => {
+      const activeRecording = activeVoiceRecordingRef.current
+
+      if (activeRecording) {
+        void activeRecording.stopAndUnloadAsync().catch(() => {
+          // Ignore cleanup failures.
+        })
+      }
+
+      void unloadActiveVoiceSound()
+    }
+  }, [unloadActiveVoiceSound])
 
   const registerPushTokenForAlerts = useCallback(async (forceEnable = false) => {
     if (!firebaseUser || !hasApprovedSessionAccess || (!forceEnable && !isNotificationsEnabled)) {
@@ -4077,6 +4883,16 @@ export default function App() {
       return
     }
 
+    if (activeScreen === 'chat') {
+      void loadChatState(true)
+
+      if (chatSelectedThreadId) {
+        void loadChatMessages(chatSelectedThreadId, true)
+      }
+
+      return
+    }
+
     if (activeScreen === 'settings') {
       void syncAuthProfile()
       void handleCheckForUpdates()
@@ -4100,6 +4916,9 @@ export default function App() {
     handleCheckForUpdates,
     handleAdminWorkspaceRefresh,
     handleRefreshOrdersScreen,
+    chatSelectedThreadId,
+    loadChatMessages,
+    loadChatState,
     loadAlerts,
     loadDashboard,
     loadManagerSheet,
@@ -4585,6 +5404,16 @@ export default function App() {
 
   const alertsCardHeight = useMemo(
     () => Math.max(400, windowHeight - 300),
+    [windowHeight],
+  )
+
+  const chatCardHeight = useMemo(
+    () => Math.max(420, windowHeight - 300),
+    [windowHeight],
+  )
+
+  const chatThreadCardHeight = useMemo(
+    () => Math.max(520, windowHeight - 140),
     [windowHeight],
   )
 
@@ -6295,6 +7124,18 @@ export default function App() {
     }
   }, [activeScreen])
 
+  useEffect(() => {
+    if (activeScreen !== 'chat' && chatViewMode !== 'list') {
+      setChatViewMode('list')
+    }
+  }, [activeScreen, chatViewMode])
+
+  useEffect(() => {
+    if (chatViewMode === 'thread' && !selectedChatThread) {
+      setChatViewMode('list')
+    }
+  }, [chatViewMode, selectedChatThread])
+
   const handleSelectScreen = useCallback((nextScreen: AppScreen) => {
     setActiveScreen(nextScreen)
     setDetailSelection(null)
@@ -6316,8 +7157,16 @@ export default function App() {
       closeSettingsMenu()
     }
 
+    if (nextScreen !== 'chat') {
+      setChatViewMode('list')
+      setChatComposerText('')
+      setChatAttachmentDraft(null)
+      setChatMessage(null)
+      void unloadActiveVoiceSound()
+    }
+
     setIsAccountMenuOpen(false)
-  }, [clearDashboardMetricZoomTimeout, closePicturesModal, closeSettingsMenu])
+  }, [clearDashboardMetricZoomTimeout, closePicturesModal, closeSettingsMenu, unloadActiveVoiceSound])
 
   const hasGoogleClientId = !isExpoGo && Boolean(GOOGLE_WEB_CLIENT_ID)
   const googleClientIdHint = isExpoGo
@@ -6529,13 +7378,15 @@ export default function App() {
     )
   }
 
-  const usesNestedListScroll = activeScreen === 'pictures' || activeScreen === 'orders' || activeScreen === 'alerts' || activeScreen === 'admin'
+  const usesNestedListScroll = activeScreen === 'pictures' || activeScreen === 'orders' || activeScreen === 'alerts' || activeScreen === 'chat' || activeScreen === 'admin'
   const isRefreshBusy =
     isRefreshing
     || (activeScreen === 'timesheet' && isTimesheetLoading)
     || (activeScreen === 'manager' && (isManagerLoading || isManagerSaving))
     || (activeScreen === 'alerts' && isAlertsLoading)
+    || (activeScreen === 'chat' && (isChatLoading || isChatMessagesLoading || isChatSendingMessage || isChatProcessingVoice))
     || (activeScreen === 'settings' && (isCheckingForUpdates || isInstallingUpdate))
+  const isChatThreadScreen = activeScreen === 'chat' && chatViewMode === 'thread' && Boolean(selectedChatThread)
 
   return (
     <GestureHandlerRootView style={styles.gestureRoot}>
@@ -6552,7 +7403,8 @@ export default function App() {
             ]}
             scrollEnabled={!usesNestedListScroll}
           >
-            <View style={styles.topBarCard}>
+            {!isChatThreadScreen ? (
+              <View style={styles.topBarCard}>
               <View style={styles.topBarLeftGroup}>
                 {activeScreen !== 'dashboard' ? (
                   <Pressable
@@ -6598,7 +7450,8 @@ export default function App() {
                   )}
                 </Pressable>
               </View>
-            </View>
+              </View>
+            ) : null}
 
             {errorMessage ? (
               <View style={styles.errorBox}>
@@ -6664,7 +7517,6 @@ export default function App() {
                 showOrderViewTabs={!isStandardUser}
                 poNumberByOrderId={poNumberByOrderId}
                 ordersCardHeight={ordersCardHeight}
-                hasManagerInsights={hasManagerSheetAccess}
                 managerInsightsByOrderId={orderManagerInsightsByOrderId}
                 ordersPage={ordersPage}
                 ordersTotalPages={ordersTotalPages}
@@ -6753,6 +7605,61 @@ export default function App() {
                 onMarkAlertAsUnread={(alertItem) => {
                   void markAlertAsUnread(alertItem)
                 }}
+              />
+            ) : null}
+
+            {activeScreen === 'chat' ? (
+              <ChatSection
+                chatAttachmentDraft={chatAttachmentDraft}
+                chatCardHeight={chatCardHeight}
+                chatComposerText={chatComposerText}
+                chatMessage={chatMessage}
+                chatPlayingMessageId={chatPlayingMessageId}
+                chatThreadCardHeight={chatThreadCardHeight}
+                chatViewMode={chatViewMode}
+                currentUserEmail={String(firebaseUser?.email ?? '')}
+                currentUserUid={String(firebaseUser?.uid ?? '')}
+                isAdminUser={isAdminUser}
+                isChatLoading={isChatLoading}
+                isChatMessagesLoading={isChatMessagesLoading}
+                isChatProcessingVoice={isChatProcessingVoice}
+                isChatRecordingVoice={isChatRecordingVoice}
+                isChatSendingMessage={isChatSendingMessage}
+                locale={locale}
+                onBackToList={() => {
+                  setChatViewMode('list')
+                }}
+                onComposerTextChange={setChatComposerText}
+                onDeleteMessage={(messageId) => {
+                  void handleDeleteChatMessage(messageId)
+                }}
+                onOpenAttachmentMenu={handleOpenChatAttachmentMenu}
+                onRemoveAttachmentDraft={() => {
+                  setChatAttachmentDraft(null)
+                }}
+                onSelectThread={(threadId) => {
+                  setChatSelectedThreadId(threadId)
+                  setChatMessage(null)
+                  setChatViewMode('thread')
+                }}
+                onSendMessage={(text) => {
+                  void handleSendChatMessage(text)
+                }}
+                onStartVoiceRecording={() => {
+                  void handleStartVoiceNoteRecording()
+                }}
+                onStopVoiceRecording={(sendImmediately) => {
+                  void handleStopVoiceNoteRecording(sendImmediately)
+                }}
+                onToggleVoicePlayback={(messageId, dataUrl) => {
+                  void handleToggleVoicePlayback(messageId, dataUrl)
+                }}
+                resolveChatThreadSubtitle={resolveChatThreadSubtitle}
+                resolveChatThreadTitle={resolveChatThreadTitle}
+                selectedChatMessages={selectedChatMessages}
+                selectedChatThread={selectedChatThread}
+                sortedChatThreads={sortedChatThreads}
+                t={t}
               />
             ) : null}
 
@@ -7091,36 +7998,38 @@ export default function App() {
           </ScrollView>
         </View>
 
-        <View style={styles.bottomNavBar}>
-          {bottomNavItems.map((item) => {
-            const isActive = activeScreen === item.id
-            const iconColor = isActive ? '#0c3f8f' : '#4e5f79'
+        {!isChatThreadScreen ? (
+          <View style={styles.bottomNavBar}>
+            {bottomNavItems.map((item) => {
+              const isActive = activeScreen === item.id
+              const iconColor = isActive ? '#0c3f8f' : '#4e5f79'
 
-            return (
-              <Pressable
-                key={item.id}
-                style={[styles.bottomNavItem, isActive ? styles.bottomNavItemActive : null]}
-                onPress={() => handleSelectScreen(item.id)}
-              >
-                <Ionicons
-                  name={item.icon}
-                  size={20}
-                  color={iconColor}
-                />
-                <Text style={[styles.bottomNavLabel, isActive ? styles.bottomNavLabelActive : null]}>
-                  {item.label}
-                </Text>
-                {item.id === 'alerts' && alertsUnreadCount > 0 ? (
-                  <View style={styles.bottomNavBadge}>
-                    <Text style={styles.bottomNavBadgeText}>
-                      {alertsUnreadCount > 99 ? '99+' : String(alertsUnreadCount)}
-                    </Text>
-                  </View>
-                ) : null}
-              </Pressable>
-            )
-          })}
-        </View>
+              return (
+                <Pressable
+                  key={item.id}
+                  style={[styles.bottomNavItem, isActive ? styles.bottomNavItemActive : null]}
+                  onPress={() => handleSelectScreen(item.id)}
+                >
+                  <Ionicons
+                    name={item.icon}
+                    size={20}
+                    color={iconColor}
+                  />
+                  <Text style={[styles.bottomNavLabel, isActive ? styles.bottomNavLabelActive : null]}>
+                    {item.label}
+                  </Text>
+                  {item.id === 'alerts' && alertsUnreadCount > 0 ? (
+                    <View style={styles.bottomNavBadge}>
+                      <Text style={styles.bottomNavBadgeText}>
+                        {alertsUnreadCount > 99 ? '99+' : String(alertsUnreadCount)}
+                      </Text>
+                    </View>
+                  ) : null}
+                </Pressable>
+              )
+            })}
+          </View>
+        ) : null}
 
         <Modal
           visible={Boolean(detailSelection)}

@@ -2,6 +2,7 @@ import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded'
 import EditRoundedIcon from '@mui/icons-material/EditRounded'
+import AddCircleRoundedIcon from '@mui/icons-material/AddCircleRounded'
 import {
   Button,
   Chip,
@@ -37,6 +38,9 @@ type OrdersToolbarProps = {
   canOpenBulkUpdate: boolean
   onOpenBulkUpdate: () => void
   bulkUpdateDisabled: boolean
+  canAddOrder: boolean
+  onAddOrder: () => void
+  addOrderDisabled: boolean
   searchText: string
   onSearchTextChange: (next: string) => void
   isRefreshing: boolean
@@ -56,6 +60,9 @@ export function OrdersToolbar({
   canOpenBulkUpdate,
   onOpenBulkUpdate,
   bulkUpdateDisabled,
+  canAddOrder,
+  onAddOrder,
+  addOrderDisabled,
   searchText,
   onSearchTextChange,
   isRefreshing,
@@ -109,6 +116,18 @@ export function OrdersToolbar({
           </Stack>
 
           <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} sx={{ width: { xs: '100%', sm: 'auto' } }}>
+            {canAddOrder ? (
+              <Button
+                variant="contained"
+                color="success"
+                startIcon={<AddCircleRoundedIcon />}
+                onClick={onAddOrder}
+                disabled={addOrderDisabled}
+                sx={{ minWidth: 138 }}
+              >
+                Add order
+              </Button>
+            ) : null}
             <Button
               variant="contained"
               startIcon={<RefreshRoundedIcon />}

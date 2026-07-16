@@ -131,7 +131,7 @@ function toErrorMessage(error: unknown, fallback: string) {
 
   if (
     statusCode === 502
-    || /<\!doctype html>|error 502|bad gateway|temporary error/i.test(message)
+    || /<!doctype html>|error 502|bad gateway|temporary error/i.test(message)
   ) {
     return 'Mailbox sync timed out at the gateway (502). Please run Sync again; partial work may already be saved.'
   }

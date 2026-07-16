@@ -2,6 +2,7 @@ import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded'
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
 import EditRoundedIcon from '@mui/icons-material/EditRounded'
 import NotificationsActiveRoundedIcon from '@mui/icons-material/NotificationsActiveRounded'
+import PictureAsPdfRoundedIcon from '@mui/icons-material/PictureAsPdfRounded'
 import UploadFileRoundedIcon from '@mui/icons-material/UploadFileRounded'
 import VisibilityRoundedIcon from '@mui/icons-material/VisibilityRounded'
 import {
@@ -1136,21 +1137,25 @@ export function JobDetailsDialog({
     }
 
     return (
-      <Box
-        component="iframe"
-        src={normalizedUrl}
-        title={`mini-preview-${String(fileName ?? 'document').trim() || 'document'}`}
+      <Stack
+        alignItems="center"
+        justifyContent="center"
+        spacing={0.45}
         sx={{
-          width: '100%',
           height: 128,
+          borderRadius: 1,
           border: '1px solid',
           borderColor: 'divider',
-          borderRadius: 1,
-          display: 'block',
-          pointerEvents: 'none',
           bgcolor: '#ffffff',
+          px: 1,
+          textAlign: 'center',
         }}
-      />
+      >
+        <PictureAsPdfRoundedIcon sx={{ color: 'error.main' }} />
+        <Typography variant="caption" sx={{ fontWeight: 700 }}>
+          PDF preview available on click
+        </Typography>
+      </Stack>
     )
   }
 

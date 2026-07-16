@@ -108,6 +108,11 @@ export const QUERY_KEYS = {
     ['admin', 'ai-council', 'chats', chatType, targetMember] as const,
   aiCouncilMessages: (chatId: string) =>
     ['admin', 'ai-council', 'messages', chatId] as const,
+  chatUsers: ['chat', 'users'] as const,
+  chatThreads: (type: 'direct' | 'group' | 'all' = 'all') =>
+    ['chat', 'threads', type] as const,
+  chatMessages: (threadId: string, limit: number, offset: number) =>
+    ['chat', 'messages', threadId, limit, offset] as const,
 
   // Pictures
   photosIndex: ['pictures', 'photos-index'] as const,

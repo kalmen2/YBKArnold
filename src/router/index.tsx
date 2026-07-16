@@ -7,6 +7,7 @@ import {
   AdminEmailWorkspacePage,
   AdminSettingsPage,
   AppLayout,
+  ChatPage,
   ConfigPage,
   DashboardPage,
   OperatingCostsPage,
@@ -78,6 +79,10 @@ export const router = createBrowserRouter([
       {
         path: 'notifications',
         element: withRouteSuspense(<SalesNotificationsPage />),
+      },
+      {
+        path: 'chat',
+        element: withRouteSuspense(<ChatPage />),
       },
       {
         path: 'pictures',

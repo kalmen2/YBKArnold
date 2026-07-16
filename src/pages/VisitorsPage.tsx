@@ -128,6 +128,10 @@ export default function VisitorsPage() {
     },
   })
 
+  const nowTimestamp = Number.isFinite(recentLogsQuery.dataUpdatedAt)
+    ? recentLogsQuery.dataUpdatedAt
+    : 0
+
   const savedVisitors = useMemo<SavedVisitor[]>(() => {
     const shortcuts = Array.isArray(savedVisitorsQuery.data?.shortcuts)
       ? savedVisitorsQuery.data.shortcuts
@@ -148,14 +152,14 @@ export default function VisitorsPage() {
       : []
 
     return [...entries]
-      .filter((entry) => Date.parse(String(entry.expiresAt ?? '')) > Date.now())
+      .filter((entry) => Date.parse(String(entry.expiresAt ?? '')) > nowTimestamp)
       .sort((left, right) => {
       const rightTime = Date.parse(String(right.createdAt ?? ''))
       const leftTime = Date.parse(String(left.createdAt ?? ''))
 
       return rightTime - leftTime
       })
-  }, [recentLogsQuery.data])
+  }, [nowTimestamp, recentLogsQuery.data])
 
   const combinedErrorMessage = errorMessage
     || (savedVisitorsQuery.error instanceof Error ? savedVisitorsQuery.error.message : null)
@@ -459,7 +463,7 @@ export default function VisitorsPage() {
               </TableRow>
             ) : (
               insideLogs.map((entry) => {
-                const isActive = Date.parse(String(entry.expiresAt ?? '')) > Date.now()
+                const isActive = Date.parse(String(entry.expiresAt ?? '')) > nowTimestamp
 
                 return (
                   <TableRow key={entry.id} hover>

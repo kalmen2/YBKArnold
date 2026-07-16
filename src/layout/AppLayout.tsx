@@ -123,8 +123,11 @@ export default function AppLayout() {
     const isSalesRepNotificationsRoute =
       location.pathname === '/notifications'
       || location.pathname.startsWith('/notifications/')
+    const isSalesRepChatRoute =
+      location.pathname === '/chat'
+      || location.pathname.startsWith('/chat/')
 
-    if (!isSalesRoute && !isSalesRepNotificationsRoute) {
+    if (!isSalesRoute && !isSalesRepNotificationsRoute && !isSalesRepChatRoute) {
       navigate('/sales?tab=dealers', { replace: true })
     }
   }, [appUser?.isSalesRep, location.pathname, navigate])
