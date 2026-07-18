@@ -759,6 +759,17 @@ export type CrmOrder = {
   dealerSourceId: string
   dealerName: string
   orderNumber: string | null
+  sourceQuoteId?: string | null
+  sourceQuoteNumber?: string | null
+  sourceQuoteTitle?: string | null
+  mondayPrimaryBoardId?: string | null
+  mondayPrimaryItemId?: string | null
+  mondaySecondaryBoardId?: string | null
+  mondaySecondaryItemId?: string | null
+  poDate?: string | null
+  poNumber?: string | null
+  leadTimeDate?: string | null
+  shipTo?: string | null
   title: string
   status: CrmOrderStatus
   progressPercent: number
@@ -791,6 +802,36 @@ export type CrmOrderUpsertInput = {
   shippedAt?: string | null
   deliveredAt?: string | null
   notes?: string | null
+}
+
+export type CrmConvertOrderBoardOption = {
+  id: string
+  name: string | null
+}
+
+export type CrmConvertOrderBoardsResponse = {
+  primaryBoardId: string
+  secondaryBoardId: string
+  boards: CrmConvertOrderBoardOption[]
+}
+
+export type CrmConvertQuoteToOrderInput = {
+  poDate?: string | null
+  poNumber?: string | null
+  leadTimeDate?: string | null
+  shipTo: string
+  notes?: string | null
+}
+
+export type CrmConvertQuoteToOrderResponse = {
+  order: CrmOrder
+  quote: CrmQuote
+  monday: {
+    primaryBoardId: string
+    primaryItemId: string
+    secondaryBoardId: string
+    secondaryItemId: string
+  }
 }
 
 function withQuery(path: string, query: Record<string, string | number | null | undefined>) {
@@ -1173,6 +1214,17 @@ export function fetchCrmExcelQuoteLookup(quoteNumber: string) {
       quoteNumber,
     }),
   )
+}
+
+export function fetchCrmConvertOrderBoards() {
+  return apiRequest<CrmConvertOrderBoardsResponse>('/api/crm/quotes/convert-order-options')
+}
+
+export function convertCrmQuoteToOrder(quoteId: string, input: CrmConvertQuoteToOrderInput) {
+  return apiRequest<CrmConvertQuoteToOrderResponse>(`/api/crm/quotes/${encodeURIComponent(quoteId)}/convert-to-order`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
 }
 
 export function fetchCrmOrders(options: { limit?: number; status?: string; dealerSourceId?: string } = {}) {

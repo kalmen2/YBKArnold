@@ -49,12 +49,12 @@ import { LoadingPanel } from '../components/LoadingPanel'
 import { StatusAlerts } from '../components/StatusAlerts'
 import {
   createCrmDealer,
-  createCrmOrder,
+  convertCrmQuoteToOrder,
   createCrmQuote,
   createCrmQuoteChatMessage,
+  fetchCrmConvertOrderBoards,
   fetchCrmDealers,
   fetchCrmExcelQuoteLookup,
-  fetchCrmOrders,
   fetchCrmQuoteChats,
   fetchCrmQuotes,
   fetchCrmSalesReps,
@@ -63,12 +63,12 @@ import {
   syncCrmQuoteFromExcel,
   updateCrmQuote,
   type CrmDealer,
+  type CrmConvertOrderBoardOption,
   type CrmExcelQuoteLookupResponse,
   type CrmExcelQuoteSyncInput,
   type CrmQuoteDocument,
   type CrmQuoteLineItem,
   type CrmOpportunityStage,
-  type CrmOrder,
   type CrmQuote,
   type CrmQuoteChatMessage,
 } from '../features/crm/api'
@@ -79,6 +79,8 @@ import { formatCurrency } from '../lib/formatters'
 import { QUERY_KEYS } from '../lib/queryKeys'
 
 const DEFAULT_OPPORTUNITY_TITLE_PREFIX = 'Opportunity '
+const DEFAULT_NEW_ORDERS_2026_BOARD_ID = '18393945685'
+const DEFAULT_DESIGN_AKF_BOARD_ID = '1064270065'
 
 type OpportunityLineItemFormState = {
   itemNumber: string
@@ -127,6 +129,16 @@ type OpportunityDetailsFormState = {
   notes: string
   lineItems: OpportunityLineItemFormState[]
   documents: CrmQuoteDocument[]
+}
+
+type OpportunityConvertOrderFormState = {
+  primaryBoardId: string
+  secondaryBoardId: string
+  poDate: string
+  poNumber: string
+  leadTimeDate: string
+  shipTo: string
+  notes: string
 }
 
 type StageDefinition = {
@@ -196,7 +208,7 @@ type StageColumnFilters = {
   amountValueMax: string
 }
 
-type OpportunityDetailsSaveMode = 'save' | 'decline' | 'convert_to_order'
+type OpportunityDetailsSaveMode = 'save' | 'decline'
 type QuoteSidebarFolderKey =
   | 'client_doc'
   | 'renderings'
@@ -673,6 +685,21 @@ function createEmptyOpportunityForm(): OpportunityFormState {
     lineItems: [createEmptyLineItemFormState()],
     quoteDocumentUrl: '',
     quoteDocumentName: '',
+  }
+}
+
+function createEmptyConvertOrderForm(
+  primaryBoardId = DEFAULT_NEW_ORDERS_2026_BOARD_ID,
+  secondaryBoardId = DEFAULT_DESIGN_AKF_BOARD_ID,
+): OpportunityConvertOrderFormState {
+  return {
+    primaryBoardId,
+    secondaryBoardId,
+    poDate: getTodayEasternDateInputValue(),
+    poNumber: '',
+    leadTimeDate: '',
+    shipTo: '',
+    notes: '',
   }
 }
 
@@ -2788,8 +2815,14 @@ export default function SalesOpportunitiesPage() {
   const [isUploadingQuoteDocument, setIsUploadingQuoteDocument] = useState(false)
   const [isUploadingFolderSelection, setIsUploadingFolderSelection] = useState(false)
   const [isSavingOpportunityDetails, setIsSavingOpportunityDetails] = useState(false)
+  const [isConvertOrderDialogOpen, setIsConvertOrderDialogOpen] = useState(false)
+  const [isSubmittingConvertOrder, setIsSubmittingConvertOrder] = useState(false)
   const [busyQuoteId, setBusyQuoteId] = useState<string | null>(null)
   const [selectedOpportunity, setSelectedOpportunity] = useState<CrmQuote | null>(null)
+  const [convertOrderTargetQuote, setConvertOrderTargetQuote] = useState<CrmQuote | null>(null)
+  const [convertOrderFormState, setConvertOrderFormState] = useState<OpportunityConvertOrderFormState>(() => (
+    createEmptyConvertOrderForm()
+  ))
   const [selectedOpportunityDetailsTab, setSelectedOpportunityDetailsTab] = useState<OpportunityDetailsTab>('details')
   const [selectedOpportunityNestedFolderPath, setSelectedOpportunityNestedFolderPath] = useState<string | null>(null)
   const [opportunityDetailsFormState, setOpportunityDetailsFormState] = useState<OpportunityDetailsFormState | null>(null)
@@ -2831,15 +2864,15 @@ export default function SalesOpportunitiesPage() {
     staleTime: 60 * 1000,
   })
 
-  const ordersQuery = useQuery({
-    queryKey: QUERY_KEYS.crmOpportunitiesOrders,
-    queryFn: () => fetchCrmOrders({ limit: 700, status: 'all' }),
-    staleTime: 60 * 1000,
-  })
-
   const salesRepsQuery = useQuery({
     queryKey: QUERY_KEYS.crmSalesReps,
     queryFn: () => fetchCrmSalesReps(),
+    staleTime: 5 * 60 * 1000,
+  })
+
+  const convertOrderBoardsQuery = useQuery({
+    queryKey: QUERY_KEYS.crmOpportunitiesConvertOrderBoards,
+    queryFn: () => fetchCrmConvertOrderBoards(),
     staleTime: 5 * 60 * 1000,
   })
 
@@ -2855,14 +2888,16 @@ export default function SalesOpportunitiesPage() {
 
   const isLoading = dealersQuery.isLoading
     || quotesQuery.isLoading
-    || ordersQuery.isLoading
   const isRefreshing = (
     dealersQuery.isFetching
     || quotesQuery.isFetching
-    || ordersQuery.isFetching
   ) && !isLoading
 
-  const queryError = [dealersQuery.error, quotesQuery.error, ordersQuery.error, salesRepsQuery.error]
+  const queryError = [
+    dealersQuery.error,
+    quotesQuery.error,
+    salesRepsQuery.error,
+  ]
     .find((entry) => entry instanceof Error)
 
   const currentUserUid = String(appUser?.uid ?? '').trim()
@@ -2881,10 +2916,40 @@ export default function SalesOpportunitiesPage() {
     [quotesQuery.data?.quotes],
   )
 
-  const orders = useMemo(
-    () => (Array.isArray(ordersQuery.data?.orders) ? ordersQuery.data.orders : []),
-    [ordersQuery.data?.orders],
-  )
+  const convertOrderBoardOptions = useMemo<CrmConvertOrderBoardOption[]>(() => {
+    const fromApi = Array.isArray(convertOrderBoardsQuery.data?.boards)
+      ? convertOrderBoardsQuery.data.boards
+      : []
+
+    if (fromApi.length > 0) {
+      return fromApi
+    }
+
+    return [
+      { id: DEFAULT_NEW_ORDERS_2026_BOARD_ID, name: 'New Orders 2026' },
+      { id: DEFAULT_DESIGN_AKF_BOARD_ID, name: 'Design AKF' },
+    ]
+  }, [convertOrderBoardsQuery.data?.boards])
+
+  const convertOrderPrimaryBoardId = useMemo(() => {
+    const fromApi = String(convertOrderBoardsQuery.data?.primaryBoardId ?? '').trim()
+
+    if (fromApi) {
+      return fromApi
+    }
+
+    return DEFAULT_NEW_ORDERS_2026_BOARD_ID
+  }, [convertOrderBoardsQuery.data?.primaryBoardId])
+
+  const convertOrderSecondaryBoardId = useMemo(() => {
+    const fromApi = String(convertOrderBoardsQuery.data?.secondaryBoardId ?? '').trim()
+
+    if (fromApi) {
+      return fromApi
+    }
+
+    return DEFAULT_DESIGN_AKF_BOARD_ID
+  }, [convertOrderBoardsQuery.data?.secondaryBoardId])
 
   const excelSyncSalesRepOptions = useMemo(() => {
     const dynamicSalesReps = Array.isArray(salesRepsQuery.data?.salesReps)
@@ -3466,9 +3531,8 @@ export default function SalesOpportunitiesPage() {
     await Promise.all([
       dealersQuery.refetch(),
       quotesQuery.refetch(),
-      ordersQuery.refetch(),
     ])
-  }, [dealersQuery, ordersQuery, quotesQuery])
+  }, [dealersQuery, quotesQuery])
 
   const initializeExcelSyncFromPayload = useCallback(async (
     excelPayload: CrmExcelQuoteSyncInput,
@@ -4814,56 +4878,106 @@ export default function SalesOpportunitiesPage() {
     }
   }, [updateStage])
 
-  const createOrderFromQuote = useCallback(async (quote: CrmQuote, existingOrders: CrmOrder[]) => {
-    const quoteNumber = String(quote.quoteNumber || '').trim()
-    const orderNumbers = new Set(existingOrders.map((order) => normalizeMatchValue(order.orderNumber)).filter(Boolean))
-    let nextOrderNumber = quoteNumber || `OP-${quote.id.slice(0, 8).toUpperCase()}`
-
-    if (orderNumbers.has(normalizeMatchValue(nextOrderNumber))) {
-      nextOrderNumber = `${nextOrderNumber}-${Date.now().toString().slice(-4)}`
+  const handleCloseConvertOrderDialog = useCallback(() => {
+    if (isSubmittingConvertOrder) {
+      return
     }
 
-    const now = new Date().toISOString()
+    setIsConvertOrderDialogOpen(false)
+    setConvertOrderTargetQuote(null)
+    setConvertOrderFormState(createEmptyConvertOrderForm(convertOrderPrimaryBoardId, convertOrderSecondaryBoardId))
+  }, [convertOrderPrimaryBoardId, convertOrderSecondaryBoardId, isSubmittingConvertOrder])
 
-    await createCrmOrder({
-      dealerSourceId: quote.dealerSourceId,
-      title: quote.title,
-      orderNumber: nextOrderNumber,
-      status: 'pending',
-      progressPercent: 5,
-      orderValue: Number(quote.totalAmount || 0),
-      currency: quote.currency || 'USD',
-      notes: `Created from opportunity ${quote.quoteNumber || quote.id}`,
-    })
+  const openConvertOrderDialog = useCallback((quote: CrmQuote) => {
+    setErrorMessage(null)
+    setSuccessMessage(null)
+    setConvertOrderTargetQuote(quote)
+    setConvertOrderFormState(createEmptyConvertOrderForm(convertOrderPrimaryBoardId, convertOrderSecondaryBoardId))
+    setIsConvertOrderDialogOpen(true)
+  }, [convertOrderPrimaryBoardId, convertOrderSecondaryBoardId])
 
-    await updateCrmQuote(quote.id, {
-      opportunityStage: 'order_placement',
-      status: 'accepted',
-      acceptedAt: now,
-    })
+  const updateConvertOrderField = useCallback(<Key extends keyof OpportunityConvertOrderFormState>(
+    key: Key,
+    value: OpportunityConvertOrderFormState[Key],
+  ) => {
+    setConvertOrderFormState((current) => ({
+      ...current,
+      [key]: value,
+    }))
   }, [])
 
-  const handleMarkApproved = useCallback(async (quote: CrmQuote) => {
-    const confirmed = window.confirm(`Mark ${quote.quoteNumber || quote.title} as approved and convert to order?`)
+  const handleSubmitConvertOrder = useCallback(async () => {
+    if (!convertOrderTargetQuote) {
+      return
+    }
 
-    if (!confirmed) {
+    const poDate = convertOrderFormState.poDate.trim()
+    const leadTimeDate = convertOrderFormState.leadTimeDate.trim()
+    const shipTo = convertOrderFormState.shipTo.trim()
+
+    if (!poDate || !/^\d{4}-\d{2}-\d{2}$/.test(poDate)) {
+      setErrorMessage('P.O. date is required and must be valid.')
+      return
+    }
+
+    if (leadTimeDate && !/^\d{4}-\d{2}-\d{2}$/.test(leadTimeDate)) {
+      setErrorMessage('Lead Time must be a valid date when provided.')
+      return
+    }
+
+    if (!shipTo) {
+      setErrorMessage('Ship To is required.')
       return
     }
 
     setErrorMessage(null)
     setSuccessMessage(null)
-    setBusyQuoteId(quote.id)
+    setIsSubmittingConvertOrder(true)
+    setBusyQuoteId(convertOrderTargetQuote.id)
 
     try {
-      await createOrderFromQuote(quote, orders)
+      await convertCrmQuoteToOrder(convertOrderTargetQuote.id, {
+        poDate,
+        poNumber: convertOrderFormState.poNumber.trim() || null,
+        leadTimeDate: leadTimeDate || null,
+        shipTo,
+        notes: convertOrderFormState.notes.trim() || null,
+      })
+
       await invalidateOpportunityData()
-      setSuccessMessage('Opportunity approved and converted to order placement.')
+      setIsConvertOrderDialogOpen(false)
+      setConvertOrderTargetQuote(null)
+      setConvertOrderFormState(createEmptyConvertOrderForm(convertOrderPrimaryBoardId, convertOrderSecondaryBoardId))
+      setDetailsActionMenuAnchorEl(null)
+      setUploadQuoteActionMenuAnchorEl(null)
+      setSelectedOpportunity(null)
+      setOpportunityDetailsFormState(null)
+      setOpportunityDetailsInitialSnapshot('')
+      setSelectedOpportunityDetailsTab('details')
+      setSelectedOpportunityNestedFolderPath(null)
+      setPendingExcelSyncPromotionQuoteId(null)
+      setSuccessMessage('Opportunity converted to order and pushed to New Orders 2026 + Design AKF.')
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Failed to convert opportunity to order.')
     } finally {
+      setIsSubmittingConvertOrder(false)
       setBusyQuoteId(null)
     }
-  }, [createOrderFromQuote, invalidateOpportunityData, orders])
+  }, [
+    convertOrderFormState.leadTimeDate,
+    convertOrderFormState.notes,
+    convertOrderFormState.poDate,
+    convertOrderFormState.poNumber,
+    convertOrderFormState.shipTo,
+    convertOrderPrimaryBoardId,
+    convertOrderSecondaryBoardId,
+    convertOrderTargetQuote,
+    invalidateOpportunityData,
+  ])
+
+  const handleMarkApproved = useCallback((quote: CrmQuote) => {
+    openConvertOrderDialog(quote)
+  }, [openConvertOrderDialog])
 
   const handleDeclineQuote = useCallback(async (quote: CrmQuote) => {
     const confirmed = window.confirm(`Mark ${quote.quoteNumber || quote.title} as declined?`)
@@ -4956,14 +5070,6 @@ export default function SalesOpportunitiesPage() {
       }
     }
 
-    if (mode === 'convert_to_order') {
-      const confirmedConvert = window.confirm(`Convert ${quoteLabel} to order placement?`)
-
-      if (!confirmedConvert) {
-        return
-      }
-    }
-
     setErrorMessage(null)
     setSuccessMessage(null)
     setIsSavingOpportunityDetails(true)
@@ -5018,19 +5124,6 @@ export default function SalesOpportunitiesPage() {
           rejectedAt: new Date().toISOString(),
         })
         setSuccessMessage('Opportunity updated and marked as declined.')
-      } else {
-        await updateCrmQuote(selectedOpportunity.id, detailsPayload)
-
-        const quoteForOrder: CrmQuote = {
-          ...selectedOpportunity,
-          ...detailsPayload,
-          title,
-          totalAmount,
-          quoteNumber: quoteNumber || null,
-        }
-
-        await createOrderFromQuote(quoteForOrder, orders)
-        setSuccessMessage('Opportunity updated and converted to order placement.')
       }
 
       await invalidateOpportunityData()
@@ -5046,13 +5139,18 @@ export default function SalesOpportunitiesPage() {
       setBusyQuoteId(null)
     }
   }, [
-    createOrderFromQuote,
     invalidateOpportunityData,
     opportunityDetailsFormState,
-    orders,
     pendingExcelSyncPromotionQuoteId,
     selectedOpportunity,
   ])
+
+  const convertOrderQuoteLabel = String(
+    convertOrderTargetQuote?.quoteNumber
+      || convertOrderTargetQuote?.title
+      || convertOrderTargetQuote?.id
+      || '',
+  ).trim()
 
   if (isLoading) {
     return <LoadingPanel loading message="Fetching pipeline opportunities..." />
@@ -5064,6 +5162,160 @@ export default function SalesOpportunitiesPage() {
         errorMessage={errorMessage || (queryError instanceof Error ? queryError.message : null)}
         successMessage={successMessage}
       />
+
+      <Dialog
+        open={isConvertOrderDialogOpen}
+        onClose={handleCloseConvertOrderDialog}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Convert To Order</DialogTitle>
+        <DialogContent>
+          <Stack spacing={1.35} sx={{ mt: 0.75 }}>
+            <Typography variant="body2" color="text.secondary">
+              This will push to both Monday boards and create a linked CRM order from quote{' '}
+              <strong>{convertOrderQuoteLabel || 'N/A'}</strong>.
+            </Typography>
+
+            <TextField
+              select
+              fullWidth
+              label="Primary Board (Locked)"
+              value={convertOrderFormState.primaryBoardId}
+              onChange={(event) => {
+                updateConvertOrderField('primaryBoardId', event.target.value)
+              }}
+              helperText="All boards are shown, but only New Orders 2026 is selectable right now."
+              disabled={isSubmittingConvertOrder}
+            >
+              {convertOrderBoardOptions.map((board) => {
+                const boardId = String(board?.id ?? '').trim()
+
+                if (!boardId) {
+                  return null
+                }
+
+                return (
+                  <MenuItem
+                    key={boardId}
+                    value={boardId}
+                    disabled={boardId !== convertOrderPrimaryBoardId}
+                  >
+                    {String(board?.name ?? '').trim() || boardId}
+                  </MenuItem>
+                )
+              })}
+            </TextField>
+
+            <TextField
+              select
+              fullWidth
+              label="Secondary Board (Locked)"
+              value={convertOrderFormState.secondaryBoardId}
+              onChange={(event) => {
+                updateConvertOrderField('secondaryBoardId', event.target.value)
+              }}
+              helperText="This order is also pushed to Design AKF."
+              disabled={isSubmittingConvertOrder}
+            >
+              {convertOrderBoardOptions.map((board) => {
+                const boardId = String(board?.id ?? '').trim()
+
+                if (!boardId) {
+                  return null
+                }
+
+                return (
+                  <MenuItem
+                    key={boardId}
+                    value={boardId}
+                    disabled={boardId !== convertOrderSecondaryBoardId}
+                  >
+                    {String(board?.name ?? '').trim() || boardId}
+                  </MenuItem>
+                )
+              })}
+            </TextField>
+
+            <TextField
+              required
+              fullWidth
+              label="P.O. Date"
+              type="date"
+              value={convertOrderFormState.poDate}
+              onChange={(event) => {
+                updateConvertOrderField('poDate', event.target.value)
+              }}
+              InputLabelProps={{ shrink: true }}
+              disabled={isSubmittingConvertOrder}
+            />
+
+            <TextField
+              fullWidth
+              label="P.O. Number (Optional)"
+              value={convertOrderFormState.poNumber}
+              onChange={(event) => {
+                updateConvertOrderField('poNumber', event.target.value)
+              }}
+              disabled={isSubmittingConvertOrder}
+            />
+
+            <TextField
+              fullWidth
+              label="Lead Time (Optional)"
+              type="date"
+              value={convertOrderFormState.leadTimeDate}
+              onChange={(event) => {
+                updateConvertOrderField('leadTimeDate', event.target.value)
+              }}
+              InputLabelProps={{ shrink: true }}
+              disabled={isSubmittingConvertOrder}
+            />
+
+            <TextField
+              required
+              fullWidth
+              label="Ship To"
+              value={convertOrderFormState.shipTo}
+              onChange={(event) => {
+                updateConvertOrderField('shipTo', event.target.value)
+              }}
+              multiline
+              minRows={2}
+              disabled={isSubmittingConvertOrder}
+            />
+
+            <TextField
+              fullWidth
+              label="Notes (Optional)"
+              value={convertOrderFormState.notes}
+              onChange={(event) => {
+                updateConvertOrderField('notes', event.target.value)
+              }}
+              multiline
+              minRows={2}
+              disabled={isSubmittingConvertOrder}
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={handleCloseConvertOrderDialog}
+            disabled={isSubmittingConvertOrder}
+          >
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            onClick={() => {
+              void handleSubmitConvertOrder()
+            }}
+            disabled={isSubmittingConvertOrder}
+          >
+            {isSubmittingConvertOrder ? 'Converting...' : 'Convert To Order'}
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <Dialog
         open={isExcelMissingConceptDialogOpen}
@@ -6485,12 +6737,15 @@ export default function SalesOpportunitiesPage() {
             disabled={
               !canUseProposalDetailsActions
               || isSavingOpportunityDetails
+              || isSubmittingConvertOrder
               || isUploadingFolderSelection
               || isSendingSelectedOpportunityChat
             }
             onClick={() => {
               setDetailsActionMenuAnchorEl(null)
-              void handleSaveOpportunityDetails('convert_to_order')
+              if (selectedOpportunity) {
+                openConvertOrderDialog(selectedOpportunity)
+              }
             }}
           >
             Convert to order

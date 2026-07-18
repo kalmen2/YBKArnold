@@ -33,6 +33,28 @@ const orderStatuses = [
   'delivered',
   'cancelled',
 ]
+const mondayNewOrders2026BoardId = '18393945685'
+const mondayDesignAkfBoardId = '1064270065'
+const mondayNewOrders2026ColumnIds = Object.freeze({
+  ack: 'text9',
+  salesRep: 'text_mm3x9wep',
+  orderValue: 'numbers',
+  freightValue: 'numbers5',
+  poDate: 'date',
+  poNumber: 'text2',
+  description: 'text81',
+  leadTimeDate: 'due_date',
+  shipTo: 'location',
+  notes: 'text95',
+})
+const mondayDesignAkfColumnIds = Object.freeze({
+  orderNumber: 'text9',
+  poDate: 'date',
+  poNumber: 'text2',
+  description: 'text81',
+  shipTo: 'location',
+  notes: 'text95',
+})
 const usStateCodes = [
   'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA',
   'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD',
@@ -129,6 +151,22 @@ function toIsoDateOrNull(value) {
   }
 
   return parsed.toISOString()
+}
+
+function toIsoDateOnlyOrNull(value) {
+  const normalized = toTrimmedText(value, 80)
+
+  if (!normalized) {
+    return null
+  }
+
+  const parsed = new Date(normalized)
+
+  if (Number.isNaN(parsed.getTime())) {
+    return null
+  }
+
+  return parsed.toISOString().slice(0, 10)
 }
 
 function toBoolean(value) {
@@ -1538,6 +1576,11 @@ async function computeCrmOverview({
 export function registerCrmRoutes(app, deps) {
   const {
     getCollections,
+    fetchMondayBoardsCatalog,
+    createMondayItem,
+    updateMondayItemTextColumn,
+    updateMondayItemJsonColumn,
+    deleteMondayItem,
     randomUUID,
     requireAdminRole,
     requireSalesManagerOrAdminRole,
@@ -6527,6 +6570,487 @@ export function registerCrmRoutes(app, deps) {
         quote: normalizeQuoteOpportunityStageForResponse(updatedQuote),
       })
     } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/crm/quotes/convert-order-options', requireFirebaseAuth, async (_req, res, next) => {
+    try {
+      const catalogBoards = typeof fetchMondayBoardsCatalog === 'function'
+        ? await fetchMondayBoardsCatalog()
+        : []
+      const boardsById = new Map()
+
+      ;(Array.isArray(catalogBoards) ? catalogBoards : []).forEach((board) => {
+        const boardId = toTrimmedText(board?.id, 120)
+
+        if (!boardId || boardsById.has(boardId)) {
+          return
+        }
+
+        boardsById.set(boardId, {
+          id: boardId,
+          name: toTrimmedText(board?.name, 240) || null,
+        })
+      })
+
+      if (!boardsById.has(mondayNewOrders2026BoardId)) {
+        boardsById.set(mondayNewOrders2026BoardId, {
+          id: mondayNewOrders2026BoardId,
+          name: 'New Orders 2026',
+        })
+      }
+
+      if (!boardsById.has(mondayDesignAkfBoardId)) {
+        boardsById.set(mondayDesignAkfBoardId, {
+          id: mondayDesignAkfBoardId,
+          name: 'Design AKF',
+        })
+      }
+
+      const boards = [...boardsById.values()].sort((left, right) => {
+        const leftName = toTrimmedText(left?.name, 240).toLowerCase()
+        const rightName = toTrimmedText(right?.name, 240).toLowerCase()
+        const byName = leftName.localeCompare(rightName)
+
+        if (byName !== 0) {
+          return byName
+        }
+
+        return toTrimmedText(left?.id, 120).localeCompare(toTrimmedText(right?.id, 120))
+      })
+
+      return res.json({
+        primaryBoardId: mondayNewOrders2026BoardId,
+        secondaryBoardId: mondayDesignAkfBoardId,
+        boards,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.post('/api/crm/quotes/:quoteId/convert-to-order', requireFirebaseAuth, async (req, res, next) => {
+    const createdMondayItems = []
+
+    try {
+      if (
+        typeof createMondayItem !== 'function'
+        || typeof updateMondayItemTextColumn !== 'function'
+        || typeof updateMondayItemJsonColumn !== 'function'
+      ) {
+        return res.status(500).json({
+          error: 'Monday conversion helpers are not configured on this server.',
+        })
+      }
+
+      const quoteId = toTrimmedText(req.params.quoteId, 160)
+
+      if (!quoteId) {
+        return res.status(400).json({
+          error: 'quoteId is required.',
+        })
+      }
+
+      const accessScope = resolveCrmAccessScope(req)
+      const quoteAccessScope = resolveSalesRepQuoteAccessScope(accessScope)
+
+      if (quoteAccessScope.restrictToLinkedSalesRep && !quoteAccessScope.linkedSalesRepName) {
+        return res.status(403).json({
+          error: 'Sales rep access is not linked to a CRM sales rep yet.',
+        })
+      }
+
+      const body = toOptionalObject(req.body)
+      const rawPoDate = toTrimmedText(body.poDate, 80)
+      const parsedPoDate = toIsoDateOnlyOrNull(rawPoDate)
+
+      if (rawPoDate && !parsedPoDate) {
+        return res.status(400).json({
+          error: 'poDate must be a valid date.',
+        })
+      }
+
+      const poDate = parsedPoDate || nowIso().slice(0, 10)
+      const rawLeadTimeDate = toTrimmedText(body.leadTimeDate, 80)
+      const parsedLeadTimeDate = toIsoDateOnlyOrNull(rawLeadTimeDate)
+
+      if (rawLeadTimeDate && !parsedLeadTimeDate) {
+        return res.status(400).json({
+          error: 'leadTimeDate must be a valid date when provided.',
+        })
+      }
+
+      const shipTo = toTrimmedText(body.shipTo, 2000)
+
+      if (!shipTo) {
+        return res.status(400).json({
+          error: 'shipTo is required.',
+        })
+      }
+
+      const poNumber = toTrimmedText(body.poNumber, 120) || null
+      const notes = toTrimmedText(body.notes, 4000) || null
+      const {
+        crmQuotesCollection,
+        crmOrdersCollection,
+      } = await getCollections()
+
+      const quote = await crmQuotesCollection.findOne(
+        {
+          id: quoteId,
+        },
+        {
+          projection: {
+            _id: 0,
+          },
+        },
+      )
+
+      if (!quote) {
+        return res.status(404).json({
+          error: 'Quote not found.',
+        })
+      }
+
+      assertCanAccessQuoteBySalesRep(quote, quoteAccessScope)
+
+      const dealerSourceId = toTrimmedText(quote?.dealerSourceId, 160)
+
+      if (!dealerSourceId) {
+        return res.status(400).json({
+          error: 'Quote must be linked to a dealer account before conversion.',
+        })
+      }
+
+      const existingLinkedOrder = await crmOrdersCollection.findOne(
+        {
+          sourceQuoteId: quoteId,
+        },
+        {
+          projection: {
+            _id: 0,
+          },
+        },
+      )
+
+      if (existingLinkedOrder) {
+        return res.status(409).json({
+          error: 'This quote was already converted to an order.',
+          order: existingLinkedOrder,
+        })
+      }
+
+      const fallbackOrderNumber = `OP-${quoteId.slice(0, 8).toUpperCase()}`
+      const baseOrderNumber =
+        toTrimmedText(quote?.acknowledgmentNumber, 120)
+        || toTrimmedText(quote?.orderNumber, 120)
+        || toTrimmedText(quote?.quoteNumber, 120)
+        || fallbackOrderNumber
+      let orderNumber = baseOrderNumber
+
+      const existingOrderWithSameNumber = await crmOrdersCollection.findOne(
+        {
+          orderNumber: new RegExp(`^${escapeRegex(baseOrderNumber)}$`, 'i'),
+        },
+        {
+          projection: {
+            _id: 0,
+            id: 1,
+          },
+        },
+      )
+
+      if (existingOrderWithSameNumber) {
+        orderNumber = `${baseOrderNumber}-${Date.now().toString().slice(-4)}`
+      }
+
+      const dealerLabel =
+        toTrimmedText(quote?.companyName, 200)
+        || toTrimmedText(quote?.dealerName, 240)
+        || dealerSourceId
+      const itemName = `${dealerLabel} / ${orderNumber}`
+      const description =
+        toTrimmedText(quote?.title, 240)
+        || toTrimmedText(quote?.description, 2000)
+        || `Opportunity ${toTrimmedText(quote?.quoteNumber, 120) || quoteId}`
+      const salesRep = toTrimmedText(quote?.salesRep, 200) || null
+      const orderValue = Number((toNonNegativeNumberOrNull(quote?.totalAmount) ?? 0).toFixed(2))
+      const freightValue = toNonNegativeNumberOrNull(quote?.freight)
+
+      const updateTextIfPresent = async ({ boardId, itemId, columnId, value }) => {
+        const textValue = toTrimmedText(value, 4000)
+
+        if (!textValue) {
+          return
+        }
+
+        await updateMondayItemTextColumn({
+          boardId,
+          itemId,
+          columnId,
+          textValue,
+        })
+      }
+
+      const updateDateIfPresent = async ({ boardId, itemId, columnId, value }) => {
+        const dateValue = toIsoDateOnlyOrNull(value)
+
+        if (!dateValue) {
+          return
+        }
+
+        await updateMondayItemJsonColumn({
+          boardId,
+          itemId,
+          columnId,
+          jsonValue: {
+            date: dateValue,
+          },
+        })
+      }
+
+      const updateNumberIfPresent = async ({ boardId, itemId, columnId, value }) => {
+        const numericValue = toNonNegativeNumberOrNull(value)
+
+        if (numericValue === null) {
+          return
+        }
+
+        await updateMondayItemTextColumn({
+          boardId,
+          itemId,
+          columnId,
+          textValue: String(Number(numericValue.toFixed(2))),
+        })
+      }
+
+      const primaryCreated = await createMondayItem({
+        boardId: mondayNewOrders2026BoardId,
+        itemName,
+      })
+      const primaryItemId = toTrimmedText(primaryCreated?.itemId, 120)
+
+      if (!primaryItemId) {
+        throw {
+          status: 502,
+          message: 'Monday did not return an item id for New Orders 2026.',
+        }
+      }
+
+      createdMondayItems.push({
+        boardId: mondayNewOrders2026BoardId,
+        itemId: primaryItemId,
+      })
+
+      await updateTextIfPresent({
+        boardId: mondayNewOrders2026BoardId,
+        itemId: primaryItemId,
+        columnId: mondayNewOrders2026ColumnIds.ack,
+        value: orderNumber,
+      })
+      await updateTextIfPresent({
+        boardId: mondayNewOrders2026BoardId,
+        itemId: primaryItemId,
+        columnId: mondayNewOrders2026ColumnIds.salesRep,
+        value: salesRep,
+      })
+      await updateNumberIfPresent({
+        boardId: mondayNewOrders2026BoardId,
+        itemId: primaryItemId,
+        columnId: mondayNewOrders2026ColumnIds.orderValue,
+        value: orderValue,
+      })
+      await updateNumberIfPresent({
+        boardId: mondayNewOrders2026BoardId,
+        itemId: primaryItemId,
+        columnId: mondayNewOrders2026ColumnIds.freightValue,
+        value: freightValue,
+      })
+      await updateDateIfPresent({
+        boardId: mondayNewOrders2026BoardId,
+        itemId: primaryItemId,
+        columnId: mondayNewOrders2026ColumnIds.poDate,
+        value: poDate,
+      })
+      await updateTextIfPresent({
+        boardId: mondayNewOrders2026BoardId,
+        itemId: primaryItemId,
+        columnId: mondayNewOrders2026ColumnIds.poNumber,
+        value: poNumber,
+      })
+      await updateTextIfPresent({
+        boardId: mondayNewOrders2026BoardId,
+        itemId: primaryItemId,
+        columnId: mondayNewOrders2026ColumnIds.description,
+        value: description,
+      })
+      await updateDateIfPresent({
+        boardId: mondayNewOrders2026BoardId,
+        itemId: primaryItemId,
+        columnId: mondayNewOrders2026ColumnIds.leadTimeDate,
+        value: parsedLeadTimeDate,
+      })
+      await updateTextIfPresent({
+        boardId: mondayNewOrders2026BoardId,
+        itemId: primaryItemId,
+        columnId: mondayNewOrders2026ColumnIds.shipTo,
+        value: shipTo,
+      })
+      await updateTextIfPresent({
+        boardId: mondayNewOrders2026BoardId,
+        itemId: primaryItemId,
+        columnId: mondayNewOrders2026ColumnIds.notes,
+        value: notes,
+      })
+
+      const secondaryCreated = await createMondayItem({
+        boardId: mondayDesignAkfBoardId,
+        itemName,
+      })
+      const secondaryItemId = toTrimmedText(secondaryCreated?.itemId, 120)
+
+      if (!secondaryItemId) {
+        throw {
+          status: 502,
+          message: 'Monday did not return an item id for Design AKF.',
+        }
+      }
+
+      createdMondayItems.push({
+        boardId: mondayDesignAkfBoardId,
+        itemId: secondaryItemId,
+      })
+
+      await updateTextIfPresent({
+        boardId: mondayDesignAkfBoardId,
+        itemId: secondaryItemId,
+        columnId: mondayDesignAkfColumnIds.orderNumber,
+        value: orderNumber,
+      })
+      await updateDateIfPresent({
+        boardId: mondayDesignAkfBoardId,
+        itemId: secondaryItemId,
+        columnId: mondayDesignAkfColumnIds.poDate,
+        value: poDate,
+      })
+      await updateTextIfPresent({
+        boardId: mondayDesignAkfBoardId,
+        itemId: secondaryItemId,
+        columnId: mondayDesignAkfColumnIds.poNumber,
+        value: poNumber,
+      })
+      await updateTextIfPresent({
+        boardId: mondayDesignAkfBoardId,
+        itemId: secondaryItemId,
+        columnId: mondayDesignAkfColumnIds.description,
+        value: description,
+      })
+      await updateTextIfPresent({
+        boardId: mondayDesignAkfBoardId,
+        itemId: secondaryItemId,
+        columnId: mondayDesignAkfColumnIds.shipTo,
+        value: shipTo,
+      })
+      await updateTextIfPresent({
+        boardId: mondayDesignAkfBoardId,
+        itemId: secondaryItemId,
+        columnId: mondayDesignAkfColumnIds.notes,
+        value: notes,
+      })
+
+      const now = nowIso()
+      const nextOrder = {
+        id: randomUUID(),
+        dealerSourceId,
+        dealerName: dealerLabel,
+        orderNumber,
+        sourceQuoteId: quoteId,
+        sourceQuoteNumber: toTrimmedText(quote?.quoteNumber, 120) || null,
+        sourceQuoteTitle: toTrimmedText(quote?.title, 240) || null,
+        mondayPrimaryBoardId: mondayNewOrders2026BoardId,
+        mondayPrimaryItemId: primaryItemId,
+        mondaySecondaryBoardId: mondayDesignAkfBoardId,
+        mondaySecondaryItemId: secondaryItemId,
+        poDate: poDate || null,
+        poNumber,
+        leadTimeDate: parsedLeadTimeDate || null,
+        shipTo,
+        title: description,
+        status: 'pending',
+        progressPercent: 5,
+        orderValue,
+        currency: toTrimmedText(quote?.currency, 16) || 'USD',
+        dueDate: parsedLeadTimeDate || null,
+        shippedAt: null,
+        deliveredAt: null,
+        notes: notes || `Created from quote ${toTrimmedText(quote?.quoteNumber, 120) || quoteId}`,
+        createdByUid: toTrimmedText(req.authUser?.uid, 160) || null,
+        createdByEmail: toTrimmedText(req.authUser?.email, 200) || null,
+        lastStatusChangedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      }
+
+      await crmOrdersCollection.insertOne(nextOrder)
+
+      const nextQuoteStatus = 'accepted'
+      const currentQuoteStatus = normalizeStatus(quote?.status, quoteStatuses, 'draft') || 'draft'
+      const quoteUpdates = {
+        opportunityStage: 'order_placement',
+        status: nextQuoteStatus,
+        acceptedAt: toIsoDateOrNull(quote?.acceptedAt) || now,
+        orderNumber,
+        poNumber,
+        leadTime: parsedLeadTimeDate || null,
+        updatedAt: now,
+      }
+
+      if (currentQuoteStatus !== nextQuoteStatus) {
+        quoteUpdates.lastStatusChangedAt = now
+      }
+
+      const updatedQuote = await crmQuotesCollection.findOneAndUpdate(
+        {
+          id: quoteId,
+        },
+        {
+          $set: quoteUpdates,
+        },
+        {
+          returnDocument: 'after',
+          projection: {
+            _id: 0,
+          },
+        },
+      )
+
+      return res.status(201).json({
+        order: nextOrder,
+        quote: normalizeQuoteOpportunityStageForResponse(updatedQuote),
+        monday: {
+          primaryBoardId: mondayNewOrders2026BoardId,
+          primaryItemId,
+          secondaryBoardId: mondayDesignAkfBoardId,
+          secondaryItemId,
+        },
+      })
+    } catch (error) {
+      if (typeof deleteMondayItem === 'function' && createdMondayItems.length > 0) {
+        for (const item of [...createdMondayItems].reverse()) {
+          try {
+            // Best effort rollback to avoid half-converted Monday state.
+            // eslint-disable-next-line no-await-in-loop
+            await deleteMondayItem({
+              boardId: item.boardId,
+              itemId: item.itemId,
+            })
+          } catch {
+            // Ignore rollback errors and surface original failure.
+          }
+        }
+      }
+
       next(error)
     }
   })
