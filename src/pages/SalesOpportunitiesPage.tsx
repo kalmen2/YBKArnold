@@ -2324,8 +2324,6 @@ function StageColumn({
     setSortSubmenuAnchorEl(null)
   }
 
-  const totalAmount = visibleRows.reduce((sum, quote) => sum + Number(quote.totalAmount || 0), 0)
-
   return (
     <Paper
       variant="outlined"
@@ -2340,31 +2338,29 @@ function StageColumn({
     >
       <Box
         sx={{
-          px: { xs: 1.4, md: 2 },
-          py: 1.35,
-          backgroundColor: '#ffffff',
+          px: { xs: 1.1, md: 1.35 },
+          py: 0.65,
+          backgroundColor: alpha(stage.panelColor, 0.4),
           borderBottom: 1,
           borderColor: alpha('#0f4c81', 0.12),
         }}
       >
-        <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1.5}>
-          <Stack spacing={0.2} sx={{ minWidth: 0 }}>
-            <Typography variant="subtitle1" sx={{ fontWeight: 800, color: '#0b2239', lineHeight: 1.2 }}>
+        <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
+          <Stack direction="row" spacing={0.75} alignItems="center" sx={{ minWidth: 0 }}>
+            <Box sx={{ width: 7, height: 7, borderRadius: '50%', backgroundColor: stage.headerColor, flexShrink: 0 }} />
+            <Typography variant="subtitle2" sx={{ fontWeight: 800, color: '#0b2239', lineHeight: 1.2 }}>
               {stage.label.replace(/^\d+\.\s*/, '')}
             </Typography>
-            <Typography variant="caption" color="text.secondary">
-              {stage.description}
-            </Typography>
+            {activeFilterCount > 0 ? (
+              <Chip
+                size="small"
+                label={`${activeFilterCount} filter${activeFilterCount === 1 ? '' : 's'}`}
+                color="primary"
+                variant="outlined"
+                sx={{ height: 20 }}
+              />
+            ) : null}
           </Stack>
-          <Stack direction="row" spacing={1} alignItems="center">
-            <Stack alignItems="flex-end" sx={{ display: { xs: 'none', sm: 'flex' } }}>
-              <Typography variant="subtitle2" sx={{ color: '#0b2239', fontWeight: 800 }}>
-                {formatCurrency(totalAmount, 2)}
-              </Typography>
-              <Typography variant="caption" color="text.secondary">
-                {visibleRows.length} opportunit{visibleRows.length === 1 ? 'y' : 'ies'}
-              </Typography>
-            </Stack>
             <IconButton
               size="small"
               onClick={(event) => {
@@ -2380,17 +2376,7 @@ function StageColumn({
             >
               <MoreVertRoundedIcon sx={{ fontSize: 19 }} />
             </IconButton>
-          </Stack>
         </Stack>
-        {activeFilterCount > 0 ? (
-          <Chip
-            size="small"
-            label={`${activeFilterCount} active filter${activeFilterCount === 1 ? '' : 's'}`}
-            color="primary"
-            variant="outlined"
-            sx={{ mt: 0.8, height: 22 }}
-          />
-        ) : null}
         <Menu
           anchorEl={menuAnchorEl}
           open={isMenuOpen}
@@ -2530,7 +2516,7 @@ function StageColumn({
       <Box
         sx={{
           p: { xs: 1, md: 1.5 },
-          height: 'clamp(540px, 70vh, 780px)',
+          height: 'clamp(620px, 78vh, 900px)',
           overflowY: 'auto',
           background: `linear-gradient(180deg, ${alpha(stage.panelColor, 0.62)} 0%, #f8fafc 100%)`,
           display: 'grid',
@@ -3092,6 +3078,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   ), [stageBuckets])
 
   const activePipelineStageDefinition = stageById.get(activePipelineStage) || stageDefinitions[0]
+  const activePipelineSummary = stageSummaries.get(activePipelineStage) || { count: 0, amount: 0 }
 
   const selectedOpportunityStage = useMemo(
     () => (selectedOpportunity ? resolveOpportunityStage(selectedOpportunity) : null),
@@ -6157,28 +6144,36 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         }}
       >
         <Stack
-          direction={{ xs: 'column', lg: 'row' }}
-          spacing={1.4}
+          direction={{ xs: 'column', xl: 'row' }}
+          spacing={0.9}
           justifyContent="space-between"
-          alignItems={{ xs: 'stretch', lg: 'center' }}
+          alignItems={{ xs: 'stretch', xl: 'center' }}
           sx={{
-            p: { xs: 1.5, md: 2 },
-            background: `linear-gradient(125deg, ${alpha('#0f4c81', 0.12)} 0%, #ffffff 58%, ${alpha('#2f80ed', 0.06)} 100%)`,
+            px: { xs: 1.25, md: 1.5 },
+            py: 1,
+            background: `linear-gradient(110deg, ${alpha('#0f4c81', 0.1)} 0%, #ffffff 52%, ${alpha('#2f80ed', 0.05)} 100%)`,
           }}
         >
-          <Stack spacing={0.25}>
+          <Stack direction="row" spacing={0.8} alignItems="center" flexWrap="wrap" useFlexGap>
             <Stack direction="row" spacing={0.8} alignItems="center">
-              <WorkspacesRoundedIcon sx={{ color: '#0f4c81' }} />
-              <Typography variant="h5" sx={{ fontWeight: 850, color: '#0b2239', letterSpacing: -0.3 }}>
+              <WorkspacesRoundedIcon sx={{ color: '#0f4c81', fontSize: 22 }} />
+              <Typography variant="h6" sx={{ fontWeight: 850, color: '#0b2239', letterSpacing: -0.2 }}>
                 Opportunities
               </Typography>
             </Stack>
-            <Typography variant="body2" color="text.secondary">
-              Focus on one sales stage at a time, from first concept through submitted proposal.
-            </Typography>
+            <Chip
+              size="small"
+              label={`${activePipelineSummary.count} opportunities`}
+              sx={{ height: 24, fontWeight: 750, color: '#0f4c81', backgroundColor: alpha('#0f4c81', 0.09) }}
+            />
+            <Chip
+              size="small"
+              label={formatCurrency(activePipelineSummary.amount, 2)}
+              sx={{ height: 24, fontWeight: 800, color: '#14532d', backgroundColor: alpha('#16a34a', 0.1) }}
+            />
           </Stack>
 
-          <Stack direction="row" spacing={0.75} alignItems="center">
+          <Stack direction="row" spacing={0.6} alignItems="center">
             <TextField
               size="small"
               placeholder="Search by quote #, project, or company..."
@@ -6193,9 +6188,10 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                   </InputAdornment>
                 ),
               }}
-              sx={{ width: { xs: '100%', sm: 290 } }}
+              sx={{ width: { xs: '100%', sm: 245 } }}
             />
             <Button
+              size="small"
               variant="outlined"
               color="inherit"
               startIcon={<FileUploadRoundedIcon fontSize="small" />}
@@ -6206,6 +6202,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
               {isSyncingExcelQuote ? 'Syncing Excel...' : (isUploadingFolderSelection ? 'Scanning Folder...' : 'Sync Excel Sheet')}
             </Button>
             <Button
+              size="small"
               variant="outlined"
               color="inherit"
               startIcon={<RefreshRoundedIcon fontSize="small" />}
@@ -6218,6 +6215,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
             </Button>
 
             <Button
+              size="small"
               variant="contained"
               startIcon={<AddRoundedIcon fontSize="small" />}
               onClick={handleOpenDialog}
@@ -6267,10 +6265,10 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
 
         <Box
           sx={{
-            p: 1.25,
+            p: 0.65,
             display: 'grid',
             gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 1fr))' },
-            gap: 1,
+            gap: 0.6,
             borderTop: 1,
             borderColor: alpha('#0f4c81', 0.1),
             backgroundColor: '#f8fafc',
@@ -6287,28 +6285,29 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                 variant="text"
                 aria-pressed={isActive}
                 sx={{
-                  p: 1.25,
+                  px: 1,
+                  py: 0.55,
                   justifyContent: 'stretch',
                   textTransform: 'none',
                   color: '#0b2239',
-                  borderRadius: 2,
+                  borderRadius: 1.5,
                   border: '1px solid',
                   borderColor: isActive ? alpha(stage.headerColor, 0.48) : alpha('#0f4c81', 0.12),
                   backgroundColor: isActive ? '#ffffff' : 'transparent',
-                  boxShadow: isActive ? `0 8px 24px ${alpha(stage.headerColor, 0.13)}` : 'none',
+                  boxShadow: isActive ? `0 4px 14px ${alpha(stage.headerColor, 0.11)}` : 'none',
                   '&:hover': {
                     backgroundColor: '#ffffff',
                     borderColor: alpha(stage.headerColor, 0.38),
                   },
                 }}
               >
-                <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1.5} sx={{ width: '100%' }}>
-                  <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0 }}>
+                <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1} sx={{ width: '100%' }}>
+                  <Stack direction="row" spacing={0.75} alignItems="center" sx={{ minWidth: 0 }}>
                     <Box
                       sx={{
-                        width: 34,
-                        height: 34,
-                        borderRadius: 1.5,
+                        width: 26,
+                        height: 26,
+                        borderRadius: 1,
                         display: 'grid',
                         placeItems: 'center',
                         flexShrink: 0,
@@ -6319,23 +6318,15 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                     >
                       {stage.id === 'concept' ? '1' : '2'}
                     </Box>
-                    <Stack spacing={0.1} alignItems="flex-start" sx={{ minWidth: 0 }}>
-                      <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
-                        {stage.label.replace(/^\d+\.\s*/, '')}
-                      </Typography>
-                      <Typography variant="caption" color="text.secondary" noWrap>
-                        {stage.description}
-                      </Typography>
-                    </Stack>
-                  </Stack>
-                  <Stack alignItems="flex-end" sx={{ flexShrink: 0 }}>
-                    <Typography variant="subtitle2" sx={{ fontWeight: 850, color: stage.headerColor }}>
-                      {summary.count}
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary">
-                      {formatCurrency(summary.amount, 0)}
+                    <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
+                      {stage.label.replace(/^\d+\.\s*/, '')}
                     </Typography>
                   </Stack>
+                  <Chip
+                    size="small"
+                    label={summary.count}
+                    sx={{ height: 21, minWidth: 34, fontWeight: 800, color: stage.headerColor, backgroundColor: alpha(stage.headerColor, 0.08) }}
+                  />
                 </Stack>
               </Button>
             )
