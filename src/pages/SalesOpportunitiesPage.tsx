@@ -10,6 +10,7 @@ import MoreVertRoundedIcon from '@mui/icons-material/MoreVertRounded'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import WorkspacesRoundedIcon from '@mui/icons-material/WorkspacesRounded'
 import {
+  Alert,
   Autocomplete,
   Avatar,
   Badge,
@@ -5160,6 +5161,10 @@ export default function SalesOpportunitiesPage() {
               <strong>{convertOrderQuoteLabel || 'N/A'}</strong>.
             </Typography>
 
+            {errorMessage ? (
+              <Alert severity="error">{errorMessage}</Alert>
+            ) : null}
+
             <TextField
               select
               fullWidth
@@ -5293,7 +5298,11 @@ export default function SalesOpportunitiesPage() {
             onClick={() => {
               void handleSubmitConvertOrder()
             }}
-            disabled={isSubmittingConvertOrder}
+            disabled={
+              isSubmittingConvertOrder
+              || !convertOrderFormState.poDate.trim()
+              || !convertOrderFormState.shipTo.trim()
+            }
           >
             {isSubmittingConvertOrder ? 'Converting...' : 'Convert To Order'}
           </Button>

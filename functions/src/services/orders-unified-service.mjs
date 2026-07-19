@@ -4,8 +4,8 @@
 //   1. Pull Order Track from Monday (whitelisted columns, no subitems).
 //   2. Pull QuickBooks projects + financials.
 //   3. Merge by order number / Monday item id / QB project id.
-//   4. For QB-only non-shipped rows: ONE name-only lookup against the Design
-//      (Pre-Production) board. Matches → flag "in design", not a hazard.
+//   4. Pull all item names from the Design (Pre-Production) board, seed every
+//      current Design item into the unified map, and merge any QB matches.
 //   5. For every non-shipped QB row still missing from Monday (including
 //      carryover rows), run ONE name-only lookup against the Shipped board.
 //      Matches → mark shipped.
@@ -573,6 +573,9 @@ export function createOrdersUnifiedService(deps) {
       return {
         candidateCount: 0,
         matchedCount: 0,
+        boardItemCount: 0,
+        activeItemIds: new Set(),
+        lookupSucceeded: false,
         matchedRowsByItemId: new Map(),
       }
     }
@@ -583,14 +586,6 @@ export function createOrdersUnifiedService(deps) {
         candidates.push(row)
       }
     })
-
-    if (candidates.length === 0) {
-      return {
-        candidateCount: 0,
-        matchedCount: 0,
-        matchedRowsByItemId: new Map(),
-      }
-    }
 
     let snapshot = null
     try {
@@ -604,12 +599,17 @@ export function createOrdersUnifiedService(deps) {
       return {
         candidateCount: candidates.length,
         matchedCount: 0,
+        boardItemCount: 0,
+        activeItemIds: new Set(),
+        lookupSucceeded: false,
         matchedRowsByItemId: new Map(),
       }
     }
 
-    const lookup = buildNameLookupFromMondayItems(snapshot.items)
+    const designItems = Array.isArray(snapshot?.items) ? snapshot.items : []
+    const lookup = buildNameLookupFromMondayItems(designItems)
     const matchedRowsByItemId = new Map()
+    const activeItemIds = new Set()
     let matchedCount = 0
 
     candidates.forEach((row) => {
@@ -638,9 +638,53 @@ export function createOrdersUnifiedService(deps) {
       matchedCount += 1
     })
 
+    designItems.forEach((item) => {
+      const itemId = normalizeText(item?.id, 120)
+
+      if (!itemId) {
+        return
+      }
+
+      activeItemIds.add(itemId)
+
+      const itemName = normalizeText(item?.name, 260) || null
+      const orderNumber = resolveOrderNumberFromMondayOrder({
+        orderName: itemName,
+      })
+      const orderKey = buildOrderKey({
+        orderNumber,
+        mondayItemId: itemId,
+      })
+
+      if (!orderKey) {
+        return
+      }
+
+      const row = mergedByKey.get(orderKey) ?? createEmptyUnifiedOrder(orderKey)
+
+      row.order_number = row.order_number || orderNumber || null
+      row.order_name = itemName || row.order_name
+      row.in_design = true
+      row.has_monday_record = true
+      row.is_shipped = false
+      row.hazard_reason = null
+      row.Monday_status = 'In Design'
+      row.monday_item_id = itemId
+      row.monday_board_id = designBoardId
+      row.monday_board_name = normalizeText(snapshot?.board?.name, 260)
+        || row.monday_board_name
+        || 'Pre-Production / Design AKF'
+
+      mergedByKey.set(orderKey, row)
+      matchedRowsByItemId.set(itemId, row)
+    })
+
     return {
       candidateCount: candidates.length,
       matchedCount,
+      boardItemCount: designItems.length,
+      activeItemIds,
+      lookupSucceeded: true,
       matchedRowsByItemId,
     }
   }
@@ -1336,6 +1380,22 @@ export function createOrdersUnifiedService(deps) {
           quickBooksOnlyMarkedShippedCount += 1
         }
       } else if (carryoverOrderKeys.has(row.orderKey)) {
+        const rowMondayItemId = normalizeText(row?.monday_item_id, 120)
+        const rowMondayBoardId = normalizeText(row?.monday_board_id, 120)
+        const wasRemovedFromDesign = Boolean(
+          designStats.lookupSucceeded
+          && row.in_design
+          && rowMondayBoardId === designBoardId
+          && rowMondayItemId
+          && !designStats.activeItemIds.has(rowMondayItemId)
+        )
+
+        if (wasRemovedFromDesign) {
+          staleQuickBooksOrderKeysToDelete.add(row.orderKey)
+          mergedByKey.delete(row.orderKey)
+          return
+        }
+
         if (pendingManualPlacementOrderKeys.has(normalizeText(row?.orderKey, 200))) {
           row.in_design = true
           row.Monday_status = normalizeText(row?.Monday_status, 260) || 'Pending placement'
@@ -1522,6 +1582,7 @@ export function createOrdersUnifiedService(deps) {
       orderTrackOrderCount: orderTrackOrders(orderTrackSnapshot).length,
       designBoardCandidateCount: designStats.candidateCount,
       designBoardMatchedCount: designStats.matchedCount,
+      designBoardItemCount: designStats.boardItemCount,
       designDetailEnrichedCount,
       pendingDesignCandidateCount: pendingDesignStats.candidateCount,
       pendingDesignMatchedCount: pendingDesignStats.matchedCount,
