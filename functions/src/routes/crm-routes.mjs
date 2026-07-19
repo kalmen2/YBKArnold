@@ -6825,6 +6825,25 @@ export function registerCrmRoutes(app, deps) {
         })
       }
 
+      const updateLocationIfPresent = async ({ boardId, itemId, columnId, value }) => {
+        const address = toTrimmedText(value, 2000)
+
+        if (!address) {
+          return
+        }
+
+        await updateMondayItemJsonColumn({
+          boardId,
+          itemId,
+          columnId,
+          jsonValue: {
+            address,
+            lat: '0',
+            lng: '0',
+          },
+        })
+      }
+
       const primaryCreated = await createMondayItem({
         boardId: mondayNewOrders2026BoardId,
         itemName,
@@ -6891,7 +6910,7 @@ export function registerCrmRoutes(app, deps) {
         columnId: mondayNewOrders2026ColumnIds.leadTimeDate,
         value: parsedLeadTimeDate,
       })
-      await updateTextIfPresent({
+      await updateLocationIfPresent({
         boardId: mondayNewOrders2026BoardId,
         itemId: primaryItemId,
         columnId: mondayNewOrders2026ColumnIds.shipTo,
@@ -6946,7 +6965,7 @@ export function registerCrmRoutes(app, deps) {
         columnId: mondayDesignAkfColumnIds.description,
         value: description,
       })
-      await updateTextIfPresent({
+      await updateLocationIfPresent({
         boardId: mondayDesignAkfBoardId,
         itemId: secondaryItemId,
         columnId: mondayDesignAkfColumnIds.shipTo,

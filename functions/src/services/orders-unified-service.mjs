@@ -1523,7 +1523,7 @@ export function createOrdersUnifiedService(deps) {
       //   - QB outage → don't fabricate "missing from QuickBooks" hazards
       if (existingHazard) {
         row.hazard_reason = existingHazard
-      } else if (hasMonday && !hasQB && quickBooksSucceeded && !row.in_design) {
+      } else if (hasMonday && !hasQB && quickBooksSucceeded) {
         row.hazard_reason = 'Order Track item not found in QuickBooks projects.'
       } else if (hasQB && !hasMonday && !row.in_design) {
         row.hazard_reason = 'QuickBooks project not found in Order Track or Design.'

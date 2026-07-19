@@ -139,9 +139,12 @@ export async function apiRequest<T>(
     'x-client-platform': 'web',
   })
   const payload = await response.json().catch(() => ({}))
+  const payloadError = typeof (payload as { error?: unknown }).error === 'string'
+    ? String((payload as { error?: unknown }).error).trim()
+    : ''
 
-  if (!response.ok) {
-    const requestError: ApiRequestError = new Error(payload.error ?? 'Request failed.')
+  if (!response.ok || payloadError) {
+    const requestError: ApiRequestError = new Error(payloadError || 'Request failed.')
     requestError.status = response.status
     requestError.payload = payload
     throw requestError

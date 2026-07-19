@@ -541,17 +541,18 @@ export function createMondaySnapshotService({
             return payload?.data ?? {}
           }
 
-          const status = Number(response?.status ?? 0)
+          const upstreamStatus = Number(response?.status ?? 0)
+          const status = response.ok ? 502 : upstreamStatus
           const fallbackMessage = response.ok
             ? 'Monday API returned an error.'
-            : `Monday API request failed with status ${status || 'unknown'}.`
+            : `Monday API request failed with status ${upstreamStatus || 'unknown'}.`
           const message = extractMondayErrorMessage(payload, fallbackMessage)
           const retryAfterHeaderMs = parseRetryAfterMs(response.headers?.get('retry-after'))
           const retryAfterPayloadMs = extractRetryDelayMsFromPayload(payload)
           const retryAfterMs = Math.max(retryAfterHeaderMs, retryAfterPayloadMs)
 
           if (
-            !isRetriableMondayFailure({ status, payload, message })
+            !isRetriableMondayFailure({ status: upstreamStatus, payload, message })
             || attempt >= mondayMaxRetryAttempts
           ) {
             throw {
