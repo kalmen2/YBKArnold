@@ -256,7 +256,7 @@ export function createMongoCollectionsService({
         const visitorLogsCollection = platformDatabase.collection('visitor_logs')
         const visitorShortcutsCollection = platformDatabase.collection('visitor_shortcuts')
         const mondayOrdersCollection = ordersDatabase.collection('monday_orders')
-        const ordersUnifiedCollection = ordersDatabase.collection('orders_unified')
+        const ordersUnifiedCollection = ordersDatabase.collection('orders')
         const authUsersCollection = authDatabase.collection('auth_users')
         const apiKeysCollection = authDatabase.collection('api_keys')
         const mobilePushTokensCollection = authDatabase.collection('mobile_push_tokens')
@@ -268,7 +268,9 @@ export function createMongoCollectionsService({
         const crmSalesRepsCollection = crmDatabase.collection('crm_sales_reps')
         const crmDuplicateQueueCollection = crmDatabase.collection('crm_duplicate_queue')
         const crmQuotesCollection = crmDatabase.collection('crm_quotes')
-        const crmOrdersCollection = crmDatabase.collection('crm_orders')
+        // Compatibility alias: all order reads and writes now use one canonical
+        // Orders collection in the orders domain database.
+        const crmOrdersCollection = ordersUnifiedCollection
         const aiRulesCollection = aiDatabase.collection('ai_rules')
         const aiCommentSummariesCollection = aiDatabase.collection('ai_comment_summaries')
         const purchasingItemsCollection = purchasingDatabase.collection('purchasing_items')
@@ -317,6 +319,8 @@ export function createMongoCollectionsService({
             mondayOrdersCollection.createIndex({ createdAt: -1 }),
             mondayOrdersCollection.createIndex({ orderName: 1 }),
             ordersUnifiedCollection.createIndex({ orderKey: 1 }, { unique: true }),
+            ordersUnifiedCollection.createIndex({ canonical_order_id: 1 }, { unique: true, sparse: true }),
+            ordersUnifiedCollection.createIndex({ source_quote_id: 1 }, { unique: true, sparse: true }),
             ordersUnifiedCollection.createIndex({ order_number: 1 }),
             ordersUnifiedCollection.createIndex({ is_shipped: 1, Due_date: 1 }),
             ordersUnifiedCollection.createIndex({ has_monday_record: 1, has_quickbooks_record: 1 }),
@@ -375,9 +379,10 @@ export function createMongoCollectionsService({
             crmQuotesCollection.createIndex({ id: 1 }, { unique: true }),
             crmQuotesCollection.createIndex({ dealerSourceId: 1, status: 1 }),
             crmQuotesCollection.createIndex({ quoteNumber: 1 }, { sparse: true }),
+            crmQuotesCollection.createIndex({ convertedOrderId: 1 }, { sparse: true }),
             crmQuotesCollection.createIndex({ status: 1, updatedAt: -1 }),
             crmQuotesCollection.createIndex({ createdAt: -1 }),
-            crmOrdersCollection.createIndex({ id: 1 }, { unique: true }),
+            crmOrdersCollection.createIndex({ id: 1 }, { unique: true, sparse: true }),
             crmOrdersCollection.createIndex({ dealerSourceId: 1, status: 1 }),
             crmOrdersCollection.createIndex({ orderNumber: 1 }, { sparse: true }),
             crmOrdersCollection.createIndex({ status: 1, updatedAt: -1 }),

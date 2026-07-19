@@ -371,6 +371,18 @@ export type OrdersChatMessageCreateInput = {
 
 export type OrdersOverviewOrder = {
   id: string
+  canonicalOrderId: string | null
+  sourceQuoteId: string | null
+  sourceQuoteNumber: string | null
+  sourceQuoteTitle: string | null
+  quoteCreatedAt: string | null
+  quoteSentAt: string | null
+  quoteViewedAt: string | null
+  quoteAcceptedAt: string | null
+  convertedAt: string | null
+  convertedByEmail: string | null
+  dealerSourceId: string | null
+  dealerName: string | null
   mondayItemId: string
   orderNumber: string
   jobNumber: string
@@ -431,7 +443,7 @@ export type OrdersOverviewOrder = {
   shopDrawingUrl: string | null
   cutListCachedUrl: string | null
   cutListUrl: string | null
-  source: 'monday' | 'quickbooks' | 'merged'
+  source: 'monday' | 'quickbooks' | 'merged' | 'website'
   hasMondayRecord: boolean
   hasQuickBooksRecord: boolean
   inDesign: boolean

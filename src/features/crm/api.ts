@@ -627,6 +627,9 @@ export type CrmQuote = {
   poNumber?: string | null
   acknowledgmentNumber?: string | null
   orderNumber?: string | null
+  convertedOrderId?: string | null
+  convertedOrderNumber?: string | null
+  convertedAt?: string | null
   paymentTerms?: string | null
   leadTime?: string | null
   subtotal?: number | null

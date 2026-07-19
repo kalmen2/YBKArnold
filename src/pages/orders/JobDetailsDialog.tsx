@@ -1,8 +1,10 @@
 import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded'
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
+import DescriptionRoundedIcon from '@mui/icons-material/DescriptionRounded'
 import EditRoundedIcon from '@mui/icons-material/EditRounded'
 import NotificationsActiveRoundedIcon from '@mui/icons-material/NotificationsActiveRounded'
 import PictureAsPdfRoundedIcon from '@mui/icons-material/PictureAsPdfRounded'
+import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded'
 import UploadFileRoundedIcon from '@mui/icons-material/UploadFileRounded'
 import VisibilityRoundedIcon from '@mui/icons-material/VisibilityRounded'
 import {
@@ -3069,6 +3071,60 @@ export function JobDetailsDialog({
 
             {detailsTab === 'info' ? (
               <Stack spacing={1.25}>
+                {order?.sourceQuoteId ? (
+                  <Paper
+                    variant="outlined"
+                    sx={{
+                      p: { xs: 1.4, md: 1.7 },
+                      borderColor: (theme) => alpha(theme.palette.primary.main, 0.28),
+                      background: (theme) => `linear-gradient(135deg, ${alpha(theme.palette.primary.main, 0.1)} 0%, ${alpha(theme.palette.info.light, 0.08)} 100%)`,
+                    }}
+                  >
+                    <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.4} alignItems={{ xs: 'stretch', sm: 'center' }}>
+                      <Box
+                        sx={{
+                          width: 42,
+                          height: 42,
+                          borderRadius: 1.5,
+                          display: 'grid',
+                          placeItems: 'center',
+                          color: 'primary.main',
+                          bgcolor: (theme) => alpha(theme.palette.primary.main, 0.12),
+                          flexShrink: 0,
+                        }}
+                      >
+                        <DescriptionRoundedIcon />
+                      </Box>
+                      <Stack spacing={0.35} sx={{ flex: 1, minWidth: 0 }}>
+                        <Typography variant="overline" color="primary.main" sx={{ fontWeight: 800, lineHeight: 1.2 }}>
+                          Accepted Quote
+                        </Typography>
+                        <Typography variant="h6" sx={{ fontWeight: 800 }}>
+                          {order.sourceQuoteNumber || 'Linked quote'}
+                        </Typography>
+                        <Stack direction="row" spacing={0.7} flexWrap="wrap" useFlexGap>
+                          {order.quoteAcceptedAt ? (
+                            <Chip size="small" label={`Accepted ${formatDate(order.quoteAcceptedAt)}`} />
+                          ) : null}
+                          {order.convertedAt ? (
+                            <Chip size="small" variant="outlined" label={`Converted ${formatDateTime(order.convertedAt)}`} />
+                          ) : null}
+                        </Stack>
+                      </Stack>
+                      <Button
+                        variant="contained"
+                        endIcon={<OpenInNewRoundedIcon />}
+                        onClick={() => {
+                          window.open(`/sales?tab=opportunities&quoteId=${encodeURIComponent(order.sourceQuoteId || '')}`, '_blank', 'noopener,noreferrer')
+                        }}
+                        sx={{ textTransform: 'none', fontWeight: 700, whiteSpace: 'nowrap' }}
+                      >
+                        Open quote details
+                      </Button>
+                    </Stack>
+                  </Paper>
+                ) : null}
+
                 <Paper variant="outlined" sx={{ p: { xs: 1.3, md: 1.5 } }}>
                   <Stack spacing={1}>
                     <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>

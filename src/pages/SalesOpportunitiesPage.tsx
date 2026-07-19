@@ -6910,6 +6910,57 @@ export default function SalesOpportunitiesPage() {
 
               {selectedOpportunityDetailsTab === 'details' ? (
                 <>
+              {selectedOpportunity.convertedOrderId ? (
+                <Paper
+                  variant="outlined"
+                  sx={{
+                    p: 1.5,
+                    borderColor: alpha('#0f4c81', 0.28),
+                    background: `linear-gradient(135deg, ${alpha('#0f4c81', 0.11)} 0%, ${alpha('#4f9ac9', 0.07)} 100%)`,
+                  }}
+                >
+                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.2} alignItems={{ xs: 'stretch', sm: 'center' }}>
+                    <Box
+                      sx={{
+                        width: 42,
+                        height: 42,
+                        borderRadius: 1.4,
+                        display: 'grid',
+                        placeItems: 'center',
+                        color: '#0f4c81',
+                        bgcolor: alpha('#0f4c81', 0.12),
+                        flexShrink: 0,
+                      }}
+                    >
+                      <WorkspacesRoundedIcon />
+                    </Box>
+                    <Stack spacing={0.25} sx={{ flex: 1, minWidth: 0 }}>
+                      <Typography variant="overline" sx={{ color: '#0f4c81', fontWeight: 800, lineHeight: 1.2 }}>
+                        Accepted Into Order
+                      </Typography>
+                      <Typography variant="h6" sx={{ fontWeight: 800 }}>
+                        {selectedOpportunity.convertedOrderNumber || selectedOpportunity.orderNumber || 'Linked order'}
+                      </Typography>
+                      {selectedOpportunity.convertedAt ? (
+                        <Typography variant="caption" color="text.secondary">
+                          Converted {formatOpportunityLikeDate(selectedOpportunity.convertedAt)}
+                        </Typography>
+                      ) : null}
+                    </Stack>
+                    <Button
+                      variant="contained"
+                      endIcon={<ArrowForwardRoundedIcon />}
+                      onClick={() => {
+                        window.open(`/orders?orderId=${encodeURIComponent(selectedOpportunity.convertedOrderId || '')}`, '_blank', 'noopener,noreferrer')
+                      }}
+                      sx={{ textTransform: 'none', fontWeight: 700, whiteSpace: 'nowrap' }}
+                    >
+                      Open order details
+                    </Button>
+                  </Stack>
+                </Paper>
+              ) : null}
+
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.1}>
                 <Autocomplete
                   options={excelSyncDealerOptions}

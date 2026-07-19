@@ -238,7 +238,7 @@ export default function OrdersPage() {
     }
 
     const targetOrder = allOrders.find((order) => {
-      return [order.id, order.mondayItemId, order.orderNumber]
+      return [order.canonicalOrderId, order.id, order.mondayItemId, order.orderNumber]
         .map((value) => String(value ?? '').trim())
         .some((value) => value === requestedOrderId)
     })
@@ -269,7 +269,7 @@ export default function OrdersPage() {
   }, [overview])
 
   const handleOpenJobDialog = useCallback((order: OrdersOverviewOrder, mode: JobDetailsMode) => {
-    if (!order.hasMondayRecord && !order.inDesign) {
+    if (!order.hasMondayRecord && !order.inDesign && !order.canonicalOrderId) {
       setErrorMessage('This QuickBooks project is not linked to a Monday order yet.')
       return
     }

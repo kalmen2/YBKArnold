@@ -649,7 +649,7 @@ export function registerOrdersRoutes(app, deps) {
 
     const sourceValue = String(orderDocument?.source ?? '').trim().toLowerCase()
     const source =
-      sourceValue === 'quickbooks' || sourceValue === 'monday' || sourceValue === 'merged'
+      sourceValue === 'quickbooks' || sourceValue === 'monday' || sourceValue === 'merged' || sourceValue === 'website'
         ? sourceValue
         : hasMondayRecord
           ? 'monday'
@@ -703,6 +703,18 @@ export function registerOrdersRoutes(app, deps) {
 
     return {
       id: String(orderDocument?.orderKey ?? resolvedOrderNumber).trim() || resolvedOrderNumber,
+      canonicalOrderId: String(orderDocument?.canonical_order_id ?? '').trim() || null,
+      sourceQuoteId: String(orderDocument?.source_quote_id ?? '').trim() || null,
+      sourceQuoteNumber: String(orderDocument?.source_quote_number ?? '').trim() || null,
+      sourceQuoteTitle: String(orderDocument?.source_quote_title ?? '').trim() || null,
+      quoteCreatedAt: String(orderDocument?.quote_created_at ?? '').trim() || null,
+      quoteSentAt: String(orderDocument?.quote_sent_at ?? '').trim() || null,
+      quoteViewedAt: String(orderDocument?.quote_viewed_at ?? '').trim() || null,
+      quoteAcceptedAt: String(orderDocument?.quote_accepted_at ?? '').trim() || null,
+      convertedAt: String(orderDocument?.converted_at ?? '').trim() || null,
+      convertedByEmail: String(orderDocument?.converted_by_email ?? '').trim() || null,
+      dealerSourceId: String(orderDocument?.dealer_source_id ?? '').trim() || null,
+      dealerName: String(orderDocument?.dealer_name ?? '').trim() || null,
       mondayItemId,
       orderNumber: resolvedOrderNumber,
       jobNumber: resolvedOrderNumber,
@@ -880,6 +892,19 @@ export function registerOrdersRoutes(app, deps) {
             projection: {
               _id: 0,
               orderKey: 1,
+              canonical_order_id: 1,
+              is_canonical_order: 1,
+              source_quote_id: 1,
+              source_quote_number: 1,
+              source_quote_title: 1,
+              quote_created_at: 1,
+              quote_sent_at: 1,
+              quote_viewed_at: 1,
+              quote_accepted_at: 1,
+              converted_at: 1,
+              converted_by_email: 1,
+              dealer_source_id: 1,
+              dealer_name: 1,
               order_number: 1,
               monday_item_id: 1,
               Monday_url: 1,

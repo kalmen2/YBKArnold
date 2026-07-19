@@ -1257,6 +1257,76 @@ export function createOrdersUnifiedService(deps) {
       warnings,
     })
 
+    // Canonical website orders are permanent. Reconcile their external Monday
+    // rows into one record and retain the order when either linked item is
+    // removed, surfacing the missing source as a hazard instead of deleting it.
+    ;(Array.isArray(existingNonShippedRows) ? existingNonShippedRows : [])
+      .filter((stored) => stored?.is_canonical_order === true)
+      .forEach((stored) => {
+        const canonicalRow = hydrateUnifiedRowFromStoredDocument(stored)
+        if (!canonicalRow) {
+          return
+        }
+
+        const primaryItemId = normalizeText(stored?.monday_primary_item_id, 120)
+        const secondaryItemId = normalizeText(stored?.monday_secondary_item_id, 120)
+        const matchingEntries = [...mergedByKey.entries()].filter(([, row]) => {
+          const mondayItemId = normalizeText(row?.monday_item_id, 120)
+          return row?.orderKey === canonicalRow.orderKey
+            || (primaryItemId && mondayItemId === primaryItemId)
+            || (secondaryItemId && mondayItemId === secondaryItemId)
+        })
+        const primaryActive = Boolean(primaryItemId && activeMondayItemIds.has(primaryItemId))
+        const secondaryActive = Boolean(
+          secondaryItemId && designStats.activeItemIds.has(secondaryItemId)
+        )
+        const reconciled = { ...canonicalRow }
+
+        matchingEntries.forEach(([matchingKey, matchingRow]) => {
+          Object.entries(matchingRow).forEach(([field, value]) => {
+            if (value === null || value === undefined || value === '') {
+              return
+            }
+            if (Array.isArray(value) && value.length === 0) {
+              return
+            }
+            reconciled[field] = value
+          })
+          if (matchingKey !== canonicalRow.orderKey) {
+            mergedByKey.delete(matchingKey)
+          }
+        })
+
+        reconciled.orderKey = canonicalRow.orderKey
+        reconciled.canonical_order_id = stored.canonical_order_id
+        reconciled.is_canonical_order = true
+        reconciled.has_crm_record = true
+        reconciled.has_monday_record = primaryActive || secondaryActive
+        reconciled.in_design = secondaryItemId ? true : Boolean(reconciled.in_design)
+
+        if (secondaryActive) {
+          reconciled.monday_item_id = secondaryItemId
+          reconciled.monday_board_id = designBoardId
+        } else if (primaryActive) {
+          reconciled.monday_item_id = primaryItemId
+          reconciled.monday_board_id = orderTrackBoardId
+        } else {
+          reconciled.monday_item_id = secondaryItemId || primaryItemId || reconciled.monday_item_id
+        }
+
+        if (secondaryItemId && !secondaryActive) {
+          reconciled.hazard_reason = 'Design item not found in Monday.'
+        } else if (!reconciled.has_monday_record) {
+          reconciled.hazard_reason = 'Order was created from a quote but is missing from Monday.'
+        } else if (!reconciled.has_quickbooks_record && quickBooksSucceeded) {
+          reconciled.hazard_reason = 'Order Track item not found in QuickBooks projects.'
+        } else {
+          reconciled.hazard_reason = null
+        }
+
+        mergedByKey.set(canonicalRow.orderKey, reconciled)
+      })
+
     // Carryover: rows in DB (non-shipped) that didn't show up in this pull.
     const carryoverCandidates = []
     ;(Array.isArray(existingNonShippedRows) ? existingNonShippedRows : []).forEach((stored) => {
@@ -1518,8 +1588,8 @@ export function createOrdersUnifiedService(deps) {
       //   - Order Track has it but QB doesn't  → real hazard (must be fixed)
       //   - QB has it but Order Track doesn't, and we found it in design → not a hazard
       //   - QB has it but Order Track doesn't, and design didn't match   → hazard
-      //   - Design rows (including pending New Orders placement) should not
-      //     receive the generic "missing from QuickBooks" hazard
+      //   - Monday Design rows missing from QB receive the same hazard as Orders
+      //   - Canonical website orders survive missing external records
       //   - QB outage → don't fabricate "missing from QuickBooks" hazards
       if (existingHazard) {
         row.hazard_reason = existingHazard
@@ -1531,7 +1601,13 @@ export function createOrdersUnifiedService(deps) {
         row.hazard_reason = null
       }
 
-      row.source = hasMonday && hasQB ? 'merged' : hasQB ? 'quickbooks' : 'monday'
+      row.source = hasMonday && hasQB
+        ? 'merged'
+        : hasQB
+          ? 'quickbooks'
+          : row.is_canonical_order
+            ? 'website'
+            : 'monday'
       row.lastSyncedAt = refreshedAt
       row.updatedAt = refreshedAt
       row.quickbooks_synced_at = quickBooksData?.generatedAt || null

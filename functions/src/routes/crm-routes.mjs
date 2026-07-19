@@ -1460,7 +1460,7 @@ async function computeCrmOverview({
       .sort({ importedAt: -1 })
       .limit(1)
       .next(),
-    crmOrdersCollection.countDocuments({}),
+    crmOrdersCollection.countDocuments({ is_canonical_order: true }),
   ])
 
   const quoteCursor = crmQuotesCollection.find(
@@ -1571,6 +1571,64 @@ async function computeCrmOverview({
     orders: {
       totalOrders,
     },
+  }
+}
+
+function toCrmOrderResponse(order) {
+  if (!order || typeof order !== 'object') {
+    return null
+  }
+
+  return {
+    id: toTrimmedText(order?.canonical_order_id, 160) || toTrimmedText(order?.id, 160),
+    dealerSourceId: toTrimmedText(order?.dealer_source_id, 160)
+      || toTrimmedText(order?.dealerSourceId, 160),
+    dealerName: toTrimmedText(order?.dealer_name, 240)
+      || toTrimmedText(order?.dealerName, 240),
+    orderNumber: toTrimmedText(order?.order_number, 120)
+      || toTrimmedText(order?.orderNumber, 120)
+      || null,
+    sourceQuoteId: toTrimmedText(order?.source_quote_id, 160)
+      || toTrimmedText(order?.sourceQuoteId, 160)
+      || null,
+    sourceQuoteNumber: toTrimmedText(order?.source_quote_number, 120)
+      || toTrimmedText(order?.sourceQuoteNumber, 120)
+      || null,
+    sourceQuoteTitle: toTrimmedText(order?.source_quote_title, 240)
+      || toTrimmedText(order?.sourceQuoteTitle, 240)
+      || null,
+    mondayPrimaryBoardId: toTrimmedText(order?.monday_primary_board_id, 120)
+      || toTrimmedText(order?.mondayPrimaryBoardId, 120)
+      || null,
+    mondayPrimaryItemId: toTrimmedText(order?.monday_primary_item_id, 120)
+      || toTrimmedText(order?.mondayPrimaryItemId, 120)
+      || null,
+    mondaySecondaryBoardId: toTrimmedText(order?.monday_secondary_board_id, 120)
+      || toTrimmedText(order?.mondaySecondaryBoardId, 120)
+      || null,
+    mondaySecondaryItemId: toTrimmedText(order?.monday_secondary_item_id, 120)
+      || toTrimmedText(order?.mondaySecondaryItemId, 120)
+      || null,
+    poDate: toIsoDateOrNull(order?.poDate ?? order?.order_date),
+    poNumber: toTrimmedText(order?.poNumber ?? order?.po_number, 120) || null,
+    leadTimeDate: toIsoDateOrNull(order?.leadTimeDate ?? order?.Due_date),
+    shipTo: toTrimmedText(order?.shipTo ?? order?.ship_to, 2000) || null,
+    title: toTrimmedText(order?.title ?? order?.order_name, 240) || 'Order',
+    status: normalizeStatus(order?.crmStatus ?? order?.canonical_status, orderStatuses, 'pending') || 'pending',
+    progressPercent: toPercentInRangeOrNull(order?.progressPercent ?? order?.canonical_progress_percent) ?? 0,
+    orderValue: toNonNegativeNumberOrNull(order?.orderValue ?? order?.canonical_order_value) ?? 0,
+    currency: toTrimmedText(order?.currency ?? order?.canonical_currency, 16) || 'USD',
+    dueDate: toIsoDateOrNull(order?.dueDate ?? order?.Due_date),
+    shippedAt: toIsoDateOrNull(order?.shippedAt ?? order?.shipped_at),
+    deliveredAt: toIsoDateOrNull(order?.deliveredAt),
+    notes: toTrimmedText(order?.notes ?? order?.canonical_notes, 4000) || null,
+    createdByUid: toTrimmedText(order?.createdByUid ?? order?.converted_by_uid, 160) || null,
+    createdByEmail: toTrimmedText(order?.createdByEmail ?? order?.converted_by_email, 200) || null,
+    lastStatusChangedAt: toIsoDateOrNull(order?.lastStatusChangedAt)
+      || toIsoDateOrNull(order?.canonical_created_at)
+      || null,
+    createdAt: toIsoDateOrNull(order?.canonical_created_at ?? order?.createdAt),
+    updatedAt: toIsoDateOrNull(order?.canonical_updated_at ?? order?.updatedAt),
   }
 }
 
@@ -6634,6 +6692,8 @@ export function registerCrmRoutes(app, deps) {
 
   app.post('/api/crm/quotes/:quoteId/convert-to-order', requireFirebaseAuth, async (req, res, next) => {
     const createdMondayItems = []
+    let createdCanonicalOrderKey = null
+    let canonicalOrdersCollection = null
 
     try {
       if (
@@ -6695,8 +6755,9 @@ export function registerCrmRoutes(app, deps) {
       const notes = toTrimmedText(body.notes, 4000) || null
       const {
         crmQuotesCollection,
-        crmOrdersCollection,
+        ordersUnifiedCollection,
       } = await getCollections()
+      canonicalOrdersCollection = ordersUnifiedCollection
 
       const quote = await crmQuotesCollection.findOne(
         {
@@ -6725,9 +6786,9 @@ export function registerCrmRoutes(app, deps) {
         })
       }
 
-      const existingLinkedOrder = await crmOrdersCollection.findOne(
+      const existingLinkedOrder = await ordersUnifiedCollection.findOne(
         {
-          sourceQuoteId: quoteId,
+          source_quote_id: quoteId,
         },
         {
           projection: {
@@ -6739,7 +6800,7 @@ export function registerCrmRoutes(app, deps) {
       if (existingLinkedOrder) {
         return res.status(409).json({
           error: 'This quote was already converted to an order.',
-          order: existingLinkedOrder,
+          order: toCrmOrderResponse(existingLinkedOrder),
         })
       }
 
@@ -6751,9 +6812,9 @@ export function registerCrmRoutes(app, deps) {
         || fallbackOrderNumber
       let orderNumber = baseOrderNumber
 
-      const existingOrderWithSameNumber = await crmOrdersCollection.findOne(
+      const existingOrderWithSameNumber = await ordersUnifiedCollection.findOne(
         {
-          orderNumber: new RegExp(`^${escapeRegex(baseOrderNumber)}$`, 'i'),
+          order_number: new RegExp(`^${escapeRegex(baseOrderNumber)}$`, 'i'),
         },
         {
           projection: {
@@ -6987,8 +7048,13 @@ export function registerCrmRoutes(app, deps) {
       })
 
       const now = nowIso()
+      const canonicalOrderId = randomUUID()
+      const normalizedOrderNumberKey = orderNumber.toLowerCase().replace(/[^a-z0-9]+/g, '')
+      const canonicalOrderKey = normalizedOrderNumberKey
+        ? `order:${normalizedOrderNumberKey}`
+        : `canonical:${canonicalOrderId}`
       const nextOrder = {
-        id: randomUUID(),
+        id: canonicalOrderId,
         dealerSourceId,
         dealerName: dealerLabel,
         orderNumber,
@@ -7019,7 +7085,76 @@ export function registerCrmRoutes(app, deps) {
         updatedAt: now,
       }
 
-      await crmOrdersCollection.insertOne(nextOrder)
+      const quoteSnapshot = {
+        ...quote,
+        opportunityStage: 'order_placement',
+        status: 'accepted',
+        acceptedAt: toIsoDateOrNull(quote?.acceptedAt) || now,
+        orderNumber,
+        poNumber,
+        leadTime: parsedLeadTimeDate || null,
+        updatedAt: now,
+      }
+      delete quoteSnapshot._id
+
+      await ordersUnifiedCollection.insertOne({
+        orderKey: canonicalOrderKey,
+        ...nextOrder,
+        crmStatus: nextOrder.status,
+        id: canonicalOrderId,
+        canonical_order_id: canonicalOrderId,
+        is_canonical_order: true,
+        has_crm_record: true,
+        order_number: orderNumber,
+        order_name: description,
+        dealer_source_id: dealerSourceId,
+        dealer_name: dealerLabel,
+        source_quote_id: quoteId,
+        source_quote_number: toTrimmedText(quote?.quoteNumber, 120) || null,
+        source_quote_title: toTrimmedText(quote?.title, 240) || null,
+        source_quote_snapshot: quoteSnapshot,
+        quote_created_at: toIsoDateOrNull(quote?.createdAt),
+        quote_sent_at: toIsoDateOrNull(quote?.sentAt),
+        quote_viewed_at: toIsoDateOrNull(quote?.viewedAt) || toIsoDateOrNull(quote?.readAt),
+        quote_accepted_at: toIsoDateOrNull(quote?.acceptedAt) || now,
+        converted_at: now,
+        converted_by_uid: toTrimmedText(req.authUser?.uid, 160) || null,
+        converted_by_email: toTrimmedText(req.authUser?.email, 200) || null,
+        canonical_status: 'pending',
+        canonical_progress_percent: 5,
+        canonical_order_value: orderValue,
+        canonical_currency: toTrimmedText(quote?.currency, 16) || 'USD',
+        canonical_notes: nextOrder.notes,
+        canonical_created_at: now,
+        canonical_updated_at: now,
+        monday_primary_board_id: mondayNewOrders2026BoardId,
+        monday_primary_item_id: primaryItemId,
+        monday_secondary_board_id: mondayDesignAkfBoardId,
+        monday_secondary_item_id: secondaryItemId,
+        monday_item_id: secondaryItemId,
+        monday_board_id: mondayDesignAkfBoardId,
+        monday_board_name: 'Design AKF',
+        Monday_status: 'waiting on deposit',
+        po_number: poNumber,
+        ship_to: shipTo,
+        order_date: poDate || null,
+        Due_date: parsedLeadTimeDate || null,
+        monday_notes: nextOrder.notes,
+        monday_description: description,
+        is_shipped: false,
+        status: [],
+        progress_percent: 5,
+        progress_status_details: [],
+        has_monday_record: true,
+        has_quickbooks_record: false,
+        in_design: true,
+        hazard_reason: 'Order Track item not found in QuickBooks projects.',
+        source: 'monday',
+        createdAt: now,
+        updatedAt: now,
+        lastSyncedAt: now,
+      })
+      createdCanonicalOrderKey = canonicalOrderKey
 
       const nextQuoteStatus = 'accepted'
       const currentQuoteStatus = normalizeStatus(quote?.status, quoteStatuses, 'draft') || 'draft'
@@ -7028,6 +7163,9 @@ export function registerCrmRoutes(app, deps) {
         status: nextQuoteStatus,
         acceptedAt: toIsoDateOrNull(quote?.acceptedAt) || now,
         orderNumber,
+        convertedOrderId: canonicalOrderId,
+        convertedOrderNumber: orderNumber,
+        convertedAt: now,
         poNumber,
         leadTime: parsedLeadTimeDate || null,
         updatedAt: now,
@@ -7063,6 +7201,14 @@ export function registerCrmRoutes(app, deps) {
         },
       })
     } catch (error) {
+      if (canonicalOrdersCollection && createdCanonicalOrderKey) {
+        try {
+          await canonicalOrdersCollection.deleteOne({ orderKey: createdCanonicalOrderKey })
+        } catch {
+          // Best effort rollback; preserve original conversion error.
+        }
+      }
+
       if (typeof deleteMondayItem === 'function' && createdMondayItems.length > 0) {
         for (const item of [...createdMondayItems].reverse()) {
           try {
@@ -7093,6 +7239,16 @@ export function registerCrmRoutes(app, deps) {
       }
 
       const { crmQuotesCollection } = await getCollections()
+      const existingQuote = await crmQuotesCollection.findOne(
+        { id: quoteId },
+        { projection: { _id: 0, convertedOrderId: 1, orderNumber: 1, status: 1 } },
+      )
+
+      if (toTrimmedText(existingQuote?.convertedOrderId, 160)) {
+        return res.status(409).json({
+          error: 'Converted quotes are permanent and cannot be deleted. Open the linked order instead.',
+        })
+      }
 
       const deletedQuote = await crmQuotesCollection.findOneAndDelete(
         {
@@ -7694,32 +7850,37 @@ export function registerCrmRoutes(app, deps) {
       const status = toLowerText(req.query?.status, 60)
       const dealerSourceId = toTrimmedText(req.query?.dealerSourceId, 160)
       const limit = Math.min(500, Math.max(1, toNonNegativeInteger(req.query?.limit, 120)))
-      const { crmOrdersCollection } = await getCollections()
-      const filter = {}
+      const { ordersUnifiedCollection } = await getCollections()
+      const filterClauses = [{ is_canonical_order: true }]
 
       if (status && status !== 'all') {
-        filter.status = status
+        filterClauses.push({ crmStatus: status })
       }
 
       if (dealerSourceId) {
-        filter.dealerSourceId = dealerSourceId
+        filterClauses.push({
+          $or: [
+            { dealer_source_id: dealerSourceId },
+            { dealerSourceId },
+          ],
+        })
       }
 
-      const orders = await crmOrdersCollection
+      const orders = await ordersUnifiedCollection
         .find(
-          filter,
+          combineFilterClauses(filterClauses),
           {
             projection: {
               _id: 0,
             },
           },
         )
-        .sort({ createdAt: -1, updatedAt: -1 })
+        .sort({ canonical_created_at: -1, createdAt: -1, updatedAt: -1 })
         .limit(limit)
         .toArray()
 
       return res.json({
-        orders,
+        orders: orders.map(toCrmOrderResponse).filter(Boolean),
       })
     } catch (error) {
       next(error)
@@ -7757,7 +7918,7 @@ export function registerCrmRoutes(app, deps) {
 
       const {
         crmAccountsCollection,
-        crmOrdersCollection,
+        ordersUnifiedCollection,
       } = await getCollections()
 
       const dealer = await resolveDealerOrThrow(crmAccountsCollection, body.dealerSourceId)
@@ -7784,7 +7945,41 @@ export function registerCrmRoutes(app, deps) {
         updatedAt: now,
       }
 
-      await crmOrdersCollection.insertOne(nextOrder)
+      const normalizedOrderNumberKey = (nextOrder.orderNumber || nextOrder.id)
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '')
+      const orderKey = normalizedOrderNumberKey
+        ? `order:${normalizedOrderNumberKey}`
+        : `canonical:${nextOrder.id}`
+
+      await ordersUnifiedCollection.insertOne({
+        ...nextOrder,
+        orderKey,
+        canonical_order_id: nextOrder.id,
+        is_canonical_order: true,
+        has_crm_record: true,
+        dealer_source_id: nextOrder.dealerSourceId,
+        dealer_name: nextOrder.dealerName,
+        order_number: nextOrder.orderNumber || nextOrder.id,
+        order_name: nextOrder.title,
+        canonical_status: nextOrder.status,
+        crmStatus: nextOrder.status,
+        canonical_progress_percent: nextOrder.progressPercent,
+        canonical_order_value: nextOrder.orderValue,
+        canonical_currency: nextOrder.currency,
+        canonical_notes: nextOrder.notes,
+        canonical_created_at: now,
+        canonical_updated_at: now,
+        is_shipped: nextOrder.status === 'shipped' || nextOrder.status === 'delivered',
+        status: [],
+        progress_percent: nextOrder.progressPercent,
+        progress_status_details: [],
+        has_monday_record: false,
+        has_quickbooks_record: false,
+        in_design: false,
+        hazard_reason: 'Website order is missing from Monday and QuickBooks.',
+        source: 'website',
+      })
 
       return res.status(201).json({
         order: nextOrder,
@@ -7827,6 +8022,7 @@ export function registerCrmRoutes(app, deps) {
         })
       }
 
+      const existingOrderResponse = toCrmOrderResponse(existingOrder)
       const updates = {}
       const now = nowIso()
 
@@ -7869,7 +8065,7 @@ export function registerCrmRoutes(app, deps) {
       }
 
       if (Object.prototype.hasOwnProperty.call(body, 'status')) {
-        const nextStatus = normalizeStatus(body.status, orderStatuses, existingOrder.status)
+        const nextStatus = normalizeStatus(body.status, orderStatuses, existingOrderResponse?.status)
 
         if (!nextStatus) {
           return res.status(400).json({
@@ -7879,20 +8075,20 @@ export function registerCrmRoutes(app, deps) {
 
         updates.status = nextStatus
 
-        if (nextStatus !== existingOrder.status) {
+        if (nextStatus !== existingOrderResponse?.status) {
           updates.lastStatusChangedAt = now
         }
 
-        if (nextStatus === 'shipped' && !existingOrder.shippedAt) {
+        if (nextStatus === 'shipped' && !existingOrderResponse?.shippedAt) {
           updates.shippedAt = now
         }
 
-        if (nextStatus === 'delivered' && !existingOrder.deliveredAt) {
+        if (nextStatus === 'delivered' && !existingOrderResponse?.deliveredAt) {
           updates.deliveredAt = now
         }
 
         if (!Object.prototype.hasOwnProperty.call(body, 'progressPercent')) {
-          updates.progressPercent = inferProgressFromOrderStatus(nextStatus, existingOrder.progressPercent)
+          updates.progressPercent = inferProgressFromOrderStatus(nextStatus, existingOrderResponse?.progressPercent)
         }
       }
 
@@ -7926,11 +8122,42 @@ export function registerCrmRoutes(app, deps) {
 
       if (Object.keys(updates).length === 0) {
         return res.json({
-          order: existingOrder,
+          order: existingOrderResponse,
         })
       }
 
       updates.updatedAt = now
+      updates.canonical_updated_at = now
+
+      if (Object.prototype.hasOwnProperty.call(updates, 'title')) {
+        updates.order_name = updates.title
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, 'orderNumber')) {
+        updates.order_number = updates.orderNumber
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, 'dealerSourceId')) {
+        updates.dealer_source_id = updates.dealerSourceId
+        updates.dealer_name = updates.dealerName
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, 'status')) {
+        updates.crmStatus = updates.status
+        updates.canonical_status = updates.status
+        updates.is_shipped = updates.status === 'shipped' || updates.status === 'delivered'
+        delete updates.status
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, 'progressPercent')) {
+        updates.canonical_progress_percent = updates.progressPercent
+        updates.progress_percent = updates.progressPercent
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, 'orderValue')) {
+        updates.canonical_order_value = updates.orderValue
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, 'currency')) {
+        updates.canonical_currency = updates.currency
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, 'notes')) {
+        updates.canonical_notes = updates.notes
+      }
 
       const updatedOrder = await crmOrdersCollection.findOneAndUpdate(
         {
@@ -7948,7 +8175,7 @@ export function registerCrmRoutes(app, deps) {
       )
 
       return res.json({
-        order: updatedOrder,
+        order: toCrmOrderResponse(updatedOrder),
       })
     } catch (error) {
       next(error)
