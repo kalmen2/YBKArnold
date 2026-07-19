@@ -20,6 +20,7 @@
     "@mui/icons-material": "^7.3.9",
     "@mui/material": "^7.3.9",
     "@mui/x-data-grid": "^9.0.4",
+    "@react-pdf/renderer": "^4.5.1",
     "@svg-maps/usa": "^2.0.0",
     "@tanstack/react-query": "^5.99.1",
     "concurrently": "^9.2.1",

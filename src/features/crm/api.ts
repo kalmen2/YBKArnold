@@ -548,13 +548,46 @@ export type CrmQuoteDocument = {
   name: string | null
 }
 
+export type CrmQuoteLineImage = {
+  id: string
+  url: string
+  name: string | null
+  width: number | null
+  height: number | null
+}
+
 export type CrmQuoteLineItem = {
+  id?: string
   itemNumber: number
   description: string | null
   qty: number | null
   unitPrice: number | null
   extPrice: number | null
+  images?: CrmQuoteLineImage[]
 }
+
+export type CrmQuoteOrigin = 'website' | 'excel'
+
+export type CrmQuotePrintSettings = {
+  id: 'default'
+  logoUrl: string | null
+  logoName: string | null
+  companyName: string
+  addressLines: string[]
+  phone: string | null
+  email: string | null
+  website: string | null
+  headerText: string | null
+  footerText: string | null
+  accentColor: string
+  showPaymentTerms: boolean
+  showLeadTime: boolean
+  showFreight: boolean
+  updatedAt: string | null
+  updatedByEmail: string | null
+}
+
+export type CrmQuotePrintSettingsInput = Omit<CrmQuotePrintSettings, 'id' | 'updatedAt' | 'updatedByEmail'>
 
 export type CrmQuote = {
   id: string
@@ -591,6 +624,11 @@ export type CrmQuote = {
   documentUrl?: string | null
   documentName?: string | null
   documents?: CrmQuoteDocument[] | null
+  origin?: CrmQuoteOrigin | null
+  sourceWorkbookUrl?: string | null
+  sourceWorkbookName?: string | null
+  convertedPdfUrl?: string | null
+  convertedPdfName?: string | null
   revisionCount?: number | null
   status: CrmQuoteStatus
   totalAmount: number
@@ -639,6 +677,11 @@ export type CrmQuoteUpsertInput = {
   documentUrl?: string | null
   documentName?: string | null
   documents?: CrmQuoteDocument[] | null
+  origin?: CrmQuoteOrigin | null
+  sourceWorkbookUrl?: string | null
+  sourceWorkbookName?: string | null
+  convertedPdfUrl?: string | null
+  convertedPdfName?: string | null
   revisionCount?: number | null
   status?: CrmQuoteStatus
   totalAmount: number
@@ -651,6 +694,7 @@ export type CrmQuoteUpsertInput = {
 
 export type CrmExcelQuoteSyncInput = {
   quoteNumber: string
+  origin?: CrmQuoteOrigin | null
   allowCreateWhenMissingConcept?: boolean
   title?: string | null
   companyName?: string | null
@@ -668,6 +712,10 @@ export type CrmExcelQuoteSyncInput = {
   freightDescription?: string | null
   totalAmount?: number | null
   lineItems?: CrmQuoteLineItem[]
+  sourceWorkbookUrl?: string | null
+  sourceWorkbookName?: string | null
+  convertedPdfUrl?: string | null
+  convertedPdfName?: string | null
 }
 
 export type CrmExcelQuoteSyncResponse = {
@@ -1115,6 +1163,28 @@ export function fetchCrmQuotes(options: {
       lifecycle: options.lifecycle ?? undefined,
     }),
   )
+}
+
+export function fetchCrmQuotePrintSettings() {
+  return apiRequest<{ settings: CrmQuotePrintSettings }>('/api/crm/quote-print-settings')
+}
+
+export function updateCrmQuotePrintSettings(input: CrmQuotePrintSettingsInput) {
+  return apiRequest<{ settings: CrmQuotePrintSettings }>('/api/crm/quote-print-settings', {
+    method: 'PUT',
+    body: JSON.stringify(input),
+  })
+}
+
+export function convertCrmQuoteWorkbook(input: {
+  workbookUrl: string
+  workbookName: string
+  quoteNumber: string
+}) {
+  return apiRequest<{ convertedPdfUrl: string; convertedPdfName: string }>('/api/crm/quotes/convert-workbook', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
 }
 
 export function createCrmQuote(input: CrmQuoteUpsertInput) {

@@ -1,0 +1,14 @@
+{
+  "name": "arnold-quote-converter",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "22"
+  },
+  "scripts": {
+    "start": "node index.mjs"
+  },
+  "dependencies": {
+    "express": "^5.1.0"
+  }
+}

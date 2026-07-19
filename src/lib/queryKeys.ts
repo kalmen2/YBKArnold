@@ -24,6 +24,7 @@ export const QUERY_KEYS = {
   crmOpportunitiesQuotes: ['crm', 'opportunities', 'quotes'] as const,
   crmOpportunitiesOrders: ['crm', 'opportunities', 'orders'] as const,
   crmOpportunitiesConvertOrderBoards: ['crm', 'opportunities', 'convert-order-boards'] as const,
+  crmQuotePrintSettings: ['crm', 'quote-print-settings'] as const,
   crmQuoteChats: (quoteId: string) => ['crm', 'quote-chats', quoteId] as const,
   crmQuotes: (opts: {
     limit: number

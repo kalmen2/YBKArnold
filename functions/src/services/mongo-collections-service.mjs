@@ -268,6 +268,7 @@ export function createMongoCollectionsService({
         const crmSalesRepsCollection = crmDatabase.collection('crm_sales_reps')
         const crmDuplicateQueueCollection = crmDatabase.collection('crm_duplicate_queue')
         const crmQuotesCollection = crmDatabase.collection('crm_quotes')
+        const crmQuotePrintSettingsCollection = crmDatabase.collection('crm_quote_print_settings')
         // Compatibility alias: all order reads and writes now use one canonical
         // Orders collection in the orders domain database.
         const crmOrdersCollection = ordersUnifiedCollection
@@ -382,6 +383,7 @@ export function createMongoCollectionsService({
             crmQuotesCollection.createIndex({ convertedOrderId: 1 }, { sparse: true }),
             crmQuotesCollection.createIndex({ status: 1, updatedAt: -1 }),
             crmQuotesCollection.createIndex({ createdAt: -1 }),
+            crmQuotePrintSettingsCollection.createIndex({ id: 1 }, { unique: true }),
             crmOrdersCollection.createIndex({ id: 1 }, { unique: true, sparse: true }),
             crmOrdersCollection.createIndex({ dealerSourceId: 1, status: 1 }),
             crmOrdersCollection.createIndex({ orderNumber: 1 }, { sparse: true }),
@@ -510,6 +512,7 @@ export function createMongoCollectionsService({
           crmSalesRepsCollection,
           crmDuplicateQueueCollection,
           crmQuotesCollection,
+          crmQuotePrintSettingsCollection,
           crmOrdersCollection,
           aiRulesCollection,
           aiCommentSummariesCollection,

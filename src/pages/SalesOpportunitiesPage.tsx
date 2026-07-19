@@ -7,6 +7,7 @@ import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded'
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
 import FileUploadRoundedIcon from '@mui/icons-material/FileUploadRounded'
 import MoreVertRoundedIcon from '@mui/icons-material/MoreVertRounded'
+import PrintRoundedIcon from '@mui/icons-material/PrintRounded'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import WorkspacesRoundedIcon from '@mui/icons-material/WorkspacesRounded'
 import {
@@ -53,10 +54,12 @@ import {
   convertCrmQuoteToOrder,
   createCrmQuote,
   createCrmQuoteChatMessage,
+  convertCrmQuoteWorkbook,
   fetchCrmConvertOrderBoards,
   fetchCrmDealers,
   fetchCrmExcelQuoteLookup,
   fetchCrmQuoteChats,
+  fetchCrmQuotePrintSettings,
   fetchCrmQuotes,
   fetchCrmSalesReps,
   removeCrmQuoteChatMessage,
@@ -68,12 +71,14 @@ import {
   type CrmExcelQuoteLookupResponse,
   type CrmExcelQuoteSyncInput,
   type CrmQuoteDocument,
+  type CrmQuoteLineImage,
   type CrmQuoteLineItem,
   type CrmOpportunityStage,
   type CrmQuote,
   type CrmQuoteChatMessage,
 } from '../features/crm/api'
 import { parseExcelQuoteForSync } from '../features/crm/excelQuoteParser'
+import { DEFAULT_QUOTE_PRINT_SETTINGS, QuotePdfPreviewDialog } from '../features/crm/NativeQuotePdf'
 import { resolveQuoteAgeDays } from '../features/crm/utils'
 import { resolveFileExtension, sanitizeStoragePathSegment } from '../lib/fileUtils'
 import { formatCurrency } from '../lib/formatters'
@@ -84,11 +89,13 @@ const DEFAULT_NEW_ORDERS_2026_BOARD_ID = '18393945685'
 const DEFAULT_DESIGN_AKF_BOARD_ID = '1064270065'
 
 type OpportunityLineItemFormState = {
+  id: string
   itemNumber: string
   description: string
   qty: string
   unitPrice: string
   extPrice: string
+  images: CrmQuoteLineImage[]
 }
 
 type OpportunityFormState = {
@@ -110,6 +117,11 @@ type OpportunityFormState = {
   lineItems: OpportunityLineItemFormState[]
   quoteDocumentUrl: string
   quoteDocumentName: string
+  origin: 'website' | 'excel'
+  sourceWorkbookUrl: string
+  sourceWorkbookName: string
+  convertedPdfUrl: string
+  convertedPdfName: string
 }
 
 type OpportunityDetailsFormState = {
@@ -130,6 +142,11 @@ type OpportunityDetailsFormState = {
   notes: string
   lineItems: OpportunityLineItemFormState[]
   documents: CrmQuoteDocument[]
+  origin: 'website' | 'excel'
+  sourceWorkbookUrl: string
+  sourceWorkbookName: string
+  convertedPdfUrl: string
+  convertedPdfName: string
 }
 
 type OpportunityConvertOrderFormState = {
@@ -164,6 +181,7 @@ type OpportunityCardProps = {
   onMarkApproved: (quote: CrmQuote) => void
   onDeclineQuote: (quote: CrmQuote) => void
   onDeleteQuote: (quote: CrmQuote) => void
+  onPrintQuote: (quote: CrmQuote) => void
   onOpenDetails: (quote: CrmQuote) => void
   onOpenChat: (quote: CrmQuote) => void
 }
@@ -178,6 +196,7 @@ type StageColumnProps = {
   onMarkApproved: (quote: CrmQuote) => void
   onDeclineQuote: (quote: CrmQuote) => void
   onDeleteQuote: (quote: CrmQuote) => void
+  onPrintQuote: (quote: CrmQuote) => void
   onOpenDetails: (quote: CrmQuote) => void
   onOpenChat: (quote: CrmQuote) => void
 }
@@ -273,8 +292,11 @@ type LineItemsEditorProps = {
   lineItems: OpportunityLineItemFormState[]
   canEdit: boolean
   onAddLineItem: () => void
-  onUpdateLineItem: (index: number, field: keyof OpportunityLineItemFormState, value: string) => void
+  onUpdateLineItem: (index: number, field: 'itemNumber' | 'description' | 'qty' | 'unitPrice' | 'extPrice', value: string) => void
   onRemoveLineItem: (index: number) => void
+  onAddImages: (index: number, files: File[]) => void
+  onRemoveImage: (lineIndex: number, imageId: string) => void
+  isUploadingImage: boolean
 }
 
 const stageDefinitions: StageDefinition[] = [
@@ -472,11 +494,13 @@ function getTodayEasternDateInputValue() {
 
 function createEmptyLineItemFormState(): OpportunityLineItemFormState {
   return {
+    id: crypto.randomUUID(),
     itemNumber: '',
     description: '',
     qty: '',
     unitPrice: '',
     extPrice: '',
+    images: [],
   }
 }
 
@@ -486,6 +510,20 @@ function isBlankLineItem(lineItem: OpportunityLineItemFormState) {
     && !lineItem.qty.trim()
     && !lineItem.unitPrice.trim()
     && !lineItem.extPrice.trim()
+    && lineItem.images.length === 0
+}
+
+async function readImageDimensions(file: File) {
+  const objectUrl = URL.createObjectURL(file)
+
+  try {
+    const image = new Image()
+    image.src = objectUrl
+    await image.decode()
+    return { width: image.naturalWidth || null, height: image.naturalHeight || null }
+  } finally {
+    URL.revokeObjectURL(objectUrl)
+  }
 }
 
 function toOptionalNumber(value: string) {
@@ -529,11 +567,13 @@ function normalizeLineItemsForPayload(lineItems: OpportunityLineItemFormState[])
     }
 
     normalized.push({
+      id: lineItem.id,
       itemNumber: toOptionalInteger(lineItem.itemNumber) ?? 0,
       description: lineItem.description.trim() || null,
       qty: toOptionalNumber(lineItem.qty),
       unitPrice: toOptionalNumber(lineItem.unitPrice),
       extPrice: toOptionalNumber(lineItem.extPrice),
+      images: lineItem.images,
     })
   }
 
@@ -542,11 +582,13 @@ function normalizeLineItemsForPayload(lineItems: OpportunityLineItemFormState[])
 
 function mapLineItemToFormState(lineItem: CrmQuoteLineItem): OpportunityLineItemFormState {
   return {
+    id: lineItem.id || crypto.randomUUID(),
     itemNumber: String(lineItem.itemNumber ?? '').trim(),
     description: String(lineItem.description ?? '').trim(),
     qty: lineItem.qty === null || lineItem.qty === undefined ? '' : String(lineItem.qty),
     unitPrice: lineItem.unitPrice === null || lineItem.unitPrice === undefined ? '' : String(lineItem.unitPrice),
     extPrice: lineItem.extPrice === null || lineItem.extPrice === undefined ? '' : String(lineItem.extPrice),
+    images: Array.isArray(lineItem.images) ? lineItem.images : [],
   }
 }
 
@@ -686,6 +728,11 @@ function createEmptyOpportunityForm(): OpportunityFormState {
     lineItems: [createEmptyLineItemFormState()],
     quoteDocumentUrl: '',
     quoteDocumentName: '',
+    origin: 'website',
+    sourceWorkbookUrl: '',
+    sourceWorkbookName: '',
+    convertedPdfUrl: '',
+    convertedPdfName: '',
   }
 }
 
@@ -734,6 +781,11 @@ function createOpportunityDetailsFormState(quote: CrmQuote): OpportunityDetailsF
     notes: String(quote.notes || ''),
     lineItems: mapQuoteLineItemsToFormState(quote.lineItems),
     documents: resolveQuoteDocuments(quote),
+    origin: quote.origin === 'excel' ? 'excel' : 'website',
+    sourceWorkbookUrl: String(quote.sourceWorkbookUrl || ''),
+    sourceWorkbookName: String(quote.sourceWorkbookName || ''),
+    convertedPdfUrl: String(quote.convertedPdfUrl || ''),
+    convertedPdfName: String(quote.convertedPdfName || ''),
   }
 }
 
@@ -762,6 +814,11 @@ function mergeExcelSyncIntoDetailsFormState(
   const nextLineItems = Array.isArray(syncInput.lineItems) && syncInput.lineItems.length > 0
     ? mapQuoteLineItemsToFormState(syncInput.lineItems)
     : baseState.lineItems
+  const nextDocuments = Array.from(new Map([
+    ...baseState.documents,
+    ...(syncInput.sourceWorkbookUrl ? [{ url: syncInput.sourceWorkbookUrl, name: syncInput.sourceWorkbookName || null }] : []),
+    ...(syncInput.convertedPdfUrl ? [{ url: syncInput.convertedPdfUrl, name: syncInput.convertedPdfName || null }] : []),
+  ].map((document) => [document.url, document])).values())
 
   return {
     ...baseState,
@@ -784,6 +841,12 @@ function mergeExcelSyncIntoDetailsFormState(
       : String(syncInput.freight),
     freightDescription: nextFreightDescription || baseState.freightDescription,
     lineItems: nextLineItems,
+    origin: syncInput.origin === 'excel' ? 'excel' : baseState.origin,
+    sourceWorkbookUrl: String(syncInput.sourceWorkbookUrl || baseState.sourceWorkbookUrl),
+    sourceWorkbookName: String(syncInput.sourceWorkbookName || baseState.sourceWorkbookName),
+    convertedPdfUrl: String(syncInput.convertedPdfUrl || baseState.convertedPdfUrl),
+    convertedPdfName: String(syncInput.convertedPdfName || baseState.convertedPdfName),
+    documents: nextDocuments,
   }
 }
 
@@ -1759,6 +1822,9 @@ function LineItemsEditor({
   onAddLineItem,
   onUpdateLineItem,
   onRemoveLineItem,
+  onAddImages,
+  onRemoveImage,
+  isUploadingImage,
 }: LineItemsEditorProps) {
   const lineItemsTotal = calculateLineItemsTotal(normalizeLineItemsForPayload(lineItems))
 
@@ -1789,10 +1855,11 @@ function LineItemsEditor({
           overflowX: 'auto',
         }}
       >
-        <Table size="small" sx={{ minWidth: 760 }}>
+        <Table size="small" sx={{ minWidth: 980 }}>
           <TableHead>
             <TableRow>
               <TableCell sx={{ width: 92, fontWeight: 700 }}>Item</TableCell>
+              <TableCell sx={{ width: 190, fontWeight: 700 }}>Pictures</TableCell>
               <TableCell sx={{ minWidth: 220, fontWeight: 700 }}>Description</TableCell>
               <TableCell sx={{ width: 90, fontWeight: 700 }}>Qty</TableCell>
               <TableCell sx={{ width: 125, fontWeight: 700 }}>Unit Price</TableCell>
@@ -1815,6 +1882,59 @@ function LineItemsEditor({
                     disabled={!canEdit}
                     fullWidth
                   />
+                </TableCell>
+                <TableCell>
+                  <Stack spacing={0.6}>
+                    {lineItem.images.length > 0 ? (
+                      <Stack direction="row" spacing={0.6}>
+                        {lineItem.images.map((image) => (
+                          <Box
+                            key={image.id}
+                            sx={{
+                              position: 'relative',
+                              width: lineItem.images.length === 1 ? 150 : 72,
+                              height: 84,
+                              border: 1,
+                              borderColor: 'divider',
+                              borderRadius: 1,
+                              overflow: 'hidden',
+                              bgcolor: '#fff',
+                            }}
+                          >
+                            <Box component="img" src={image.url} alt={image.name || 'Line item'} sx={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+                            {canEdit ? (
+                              <IconButton
+                                size="small"
+                                color="error"
+                                onClick={() => onRemoveImage(index, image.id)}
+                                sx={{ position: 'absolute', top: 1, right: 1, bgcolor: 'rgba(255,255,255,.9)', p: 0.2 }}
+                              >
+                                <DeleteOutlineRoundedIcon sx={{ fontSize: 15 }} />
+                              </IconButton>
+                            ) : null}
+                          </Box>
+                        ))}
+                      </Stack>
+                    ) : (
+                      <Typography variant="caption" color="text.secondary">Optional</Typography>
+                    )}
+                    {lineItem.images.length < 2 ? (
+                      <Button component="label" size="small" variant="text" startIcon={<FileUploadRoundedIcon />} disabled={!canEdit || isUploadingImage} sx={{ alignSelf: 'flex-start', px: 0.4 }}>
+                        {isUploadingImage ? 'Uploading…' : 'Add picture'}
+                        <input
+                          hidden
+                          type="file"
+                          accept="image/jpeg,image/png,image/webp"
+                          multiple
+                          onChange={(event) => {
+                            const files = Array.from(event.target.files || []).slice(0, 2 - lineItem.images.length)
+                            event.target.value = ''
+                            if (files.length > 0) onAddImages(index, files)
+                          }}
+                        />
+                      </Button>
+                    ) : null}
+                  </Stack>
                 </TableCell>
                 <TableCell>
                   <TextField
@@ -1911,6 +2031,7 @@ function OpportunityCard({
   onMarkApproved,
   onDeclineQuote,
   onDeleteQuote,
+  onPrintQuote,
   onOpenDetails,
   onOpenChat,
 }: OpportunityCardProps) {
@@ -2016,6 +2137,20 @@ function OpportunityCard({
             ) : (
               <Chip size="small" label={`${ageDays}d`} sx={{ height: 19, fontSize: 10 }} />
             )}
+
+            <IconButton
+              size="small"
+              disabled={isBusy}
+              onClick={(event) => {
+                preventCardClick(event)
+                onPrintQuote(quote)
+              }}
+              sx={{ p: 0.15, color: '#0f4c81' }}
+              title="Print quote"
+              aria-label="Print quote"
+            >
+              <PrintRoundedIcon sx={{ fontSize: 20 }} />
+            </IconButton>
 
             <IconButton
               size="small"
@@ -2137,6 +2272,7 @@ function StageColumn({
   onMarkApproved,
   onDeclineQuote,
   onDeleteQuote,
+  onPrintQuote,
   onOpenDetails,
   onOpenChat,
 }: StageColumnProps) {
@@ -2566,6 +2702,7 @@ function StageColumn({
                 onMarkApproved={onMarkApproved}
                 onDeclineQuote={onDeclineQuote}
                 onDeleteQuote={onDeleteQuote}
+                onPrintQuote={onPrintQuote}
                 onOpenDetails={onOpenDetails}
                 onOpenChat={onOpenChat}
               />
@@ -2786,6 +2923,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   const [excelSyncDraft, setExcelSyncDraft] = useState<CrmExcelQuoteSyncInput | null>(null)
   const [excelSyncLookupResult, setExcelSyncLookupResult] = useState<CrmExcelQuoteLookupResponse | null>(null)
   const [excelSyncSourceFileName, setExcelSyncSourceFileName] = useState('')
+  const [excelSyncSourceFile, setExcelSyncSourceFile] = useState<File | null>(null)
   const [excelSyncQuoteNumberInput, setExcelSyncQuoteNumberInput] = useState('')
   const [excelSyncSalesRepInput, setExcelSyncSalesRepInput] = useState('')
   const [excelSyncRawSalesRep, setExcelSyncRawSalesRep] = useState('')
@@ -2799,11 +2937,13 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   const [excelSyncDialogError, setExcelSyncDialogError] = useState<string | null>(null)
   const [isSavingOpportunity, setIsSavingOpportunity] = useState(false)
   const [isUploadingQuoteDocument, setIsUploadingQuoteDocument] = useState(false)
+  const [isUploadingLineImage, setIsUploadingLineImage] = useState(false)
   const [isUploadingFolderSelection, setIsUploadingFolderSelection] = useState(false)
   const [isSavingOpportunityDetails, setIsSavingOpportunityDetails] = useState(false)
   const [isConvertOrderDialogOpen, setIsConvertOrderDialogOpen] = useState(false)
   const [isSubmittingConvertOrder, setIsSubmittingConvertOrder] = useState(false)
   const [busyQuoteId, setBusyQuoteId] = useState<string | null>(null)
+  const [quotePrintPreview, setQuotePrintPreview] = useState<CrmQuote | null>(null)
   const [selectedOpportunity, setSelectedOpportunity] = useState<CrmQuote | null>(null)
   const [convertOrderTargetQuote, setConvertOrderTargetQuote] = useState<CrmQuote | null>(null)
   const [convertOrderFormState, setConvertOrderFormState] = useState<OpportunityConvertOrderFormState>(() => (
@@ -2854,6 +2994,12 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   const salesRepsQuery = useQuery({
     queryKey: QUERY_KEYS.crmSalesReps,
     queryFn: () => fetchCrmSalesReps(),
+    staleTime: 5 * 60 * 1000,
+  })
+
+  const quotePrintSettingsQuery = useQuery({
+    queryKey: QUERY_KEYS.crmQuotePrintSettings,
+    queryFn: fetchCrmQuotePrintSettings,
     staleTime: 5 * 60 * 1000,
   })
 
@@ -3402,6 +3548,40 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     }
   }, [opportunityDetailsFormState, selectedOpportunity?.totalAmount])
 
+  const selectedOpportunityPrintQuote = useMemo<CrmQuote | null>(() => {
+    if (!selectedOpportunity || !opportunityDetailsFormState || selectedOpportunity.origin === 'excel') {
+      return selectedOpportunity
+    }
+
+    const pricing = resolveQuotePricing(
+      opportunityDetailsFormState.lineItems,
+      opportunityDetailsFormState.subtotal,
+      opportunityDetailsFormState.freight,
+      Number(selectedOpportunity.totalAmount || 0),
+    )
+
+    return {
+      ...selectedOpportunity,
+      dealerSourceId: opportunityDetailsFormState.dealerSourceId.trim() || selectedOpportunity.dealerSourceId,
+      companyName: opportunityDetailsFormState.companyName.trim() || null,
+      contactName: opportunityDetailsFormState.contactName.trim() || null,
+      contactEmail: opportunityDetailsFormState.contactEmail.trim() || null,
+      contactPhone: opportunityDetailsFormState.contactPhone.trim() || null,
+      salesRep: opportunityDetailsFormState.salesRep.trim() || null,
+      quoteNumber: opportunityDetailsFormState.quoteNumber.trim() || null,
+      title: opportunityDetailsFormState.title.trim() || selectedOpportunity.title,
+      opportunityDate: opportunityDetailsFormState.opportunityDateInput.trim() || null,
+      leadTime: opportunityDetailsFormState.leadTime.trim() || null,
+      paymentTerms: opportunityDetailsFormState.paymentTerms.trim() || null,
+      subtotal: pricing.subtotal,
+      freight: pricing.freight,
+      freightDescription: opportunityDetailsFormState.freightDescription.trim() || null,
+      lineItems: pricing.normalizedLineItems,
+      totalAmount: pricing.totalAmount,
+      notes: opportunityDetailsFormState.notes.trim() || null,
+    }
+  }, [opportunityDetailsFormState, selectedOpportunity])
+
   const invalidateOpportunityData = useCallback(async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: QUERY_KEYS.crmOpportunitiesQuotes }),
@@ -3420,6 +3600,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     setExcelSyncDraft(null)
     setExcelSyncLookupResult(null)
     setExcelSyncSourceFileName('')
+    setExcelSyncSourceFile(null)
     setExcelSyncQuoteNumberInput('')
     setExcelSyncSalesRepInput('')
     setExcelSyncRawSalesRep('')
@@ -3515,6 +3696,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     options: {
       launchMode: ExcelSyncLaunchMode
       scannedFiles?: File[]
+      sourceFile?: File
     },
   ) => {
     const quoteNumberFromExcel = String(excelPayload.quoteNumber ?? '').trim()
@@ -3537,6 +3719,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     setExcelSyncLookupResult(lookupResult)
     setExcelSyncDraft(excelPayload)
     setExcelSyncSourceFileName(sourceFileName)
+    setExcelSyncSourceFile(options.sourceFile || null)
     setExcelSyncQuoteNumberInput(quoteNumberFromExcel)
     setExcelSyncRawSalesRep(salesRepFromExcel)
     setExcelSyncSalesRepInput(defaultSalesRep)
@@ -3588,6 +3771,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       const excelPayload = await parseExcelQuoteForSync(file)
       await initializeExcelSyncFromPayload(excelPayload, file.name, {
         launchMode: 'excel_file',
+        sourceFile: file,
       })
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Failed to sync quote file.')
@@ -3787,6 +3971,31 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         || '',
       ).trim()
 
+      if (!excelSyncSourceFile) {
+        throw new Error('The source workbook is no longer available. Select the Excel or ODS file again.')
+      }
+
+      if (excelSyncSourceFile.size > 25 * 1024 * 1024) {
+        throw new Error('The source workbook must be 25 MB or smaller.')
+      }
+
+      const companySegment = sanitizeStoragePathSegment(resolvedCompanyName || 'company', 'company')
+      const quoteSegment = sanitizeStoragePathSegment(quoteNumber, 'opportunity')
+      const workbookExtension = resolveFileExtension(excelSyncSourceFile) || '.xlsx'
+      const workbookPath = `crm/opportunities/${companySegment}/${quoteSegment}-source-${Date.now()}${workbookExtension}`
+      const workbookReference = storageRef(firebaseStorage, workbookPath)
+      await uploadBytes(
+        workbookReference,
+        excelSyncSourceFile,
+        excelSyncSourceFile.type ? { contentType: excelSyncSourceFile.type } : undefined,
+      )
+      const sourceWorkbookUrl = await getDownloadURL(workbookReference)
+      const converted = await convertCrmQuoteWorkbook({
+        workbookUrl: sourceWorkbookUrl,
+        workbookName: excelSyncSourceFile.name,
+        quoteNumber,
+      })
+
       const syncInput: CrmExcelQuoteSyncInput = {
         ...excelSyncDraft,
         allowCreateWhenMissingConcept: excelSyncAllowCreateWhenMissingConcept,
@@ -3794,6 +4003,11 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         salesRep: selectedSalesRep,
         dealerState: dealerStateCode,
         projectType: projectTypeInput,
+        origin: 'excel',
+        sourceWorkbookUrl,
+        sourceWorkbookName: excelSyncSourceFile.name,
+        convertedPdfUrl: converted.convertedPdfUrl,
+        convertedPdfName: converted.convertedPdfName,
       }
 
       if (resolvedCompanyName) {
@@ -3888,6 +4102,11 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
           lineItems: stagedLineItems,
           quoteDocumentUrl: '',
           quoteDocumentName: '',
+          origin: syncInput.origin === 'excel' ? 'excel' : 'website',
+          sourceWorkbookUrl: String(syncInput.sourceWorkbookUrl || ''),
+          sourceWorkbookName: String(syncInput.sourceWorkbookName || ''),
+          convertedPdfUrl: String(syncInput.convertedPdfUrl || ''),
+          convertedPdfName: String(syncInput.convertedPdfName || ''),
         })
         setPendingExcelSyncPromotionQuoteId(null)
         setIsAddDialogDraftFromExcelSync(true)
@@ -3910,6 +4129,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     excelSyncLaunchMode,
     excelSyncDealerStateCode,
     excelSyncDraft,
+    excelSyncSourceFile,
     excelSyncLookupResult,
     excelSyncAllowCreateWhenMissingConcept,
     excelSyncAccountMode,
@@ -3979,6 +4199,44 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       setIsUploadingQuoteDocument(false)
     }
   }, [uploadQuoteDocumentFile])
+
+  const uploadLineItemImages = useCallback(async (
+    files: File[],
+    quoteNumber: string,
+    companyName: string,
+  ): Promise<CrmQuoteLineImage[]> => {
+    const normalizedQuoteNumber = quoteNumber.trim()
+    if (!normalizedQuoteNumber) throw new Error('Enter a quote number before adding pictures.')
+
+    const companySegment = sanitizeStoragePathSegment(companyName.trim() || 'company', 'company')
+    const quoteSegment = sanitizeStoragePathSegment(normalizedQuoteNumber, 'opportunity')
+    const uploadedImages: CrmQuoteLineImage[] = []
+
+    for (const file of files) {
+      if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+        throw new Error(`${file.name} must be a JPG, PNG, or WebP image.`)
+      }
+      if (file.size > 10 * 1024 * 1024) {
+        throw new Error(`${file.name} must be 10 MB or smaller.`)
+      }
+
+      const id = crypto.randomUUID()
+      const extension = resolveFileExtension(file) || '.jpg'
+      const filePath = `crm/opportunities/${companySegment}/${quoteSegment}-line-image-${id}${extension}`
+      const reference = storageRef(firebaseStorage, filePath)
+      const dimensions = await readImageDimensions(file)
+      await uploadBytes(reference, file, { contentType: file.type })
+      uploadedImages.push({
+        id,
+        url: await getDownloadURL(reference),
+        name: file.name,
+        width: dimensions.width,
+        height: dimensions.height,
+      })
+    }
+
+    return uploadedImages
+  }, [])
 
   const uploadSelectedOpportunityDocumentFile = useCallback(async (
     quote: CrmQuote,
@@ -4068,11 +4326,13 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
 
       let parsedExcelPayload: CrmExcelQuoteSyncInput | null = null
       let sourceExcelFileName = ''
+      let sourceExcelFile: File | null = null
 
       for (const file of excelFiles) {
         try {
           parsedExcelPayload = await parseExcelQuoteForSync(file)
           sourceExcelFileName = file.name
+          sourceExcelFile = file
           break
         } catch {
           // Try the next Excel file if this workbook fails to parse.
@@ -4146,6 +4406,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       await initializeExcelSyncFromPayload(parsedExcelPayload, sourceExcelFileName, {
         launchMode: 'folder_scan',
         scannedFiles,
+        sourceFile: sourceExcelFile || undefined,
       })
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Failed to scan quote folder.')
@@ -4633,7 +4894,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   }, [])
 
   const handleUpdateFormLineItem = useCallback(
-    (index: number, field: keyof OpportunityLineItemFormState, value: string) => {
+    (index: number, field: 'itemNumber' | 'description' | 'qty' | 'unitPrice' | 'extPrice', value: string) => {
       setFormState((current) => ({
         ...current,
         lineItems: current.lineItems.map((entry, entryIndex) => (
@@ -4648,6 +4909,33 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     },
     [],
   )
+
+  const handleAddFormLineImages = useCallback(async (index: number, files: File[]) => {
+    setErrorMessage(null)
+    setIsUploadingLineImage(true)
+    try {
+      const images = await uploadLineItemImages(files, formState.quoteNumber, formState.companyName)
+      setFormState((current) => ({
+        ...current,
+        lineItems: current.lineItems.map((line, lineIndex) => lineIndex === index
+          ? { ...line, images: [...line.images, ...images].slice(0, 2) }
+          : line),
+      }))
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to upload line picture.')
+    } finally {
+      setIsUploadingLineImage(false)
+    }
+  }, [formState.companyName, formState.quoteNumber, uploadLineItemImages])
+
+  const handleRemoveFormLineImage = useCallback((lineIndex: number, imageId: string) => {
+    setFormState((current) => ({
+      ...current,
+      lineItems: current.lineItems.map((line, index) => index === lineIndex
+        ? { ...line, images: line.images.filter((image) => image.id !== imageId) }
+        : line),
+    }))
+  }, [])
 
   const handleAddDetailsLineItem = useCallback(() => {
     setOpportunityDetailsFormState((current) => {
@@ -4678,7 +4966,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   }, [])
 
   const handleUpdateDetailsLineItem = useCallback(
-    (index: number, field: keyof OpportunityLineItemFormState, value: string) => {
+    (index: number, field: 'itemNumber' | 'description' | 'qty' | 'unitPrice' | 'extPrice', value: string) => {
       setOpportunityDetailsFormState((current) => {
         if (!current) {
           return current
@@ -4699,6 +4987,85 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     },
     [],
   )
+
+  const handleAddDetailsLineImages = useCallback(async (index: number, files: File[]) => {
+    if (!opportunityDetailsFormState) return
+    setErrorMessage(null)
+    setIsUploadingLineImage(true)
+    try {
+      const images = await uploadLineItemImages(
+        files,
+        opportunityDetailsFormState.quoteNumber,
+        opportunityDetailsFormState.companyName,
+      )
+      setOpportunityDetailsFormState((current) => current ? ({
+        ...current,
+        lineItems: current.lineItems.map((line, lineIndex) => lineIndex === index
+          ? { ...line, images: [...line.images, ...images].slice(0, 2) }
+          : line),
+      }) : current)
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to upload line picture.')
+    } finally {
+      setIsUploadingLineImage(false)
+    }
+  }, [opportunityDetailsFormState, uploadLineItemImages])
+
+  const handleRemoveDetailsLineImage = useCallback((lineIndex: number, imageId: string) => {
+    setOpportunityDetailsFormState((current) => current ? ({
+      ...current,
+      lineItems: current.lineItems.map((line, index) => index === lineIndex
+        ? { ...line, images: line.images.filter((image) => image.id !== imageId) }
+        : line),
+    }) : current)
+  }, [])
+
+  const handlePrintQuote = useCallback(async (quote: CrmQuote) => {
+    setErrorMessage(null)
+
+    if (quote.origin !== 'excel') {
+      setQuotePrintPreview(quote)
+      return
+    }
+
+    if (quote.convertedPdfUrl) {
+      window.open(quote.convertedPdfUrl, '_blank', 'noopener,noreferrer')
+      return
+    }
+
+    if (!quote.sourceWorkbookUrl || !quote.sourceWorkbookName || !quote.quoteNumber) {
+      setErrorMessage('This Excel quote has no source workbook available for printing. Upload and sync the workbook again.')
+      return
+    }
+
+    const printWindow = window.open('about:blank', '_blank')
+    if (printWindow) {
+      printWindow.document.title = 'Preparing quote PDF…'
+      printWindow.document.body.textContent = 'Preparing the quote PDF…'
+      printWindow.opener = null
+    }
+
+    setBusyQuoteId(quote.id)
+    try {
+      const converted = await convertCrmQuoteWorkbook({
+        workbookUrl: quote.sourceWorkbookUrl,
+        workbookName: quote.sourceWorkbookName,
+        quoteNumber: quote.quoteNumber,
+      })
+      await updateCrmQuote(quote.id, {
+        convertedPdfUrl: converted.convertedPdfUrl,
+        convertedPdfName: converted.convertedPdfName,
+      })
+      await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.crmOpportunitiesQuotes })
+      if (printWindow) printWindow.location.href = converted.convertedPdfUrl
+      else window.open(converted.convertedPdfUrl, '_blank', 'noopener,noreferrer')
+    } catch (error) {
+      printWindow?.close()
+      setErrorMessage(error instanceof Error ? error.message : 'Could not prepare this workbook for printing.')
+    } finally {
+      setBusyQuoteId(null)
+    }
+  }, [queryClient])
 
   const handleCreateOpportunity = useCallback(async () => {
     const dealerSourceId = formState.dealerSourceId.trim()
@@ -4765,15 +5132,19 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         opportunityStage: targetStage,
         opportunityDate: opportunityDateInput || null,
         lineItems,
+        origin: formState.origin,
+        sourceWorkbookUrl: formState.sourceWorkbookUrl || null,
+        sourceWorkbookName: formState.sourceWorkbookName || null,
+        convertedPdfUrl: formState.convertedPdfUrl || null,
+        convertedPdfName: formState.convertedPdfName || null,
         totalAmount,
         sentAt,
         notes: formState.notes.trim() || null,
-        documents: quoteDocumentUrl
-          ? [{
-            url: quoteDocumentUrl,
-            name: quoteDocumentName || null,
-          }]
-          : [],
+        documents: [
+          ...(quoteDocumentUrl ? [{ url: quoteDocumentUrl, name: quoteDocumentName || null }] : []),
+          ...(formState.sourceWorkbookUrl ? [{ url: formState.sourceWorkbookUrl, name: formState.sourceWorkbookName || null }] : []),
+          ...(formState.convertedPdfUrl ? [{ url: formState.convertedPdfUrl, name: formState.convertedPdfName || null }] : []),
+        ],
         revisionCount: 0,
       })
 
@@ -4802,18 +5173,23 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     formState.contactEmail,
     formState.contactName,
     formState.contactPhone,
+    formState.convertedPdfName,
+    formState.convertedPdfUrl,
     formState.dealerSourceId,
     formState.freight,
     formState.freightDescription,
     formState.leadTime,
     formState.lineItems,
     formState.notes,
+    formState.origin,
     formState.opportunityDateInput,
     formState.paymentTerms,
     formState.quoteDocumentName,
     formState.quoteDocumentUrl,
     formState.quoteNumber,
     formState.salesRep,
+    formState.sourceWorkbookName,
+    formState.sourceWorkbookUrl,
     formState.subtotal,
     formState.title,
     invalidateOpportunityData,
@@ -5075,6 +5451,11 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         opportunityDate: opportunityDateInput || null,
         lineItems,
         documents: opportunityDetailsFormState.documents,
+        origin: opportunityDetailsFormState.origin,
+        sourceWorkbookUrl: opportunityDetailsFormState.sourceWorkbookUrl || null,
+        sourceWorkbookName: opportunityDetailsFormState.sourceWorkbookName || null,
+        convertedPdfUrl: opportunityDetailsFormState.convertedPdfUrl || null,
+        convertedPdfName: opportunityDetailsFormState.convertedPdfName || null,
         totalAmount,
         notes: opportunityDetailsFormState.notes.trim() || null,
       }
@@ -6333,8 +6714,16 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         onMarkApproved={handleMarkApproved}
         onDeclineQuote={handleDeclineQuote}
         onDeleteQuote={handleDeleteQuote}
+        onPrintQuote={(quote) => void handlePrintQuote(quote)}
         onOpenDetails={handleOpenOpportunityDetails}
         onOpenChat={handleOpenOpportunityChat}
+      />
+
+      <QuotePdfPreviewDialog
+        open={Boolean(quotePrintPreview)}
+        quote={quotePrintPreview}
+        settings={quotePrintSettingsQuery.data?.settings || DEFAULT_QUOTE_PRINT_SETTINGS}
+        onClose={() => setQuotePrintPreview(null)}
       />
 
       <Dialog open={isDialogOpen} onClose={handleCloseDialog} maxWidth="md" fullWidth>
@@ -6593,6 +6982,9 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                   onAddLineItem={handleAddFormLineItem}
                   onUpdateLineItem={handleUpdateFormLineItem}
                   onRemoveLineItem={handleRemoveFormLineItem}
+                  onAddImages={(index, files) => void handleAddFormLineImages(index, files)}
+                  onRemoveImage={handleRemoveFormLineImage}
+                  isUploadingImage={isUploadingLineImage}
                 />
 
                 <Stack spacing={0.8}>
@@ -6755,6 +7147,17 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
             </Typography>
           </Stack>
           <Stack direction="row" spacing={0.6} alignItems="center">
+            {selectedOpportunityPrintQuote ? (
+              <Tooltip title="Print quote">
+                <IconButton
+                  size="medium"
+                  disabled={busyQuoteId === selectedOpportunityPrintQuote.id}
+                  onClick={() => void handlePrintQuote(selectedOpportunityPrintQuote)}
+                >
+                  <PrintRoundedIcon sx={{ fontSize: 20 }} />
+                </IconButton>
+              </Tooltip>
+            ) : null}
             {canUseProposalDetailsActions ? (
               <IconButton
                 size="medium"
@@ -7350,6 +7753,9 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                 onAddLineItem={handleAddDetailsLineItem}
                 onUpdateLineItem={handleUpdateDetailsLineItem}
                 onRemoveLineItem={handleRemoveDetailsLineItem}
+                onAddImages={(index, files) => void handleAddDetailsLineImages(index, files)}
+                onRemoveImage={handleRemoveDetailsLineImage}
+                isUploadingImage={isUploadingLineImage}
               />
 
                 </>

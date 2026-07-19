@@ -1,4 +1,4 @@
-import { createHash, timingSafeEqual } from 'node:crypto'
+import { createHash, randomUUID as createRandomUuid, timingSafeEqual } from 'node:crypto'
 import { getStorage } from 'firebase-admin/storage'
 import { createTtlCache } from '../utils/ttl-cache.mjs'
 import { normalizeText, nowIso } from '../utils/value-utils.mjs'
@@ -767,7 +767,15 @@ function resolveQuoteDocumentUrls(quote) {
 
   const legacyUrls = [
     toTrimmedText(source.documentUrl ?? source.document_url, 2000),
+    toTrimmedText(source.sourceWorkbookUrl, 2000),
+    toTrimmedText(source.convertedPdfUrl, 2000),
   ]
+
+  for (const lineItem of Array.isArray(source.lineItems) ? source.lineItems : []) {
+    for (const image of Array.isArray(lineItem?.images) ? lineItem.images : []) {
+      legacyUrls.push(toTrimmedText(image?.url, 2000))
+    }
+  }
 
   for (const url of legacyUrls) {
     const dedupeKey = toLowerText(url, 2000)
@@ -873,17 +881,44 @@ function normalizeQuoteLineItems(input) {
     const qty = toNumberOrNull(lineItem.qty)
     const unitPrice = toNumberOrNull(lineItem.unitPrice)
     const extPrice = toNumberOrNull(lineItem.extPrice)
+    const images = []
+    const seenImageUrls = new Set()
 
-    if (!description && qty === null && unitPrice === null && extPrice === null) {
+    for (const rawImage of Array.isArray(lineItem.images) ? lineItem.images : []) {
+      const image = toOptionalObject(rawImage)
+      const url = toTrimmedText(image.url, 2000)
+      const dedupeKey = toLowerText(url, 2000)
+
+      if (!url || !dedupeKey || seenImageUrls.has(dedupeKey)) {
+        continue
+      }
+
+      seenImageUrls.add(dedupeKey)
+      images.push({
+        id: toTrimmedText(image.id, 160) || createRandomUuid(),
+        url,
+        name: toTrimmedText(image.name, 500) || null,
+        width: toNonNegativeInteger(image.width, 0) || null,
+        height: toNonNegativeInteger(image.height, 0) || null,
+      })
+
+      if (images.length >= 2) {
+        break
+      }
+    }
+
+    if (!description && qty === null && unitPrice === null && extPrice === null && images.length === 0) {
       continue
     }
 
     normalizedLineItems.push({
+      id: toTrimmedText(lineItem.id, 160) || createRandomUuid(),
       itemNumber,
       description: description || null,
       qty,
       unitPrice,
       extPrice,
+      images,
     })
 
     if (normalizedLineItems.length >= maxLineItems) {
@@ -892,6 +927,75 @@ function normalizeQuoteLineItems(input) {
   }
 
   return normalizedLineItems
+}
+
+function normalizeExcelQuoteLineItems(input, existingLineItems) {
+  const existing = normalizeQuoteLineItems(existingLineItems)
+  const incoming = normalizeQuoteLineItems(input)
+
+  return incoming.map((lineItem, index) => {
+    const matchingLine = existing.find((entry) => entry.id === lineItem.id)
+      || existing.find((entry) => entry.itemNumber > 0 && entry.itemNumber === lineItem.itemNumber)
+      || existing[index]
+
+    return {
+      ...lineItem,
+      id: matchingLine?.id || lineItem.id,
+      images: Array.isArray(matchingLine?.images) ? matchingLine.images : lineItem.images,
+    }
+  })
+}
+
+const defaultQuotePrintSettings = Object.freeze({
+  id: 'default',
+  logoUrl: null,
+  logoName: null,
+  companyName: 'Arnold Contract',
+  addressLines: [],
+  phone: null,
+  email: null,
+  website: null,
+  headerText: 'Quotation',
+  footerText: 'Thank you for the opportunity to quote this project.',
+  accentColor: '#0f4c81',
+  showPaymentTerms: true,
+  showLeadTime: true,
+  showFreight: true,
+})
+
+function normalizeQuoteOrigin(value, fallback = 'website') {
+  return toLowerText(value, 20) === 'excel' ? 'excel' : fallback
+}
+
+function normalizeQuotePrintSettings(input, metadata = {}) {
+  const source = toOptionalObject(input)
+  const normalizeBoolean = (value, fallback) => {
+    const parsed = toNullableBoolean(value)
+    return parsed === null ? fallback : parsed
+  }
+  const accentColor = toTrimmedText(source.accentColor, 7)
+
+  return {
+    id: 'default',
+    logoUrl: toTrimmedText(source.logoUrl, 2000) || null,
+    logoName: toTrimmedText(source.logoName, 500) || null,
+    companyName: toTrimmedText(source.companyName, 240) || defaultQuotePrintSettings.companyName,
+    addressLines: (Array.isArray(source.addressLines) ? source.addressLines : [])
+      .map((entry) => toTrimmedText(entry, 240))
+      .filter(Boolean)
+      .slice(0, 5),
+    phone: toTrimmedText(source.phone, 80) || null,
+    email: toTrimmedText(source.email, 200) || null,
+    website: toTrimmedText(source.website, 300) || null,
+    headerText: toTrimmedText(source.headerText, 1000) || null,
+    footerText: toTrimmedText(source.footerText, 4000) || null,
+    accentColor: /^#[0-9a-f]{6}$/i.test(accentColor) ? accentColor.toLowerCase() : defaultQuotePrintSettings.accentColor,
+    showPaymentTerms: normalizeBoolean(source.showPaymentTerms, true),
+    showLeadTime: normalizeBoolean(source.showLeadTime, true),
+    showFreight: normalizeBoolean(source.showFreight, true),
+    updatedAt: toIsoDateOrNull(metadata.updatedAt ?? source.updatedAt),
+    updatedByEmail: toTrimmedText(metadata.updatedByEmail ?? source.updatedByEmail, 200) || null,
+  }
 }
 
 function toSalesRepResponse(rawSalesRep, options = {}) {
@@ -5490,6 +5594,139 @@ export function registerCrmRoutes(app, deps) {
     }
   })
 
+  app.get('/api/crm/quote-print-settings', requireFirebaseAuth, async (_req, res, next) => {
+    try {
+      const { crmQuotePrintSettingsCollection } = await getCollections()
+      const storedSettings = await crmQuotePrintSettingsCollection.findOne(
+        { id: 'default' },
+        { projection: { _id: 0 } },
+      )
+
+      return res.json({
+        settings: normalizeQuotePrintSettings(storedSettings || defaultQuotePrintSettings),
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.put('/api/crm/quote-print-settings', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const { crmQuotePrintSettingsCollection } = await getCollections()
+      const updatedAt = nowIso()
+      const updatedByEmail = toLowerText(req.authUser?.email, 200) || null
+      const settings = normalizeQuotePrintSettings(req.body, { updatedAt, updatedByEmail })
+
+      await crmQuotePrintSettingsCollection.updateOne(
+        { id: 'default' },
+        { $set: settings },
+        { upsert: true },
+      )
+
+      return res.json({ settings })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.post('/api/crm/quotes/convert-workbook', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const body = toOptionalObject(req.body)
+      const workbookUrl = toTrimmedText(body.workbookUrl, 2000)
+      const workbookName = toTrimmedText(body.workbookName, 500)
+      const quoteNumber = toTrimmedText(body.quoteNumber, 120) || 'quote'
+      const converterUrl = toTrimmedText(process.env.QUOTE_CONVERTER_URL, 2000)
+      const converterToken = toTrimmedText(process.env.QUOTE_CONVERTER_TOKEN, 500)
+
+      if (!workbookUrl || !workbookName) {
+        return res.status(400).json({ error: 'workbookUrl and workbookName are required.' })
+      }
+
+      if (!/\.(xls|xlsx|xlsm|ods)$/i.test(workbookName)) {
+        return res.status(400).json({ error: 'Only XLS, XLSX, XLSM, and ODS workbooks can be converted.' })
+      }
+
+      if (!converterUrl || !converterToken) {
+        return res.status(503).json({ error: 'Workbook PDF conversion is not configured.' })
+      }
+
+      const workbookStorageTarget = extractFirebaseStorageObjectFromUrl(workbookUrl)
+      const storage = getStorage()
+      const bucket = storage.bucket()
+
+      if (
+        !workbookStorageTarget
+        || workbookStorageTarget.bucketName !== bucket.name
+        || !workbookStorageTarget.objectPath.startsWith('crm/opportunities/')
+      ) {
+        return res.status(400).json({ error: 'Workbook must be stored in this project\'s Opportunity files.' })
+      }
+
+      const workbookResponse = await fetch(workbookUrl, { signal: AbortSignal.timeout(60_000) })
+
+      if (!workbookResponse.ok) {
+        return res.status(400).json({ error: 'The uploaded workbook could not be downloaded.' })
+      }
+
+      const workbookBytes = Buffer.from(await workbookResponse.arrayBuffer())
+
+      if (workbookBytes.length === 0 || workbookBytes.length > 25 * 1024 * 1024) {
+        return res.status(400).json({ error: 'Workbook must be between 1 byte and 25 MB.' })
+      }
+
+      const conversionResponse = await fetch(`${converterUrl.replace(/\/$/, '')}/convert`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/octet-stream',
+          'x-conversion-token': converterToken,
+          'x-file-name': workbookName,
+        },
+        body: workbookBytes,
+        signal: AbortSignal.timeout(180_000),
+      })
+
+      if (!conversionResponse.ok) {
+        const failureBody = await conversionResponse.text().catch(() => '')
+        console.error('Quote workbook conversion service failed.', {
+          status: conversionResponse.status,
+          body: failureBody.slice(0, 1000),
+        })
+        return res.status(502).json({ error: 'Workbook could not be converted to PDF.' })
+      }
+
+      const pdfBytes = Buffer.from(await conversionResponse.arrayBuffer())
+
+      if (pdfBytes.length === 0) {
+        return res.status(502).json({ error: 'Workbook converter returned an empty PDF.' })
+      }
+
+      const safeQuoteNumber = quoteNumber.replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '') || 'quote'
+      const objectPath = `crm/opportunities/generated/${safeQuoteNumber}-${Date.now()}-${randomUUID()}.pdf`
+      const downloadToken = randomUUID()
+      const file = bucket.file(objectPath)
+
+      await file.save(pdfBytes, {
+        resumable: false,
+        metadata: {
+          contentType: 'application/pdf',
+          cacheControl: 'private, max-age=0, no-store',
+          metadata: {
+            firebaseStorageDownloadTokens: downloadToken,
+          },
+        },
+      })
+
+      const convertedPdfUrl = `https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(bucket.name)}/o/${encodeURIComponent(objectPath)}?alt=media&token=${encodeURIComponent(downloadToken)}`
+
+      return res.json({
+        convertedPdfUrl,
+        convertedPdfName: `${safeQuoteNumber}.pdf`,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
   app.get('/api/crm/quotes', requireFirebaseAuth, async (req, res, next) => {
     try {
       const accessScope = resolveCrmAccessScope(req)
@@ -5799,6 +6036,11 @@ export function registerCrmRoutes(app, deps) {
         documentUrl: primaryDocument?.url || explicitDocumentUrl || null,
         documentName: primaryDocument?.name || explicitDocumentName || null,
         documents: normalizedDocuments,
+        origin: normalizeQuoteOrigin(body.origin, 'website'),
+        sourceWorkbookUrl: toTrimmedText(body.sourceWorkbookUrl, 2000) || null,
+        sourceWorkbookName: toTrimmedText(body.sourceWorkbookName, 500) || null,
+        convertedPdfUrl: toTrimmedText(body.convertedPdfUrl, 2000) || null,
+        convertedPdfName: toTrimmedText(body.convertedPdfName, 500) || null,
         revisionCount,
         status,
         totalAmount: Number(totalAmount.toFixed(2)),
@@ -5970,6 +6212,16 @@ export function registerCrmRoutes(app, deps) {
 
       if (Object.prototype.hasOwnProperty.call(body, 'lineItems')) {
         updates.lineItems = normalizeQuoteLineItems(body.lineItems)
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'origin')) {
+        updates.origin = normalizeQuoteOrigin(body.origin, normalizeQuoteOrigin(existingQuote.origin, 'website'))
+      }
+
+      for (const fieldName of ['sourceWorkbookUrl', 'sourceWorkbookName', 'convertedPdfUrl', 'convertedPdfName']) {
+        if (Object.prototype.hasOwnProperty.call(body, fieldName)) {
+          updates[fieldName] = toTrimmedText(body[fieldName], fieldName.endsWith('Url') ? 2000 : 500) || null
+        }
       }
 
       if (Object.prototype.hasOwnProperty.call(body, 'salesRep')) {
@@ -7310,6 +7562,11 @@ export function registerCrmRoutes(app, deps) {
           documentUrl: null,
           documentName: null,
           documents: [],
+          origin: 'excel',
+          sourceWorkbookUrl: toTrimmedText(body.sourceWorkbookUrl, 2000) || null,
+          sourceWorkbookName: toTrimmedText(body.sourceWorkbookName, 500) || null,
+          convertedPdfUrl: toTrimmedText(body.convertedPdfUrl, 2000) || null,
+          convertedPdfName: toTrimmedText(body.convertedPdfName, 500) || null,
           revisionCount: 0,
           status: 'sent',
           totalAmount: Number(derivedTotalAmount.toFixed(2)),
@@ -7363,7 +7620,6 @@ export function registerCrmRoutes(app, deps) {
     const fromStage = normalizeOpportunityStage(existingQuote.opportunityStage, 'concept') || 'concept'
     const now = nowIso()
     const updates = {}
-    let hasExcelFieldChanges = false
 
     const setExcelFieldUpdateIfChanged = (fieldName, nextValue) => {
       const previousValue = Object.prototype.hasOwnProperty.call(existingQuote, fieldName)
@@ -7384,8 +7640,9 @@ export function registerCrmRoutes(app, deps) {
       }
 
       updates[fieldName] = normalizedNext
-      hasExcelFieldChanges = true
     }
+
+    setExcelFieldUpdateIfChanged('origin', 'excel')
 
     const title = toTrimmedText(body.title, 240)
     if (title) {
@@ -7456,7 +7713,16 @@ export function registerCrmRoutes(app, deps) {
     }
 
     if (body.lineItems !== undefined) {
-      setExcelFieldUpdateIfChanged('lineItems', normalizeQuoteLineItems(body.lineItems))
+      setExcelFieldUpdateIfChanged('lineItems', normalizeExcelQuoteLineItems(body.lineItems, existingQuote.lineItems))
+    }
+
+    for (const fieldName of ['sourceWorkbookUrl', 'sourceWorkbookName', 'convertedPdfUrl', 'convertedPdfName']) {
+      if (body[fieldName] !== undefined) {
+        setExcelFieldUpdateIfChanged(
+          fieldName,
+          toTrimmedText(body[fieldName], fieldName.endsWith('Url') ? 2000 : 500) || null,
+        )
+      }
     }
 
     let toStage = fromStage

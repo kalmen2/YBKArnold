@@ -3,6 +3,7 @@ import ContactsRoundedIcon from '@mui/icons-material/ContactsRounded'
 import MapRoundedIcon from '@mui/icons-material/MapRounded'
 import WorkspacesRoundedIcon from '@mui/icons-material/WorkspacesRounded'
 import LocalOfferRoundedIcon from '@mui/icons-material/LocalOfferRounded'
+import DescriptionRoundedIcon from '@mui/icons-material/DescriptionRounded'
 import { Box, Tab, Tabs } from '@mui/material'
 import { useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
@@ -11,9 +12,10 @@ import CrmDealersPage from './CrmDealersPage'
 import CrmContactsPage from './CrmContactsPage'
 import SalesOpportunitiesPage from './SalesOpportunitiesPage'
 import SalesQuotesPage from './SalesQuotesPage'
+import SalesQuoteLayoutPage from './SalesQuoteLayoutPage'
 import SalesRepsPage from './SalesRepsPage'
 
-type SalesTab = 'dealers' | 'contacts' | 'opportunities' | 'quotes' | 'sales-reps'
+type SalesTab = 'dealers' | 'contacts' | 'opportunities' | 'quotes' | 'quote-layout' | 'sales-reps'
 
 function resolveFallbackTab(allowedTabs: SalesTab[]): SalesTab {
   return allowedTabs.includes('opportunities')
@@ -42,6 +44,10 @@ function resolveTab(value: string | null, allowedTabs: SalesTab[]): SalesTab {
     return allowedTabSet.has('quotes') ? 'quotes' : fallbackTab
   }
 
+  if (value === 'quote-layout') {
+    return allowedTabSet.has('quote-layout') ? 'quote-layout' : fallbackTab
+  }
+
   if (value === 'sales-reps') {
     return allowedTabSet.has('sales-reps') ? 'sales-reps' : fallbackTab
   }
@@ -54,10 +60,10 @@ export default function SalesPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const allowedTabs = useMemo<SalesTab[]>(() => {
     if (appUser?.isSalesRep) {
-      return ['dealers', 'contacts', 'opportunities']
+      return ['dealers', 'contacts', 'opportunities', 'quote-layout']
     }
 
-    return ['dealers', 'contacts', 'opportunities', 'quotes', 'sales-reps']
+    return ['dealers', 'contacts', 'opportunities', 'quotes', 'quote-layout', 'sales-reps']
   }, [appUser?.isSalesRep])
   const activeTab = resolveTab(searchParams.get('tab'), allowedTabs)
 
@@ -89,6 +95,13 @@ export default function SalesPage() {
               sx={{ minHeight: 44, textTransform: 'none', fontWeight: 600, gap: 0.75 }}
             />
           ) : null}
+          <Tab
+            value="quote-layout"
+            label="Quote Layout"
+            icon={<DescriptionRoundedIcon fontSize="small" />}
+            iconPosition="start"
+            sx={{ minHeight: 44, textTransform: 'none', fontWeight: 600, gap: 0.75 }}
+          />
           <Tab
             value="dealers"
             label="Accounts"
@@ -126,6 +139,8 @@ export default function SalesPage() {
                   <SalesQuotesPage />
                   <SalesOpportunitiesPage detailsOnly />
                 </>
+            : activeTab === 'quote-layout'
+              ? <SalesQuoteLayoutPage />
             : <SalesRepsPage />}
     </Box>
   )

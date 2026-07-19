@@ -60,6 +60,7 @@ const MONGO_DOMAIN_COLLECTIONS = Object.freeze({
     'crm_sales_reps',
     'crm_duplicate_queue',
     'crm_quotes',
+    'crm_quote_print_settings',
     'crm_orders',
   ]),
   timesheet: Object.freeze([
