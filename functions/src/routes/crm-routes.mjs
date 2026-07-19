@@ -48,6 +48,7 @@ const mondayNewOrders2026ColumnIds = Object.freeze({
   notes: 'text95',
 })
 const mondayDesignAkfColumnIds = Object.freeze({
+  designStatus: 'status',
   orderNumber: 'text9',
   poDate: 'date',
   poNumber: 'text2',
@@ -1578,6 +1579,7 @@ export function registerCrmRoutes(app, deps) {
     getCollections,
     fetchMondayBoardsCatalog,
     createMondayItem,
+    updateMondayItemStatusColumn,
     updateMondayItemTextColumn,
     updateMondayItemJsonColumn,
     deleteMondayItem,
@@ -6941,6 +6943,12 @@ export function registerCrmRoutes(app, deps) {
         itemId: secondaryItemId,
       })
 
+      await updateMondayItemStatusColumn({
+        boardId: mondayDesignAkfBoardId,
+        itemId: secondaryItemId,
+        columnId: mondayDesignAkfColumnIds.designStatus,
+        statusLabel: 'waiting on deposit',
+      })
       await updateTextIfPresent({
         boardId: mondayDesignAkfBoardId,
         itemId: secondaryItemId,
