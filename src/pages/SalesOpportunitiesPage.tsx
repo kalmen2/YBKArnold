@@ -2332,66 +2332,65 @@ function StageColumn({
       sx={{
         width: '100%',
         minWidth: 0,
-        borderRadius: 2,
-        borderColor: alpha(stage.headerColor, 0.36),
-        boxShadow: '0 6px 20px rgba(15, 35, 63, 0.08)',
+        borderRadius: 2.5,
+        borderColor: alpha('#0f4c81', 0.16),
+        boxShadow: '0 12px 34px rgba(15, 35, 63, 0.08)',
         overflow: 'hidden',
       }}
     >
       <Box
         sx={{
-          px: 1.1,
-          py: 0.9,
-          minHeight: 104,
-          background: `linear-gradient(135deg, ${stage.headerColor} 0%, ${alpha(stage.headerColor, 0.86)} 100%)`,
-          color: '#ffffff',
+          px: { xs: 1.4, md: 2 },
+          py: 1.35,
+          backgroundColor: '#ffffff',
+          borderBottom: 1,
+          borderColor: alpha('#0f4c81', 0.12),
         }}
       >
-        <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={0.75}>
-          <Typography variant="subtitle2" sx={{ fontWeight: 700, lineHeight: 1.2 }}>
-            {stage.label}
-          </Typography>
-          <IconButton
-            size="small"
-            onClick={(event) => {
-              setMenuAnchorEl(event.currentTarget)
-            }}
-            sx={{
-              color: '#ffffff',
-              border: `1px solid ${alpha('#ffffff', 0.55)}`,
-              backgroundColor: alpha('#ffffff', 0.15),
-              p: 0.35,
-            }}
-          >
-            <MoreVertRoundedIcon sx={{ fontSize: 16 }} />
-          </IconButton>
+        <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1.5}>
+          <Stack spacing={0.2} sx={{ minWidth: 0 }}>
+            <Typography variant="subtitle1" sx={{ fontWeight: 800, color: '#0b2239', lineHeight: 1.2 }}>
+              {stage.label.replace(/^\d+\.\s*/, '')}
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              {stage.description}
+            </Typography>
+          </Stack>
+          <Stack direction="row" spacing={1} alignItems="center">
+            <Stack alignItems="flex-end" sx={{ display: { xs: 'none', sm: 'flex' } }}>
+              <Typography variant="subtitle2" sx={{ color: '#0b2239', fontWeight: 800 }}>
+                {formatCurrency(totalAmount, 2)}
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                {visibleRows.length} opportunit{visibleRows.length === 1 ? 'y' : 'ies'}
+              </Typography>
+            </Stack>
+            <IconButton
+              size="small"
+              onClick={(event) => {
+                setMenuAnchorEl(event.currentTarget)
+              }}
+              sx={{
+                color: '#0f4c81',
+                border: `1px solid ${alpha('#0f4c81', 0.2)}`,
+                backgroundColor: alpha('#0f4c81', 0.05),
+                p: 0.55,
+              }}
+              aria-label={`Sort and filter ${stage.label}`}
+            >
+              <MoreVertRoundedIcon sx={{ fontSize: 19 }} />
+            </IconButton>
+          </Stack>
         </Stack>
-        <Typography
-          variant="caption"
-          sx={{
-            display: 'block',
-            mt: 0.4,
-            opacity: 0.92,
-            minHeight: '2.4em',
-            lineHeight: 1.2,
-          }}
-        >
-          {stage.description}
-        </Typography>
-        <Typography
-          variant="caption"
-          sx={{
-            display: 'block',
-            mt: 0.2,
-            minHeight: '1.2em',
-            opacity: activeFilterCount > 0 ? 0.92 : 0,
-            lineHeight: 1.2,
-          }}
-        >
-          {activeFilterCount > 0
-            ? `${activeFilterCount} active filter${activeFilterCount === 1 ? '' : 's'}`
-            : '0 active filters'}
-        </Typography>
+        {activeFilterCount > 0 ? (
+          <Chip
+            size="small"
+            label={`${activeFilterCount} active filter${activeFilterCount === 1 ? '' : 's'}`}
+            color="primary"
+            variant="outlined"
+            sx={{ mt: 0.8, height: 22 }}
+          />
+        ) : null}
         <Menu
           anchorEl={menuAnchorEl}
           open={isMenuOpen}
@@ -2528,24 +2527,20 @@ function StageColumn({
         </Menu>
       </Box>
 
-      <Box sx={{ px: 1, py: 0.8, backgroundColor: alpha(stage.panelColor, 0.78), borderBottom: 1, borderColor: '#d5dfeb' }}>
-        <Stack direction="row" justifyContent="space-between" alignItems="center">
-          <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
-            {visibleRows.length} items
-          </Typography>
-          <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
-            {formatCurrency(totalAmount, 2)}
-          </Typography>
-        </Stack>
-      </Box>
-
-      <Stack
-        spacing={0.75}
+      <Box
         sx={{
-          p: 0.8,
-          height: 'clamp(520px, 72vh, 760px)',
+          p: { xs: 1, md: 1.5 },
+          height: 'clamp(540px, 70vh, 780px)',
           overflowY: 'auto',
-          backgroundColor: alpha(stage.panelColor, 0.5),
+          background: `linear-gradient(180deg, ${alpha(stage.panelColor, 0.62)} 0%, #f8fafc 100%)`,
+          display: 'grid',
+          gridTemplateColumns: {
+            xs: 'minmax(0, 1fr)',
+            md: 'repeat(2, minmax(0, 1fr))',
+            xl: 'repeat(3, minmax(0, 1fr))',
+          },
+          alignContent: 'start',
+          gap: 1.15,
         }}
       >
         {visibleRows.length === 0 ? (
@@ -2591,7 +2586,7 @@ function StageColumn({
             )
           })
         )}
-      </Stack>
+      </Box>
 
       <Dialog
         open={isFilterDialogOpen}
@@ -2853,6 +2848,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
   const [globalSearch, setGlobalSearch] = useState('')
+  const [activePipelineStage, setActivePipelineStage] = useState<CrmOpportunityStage>('proposal_submission')
   const pipelineUploadExcelInputRef = useRef<HTMLInputElement | null>(null)
   const folderScanInputRef = useRef<HTMLInputElement | null>(null)
   const selectedOpportunityId = selectedOpportunity?.id ?? ''
@@ -3084,6 +3080,18 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
 
     return base
   }, [filteredActiveQuotes])
+
+  const stageSummaries = useMemo(() => new Map(
+    stageDefinitions.map((stage) => {
+      const stageRows = stageBuckets[stage.id]
+      return [stage.id, {
+        count: stageRows.length,
+        amount: stageRows.reduce((sum, quote) => sum + Number(quote.totalAmount || 0), 0),
+      }]
+    }),
+  ), [stageBuckets])
+
+  const activePipelineStageDefinition = stageById.get(activePipelineStage) || stageDefinitions[0]
 
   const selectedOpportunityStage = useMemo(
     () => (selectedOpportunity ? resolveOpportunityStage(selectedOpportunity) : null),
@@ -6142,21 +6150,31 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       <Paper
         variant="outlined"
         sx={{
-          p: 1.4,
-          borderRadius: 1.5,
-          background: `linear-gradient(130deg, ${alpha('#0f4c81', 0.09)} 0%, ${alpha('#ffffff', 0.96)} 50%, ${alpha('#14532d', 0.07)} 100%)`,
+          borderRadius: 2.5,
+          overflow: 'hidden',
+          borderColor: alpha('#0f4c81', 0.16),
+          boxShadow: '0 12px 36px rgba(15, 76, 129, 0.08)',
         }}
       >
-        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="space-between" alignItems={{ xs: 'flex-start', sm: 'center' }}>
+        <Stack
+          direction={{ xs: 'column', lg: 'row' }}
+          spacing={1.4}
+          justifyContent="space-between"
+          alignItems={{ xs: 'stretch', lg: 'center' }}
+          sx={{
+            p: { xs: 1.5, md: 2 },
+            background: `linear-gradient(125deg, ${alpha('#0f4c81', 0.12)} 0%, #ffffff 58%, ${alpha('#2f80ed', 0.06)} 100%)`,
+          }}
+        >
           <Stack spacing={0.25}>
             <Stack direction="row" spacing={0.8} alignItems="center">
               <WorkspacesRoundedIcon sx={{ color: '#0f4c81' }} />
-              <Typography variant="h6" sx={{ fontWeight: 800 }}>
-                Sales Opportunities Pipeline
+              <Typography variant="h5" sx={{ fontWeight: 850, color: '#0b2239', letterSpacing: -0.3 }}>
+                Opportunities
               </Typography>
             </Stack>
             <Typography variant="body2" color="text.secondary">
-              Concept - Proposal Submitted.
+              Focus on one sales stage at a time, from first concept through submitted proposal.
             </Typography>
           </Stack>
 
@@ -6175,7 +6193,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                   </InputAdornment>
                 ),
               }}
-              sx={{ width: 260 }}
+              sx={{ width: { xs: '100%', sm: 290 } }}
             />
             <Button
               variant="outlined"
@@ -6247,56 +6265,99 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
           </Stack>
         </Stack>
 
-      </Paper>
-
-      <Box sx={{ pb: 0.5 }}>
         <Box
           sx={{
+            p: 1.25,
             display: 'grid',
-            gap: 1.1,
-            gridTemplateColumns: {
-              xs: '1fr',
-              md: 'repeat(3, minmax(0, 1fr))',
-              lg: 'repeat(4, minmax(0, 1fr))',
-            },
-            alignItems: 'start',
+            gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 1fr))' },
+            gap: 1,
+            borderTop: 1,
+            borderColor: alpha('#0f4c81', 0.1),
+            backgroundColor: '#f8fafc',
           }}
         >
-          {stageDefinitions.map((stage) => (
-            <Box
-              key={stage.id}
-              sx={{
-                minWidth: 0,
-                gridColumn: stage.id === 'proposal_submission'
-                  ? {
-                    xs: 'span 1',
-                    md: 'span 2',
-                    lg: 'span 3',
-                  }
-                  : {
-                    xs: 'span 1',
-                    md: 'span 1',
-                    lg: 'span 1',
+          {stageDefinitions.map((stage) => {
+            const summary = stageSummaries.get(stage.id) || { count: 0, amount: 0 }
+            const isActive = activePipelineStage === stage.id
+
+            return (
+              <Button
+                key={stage.id}
+                onClick={() => setActivePipelineStage(stage.id)}
+                variant="text"
+                aria-pressed={isActive}
+                sx={{
+                  p: 1.25,
+                  justifyContent: 'stretch',
+                  textTransform: 'none',
+                  color: '#0b2239',
+                  borderRadius: 2,
+                  border: '1px solid',
+                  borderColor: isActive ? alpha(stage.headerColor, 0.48) : alpha('#0f4c81', 0.12),
+                  backgroundColor: isActive ? '#ffffff' : 'transparent',
+                  boxShadow: isActive ? `0 8px 24px ${alpha(stage.headerColor, 0.13)}` : 'none',
+                  '&:hover': {
+                    backgroundColor: '#ffffff',
+                    borderColor: alpha(stage.headerColor, 0.38),
                   },
-              }}
-            >
-              <StageColumn
-                stage={stage}
-                rows={stageBuckets[stage.id]}
-                dealersBySourceId={dealersBySourceId}
-                canManage={canManage}
-                busyQuoteId={busyQuoteId}
-                onAdvanceStage={handleAdvanceStage}
-                onMarkApproved={handleMarkApproved}
-                onDeclineQuote={handleDeclineQuote}
-                onDeleteQuote={handleDeleteQuote}
-                onOpenDetails={handleOpenOpportunityDetails}
-                onOpenChat={handleOpenOpportunityChat}
-              />
-            </Box>
-          ))}
+                }}
+              >
+                <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1.5} sx={{ width: '100%' }}>
+                  <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0 }}>
+                    <Box
+                      sx={{
+                        width: 34,
+                        height: 34,
+                        borderRadius: 1.5,
+                        display: 'grid',
+                        placeItems: 'center',
+                        flexShrink: 0,
+                        fontWeight: 800,
+                        color: isActive ? '#ffffff' : stage.headerColor,
+                        backgroundColor: isActive ? stage.headerColor : alpha(stage.headerColor, 0.1),
+                      }}
+                    >
+                      {stage.id === 'concept' ? '1' : '2'}
+                    </Box>
+                    <Stack spacing={0.1} alignItems="flex-start" sx={{ minWidth: 0 }}>
+                      <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
+                        {stage.label.replace(/^\d+\.\s*/, '')}
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary" noWrap>
+                        {stage.description}
+                      </Typography>
+                    </Stack>
+                  </Stack>
+                  <Stack alignItems="flex-end" sx={{ flexShrink: 0 }}>
+                    <Typography variant="subtitle2" sx={{ fontWeight: 850, color: stage.headerColor }}>
+                      {summary.count}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {formatCurrency(summary.amount, 0)}
+                    </Typography>
+                  </Stack>
+                </Stack>
+              </Button>
+            )
+          })}
         </Box>
-      </Box>
+
+      </Paper>
+
+      <StageColumn
+        key={activePipelineStage}
+        stage={activePipelineStageDefinition}
+        rows={stageBuckets[activePipelineStage]}
+        dealersBySourceId={dealersBySourceId}
+        canManage={canManage}
+        busyQuoteId={busyQuoteId}
+        onAdvanceStage={handleAdvanceStage}
+        onMarkApproved={handleMarkApproved}
+        onDeclineQuote={handleDeclineQuote}
+        onDeleteQuote={handleDeleteQuote}
+        onOpenDetails={handleOpenOpportunityDetails}
+        onOpenChat={handleOpenOpportunityChat}
+      />
 
       <Dialog open={isDialogOpen} onClose={handleCloseDialog} maxWidth="md" fullWidth>
         <DialogTitle>Add Opportunity</DialogTitle>
