@@ -77,9 +77,9 @@ export default function SalesNotificationsPage() {
     }
 
     const searchParams = new URLSearchParams({
-      tab: 'engagement',
+      tab: 'dealers',
       dealerSourceId,
-      quickViewTab: 'chat',
+      detailsTab: 'chat',
     })
     const chatMessageId = String(targetAlert.metadata?.chatMessageId ?? '').trim()
 

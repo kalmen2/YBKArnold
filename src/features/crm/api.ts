@@ -159,8 +159,6 @@ export type CrmDealer = {
   website?: string | null
   emails?: string[] | null
   contactCountSource?: number
-  engagementReadinessStatus?: 'ready' | 'not_ready' | null
-  engagementReadinessNote?: string | null
   recordStatus?: 'active' | 'deleted' | null
   email: string | null
   ownerEmail: string | null
@@ -198,7 +196,6 @@ export type CrmDealersQueryOptions = {
   includeArchived?: boolean
   search?: string
   accountType?: 'dealer' | 'designer' | 'all' | string
-  engagementBucket?: 'ready' | 'not_ready' | 'yes' | 'no' | 'none' | 'all' | string
   dealerStates?: string[]
   salesReps?: string[]
   ownerEmail?: string
@@ -218,7 +215,6 @@ export type CrmSalesRep = {
   phone: string | null
   phone2: string | null
   states: string[]
-  engagementReadinessEnabled: boolean
   createdAt: string | null
   updatedAt: string | null
 }
@@ -240,7 +236,6 @@ export type CrmSalesRepUpsertInput = {
   phone?: string | null
   phone2?: string | null
   states: string[]
-  engagementReadinessEnabled?: boolean
 }
 
 export type CrmContact = {
@@ -266,8 +261,6 @@ export type CrmContact = {
   gender: string | null
   contactTypeId: string | null
   photoUrl: string | null
-  engagementReadinessStatus?: 'ready' | 'not_ready' | null
-  engagementReadinessNote?: string | null
   recordStatus?: 'active' | 'deleted' | null
   isArchived: boolean
   contactOrigin: string
@@ -442,8 +435,6 @@ export type CrmDealerCreateInput = {
   pictureUrlSource?: string | null
   socialMedia?: string | null
   socialMediaLinks?: Record<string, string> | null
-  engagementReadinessStatus?: 'ready' | 'not_ready' | null
-  engagementReadinessNote?: string | null
   createdDateSource?: string | null
   modifiedDateSource?: string | null
 }
@@ -472,8 +463,6 @@ export type CrmDealerUpdateInput = Partial<{
   pictureUrlSource: string | null
   socialMedia: string | null
   socialMediaLinks: Record<string, string> | null
-  engagementReadinessStatus: 'ready' | 'not_ready' | null
-  engagementReadinessNote: string | null
   isArchived: boolean
   isFavorite: boolean
 }>
@@ -506,8 +495,6 @@ export type CrmContactMutationInput = Partial<{
   gender: string | null
   contactTypeId: string | null
   photoUrl: string | null
-  engagementReadinessStatus: 'ready' | 'not_ready' | null
-  engagementReadinessNote: string | null
   isArchived: boolean
   dealerSourceId: string | null
   contactOrigin: 'linked' | 'unlinked' | 'manual'
@@ -547,45 +534,6 @@ export type CrmDeletionQueueResponse = {
   dealers: CrmDeletionQueueRecordDealer[]
   contacts: CrmDeletionQueueRecordContact[]
   total: number
-}
-
-export type CrmEngagementReadinessDealer = {
-  sourceId: string
-  name: string | null
-  state: string | null
-  accountType: string | null
-  accountClass: string | null
-  engagementReadinessStatus: 'ready' | 'not_ready' | null
-  engagementReadinessNote: string | null
-  updatedAt: string | null
-}
-
-export type CrmEngagementReadinessContact = {
-  sourceId: string
-  name: string | null
-  accountSourceId: string | null
-  accountName: string | null
-  state: string | null
-  engagementReadinessStatus: 'ready' | 'not_ready' | null
-  engagementReadinessNote: string | null
-  updatedAt: string | null
-}
-
-export type CrmEngagementReadinessResponse = {
-  dealers: CrmEngagementReadinessDealer[]
-  contacts: CrmEngagementReadinessContact[]
-  summary: {
-    dealers: {
-      total: number
-      ready: number
-      notReady: number
-    }
-    contacts: {
-      total: number
-      ready: number
-      notReady: number
-    }
-  }
 }
 
 export type CrmQuoteStatus = 'draft' | 'sent' | 'accepted' | 'rejected' | 'cancelled'
@@ -898,7 +846,6 @@ export function fetchCrmDealers(
       includeArchived: options.includeArchived ? 'true' : undefined,
       search: options.search ?? undefined,
       accountType: options.accountType ?? undefined,
-      engagementBucket: options.engagementBucket ?? undefined,
       dealerStates: Array.isArray(options.dealerStates) && options.dealerStates.length > 0
         ? options.dealerStates.map((value) => String(value ?? '').trim()).filter(Boolean).join(',')
         : undefined,
@@ -1142,20 +1089,6 @@ export function restoreCrmDeletion(entityType: 'dealer' | 'contact', sourceId: s
   }>(`/api/crm/deletion-queue/${encodeURIComponent(entityType)}/${encodeURIComponent(sourceId)}/restore`, {
     method: 'POST',
   })
-}
-
-export function fetchCrmEngagementReadiness(options: {
-  status?: 'ready' | 'not_ready' | 'all'
-  search?: string
-  limit?: number
-} = {}) {
-  return apiRequest<CrmEngagementReadinessResponse>(
-    withQuery('/api/crm/engagement-readiness', {
-      status: options.status ?? 'all',
-      search: options.search ?? undefined,
-      limit: options.limit ?? 1200,
-    }),
-  )
 }
 
 export function fetchCrmQuotes(options: {

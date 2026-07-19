@@ -119,20 +119,6 @@ const usStateNameByCode = {
 const quoteProjectTypes = ['Reception Desk', 'Courtroom', 'Conference Table', 'Libraries', 'Other']
 const crmRecordStatusActive = 'active'
 const crmRecordStatusDeleted = 'deleted'
-const engagementReadinessReady = 'ready'
-const engagementReadinessNotReady = 'not_ready'
-const engagementReadinessReadyFilterValues = [engagementReadinessReady, 'yes']
-const engagementReadinessNotReadyFilterValues = [
-  engagementReadinessNotReady,
-  'no',
-  'engagement',
-  'not ready',
-  'notready',
-]
-const engagementReadinessKnownFilterValues = [
-  ...engagementReadinessReadyFilterValues,
-  ...engagementReadinessNotReadyFilterValues,
-]
 
 const toTrimmedText = (value, maxLength = 4000) => normalizeText(value, maxLength)
 
@@ -543,16 +529,6 @@ function normalizeDelimitedTextList(input, maxItemLength = 200, maxItems = 250) 
   return normalizedValues
 }
 
-function normalizeSalesRepEngagementReadinessEnabled(value) {
-  const normalized = toNullableBoolean(value)
-
-  if (normalized === null) {
-    return true
-  }
-
-  return normalized
-}
-
 function normalizeProjectType(value) {
   const normalized = toLowerText(value, 120)
     .replace(/[_-]+/g, ' ')
@@ -633,34 +609,6 @@ function normalizeCrmRecordStatus(value) {
   return normalized === crmRecordStatusDeleted
     ? crmRecordStatusDeleted
     : crmRecordStatusActive
-}
-
-function normalizeEngagementReadinessStatus(value) {
-  const normalized = toLowerText(value, 60)
-
-  if (normalized === engagementReadinessNotReady) {
-    return engagementReadinessNotReady
-  }
-
-  if (normalized === engagementReadinessReady) {
-    return engagementReadinessReady
-  }
-
-  return null
-}
-
-function normalizeEngagementReadinessStatusForFiltering(value) {
-  const normalized = toLowerText(value, 60)
-
-  if (engagementReadinessReadyFilterValues.includes(normalized)) {
-    return engagementReadinessReady
-  }
-
-  if (engagementReadinessNotReadyFilterValues.includes(normalized)) {
-    return engagementReadinessNotReady
-  }
-
-  return null
 }
 
 function normalizeUidList(input, maxItems = 25) {
@@ -972,7 +920,6 @@ function toSalesRepResponse(rawSalesRep, options = {}) {
     phone: phone || null,
     phone2: phone2 || null,
     states: normalizeUsStateList(salesRep.states),
-    engagementReadinessEnabled: normalizeSalesRepEngagementReadinessEnabled(salesRep.engagementReadinessEnabled),
     createdAt: toIsoDateOrNull(salesRep.createdAt),
     updatedAt: toIsoDateOrNull(salesRep.updatedAt),
   }
@@ -1079,13 +1026,6 @@ function normalizeAccount(rawAccount) {
     socialMedia: socialMediaText,
     socialMediaLinks,
     recordStatus: normalizeCrmRecordStatus(account.recordStatus ?? account.record_status),
-    engagementReadinessStatus: normalizeEngagementReadinessStatus(
-      account.engagementReadinessStatus ?? account.engagement_readiness_status,
-    ),
-    engagementReadinessNote: toTrimmedText(
-      account.engagementReadinessNote ?? account.engagement_readiness_note,
-      2000,
-    ),
     isArchived: toBoolean(account.is_archived),
     isFavorite: toBoolean(account.is_favorite),
     contacts: toOptionalArray(account.contacts),
@@ -1126,13 +1066,6 @@ function normalizeContact(rawContact, accountContext = null, contactOrigin = 'li
     contactTypeId: toTrimmedText(contact.contact_type_id, 160),
     photoUrl: toTrimmedText(contact.photo_url, 500),
     recordStatus: normalizeCrmRecordStatus(contact.recordStatus ?? contact.record_status),
-    engagementReadinessStatus: normalizeEngagementReadinessStatus(
-      contact.engagementReadinessStatus ?? contact.engagement_readiness_status,
-    ),
-    engagementReadinessNote: toTrimmedText(
-      contact.engagementReadinessNote ?? contact.engagement_readiness_note,
-      2000,
-    ),
     isArchived: toBoolean(contact.is_archived),
     contactOrigin,
   }
@@ -2001,7 +1934,6 @@ export function registerCrmRoutes(app, deps) {
               phone: 1,
               phone2: 1,
               states: 1,
-              engagementReadinessEnabled: 1,
               createdAt: 1,
               updatedAt: 1,
             },
@@ -2036,18 +1968,6 @@ export function registerCrmRoutes(app, deps) {
       const phone = toTrimmedText(body.phone, 80)
       const phone2 = toTrimmedText(body.phone2, 80)
       const states = normalizeUsStateList(body.states)
-      const hasEngagementReadinessEnabledInput = Object.prototype.hasOwnProperty.call(body, 'engagementReadinessEnabled')
-      const engagementReadinessEnabledInput = toNullableBoolean(body.engagementReadinessEnabled)
-
-      if (hasEngagementReadinessEnabledInput && engagementReadinessEnabledInput === null) {
-        return res.status(400).json({
-          error: 'engagementReadinessEnabled must be true or false.',
-        })
-      }
-
-      const engagementReadinessEnabled = engagementReadinessEnabledInput === null
-        ? true
-        : engagementReadinessEnabledInput
 
       if (!name) {
         return res.status(400).json({
@@ -2084,7 +2004,6 @@ export function registerCrmRoutes(app, deps) {
         phone: phone || null,
         phone2: phone2 || null,
         states,
-        engagementReadinessEnabled,
         createdAt: now,
         updatedAt: now,
       }
@@ -2140,7 +2059,6 @@ export function registerCrmRoutes(app, deps) {
             phone: 1,
             phone2: 1,
             states: 1,
-            engagementReadinessEnabled: 1,
             createdAt: 1,
             updatedAt: 1,
           },
@@ -2228,18 +2146,6 @@ export function registerCrmRoutes(app, deps) {
         updates.states = nextStates
       }
 
-      if (Object.prototype.hasOwnProperty.call(body, 'engagementReadinessEnabled')) {
-        const engagementReadinessEnabled = toNullableBoolean(body.engagementReadinessEnabled)
-
-        if (engagementReadinessEnabled === null) {
-          return res.status(400).json({
-            error: 'engagementReadinessEnabled must be true or false.',
-          })
-        }
-
-        updates.engagementReadinessEnabled = engagementReadinessEnabled
-      }
-
       if (Object.keys(updates).length === 0) {
         return res.json({
           salesRep: toSalesRepResponse(existingSalesRep),
@@ -2280,7 +2186,6 @@ export function registerCrmRoutes(app, deps) {
               phone: 1,
               phone2: 1,
               states: 1,
-              engagementReadinessEnabled: 1,
               createdAt: 1,
               updatedAt: 1,
             },
@@ -2362,10 +2267,8 @@ export function registerCrmRoutes(app, deps) {
       const includeArchived = toBoolean(req.query?.includeArchived)
       const ownerEmail = toLowerText(req.query?.ownerEmail, 200)
       const accountType = toLowerText(req.query?.accountType, 60)
-      const engagementBucket = toLowerText(req.query?.engagementBucket, 20)
       const dealerStates = normalizeUsStateList(normalizeDelimitedTextList(req.query?.dealerStates, 24, 120))
       const salesReps = normalizeDelimitedTextList(req.query?.salesReps, 200, 250)
-      const normalizedEngagementBucket = normalizeEngagementReadinessStatusForFiltering(engagementBucket)
       const hasEmail = toNullableBoolean(req.query?.hasEmail)
       const offset = toNonNegativeInteger(req.query?.offset, 0)
       const limit = Math.min(2500, Math.max(1, toNonNegativeInteger(req.query?.limit, 1200)))
@@ -2388,7 +2291,6 @@ export function registerCrmRoutes(app, deps) {
         includeArchived,
         ownerEmail,
         accountType,
-        engagementBucket: normalizedEngagementBucket || engagementBucket,
         dealerStates,
         salesReps,
         hasEmail,
@@ -2404,11 +2306,10 @@ export function registerCrmRoutes(app, deps) {
       }
 
       const collections = await getCollections()
-      const { crmAccountsCollection, crmContactsCollection, crmSalesRepsCollection } = collections
+      const { crmAccountsCollection, crmContactsCollection } = collections
       const crmAccountChatsCollection = await getCrmAccountChatsCollection(collections)
       const filterClauses = []
       let accountSourceIdsFromContactSearch = []
-      let readinessDisabledStateRegexes = []
 
       filterClauses.push({
         recordStatus: {
@@ -2477,85 +2378,6 @@ export function registerCrmRoutes(app, deps) {
               },
             ],
           })
-        }
-      }
-
-      if (engagementBucket && engagementBucket !== 'all') {
-        const readinessDisabledSalesReps = await crmSalesRepsCollection
-          .find(
-            {
-              isDeleted: {
-                $ne: true,
-              },
-              engagementReadinessEnabled: false,
-            },
-            {
-              projection: {
-                _id: 0,
-                states: 1,
-              },
-            },
-          )
-          .toArray()
-
-        const readinessDisabledStates = uniqueSorted(
-          readinessDisabledSalesReps.flatMap((salesRep) => normalizeUsStateList(salesRep.states)),
-        )
-
-        readinessDisabledStateRegexes = readinessDisabledStates.length > 0
-          ? buildExactStateRegexes(readinessDisabledStates)
-          : []
-
-        if (normalizedEngagementBucket === engagementReadinessReady) {
-          const readyClauseOptions = [
-            {
-              engagementReadinessStatus: {
-                $in: engagementReadinessReadyFilterValues,
-              },
-            },
-          ]
-
-          if (readinessDisabledStateRegexes.length > 0) {
-            readyClauseOptions.push({
-              state: {
-                $in: readinessDisabledStateRegexes,
-              },
-            })
-          }
-
-          filterClauses.push(readyClauseOptions.length === 1
-            ? readyClauseOptions[0]
-            : {
-              $or: readyClauseOptions,
-            })
-        } else if (normalizedEngagementBucket === engagementReadinessNotReady) {
-          filterClauses.push({
-            engagementReadinessStatus: {
-              $in: engagementReadinessNotReadyFilterValues,
-            },
-          })
-
-          if (readinessDisabledStateRegexes.length > 0) {
-            filterClauses.push({
-              state: {
-                $nin: readinessDisabledStateRegexes,
-              },
-            })
-          }
-        } else if (engagementBucket === 'none') {
-          filterClauses.push({
-            engagementReadinessStatus: {
-              $nin: engagementReadinessKnownFilterValues,
-            },
-          })
-
-          if (readinessDisabledStateRegexes.length > 0) {
-            filterClauses.push({
-              state: {
-                $nin: readinessDisabledStateRegexes,
-              },
-            })
-          }
         }
       }
 
@@ -2718,8 +2540,6 @@ export function registerCrmRoutes(app, deps) {
                 emails: 1,
                 pictureUrl: 1,
                 contactCountSource: 1,
-                engagementReadinessStatus: 1,
-                engagementReadinessNote: 1,
                 isArchived: 1,
                 lastImportedAt: 1,
               },
@@ -2731,15 +2551,8 @@ export function registerCrmRoutes(app, deps) {
           .toArray(),
       ])
 
-      const normalizedDealers = dealers.map((dealer) => ({
-        ...dealer,
-        engagementReadinessStatus: normalizeEngagementReadinessStatusForFiltering(
-          dealer.engagementReadinessStatus,
-        ),
-      }))
-
       const dealerSourceIds = [...new Set(
-        normalizedDealers
+        dealers
           .map((dealer) => toTrimmedText(dealer.sourceId, 160))
           .filter(Boolean),
       )]
@@ -2772,7 +2585,7 @@ export function registerCrmRoutes(app, deps) {
           .filter(([sourceId]) => Boolean(sourceId)),
       )
 
-      const dealersWithChatCounts = normalizedDealers.map((dealer) => ({
+      const dealersWithChatCounts = dealers.map((dealer) => ({
         ...dealer,
         chatMessageCount: chatCountByDealerSourceId.get(toTrimmedText(dealer.sourceId, 160)) ?? 0,
       }))
@@ -2844,26 +2657,6 @@ export function registerCrmRoutes(app, deps) {
       const socialMedia = Object.prototype.hasOwnProperty.call(body, 'socialMedia')
         ? (toTrimmedText(body.socialMedia, 2000) || null)
         : (hasSocialMediaLinks ? toCompactSocialMediaText(socialMediaLinks) : null)
-      const engagementReadinessStatusInput = toLowerText(body.engagementReadinessStatus, 60)
-      const engagementReadinessStatus = engagementReadinessStatusInput || null
-      const engagementReadinessNote = toTrimmedText(body.engagementReadinessNote, 2000) || null
-
-      if (
-        engagementReadinessStatusInput
-        && engagementReadinessStatusInput !== engagementReadinessReady
-        && engagementReadinessStatusInput !== engagementReadinessNotReady
-      ) {
-        return res.status(400).json({
-          error: `engagementReadinessStatus must be '${engagementReadinessReady}', '${engagementReadinessNotReady}', or empty.`,
-        })
-      }
-
-      if (engagementReadinessStatus === engagementReadinessNotReady && !engagementReadinessNote) {
-        return res.status(400).json({
-          error: 'A note is required when engagementReadinessStatus is not_ready.',
-        })
-      }
-
       const now = nowIso()
       const { crmAccountsCollection } = await getCollections()
 
@@ -2899,8 +2692,6 @@ export function registerCrmRoutes(app, deps) {
         socialMedia,
         socialMediaLinks: hasSocialMediaLinks ? socialMediaLinks : null,
         recordStatus: crmRecordStatusActive,
-        engagementReadinessStatus: normalizeEngagementReadinessStatus(engagementReadinessStatus),
-        engagementReadinessNote,
         isArchived: false,
         isFavorite: false,
         contactCountSource: 0,
@@ -3005,8 +2796,6 @@ export function registerCrmRoutes(app, deps) {
             pictureUrlSource: 1,
             socialMedia: 1,
             socialMediaLinks: 1,
-            engagementReadinessStatus: 1,
-            engagementReadinessNote: 1,
             recordStatus: 1,
             isArchived: 1,
             isFavorite: 1,
@@ -3126,8 +2915,6 @@ export function registerCrmRoutes(app, deps) {
                 contactTypeId: 1,
                 isArchived: 1,
                 recordStatus: 1,
-                engagementReadinessStatus: 1,
-                engagementReadinessNote: 1,
                 contactOrigin: 1,
                 createdDateSource: 1,
                 lastImportedAt: 1,
@@ -4045,8 +3832,6 @@ export function registerCrmRoutes(app, deps) {
             sourceId: 1,
             state: 1,
             recordStatus: 1,
-            engagementReadinessStatus: 1,
-            engagementReadinessNote: 1,
           },
         },
       )
@@ -4149,26 +3934,6 @@ export function registerCrmRoutes(app, deps) {
         updates.accountClass = accountType
       }
 
-      if (Object.prototype.hasOwnProperty.call(body, 'engagementReadinessStatus')) {
-        const readinessStatus = toLowerText(body.engagementReadinessStatus, 60)
-
-        if (
-          readinessStatus
-          && readinessStatus !== engagementReadinessReady
-          && readinessStatus !== engagementReadinessNotReady
-        ) {
-          return res.status(400).json({
-            error: `engagementReadinessStatus must be '${engagementReadinessReady}', '${engagementReadinessNotReady}', or empty.`,
-          })
-        }
-
-        updates.engagementReadinessStatus = readinessStatus || null
-      }
-
-      if (Object.prototype.hasOwnProperty.call(body, 'engagementReadinessNote')) {
-        updates.engagementReadinessNote = toTrimmedText(body.engagementReadinessNote, 2000) || null
-      }
-
       if (Object.prototype.hasOwnProperty.call(body, 'salesRep')) {
         updates.salesRep = toTrimmedText(body.salesRep, 200) || null
       }
@@ -4248,22 +4013,6 @@ export function registerCrmRoutes(app, deps) {
         updates.isFavorite = toBoolean(body.isFavorite)
       }
 
-      const effectiveEngagementStatus = Object.prototype.hasOwnProperty.call(updates, 'engagementReadinessStatus')
-        ? normalizeEngagementReadinessStatus(updates.engagementReadinessStatus)
-        : normalizeEngagementReadinessStatus(existingDealer.engagementReadinessStatus)
-      const effectiveEngagementNote = toTrimmedText(
-        Object.prototype.hasOwnProperty.call(updates, 'engagementReadinessNote')
-          ? updates.engagementReadinessNote
-          : existingDealer.engagementReadinessNote,
-        2000,
-      )
-
-      if (effectiveEngagementStatus === engagementReadinessNotReady && !effectiveEngagementNote) {
-        return res.status(400).json({
-          error: 'A note is required when engagementReadinessStatus is not_ready.',
-        })
-      }
-
       if (Object.keys(updates).length === 0) {
         const dealer = await crmAccountsCollection.findOne(
           {
@@ -4296,8 +4045,6 @@ export function registerCrmRoutes(app, deps) {
               pictureUrlSource: 1,
               socialMedia: 1,
               socialMediaLinks: 1,
-              engagementReadinessStatus: 1,
-              engagementReadinessNote: 1,
               recordStatus: 1,
               isArchived: 1,
               isFavorite: 1,
@@ -4354,8 +4101,6 @@ export function registerCrmRoutes(app, deps) {
             pictureUrlSource: 1,
             socialMedia: 1,
             socialMediaLinks: 1,
-            engagementReadinessStatus: 1,
-            engagementReadinessNote: 1,
             recordStatus: 1,
             isArchived: 1,
             isFavorite: 1,
@@ -4477,8 +4222,6 @@ export function registerCrmRoutes(app, deps) {
               pictureUrlSource: 1,
               socialMedia: 1,
               socialMediaLinks: 1,
-              engagementReadinessStatus: 1,
-              engagementReadinessNote: 1,
               recordStatus: 1,
               isArchived: 1,
               isFavorite: 1,
@@ -4536,8 +4279,6 @@ export function registerCrmRoutes(app, deps) {
               pictureUrlSource: 1,
               socialMedia: 1,
               socialMediaLinks: 1,
-              engagementReadinessStatus: 1,
-              engagementReadinessNote: 1,
               recordStatus: 1,
               isArchived: 1,
               isFavorite: 1,
@@ -4590,8 +4331,6 @@ export function registerCrmRoutes(app, deps) {
               pictureUrlSource: 1,
               socialMedia: 1,
               socialMediaLinks: 1,
-              engagementReadinessStatus: 1,
-              engagementReadinessNote: 1,
               recordStatus: 1,
               isArchived: 1,
               isFavorite: 1,
@@ -4705,26 +4444,6 @@ export function registerCrmRoutes(app, deps) {
 
       const primaryEmail = toTrimmedText(body.primaryEmail, 200)
       const secondaryEmail = toTrimmedText(body.secondaryEmail, 200)
-      const engagementReadinessStatusInput = toLowerText(body.engagementReadinessStatus, 60)
-      const engagementReadinessStatus = engagementReadinessStatusInput || null
-      const engagementReadinessNote = toTrimmedText(body.engagementReadinessNote, 2000) || null
-
-      if (
-        engagementReadinessStatusInput
-        && engagementReadinessStatusInput !== engagementReadinessReady
-        && engagementReadinessStatusInput !== engagementReadinessNotReady
-      ) {
-        return res.status(400).json({
-          error: `engagementReadinessStatus must be '${engagementReadinessReady}', '${engagementReadinessNotReady}', or empty.`,
-        })
-      }
-
-      if (engagementReadinessStatus === engagementReadinessNotReady && !engagementReadinessNote) {
-        return res.status(400).json({
-          error: 'A note is required when engagementReadinessStatus is not_ready.',
-        })
-      }
-
       const now = nowIso()
 
       const contact = {
@@ -4755,8 +4474,6 @@ export function registerCrmRoutes(app, deps) {
         contactTypeId: toTrimmedText(body.contactTypeId, 160) || null,
         photoUrl: toTrimmedText(body.photoUrl, 500) || null,
         recordStatus: crmRecordStatusActive,
-        engagementReadinessStatus,
-        engagementReadinessNote,
         isArchived: toBoolean(body.isArchived),
         contactOrigin: 'manual',
         createdDateSource: toIsoDateOrNull(body.createdDateSource) || now,
@@ -4960,26 +4677,6 @@ export function registerCrmRoutes(app, deps) {
         updates.contactTypeId = toTrimmedText(body.contactTypeId, 160) || null
       }
 
-      if (Object.prototype.hasOwnProperty.call(body, 'engagementReadinessStatus')) {
-        const readinessStatus = toLowerText(body.engagementReadinessStatus, 60)
-
-        if (
-          readinessStatus
-          && readinessStatus !== engagementReadinessReady
-          && readinessStatus !== engagementReadinessNotReady
-        ) {
-          return res.status(400).json({
-            error: `engagementReadinessStatus must be '${engagementReadinessReady}', '${engagementReadinessNotReady}', or empty.`,
-          })
-        }
-
-        updates.engagementReadinessStatus = readinessStatus || null
-      }
-
-      if (Object.prototype.hasOwnProperty.call(body, 'engagementReadinessNote')) {
-        updates.engagementReadinessNote = toTrimmedText(body.engagementReadinessNote, 2000) || null
-      }
-
       if (Object.prototype.hasOwnProperty.call(body, 'photoUrl')) {
         updates.photoUrl = toTrimmedText(body.photoUrl, 500) || null
       }
@@ -5079,22 +4776,6 @@ export function registerCrmRoutes(app, deps) {
             })
           }
         }
-      }
-
-      const effectiveEngagementStatus = Object.prototype.hasOwnProperty.call(updates, 'engagementReadinessStatus')
-        ? normalizeEngagementReadinessStatus(updates.engagementReadinessStatus)
-        : normalizeEngagementReadinessStatus(existingContact.engagementReadinessStatus)
-      const effectiveEngagementNote = toTrimmedText(
-        Object.prototype.hasOwnProperty.call(updates, 'engagementReadinessNote')
-          ? updates.engagementReadinessNote
-          : existingContact.engagementReadinessNote,
-        2000,
-      )
-
-      if (effectiveEngagementStatus === engagementReadinessNotReady && !effectiveEngagementNote) {
-        return res.status(400).json({
-          error: 'A note is required when engagementReadinessStatus is not_ready.',
-        })
       }
 
       const now = nowIso()
@@ -5539,8 +5220,6 @@ export function registerCrmRoutes(app, deps) {
                 state: 1,
                 country: 1,
                 recordStatus: 1,
-                engagementReadinessStatus: 1,
-                engagementReadinessNote: 1,
                 isArchived: 1,
                 contactOrigin: 1,
                 createdDateSource: 1,
@@ -5805,147 +5484,6 @@ export function registerCrmRoutes(app, deps) {
 
       return res.status(400).json({
         error: "entityType must be 'dealer' or 'contact'.",
-      })
-    } catch (error) {
-      next(error)
-    }
-  })
-
-  app.get('/api/crm/engagement-readiness', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
-    try {
-      const status = toLowerText(req.query?.status, 40)
-      const searchRegex = buildContainsRegex(req.query?.search, 200)
-      const limit = Math.min(3000, Math.max(1, toNonNegativeInteger(req.query?.limit, 1200)))
-      const statusFilter =
-        status === engagementReadinessNotReady || status === engagementReadinessReady
-          ? status
-          : null
-      const { crmAccountsCollection, crmContactsCollection } = await getCollections()
-
-      const dealerFilter = combineFilterClauses([
-        {
-          recordStatus: {
-            $ne: crmRecordStatusDeleted,
-          },
-        },
-        statusFilter
-          ? {
-              engagementReadinessStatus: statusFilter,
-            }
-          : null,
-        searchRegex
-          ? {
-              $or: [
-                { sourceId: searchRegex },
-                { name: searchRegex },
-                { accountType: searchRegex },
-                { accountClass: searchRegex },
-                { state: searchRegex },
-                { engagementReadinessNote: searchRegex },
-              ],
-            }
-          : null,
-      ])
-
-      const contactFilter = combineFilterClauses([
-        {
-          recordStatus: {
-            $ne: crmRecordStatusDeleted,
-          },
-        },
-        statusFilter
-          ? {
-              engagementReadinessStatus: statusFilter,
-            }
-          : null,
-        searchRegex
-          ? {
-              $or: [
-                { sourceId: searchRegex },
-                { name: searchRegex },
-                { accountName: searchRegex },
-                { state: searchRegex },
-                { engagementReadinessNote: searchRegex },
-              ],
-            }
-          : null,
-      ])
-
-      const [dealers, contacts] = await Promise.all([
-        crmAccountsCollection
-          .find(
-            dealerFilter,
-            {
-              projection: {
-                _id: 0,
-                sourceId: 1,
-                name: 1,
-                state: 1,
-                accountType: 1,
-                accountClass: 1,
-                engagementReadinessStatus: 1,
-                engagementReadinessNote: 1,
-                updatedAt: 1,
-              },
-            },
-          )
-          .sort({ engagementReadinessStatus: 1, updatedAt: -1, nameLower: 1 })
-          .limit(limit)
-          .toArray(),
-        crmContactsCollection
-          .find(
-            contactFilter,
-            {
-              projection: {
-                _id: 0,
-                sourceId: 1,
-                name: 1,
-                accountSourceId: 1,
-                accountName: 1,
-                state: 1,
-                engagementReadinessStatus: 1,
-                engagementReadinessNote: 1,
-                updatedAt: 1,
-              },
-            },
-          )
-          .sort({ engagementReadinessStatus: 1, updatedAt: -1, nameLower: 1 })
-          .limit(limit)
-          .toArray(),
-      ])
-
-      const dealerReadyCount = dealers.filter(
-        (dealer) => normalizeEngagementReadinessStatus(dealer.engagementReadinessStatus) === engagementReadinessReady,
-      ).length
-      const dealerNotReadyCount = dealers.filter(
-        (dealer) => normalizeEngagementReadinessStatus(dealer.engagementReadinessStatus) === engagementReadinessNotReady,
-      ).length
-      const dealerNoneCount = dealers.length - dealerReadyCount - dealerNotReadyCount
-      const contactReadyCount = contacts.filter(
-        (contact) => normalizeEngagementReadinessStatus(contact.engagementReadinessStatus) === engagementReadinessReady,
-      ).length
-      const contactNotReadyCount = contacts.filter(
-        (contact) => normalizeEngagementReadinessStatus(contact.engagementReadinessStatus) === engagementReadinessNotReady,
-      ).length
-      const contactNoneCount = contacts.length - contactReadyCount - contactNotReadyCount
-
-      return res.json({
-        dealers,
-        contacts,
-        summary: {
-          dealers: {
-            total: dealers.length,
-            ready: dealerReadyCount,
-            notReady: dealerNotReadyCount,
-            none: dealerNoneCount,
-          },
-          contacts: {
-            total: contacts.length,
-            ready: contactReadyCount,
-            notReady: contactNotReadyCount,
-            none: contactNoneCount,
-          },
-        },
       })
     } catch (error) {
       next(error)
@@ -8453,8 +7991,6 @@ export function registerCrmRoutes(app, deps) {
                 socialMedia: account.socialMedia || null,
                 socialMediaLinks,
                 recordStatus: account.recordStatus || crmRecordStatusActive,
-                engagementReadinessStatus: normalizeEngagementReadinessStatus(account.engagementReadinessStatus),
-                engagementReadinessNote: account.engagementReadinessNote || null,
                 isArchived: account.isArchived,
                 isFavorite: account.isFavorite,
                 contactCountSource: account.contacts.length,
@@ -8511,8 +8047,6 @@ export function registerCrmRoutes(app, deps) {
                 contactTypeId: contact.contactTypeId || null,
                 photoUrl: contact.photoUrl || null,
                 recordStatus: contact.recordStatus || crmRecordStatusActive,
-                engagementReadinessStatus: normalizeEngagementReadinessStatus(contact.engagementReadinessStatus),
-                engagementReadinessNote: contact.engagementReadinessNote || null,
                 isArchived: contact.isArchived,
                 contactOrigin: contact.contactOrigin,
                 lastImportRunId: importRunId,

@@ -1,26 +1,18 @@
 import FactCheckRoundedIcon from '@mui/icons-material/FactCheckRounded'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import RestoreRoundedIcon from '@mui/icons-material/RestoreRounded'
-import RuleRoundedIcon from '@mui/icons-material/RuleRounded'
 import {
   Box,
   Button,
   Chip,
-  FormControl,
-  InputLabel,
-  MenuItem,
   Paper,
-  Select,
   Stack,
-  Tab,
   Table,
   TableBody,
   TableCell,
   TableContainer,
   TableHead,
   TableRow,
-  Tabs,
-  TextField,
   Typography,
 } from '@mui/material'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -32,32 +24,17 @@ import { StatusAlerts } from '../components/StatusAlerts'
 import {
   confirmCrmDeletion,
   fetchCrmDeletionQueue,
-  fetchCrmEngagementReadiness,
   restoreCrmDeletion,
   type CrmDeletionQueueRecordContact,
   type CrmDeletionQueueRecordDealer,
-  type CrmEngagementReadinessContact,
-  type CrmEngagementReadinessDealer,
 } from '../features/crm/api'
-import { useDebounceValue } from '../hooks/useDebounceValue'
 import { formatDateTime, formatOptional } from '../lib/formatters'
 import { QUERY_KEYS } from '../lib/queryKeys'
 
-type ReviewTab = 'deletions' | 'readiness'
-type ReadinessStatusFilter = 'all' | 'ready' | 'not_ready'
 type EntityType = 'dealer' | 'contact'
 type ActionType = 'confirm' | 'restore'
 
 const deletionQueueLimit = 500
-const readinessLimit = 1200
-
-function readinessStatusChip(status: 'ready' | 'not_ready' | null | undefined) {
-  if (status === 'not_ready') {
-    return <Chip size="small" color="warning" variant="outlined" label="Not ready" sx={{ width: 'fit-content' }} />
-  }
-
-  return <Chip size="small" color="success" variant="outlined" label="Ready" sx={{ width: 'fit-content' }} />
-}
 
 function byRequestedAtDescending<T extends { deleteRequestedAt: string | null; updatedAt: string | null }>(rows: T[]) {
   return [...rows].sort((a, b) => {
@@ -67,22 +44,10 @@ function byRequestedAtDescending<T extends { deleteRequestedAt: string | null; u
   })
 }
 
-function byUpdatedAtDescending<T extends { updatedAt: string | null }>(rows: T[]) {
-  return [...rows].sort((a, b) => {
-    const left = Date.parse(a.updatedAt ?? '') || 0
-    const right = Date.parse(b.updatedAt ?? '') || 0
-    return right - left
-  })
-}
-
 export default function AdminSalesReviewPage() {
   const { appUser } = useAuth()
   const queryClient = useQueryClient()
 
-  const [activeTab, setActiveTab] = useState<ReviewTab>('deletions')
-  const [readinessStatus, setReadinessStatus] = useState<ReadinessStatusFilter>('all')
-  const [readinessSearchInput, setReadinessSearchInput] = useState('')
-  const readinessSearch = useDebounceValue(readinessSearchInput)
   const [processingActionKeys, setProcessingActionKeys] = useState<string[]>([])
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
@@ -90,17 +55,6 @@ export default function AdminSalesReviewPage() {
   const deletionQueueQuery = useQuery({
     queryKey: QUERY_KEYS.crmDeletionQueue(deletionQueueLimit),
     queryFn: () => fetchCrmDeletionQueue(deletionQueueLimit),
-    staleTime: 60 * 1000,
-    enabled: appUser?.isAdmin === true,
-  })
-
-  const engagementReadinessQuery = useQuery({
-    queryKey: QUERY_KEYS.crmEngagementReadiness(readinessStatus, readinessSearch, readinessLimit),
-    queryFn: () => fetchCrmEngagementReadiness({
-      status: readinessStatus,
-      search: readinessSearch || undefined,
-      limit: readinessLimit,
-    }),
     staleTime: 60 * 1000,
     enabled: appUser?.isAdmin === true,
   })
@@ -114,18 +68,6 @@ export default function AdminSalesReviewPage() {
     () => byRequestedAtDescending(deletionQueueQuery.data?.contacts ?? []),
     [deletionQueueQuery.data?.contacts],
   )
-
-  const readinessDealers = useMemo(
-    () => byUpdatedAtDescending(engagementReadinessQuery.data?.dealers ?? []),
-    [engagementReadinessQuery.data?.dealers],
-  )
-
-  const readinessContacts = useMemo(
-    () => byUpdatedAtDescending(engagementReadinessQuery.data?.contacts ?? []),
-    [engagementReadinessQuery.data?.contacts],
-  )
-
-  const readinessSummary = engagementReadinessQuery.data?.summary
 
   const queueTotal = deletionQueueQuery.data?.total ?? 0
 
@@ -156,7 +98,6 @@ export default function AdminSalesReviewPage() {
 
   const refreshData = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: ['crm', 'deletion-queue'] })
-    void queryClient.invalidateQueries({ queryKey: ['crm', 'engagement-readiness'] })
   }, [queryClient])
 
   const refreshDataAfterMutation = useCallback(() => {
@@ -249,7 +190,7 @@ export default function AdminSalesReviewPage() {
                   Sales Governance Review
                 </Typography>
                 <Typography color="text.secondary">
-                  Review deletion requests and engagement readiness across accounts and contacts.
+                  Review deletion requests across accounts and contacts.
                 </Typography>
               </Box>
             </Stack>
@@ -258,44 +199,20 @@ export default function AdminSalesReviewPage() {
               variant="outlined"
               size="small"
               startIcon={<RefreshRoundedIcon />}
-              disabled={deletionQueueQuery.isFetching || engagementReadinessQuery.isFetching}
+              disabled={deletionQueueQuery.isFetching}
               onClick={refreshData}
             >
-              {deletionQueueQuery.isFetching || engagementReadinessQuery.isFetching ? 'Refreshing...' : 'Refresh'}
+              {deletionQueueQuery.isFetching ? 'Refreshing...' : 'Refresh'}
             </Button>
           </Stack>
 
           <StatusAlerts errorMessage={errorMessage} successMessage={successMessage} />
 
-          <Tabs
-            value={activeTab}
-            onChange={(_event, nextValue: ReviewTab) => {
-              setActiveTab(nextValue)
-            }}
-            variant="scrollable"
-            allowScrollButtonsMobile
-            sx={{ minHeight: 38 }}
-          >
-            <Tab
-              value="deletions"
-              icon={<RuleRoundedIcon fontSize="small" />}
-              iconPosition="start"
-              label={`Deletion Queue (${queueTotal})`}
-              sx={{ minHeight: 38, textTransform: 'none' }}
-            />
-            <Tab
-              value="readiness"
-              icon={<FactCheckRoundedIcon fontSize="small" />}
-              iconPosition="start"
-              label="Engagement Readiness"
-              sx={{ minHeight: 38, textTransform: 'none' }}
-            />
-          </Tabs>
+          <Chip variant="outlined" size="small" label={`Deletion Queue (${queueTotal})`} sx={{ width: 'fit-content' }} />
         </Stack>
       </Paper>
 
-      {activeTab === 'deletions' ? (
-        <Stack spacing={1.5}>
+      <Stack spacing={1.5}>
           <LoadingPanel
             loading={deletionQueueQuery.isLoading}
             message="Loading deletion queue..."
@@ -476,166 +393,6 @@ export default function AdminSalesReviewPage() {
             </>
           ) : null}
         </Stack>
-      ) : (
-        <Stack spacing={1.5}>
-          <Paper variant="outlined" sx={{ p: 1.5 }}>
-            <Stack
-              direction={{ xs: 'column', md: 'row' }}
-              spacing={1}
-              alignItems={{ xs: 'stretch', md: 'center' }}
-              justifyContent="space-between"
-            >
-              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.8}>
-                <Chip
-                  size="small"
-                  variant="outlined"
-                  label={`Accounts ready/not ready: ${readinessSummary?.dealers.ready ?? 0}/${readinessSummary?.dealers.notReady ?? 0}`}
-                />
-                <Chip
-                  size="small"
-                  variant="outlined"
-                  label={`Contacts ready/not ready: ${readinessSummary?.contacts.ready ?? 0}/${readinessSummary?.contacts.notReady ?? 0}`}
-                />
-              </Stack>
-
-              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.8}>
-                <FormControl size="small" sx={{ minWidth: 150 }}>
-                  <InputLabel id="readiness-status-label">Status</InputLabel>
-                  <Select
-                    labelId="readiness-status-label"
-                    value={readinessStatus}
-                    label="Status"
-                    onChange={(event) => {
-                      const next = event.target.value
-                      setReadinessStatus(next === 'ready' || next === 'not_ready' ? next : 'all')
-                    }}
-                  >
-                    <MenuItem value="all">All</MenuItem>
-                    <MenuItem value="ready">Ready</MenuItem>
-                    <MenuItem value="not_ready">Not ready</MenuItem>
-                  </Select>
-                </FormControl>
-
-                <TextField
-                  size="small"
-                  label="Search"
-                  placeholder="Find by name, account, state"
-                  value={readinessSearchInput}
-                  onChange={(event) => {
-                    setReadinessSearchInput(event.target.value)
-                  }}
-                />
-              </Stack>
-            </Stack>
-          </Paper>
-
-          <LoadingPanel loading={engagementReadinessQuery.isLoading} message="Loading engagement readiness..." contained />
-
-          {!engagementReadinessQuery.isLoading ? (
-            <>
-              <Paper variant="outlined" sx={{ p: 1.5 }}>
-                <Stack spacing={1}>
-                  <Typography variant="h6" fontWeight={700}>
-                    Accounts Readiness
-                  </Typography>
-
-                  {readinessDealers.length === 0 ? (
-                    <Typography color="text.secondary">No account readiness records match this filter.</Typography>
-                  ) : (
-                    <TableContainer>
-                      <Table size="small" stickyHeader>
-                        <TableHead>
-                          <TableRow>
-                            <TableCell sx={{ fontWeight: 700 }}>Account</TableCell>
-                            <TableCell sx={{ fontWeight: 700 }}>Type</TableCell>
-                            <TableCell sx={{ fontWeight: 700 }}>State</TableCell>
-                            <TableCell sx={{ fontWeight: 700 }}>Status</TableCell>
-                            <TableCell sx={{ fontWeight: 700 }}>Note</TableCell>
-                            <TableCell sx={{ fontWeight: 700 }}>Updated</TableCell>
-                          </TableRow>
-                        </TableHead>
-                        <TableBody>
-                          {readinessDealers.map((dealer: CrmEngagementReadinessDealer) => (
-                            <TableRow key={dealer.sourceId} hover>
-                              <TableCell>
-                                <Stack spacing={0.25}>
-                                  <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                                    {formatOptional(dealer.name)}
-                                  </Typography>
-                                  <Typography variant="caption" color="text.secondary">
-                                    ID: {dealer.sourceId}
-                                  </Typography>
-                                </Stack>
-                              </TableCell>
-                              <TableCell>{formatOptional(dealer.accountType || dealer.accountClass)}</TableCell>
-                              <TableCell>{formatOptional(dealer.state)}</TableCell>
-                              <TableCell>{readinessStatusChip(dealer.engagementReadinessStatus)}</TableCell>
-                              <TableCell sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-                                {formatOptional(dealer.engagementReadinessNote)}
-                              </TableCell>
-                              <TableCell>{formatDateTime(dealer.updatedAt)}</TableCell>
-                            </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
-                    </TableContainer>
-                  )}
-                </Stack>
-              </Paper>
-
-              <Paper variant="outlined" sx={{ p: 1.5 }}>
-                <Stack spacing={1}>
-                  <Typography variant="h6" fontWeight={700}>
-                    Contacts Readiness
-                  </Typography>
-
-                  {readinessContacts.length === 0 ? (
-                    <Typography color="text.secondary">No contact readiness records match this filter.</Typography>
-                  ) : (
-                    <TableContainer>
-                      <Table size="small" stickyHeader>
-                        <TableHead>
-                          <TableRow>
-                            <TableCell sx={{ fontWeight: 700 }}>Contact</TableCell>
-                            <TableCell sx={{ fontWeight: 700 }}>Account</TableCell>
-                            <TableCell sx={{ fontWeight: 700 }}>State</TableCell>
-                            <TableCell sx={{ fontWeight: 700 }}>Status</TableCell>
-                            <TableCell sx={{ fontWeight: 700 }}>Note</TableCell>
-                            <TableCell sx={{ fontWeight: 700 }}>Updated</TableCell>
-                          </TableRow>
-                        </TableHead>
-                        <TableBody>
-                          {readinessContacts.map((contact: CrmEngagementReadinessContact) => (
-                            <TableRow key={contact.sourceId} hover>
-                              <TableCell>
-                                <Stack spacing={0.25}>
-                                  <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                                    {formatOptional(contact.name)}
-                                  </Typography>
-                                  <Typography variant="caption" color="text.secondary">
-                                    ID: {contact.sourceId}
-                                  </Typography>
-                                </Stack>
-                              </TableCell>
-                              <TableCell>{formatOptional(contact.accountName || contact.accountSourceId)}</TableCell>
-                              <TableCell>{formatOptional(contact.state)}</TableCell>
-                              <TableCell>{readinessStatusChip(contact.engagementReadinessStatus)}</TableCell>
-                              <TableCell sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-                                {formatOptional(contact.engagementReadinessNote)}
-                              </TableCell>
-                              <TableCell>{formatDateTime(contact.updatedAt)}</TableCell>
-                            </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
-                    </TableContainer>
-                  )}
-                </Stack>
-              </Paper>
-            </>
-          ) : null}
-        </Stack>
-      )}
     </Stack>
   )
 }

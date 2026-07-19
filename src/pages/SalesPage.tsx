@@ -2,7 +2,6 @@ import StoreRoundedIcon from '@mui/icons-material/StoreRounded'
 import ContactsRoundedIcon from '@mui/icons-material/ContactsRounded'
 import MapRoundedIcon from '@mui/icons-material/MapRounded'
 import WorkspacesRoundedIcon from '@mui/icons-material/WorkspacesRounded'
-import ForumRoundedIcon from '@mui/icons-material/ForumRounded'
 import LocalOfferRoundedIcon from '@mui/icons-material/LocalOfferRounded'
 import { Box, Tab, Tabs } from '@mui/material'
 import { useMemo } from 'react'
@@ -10,12 +9,11 @@ import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
 import CrmDealersPage from './CrmDealersPage'
 import CrmContactsPage from './CrmContactsPage'
-import SalesEngagementPage from './SalesEngagementPage'
 import SalesOpportunitiesPage from './SalesOpportunitiesPage'
 import SalesQuotesPage from './SalesQuotesPage'
 import SalesRepsPage from './SalesRepsPage'
 
-type SalesTab = 'dealers' | 'contacts' | 'opportunities' | 'quotes' | 'engagement' | 'sales-reps'
+type SalesTab = 'dealers' | 'contacts' | 'opportunities' | 'quotes' | 'sales-reps'
 
 function resolveFallbackTab(allowedTabs: SalesTab[]): SalesTab {
   return allowedTabs.includes('opportunities')
@@ -44,10 +42,6 @@ function resolveTab(value: string | null, allowedTabs: SalesTab[]): SalesTab {
     return allowedTabSet.has('quotes') ? 'quotes' : fallbackTab
   }
 
-  if (value === 'engagement') {
-    return allowedTabSet.has('engagement') ? 'engagement' : fallbackTab
-  }
-
   if (value === 'sales-reps') {
     return allowedTabSet.has('sales-reps') ? 'sales-reps' : fallbackTab
   }
@@ -60,10 +54,10 @@ export default function SalesPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const allowedTabs = useMemo<SalesTab[]>(() => {
     if (appUser?.isSalesRep) {
-      return ['dealers', 'contacts', 'opportunities', 'engagement']
+      return ['dealers', 'contacts', 'opportunities']
     }
 
-    return ['dealers', 'contacts', 'opportunities', 'quotes', 'engagement', 'sales-reps']
+    return ['dealers', 'contacts', 'opportunities', 'quotes', 'sales-reps']
   }, [appUser?.isSalesRep])
   const activeTab = resolveTab(searchParams.get('tab'), allowedTabs)
 
@@ -95,13 +89,6 @@ export default function SalesPage() {
               sx={{ minHeight: 44, textTransform: 'none', fontWeight: 600, gap: 0.75 }}
             />
           ) : null}
-          <Tab
-            value="engagement"
-            label="Engagement"
-            icon={<ForumRoundedIcon fontSize="small" />}
-            iconPosition="start"
-            sx={{ minHeight: 44, textTransform: 'none', fontWeight: 600, gap: 0.75 }}
-          />
           <Tab
             value="dealers"
             label="Accounts"
@@ -139,9 +126,7 @@ export default function SalesPage() {
                   <SalesQuotesPage />
                   <SalesOpportunitiesPage detailsOnly />
                 </>
-            : activeTab === 'engagement'
-              ? <SalesEngagementPage />
-              : <SalesRepsPage />}
+            : <SalesRepsPage />}
     </Box>
   )
 }

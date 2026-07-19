@@ -87,7 +87,6 @@ import {
   type CrmDealersResponse,
   type CrmOrder,
   type CrmQuote,
-  type CrmSalesRep,
 } from '../features/crm/api'
 import { displayContactName } from '../features/crm/utils'
 import { resolveImageFileExtension, sanitizeStoragePathSegment } from '../lib/fileUtils'
@@ -187,41 +186,6 @@ function createSocialLinkRow(platform = 'website', url = '', index = 0): DealerS
   }
 }
 
-type EngagementReadinessFormValue = '' | 'ready' | 'not_ready'
-
-function toFormReadinessStatus(value: 'ready' | 'not_ready' | null | undefined): EngagementReadinessFormValue {
-  if (value === 'not_ready') {
-    return 'not_ready'
-  }
-
-  if (value === 'ready') {
-    return 'ready'
-  }
-
-  return ''
-}
-
-function resolveReadinessChip(status: 'ready' | 'not_ready' | null | undefined) {
-  if (status === 'not_ready') {
-    return {
-      color: 'warning' as const,
-      label: 'Not ready',
-    }
-  }
-
-  if (status === 'ready') {
-    return {
-      color: 'success' as const,
-      label: 'Ready',
-    }
-  }
-
-  return {
-    color: 'default' as const,
-    label: 'None',
-  }
-}
-
 function normalizeUsStateCode(value: string | null | undefined) {
   const normalized = String(value ?? '').trim().toUpperCase()
 
@@ -269,8 +233,6 @@ type DealerFormState = {
   zip: string
   country: string
   accountText: string
-  engagementReadinessStatus: EngagementReadinessFormValue
-  engagementReadinessNote: string
   pictureUrl: string
   socialLinks: DealerSocialLinkDraft[]
   isArchived: boolean
@@ -297,8 +259,6 @@ type ContactFormState = {
   gender: string
   contactTypeId: string
   photoUrl: string
-  engagementReadinessStatus: EngagementReadinessFormValue
-  engagementReadinessNote: string
   isArchived: boolean
 }
 
@@ -345,8 +305,6 @@ function createDealerFormState(dealer: CrmDealerDetailResponse['dealer']): Deale
     zip: dealer.zip || '',
     country: dealer.country || '',
     accountText: dealer.accountText || '',
-    engagementReadinessStatus: toFormReadinessStatus(dealer.engagementReadinessStatus),
-    engagementReadinessNote: dealer.engagementReadinessNote || '',
     pictureUrl: dealer.pictureUrl || '',
     socialLinks: socialLinkRows,
     isArchived: Boolean(dealer.isArchived),
@@ -389,8 +347,6 @@ function serializeDealerFormState(form: DealerFormState | null) {
     zip: form.zip.trim(),
     country: form.country.trim(),
     accountText: form.accountText.trim(),
-    engagementReadinessStatus: form.engagementReadinessStatus,
-    engagementReadinessNote: form.engagementReadinessNote.trim(),
     pictureUrl: form.pictureUrl.trim(),
     emails: normalizedEmails,
     socialLinks: normalizedSocialLinks,
@@ -420,8 +376,6 @@ function createEmptyContactFormState(): ContactFormState {
     gender: '',
     contactTypeId: '',
     photoUrl: '',
-    engagementReadinessStatus: '',
-    engagementReadinessNote: '',
     isArchived: false,
   }
 }
@@ -447,8 +401,6 @@ function createContactFormState(contact: CrmDealerDetailResponse['contacts'][num
     gender: contact.gender || '',
     contactTypeId: contact.contactTypeId || '',
     photoUrl: contact.photoUrl || '',
-    engagementReadinessStatus: toFormReadinessStatus(contact.engagementReadinessStatus),
-    engagementReadinessNote: contact.engagementReadinessNote || '',
     isArchived: Boolean(contact.isArchived),
   }
 }
@@ -648,7 +600,6 @@ export default function CrmDealersPage() {
   const [dealerSearchInput, setDealerSearchInput] = useState('')
   const dealerSearch = useDebounceValue(dealerSearchInput)
   const [accountTypeFilter, setAccountTypeFilter] = useState<'all' | 'dealer' | 'designer' | 'none'>('all')
-  const [engagementFilter, setEngagementFilter] = useState<'all' | 'ready' | 'not_ready' | 'none'>('all')
   const [dealerStateFilters, setDealerStateFilters] = useState<string[]>([])
   const [dealerSalesRepFilters, setDealerSalesRepFilters] = useState<string[]>([])
   const [filtersMenuAnchorEl, setFiltersMenuAnchorEl] = useState<HTMLElement | null>(null)
@@ -771,31 +722,14 @@ export default function CrmDealersPage() {
 
   const hasAdvancedFilters = dealerStateFilters.length > 0 || dealerSalesRepFilters.length > 0
 
-  const readinessEnabledByState = useMemo(() => {
-    const readinessMap = new Map<string, boolean>()
-
-    salesReps.forEach((salesRep: CrmSalesRep) => {
-      const readinessEnabled = salesRep.engagementReadinessEnabled !== false
-
-      salesRep.states.forEach((stateCode) => {
-        const normalizedStateCode = normalizeUsStateCode(stateCode)
-
-        if (!normalizedStateCode) {
-          return
-        }
-
-        readinessMap.set(normalizedStateCode, readinessEnabled)
-      })
-    })
-
-    return readinessMap
-  }, [salesReps])
-
   useEffect(() => {
     const requestedDealerId = searchParams.get('dealerSourceId')?.trim() ?? ''
     if (requestedDealerId) {
       setSelectedDealerId(requestedDealerId)
       setContactPage(0)
+    }
+    if (searchParams.get('detailsTab') === 'chat') {
+      setDetailsTab('chat')
     }
     // Intentionally excludes selectedDealerId: this effect seeds the selection from
     // the URL when navigating here (e.g. from the contacts page). It must NOT re-run
@@ -823,7 +757,7 @@ export default function CrmDealersPage() {
 
   useEffect(() => {
     setDealerPage(0)
-  }, [accountTypeFilter, dealerSalesRepFilters, dealerStateFilters, engagementFilter])
+  }, [accountTypeFilter, dealerSalesRepFilters, dealerStateFilters])
 
   const { isLoading: isLoadingDealers, isRefreshing: isRefreshingDealers, errorMessage, setErrorMessage, load: loadDealers } = useDataLoader({
     fetcher: useCallback(() => fetchCrmDealers({
@@ -831,10 +765,9 @@ export default function CrmDealersPage() {
       offset: dealerPage * dealerRowsPerPage,
       search: dealerSearch || undefined,
       accountType: accountTypeFilter === 'all' ? undefined : accountTypeFilter,
-      engagementBucket: engagementFilter === 'all' ? undefined : engagementFilter,
       dealerStates: dealerStateFilters.length > 0 ? dealerStateFilters : undefined,
       salesReps: dealerSalesRepFilters.length > 0 ? dealerSalesRepFilters : undefined,
-    }), [accountTypeFilter, dealerPage, dealerRowsPerPage, dealerSalesRepFilters, dealerSearch, dealerStateFilters, engagementFilter]),
+    }), [accountTypeFilter, dealerPage, dealerRowsPerPage, dealerSalesRepFilters, dealerSearch, dealerStateFilters]),
     onSuccess: useCallback((response: CrmDealersResponse) => {
       const nextDealers = Array.isArray(response.dealers) ? response.dealers : []
       const normalizedTotal = typeof response.total === 'number' && Number.isFinite(response.total)
@@ -1010,16 +943,6 @@ export default function CrmDealersPage() {
   }, [detailsTab, loadDealerQuotesData, loadDealerSalesData])
 
   const selectedDealer = dealerDetail?.dealer ?? null
-  const selectedDealerStateCode = normalizeUsStateCode(dealerForm?.state || selectedDealer?.state)
-  const selectedDealerReadinessEnabled = selectedDealerStateCode
-    ? readinessEnabledByState.get(selectedDealerStateCode) !== false
-    : true
-  const selectedDealerReadinessChip = selectedDealerReadinessEnabled
-    ? resolveReadinessChip(selectedDealer?.engagementReadinessStatus)
-    : {
-      color: 'default' as const,
-      label: 'Engagement',
-    }
   const contactsPageLink = selectedDealerId
     ? `/sales?tab=contacts&dealerSourceId=${encodeURIComponent(selectedDealerId)}`
     : '/sales?tab=contacts'
@@ -1341,20 +1264,10 @@ export default function CrmDealersPage() {
       .map((value) => value.trim())
       .filter(Boolean)
 
-    const normalizedEngagementReadinessNote = dealerForm.engagementReadinessNote.trim()
     const normalizedAccountType = dealerForm.accountType.trim().toLowerCase()
 
     if (normalizedAccountType !== 'dealer' && normalizedAccountType !== 'designer') {
       setErrorMessage('Account type must be Dealer or Designer.')
-      return
-    }
-
-    if (
-      selectedDealerReadinessEnabled
-      && dealerForm.engagementReadinessStatus === 'not_ready'
-      && !normalizedEngagementReadinessNote
-    ) {
-      setErrorMessage('Please provide a note when account readiness is Not ready.')
       return
     }
 
@@ -1398,12 +1311,6 @@ export default function CrmDealersPage() {
         zip: dealerForm.zip.trim(),
         country: dealerForm.country.trim(),
         accountText: dealerForm.accountText,
-        engagementReadinessStatus: selectedDealerReadinessEnabled
-          ? (dealerForm.engagementReadinessStatus || null)
-          : null,
-        engagementReadinessNote: selectedDealerReadinessEnabled
-          ? (normalizedEngagementReadinessNote || null)
-          : null,
         pictureUrl: dealerForm.pictureUrl.trim(),
         emails: normalizedEmails,
         socialMediaLinks: Object.keys(socialMediaLinks).length > 0 ? socialMediaLinks : null,
@@ -1423,7 +1330,7 @@ export default function CrmDealersPage() {
     } finally {
       setIsSavingDealer(false)
     }
-  }, [dealerForm, loadDealerDetail, loadDealers, selectedDealerId, selectedDealerReadinessEnabled, setErrorMessage])
+  }, [dealerForm, loadDealerDetail, loadDealers, selectedDealerId, setErrorMessage])
 
   const handleRemoveDealer = useCallback(async () => {
     if (!selectedDealerId || !selectedDealer) {
@@ -1475,17 +1382,6 @@ export default function CrmDealersPage() {
       return
     }
 
-    const normalizedContactReadinessNote = contactForm.engagementReadinessNote.trim()
-
-    if (
-      selectedDealerReadinessEnabled
-      && contactForm.engagementReadinessStatus === 'not_ready'
-      && !normalizedContactReadinessNote
-    ) {
-      setErrorMessage('Please provide a note when contact readiness is Not ready.')
-      return
-    }
-
     setIsSavingContact(true)
     setErrorMessage(null)
 
@@ -1510,12 +1406,6 @@ export default function CrmDealersPage() {
         gender: contactForm.gender,
         contactTypeId: contactForm.contactTypeId,
         photoUrl: contactForm.photoUrl,
-        engagementReadinessStatus: selectedDealerReadinessEnabled
-          ? (contactForm.engagementReadinessStatus || null)
-          : null,
-        engagementReadinessNote: selectedDealerReadinessEnabled
-          ? (normalizedContactReadinessNote || null)
-          : null,
         isArchived: contactForm.isArchived,
       }
 
@@ -1545,7 +1435,6 @@ export default function CrmDealersPage() {
     loadDealerDetail,
     loadDealers,
     selectedDealerId,
-    selectedDealerReadinessEnabled,
     setErrorMessage,
   ])
 
@@ -1952,23 +1841,6 @@ export default function CrmDealersPage() {
                 <Tab value="designer" label="Designers" sx={{ minHeight: 30, textTransform: 'none', py: 0.25 }} />
                 <Tab value="none" label="Not set" sx={{ minHeight: 30, textTransform: 'none', py: 0.25 }} />
               </Tabs>
-
-              <FormControl size="small" sx={{ minWidth: { xs: '100%', md: 190 } }}>
-                <InputLabel id="accounts-readiness-filter-label">Readiness</InputLabel>
-                <Select
-                  labelId="accounts-readiness-filter-label"
-                  value={engagementFilter}
-                  label="Readiness"
-                  onChange={(event) => {
-                    setEngagementFilter(event.target.value as 'all' | 'ready' | 'not_ready' | 'none')
-                  }}
-                >
-                  <MenuItem value="all">All readiness</MenuItem>
-                  <MenuItem value="ready">Ready to engage</MenuItem>
-                  <MenuItem value="not_ready">Not ready</MenuItem>
-                  <MenuItem value="none">Not set</MenuItem>
-                </Select>
-              </FormControl>
             </Stack>
           </Stack>
 
@@ -2267,12 +2139,6 @@ export default function CrmDealersPage() {
                       {selectedDealer.isArchived ? (
                         <Chip size="small" label="Archived" color="warning" variant="outlined" />
                       ) : null}
-                      <Chip
-                        size="small"
-                        variant="outlined"
-                        color={selectedDealerReadinessChip.color}
-                        label={selectedDealerReadinessChip.label}
-                      />
                       <Chip size="small" label={`Contacts: ${dealerDetail?.contactsTotal ?? 0}`} variant="outlined" />
                       {isAccountEditing && hasUnsavedDealerChanges ? (
                         <Chip size="small" label="Unsaved" color="warning" variant="outlined" />
@@ -2647,37 +2513,11 @@ export default function CrmDealersPage() {
                                 display: 'grid',
                                 gridTemplateColumns: {
                                   xs: '1fr',
-                                  md: 'repeat(2, minmax(0, 1fr))',
+                                  md: 'minmax(0, 1fr)',
                                 },
                                 gap: 0.7,
                               }}
                             >
-                              <TextField
-                                select
-                                size="small"
-                                label="Engagement readiness"
-                                value={dealerForm.engagementReadinessStatus}
-                                disabled={!isAccountEditing || !selectedDealerReadinessEnabled}
-                                helperText={selectedDealerReadinessEnabled
-                                  ? ''
-                                  : 'Readiness is disabled for this territory in Sales Reps.'}
-                                onChange={(event) => {
-                                  const nextStatus = event.target.value === 'not_ready'
-                                    ? 'not_ready'
-                                    : event.target.value === 'ready'
-                                      ? 'ready'
-                                      : ''
-                                  setDealerForm((current) => current ? {
-                                    ...current,
-                                    engagementReadinessStatus: nextStatus,
-                                  } : current)
-                                }}
-                              >
-                                <MenuItem value="">None</MenuItem>
-                                <MenuItem value="ready">Ready</MenuItem>
-                                <MenuItem value="not_ready">Not ready</MenuItem>
-                              </TextField>
-
                               <TextField
                                 select
                                 size="small"
@@ -2693,33 +2533,6 @@ export default function CrmDealersPage() {
                                 <MenuItem value="designer">Designer</MenuItem>
                               </TextField>
                             </Box>
-                            <TextField
-                              size="small"
-                              multiline
-                              minRows={2}
-                              label="Readiness note"
-                              placeholder="Required when status is Not ready"
-                              value={dealerForm.engagementReadinessNote}
-                              required={dealerForm.engagementReadinessStatus === 'not_ready'}
-                              error={selectedDealerReadinessEnabled && dealerForm.engagementReadinessStatus === 'not_ready' && dealerForm.engagementReadinessNote.trim() === ''}
-                              helperText={!selectedDealerReadinessEnabled
-                                ? 'Readiness is disabled for this territory in Sales Reps.'
-                                : (dealerForm.engagementReadinessStatus === 'not_ready' && dealerForm.engagementReadinessNote.trim() === ''
-                                ? 'A note is required when status is Not ready.'
-                                : 'Optional context for readiness reviews.')}
-                              onChange={(event) => {
-                                setDealerForm((current) => current ? {
-                                  ...current,
-                                  engagementReadinessNote: event.target.value,
-                                } : current)
-                              }}
-                              InputProps={{ readOnly: !isAccountEditing || !selectedDealerReadinessEnabled }}
-                              sx={{
-                                '& .MuiInputBase-root': {
-                                  fontSize: 13,
-                                },
-                              }}
-                            />
                             <TextField
                               size="small"
                               multiline
@@ -2892,7 +2705,6 @@ export default function CrmDealersPage() {
                           <TableCell sx={{ fontWeight: 700 }}>Email</TableCell>
                           <TableCell sx={{ fontWeight: 700 }}>Phone</TableCell>
                           <TableCell sx={{ fontWeight: 700 }}>Location</TableCell>
-                          <TableCell sx={{ fontWeight: 700 }}>Readiness</TableCell>
                           <TableCell sx={{ fontWeight: 700, width: 220 }} align="right">Actions</TableCell>
                         </TableRow>
                       </TableHead>
@@ -2900,7 +2712,6 @@ export default function CrmDealersPage() {
                         {(dealerDetail?.contacts ?? []).map((contact) => {
                           const contactName = displayContactName(contact)
                           const contactPhotoUrl = String(contact.photoUrl ?? '').trim() || undefined
-                          const readinessChip = resolveReadinessChip(contact.engagementReadinessStatus)
 
                           return (
                             <TableRow key={contact.sourceId}>
@@ -2934,22 +2745,6 @@ export default function CrmDealersPage() {
                               <TableCell>{contact.primaryEmail || contact.secondaryEmail || '-'}</TableCell>
                               <TableCell>{[contact.phone, contact.phone2, contact.phoneAlt].filter(Boolean).join(' / ') || '-'}</TableCell>
                               <TableCell>{[contact.city, contact.state, contact.country].filter(Boolean).join(', ') || '-'}</TableCell>
-                              <TableCell>
-                                <Stack spacing={0.35}>
-                                  <Chip
-                                    size="small"
-                                    variant="outlined"
-                                    color={readinessChip.color}
-                                    label={readinessChip.label}
-                                    sx={{ width: 'fit-content' }}
-                                  />
-                                  {contact.engagementReadinessNote ? (
-                                    <Typography variant="caption" color="text.secondary">
-                                      {contact.engagementReadinessNote}
-                                    </Typography>
-                                  ) : null}
-                                </Stack>
-                              </TableCell>
                               <TableCell align="right">
                                 <Stack direction="row" spacing={0.75} justifyContent="flex-end">
                                   <Button
@@ -3351,44 +3146,6 @@ export default function CrmDealersPage() {
             <TextField size="small" label="Gender" value={contactForm.gender} onChange={(e) => setContactFormField('gender', e.target.value)} />
             <TextField size="small" label="Contact Type ID" value={contactForm.contactTypeId} onChange={(e) => setContactFormField('contactTypeId', e.target.value)} />
             <TextField size="small" label="Photo URL" value={contactForm.photoUrl} onChange={(e) => setContactFormField('photoUrl', e.target.value)} />
-            <FormControl size="small">
-              <InputLabel id="contact-readiness-label">Engagement Readiness</InputLabel>
-              <Select
-                labelId="contact-readiness-label"
-                label="Engagement Readiness"
-                value={contactForm.engagementReadinessStatus}
-                disabled={!selectedDealerReadinessEnabled}
-                onChange={(e) => setContactFormField(
-                  'engagementReadinessStatus',
-                  e.target.value === 'not_ready'
-                    ? 'not_ready'
-                    : e.target.value === 'ready'
-                      ? 'ready'
-                      : '',
-                )}
-              >
-                <MenuItem value="">None</MenuItem>
-                <MenuItem value="ready">Ready</MenuItem>
-                <MenuItem value="not_ready">Not ready</MenuItem>
-              </Select>
-            </FormControl>
-            <TextField
-              size="small"
-              multiline
-              minRows={2}
-              label="Readiness note"
-              placeholder="Required when status is Not ready"
-              value={contactForm.engagementReadinessNote}
-              disabled={!selectedDealerReadinessEnabled}
-              required={contactForm.engagementReadinessStatus === 'not_ready'}
-              error={selectedDealerReadinessEnabled && contactForm.engagementReadinessStatus === 'not_ready' && contactForm.engagementReadinessNote.trim() === ''}
-              helperText={!selectedDealerReadinessEnabled
-                ? 'Readiness is disabled for this territory in Sales Reps.'
-                : (contactForm.engagementReadinessStatus === 'not_ready' && contactForm.engagementReadinessNote.trim() === ''
-                ? 'A note is required when status is Not ready.'
-                : '')}
-              onChange={(e) => setContactFormField('engagementReadinessNote', e.target.value)}
-            />
             <FormControl size="small">
               <InputLabel id="contact-archived-label">Archived</InputLabel>
               <Select labelId="contact-archived-label" label="Archived" value={contactForm.isArchived ? 'true' : 'false'} onChange={(e) => setContactFormField('isArchived', e.target.value === 'true')}>
