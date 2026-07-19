@@ -3072,13 +3072,11 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       const stageRows = stageBuckets[stage.id]
       return [stage.id, {
         count: stageRows.length,
-        amount: stageRows.reduce((sum, quote) => sum + Number(quote.totalAmount || 0), 0),
       }]
     }),
   ), [stageBuckets])
 
   const activePipelineStageDefinition = stageById.get(activePipelineStage) || stageDefinitions[0]
-  const activePipelineSummary = stageSummaries.get(activePipelineStage) || { count: 0, amount: 0 }
 
   const selectedOpportunityStage = useMemo(
     () => (selectedOpportunity ? resolveOpportunityStage(selectedOpportunity) : null),
@@ -6143,37 +6141,96 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
           boxShadow: '0 12px 36px rgba(15, 76, 129, 0.08)',
         }}
       >
-        <Stack
-          direction={{ xs: 'column', xl: 'row' }}
-          spacing={0.9}
-          justifyContent="space-between"
-          alignItems={{ xs: 'stretch', xl: 'center' }}
+        <Box
           sx={{
-            px: { xs: 1.25, md: 1.5 },
-            py: 1,
-            background: `linear-gradient(110deg, ${alpha('#0f4c81', 0.1)} 0%, #ffffff 52%, ${alpha('#2f80ed', 0.05)} 100%)`,
+            p: 0.55,
+            display: 'grid',
+            gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 1fr))' },
+            gap: 0.55,
+            borderBottom: 1,
+            borderColor: alpha('#0f4c81', 0.1),
+            backgroundColor: alpha('#eaf4ff', 0.55),
           }}
         >
-          <Stack direction="row" spacing={0.8} alignItems="center" flexWrap="wrap" useFlexGap>
-            <Stack direction="row" spacing={0.8} alignItems="center">
-              <WorkspacesRoundedIcon sx={{ color: '#0f4c81', fontSize: 22 }} />
-              <Typography variant="h6" sx={{ fontWeight: 850, color: '#0b2239', letterSpacing: -0.2 }}>
-                Opportunities
-              </Typography>
-            </Stack>
-            <Chip
-              size="small"
-              label={`${activePipelineSummary.count} opportunities`}
-              sx={{ height: 24, fontWeight: 750, color: '#0f4c81', backgroundColor: alpha('#0f4c81', 0.09) }}
-            />
-            <Chip
-              size="small"
-              label={formatCurrency(activePipelineSummary.amount, 2)}
-              sx={{ height: 24, fontWeight: 800, color: '#14532d', backgroundColor: alpha('#16a34a', 0.1) }}
-            />
+          {stageDefinitions.map((stage) => {
+            const summary = stageSummaries.get(stage.id) || { count: 0 }
+            const isActive = activePipelineStage === stage.id
+
+            return (
+              <Button
+                key={stage.id}
+                onClick={() => setActivePipelineStage(stage.id)}
+                variant="text"
+                aria-pressed={isActive}
+                sx={{
+                  px: 1,
+                  py: 0.5,
+                  justifyContent: 'stretch',
+                  textTransform: 'none',
+                  color: '#0b2239',
+                  borderRadius: 1.5,
+                  border: '1px solid',
+                  borderColor: isActive ? alpha(stage.headerColor, 0.48) : alpha('#0f4c81', 0.12),
+                  backgroundColor: isActive ? '#ffffff' : 'transparent',
+                  boxShadow: isActive ? `0 4px 14px ${alpha(stage.headerColor, 0.11)}` : 'none',
+                  '&:hover': {
+                    backgroundColor: '#ffffff',
+                    borderColor: alpha(stage.headerColor, 0.38),
+                  },
+                }}
+              >
+                <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1} sx={{ width: '100%' }}>
+                  <Stack direction="row" spacing={0.75} alignItems="center" sx={{ minWidth: 0 }}>
+                    <Box
+                      sx={{
+                        width: 22,
+                        height: 22,
+                        borderRadius: 1,
+                        display: 'grid',
+                        placeItems: 'center',
+                        flexShrink: 0,
+                        fontWeight: 800,
+                        color: isActive ? '#ffffff' : stage.headerColor,
+                        backgroundColor: isActive ? stage.headerColor : alpha(stage.headerColor, 0.1),
+                        fontSize: 12,
+                      }}
+                    >
+                      {stage.id === 'concept' ? '1' : '2'}
+                    </Box>
+                    <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
+                      {stage.label.replace(/^\d+\.\s*/, '')}
+                    </Typography>
+                  </Stack>
+                  <Chip
+                    size="small"
+                    label={summary.count}
+                    sx={{ height: 20, minWidth: 30, fontWeight: 800, color: stage.headerColor, backgroundColor: alpha(stage.headerColor, 0.08) }}
+                  />
+                </Stack>
+              </Button>
+            )
+          })}
+        </Box>
+
+        <Stack
+          direction={{ xs: 'column', lg: 'row' }}
+          spacing={0.7}
+          justifyContent="space-between"
+          alignItems={{ xs: 'stretch', lg: 'center' }}
+          sx={{
+            px: { xs: 1.1, md: 1.3 },
+            py: 0.75,
+            backgroundColor: '#ffffff',
+          }}
+        >
+          <Stack direction="row" spacing={0.6} alignItems="center" flexWrap="wrap" useFlexGap>
+            <WorkspacesRoundedIcon sx={{ color: '#0f4c81', fontSize: 19 }} />
+            <Typography variant="subtitle1" sx={{ fontWeight: 800, color: '#0b2239' }}>
+              Opportunities
+            </Typography>
           </Stack>
 
-          <Stack direction="row" spacing={0.6} alignItems="center">
+          <Stack direction="row" spacing={0.55} alignItems="center">
             <TextField
               size="small"
               placeholder="Search by quote #, project, or company..."
@@ -6262,76 +6319,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
             />
           </Stack>
         </Stack>
-
-        <Box
-          sx={{
-            p: 0.65,
-            display: 'grid',
-            gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 1fr))' },
-            gap: 0.6,
-            borderTop: 1,
-            borderColor: alpha('#0f4c81', 0.1),
-            backgroundColor: '#f8fafc',
-          }}
-        >
-          {stageDefinitions.map((stage) => {
-            const summary = stageSummaries.get(stage.id) || { count: 0, amount: 0 }
-            const isActive = activePipelineStage === stage.id
-
-            return (
-              <Button
-                key={stage.id}
-                onClick={() => setActivePipelineStage(stage.id)}
-                variant="text"
-                aria-pressed={isActive}
-                sx={{
-                  px: 1,
-                  py: 0.55,
-                  justifyContent: 'stretch',
-                  textTransform: 'none',
-                  color: '#0b2239',
-                  borderRadius: 1.5,
-                  border: '1px solid',
-                  borderColor: isActive ? alpha(stage.headerColor, 0.48) : alpha('#0f4c81', 0.12),
-                  backgroundColor: isActive ? '#ffffff' : 'transparent',
-                  boxShadow: isActive ? `0 4px 14px ${alpha(stage.headerColor, 0.11)}` : 'none',
-                  '&:hover': {
-                    backgroundColor: '#ffffff',
-                    borderColor: alpha(stage.headerColor, 0.38),
-                  },
-                }}
-              >
-                <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1} sx={{ width: '100%' }}>
-                  <Stack direction="row" spacing={0.75} alignItems="center" sx={{ minWidth: 0 }}>
-                    <Box
-                      sx={{
-                        width: 26,
-                        height: 26,
-                        borderRadius: 1,
-                        display: 'grid',
-                        placeItems: 'center',
-                        flexShrink: 0,
-                        fontWeight: 800,
-                        color: isActive ? '#ffffff' : stage.headerColor,
-                        backgroundColor: isActive ? stage.headerColor : alpha(stage.headerColor, 0.1),
-                      }}
-                    >
-                      {stage.id === 'concept' ? '1' : '2'}
-                    </Box>
-                    <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
-                      {stage.label.replace(/^\d+\.\s*/, '')}
-                    </Typography>
-                  </Stack>
-                  <Chip
-                    size="small"
-                    label={summary.count}
-                    sx={{ height: 21, minWidth: 34, fontWeight: 800, color: stage.headerColor, backgroundColor: alpha(stage.headerColor, 0.08) }}
-                  />
-                </Stack>
-              </Button>
-            )
-          })}
-        </Box>
 
       </Paper>
 
