@@ -1,4 +1,5 @@
 import LocalOfferRoundedIcon from '@mui/icons-material/LocalOfferRounded'
+import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
 import MoreVertRoundedIcon from '@mui/icons-material/MoreVertRounded'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded'
@@ -21,7 +22,9 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState, type MouseEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
+  cancelCrmQuoteOrder,
   fetchCrmQuotes,
+  removeCrmQuote,
   updateCrmQuote,
   type CrmQuote,
 } from '../features/crm/api'
@@ -166,7 +169,12 @@ export default function SalesQuotesPage() {
   const isActionMenuOpen = Boolean(actionAnchorEl)
   const canMoveBackSelectedQuote = Boolean(
     selectedActionQuote
-    && ['declined', 'rejected', 'cancelled', 'canceled'].includes(normalizeText(selectedActionQuote.status)),
+    && normalizeText(selectedActionQuote.status) === 'rejected',
+  )
+  const canCancelSelectedOrder = Boolean(
+    selectedActionQuote
+    && normalizeText(selectedActionQuote.status) === 'accepted'
+    && String(selectedActionQuote.convertedOrderId ?? '').trim(),
   )
 
   const quoteUniverse = useMemo(
@@ -258,7 +266,7 @@ export default function SalesQuotesPage() {
 
     setActionErrorMessage(null)
     setActionSuccessMessage(null)
-    navigate(`/sales?tab=opportunities&quoteId=${encodeURIComponent(quoteId)}`)
+    navigate(`/sales?tab=quotes&quoteId=${encodeURIComponent(quoteId)}`)
   }
 
   const handleMoveBackQuote = async () => {
@@ -288,6 +296,73 @@ export default function SalesQuotesPage() {
       handleCloseQuoteActionMenu()
     } catch (error) {
       setActionErrorMessage(error instanceof Error ? error.message : 'Failed to move quote back.')
+    } finally {
+      setIsMovingBackQuoteId(null)
+    }
+  }
+
+  const handleCancelOrder = async () => {
+    if (!selectedActionQuote || !canCancelSelectedOrder) {
+      return
+    }
+
+    const quoteLabel = selectedActionQuote.quoteNumber || selectedActionQuote.title || selectedActionQuote.id
+    const confirmed = window.confirm(
+      `Cancel the order created from ${quoteLabel}? The order will be removed from active Orders and this quote will return to Opportunities.`,
+    )
+
+    if (!confirmed) {
+      return
+    }
+
+    setActionErrorMessage(null)
+    setActionSuccessMessage(null)
+    setIsMovingBackQuoteId(selectedActionQuote.id)
+
+    try {
+      const response = await cancelCrmQuoteOrder(selectedActionQuote.id)
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['crm', 'quotes'] }),
+        queryClient.invalidateQueries({ queryKey: QUERY_KEYS.ordersOverview }),
+      ])
+      const warning = Array.isArray(response.warnings) && response.warnings.length > 0
+        ? ` ${response.warnings[0]}`
+        : ''
+      setActionSuccessMessage(`Order canceled. Quote returned to Opportunities.${warning}`)
+      handleCloseQuoteActionMenu()
+    } catch (error) {
+      setActionErrorMessage(error instanceof Error ? error.message : 'Failed to cancel order.')
+    } finally {
+      setIsMovingBackQuoteId(null)
+    }
+  }
+
+  const handleDeleteQuote = async () => {
+    if (!selectedActionQuote) {
+      return
+    }
+
+    const quoteLabel = selectedActionQuote.quoteNumber || selectedActionQuote.title || selectedActionQuote.id
+    const linkedOrderNote = String(selectedActionQuote.convertedOrderId ?? '').trim()
+      ? ' The linked order will remain available with its accepted quote snapshot.'
+      : ''
+    const confirmed = window.confirm(`Delete ${quoteLabel}? This cannot be undone.${linkedOrderNote}`)
+
+    if (!confirmed) {
+      return
+    }
+
+    setActionErrorMessage(null)
+    setActionSuccessMessage(null)
+    setIsMovingBackQuoteId(selectedActionQuote.id)
+
+    try {
+      await removeCrmQuote(selectedActionQuote.id)
+      await queryClient.invalidateQueries({ queryKey: ['crm', 'quotes'] })
+      setActionSuccessMessage('Quote deleted.')
+      handleCloseQuoteActionMenu()
+    } catch (error) {
+      setActionErrorMessage(error instanceof Error ? error.message : 'Failed to delete quote.')
     } finally {
       setIsMovingBackQuoteId(null)
     }
@@ -612,13 +687,35 @@ export default function SalesQuotesPage() {
         anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
         transformOrigin={{ vertical: 'top', horizontal: 'right' }}
       >
+        {canMoveBackSelectedQuote ? (
+          <MenuItem
+            disabled={Boolean(isMovingBackQuoteId)}
+            onClick={() => {
+              void handleMoveBackQuote()
+            }}
+          >
+            Move back
+          </MenuItem>
+        ) : null}
+        {canCancelSelectedOrder ? (
+          <MenuItem
+            disabled={Boolean(isMovingBackQuoteId)}
+            onClick={() => {
+              void handleCancelOrder()
+            }}
+          >
+            Cancel order
+          </MenuItem>
+        ) : null}
         <MenuItem
-          disabled={!canMoveBackSelectedQuote || Boolean(isMovingBackQuoteId)}
+          disabled={!selectedActionQuote || Boolean(isMovingBackQuoteId)}
           onClick={() => {
-            void handleMoveBackQuote()
+            void handleDeleteQuote()
           }}
+          sx={{ color: 'error.main' }}
         >
-          Move back
+          <DeleteOutlineRoundedIcon fontSize="small" sx={{ mr: 1 }} />
+          Delete quote
         </MenuItem>
       </Menu>
     </Stack>

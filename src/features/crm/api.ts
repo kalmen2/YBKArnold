@@ -1204,6 +1204,17 @@ export function removeCrmQuote(quoteId: string) {
   })
 }
 
+export function cancelCrmQuoteOrder(quoteId: string) {
+  return apiRequest<{
+    ok: boolean
+    quote: CrmQuote
+    canceledOrderId: string
+    warnings: string[]
+  }>(`/api/crm/quotes/${encodeURIComponent(quoteId)}/cancel-order`, {
+    method: 'POST',
+  })
+}
+
 export function syncCrmQuoteFromExcel(input: CrmExcelQuoteSyncInput) {
   return apiRequest<CrmExcelQuoteSyncResponse>('/api/crm/quotes/excel-sync', {
     method: 'POST',

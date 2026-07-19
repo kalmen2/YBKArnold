@@ -135,7 +135,10 @@ export default function SalesPage() {
           : activeTab === 'opportunities'
             ? <SalesOpportunitiesPage />
             : activeTab === 'quotes'
-              ? <SalesQuotesPage />
+              ? <>
+                  <SalesQuotesPage />
+                  <SalesOpportunitiesPage detailsOnly />
+                </>
             : activeTab === 'engagement'
               ? <SalesEngagementPage />
               : <SalesRepsPage />}

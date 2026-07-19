@@ -2782,7 +2782,11 @@ function StageColumn({
   )
 }
 
-export default function SalesOpportunitiesPage() {
+type SalesOpportunitiesPageProps = {
+  detailsOnly?: boolean
+}
+
+export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpportunitiesPageProps = {}) {
   const { appUser } = useAuth()
   const queryClient = useQueryClient()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -5136,7 +5140,7 @@ export default function SalesOpportunitiesPage() {
       || '',
   ).trim()
 
-  if (isLoading) {
+  if (isLoading && !detailsOnly) {
     return <LoadingPanel loading message="Fetching pipeline opportunities..." />
   }
 
@@ -6134,6 +6138,7 @@ export default function SalesOpportunitiesPage() {
         </DialogActions>
       </Dialog>
 
+      {!detailsOnly ? <>
       <Paper
         variant="outlined"
         sx={{
@@ -6671,6 +6676,7 @@ export default function SalesOpportunitiesPage() {
           </Button>
         </DialogActions>
       </Dialog>
+      </> : null}
 
       <Dialog
         open={Boolean(selectedOpportunity && opportunityDetailsFormState)}
@@ -6701,10 +6707,12 @@ export default function SalesOpportunitiesPage() {
         >
           <Stack spacing={0.15}>
             <Typography variant="h6" sx={{ fontWeight: 800, letterSpacing: 0.1 }}>
-              Opportunity Details
+              {detailsOnly ? 'Quote Details' : 'Opportunity Details'}
             </Typography>
             <Typography variant="caption" sx={{ color: alpha('#0b2239', 0.78) }}>
-              Update details here. Upload quote packages from the pipeline header.
+              {detailsOnly
+                ? 'Review and update this saved quote.'
+                : 'Update details here. Upload quote packages from the pipeline header.'}
             </Typography>
           </Stack>
           <Stack direction="row" spacing={0.6} alignItems="center">

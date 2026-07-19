@@ -887,7 +887,7 @@ export function registerOrdersRoutes(app, deps) {
 
       const unifiedOrderDocuments = await ordersUnifiedCollection
         .find(
-          {},
+          { is_cancelled: { $ne: true } },
           {
             projection: {
               _id: 0,

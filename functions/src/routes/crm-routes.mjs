@@ -1460,7 +1460,10 @@ async function computeCrmOverview({
       .sort({ importedAt: -1 })
       .limit(1)
       .next(),
-    crmOrdersCollection.countDocuments({ is_canonical_order: true }),
+    crmOrdersCollection.countDocuments({
+      is_canonical_order: true,
+      is_cancelled: { $ne: true },
+    }),
   ])
 
   const quoteCursor = crmQuotesCollection.find(
@@ -7238,16 +7241,42 @@ export function registerCrmRoutes(app, deps) {
         })
       }
 
-      const { crmQuotesCollection } = await getCollections()
+      const { crmQuotesCollection, ordersUnifiedCollection } = await getCollections()
       const existingQuote = await crmQuotesCollection.findOne(
         { id: quoteId },
-        { projection: { _id: 0, convertedOrderId: 1, orderNumber: 1, status: 1 } },
+        { projection: { _id: 0 } },
       )
 
-      if (toTrimmedText(existingQuote?.convertedOrderId, 160)) {
-        return res.status(409).json({
-          error: 'Converted quotes are permanent and cannot be deleted. Open the linked order instead.',
+      if (!existingQuote) {
+        return res.status(404).json({
+          error: 'Quote not found.',
         })
+      }
+
+      const now = nowIso()
+      const convertedOrderId = toTrimmedText(existingQuote?.convertedOrderId, 160)
+
+      if (convertedOrderId) {
+        await ordersUnifiedCollection.updateOne(
+          {
+            $or: [
+              { canonical_order_id: convertedOrderId },
+              { source_quote_id: quoteId },
+            ],
+          },
+          {
+            $set: {
+              source_quote_deleted_at: now,
+              source_quote_deleted_snapshot: existingQuote,
+              canonical_updated_at: now,
+              updatedAt: now,
+            },
+            $unset: {
+              source_quote_id: '',
+              sourceQuoteId: '',
+            },
+          },
+        )
       }
 
       const deletedQuote = await crmQuotesCollection.findOneAndDelete(
@@ -7275,6 +7304,134 @@ export function registerCrmRoutes(app, deps) {
         ok: true,
         quote: deletedQuote,
         documentCleanup,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.post('/api/crm/quotes/:quoteId/cancel-order', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+    try {
+      const quoteId = toTrimmedText(req.params.quoteId, 160)
+
+      if (!quoteId) {
+        return res.status(400).json({ error: 'quoteId is required.' })
+      }
+
+      const { crmQuotesCollection, ordersUnifiedCollection } = await getCollections()
+      const quote = await crmQuotesCollection.findOne(
+        { id: quoteId },
+        { projection: { _id: 0 } },
+      )
+
+      if (!quote) {
+        return res.status(404).json({ error: 'Quote not found.' })
+      }
+
+      const convertedOrderId = toTrimmedText(quote?.convertedOrderId, 160)
+      const isAccepted = normalizeStatus(quote?.status, quoteStatuses, 'draft') === 'accepted'
+
+      if (!convertedOrderId || !isAccepted) {
+        return res.status(409).json({ error: 'Only an accepted quote with a linked order can be canceled.' })
+      }
+
+      const order = await ordersUnifiedCollection.findOne({
+        $or: [
+          { canonical_order_id: convertedOrderId },
+          { source_quote_id: quoteId },
+        ],
+        is_canonical_order: true,
+        is_cancelled: { $ne: true },
+      })
+
+      if (!order) {
+        return res.status(404).json({ error: 'Linked order not found.' })
+      }
+
+      const now = nowIso()
+      const warnings = []
+      const mondayItems = [
+        {
+          boardId: toTrimmedText(order?.monday_primary_board_id || order?.mondayPrimaryBoardId, 120),
+          itemId: toTrimmedText(order?.monday_primary_item_id || order?.mondayPrimaryItemId, 120),
+        },
+        {
+          boardId: toTrimmedText(order?.monday_secondary_board_id || order?.mondaySecondaryBoardId, 120),
+          itemId: toTrimmedText(order?.monday_secondary_item_id || order?.mondaySecondaryItemId, 120),
+        },
+      ].filter((item, index, items) => (
+        item.itemId && items.findIndex((candidate) => candidate.itemId === item.itemId) === index
+      ))
+
+      if (typeof deleteMondayItem === 'function') {
+        for (const item of mondayItems) {
+          try {
+            // eslint-disable-next-line no-await-in-loop
+            await deleteMondayItem({ boardId: item.boardId || null, itemId: item.itemId })
+          } catch (error) {
+            warnings.push(`Could not remove Monday item ${item.itemId}: ${error instanceof Error ? error.message : 'Unknown error'}`)
+          }
+        }
+      }
+
+      const canceledByUid = toTrimmedText(req.authUser?.uid, 160) || null
+      const canceledByEmail = toTrimmedText(req.authUser?.email, 200) || null
+
+      await ordersUnifiedCollection.updateOne(
+        { _id: order._id },
+        {
+          $set: {
+            is_cancelled: true,
+            cancelled_at: now,
+            cancelled_by_uid: canceledByUid,
+            cancelled_by_email: canceledByEmail,
+            cancelled_source_quote_id: quoteId,
+            canonical_status: 'cancelled',
+            crmStatus: 'cancelled',
+            has_monday_record: false,
+            canonical_updated_at: now,
+            updatedAt: now,
+          },
+          $unset: {
+            source_quote_id: '',
+            sourceQuoteId: '',
+          },
+        },
+      )
+
+      const updatedQuote = await crmQuotesCollection.findOneAndUpdate(
+        { id: quoteId },
+        {
+          $set: {
+            status: 'draft',
+            opportunityStage: 'concept',
+            acceptedAt: null,
+            rejectedAt: null,
+            cancelledOrderId: convertedOrderId,
+            cancelledOrderNumber: toTrimmedText(quote?.convertedOrderNumber || order?.order_number, 120) || null,
+            cancelledOrderAt: now,
+            cancelledOrderByUid: canceledByUid,
+            cancelledOrderByEmail: canceledByEmail,
+            lastStatusChangedAt: now,
+            updatedAt: now,
+          },
+          $unset: {
+            convertedOrderId: '',
+            convertedOrderNumber: '',
+            convertedAt: '',
+            orderNumber: '',
+          },
+        },
+        { returnDocument: 'after', projection: { _id: 0 } },
+      )
+
+      cacheDelete(OVERVIEW_CACHE_KEY)
+
+      return res.json({
+        ok: true,
+        quote: normalizeQuoteOpportunityStageForResponse(updatedQuote),
+        canceledOrderId: convertedOrderId,
+        warnings,
       })
     } catch (error) {
       next(error)
@@ -7851,7 +8008,10 @@ export function registerCrmRoutes(app, deps) {
       const dealerSourceId = toTrimmedText(req.query?.dealerSourceId, 160)
       const limit = Math.min(500, Math.max(1, toNonNegativeInteger(req.query?.limit, 120)))
       const { ordersUnifiedCollection } = await getCollections()
-      const filterClauses = [{ is_canonical_order: true }]
+      const filterClauses = [
+        { is_canonical_order: true },
+        { is_cancelled: { $ne: true } },
+      ]
 
       if (status && status !== 'all') {
         filterClauses.push({ crmStatus: status })

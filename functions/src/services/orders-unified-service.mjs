@@ -1169,7 +1169,10 @@ export function createOrdersUnifiedService(deps) {
         .find({}, { projection: { _id: 0, id: 1, date: 1, jobName: 1, readyPercent: 1, updatedAt: 1 } })
         .sort({ date: -1, updatedAt: -1 })
         .toArray(),
-      ordersUnifiedCollection.find({ is_shipped: { $ne: true } }).toArray(),
+      ordersUnifiedCollection.find({
+        is_shipped: { $ne: true },
+        is_cancelled: { $ne: true },
+      }).toArray(),
       ordersUnifiedCollection
         .find(
           { is_shipped: true },
@@ -1648,6 +1651,7 @@ export function createOrdersUnifiedService(deps) {
     if (staleQuickBooksOrderKeys.length > 0) {
       const deleteResult = await ordersUnifiedCollection.deleteMany({
         orderKey: { $in: staleQuickBooksOrderKeys },
+        is_cancelled: { $ne: true },
       })
       staleQuickBooksDeletedCount = Number(deleteResult?.deletedCount ?? 0)
     }

@@ -3115,7 +3115,7 @@ export function JobDetailsDialog({
                         variant="contained"
                         endIcon={<OpenInNewRoundedIcon />}
                         onClick={() => {
-                          window.open(`/sales?tab=opportunities&quoteId=${encodeURIComponent(order.sourceQuoteId || '')}`, '_blank', 'noopener,noreferrer')
+                          window.open(`/sales?tab=quotes&quoteId=${encodeURIComponent(order.sourceQuoteId || '')}`, '_blank', 'noopener,noreferrer')
                         }}
                         sx={{ textTransform: 'none', fontWeight: 700, whiteSpace: 'nowrap' }}
                       >
