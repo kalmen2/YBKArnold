@@ -3080,29 +3080,6 @@ export default function SalesOpportunitiesPage() {
     return base
   }, [filteredActiveQuotes])
 
-  const selectedOpportunityDealerName = useMemo(() => {
-    if (!selectedOpportunity) {
-      return ''
-    }
-
-    const stagedDealerSourceId = String(opportunityDetailsFormState?.dealerSourceId || '').trim()
-    const stagedDealerName = stagedDealerSourceId
-      ? dealersBySourceId.get(stagedDealerSourceId)?.name
-      : ''
-
-    if (stagedDealerName) {
-      return stagedDealerName
-    }
-
-    return dealersBySourceId.get(selectedOpportunity.dealerSourceId)?.name
-      || String(opportunityDetailsFormState?.companyName || '').trim()
-      || selectedOpportunity.companyName
-      || selectedOpportunity.dealerName
-      || stagedDealerSourceId
-      || selectedOpportunity.dealerSourceId
-      || ''
-  }, [dealersBySourceId, opportunityDetailsFormState?.companyName, opportunityDetailsFormState?.dealerSourceId, selectedOpportunity])
-
   const selectedOpportunityStage = useMemo(
     () => (selectedOpportunity ? resolveOpportunityStage(selectedOpportunity) : null),
     [selectedOpportunity],
@@ -4726,14 +4703,20 @@ export default function SalesOpportunitiesPage() {
   )
 
   const handleCreateOpportunity = useCallback(async () => {
+    const dealerSourceId = formState.dealerSourceId.trim()
     const quoteNumber = formState.quoteNumber.trim()
     const opportunityDateInput = formState.opportunityDateInput.trim()
     const pricing = resolveQuotePricing(formState.lineItems, formState.subtotal, formState.freight)
     const lineItems = pricing.normalizedLineItems
     const totalAmount = pricing.totalAmount
 
-    // A concept now only needs a quote number; the rest is filled in later from
-    // the Excel quote sync. Optional details are validated only when provided.
+    // Manual concepts require an account link and quote number. The remaining
+    // details can still be filled in later from the Excel quote sync.
+    if (!dealerSourceId) {
+      setErrorMessage('Dealer account is required.')
+      return
+    }
+
     if (!quoteNumber) {
       setErrorMessage('Quote number is required.')
       return
@@ -4767,7 +4750,7 @@ export default function SalesOpportunitiesPage() {
       const quoteDocumentName = formState.quoteDocumentName.trim()
 
       await createCrmQuote({
-        dealerSourceId: formState.dealerSourceId.trim() || null,
+        dealerSourceId,
         quoteNumber,
         title,
         companyName: formState.companyName.trim() || null,
@@ -6323,6 +6306,28 @@ export default function SalesOpportunitiesPage() {
               }
             />
 
+            <Autocomplete
+              options={excelSyncDealerOptions}
+              value={dealersBySourceId.get(formState.dealerSourceId) ?? null}
+              onChange={(_event, value) => {
+                setFormState((current) => ({
+                  ...current,
+                  dealerSourceId: value?.sourceId || '',
+                  companyName: value?.name || current.companyName,
+                }))
+              }}
+              isOptionEqualToValue={(option, value) => option.sourceId === value.sourceId}
+              getOptionLabel={(option) => resolveDealerSelectionLabel(option)}
+              renderInput={(params) => (
+                <TextField
+                  {...params}
+                  required
+                  label="Dealer Account"
+                  helperText="Select the CRM dealer account that owns this opportunity."
+                />
+              )}
+            />
+
             <Button
               variant="text"
               size="small"
@@ -6645,6 +6650,7 @@ export default function SalesOpportunitiesPage() {
               isSavingOpportunity
               || isUploadingQuoteDocument
               || !canManage
+              || !formState.dealerSourceId.trim()
             }
             onClick={() => {
               void handleCreateOpportunity()
@@ -6896,10 +6902,34 @@ export default function SalesOpportunitiesPage() {
               {selectedOpportunityDetailsTab === 'details' ? (
                 <>
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.1}>
-                <TextField
-                  label="Dealer"
-                  value={selectedOpportunityDealerName}
-                  InputProps={{ readOnly: true }}
+                <Autocomplete
+                  options={excelSyncDealerOptions}
+                  value={dealersBySourceId.get(opportunityDetailsFormState.dealerSourceId) ?? null}
+                  onChange={(_event, value) => {
+                    setOpportunityDetailsFormState((current) => {
+                      if (!current || !value) {
+                        return current
+                      }
+
+                      return {
+                        ...current,
+                        dealerSourceId: value.sourceId,
+                        companyName: value.name || current.companyName,
+                      }
+                    })
+                  }}
+                  isOptionEqualToValue={(option, value) => option.sourceId === value.sourceId}
+                  getOptionLabel={(option) => resolveDealerSelectionLabel(option)}
+                  renderInput={(params) => (
+                    <TextField
+                      {...params}
+                      label="Dealer Account"
+                      helperText={opportunityDetailsFormState.dealerSourceId
+                        ? 'This account is linked to the quote.'
+                        : 'Select an account before converting this quote to an order.'}
+                    />
+                  )}
+                  disabled={!canManage}
                   sx={{ flex: 1 }}
                 />
                 <TextField
