@@ -980,7 +980,7 @@ const defaultQuotePrintSettings = Object.freeze({
   phone: null,
   email: null,
   website: null,
-  headerText: 'Quotation',
+  headerText: null,
   footerText: 'Thank you for the opportunity to quote this project.',
   accentColor: '#0f4c81',
   showPaymentTerms: true,

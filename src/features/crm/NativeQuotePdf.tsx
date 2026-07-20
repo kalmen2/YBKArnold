@@ -49,7 +49,7 @@ export const DEFAULT_QUOTE_PRINT_SETTINGS: CrmQuotePrintSettings = {
   phone: null,
   email: null,
   website: null,
-  headerText: 'Quotation',
+  headerText: null,
   footerText: 'Thank you for the opportunity to quote this project.',
   accentColor: '#0f4c81',
   showPaymentTerms: true,
@@ -105,7 +105,7 @@ function splitLineItems(lineItems: CrmQuoteLineItem[]) {
 function createStyles(accentColor: string) {
   return StyleSheet.create({
     page: {
-      paddingTop: 118,
+      paddingTop: 132,
       paddingBottom: 56,
       paddingHorizontal: 28,
       fontFamily: 'Helvetica',
@@ -117,31 +117,27 @@ function createStyles(accentColor: string) {
       top: 22,
       left: 28,
       right: 28,
-      height: 84,
+      height: 98,
       flexDirection: 'row',
       borderBottomWidth: 2,
       borderBottomColor: accentColor,
       paddingBottom: 8,
     },
-    logo: { width: 104, height: 56, objectFit: 'contain', marginRight: 12 },
-    company: { flexGrow: 1 },
-    companyName: { fontSize: 17, fontWeight: 700, color: accentColor, marginBottom: 3 },
-    companyLine: { fontSize: 8, color: '#526075', marginBottom: 1 },
-    quoteHeader: { width: 170, alignItems: 'flex-end' },
-    quoteTitle: { fontSize: 20, fontWeight: 700, color: accentColor, marginBottom: 5 },
-    quoteMeta: { fontSize: 9, marginBottom: 2 },
+    logo: { width: 174, height: 82, objectFit: 'contain' },
+    quoteTitle: { position: 'absolute', top: 9, left: 185, right: 185, fontSize: 24, fontWeight: 700, color: accentColor, textAlign: 'center' },
+    quoteHeader: { width: 190, marginLeft: 'auto', alignItems: 'flex-end', paddingTop: 33 },
+    quoteMeta: { fontSize: 10, marginBottom: 4, fontWeight: 700 },
     customerBlock: {
       flexDirection: 'row',
-      borderWidth: 1,
-      borderColor: '#cbd5e1',
-      borderRadius: 3,
+      borderBottomWidth: 1,
+      borderBottomColor: '#cbd5e1',
       marginBottom: 12,
+      paddingBottom: 5,
     },
-    customerColumn: { width: '50%', padding: 8 },
-    customerColumnRight: { width: '50%', padding: 8, borderLeftWidth: 1, borderLeftColor: '#cbd5e1' },
+    customerColumn: { width: '50%', paddingVertical: 4, paddingRight: 14 },
+    customerColumnRight: { width: '50%', paddingVertical: 4, paddingLeft: 14 },
     label: { fontSize: 7, color: '#64748b', textTransform: 'uppercase', marginBottom: 2 },
     value: { fontSize: 9, marginBottom: 5 },
-    headerText: { fontSize: 9, lineHeight: 1.35, marginBottom: 10, color: '#344155' },
     tableHeader: {
       flexDirection: 'row',
       backgroundColor: accentColor,
@@ -170,7 +166,7 @@ function createStyles(accentColor: string) {
     totals: { marginTop: 10, marginLeft: 'auto', width: 230 },
     totalRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 3, borderBottomWidth: 1, borderColor: '#e2e8f0' },
     grandTotal: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6, fontSize: 12, fontWeight: 700, color: accentColor },
-    terms: { marginTop: 12, borderTopWidth: 1, borderTopColor: '#cbd5e1', paddingTop: 8, flexDirection: 'row', gap: 18 },
+    terms: { marginTop: 12, borderTopWidth: 1, borderTopColor: '#cbd5e1', paddingTop: 8 },
     termItem: { flexGrow: 1 },
     sectionTitle: { marginTop: 12, paddingVertical: 5, paddingHorizontal: 6, backgroundColor: '#eef2f7', borderWidth: 1, borderColor: '#cbd5e1', fontSize: 10, fontWeight: 700, color: accentColor },
     serviceRow: { flexDirection: 'row', borderBottomWidth: 1, borderLeftWidth: 1, borderRightWidth: 1, borderColor: '#d8e0ea', padding: 6, minHeight: 34 },
@@ -226,15 +222,8 @@ export function NativeQuotePdfDocument({
       <Page size="LETTER" style={styles.page} wrap>
         <View style={styles.header} fixed>
           {resolvedSettings.logoUrl ? <Image src={resolvedSettings.logoUrl} style={styles.logo} /> : null}
-          <View style={styles.company}>
-            <Text style={styles.companyName}>{resolvedSettings.companyName}</Text>
-            {resolvedSettings.addressLines.map((line) => <Text key={line} style={styles.companyLine}>{line}</Text>)}
-            {[resolvedSettings.phone, resolvedSettings.email, resolvedSettings.website].filter(Boolean).map((line) => (
-              <Text key={line} style={styles.companyLine}>{line}</Text>
-            ))}
-          </View>
+          <Text style={styles.quoteTitle}>QUOTE</Text>
           <View style={styles.quoteHeader}>
-            <Text style={styles.quoteTitle}>QUOTE</Text>
             <Text style={styles.quoteMeta}>No. {plain(quote.quoteNumber)}</Text>
             <Text style={styles.quoteMeta}>Date {plain(quote.opportunityDate)?.slice(0, 10)}</Text>
             <Text style={styles.quoteMeta}>{plain(quote.title)}</Text>
@@ -256,11 +245,11 @@ export function NativeQuotePdfDocument({
             <Text style={styles.label}>Project</Text>
             <Text style={styles.value}>{plain(quote.title)}</Text>
             <Text style={styles.label}>Project Type</Text>
-            <Text>{plain(quote.projectType)}</Text>
+            <Text style={styles.value}>{plain(quote.projectType)}</Text>
+            {resolvedSettings.showLeadTime ? <><Text style={styles.label}>Lead Time</Text><Text style={styles.value}>{plain(quote.leadTime)}</Text></> : null}
+            {resolvedSettings.showPaymentTerms ? <><Text style={styles.label}>Payment Terms</Text><Text style={styles.value}>{plain(quote.paymentTerms)}</Text></> : null}
           </View>
         </View>
-
-        {resolvedSettings.headerText ? <Text style={styles.headerText}>{resolvedSettings.headerText}</Text> : null}
 
         <View style={styles.tableHeader} fixed>
           <Text style={styles.imageColumn}>Picture</Text>
@@ -323,11 +312,7 @@ export function NativeQuotePdfDocument({
           <View style={styles.grandTotal}><Text>Total</Text><Text>{money(quote.totalAmount ?? subtotal + Number(freight || 0))}</Text></View>
         </View>
 
-        <View style={styles.terms} wrap={false}>
-          {resolvedSettings.showLeadTime ? <View style={styles.termItem}><Text style={styles.label}>Lead Time</Text><Text>{plain(quote.leadTime)}</Text></View> : null}
-          {resolvedSettings.showPaymentTerms ? <View style={styles.termItem}><Text style={styles.label}>Payment Terms</Text><Text>{plain(quote.paymentTerms)}</Text></View> : null}
-          {quote.notes ? <View style={styles.termItem}><Text style={styles.label}>Notes</Text><Text>{quote.notes}</Text></View> : null}
-        </View>
+        {quote.notes ? <View style={styles.terms} wrap={false}><View style={styles.termItem}><Text style={styles.label}>Notes</Text><Text>{quote.notes}</Text></View></View> : null}
 
         {resolvedSettings.customerInformation ? (
           <View style={styles.customerInfo}>

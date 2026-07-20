@@ -189,7 +189,6 @@ export default function SalesQuoteLayoutPage() {
                   <TextField label="Email" value={draft.email || ''} onChange={(event) => setField('email', event.target.value || null)} fullWidth />
                   <TextField label="Website" value={draft.website || ''} onChange={(event) => setField('website', event.target.value || null)} fullWidth />
                 </Stack>
-                <TextField label="Header text" value={draft.headerText || ''} onChange={(event) => setField('headerText', event.target.value || null)} multiline minRows={2} />
                 <TextField label="Footer text" value={draft.footerText || ''} onChange={(event) => setField('footerText', event.target.value || null)} multiline minRows={3} />
                 <TextField label="Customer information" value={draft.customerInformation} onChange={(event) => setField('customerInformation', event.target.value)} multiline minRows={8} helperText="Standard terms printed at the bottom of every website quote" />
                 <TextField label="Accent color" type="color" value={draft.accentColor} onChange={(event) => setField('accentColor', event.target.value)} sx={{ width: 180 }} />
