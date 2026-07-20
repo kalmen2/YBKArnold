@@ -181,6 +181,7 @@ type OpportunityDetailsFormState = {
 type OpportunityConvertOrderFormState = {
   primaryBoardId: string
   secondaryBoardId: string
+  acknowledgmentNumber: string
   poDate: string
   poNumber: string
   leadTimeDate: string
@@ -1066,10 +1067,12 @@ function createEmptyOpportunityForm(): OpportunityFormState {
 function createEmptyConvertOrderForm(
   primaryBoardId = DEFAULT_NEW_ORDERS_2026_BOARD_ID,
   secondaryBoardId = DEFAULT_DESIGN_AKF_BOARD_ID,
+  acknowledgmentNumber = '',
 ): OpportunityConvertOrderFormState {
   return {
     primaryBoardId,
     secondaryBoardId,
+    acknowledgmentNumber: String(acknowledgmentNumber || '').trim(),
     poDate: getTodayEasternDateInputValue(),
     poNumber: '',
     leadTimeDate: '',
@@ -5767,7 +5770,13 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     setErrorMessage(null)
     setSuccessMessage(null)
     setConvertOrderTargetQuote(quote)
-    setConvertOrderFormState(createEmptyConvertOrderForm(convertOrderPrimaryBoardId, convertOrderSecondaryBoardId))
+    setConvertOrderFormState(
+      createEmptyConvertOrderForm(
+        convertOrderPrimaryBoardId,
+        convertOrderSecondaryBoardId,
+        String(quote.acknowledgmentNumber || '').trim(),
+      ),
+    )
     setIsConvertOrderDialogOpen(true)
   }, [convertOrderPrimaryBoardId, convertOrderSecondaryBoardId])
 
@@ -5786,9 +5795,15 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       return
     }
 
+    const acknowledgmentNumber = convertOrderFormState.acknowledgmentNumber.trim()
     const poDate = convertOrderFormState.poDate.trim()
     const leadTimeDate = convertOrderFormState.leadTimeDate.trim()
     const shipTo = convertOrderFormState.shipTo.trim()
+
+    if (!acknowledgmentNumber) {
+      setErrorMessage('Acknowledgement Number is required.')
+      return
+    }
 
     if (!poDate || !/^\d{4}-\d{2}-\d{2}$/.test(poDate)) {
       setErrorMessage('P.O. date is required and must be valid.')
@@ -5812,6 +5827,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
 
     try {
       await convertCrmQuoteToOrder(convertOrderTargetQuote.id, {
+        acknowledgmentNumber,
         poDate,
         poNumber: convertOrderFormState.poNumber.trim() || null,
         leadTimeDate: leadTimeDate || null,
@@ -5839,6 +5855,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       setBusyQuoteId(null)
     }
   }, [
+    convertOrderFormState.acknowledgmentNumber,
     convertOrderFormState.leadTimeDate,
     convertOrderFormState.notes,
     convertOrderFormState.poDate,
@@ -6058,7 +6075,8 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
           <Stack spacing={1.35} sx={{ mt: 0.75 }}>
             <Typography variant="body2" color="text.secondary">
               This will push to both Monday boards and create a linked CRM order from quote{' '}
-              <strong>{convertOrderQuoteLabel || 'N/A'}</strong>.
+              <strong>{convertOrderQuoteLabel || 'N/A'}</strong>. The order number sent to Monday will use the
+              acknowledgement number below.
             </Typography>
 
             {errorMessage ? (
@@ -6124,6 +6142,18 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                 )
               })}
             </TextField>
+
+            <TextField
+              required
+              fullWidth
+              label="Acknowledgement Number"
+              value={convertOrderFormState.acknowledgmentNumber}
+              onChange={(event) => {
+                updateConvertOrderField('acknowledgmentNumber', event.target.value)
+              }}
+              helperText="Required. This value becomes the order number on Monday."
+              disabled={isSubmittingConvertOrder}
+            />
 
             <TextField
               required
@@ -6200,6 +6230,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
             }}
             disabled={
               isSubmittingConvertOrder
+              || !convertOrderFormState.acknowledgmentNumber.trim()
               || !convertOrderFormState.poDate.trim()
               || !convertOrderFormState.shipTo.trim()
             }

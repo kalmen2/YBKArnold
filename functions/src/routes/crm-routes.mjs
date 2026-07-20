@@ -124,6 +124,105 @@ const toTrimmedText = (value, maxLength = 4000) => normalizeText(value, maxLengt
 
 const toLowerText = (value, maxLength = 4000) => toTrimmedText(value, maxLength).toLowerCase()
 
+function normalizeColumnTitle(value) {
+  return toLowerText(value, 240).replace(/[^a-z0-9]+/g, ' ').trim()
+}
+
+function resolveBoardColumnId(columns, options = {}) {
+  const {
+    idCandidates = [],
+    titleCandidates = [],
+    preferredTypes = [],
+  } = options
+
+  const normalizedColumns = (Array.isArray(columns) ? columns : [])
+    .map((column) => {
+      const id = toTrimmedText(column?.id, 160)
+
+      if (!id) {
+        return null
+      }
+
+      return {
+        id,
+        normalizedId: id.toLowerCase(),
+        normalizedTitle: normalizeColumnTitle(column?.title),
+        type: toLowerText(column?.type, 120),
+      }
+    })
+    .filter(Boolean)
+
+  const normalizedIdCandidates = [...new Set(
+    (Array.isArray(idCandidates) ? idCandidates : [])
+      .map((value) => toLowerText(value, 160))
+      .filter(Boolean),
+  )]
+  const normalizedTitleCandidates = [...new Set(
+    (Array.isArray(titleCandidates) ? titleCandidates : [])
+      .map((value) => normalizeColumnTitle(value))
+      .filter(Boolean),
+  )]
+  const normalizedPreferredTypes = new Set(
+    (Array.isArray(preferredTypes) ? preferredTypes : [])
+      .map((value) => toLowerText(value, 120))
+      .filter(Boolean),
+  )
+
+  const typeMatches = (entry) => {
+    if (normalizedPreferredTypes.size === 0) {
+      return true
+    }
+
+    return normalizedPreferredTypes.has(toLowerText(entry?.type, 120))
+  }
+
+  for (const candidateId of normalizedIdCandidates) {
+    const match = normalizedColumns.find((entry) => entry.normalizedId === candidateId && typeMatches(entry))
+
+    if (match?.id) {
+      return match.id
+    }
+  }
+
+  for (const candidateTitle of normalizedTitleCandidates) {
+    const exactMatch = normalizedColumns.find(
+      (entry) => entry.normalizedTitle === candidateTitle && typeMatches(entry),
+    )
+
+    if (exactMatch?.id) {
+      return exactMatch.id
+    }
+  }
+
+  for (const candidateTitle of normalizedTitleCandidates) {
+    const looseMatch = normalizedColumns.find(
+      (entry) => entry.normalizedTitle.includes(candidateTitle) && typeMatches(entry),
+    )
+
+    if (looseMatch?.id) {
+      return looseMatch.id
+    }
+  }
+
+  return null
+}
+
+function resolveAckColumnIdFromBoardColumns(columns, fallbackColumnId) {
+  const resolved = resolveBoardColumnId(columns, {
+    idCandidates: [fallbackColumnId, 'text9'],
+    titleCandidates: [
+      'ack',
+      'ack #',
+      'ack number',
+      'acknowledgement number',
+      'acknowledgment number',
+      'order number',
+    ],
+  })
+
+  return resolved || toTrimmedText(fallbackColumnId, 160) || null
+}
+
 function toIsoDateOrNull(value) {
   const normalized = toTrimmedText(value, 80)
 
@@ -1758,6 +1857,7 @@ export function registerCrmRoutes(app, deps) {
   const {
     getCollections,
     fetchMondayBoardsCatalog,
+    fetchMondayBoardColumns,
     createMondayItem,
     updateMondayItemStatusColumn,
     updateMondayItemTextColumn,
@@ -6707,6 +6807,14 @@ export function registerCrmRoutes(app, deps) {
         })
       }
 
+      const acknowledgmentNumber = toTrimmedText(body.acknowledgmentNumber, 120)
+
+      if (!acknowledgmentNumber) {
+        return res.status(400).json({
+          error: 'acknowledgmentNumber is required.',
+        })
+      }
+
       const poNumber = toTrimmedText(body.poNumber, 120) || null
       const notes = toTrimmedText(body.notes, 4000) || null
       const {
@@ -6760,17 +6868,11 @@ export function registerCrmRoutes(app, deps) {
         })
       }
 
-      const fallbackOrderNumber = `OP-${quoteId.slice(0, 8).toUpperCase()}`
-      const baseOrderNumber =
-        toTrimmedText(quote?.acknowledgmentNumber, 120)
-        || toTrimmedText(quote?.orderNumber, 120)
-        || toTrimmedText(quote?.quoteNumber, 120)
-        || fallbackOrderNumber
-      let orderNumber = baseOrderNumber
+      const orderNumber = acknowledgmentNumber
 
       const existingOrderWithSameNumber = await ordersUnifiedCollection.findOne(
         {
-          order_number: new RegExp(`^${escapeRegex(baseOrderNumber)}$`, 'i'),
+          order_number: new RegExp(`^${escapeRegex(orderNumber)}$`, 'i'),
         },
         {
           projection: {
@@ -6781,7 +6883,30 @@ export function registerCrmRoutes(app, deps) {
       )
 
       if (existingOrderWithSameNumber) {
-        orderNumber = `${baseOrderNumber}-${Date.now().toString().slice(-4)}`
+        return res.status(409).json({
+          error: `Order number ${orderNumber} already exists. Use a different acknowledgement number.`,
+        })
+      }
+
+      let primaryAckColumnId = mondayNewOrders2026ColumnIds.ack
+      let secondaryAckColumnId = mondayDesignAkfColumnIds.orderNumber
+
+      if (typeof fetchMondayBoardColumns === 'function') {
+        try {
+          const [primaryBoardSnapshot, secondaryBoardSnapshot] = await Promise.all([
+            fetchMondayBoardColumns({ boardId: mondayNewOrders2026BoardId }),
+            fetchMondayBoardColumns({ boardId: mondayDesignAkfBoardId }),
+          ])
+
+          primaryAckColumnId =
+            resolveAckColumnIdFromBoardColumns(primaryBoardSnapshot?.columns, primaryAckColumnId)
+            || primaryAckColumnId
+          secondaryAckColumnId =
+            resolveAckColumnIdFromBoardColumns(secondaryBoardSnapshot?.columns, secondaryAckColumnId)
+            || secondaryAckColumnId
+        } catch {
+          // Keep static fallback IDs when live board metadata cannot be loaded.
+        }
       }
 
       const dealerLabel =
@@ -6884,7 +7009,7 @@ export function registerCrmRoutes(app, deps) {
       await updateTextIfPresent({
         boardId: mondayNewOrders2026BoardId,
         itemId: primaryItemId,
-        columnId: mondayNewOrders2026ColumnIds.ack,
+        columnId: primaryAckColumnId,
         value: orderNumber,
       })
       await updateTextIfPresent({
@@ -6969,7 +7094,7 @@ export function registerCrmRoutes(app, deps) {
       await updateTextIfPresent({
         boardId: mondayDesignAkfBoardId,
         itemId: secondaryItemId,
-        columnId: mondayDesignAkfColumnIds.orderNumber,
+        columnId: secondaryAckColumnId,
         value: orderNumber,
       })
       await updateDateIfPresent({
@@ -7046,6 +7171,7 @@ export function registerCrmRoutes(app, deps) {
         opportunityStage: 'order_placement',
         status: 'accepted',
         acceptedAt: toIsoDateOrNull(quote?.acceptedAt) || now,
+        acknowledgmentNumber: orderNumber,
         orderNumber,
         poNumber,
         leadTime: parsedLeadTimeDate || null,
@@ -7118,6 +7244,7 @@ export function registerCrmRoutes(app, deps) {
         opportunityStage: 'order_placement',
         status: nextQuoteStatus,
         acceptedAt: toIsoDateOrNull(quote?.acceptedAt) || now,
+        acknowledgmentNumber: orderNumber,
         orderNumber,
         convertedOrderId: canonicalOrderId,
         convertedOrderNumber: orderNumber,

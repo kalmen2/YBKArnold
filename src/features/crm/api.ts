@@ -839,6 +839,7 @@ export type CrmConvertOrderBoardsResponse = {
 }
 
 export type CrmConvertQuoteToOrderInput = {
+  acknowledgmentNumber: string
   poDate?: string | null
   poNumber?: string | null
   leadTimeDate?: string | null
