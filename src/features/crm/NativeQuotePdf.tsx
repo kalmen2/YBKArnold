@@ -13,6 +13,7 @@ import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded'
 import { Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, Stack } from '@mui/material'
 import type { CrmQuote, CrmQuoteLineItem, CrmQuotePrintSettings } from './api'
 const defaultArnoldLogoUrl = '/arnold-quote-logo.png'
+const defaultArnoldMarkUrl = '/arnold-quote-mark.png'
 
 const DEFAULT_CUSTOMER_INFORMATION = `Purchase Orders can be sent to sales@arnoldcontract.us.
 Arnold Contract requires full payment as a deposit for all change orders, replacements, and add-ons prior to processing.
@@ -115,7 +116,7 @@ function createStyles(accentColor: string) {
     header: {
       position: 'absolute',
       top: 22,
-      left: 28,
+      left: 18,
       right: 28,
       height: 98,
       flexDirection: 'row',
@@ -123,10 +124,17 @@ function createStyles(accentColor: string) {
       borderBottomColor: accentColor,
       paddingBottom: 8,
     },
-    logo: { width: 174, height: 82, objectFit: 'contain' },
-    quoteTitle: { position: 'absolute', top: 9, left: 185, right: 185, fontSize: 24, fontWeight: 700, color: accentColor, textAlign: 'center' },
-    quoteHeader: { width: 190, marginLeft: 'auto', alignItems: 'flex-end', paddingTop: 33 },
-    quoteMeta: { fontSize: 10, marginBottom: 4, fontWeight: 700 },
+    logo: { width: 82, height: 82, objectFit: 'contain' },
+    brandBlock: { paddingTop: 12, paddingLeft: 8, flexGrow: 1 },
+    brandName: { fontSize: 22, fontWeight: 700, letterSpacing: 0.3 },
+    brandArnold: { color: '#151515' },
+    brandContract: { color: '#b1161b' },
+    brandQuote: { marginTop: 5, fontSize: 17, fontWeight: 700, color: '#172033', letterSpacing: 1.2 },
+    quoteInfoBox: { width: 188, borderWidth: 1, borderColor: accentColor, borderRadius: 2, overflow: 'hidden' },
+    quoteInfoTitle: { backgroundColor: accentColor, color: '#ffffff', fontSize: 11, fontWeight: 700, paddingVertical: 4, paddingHorizontal: 7 },
+    quoteInfoRow: { flexDirection: 'row', minHeight: 19, borderTopWidth: 1, borderTopColor: '#d8e0ea', alignItems: 'center', paddingHorizontal: 7 },
+    quoteInfoLabel: { width: 48, fontSize: 7, color: '#64748b', textTransform: 'uppercase' },
+    quoteInfoValue: { flexGrow: 1, fontSize: 8.5, fontWeight: 700, textAlign: 'right' },
     customerBlock: {
       flexDirection: 'row',
       borderBottomWidth: 1,
@@ -159,7 +167,7 @@ function createStyles(accentColor: string) {
     imageColumn: { width: 138, flexDirection: 'row', gap: 4, paddingRight: 5 },
     lineImage: { flexGrow: 1, height: 82, objectFit: 'contain' },
     itemColumn: { width: 30, paddingRight: 4 },
-    descriptionColumn: { flexGrow: 1, paddingRight: 5, lineHeight: 1.25 },
+    descriptionColumn: { flexGrow: 1, flexShrink: 1, flexBasis: 0, paddingRight: 5, lineHeight: 1.25 },
     qtyColumn: { width: 35, textAlign: 'right', paddingRight: 4 },
     unitColumn: { width: 62, textAlign: 'right', paddingRight: 4 },
     extColumn: { width: 68, textAlign: 'right' },
@@ -170,7 +178,11 @@ function createStyles(accentColor: string) {
     termItem: { flexGrow: 1 },
     sectionTitle: { marginTop: 12, paddingVertical: 5, paddingHorizontal: 6, backgroundColor: '#eef2f7', borderWidth: 1, borderColor: '#cbd5e1', fontSize: 10, fontWeight: 700, color: accentColor },
     serviceRow: { flexDirection: 'row', borderBottomWidth: 1, borderLeftWidth: 1, borderRightWidth: 1, borderColor: '#d8e0ea', padding: 6, minHeight: 34 },
-    serviceText: { flexGrow: 1, paddingRight: 8 },
+    serviceHeader: { flexDirection: 'row', backgroundColor: accentColor, color: '#ffffff', paddingVertical: 5, paddingHorizontal: 6, fontWeight: 700 },
+    serviceHeaderImages: { width: 128, paddingRight: 6 },
+    serviceHeaderText: { flexGrow: 1, flexShrink: 1, flexBasis: 0, paddingRight: 8 },
+    serviceHeaderPrice: { width: 72, textAlign: 'right' },
+    serviceText: { flexGrow: 1, flexShrink: 1, flexBasis: 0, paddingRight: 8 },
     serviceName: { fontWeight: 700, marginBottom: 2 },
     serviceDescription: { fontSize: 8, lineHeight: 1.25, color: '#344155' },
     serviceImages: { width: 122, flexDirection: 'row', gap: 4, paddingRight: 6 },
@@ -205,7 +217,7 @@ export function NativeQuotePdfDocument({
   const resolvedSettings = {
     ...DEFAULT_QUOTE_PRINT_SETTINGS,
     ...settings,
-    logoUrl: settings.logoUrl || defaultArnoldLogoUrl,
+    logoUrl: !settings.logoUrl || settings.logoUrl === defaultArnoldLogoUrl ? defaultArnoldMarkUrl : settings.logoUrl,
     customerInformation: settings.customerInformation || DEFAULT_CUSTOMER_INFORMATION,
   }
   const styles = createStyles(resolvedSettings.accentColor)
@@ -222,11 +234,15 @@ export function NativeQuotePdfDocument({
       <Page size="LETTER" style={styles.page} wrap>
         <View style={styles.header} fixed>
           {resolvedSettings.logoUrl ? <Image src={resolvedSettings.logoUrl} style={styles.logo} /> : null}
-          <Text style={styles.quoteTitle}>QUOTE</Text>
-          <View style={styles.quoteHeader}>
-            <Text style={styles.quoteMeta}>No. {plain(quote.quoteNumber)}</Text>
-            <Text style={styles.quoteMeta}>Date {plain(quote.opportunityDate)?.slice(0, 10)}</Text>
-            <Text style={styles.quoteMeta}>{plain(quote.title)}</Text>
+          <View style={styles.brandBlock}>
+            <Text style={styles.brandName}><Text style={styles.brandArnold}>Arnold </Text><Text style={styles.brandContract}>Contract</Text></Text>
+            <Text style={styles.brandQuote}>QUOTE</Text>
+          </View>
+          <View style={styles.quoteInfoBox}>
+            <Text style={styles.quoteInfoTitle}>QUOTE</Text>
+            <View style={styles.quoteInfoRow}><Text style={styles.quoteInfoLabel}>Number</Text><Text style={styles.quoteInfoValue}>{plain(quote.quoteNumber)}</Text></View>
+            <View style={styles.quoteInfoRow}><Text style={styles.quoteInfoLabel}>Date</Text><Text style={styles.quoteInfoValue}>{plain(quote.opportunityDate)?.slice(0, 10)}</Text></View>
+            <View style={styles.quoteInfoRow}><Text style={styles.quoteInfoLabel}>Project</Text><Text style={styles.quoteInfoValue}>{plain(quote.title)}</Text></View>
           </View>
         </View>
 
@@ -251,7 +267,7 @@ export function NativeQuotePdfDocument({
           </View>
         </View>
 
-        <View style={styles.tableHeader} fixed>
+        <View style={styles.tableHeader}>
           <Text style={styles.imageColumn}>Picture</Text>
           <Text style={styles.itemColumn}>Item</Text>
           <Text style={styles.descriptionColumn}>Description</Text>
@@ -275,15 +291,24 @@ export function NativeQuotePdfDocument({
           </View>
         ))}
 
-        {additionalServices.length > 0 ? <Text style={styles.sectionTitle}>Additional Services</Text> : null}
+        {additionalServices.length > 0 ? (
+          <View minPresenceAhead={40}>
+            <Text style={styles.sectionTitle}>Additional Services</Text>
+            <View style={styles.serviceHeader}>
+              <Text style={styles.serviceHeaderImages}>Picture</Text>
+              <Text style={styles.serviceHeaderText}>Service &amp; Description</Text>
+              <Text style={styles.serviceHeaderPrice}>Price</Text>
+            </View>
+          </View>
+        ) : null}
         {additionalServices.map((service) => (
           <View key={service.id} style={styles.serviceRow} wrap={false}>
+            <View style={styles.serviceImages}>
+              {(service.images || []).slice(0, 2).map((image) => <Image key={image.id} src={image.url} style={styles.serviceImage} />)}
+            </View>
             <View style={styles.serviceText}>
               <Text style={styles.serviceName}>{service.title}</Text>
               {service.description ? <Text style={styles.serviceDescription}>{service.description}</Text> : null}
-            </View>
-            <View style={styles.serviceImages}>
-              {(service.images || []).slice(0, 2).map((image) => <Image key={image.id} src={image.url} style={styles.serviceImage} />)}
             </View>
             <Text style={styles.servicePrice}>{money(service.price)}</Text>
           </View>
@@ -293,15 +318,24 @@ export function NativeQuotePdfDocument({
           <View style={styles.totalRow}><Text>Subtotal</Text><Text>{money(subtotal)}</Text></View>
         </View>
 
-        {resolvedSettings.showFreight && shippingServices.length > 0 ? <Text style={styles.sectionTitle}>Freight, Delivery &amp; Installation</Text> : null}
+        {resolvedSettings.showFreight && shippingServices.length > 0 ? (
+          <View minPresenceAhead={40}>
+            <Text style={styles.sectionTitle}>Freight, Delivery &amp; Installation</Text>
+            <View style={styles.serviceHeader}>
+              <Text style={styles.serviceHeaderImages}>Picture</Text>
+              <Text style={styles.serviceHeaderText}>Service &amp; Description</Text>
+              <Text style={styles.serviceHeaderPrice}>Price</Text>
+            </View>
+          </View>
+        ) : null}
         {resolvedSettings.showFreight ? shippingServices.map((service) => (
           <View key={service.id} style={styles.serviceRow} wrap={false}>
+            <View style={styles.serviceImages}>
+              {(service.images || []).slice(0, 2).map((image) => <Image key={image.id} src={image.url} style={styles.serviceImage} />)}
+            </View>
             <View style={styles.serviceText}>
               <Text style={styles.serviceName}>{service.title}</Text>
               {service.description ? <Text style={styles.serviceDescription}>{service.description}</Text> : null}
-            </View>
-            <View style={styles.serviceImages}>
-              {(service.images || []).slice(0, 2).map((image) => <Image key={image.id} src={image.url} style={styles.serviceImage} />)}
             </View>
             <Text style={styles.servicePrice}>{money(service.price)}</Text>
           </View>
