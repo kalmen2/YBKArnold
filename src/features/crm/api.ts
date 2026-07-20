@@ -566,6 +566,14 @@ export type CrmQuoteLineItem = {
   images?: CrmQuoteLineImage[]
 }
 
+export type CrmQuoteServiceItem = {
+  id: string
+  title: string
+  description: string | null
+  price: number | null
+  images?: CrmQuoteLineImage[]
+}
+
 export type CrmQuoteOrigin = 'website' | 'excel'
 
 export type CrmQuotePrintSettings = {
@@ -583,6 +591,7 @@ export type CrmQuotePrintSettings = {
   showPaymentTerms: boolean
   showLeadTime: boolean
   showFreight: boolean
+  customerInformation: string
   updatedAt: string | null
   updatedByEmail: string | null
 }
@@ -617,6 +626,8 @@ export type CrmQuote = {
   freight?: number | null
   freightDescription?: string | null
   lineItems?: CrmQuoteLineItem[] | null
+  additionalServices?: CrmQuoteServiceItem[] | null
+  shippingServices?: CrmQuoteServiceItem[] | null
   title: string
   description: string | null
   conceptImageUrl?: string | null
@@ -671,6 +682,8 @@ export type CrmQuoteUpsertInput = {
   freight?: number | null
   freightDescription?: string | null
   lineItems?: CrmQuoteLineItem[] | null
+  additionalServices?: CrmQuoteServiceItem[] | null
+  shippingServices?: CrmQuoteServiceItem[] | null
   description?: string | null
   conceptImageUrl?: string | null
   conceptImageName?: string | null

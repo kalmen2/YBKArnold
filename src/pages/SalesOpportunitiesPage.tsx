@@ -73,6 +73,7 @@ import {
   type CrmQuoteDocument,
   type CrmQuoteLineImage,
   type CrmQuoteLineItem,
+  type CrmQuoteServiceItem,
   type CrmOpportunityStage,
   type CrmQuote,
   type CrmQuoteChatMessage,
@@ -98,6 +99,14 @@ type OpportunityLineItemFormState = {
   images: CrmQuoteLineImage[]
 }
 
+type OpportunityServiceItemFormState = {
+  id: string
+  title: string
+  description: string
+  price: string
+  images: CrmQuoteLineImage[]
+}
+
 type OpportunityFormState = {
   dealerSourceId: string
   quoteNumber: string
@@ -115,6 +124,8 @@ type OpportunityFormState = {
   freightDescription: string
   notes: string
   lineItems: OpportunityLineItemFormState[]
+  additionalServices: OpportunityServiceItemFormState[]
+  shippingServices: OpportunityServiceItemFormState[]
   quoteDocumentUrl: string
   quoteDocumentName: string
   origin: 'website' | 'excel'
@@ -141,6 +152,8 @@ type OpportunityDetailsFormState = {
   freightDescription: string
   notes: string
   lineItems: OpportunityLineItemFormState[]
+  additionalServices: OpportunityServiceItemFormState[]
+  shippingServices: OpportunityServiceItemFormState[]
   documents: CrmQuoteDocument[]
   origin: 'website' | 'excel'
   sourceWorkbookUrl: string
@@ -504,6 +517,55 @@ function createEmptyLineItemFormState(): OpportunityLineItemFormState {
   }
 }
 
+const defaultAdditionalServiceTemplates = [
+  ['Custom Design Fee', 'Includes up to two rendering revisions with a lead time of two weeks. Additional revisions beyond the included revisions are billed separately.'],
+  ['Stain to Match', 'Stain matching is available on Arnold standard wood veneers and includes standard strike-offs.'],
+  ['Paint Sample', 'Paint sample includes one standard paint strike-off. Additional approval samples may incur an extra fee.'],
+  ['Field Verification & Measurement', 'Includes one-time field verification and measurement during regular business hours. The site must be clear and accessible.'],
+  ['Shop Drawing', 'Includes up to two revisions with an estimated two-week lead time. Additional revisions are billed separately.'],
+  ['Demolition and Disposal of Existing Furniture', 'Demolition and disposal must be coordinated with delivery and installation. Unforeseen conditions and additional trips may result in extra charges.'],
+] as const
+
+const defaultShippingServiceTemplates = [
+  ['Blanket-Wrapped Dock Delivery', 'Dedicated truck delivery to a local warehouse dock. Customer team unloads the truck; no driver assistance is included.'],
+  ['Crated & Shipped via Common Carrier', 'Delivered crated to a warehouse dock by common carrier. Customer team unloads the truck.'],
+  ['Delivery & Installation', 'Delivery and installation service. Site conditions, access, working hours, and carry-up requirements must be confirmed before scheduling.'],
+] as const
+
+function createServiceItemFormState(title = '', description = ''): OpportunityServiceItemFormState {
+  return { id: crypto.randomUUID(), title, description, price: '', images: [] }
+}
+
+function createDefaultAdditionalServices() {
+  return defaultAdditionalServiceTemplates.map(([title, description]) => createServiceItemFormState(title, description))
+}
+
+function createDefaultShippingServices() {
+  return defaultShippingServiceTemplates.map(([title, description]) => createServiceItemFormState(title, description))
+}
+
+function mapServiceItemsToFormState(items: CrmQuoteServiceItem[] | null | undefined, defaults: () => OpportunityServiceItemFormState[]) {
+  if (!Array.isArray(items)) return defaults()
+  if (items.length === 0) return []
+  return items.map((item) => ({
+    id: item.id || crypto.randomUUID(),
+    title: String(item.title || ''),
+    description: String(item.description || ''),
+    price: item.price === null || item.price === undefined ? '' : String(item.price),
+    images: Array.isArray(item.images) ? item.images : [],
+  }))
+}
+
+function normalizeServiceItemsForPayload(items: OpportunityServiceItemFormState[]): CrmQuoteServiceItem[] {
+  return items.map((item) => ({
+    id: item.id,
+    title: item.title.trim(),
+    description: item.description.trim() || null,
+    price: toOptionalNumber(item.price),
+    images: item.images,
+  })).filter((item) => item.title || item.description || item.price !== null || (item.images?.length || 0) > 0)
+}
+
 function isBlankLineItem(lineItem: OpportunityLineItemFormState) {
   return !lineItem.itemNumber.trim()
     && !lineItem.description.trim()
@@ -613,16 +675,26 @@ function resolveQuotePricing(
   subtotalInput: string,
   freightInput: string,
   fallbackTotal = 0,
+  additionalServices: OpportunityServiceItemFormState[] = [],
+  shippingServices: OpportunityServiceItemFormState[] = [],
 ) {
   const normalizedLineItems = normalizeLineItemsForPayload(lineItems)
   const lineItemsTotal = calculateLineItemsTotal(normalizedLineItems)
-  const subtotal = toOptionalNumber(subtotalInput)
-  const freight = toOptionalNumber(freightInput)
-  const baseSubtotal = subtotal ?? lineItemsTotal
+  const normalizedAdditionalServices = normalizeServiceItemsForPayload(additionalServices)
+  const normalizedShippingServices = normalizeServiceItemsForPayload(shippingServices)
+  const additionalServicesTotal = normalizedAdditionalServices.reduce((sum, item) => sum + Number(item.price || 0), 0)
+  const shippingServicesTotal = normalizedShippingServices.reduce((sum, item) => sum + Number(item.price || 0), 0)
+  const enteredSubtotal = toOptionalNumber(subtotalInput)
+  const enteredFreight = toOptionalNumber(freightInput)
+  const subtotal = Number(((enteredSubtotal ?? lineItemsTotal) + additionalServicesTotal).toFixed(2))
+  const freight = Number((shippingServicesTotal || enteredFreight || 0).toFixed(2))
+  const baseSubtotal = subtotal
   const computedTotal = Number((baseSubtotal + (freight ?? 0)).toFixed(2))
 
   return {
     normalizedLineItems,
+    normalizedAdditionalServices,
+    normalizedShippingServices,
     lineItemsTotal,
     subtotal,
     freight,
@@ -726,6 +798,8 @@ function createEmptyOpportunityForm(): OpportunityFormState {
     freightDescription: '',
     notes: '',
     lineItems: [createEmptyLineItemFormState()],
+    additionalServices: createDefaultAdditionalServices(),
+    shippingServices: createDefaultShippingServices(),
     quoteDocumentUrl: '',
     quoteDocumentName: '',
     origin: 'website',
@@ -763,6 +837,12 @@ function resolveDateInputFromIso(value: string | null | undefined) {
 }
 
 function createOpportunityDetailsFormState(quote: CrmQuote): OpportunityDetailsFormState {
+  const additionalServices = mapServiceItemsToFormState(quote.additionalServices, createDefaultAdditionalServices)
+  const storedAdditionalServicesTotal = (quote.additionalServices || []).reduce((sum, item) => sum + Number(item.price || 0), 0)
+  const productSubtotal = quote.subtotal === null || quote.subtotal === undefined
+    ? ''
+    : String(Math.max(0, Number(quote.subtotal) - storedAdditionalServicesTotal))
+
   return {
     dealerSourceId: String(quote.dealerSourceId || ''),
     quoteNumber: String(quote.quoteNumber || ''),
@@ -775,11 +855,13 @@ function createOpportunityDetailsFormState(quote: CrmQuote): OpportunityDetailsF
     salesRep: String(quote.salesRep || ''),
     leadTime: String(quote.leadTime || ''),
     paymentTerms: String(quote.paymentTerms || ''),
-    subtotal: quote.subtotal === null || quote.subtotal === undefined ? '' : String(quote.subtotal),
+    subtotal: productSubtotal,
     freight: quote.freight === null || quote.freight === undefined ? '' : String(quote.freight),
     freightDescription: String(quote.freightDescription || ''),
     notes: String(quote.notes || ''),
     lineItems: mapQuoteLineItemsToFormState(quote.lineItems),
+    additionalServices,
+    shippingServices: mapServiceItemsToFormState(quote.shippingServices, createDefaultShippingServices),
     documents: resolveQuoteDocuments(quote),
     origin: quote.origin === 'excel' ? 'excel' : 'website',
     sourceWorkbookUrl: String(quote.sourceWorkbookUrl || ''),
@@ -2014,6 +2096,79 @@ function LineItemsEditor({
           </TableBody>
         </Table>
       </Box>
+    </Stack>
+  )
+}
+
+type QuoteServiceItemsEditorProps = {
+  heading: string
+  description: string
+  items: OpportunityServiceItemFormState[]
+  canEdit: boolean
+  isUploadingImage: boolean
+  onChange: (items: OpportunityServiceItemFormState[]) => void
+  onAddImages: (index: number, files: File[]) => void
+}
+
+function QuoteServiceItemsEditor({ heading, description, items, canEdit, isUploadingImage, onChange, onAddImages }: QuoteServiceItemsEditorProps) {
+  const updateItem = (index: number, patch: Partial<OpportunityServiceItemFormState>) => {
+    onChange(items.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item))
+  }
+
+  return (
+    <Stack spacing={1}>
+      <Stack direction="row" justifyContent="space-between" alignItems="flex-start" gap={1}>
+        <Box>
+          <Typography variant="subtitle2" fontWeight={800}>{heading}</Typography>
+          <Typography variant="caption" color="text.secondary">{description}</Typography>
+        </Box>
+        <Button size="small" variant="outlined" disabled={!canEdit} onClick={() => onChange([...items, createServiceItemFormState()])}>Add option</Button>
+      </Stack>
+      <Stack spacing={0.8}>
+        {items.map((item, index) => (
+          <Paper key={item.id} variant="outlined" sx={{ p: 1.1, borderRadius: 1.2 }}>
+            <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} alignItems="flex-start">
+              <Stack spacing={0.8} flex={1} width="100%">
+                <TextField size="small" label="Service" value={item.title} disabled={!canEdit} onChange={(event) => updateItem(index, { title: event.target.value })} />
+                <TextField size="small" label="Description / conditions" value={item.description} disabled={!canEdit} multiline minRows={2} onChange={(event) => updateItem(index, { description: event.target.value })} />
+              </Stack>
+              <TextField
+                size="small"
+                label="Price"
+                type="number"
+                value={item.price}
+                disabled={!canEdit}
+                onChange={(event) => updateItem(index, { price: event.target.value })}
+                InputProps={{ startAdornment: <InputAdornment position="start">$</InputAdornment> }}
+                sx={{ width: { xs: '100%', md: 145 } }}
+              />
+              <Stack spacing={0.6} sx={{ width: { xs: '100%', md: 170 } }}>
+                {item.images.length > 0 ? (
+                  <Stack direction="row" spacing={0.5}>
+                    {item.images.map((image) => (
+                      <Box key={image.id} sx={{ position: 'relative', width: item.images.length === 1 ? 150 : 72, height: 76, border: 1, borderColor: 'divider', borderRadius: 1, overflow: 'hidden' }}>
+                        <Box component="img" src={image.url} alt={image.name || item.title} sx={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+                        {canEdit ? <IconButton size="small" color="error" onClick={() => updateItem(index, { images: item.images.filter((entry) => entry.id !== image.id) })} sx={{ position: 'absolute', top: 1, right: 1, bgcolor: 'rgba(255,255,255,.9)', p: 0.2 }}><DeleteOutlineRoundedIcon sx={{ fontSize: 15 }} /></IconButton> : null}
+                      </Box>
+                    ))}
+                  </Stack>
+                ) : <Typography variant="caption" color="text.secondary">Picture optional</Typography>}
+                {item.images.length < 2 ? (
+                  <Button component="label" size="small" variant="text" startIcon={<FileUploadRoundedIcon />} disabled={!canEdit || isUploadingImage} sx={{ alignSelf: 'flex-start', px: 0.4 }}>
+                    Add picture
+                    <input hidden type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={(event) => {
+                      const files = Array.from(event.target.files || []).slice(0, 2 - item.images.length)
+                      event.target.value = ''
+                      if (files.length > 0) onAddImages(index, files)
+                    }} />
+                  </Button>
+                ) : null}
+              </Stack>
+              <IconButton color="error" disabled={!canEdit} onClick={() => onChange(items.filter((_entry, itemIndex) => itemIndex !== index))}><DeleteOutlineRoundedIcon /></IconButton>
+            </Stack>
+          </Paper>
+        ))}
+      </Stack>
     </Stack>
   )
 }
@@ -3521,13 +3676,13 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   const canUploadQuoteDocument = Boolean(formState.quoteNumber.trim())
 
   const addPricingPreview = useMemo(() => {
-    const pricing = resolveQuotePricing(formState.lineItems, formState.subtotal, formState.freight)
+    const pricing = resolveQuotePricing(formState.lineItems, formState.subtotal, formState.freight, 0, formState.additionalServices, formState.shippingServices)
     return {
       subtotal: pricing.subtotal ?? pricing.lineItemsTotal,
       freight: pricing.freight ?? 0,
       totalAmount: pricing.totalAmount,
     }
-  }, [formState.freight, formState.lineItems, formState.subtotal])
+  }, [formState.additionalServices, formState.freight, formState.lineItems, formState.shippingServices, formState.subtotal])
 
   const detailsPricingPreview = useMemo(() => {
     if (!opportunityDetailsFormState) {
@@ -3539,6 +3694,8 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       opportunityDetailsFormState.subtotal,
       opportunityDetailsFormState.freight,
       Number(selectedOpportunity?.totalAmount || 0),
+      opportunityDetailsFormState.additionalServices,
+      opportunityDetailsFormState.shippingServices,
     )
 
     return {
@@ -3558,6 +3715,8 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       opportunityDetailsFormState.subtotal,
       opportunityDetailsFormState.freight,
       Number(selectedOpportunity.totalAmount || 0),
+      opportunityDetailsFormState.additionalServices,
+      opportunityDetailsFormState.shippingServices,
     )
 
     return {
@@ -3577,6 +3736,8 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       freight: pricing.freight,
       freightDescription: opportunityDetailsFormState.freightDescription.trim() || null,
       lineItems: pricing.normalizedLineItems,
+      additionalServices: pricing.normalizedAdditionalServices,
+      shippingServices: pricing.normalizedShippingServices,
       totalAmount: pricing.totalAmount,
       notes: opportunityDetailsFormState.notes.trim() || null,
     }
@@ -4937,6 +5098,28 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     }))
   }, [])
 
+  const handleAddFormServiceImages = useCallback(async (
+    section: 'additionalServices' | 'shippingServices',
+    index: number,
+    files: File[],
+  ) => {
+    setErrorMessage(null)
+    setIsUploadingLineImage(true)
+    try {
+      const images = await uploadLineItemImages(files, formState.quoteNumber, formState.companyName)
+      setFormState((current) => ({
+        ...current,
+        [section]: current[section].map((item, itemIndex) => itemIndex === index
+          ? { ...item, images: [...item.images, ...images].slice(0, 2) }
+          : item),
+      }))
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to upload service picture.')
+    } finally {
+      setIsUploadingLineImage(false)
+    }
+  }, [formState.companyName, formState.quoteNumber, uploadLineItemImages])
+
   const handleAddDetailsLineItem = useCallback(() => {
     setOpportunityDetailsFormState((current) => {
       if (!current) {
@@ -5020,6 +5203,29 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     }) : current)
   }, [])
 
+  const handleAddDetailsServiceImages = useCallback(async (
+    section: 'additionalServices' | 'shippingServices',
+    index: number,
+    files: File[],
+  ) => {
+    if (!opportunityDetailsFormState) return
+    setErrorMessage(null)
+    setIsUploadingLineImage(true)
+    try {
+      const images = await uploadLineItemImages(files, opportunityDetailsFormState.quoteNumber, opportunityDetailsFormState.companyName)
+      setOpportunityDetailsFormState((current) => current ? ({
+        ...current,
+        [section]: current[section].map((item, itemIndex) => itemIndex === index
+          ? { ...item, images: [...item.images, ...images].slice(0, 2) }
+          : item),
+      }) : current)
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to upload service picture.')
+    } finally {
+      setIsUploadingLineImage(false)
+    }
+  }, [opportunityDetailsFormState, uploadLineItemImages])
+
   const handlePrintQuote = useCallback(async (quote: CrmQuote) => {
     setErrorMessage(null)
 
@@ -5071,7 +5277,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     const dealerSourceId = formState.dealerSourceId.trim()
     const quoteNumber = formState.quoteNumber.trim()
     const opportunityDateInput = formState.opportunityDateInput.trim()
-    const pricing = resolveQuotePricing(formState.lineItems, formState.subtotal, formState.freight)
+    const pricing = resolveQuotePricing(formState.lineItems, formState.subtotal, formState.freight, 0, formState.additionalServices, formState.shippingServices)
     const lineItems = pricing.normalizedLineItems
     const totalAmount = pricing.totalAmount
 
@@ -5132,6 +5338,8 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         opportunityStage: targetStage,
         opportunityDate: opportunityDateInput || null,
         lineItems,
+        additionalServices: pricing.normalizedAdditionalServices,
+        shippingServices: pricing.normalizedShippingServices,
         origin: formState.origin,
         sourceWorkbookUrl: formState.sourceWorkbookUrl || null,
         sourceWorkbookName: formState.sourceWorkbookName || null,
@@ -5169,6 +5377,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       setIsSavingOpportunity(false)
     }
   }, [
+    formState.additionalServices,
     formState.companyName,
     formState.contactEmail,
     formState.contactName,
@@ -5188,6 +5397,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     formState.quoteDocumentUrl,
     formState.quoteNumber,
     formState.salesRep,
+    formState.shippingServices,
     formState.sourceWorkbookName,
     formState.sourceWorkbookUrl,
     formState.subtotal,
@@ -5395,6 +5605,8 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       opportunityDetailsFormState.subtotal,
       opportunityDetailsFormState.freight,
       Number(selectedOpportunity.totalAmount || 0),
+      opportunityDetailsFormState.additionalServices,
+      opportunityDetailsFormState.shippingServices,
     )
     const lineItems = pricing.normalizedLineItems
     const totalAmount = pricing.totalAmount
@@ -5450,6 +5662,8 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         freightDescription: opportunityDetailsFormState.freightDescription.trim() || null,
         opportunityDate: opportunityDateInput || null,
         lineItems,
+        additionalServices: pricing.normalizedAdditionalServices,
+        shippingServices: pricing.normalizedShippingServices,
         documents: opportunityDetailsFormState.documents,
         origin: opportunityDetailsFormState.origin,
         sourceWorkbookUrl: opportunityDetailsFormState.sourceWorkbookUrl || null,
@@ -6987,6 +7201,26 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                   isUploadingImage={isUploadingLineImage}
                 />
 
+                <QuoteServiceItemsEditor
+                  heading="Additional Services & Demolition"
+                  description="Optional priced services without quantity fields. Blank prices do not affect the subtotal."
+                  items={formState.additionalServices}
+                  canEdit={!isSavingOpportunity}
+                  isUploadingImage={isUploadingLineImage}
+                  onChange={(additionalServices) => setFormState((current) => ({ ...current, additionalServices }))}
+                  onAddImages={(index, files) => void handleAddFormServiceImages('additionalServices', index, files)}
+                />
+
+                <QuoteServiceItemsEditor
+                  heading="Freight, Delivery & Installation"
+                  description="Add the applicable delivery or installation price. No A/B/C/D option labels are used."
+                  items={formState.shippingServices}
+                  canEdit={!isSavingOpportunity}
+                  isUploadingImage={isUploadingLineImage}
+                  onChange={(shippingServices) => setFormState((current) => ({ ...current, shippingServices }))}
+                  onAddImages={(index, files) => void handleAddFormServiceImages('shippingServices', index, files)}
+                />
+
                 <Stack spacing={0.8}>
                   <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
                     Quote Document (optional)
@@ -7756,6 +7990,26 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                 onAddImages={(index, files) => void handleAddDetailsLineImages(index, files)}
                 onRemoveImage={handleRemoveDetailsLineImage}
                 isUploadingImage={isUploadingLineImage}
+              />
+
+              <QuoteServiceItemsEditor
+                heading="Additional Services & Demolition"
+                description="Optional priced services without quantity fields. Blank prices do not affect the subtotal."
+                items={opportunityDetailsFormState.additionalServices}
+                canEdit={canManage}
+                isUploadingImage={isUploadingLineImage}
+                onChange={(additionalServices) => setOpportunityDetailsFormState((current) => current ? ({ ...current, additionalServices }) : current)}
+                onAddImages={(index, files) => void handleAddDetailsServiceImages('additionalServices', index, files)}
+              />
+
+              <QuoteServiceItemsEditor
+                heading="Freight, Delivery & Installation"
+                description="Add the applicable delivery or installation price. No A/B/C/D option labels are used."
+                items={opportunityDetailsFormState.shippingServices}
+                canEdit={canManage}
+                isUploadingImage={isUploadingLineImage}
+                onChange={(shippingServices) => setOpportunityDetailsFormState((current) => current ? ({ ...current, shippingServices }) : current)}
+                onAddImages={(index, files) => void handleAddDetailsServiceImages('shippingServices', index, files)}
               />
 
                 </>

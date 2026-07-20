@@ -771,9 +771,11 @@ function resolveQuoteDocumentUrls(quote) {
     toTrimmedText(source.convertedPdfUrl, 2000),
   ]
 
-  for (const lineItem of Array.isArray(source.lineItems) ? source.lineItems : []) {
-    for (const image of Array.isArray(lineItem?.images) ? lineItem.images : []) {
-      legacyUrls.push(toTrimmedText(image?.url, 2000))
+  for (const itemCollection of [source.lineItems, source.additionalServices, source.shippingServices]) {
+    for (const item of Array.isArray(itemCollection) ? itemCollection : []) {
+      for (const image of Array.isArray(item?.images) ? item.images : []) {
+        legacyUrls.push(toTrimmedText(image?.url, 2000))
+      }
     }
   }
 
@@ -929,6 +931,29 @@ function normalizeQuoteLineItems(input) {
   return normalizedLineItems
 }
 
+function normalizeQuoteServiceItems(input) {
+  if (!Array.isArray(input)) {
+    return []
+  }
+
+  return input.slice(0, 50).map((rawItem) => {
+    const item = toOptionalObject(rawItem)
+    const images = normalizeQuoteLineItems([{
+      id: item.id,
+      description: item.description,
+      images: item.images,
+    }])[0]?.images || []
+
+    return {
+      id: toTrimmedText(item.id, 160) || createRandomUuid(),
+      title: toTrimmedText(item.title, 240),
+      description: toTrimmedText(item.description, 4000) || null,
+      price: toNonNegativeNumberOrNull(item.price),
+      images,
+    }
+  }).filter((item) => item.title || item.description || item.price !== null || item.images.length > 0)
+}
+
 function normalizeExcelQuoteLineItems(input, existingLineItems) {
   const existing = normalizeQuoteLineItems(existingLineItems)
   const incoming = normalizeQuoteLineItems(input)
@@ -961,6 +986,7 @@ const defaultQuotePrintSettings = Object.freeze({
   showPaymentTerms: true,
   showLeadTime: true,
   showFreight: true,
+  customerInformation: `Purchase Orders can be sent to sales@arnoldcontract.us.\nArnold Contract requires full payment as a deposit for all change orders, replacements, and add-ons prior to processing.\nAll items are shipped F.O.B. Factory, Irvington NJ.\nCustom-made and custom-finished furniture is non-cancelable and non-returnable. Please ensure specifications are correct before placing your order.\nArnold Contract reserves the right to correct clerical or pricing errors at any time.\nIt is the customer's responsibility to confirm that all furniture will fit into the designated elevator and building.\nCrated and knocked-down units will be shipped and must be installed on-site by the customer's installer.\nLead times are based on the volume of orders in-house when the quotation and deposit are received and may change.\nArnold Contract will acknowledge receipt of your PO and confirm order details once processed.`,
 })
 
 function normalizeQuoteOrigin(value, fallback = 'website') {
@@ -993,6 +1019,7 @@ function normalizeQuotePrintSettings(input, metadata = {}) {
     showPaymentTerms: normalizeBoolean(source.showPaymentTerms, true),
     showLeadTime: normalizeBoolean(source.showLeadTime, true),
     showFreight: normalizeBoolean(source.showFreight, true),
+    customerInformation: toTrimmedText(source.customerInformation, 8000) || defaultQuotePrintSettings.customerInformation,
     updatedAt: toIsoDateOrNull(metadata.updatedAt ?? source.updatedAt),
     updatedByEmail: toTrimmedText(metadata.updatedByEmail ?? source.updatedByEmail, 200) || null,
   }
@@ -6029,6 +6056,8 @@ export function registerCrmRoutes(app, deps) {
         freight: toNonNegativeNumberOrNull(body.freight),
         freightDescription: toTrimmedText(body.freightDescription, 1200) || null,
         lineItems,
+        additionalServices: normalizeQuoteServiceItems(body.additionalServices),
+        shippingServices: normalizeQuoteServiceItems(body.shippingServices),
         title,
         description: toTrimmedText(body.description, 2000) || null,
         conceptImageUrl: toTrimmedText(body.conceptImageUrl, 2000) || null,
@@ -6212,6 +6241,14 @@ export function registerCrmRoutes(app, deps) {
 
       if (Object.prototype.hasOwnProperty.call(body, 'lineItems')) {
         updates.lineItems = normalizeQuoteLineItems(body.lineItems)
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'additionalServices')) {
+        updates.additionalServices = normalizeQuoteServiceItems(body.additionalServices)
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'shippingServices')) {
+        updates.shippingServices = normalizeQuoteServiceItems(body.shippingServices)
       }
 
       if (Object.prototype.hasOwnProperty.call(body, 'origin')) {

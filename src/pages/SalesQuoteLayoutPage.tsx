@@ -33,10 +33,10 @@ const sampleQuote: CrmQuote = {
   title: 'Sample Conference Room',
   description: null,
   status: 'draft',
-  subtotal: 7200,
+  subtotal: 7450,
   freight: 450,
   freightDescription: 'Delivery and installation',
-  totalAmount: 7650,
+  totalAmount: 7900,
   currency: 'USD',
   paymentTerms: '50% deposit, balance before delivery',
   leadTime: '8–10 weeks',
@@ -49,6 +49,8 @@ const sampleQuote: CrmQuote = {
     extPrice: 7200,
     images: [],
   }],
+  additionalServices: [{ id: 'sample-service', title: 'Shop Drawing', description: 'Includes up to two revisions.', price: 250, images: [] }],
+  shippingServices: [{ id: 'sample-shipping', title: 'Delivery & Installation', description: 'Scheduled delivery and installation.', price: 450, images: [] }],
   sentAt: null,
   acceptedAt: null,
   rejectedAt: null,
@@ -134,6 +136,7 @@ export default function SalesQuoteLayoutPage() {
         showPaymentTerms: draft.showPaymentTerms,
         showLeadTime: draft.showLeadTime,
         showFreight: draft.showFreight,
+        customerInformation: draft.customerInformation,
       })
       setDraft(result.settings)
       setAddressText(result.settings.addressLines.join('\n'))
@@ -171,7 +174,7 @@ export default function SalesQuoteLayoutPage() {
               <Box sx={{ width: { xs: '100%', md: 220 } }}>
                 <Stack spacing={1}>
                   <Typography fontWeight={700}>Logo</Typography>
-                  {draft.logoUrl ? <Box component="img" src={draft.logoUrl} alt="Quote logo" sx={{ width: '100%', height: 100, objectFit: 'contain', border: '1px solid', borderColor: 'divider', borderRadius: 1 }} /> : null}
+                  <Box component="img" src={draft.logoUrl || DEFAULT_QUOTE_PRINT_SETTINGS.logoUrl || ''} alt="Quote logo" sx={{ width: '100%', height: 100, objectFit: 'contain', border: '1px solid', borderColor: 'divider', borderRadius: 1 }} />
                   <Button component="label" variant="outlined" startIcon={<CloudUploadRoundedIcon />} disabled={uploading}>
                     {uploading ? 'Uploading…' : 'Upload logo'}
                     <input hidden type="file" accept="image/*" onChange={handleLogoUpload} />
@@ -188,6 +191,7 @@ export default function SalesQuoteLayoutPage() {
                 </Stack>
                 <TextField label="Header text" value={draft.headerText || ''} onChange={(event) => setField('headerText', event.target.value || null)} multiline minRows={2} />
                 <TextField label="Footer text" value={draft.footerText || ''} onChange={(event) => setField('footerText', event.target.value || null)} multiline minRows={3} />
+                <TextField label="Customer information" value={draft.customerInformation} onChange={(event) => setField('customerInformation', event.target.value)} multiline minRows={8} helperText="Standard terms printed at the bottom of every website quote" />
                 <TextField label="Accent color" type="color" value={draft.accentColor} onChange={(event) => setField('accentColor', event.target.value)} sx={{ width: 180 }} />
                 <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
                   <FormControlLabel control={<Checkbox checked={draft.showLeadTime} onChange={(event) => setField('showLeadTime', event.target.checked)} />} label="Show lead time" />

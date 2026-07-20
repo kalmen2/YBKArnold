@@ -12,12 +12,38 @@ import CloseRoundedIcon from '@mui/icons-material/CloseRounded'
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded'
 import { Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, Stack } from '@mui/material'
 import type { CrmQuote, CrmQuoteLineItem, CrmQuotePrintSettings } from './api'
+const defaultArnoldLogoUrl = '/arnold-quote-logo.png'
+
+const DEFAULT_CUSTOMER_INFORMATION = `Purchase Orders can be sent to sales@arnoldcontract.us.
+Arnold Contract requires full payment as a deposit for all change orders, replacements, and add-ons prior to processing.
+All items are shipped F.O.B. Factory, Irvington NJ.
+Custom-made and custom-finished furniture is non-cancelable and non-returnable. Please ensure specifications are correct before placing your order.
+Arnold Contract reserves the right to correct clerical or pricing errors at any time.
+It is the customer's responsibility to confirm that all furniture will fit into the designated elevator and building.
+Crated and knocked-down units will be shipped and must be installed on-site by the customer's installer.
+Lead times are based on the volume of orders in-house when the quotation and deposit are received and may change.
+Arnold Contract will acknowledge receipt of your PO and confirm order details once processed.`
+
+const DEFAULT_ADDITIONAL_SERVICES = [
+  ['custom-design', 'Custom Design Fee', 'Includes up to two rendering revisions with a lead time of two weeks. Additional revisions are billed separately.'],
+  ['stain-match', 'Stain to Match', 'Stain matching is available on Arnold standard wood veneers and includes standard strike-offs.'],
+  ['paint-sample', 'Paint Sample', 'Paint sample includes one standard paint strike-off. Additional approval samples may incur an extra fee.'],
+  ['field-verification', 'Field Verification & Measurement', 'Includes one-time field verification and measurement during regular business hours.'],
+  ['shop-drawing', 'Shop Drawing', 'Includes up to two revisions with an estimated two-week lead time.'],
+  ['demolition', 'Demolition and Disposal of Existing Furniture', 'Demolition and disposal must be coordinated with delivery and installation. Unforeseen conditions may result in extra charges.'],
+].map(([id, title, description]) => ({ id, title, description, price: null, images: [] }))
+
+const DEFAULT_SHIPPING_SERVICES = [
+  ['blanket-delivery', 'Blanket-Wrapped Dock Delivery', 'Dedicated truck delivery to a local warehouse dock. Customer team unloads the truck.'],
+  ['common-carrier', 'Crated & Shipped via Common Carrier', 'Delivered crated to a warehouse dock by common carrier. Customer team unloads the truck.'],
+  ['delivery-installation', 'Delivery & Installation', 'Site conditions, access, working hours, and carry-up requirements must be confirmed before scheduling.'],
+].map(([id, title, description]) => ({ id, title, description, price: null, images: [] }))
 
 // eslint-disable-next-line react-refresh/only-export-components
 export const DEFAULT_QUOTE_PRINT_SETTINGS: CrmQuotePrintSettings = {
   id: 'default',
-  logoUrl: null,
-  logoName: null,
+  logoUrl: defaultArnoldLogoUrl,
+  logoName: 'Arnold Contract',
   companyName: 'Arnold Contract',
   addressLines: [],
   phone: null,
@@ -29,11 +55,13 @@ export const DEFAULT_QUOTE_PRINT_SETTINGS: CrmQuotePrintSettings = {
   showPaymentTerms: true,
   showLeadTime: true,
   showFreight: true,
+  customerInformation: DEFAULT_CUSTOMER_INFORMATION,
   updatedAt: null,
   updatedByEmail: null,
 }
 
 const money = (value: number | null | undefined) => {
+  if (value === null || value === undefined) return '-'
   const amount = Number(value)
   return Number.isFinite(amount)
     ? amount.toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2 })
@@ -144,6 +172,17 @@ function createStyles(accentColor: string) {
     grandTotal: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6, fontSize: 12, fontWeight: 700, color: accentColor },
     terms: { marginTop: 12, borderTopWidth: 1, borderTopColor: '#cbd5e1', paddingTop: 8, flexDirection: 'row', gap: 18 },
     termItem: { flexGrow: 1 },
+    sectionTitle: { marginTop: 12, paddingVertical: 5, paddingHorizontal: 6, backgroundColor: '#eef2f7', borderWidth: 1, borderColor: '#cbd5e1', fontSize: 10, fontWeight: 700, color: accentColor },
+    serviceRow: { flexDirection: 'row', borderBottomWidth: 1, borderLeftWidth: 1, borderRightWidth: 1, borderColor: '#d8e0ea', padding: 6, minHeight: 34 },
+    serviceText: { flexGrow: 1, paddingRight: 8 },
+    serviceName: { fontWeight: 700, marginBottom: 2 },
+    serviceDescription: { fontSize: 8, lineHeight: 1.25, color: '#344155' },
+    serviceImages: { width: 122, flexDirection: 'row', gap: 4, paddingRight: 6 },
+    serviceImage: { flexGrow: 1, height: 70, objectFit: 'contain' },
+    servicePrice: { width: 72, textAlign: 'right', fontWeight: 700 },
+    customerInfo: { marginTop: 14, borderTopWidth: 1, borderTopColor: accentColor, paddingTop: 7 },
+    customerInfoTitle: { textAlign: 'center', color: '#c1121f', fontWeight: 700, marginBottom: 4 },
+    customerInfoLine: { textAlign: 'center', color: '#c1121f', fontSize: 7, lineHeight: 1.25, marginBottom: 2 },
     footer: {
       position: 'absolute',
       bottom: 18,
@@ -167,11 +206,20 @@ export function NativeQuotePdfDocument({
   quote: CrmQuote
   settings: CrmQuotePrintSettings
 }) {
-  const resolvedSettings = { ...DEFAULT_QUOTE_PRINT_SETTINGS, ...settings }
+  const resolvedSettings = {
+    ...DEFAULT_QUOTE_PRINT_SETTINGS,
+    ...settings,
+    logoUrl: settings.logoUrl || defaultArnoldLogoUrl,
+    customerInformation: settings.customerInformation || DEFAULT_CUSTOMER_INFORMATION,
+  }
   const styles = createStyles(resolvedSettings.accentColor)
   const rows = splitLineItems(Array.isArray(quote.lineItems) ? quote.lineItems : [])
-  const subtotal = quote.subtotal ?? rows.reduce((sum, row) => sum + Number(row.extPrice || 0), 0)
-  const freight = Number(quote.freight || 0)
+  const additionalServices = Array.isArray(quote.additionalServices) ? quote.additionalServices : DEFAULT_ADDITIONAL_SERVICES
+  const shippingServices = Array.isArray(quote.shippingServices) ? quote.shippingServices : DEFAULT_SHIPPING_SERVICES
+  const servicesTotal = additionalServices.reduce((sum, item) => sum + Number(item.price || 0), 0)
+  const shippingTotal = shippingServices.reduce((sum, item) => sum + Number(item.price || 0), 0)
+  const subtotal = quote.subtotal ?? rows.reduce((sum, row) => sum + Number(row.extPrice || 0), 0) + servicesTotal
+  const freight = quote.freight ?? shippingTotal
 
   return (
     <Document title={`Quote ${plain(quote.quoteNumber, quote.id)}`} author={resolvedSettings.companyName}>
@@ -238,12 +286,41 @@ export function NativeQuotePdfDocument({
           </View>
         ))}
 
+        {additionalServices.length > 0 ? <Text style={styles.sectionTitle}>Additional Services</Text> : null}
+        {additionalServices.map((service) => (
+          <View key={service.id} style={styles.serviceRow} wrap={false}>
+            <View style={styles.serviceText}>
+              <Text style={styles.serviceName}>{service.title}</Text>
+              {service.description ? <Text style={styles.serviceDescription}>{service.description}</Text> : null}
+            </View>
+            <View style={styles.serviceImages}>
+              {(service.images || []).slice(0, 2).map((image) => <Image key={image.id} src={image.url} style={styles.serviceImage} />)}
+            </View>
+            <Text style={styles.servicePrice}>{money(service.price)}</Text>
+          </View>
+        ))}
+
         <View style={styles.totals} wrap={false}>
           <View style={styles.totalRow}><Text>Subtotal</Text><Text>{money(subtotal)}</Text></View>
-          {resolvedSettings.showFreight ? (
-            <View style={styles.totalRow}><Text>{quote.freightDescription || 'Freight'}</Text><Text>{money(freight)}</Text></View>
-          ) : null}
-          <View style={styles.grandTotal}><Text>Total</Text><Text>{money(quote.totalAmount ?? subtotal + freight)}</Text></View>
+        </View>
+
+        {resolvedSettings.showFreight && shippingServices.length > 0 ? <Text style={styles.sectionTitle}>Freight, Delivery &amp; Installation</Text> : null}
+        {resolvedSettings.showFreight ? shippingServices.map((service) => (
+          <View key={service.id} style={styles.serviceRow} wrap={false}>
+            <View style={styles.serviceText}>
+              <Text style={styles.serviceName}>{service.title}</Text>
+              {service.description ? <Text style={styles.serviceDescription}>{service.description}</Text> : null}
+            </View>
+            <View style={styles.serviceImages}>
+              {(service.images || []).slice(0, 2).map((image) => <Image key={image.id} src={image.url} style={styles.serviceImage} />)}
+            </View>
+            <Text style={styles.servicePrice}>{money(service.price)}</Text>
+          </View>
+        )) : null}
+
+        <View style={styles.totals} wrap={false}>
+          {resolvedSettings.showFreight ? <View style={styles.totalRow}><Text>{quote.freightDescription || 'Freight'}</Text><Text>{money(freight)}</Text></View> : null}
+          <View style={styles.grandTotal}><Text>Total</Text><Text>{money(quote.totalAmount ?? subtotal + Number(freight || 0))}</Text></View>
         </View>
 
         <View style={styles.terms} wrap={false}>
@@ -251,6 +328,15 @@ export function NativeQuotePdfDocument({
           {resolvedSettings.showPaymentTerms ? <View style={styles.termItem}><Text style={styles.label}>Payment Terms</Text><Text>{plain(quote.paymentTerms)}</Text></View> : null}
           {quote.notes ? <View style={styles.termItem}><Text style={styles.label}>Notes</Text><Text>{quote.notes}</Text></View> : null}
         </View>
+
+        {resolvedSettings.customerInformation ? (
+          <View style={styles.customerInfo}>
+            <Text style={styles.customerInfoTitle}>Customer Information</Text>
+            {resolvedSettings.customerInformation.split('\n').filter(Boolean).map((line) => (
+              <Text key={line} style={styles.customerInfoLine}>* {line}</Text>
+            ))}
+          </View>
+        ) : null}
 
         <View style={styles.footer} fixed>
           <Text>{resolvedSettings.footerText || ''}</Text>
