@@ -69,44 +69,57 @@ const money = (value: number | null | undefined) => {
     : '-'
 }
 
+const optionalMoney = (value: number | null | undefined) => value === null || value === undefined ? '' : money(value)
+
 const plain = (value: unknown, fallback = '-') => String(value ?? '').trim() || fallback
 
 function splitLineItems(lineItems: CrmQuoteLineItem[]) {
   return lineItems.flatMap((lineItem) => {
-    const description = plain(lineItem.description, '')
-    const chunkLength = 650
-
-    if (description.length <= chunkLength) {
-      return [lineItem]
-    }
-
+    const description = plain(lineItem.description, '').replace(/\r\n?/g, '\n')
+    const visualLines = description.split('\n').flatMap((sourceLine) => {
+      if (!sourceLine) return ['']
+      const wrappedLines: string[] = []
+      let remaining = sourceLine
+      while (remaining.length > 64) {
+        let splitAt = remaining.lastIndexOf(' ', 64)
+        if (splitAt < 38) splitAt = 64
+        wrappedLines.push(remaining.slice(0, splitAt).trim())
+        remaining = remaining.slice(splitAt).trimStart()
+      }
+      wrappedLines.push(remaining)
+      return wrappedLines
+    })
     const chunks: string[] = []
-    let remaining = description
-
-    while (remaining.length > chunkLength) {
-      let splitAt = remaining.lastIndexOf(' ', chunkLength)
-      if (splitAt < chunkLength * 0.6) splitAt = chunkLength
-      chunks.push(remaining.slice(0, splitAt).trim())
-      remaining = remaining.slice(splitAt).trim()
+    for (let index = 0; index < visualLines.length; index += 12) {
+      chunks.push(visualLines.slice(index, index + 12).join('\n'))
     }
-    if (remaining) chunks.push(remaining)
+    if (chunks.length === 0) chunks.push('')
 
     return chunks.map((chunk, index) => ({
       ...lineItem,
       id: `${lineItem.id || lineItem.itemNumber}-${index}`,
-      description: index === 0 ? chunk : `${chunk} (continued)`,
+      description: index === 0 ? chunk : `(continued)\n${chunk}`,
       images: index === 0 ? lineItem.images : [],
       qty: index === 0 ? lineItem.qty : null,
       unitPrice: index === 0 ? lineItem.unitPrice : null,
       extPrice: index === 0 ? lineItem.extPrice : null,
+      continuation: index > 0,
     }))
   })
 }
 
+const hasImages = (items: Array<{ images?: CrmQuoteLineItem['images'] }>) => items.some((item) => (item.images || []).length > 0)
+
+const imageHeight = (images: CrmQuoteLineItem['images'], landscapeHeight: number, portraitHeight: number) => (
+  (images || []).some((image) => Number(image.height || 0) > Number(image.width || 0) * 1.15)
+    ? portraitHeight
+    : landscapeHeight
+)
+
 function createStyles(accentColor: string) {
   return StyleSheet.create({
     page: {
-      paddingTop: 132,
+      paddingTop: 138,
       paddingBottom: 56,
       paddingHorizontal: 28,
       fontFamily: 'Helvetica',
@@ -118,34 +131,39 @@ function createStyles(accentColor: string) {
       top: 22,
       left: 18,
       right: 28,
-      height: 98,
+      height: 104,
       flexDirection: 'row',
+      alignItems: 'center',
       borderBottomWidth: 2,
       borderBottomColor: accentColor,
       paddingBottom: 8,
     },
-    logo: { width: 82, height: 82, objectFit: 'contain' },
-    brandBlock: { paddingTop: 12, paddingLeft: 8, flexGrow: 1 },
+    logo: { width: 84, height: 84, objectFit: 'contain' },
+    brandBlock: { paddingLeft: 9, flexGrow: 1 },
     brandName: { fontSize: 22, fontWeight: 700, letterSpacing: 0.3 },
     brandArnold: { color: '#151515' },
     brandContract: { color: '#b1161b' },
     brandQuote: { marginTop: 5, fontSize: 17, fontWeight: 700, color: '#172033', letterSpacing: 1.2 },
-    quoteInfoBox: { width: 188, borderWidth: 1, borderColor: accentColor, borderRadius: 2, overflow: 'hidden' },
+    quoteInfoBox: { width: 192, borderWidth: 1, borderColor: accentColor, borderRadius: 3, overflow: 'hidden' },
     quoteInfoTitle: { backgroundColor: accentColor, color: '#ffffff', fontSize: 11, fontWeight: 700, paddingVertical: 4, paddingHorizontal: 7 },
-    quoteInfoRow: { flexDirection: 'row', minHeight: 19, borderTopWidth: 1, borderTopColor: '#d8e0ea', alignItems: 'center', paddingHorizontal: 7 },
-    quoteInfoLabel: { width: 48, fontSize: 7, color: '#64748b', textTransform: 'uppercase' },
-    quoteInfoValue: { flexGrow: 1, fontSize: 8.5, fontWeight: 700, textAlign: 'right' },
+    quoteInfoRow: { flexDirection: 'row', minHeight: 20, borderTopWidth: 1, borderTopColor: '#d8e0ea', alignItems: 'center', paddingVertical: 3, paddingHorizontal: 7 },
+    quoteInfoLabel: { width: 52, fontSize: 7, color: '#64748b', textTransform: 'uppercase' },
+    quoteInfoValue: { flexGrow: 1, flexShrink: 1, flexBasis: 0, fontSize: 8.5, lineHeight: 1.15, fontWeight: 700, textAlign: 'right' },
     customerBlock: {
       flexDirection: 'row',
-      borderBottomWidth: 1,
-      borderBottomColor: '#cbd5e1',
+      backgroundColor: '#f8fafc',
+      borderWidth: 1,
+      borderColor: '#d8e0ea',
+      borderRadius: 3,
       marginBottom: 12,
-      paddingBottom: 5,
     },
-    customerColumn: { width: '50%', paddingVertical: 4, paddingRight: 14 },
-    customerColumnRight: { width: '50%', paddingVertical: 4, paddingLeft: 14 },
+    customerGroup: { flexGrow: 1, flexShrink: 1, flexBasis: 0, paddingVertical: 8, paddingHorizontal: 9 },
+    customerGroupWide: { flexGrow: 1.2, flexShrink: 1, flexBasis: 0, paddingVertical: 8, paddingHorizontal: 9 },
+    customerGroupDivider: { borderLeftWidth: 1, borderLeftColor: '#d8e0ea' },
     label: { fontSize: 7, color: '#64748b', textTransform: 'uppercase', marginBottom: 2 },
-    value: { fontSize: 9, marginBottom: 5 },
+    value: { fontSize: 9, lineHeight: 1.2, marginBottom: 5 },
+    contactLine: { fontSize: 8, color: '#344155', lineHeight: 1.25, marginBottom: 2 },
+    sectionTitleFirst: { paddingVertical: 5, paddingHorizontal: 6, backgroundColor: '#eef2f7', borderWidth: 1, borderColor: '#cbd5e1', fontSize: 10, fontWeight: 700, color: accentColor },
     tableHeader: {
       flexDirection: 'row',
       backgroundColor: accentColor,
@@ -163,34 +181,38 @@ function createStyles(accentColor: string) {
       paddingVertical: 6,
       paddingHorizontal: 4,
       minHeight: 34,
+      alignItems: 'stretch',
     },
-    imageColumn: { width: 138, flexDirection: 'row', gap: 4, paddingRight: 5 },
-    lineImage: { flexGrow: 1, height: 82, objectFit: 'contain' },
-    itemColumn: { width: 30, paddingRight: 4 },
-    descriptionColumn: { flexGrow: 1, flexShrink: 1, flexBasis: 0, paddingRight: 5, lineHeight: 1.25 },
-    qtyColumn: { width: 35, textAlign: 'right', paddingRight: 4 },
-    unitColumn: { width: 62, textAlign: 'right', paddingRight: 4 },
-    extColumn: { width: 68, textAlign: 'right' },
-    totals: { marginTop: 10, marginLeft: 'auto', width: 230 },
-    totalRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 3, borderBottomWidth: 1, borderColor: '#e2e8f0' },
-    grandTotal: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6, fontSize: 12, fontWeight: 700, color: accentColor },
+    imageColumn: { width: 104, flexDirection: 'row', gap: 4, paddingRight: 6 },
+    lineImage: { flexGrow: 1, flexShrink: 1, flexBasis: 0, objectFit: 'contain' },
+    itemColumn: { width: 30, paddingRight: 5 },
+    descriptionColumn: { flexGrow: 1, flexShrink: 1, flexBasis: 0, paddingRight: 7, lineHeight: 1.35 },
+    qtyColumn: { width: 38, textAlign: 'right', paddingRight: 6 },
+    unitColumn: { width: 70, textAlign: 'right', paddingRight: 6 },
+    extColumn: { width: 76, textAlign: 'right' },
+    centeredCell: { alignSelf: 'center' },
+    totals: { marginTop: 14, marginLeft: 'auto', width: 250, backgroundColor: '#f8fafc', borderWidth: 1, borderColor: '#d8e0ea', borderRadius: 3, paddingHorizontal: 10, paddingVertical: 6 },
+    totalRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4, borderBottomWidth: 1, borderColor: '#e2e8f0' },
+    grandTotal: { flexDirection: 'row', justifyContent: 'space-between', borderTopWidth: 2, borderTopColor: accentColor, paddingTop: 7, paddingBottom: 3, marginTop: 3, fontSize: 14, fontWeight: 700, color: accentColor },
     terms: { marginTop: 12, borderTopWidth: 1, borderTopColor: '#cbd5e1', paddingTop: 8 },
     termItem: { flexGrow: 1 },
     sectionTitle: { marginTop: 12, paddingVertical: 5, paddingHorizontal: 6, backgroundColor: '#eef2f7', borderWidth: 1, borderColor: '#cbd5e1', fontSize: 10, fontWeight: 700, color: accentColor },
     serviceRow: { flexDirection: 'row', borderBottomWidth: 1, borderLeftWidth: 1, borderRightWidth: 1, borderColor: '#d8e0ea', padding: 6, minHeight: 34 },
     serviceHeader: { flexDirection: 'row', backgroundColor: accentColor, color: '#ffffff', paddingVertical: 5, paddingHorizontal: 6, fontWeight: 700 },
-    serviceHeaderImages: { width: 128, paddingRight: 6 },
+    serviceHeaderImages: { width: 104, paddingRight: 6 },
     serviceHeaderText: { flexGrow: 1, flexShrink: 1, flexBasis: 0, paddingRight: 8 },
     serviceHeaderPrice: { width: 72, textAlign: 'right' },
     serviceText: { flexGrow: 1, flexShrink: 1, flexBasis: 0, paddingRight: 8 },
     serviceName: { fontWeight: 700, marginBottom: 2 },
     serviceDescription: { fontSize: 8, lineHeight: 1.25, color: '#344155' },
-    serviceImages: { width: 122, flexDirection: 'row', gap: 4, paddingRight: 6 },
-    serviceImage: { flexGrow: 1, height: 70, objectFit: 'contain' },
+    serviceImages: { width: 104, flexDirection: 'row', gap: 4, paddingRight: 6 },
+    serviceImage: { flexGrow: 1, flexShrink: 1, flexBasis: 0, objectFit: 'contain' },
     servicePrice: { width: 72, textAlign: 'right', fontWeight: 700 },
-    customerInfo: { marginTop: 14, borderTopWidth: 1, borderTopColor: accentColor, paddingTop: 7 },
-    customerInfoTitle: { textAlign: 'center', color: '#c1121f', fontWeight: 700, marginBottom: 4 },
-    customerInfoLine: { textAlign: 'center', color: '#c1121f', fontSize: 7, lineHeight: 1.25, marginBottom: 2 },
+    customerInfo: { marginTop: 14, backgroundColor: '#fff7f7', borderWidth: 1, borderColor: '#efc8ca', borderRadius: 3, paddingVertical: 8, paddingHorizontal: 10 },
+    customerInfoTitle: { color: '#b1161b', fontSize: 9, fontWeight: 700, marginBottom: 6 },
+    customerInfoColumns: { flexDirection: 'row', gap: 12 },
+    customerInfoColumn: { flexGrow: 1, flexShrink: 1, flexBasis: 0 },
+    customerInfoLine: { color: '#344155', fontSize: 7.4, lineHeight: 1.35, marginBottom: 4 },
     footer: {
       position: 'absolute',
       bottom: 18,
@@ -224,10 +246,16 @@ export function NativeQuotePdfDocument({
   const rows = splitLineItems(Array.isArray(quote.lineItems) ? quote.lineItems : [])
   const additionalServices = Array.isArray(quote.additionalServices) ? quote.additionalServices : DEFAULT_ADDITIONAL_SERVICES
   const shippingServices = Array.isArray(quote.shippingServices) ? quote.shippingServices : DEFAULT_SHIPPING_SERVICES
+  const productHasImages = hasImages(rows)
+  const additionalServicesHaveImages = hasImages(additionalServices)
+  const shippingServicesHaveImages = hasImages(shippingServices)
   const servicesTotal = additionalServices.reduce((sum, item) => sum + Number(item.price || 0), 0)
   const shippingTotal = shippingServices.reduce((sum, item) => sum + Number(item.price || 0), 0)
   const subtotal = quote.subtotal ?? rows.reduce((sum, row) => sum + Number(row.extPrice || 0), 0) + servicesTotal
   const freight = quote.freight ?? shippingTotal
+  const customerInfoLines = resolvedSettings.customerInformation.split('\n').map((line) => line.trim()).filter(Boolean)
+  const customerInfoMiddle = Math.ceil(customerInfoLines.length / 2)
+  const customerInfoColumns = [customerInfoLines.slice(0, customerInfoMiddle), customerInfoLines.slice(customerInfoMiddle)].filter((column) => column.length > 0)
 
   return (
     <Document title={`Quote ${plain(quote.quoteNumber, quote.id)}`} author={resolvedSettings.companyName}>
@@ -247,47 +275,54 @@ export function NativeQuotePdfDocument({
         </View>
 
         <View style={styles.customerBlock} wrap={false}>
-          <View style={styles.customerColumn}>
+          <View style={styles.customerGroupWide}>
             <Text style={styles.label}>Prepared For</Text>
             <Text style={styles.value}>{plain(quote.companyName || quote.dealerName)}</Text>
             <Text style={styles.label}>Contact</Text>
             <Text style={styles.value}>{plain(quote.contactName)}</Text>
-            <Text>{plain(quote.contactEmail, '')}</Text>
-            <Text>{plain(quote.contactPhone, '')}</Text>
+            {quote.contactEmail ? <Text style={styles.contactLine}>{quote.contactEmail}</Text> : null}
+            {quote.contactPhone ? <Text style={styles.contactLine}>{quote.contactPhone}</Text> : null}
           </View>
-          <View style={styles.customerColumnRight}>
+          <View style={[styles.customerGroup, styles.customerGroupDivider]}>
             <Text style={styles.label}>Sales Representative</Text>
             <Text style={styles.value}>{plain(quote.salesRep)}</Text>
-            <Text style={styles.label}>Project</Text>
-            <Text style={styles.value}>{plain(quote.title)}</Text>
             <Text style={styles.label}>Project Type</Text>
             <Text style={styles.value}>{plain(quote.projectType)}</Text>
+          </View>
+          <View style={[styles.customerGroupWide, styles.customerGroupDivider]}>
             {resolvedSettings.showLeadTime ? <><Text style={styles.label}>Lead Time</Text><Text style={styles.value}>{plain(quote.leadTime)}</Text></> : null}
             {resolvedSettings.showPaymentTerms ? <><Text style={styles.label}>Payment Terms</Text><Text style={styles.value}>{plain(quote.paymentTerms)}</Text></> : null}
           </View>
         </View>
 
-        <View style={styles.tableHeader}>
-          <Text style={styles.imageColumn}>Picture</Text>
-          <Text style={styles.itemColumn}>Item</Text>
-          <Text style={styles.descriptionColumn}>Description</Text>
-          <Text style={styles.qtyColumn}>Qty</Text>
-          <Text style={styles.unitColumn}>Unit</Text>
-          <Text style={styles.extColumn}>Extended</Text>
-        </View>
+        {rows.length > 0 ? (
+          <View minPresenceAhead={48}>
+            <Text style={styles.sectionTitleFirst}>Products</Text>
+            <View style={styles.tableHeader}>
+              {productHasImages ? <Text style={styles.imageColumn}>Picture</Text> : null}
+              <Text style={styles.itemColumn}>Item</Text>
+              <Text style={styles.descriptionColumn}>Description</Text>
+              <Text style={styles.qtyColumn}>Qty</Text>
+              <Text style={styles.unitColumn}>Unit Price</Text>
+              <Text style={styles.extColumn}>Extended</Text>
+            </View>
+          </View>
+        ) : null}
 
         {rows.map((lineItem, index) => (
-          <View key={lineItem.id || `${lineItem.itemNumber}-${index}`} style={styles.row} wrap={false}>
-            <View style={styles.imageColumn}>
-              {(lineItem.images || []).slice(0, 2).map((image) => (
-                <Image key={image.id} src={image.url} style={styles.lineImage} />
-              ))}
-            </View>
-            <Text style={styles.itemColumn}>{lineItem.itemNumber || index + 1}</Text>
+          <View key={lineItem.id || `${lineItem.itemNumber}-${index}`} style={[styles.row, index % 2 === 1 ? { backgroundColor: '#fbfdff' } : {}]} wrap={false}>
+            {productHasImages ? (
+              <View style={styles.imageColumn}>
+                {(lineItem.images || []).slice(0, 2).map((image) => (
+                  <Image key={image.id} src={image.url} style={[styles.lineImage, { height: imageHeight([image], 82, 116) }]} />
+                ))}
+              </View>
+            ) : null}
+            <Text style={[styles.itemColumn, styles.centeredCell]}>{lineItem.continuation ? '' : lineItem.itemNumber || index + 1}</Text>
             <Text style={styles.descriptionColumn}>{plain(lineItem.description, '')}</Text>
-            <Text style={styles.qtyColumn}>{plain(lineItem.qty, '')}</Text>
-            <Text style={styles.unitColumn}>{money(lineItem.unitPrice)}</Text>
-            <Text style={styles.extColumn}>{money(lineItem.extPrice)}</Text>
+            <Text style={[styles.qtyColumn, styles.centeredCell]}>{plain(lineItem.qty, '')}</Text>
+            <Text style={[styles.unitColumn, styles.centeredCell]}>{optionalMoney(lineItem.unitPrice)}</Text>
+            <Text style={[styles.extColumn, styles.centeredCell]}>{optionalMoney(lineItem.extPrice)}</Text>
           </View>
         ))}
 
@@ -295,7 +330,7 @@ export function NativeQuotePdfDocument({
           <View minPresenceAhead={40}>
             <Text style={styles.sectionTitle}>Additional Services</Text>
             <View style={styles.serviceHeader}>
-              <Text style={styles.serviceHeaderImages}>Picture</Text>
+              {additionalServicesHaveImages ? <Text style={styles.serviceHeaderImages}>Picture</Text> : null}
               <Text style={styles.serviceHeaderText}>Service &amp; Description</Text>
               <Text style={styles.serviceHeaderPrice}>Price</Text>
             </View>
@@ -303,26 +338,24 @@ export function NativeQuotePdfDocument({
         ) : null}
         {additionalServices.map((service) => (
           <View key={service.id} style={styles.serviceRow} wrap={false}>
-            <View style={styles.serviceImages}>
-              {(service.images || []).slice(0, 2).map((image) => <Image key={image.id} src={image.url} style={styles.serviceImage} />)}
-            </View>
+            {additionalServicesHaveImages ? (
+              <View style={styles.serviceImages}>
+                {(service.images || []).slice(0, 2).map((image) => <Image key={image.id} src={image.url} style={[styles.serviceImage, { height: imageHeight([image], 68, 96) }]} />)}
+              </View>
+            ) : null}
             <View style={styles.serviceText}>
               <Text style={styles.serviceName}>{service.title}</Text>
               {service.description ? <Text style={styles.serviceDescription}>{service.description}</Text> : null}
             </View>
-            <Text style={styles.servicePrice}>{money(service.price)}</Text>
+            <Text style={[styles.servicePrice, styles.centeredCell]}>{optionalMoney(service.price)}</Text>
           </View>
         ))}
-
-        <View style={styles.totals} wrap={false}>
-          <View style={styles.totalRow}><Text>Subtotal</Text><Text>{money(subtotal)}</Text></View>
-        </View>
 
         {resolvedSettings.showFreight && shippingServices.length > 0 ? (
           <View minPresenceAhead={40}>
             <Text style={styles.sectionTitle}>Freight, Delivery &amp; Installation</Text>
             <View style={styles.serviceHeader}>
-              <Text style={styles.serviceHeaderImages}>Picture</Text>
+              {shippingServicesHaveImages ? <Text style={styles.serviceHeaderImages}>Picture</Text> : null}
               <Text style={styles.serviceHeaderText}>Service &amp; Description</Text>
               <Text style={styles.serviceHeaderPrice}>Price</Text>
             </View>
@@ -330,18 +363,21 @@ export function NativeQuotePdfDocument({
         ) : null}
         {resolvedSettings.showFreight ? shippingServices.map((service) => (
           <View key={service.id} style={styles.serviceRow} wrap={false}>
-            <View style={styles.serviceImages}>
-              {(service.images || []).slice(0, 2).map((image) => <Image key={image.id} src={image.url} style={styles.serviceImage} />)}
-            </View>
+            {shippingServicesHaveImages ? (
+              <View style={styles.serviceImages}>
+                {(service.images || []).slice(0, 2).map((image) => <Image key={image.id} src={image.url} style={[styles.serviceImage, { height: imageHeight([image], 68, 96) }]} />)}
+              </View>
+            ) : null}
             <View style={styles.serviceText}>
               <Text style={styles.serviceName}>{service.title}</Text>
               {service.description ? <Text style={styles.serviceDescription}>{service.description}</Text> : null}
             </View>
-            <Text style={styles.servicePrice}>{money(service.price)}</Text>
+            <Text style={[styles.servicePrice, styles.centeredCell]}>{optionalMoney(service.price)}</Text>
           </View>
         )) : null}
 
         <View style={styles.totals} wrap={false}>
+          <View style={styles.totalRow}><Text>Subtotal</Text><Text>{money(subtotal)}</Text></View>
           {resolvedSettings.showFreight ? <View style={styles.totalRow}><Text>{quote.freightDescription || 'Freight'}</Text><Text>{money(freight)}</Text></View> : null}
           <View style={styles.grandTotal}><Text>Total</Text><Text>{money(quote.totalAmount ?? subtotal + Number(freight || 0))}</Text></View>
         </View>
@@ -349,11 +385,15 @@ export function NativeQuotePdfDocument({
         {quote.notes ? <View style={styles.terms} wrap={false}><View style={styles.termItem}><Text style={styles.label}>Notes</Text><Text>{quote.notes}</Text></View></View> : null}
 
         {resolvedSettings.customerInformation ? (
-          <View style={styles.customerInfo}>
+          <View style={styles.customerInfo} wrap={false}>
             <Text style={styles.customerInfoTitle}>Customer Information</Text>
-            {resolvedSettings.customerInformation.split('\n').filter(Boolean).map((line) => (
-              <Text key={line} style={styles.customerInfoLine}>* {line}</Text>
-            ))}
+            <View style={styles.customerInfoColumns}>
+              {customerInfoColumns.map((column, columnIndex) => (
+                <View key={`customer-info-${columnIndex}`} style={styles.customerInfoColumn}>
+                  {column.map((line, lineIndex) => <Text key={`${line}-${lineIndex}`} style={styles.customerInfoLine}>• {line}</Text>)}
+                </View>
+              ))}
+            </View>
           </View>
         ) : null}
 
