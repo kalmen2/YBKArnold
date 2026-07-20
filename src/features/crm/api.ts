@@ -578,6 +578,9 @@ export type CrmQuoteServiceItem = {
   id: string
   title: string
   description: string | null
+  qty?: number | null
+  unitPrice?: number | null
+  extPrice?: number | null
   price: number | null
   images?: CrmQuoteLineImage[]
 }

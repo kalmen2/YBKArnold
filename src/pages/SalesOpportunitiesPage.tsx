@@ -117,7 +117,9 @@ type OpportunityServiceItemFormState = {
   id: string
   title: string
   description: string
-  price: string
+  qty: string
+  unitPrice: string
+  extPrice: string
   images: CrmQuoteLineImage[]
 }
 
@@ -551,6 +553,43 @@ function updateLineItemPricing(
   return nextLineItem
 }
 
+function resolveServiceItemExtPrice(item: {
+  qty?: number | null
+  unitPrice?: number | null
+  extPrice?: number | null
+  price?: number | null
+}) {
+  const extPrice = Number(item.extPrice)
+  if (Number.isFinite(extPrice)) {
+    return Number(extPrice.toFixed(2))
+  }
+
+  const quantity = Number(item.qty)
+  const unitPrice = Number(item.unitPrice)
+  if (Number.isFinite(quantity) && Number.isFinite(unitPrice)) {
+    return Number((quantity * unitPrice).toFixed(2))
+  }
+
+  const legacyPrice = Number(item.price)
+  if (Number.isFinite(legacyPrice)) {
+    return Number(legacyPrice.toFixed(2))
+  }
+
+  return null
+}
+
+function updateServiceItemPricing(
+  serviceItem: OpportunityServiceItemFormState,
+  field: 'title' | 'description' | 'qty' | 'unitPrice' | 'extPrice',
+  value: string,
+) {
+  const nextServiceItem = { ...serviceItem, [field]: value }
+  if (field === 'qty' || field === 'unitPrice') {
+    nextServiceItem.extPrice = calculateExtendedPrice(nextServiceItem.qty, nextServiceItem.unitPrice)
+  }
+  return nextServiceItem
+}
+
 function resolveDealerQuoteCompanyName(dealer: CrmDealer | null | undefined) {
   const configuredName = String(dealer?.quoteCompanyName || '').trim()
   if (configuredName) return configuredName
@@ -582,7 +621,7 @@ const defaultShippingServiceTemplates = [
 ] as const
 
 function createServiceItemFormState(title = '', description = ''): OpportunityServiceItemFormState {
-  return { id: crypto.randomUUID(), title, description, price: '', images: [] }
+  return { id: crypto.randomUUID(), title, description, qty: '', unitPrice: '', extPrice: '', images: [] }
 }
 
 function createDefaultAdditionalServices() {
@@ -600,19 +639,60 @@ function mapServiceItemsToFormState(items: CrmQuoteServiceItem[] | null | undefi
     id: item.id || crypto.randomUUID(),
     title: String(item.title || ''),
     description: String(item.description || ''),
-    price: item.price === null || item.price === undefined ? '' : String(item.price),
+    qty: (() => {
+      const quantity = Number(item.qty)
+      if (Number.isFinite(quantity)) {
+        return String(quantity)
+      }
+
+      const fallbackExt = resolveServiceItemExtPrice(item)
+      return fallbackExt !== null ? '1' : ''
+    })(),
+    unitPrice: (() => {
+      const unitPrice = Number(item.unitPrice)
+      if (Number.isFinite(unitPrice)) {
+        return String(unitPrice)
+      }
+
+      const fallbackExt = resolveServiceItemExtPrice(item)
+      return fallbackExt !== null ? String(fallbackExt) : ''
+    })(),
+    extPrice: (() => {
+      const extPrice = resolveServiceItemExtPrice(item)
+      return extPrice === null ? '' : String(extPrice)
+    })(),
     images: Array.isArray(item.images) ? item.images : [],
   }))
 }
 
 function normalizeServiceItemsForPayload(items: OpportunityServiceItemFormState[]): CrmQuoteServiceItem[] {
-  return items.map((item) => ({
-    id: item.id,
-    title: item.title.trim(),
-    description: item.description.trim() || null,
-    price: toOptionalNumber(item.price),
-    images: item.images,
-  })).filter((item) => item.title || item.description || item.price !== null || (item.images?.length || 0) > 0)
+  return items.map((item) => {
+    const qty = toOptionalNumber(item.qty)
+    const unitPrice = toOptionalNumber(item.unitPrice)
+    const extFromFields = qty !== null && unitPrice !== null
+      ? Number((qty * unitPrice).toFixed(2))
+      : null
+    const extPrice = toOptionalNumber(item.extPrice) ?? extFromFields
+
+    return {
+      id: item.id,
+      title: item.title.trim(),
+      description: item.description.trim() || null,
+      qty,
+      unitPrice,
+      extPrice,
+      // Keep legacy field for older records and consumers.
+      price: extPrice,
+      images: item.images,
+    }
+  }).filter((item) => (
+    item.title
+    || item.description
+    || item.qty !== null
+    || item.unitPrice !== null
+    || item.extPrice !== null
+    || (item.images?.length || 0) > 0
+  ))
 }
 
 function isBlankLineItem(lineItem: OpportunityLineItemFormState) {
@@ -857,8 +937,10 @@ function resolveQuotePricing(
   const lineItemsTotal = calculateLineItemsTotal(normalizedLineItems)
   const normalizedAdditionalServices = normalizeServiceItemsForPayload(additionalServices)
   const normalizedShippingServices = normalizeServiceItemsForPayload(shippingServices)
-  const additionalServicesTotal = normalizedAdditionalServices.reduce((sum, item) => sum + Number(item.price || 0), 0)
-  const shippingServicesTotal = normalizedShippingServices.reduce((sum, item) => sum + Number(item.price || 0), 0)
+  const additionalServicesTotal = normalizedAdditionalServices
+    .reduce((sum, item) => sum + Number(resolveServiceItemExtPrice(item) || 0), 0)
+  const shippingServicesTotal = normalizedShippingServices
+    .reduce((sum, item) => sum + Number(resolveServiceItemExtPrice(item) || 0), 0)
   const enteredSubtotal = toOptionalNumber(subtotalInput)
   const enteredFreight = toOptionalNumber(freightInput)
   const subtotal = Number(((enteredSubtotal ?? lineItemsTotal) + additionalServicesTotal).toFixed(2))
@@ -1014,7 +1096,8 @@ function resolveDateInputFromIso(value: string | null | undefined) {
 function createOpportunityDetailsFormState(quote: CrmQuote): OpportunityDetailsFormState {
   const origin = quote.origin === 'excel' ? 'excel' : 'website'
   const additionalServices = mapServiceItemsToFormState(quote.additionalServices, createDefaultAdditionalServices)
-  const storedAdditionalServicesTotal = (quote.additionalServices || []).reduce((sum, item) => sum + Number(item.price || 0), 0)
+  const storedAdditionalServicesTotal = (quote.additionalServices || [])
+    .reduce((sum, item) => sum + Number(resolveServiceItemExtPrice(item) || 0), 0)
   const productSubtotal = quote.subtotal === null || quote.subtotal === undefined
     ? ''
     : String(Math.max(0, Number(quote.subtotal) - storedAdditionalServicesTotal))
@@ -2122,7 +2205,7 @@ function LineItemsEditor({
               <TableCell sx={{ minWidth: 220, fontWeight: 700 }}>Description</TableCell>
               <TableCell sx={{ width: 90, fontWeight: 700 }}>Qty</TableCell>
               <TableCell sx={{ width: 125, fontWeight: 700 }}>Unit Price</TableCell>
-              <TableCell sx={{ width: 135, fontWeight: 700 }}>Ext Price</TableCell>
+              <TableCell sx={{ width: 135, fontWeight: 700 }}>Ext</TableCell>
               <TableCell align="center" sx={{ width: 60, fontWeight: 700 }}>Del</TableCell>
             </TableRow>
           </TableHead>
@@ -2303,6 +2386,17 @@ function QuoteServiceItemsEditor({ heading, description, items, canEdit, isUploa
   const updateItem = (index: number, patch: Partial<OpportunityServiceItemFormState>) => {
     onChange(items.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item))
   }
+  const updateItemField = (
+    index: number,
+    field: 'title' | 'description' | 'qty' | 'unitPrice' | 'extPrice',
+    value: string,
+  ) => {
+    onChange(items.map((item, itemIndex) => (
+      itemIndex === index
+        ? updateServiceItemPricing(item, field, value)
+        : item
+    )))
+  }
 
   return (
     <Stack spacing={1}>
@@ -2318,19 +2412,46 @@ function QuoteServiceItemsEditor({ heading, description, items, canEdit, isUploa
           <Paper key={item.id} variant="outlined" sx={{ p: 1.1, borderRadius: 1.2 }}>
             <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} alignItems="flex-start">
               <Stack spacing={0.8} flex={1} width="100%">
-                <TextField size="small" label="Service" value={item.title} disabled={!canEdit} onChange={(event) => updateItem(index, { title: event.target.value })} />
-                <TextField size="small" label="Description / conditions" value={item.description} disabled={!canEdit} multiline minRows={2} onChange={(event) => updateItem(index, { description: event.target.value })} />
+                <TextField size="small" label="Service" value={item.title} disabled={!canEdit} onChange={(event) => updateItemField(index, 'title', event.target.value)} />
+                <TextField size="small" label="Description / conditions" value={item.description} disabled={!canEdit} multiline minRows={2} onChange={(event) => updateItemField(index, 'description', event.target.value)} />
+                <Stack direction={{ xs: 'column', md: 'row' }} spacing={0.8}>
+                  <TextField
+                    size="small"
+                    label="Qty"
+                    type="number"
+                    value={item.qty}
+                    disabled={!canEdit}
+                    onChange={(event) => updateItemField(index, 'qty', event.target.value)}
+                    inputProps={{ inputMode: 'decimal' }}
+                    sx={{ width: { xs: '100%', md: 96 } }}
+                  />
+                  <TextField
+                    size="small"
+                    label="Unit Price"
+                    type="number"
+                    value={item.unitPrice}
+                    disabled={!canEdit}
+                    onChange={(event) => updateItemField(index, 'unitPrice', event.target.value)}
+                    inputProps={{ inputMode: 'decimal' }}
+                    InputProps={{ startAdornment: <InputAdornment position="start">$</InputAdornment> }}
+                    sx={{ width: { xs: '100%', md: 150 } }}
+                  />
+                  <TextField
+                    size="small"
+                    label="Ext"
+                    type="text"
+                    value={item.extPrice}
+                    disabled={!canEdit}
+                    inputProps={{ inputMode: 'decimal' }}
+                    InputProps={{
+                      readOnly: true,
+                      startAdornment: <InputAdornment position="start">$</InputAdornment>,
+                    }}
+                    helperText="Qty × Unit"
+                    sx={{ width: { xs: '100%', md: 150 } }}
+                  />
+                </Stack>
               </Stack>
-              <TextField
-                size="small"
-                label="Price"
-                type="number"
-                value={item.price}
-                disabled={!canEdit}
-                onChange={(event) => updateItem(index, { price: event.target.value })}
-                InputProps={{ startAdornment: <InputAdornment position="start">$</InputAdornment> }}
-                sx={{ width: { xs: '100%', md: 145 } }}
-              />
               <Stack spacing={0.6} sx={{ width: { xs: '100%', md: 170 } }}>
                 {item.images.length > 0 ? (
                   <Stack direction="row" spacing={0.5}>
@@ -7385,7 +7506,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
 
                 <QuoteServiceItemsEditor
                   heading="Freight, Delivery & Installation"
-                  description="Add the applicable delivery or installation price. No A/B/C/D option labels are used."
+                  description="Add delivery or installation lines with Qty, Unit Price, and Ext values."
                   items={formState.shippingServices}
                   canEdit={!isSavingOpportunity}
                   isUploadingImage={isUploadingLineImage}
@@ -8176,7 +8297,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
 
               <QuoteServiceItemsEditor
                 heading="Freight, Delivery & Installation"
-                description="Add the applicable delivery or installation price. No A/B/C/D option labels are used."
+                description="Add delivery or installation lines with Qty, Unit Price, and Ext values."
                 items={opportunityDetailsFormState.shippingServices}
                 canEdit={canManage}
                 isUploadingImage={isUploadingLineImage}

@@ -944,6 +944,12 @@ function normalizeQuoteServiceItems(input) {
 
   return input.slice(0, 50).map((rawItem) => {
     const item = toOptionalObject(rawItem)
+    const qty = toNonNegativeNumberOrNull(item.qty)
+    const unitPrice = toNonNegativeNumberOrNull(item.unitPrice)
+    const extFromFields = qty !== null && unitPrice !== null
+      ? Number((qty * unitPrice).toFixed(2))
+      : null
+    const extPrice = toNonNegativeNumberOrNull(item.extPrice) ?? extFromFields ?? toNonNegativeNumberOrNull(item.price)
     const images = normalizeQuoteLineItems([{
       id: item.id,
       description: item.description,
@@ -954,10 +960,21 @@ function normalizeQuoteServiceItems(input) {
       id: toTrimmedText(item.id, 160) || createRandomUuid(),
       title: toTrimmedText(item.title, 240),
       description: toTrimmedText(item.description, 4000) || null,
-      price: toNonNegativeNumberOrNull(item.price),
+      qty,
+      unitPrice,
+      extPrice,
+      // Keep legacy field for compatibility with older consumers.
+      price: extPrice,
       images,
     }
-  }).filter((item) => item.title || item.description || item.price !== null || item.images.length > 0)
+  }).filter((item) => (
+    item.title
+    || item.description
+    || item.qty !== null
+    || item.unitPrice !== null
+    || item.extPrice !== null
+    || item.images.length > 0
+  ))
 }
 
 function normalizeExcelQuoteLineItems(input, existingLineItems) {

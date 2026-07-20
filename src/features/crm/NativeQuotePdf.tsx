@@ -4,6 +4,7 @@ import {
   Page,
   PDFDownloadLink,
   PDFViewer,
+  pdf,
   StyleSheet,
   Text,
   View,
@@ -11,6 +12,7 @@ import {
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded'
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded'
 import { Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, Stack } from '@mui/material'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CrmQuote, CrmQuoteLineItem, CrmQuotePrintSettings } from './api'
 const defaultArnoldLogoUrl = '/arnold-quote-logo.png'
 const defaultArnoldMarkUrl = '/arnold-quote-mark.png'
@@ -33,12 +35,14 @@ const DEFAULT_ADDITIONAL_SERVICES = [
   ['shop-drawing', 'Shop Drawing', 'Includes up to two revisions with an estimated two-week lead time.'],
   ['demolition', 'Demolition and Disposal of Existing Furniture', 'Demolition and disposal must be coordinated with delivery and installation. Unforeseen conditions may result in extra charges.'],
 ].map(([id, title, description]) => ({ id, title, description, price: null, images: [] }))
+  .map((service) => ({ ...service, qty: null, unitPrice: null, extPrice: null }))
 
 const DEFAULT_SHIPPING_SERVICES = [
   ['blanket-delivery', 'Blanket-Wrapped Dock Delivery', 'Dedicated truck delivery to a local warehouse dock. Customer team unloads the truck.'],
   ['common-carrier', 'Crated & Shipped via Common Carrier', 'Delivered crated to a warehouse dock by common carrier. Customer team unloads the truck.'],
   ['delivery-installation', 'Delivery & Installation', 'Site conditions, access, working hours, and carry-up requirements must be confirmed before scheduling.'],
 ].map(([id, title, description]) => ({ id, title, description, price: null, images: [] }))
+  .map((service) => ({ ...service, qty: null, unitPrice: null, extPrice: null }))
 
 // eslint-disable-next-line react-refresh/only-export-components
 export const DEFAULT_QUOTE_PRINT_SETTINGS: CrmQuotePrintSettings = {
@@ -70,6 +74,27 @@ const money = (value: number | null | undefined) => {
 }
 
 const optionalMoney = (value: number | null | undefined) => value === null || value === undefined ? '' : money(value)
+
+const resolveServiceExtPrice = (service: {
+  qty?: number | null
+  unitPrice?: number | null
+  extPrice?: number | null
+  price?: number | null
+}) => {
+  const extPrice = Number(service.extPrice)
+  if (Number.isFinite(extPrice)) return Number(extPrice.toFixed(2))
+
+  const qty = Number(service.qty)
+  const unitPrice = Number(service.unitPrice)
+  if (Number.isFinite(qty) && Number.isFinite(unitPrice)) {
+    return Number((qty * unitPrice).toFixed(2))
+  }
+
+  const legacyPrice = Number(service.price)
+  if (Number.isFinite(legacyPrice)) return Number(legacyPrice.toFixed(2))
+
+  return null
+}
 
 const plain = (value: unknown, fallback = '-') => String(value ?? '').trim() || fallback
 
@@ -145,14 +170,14 @@ function createStyles(accentColor: string) {
       paddingBottom: 8,
     },
     logo: { width: 84, height: 84, objectFit: 'contain' },
-    brandBlock: { paddingLeft: 9, flexGrow: 1 },
+    brandBlock: { paddingLeft: 9, flexGrow: 1, flexShrink: 1, flexBasis: 0, justifyContent: 'center', alignItems: 'center' },
     brandName: { fontSize: 22, fontWeight: 700, letterSpacing: 0.3 },
     brandArnold: { color: '#151515' },
     brandContract: { color: '#b1161b' },
     brandQuote: { marginTop: 5, fontSize: 17, fontWeight: 700, color: '#172033', letterSpacing: 1.2 },
     quoteInfoBox: { width: 192, borderWidth: 1, borderColor: accentColor, borderRadius: 3, overflow: 'hidden' },
-    quoteInfoTitle: { backgroundColor: accentColor, color: '#ffffff', fontSize: 11, fontWeight: 700, paddingVertical: 4, paddingHorizontal: 7 },
     quoteInfoRow: { flexDirection: 'row', minHeight: 20, borderTopWidth: 1, borderTopColor: '#d8e0ea', alignItems: 'center', paddingVertical: 3, paddingHorizontal: 7 },
+    quoteInfoRowFirst: { borderTopWidth: 0 },
     quoteInfoLabel: { width: 52, fontSize: 7, color: '#64748b', textTransform: 'uppercase' },
     quoteInfoValue: { flexGrow: 1, flexShrink: 1, flexBasis: 0, fontSize: 8.5, lineHeight: 1.15, fontWeight: 700, textAlign: 'right' },
     customerBlock: {
@@ -207,12 +232,18 @@ function createStyles(accentColor: string) {
     serviceHeader: { flexDirection: 'row', backgroundColor: accentColor, color: '#ffffff', paddingVertical: 5, paddingHorizontal: 6, fontWeight: 700 },
     serviceHeaderImages: { width: 104, paddingRight: 6 },
     serviceHeaderText: { flexGrow: 1, flexShrink: 1, flexBasis: 0, paddingRight: 8 },
+    serviceHeaderQty: { width: 46, textAlign: 'right', paddingRight: 5 },
+    serviceHeaderUnit: { width: 74, textAlign: 'right', paddingRight: 5 },
+    serviceHeaderExt: { width: 74, textAlign: 'right' },
     serviceHeaderPrice: { width: 72, textAlign: 'right' },
     serviceText: { flexGrow: 1, flexShrink: 1, flexBasis: 0, paddingRight: 8 },
     serviceName: { fontWeight: 700, marginBottom: 2 },
     serviceDescription: { fontSize: 8, lineHeight: 1.25, color: '#344155' },
     serviceImages: { width: 104, flexDirection: 'row', gap: 4, paddingRight: 6 },
     serviceImage: { flexGrow: 1, flexShrink: 1, flexBasis: 0, objectFit: 'contain' },
+    serviceQty: { width: 46, textAlign: 'right', paddingRight: 5 },
+    serviceUnit: { width: 74, textAlign: 'right', paddingRight: 5 },
+    serviceExt: { width: 74, textAlign: 'right', fontWeight: 700 },
     servicePrice: { width: 72, textAlign: 'right', fontWeight: 700 },
     customerInfo: { marginTop: 14, backgroundColor: '#fff7f7', borderWidth: 1, borderColor: '#efc8ca', borderRadius: 3, paddingVertical: 8, paddingHorizontal: 10 },
     customerInfoTitle: { color: '#b1161b', fontSize: 9, fontWeight: 700, marginBottom: 6 },
@@ -255,8 +286,8 @@ export function NativeQuotePdfDocument({
   const productHasImages = hasImages(rows)
   const additionalServicesHaveImages = hasImages(additionalServices)
   const shippingServicesHaveImages = hasImages(shippingServices)
-  const servicesTotal = additionalServices.reduce((sum, item) => sum + Number(item.price || 0), 0)
-  const shippingTotal = shippingServices.reduce((sum, item) => sum + Number(item.price || 0), 0)
+  const servicesTotal = additionalServices.reduce((sum, item) => sum + Number(resolveServiceExtPrice(item) || 0), 0)
+  const shippingTotal = shippingServices.reduce((sum, item) => sum + Number(resolveServiceExtPrice(item) || 0), 0)
   const subtotal = quote.subtotal ?? rows.reduce((sum, row) => sum + Number(row.extPrice || 0), 0) + servicesTotal
   const freight = quote.freight ?? shippingTotal
   const customerInfoLines = resolvedSettings.customerInformation.split('\n').map((line) => line.trim()).filter(Boolean)
@@ -273,8 +304,7 @@ export function NativeQuotePdfDocument({
             <Text style={styles.brandQuote}>QUOTE</Text>
           </View>
           <View style={styles.quoteInfoBox}>
-            <Text style={styles.quoteInfoTitle}>QUOTE</Text>
-            <View style={styles.quoteInfoRow}><Text style={styles.quoteInfoLabel}>Number</Text><Text style={styles.quoteInfoValue}>{plain(quote.quoteNumber)}</Text></View>
+            <View style={[styles.quoteInfoRow, styles.quoteInfoRowFirst]}><Text style={styles.quoteInfoLabel}>Quote #</Text><Text style={styles.quoteInfoValue}>{plain(quote.quoteNumber)}</Text></View>
             <View style={styles.quoteInfoRow}><Text style={styles.quoteInfoLabel}>Date</Text><Text style={styles.quoteInfoValue}>{plain(quote.opportunityDate)?.slice(0, 10)}</Text></View>
             <View style={styles.quoteInfoRow}><Text style={styles.quoteInfoLabel}>Project</Text><Text style={styles.quoteInfoValue}>{plain(quote.title)}</Text></View>
           </View>
@@ -282,7 +312,7 @@ export function NativeQuotePdfDocument({
 
         <View style={styles.customerBlock} wrap={false}>
           <View style={styles.customerGroupWide}>
-            <Text style={styles.label}>Prepared For</Text>
+            <Text style={styles.label}>Dealer Account</Text>
             <Text style={styles.value}>{plain(quote.companyName || quote.dealerName)}</Text>
             <Text style={styles.label}>Contact</Text>
             <Text style={styles.value}>{plain(quote.contactName)}</Text>
@@ -310,7 +340,7 @@ export function NativeQuotePdfDocument({
               <Text style={styles.descriptionColumn}>Description</Text>
               <Text style={styles.qtyColumn}>Qty</Text>
               <Text style={styles.unitColumn}>Unit Price</Text>
-              <Text style={styles.extColumn}>Extended</Text>
+              <Text style={styles.extColumn}>Ext</Text>
             </View>
           </View>
         ) : null}
@@ -320,7 +350,7 @@ export function NativeQuotePdfDocument({
             {productHasImages ? (
               <View style={styles.imageColumn}>
                 {(lineItem.images || []).slice(0, 2).map((image) => (
-                  <Image key={image.id} src={image.url} style={[styles.lineImage, { height: imageHeight([image], 82, 116) }]} />
+                  <Image key={image.id} src={{ uri: image.url }} cache={false} style={[styles.lineImage, { height: imageHeight([image], 82, 116) }]} />
                 ))}
               </View>
             ) : null}
@@ -338,7 +368,9 @@ export function NativeQuotePdfDocument({
             <View style={styles.serviceHeader}>
               {additionalServicesHaveImages ? <Text style={styles.serviceHeaderImages}>Picture</Text> : null}
               <Text style={styles.serviceHeaderText}>Service &amp; Description</Text>
-              <Text style={styles.serviceHeaderPrice}>Price</Text>
+              <Text style={styles.serviceHeaderQty}>Qty</Text>
+              <Text style={styles.serviceHeaderUnit}>Unit Price</Text>
+              <Text style={styles.serviceHeaderExt}>Ext</Text>
             </View>
           </View>
         ) : null}
@@ -346,14 +378,16 @@ export function NativeQuotePdfDocument({
           <View key={service.id} style={styles.serviceRow} wrap={false}>
             {additionalServicesHaveImages ? (
               <View style={styles.serviceImages}>
-                {(service.images || []).slice(0, 2).map((image) => <Image key={image.id} src={image.url} style={[styles.serviceImage, { height: imageHeight([image], 68, 96) }]} />)}
+                {(service.images || []).slice(0, 2).map((image) => <Image key={image.id} src={{ uri: image.url }} cache={false} style={[styles.serviceImage, { height: imageHeight([image], 68, 96) }]} />)}
               </View>
             ) : null}
             <View style={styles.serviceText}>
               <Text style={styles.serviceName}>{service.title}</Text>
               {service.description ? <Text style={styles.serviceDescription}>{service.description}</Text> : null}
             </View>
-            <Text style={[styles.servicePrice, styles.centeredCell]}>{optionalMoney(service.price)}</Text>
+            <Text style={[styles.serviceQty, styles.centeredCell]}>{plain(service.qty, '')}</Text>
+            <Text style={[styles.serviceUnit, styles.centeredCell]}>{optionalMoney(service.unitPrice)}</Text>
+            <Text style={[styles.serviceExt, styles.centeredCell]}>{optionalMoney(resolveServiceExtPrice(service))}</Text>
           </View>
         ))}
 
@@ -371,14 +405,14 @@ export function NativeQuotePdfDocument({
           <View key={service.id} style={styles.serviceRow} wrap={false}>
             {shippingServicesHaveImages ? (
               <View style={styles.serviceImages}>
-                {(service.images || []).slice(0, 2).map((image) => <Image key={image.id} src={image.url} style={[styles.serviceImage, { height: imageHeight([image], 68, 96) }]} />)}
+                {(service.images || []).slice(0, 2).map((image) => <Image key={image.id} src={{ uri: image.url }} cache={false} style={[styles.serviceImage, { height: imageHeight([image], 68, 96) }]} />)}
               </View>
             ) : null}
             <View style={styles.serviceText}>
               <Text style={styles.serviceName}>{service.title}</Text>
               {service.description ? <Text style={styles.serviceDescription}>{service.description}</Text> : null}
             </View>
-            <Text style={[styles.servicePrice, styles.centeredCell]}>{optionalMoney(service.price)}</Text>
+            <Text style={[styles.servicePrice, styles.centeredCell]}>{optionalMoney(resolveServiceExtPrice(service))}</Text>
           </View>
         )) : null}
 
@@ -412,7 +446,7 @@ export function NativeQuotePdfDocument({
   )
 }
 
-export function QuotePdfPreviewDialog({
+export const QuotePdfPreviewDialog = memo(function QuotePdfPreviewDialog({
   open,
   quote,
   settings,
@@ -423,17 +457,60 @@ export function QuotePdfPreviewDialog({
   settings: CrmQuotePrintSettings
   onClose: () => void
 }) {
-  if (!quote) return null
+  const [isOpeningPrint, setIsOpeningPrint] = useState(false)
+  const printBlobUrlRef = useRef<string | null>(null)
 
-  const document = <NativeQuotePdfDocument quote={quote} settings={settings} />
-  const fileName = `Quote-${plain(quote.quoteNumber, quote.id).replace(/[^a-z0-9._-]+/gi, '-')}.pdf`
+  const document = useMemo(
+    () => (quote ? <NativeQuotePdfDocument quote={quote} settings={settings} /> : null),
+    [quote, settings],
+  )
+
+  const fileName = useMemo(
+    () => (quote ? `Quote-${plain(quote.quoteNumber, quote.id).replace(/[^a-z0-9._-]+/gi, '-')}.pdf` : 'Quote.pdf'),
+    [quote?.id, quote?.quoteNumber],
+  )
+
+  const revokePrintBlobUrl = useCallback(() => {
+    if (printBlobUrlRef.current) {
+      URL.revokeObjectURL(printBlobUrlRef.current)
+      printBlobUrlRef.current = null
+    }
+  }, [])
+
+  useEffect(() => () => {
+    revokePrintBlobUrl()
+  }, [revokePrintBlobUrl])
+
+  const handleClose = useCallback(() => {
+    revokePrintBlobUrl()
+    onClose()
+  }, [onClose, revokePrintBlobUrl])
+
+  const handleOpenToPrint = useCallback(async () => {
+    if (!document) {
+      return
+    }
+
+    setIsOpeningPrint(true)
+    try {
+      const blob = await pdf(document).toBlob()
+      revokePrintBlobUrl()
+      const blobUrl = URL.createObjectURL(blob)
+      printBlobUrlRef.current = blobUrl
+      window.open(blobUrl, '_blank', 'noopener,noreferrer')
+    } finally {
+      setIsOpeningPrint(false)
+    }
+  }, [document, revokePrintBlobUrl])
+
+  if (!quote || !document) return null
 
   return (
-    <Dialog open={open} onClose={onClose} fullScreen>
+    <Dialog open={open} onClose={handleClose} fullScreen>
       <DialogTitle sx={{ py: 1.2 }}>
         <Stack direction="row" alignItems="center" justifyContent="space-between">
           <Box>Quote PDF Preview</Box>
-          <IconButton onClick={onClose}><CloseRoundedIcon /></IconButton>
+          <IconButton onClick={handleClose}><CloseRoundedIcon /></IconButton>
         </Stack>
       </DialogTitle>
       <DialogContent dividers sx={{ p: 0, bgcolor: '#525659' }}>
@@ -442,7 +519,7 @@ export function QuotePdfPreviewDialog({
         </PDFViewer>
       </DialogContent>
       <DialogActions>
-        <Button onClick={onClose}>Close</Button>
+        <Button onClick={handleClose}>Close</Button>
         <PDFDownloadLink document={document} fileName={fileName} style={{ textDecoration: 'none' }}>
           {({ loading }) => (
             <Button component="span" variant="outlined" disabled={loading}>
@@ -450,22 +527,17 @@ export function QuotePdfPreviewDialog({
             </Button>
           )}
         </PDFDownloadLink>
-        <PDFDownloadLink document={document} fileName={fileName} style={{ textDecoration: 'none' }}>
-          {({ url, loading }) => (
-            <Button
-              component="span"
-              variant="contained"
-              startIcon={<OpenInNewRoundedIcon />}
-              disabled={loading || !url}
-              onClick={() => {
-                if (url) window.open(url, '_blank', 'noopener,noreferrer')
-              }}
-            >
-              Open to Print
-            </Button>
-          )}
-        </PDFDownloadLink>
+        <Button
+          variant="contained"
+          startIcon={<OpenInNewRoundedIcon />}
+          disabled={isOpeningPrint}
+          onClick={() => {
+            void handleOpenToPrint()
+          }}
+        >
+          {isOpeningPrint ? 'Preparing PDF…' : 'Open to Print'}
+        </Button>
       </DialogActions>
     </Dialog>
   )
-}
+})
