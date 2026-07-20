@@ -218,12 +218,14 @@ function normalizeWebsiteHref(value: string | null | undefined) {
 type DealerFormState = {
   sourceId: string
   name: string
+  quoteCompanyName: string
   accountType: string
   owner: string
   ownerEmail: string
   primaryEmail: string
   secondaryEmail: string
   salesRep: string
+  paymentTerms: string
   phone: string
   phone2: string
   website: string
@@ -290,12 +292,14 @@ function createDealerFormState(dealer: CrmDealerDetailResponse['dealer']): Deale
   return {
     sourceId: dealer.sourceId,
     name: dealer.name || '',
+    quoteCompanyName: dealer.quoteCompanyName || dealer.name || '',
     accountType: dealer.accountType || dealer.accountClass || 'dealer',
     owner: dealer.owner || '',
     ownerEmail: dealer.ownerEmail || '',
     primaryEmail,
     secondaryEmail,
     salesRep: dealer.salesRep || '',
+    paymentTerms: dealer.paymentTerms || '50% Deposit / 50% CBD',
     phone: dealer.phone || '',
     phone2: dealer.phone2 || '',
     website: dealer.website || '',
@@ -332,12 +336,14 @@ function serializeDealerFormState(form: DealerFormState | null) {
   return JSON.stringify({
     sourceId: form.sourceId,
     name: form.name.trim(),
+    quoteCompanyName: form.quoteCompanyName.trim(),
     accountType: form.accountType.trim(),
     owner: form.owner.trim(),
     ownerEmail: form.ownerEmail.trim(),
     primaryEmail: form.primaryEmail.trim(),
     secondaryEmail: form.secondaryEmail.trim(),
     salesRep: form.salesRep.trim(),
+    paymentTerms: form.paymentTerms.trim(),
     phone: form.phone.trim(),
     phone2: form.phone2.trim(),
     website: form.website.trim(),
@@ -1082,12 +1088,14 @@ export default function CrmDealersPage() {
 
   type DealerStringField =
     | 'name'
+    | 'quoteCompanyName'
     | 'accountType'
     | 'owner'
     | 'ownerEmail'
     | 'primaryEmail'
     | 'secondaryEmail'
     | 'salesRep'
+    | 'paymentTerms'
     | 'phone'
     | 'phone2'
     | 'website'
@@ -1298,10 +1306,12 @@ export default function CrmDealersPage() {
     try {
       await updateCrmDealer(selectedDealerId, {
         name: dealerForm.name.trim(),
+        quoteCompanyName: dealerForm.quoteCompanyName.trim(),
         accountType: normalizedAccountType,
         owner: dealerForm.owner.trim(),
         ownerEmail: dealerForm.ownerEmail.trim(),
         salesRep: dealerForm.salesRep.trim(),
+        paymentTerms: dealerForm.paymentTerms.trim(),
         phone: dealerForm.phone.trim(),
         phone2: dealerForm.phone2.trim(),
         website: dealerForm.website.trim(),
@@ -2273,6 +2283,14 @@ export default function CrmDealersPage() {
                         />
                         <TextField
                           size="small"
+                          label="Quote company name"
+                          value={dealerForm.quoteCompanyName}
+                          onChange={(e) => setDealerTextField('quoteCompanyName', e.target.value)}
+                          helperText={isAccountEditing ? 'Clean customer-facing name used on website-created quotes.' : undefined}
+                          InputProps={{ readOnly: !isAccountEditing }}
+                        />
+                        <TextField
+                          size="small"
                           label="Owner"
                           value={dealerForm.owner}
                           onChange={(e) => setDealerTextField('owner', e.target.value)}
@@ -2304,6 +2322,21 @@ export default function CrmDealersPage() {
                           label="Sales rep"
                           value={dealerForm.salesRep}
                           onChange={(e) => setDealerTextField('salesRep', e.target.value)}
+                          select={isAccountEditing}
+                          InputProps={{ readOnly: !isAccountEditing }}
+                        >
+                          {isAccountEditing
+                            ? [...new Set(['House', ...availableDealerSalesRepOptions])].map((salesRepName) => (
+                                <MenuItem key={salesRepName} value={salesRepName}>{salesRepName}</MenuItem>
+                              ))
+                            : null}
+                        </TextField>
+                        <TextField
+                          size="small"
+                          label="Payment terms"
+                          value={dealerForm.paymentTerms}
+                          onChange={(e) => setDealerTextField('paymentTerms', e.target.value)}
+                          helperText={isAccountEditing ? 'Automatically applied to new website-created quotes.' : undefined}
                           InputProps={{ readOnly: !isAccountEditing }}
                         />
                         <TextField

@@ -902,6 +902,12 @@ function normalizeQuoteLineItems(input) {
         name: toTrimmedText(image.name, 500) || null,
         width: toNonNegativeInteger(image.width, 0) || null,
         height: toNonNegativeInteger(image.height, 0) || null,
+        shape: ['square', 'landscape', 'wide', 'portrait'].includes(toLowerText(image.shape, 20))
+          ? toLowerText(image.shape, 20)
+          : null,
+        displaySize: ['small', 'medium', 'large'].includes(toLowerText(image.displaySize, 20))
+          ? toLowerText(image.displaySize, 20)
+          : null,
       })
 
       if (images.length >= 2) {
@@ -1133,6 +1139,7 @@ function normalizeAccount(rawAccount) {
   return {
     sourceId: toTrimmedText(account.id, 160),
     name: toTrimmedText(account.name, 240),
+    quoteCompanyName: toTrimmedText(account.quoteCompanyName ?? account.quote_company_name, 240),
     pictureUrlSource: toTrimmedText(account.picture_url, 500),
     phone: toTrimmedText(account.phone, 80),
     phone2: toTrimmedText(account.phone2, 80),
@@ -1148,6 +1155,7 @@ function normalizeAccount(rawAccount) {
     accountClass: toTrimmedText(account.account_class, 160),
     accountType: toTrimmedText(account.account_type, 160),
     salesRep: toTrimmedText(account.sales_rep ?? account.salesRep, 200),
+    paymentTerms: toTrimmedText(account.paymentTerms ?? account.payment_terms, 240),
     website: toTrimmedText(account.website, 240),
     accountText: toTrimmedText(account.account_text, 4000),
     createdDate: toIsoDateOrNull(account.created),
@@ -2657,6 +2665,7 @@ export function registerCrmRoutes(app, deps) {
                 _id: 0,
                 sourceId: 1,
                 name: 1,
+                quoteCompanyName: 1,
                 phone: 1,
                 email: 1,
                 ownerEmail: 1,
@@ -2667,6 +2676,7 @@ export function registerCrmRoutes(app, deps) {
                 accountType: 1,
                 accountClass: 1,
                 salesRep: 1,
+                paymentTerms: 1,
                 website: 1,
                 emails: 1,
                 pictureUrl: 1,
@@ -2796,6 +2806,7 @@ export function registerCrmRoutes(app, deps) {
         sourceId,
         name,
         nameLower: toLowerText(name, 240),
+        quoteCompanyName: toTrimmedText(body.quoteCompanyName, 240) || name,
         phone: toTrimmedText(body.phone, 80) || null,
         phone2: toTrimmedText(body.phone2, 80) || null,
         email: primaryEmail || null,
@@ -2811,6 +2822,7 @@ export function registerCrmRoutes(app, deps) {
         accountClass: toTrimmedText(body.accountClass, 160) || accountType,
         accountType,
         salesRep: toTrimmedText(body.salesRep, 200) || null,
+        paymentTerms: toTrimmedText(body.paymentTerms, 240) || '50% Deposit / 50% CBD',
         website: toTrimmedText(body.website, 240) || null,
         accountText: toTrimmedText(body.accountText, 4000) || null,
         createdDateSource: toIsoDateOrNull(body.createdDateSource) || now,
@@ -2905,6 +2917,7 @@ export function registerCrmRoutes(app, deps) {
             _id: 0,
             sourceId: 1,
             name: 1,
+            quoteCompanyName: 1,
             phone: 1,
             phone2: 1,
             email: 1,
@@ -2918,6 +2931,7 @@ export function registerCrmRoutes(app, deps) {
             accountClass: 1,
             accountType: 1,
             salesRep: 1,
+            paymentTerms: 1,
             website: 1,
             emails: 1,
             accountText: 1,
@@ -4000,6 +4014,10 @@ export function registerCrmRoutes(app, deps) {
         updates.nameLower = toLowerText(nextName, 240)
       }
 
+      if (Object.prototype.hasOwnProperty.call(body, 'quoteCompanyName')) {
+        updates.quoteCompanyName = toTrimmedText(body.quoteCompanyName, 240) || null
+      }
+
       if (Object.prototype.hasOwnProperty.call(body, 'phone')) {
         updates.phone = toTrimmedText(body.phone, 80) || null
       }
@@ -4067,6 +4085,10 @@ export function registerCrmRoutes(app, deps) {
 
       if (Object.prototype.hasOwnProperty.call(body, 'salesRep')) {
         updates.salesRep = toTrimmedText(body.salesRep, 200) || null
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'paymentTerms')) {
+        updates.paymentTerms = toTrimmedText(body.paymentTerms, 240) || null
       }
 
       if (Object.prototype.hasOwnProperty.call(body, 'website')) {

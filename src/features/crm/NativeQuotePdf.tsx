@@ -111,9 +111,15 @@ function splitLineItems(lineItems: CrmQuoteLineItem[]) {
 const hasImages = (items: Array<{ images?: CrmQuoteLineItem['images'] }>) => items.some((item) => (item.images || []).length > 0)
 
 const imageHeight = (images: CrmQuoteLineItem['images'], landscapeHeight: number, portraitHeight: number) => (
-  (images || []).some((image) => Number(image.height || 0) > Number(image.width || 0) * 1.15)
-    ? portraitHeight
-    : landscapeHeight
+  (() => {
+    const heights = (images || []).map((image) => {
+      const isPortrait = image.shape === 'portrait'
+        || Number(image.height || 0) > Number(image.width || 0) * 1.15
+      const sizeMultiplier = image.displaySize === 'small' ? 0.72 : image.displaySize === 'large' ? 1.28 : 1
+      return Math.round((isPortrait ? portraitHeight : landscapeHeight) * sizeMultiplier)
+    })
+    return heights.length > 0 ? Math.max(...heights) : landscapeHeight
+  })()
 )
 
 function createStyles(accentColor: string) {

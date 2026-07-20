@@ -32,6 +32,7 @@
     "jszip": "^3.10.1",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
+    "react-easy-crop": "^6.2.2",
     "react-mentions": "^4.4.10",
     "react-native": "0.83.4",
     "react-router-dom": "^7.14.0",

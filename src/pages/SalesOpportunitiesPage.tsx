@@ -30,6 +30,7 @@ import {
   Menu,
   MenuItem,
   Paper,
+  Slider,
   Stack,
   Table,
   TableBody,
@@ -38,6 +39,8 @@ import {
   TableRow,
   TextField,
   Tooltip,
+  ToggleButton,
+  ToggleButtonGroup,
   Typography,
 } from '@mui/material'
 import { alpha } from '@mui/material/styles'
@@ -45,6 +48,7 @@ import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type MouseEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
+import Cropper, { type Area } from 'react-easy-crop'
 import { useAuth } from '../auth/useAuth'
 import { firebaseStorage } from '../auth/firebase'
 import { LoadingPanel } from '../components/LoadingPanel'
@@ -86,6 +90,7 @@ import { formatCurrency } from '../lib/formatters'
 import { QUERY_KEYS } from '../lib/queryKeys'
 
 const DEFAULT_OPPORTUNITY_TITLE_PREFIX = 'Opportunity '
+const DEFAULT_WEBSITE_PAYMENT_TERMS = '50% Deposit / 50% CBD'
 const DEFAULT_NEW_ORDERS_2026_BOARD_ID = '18393945685'
 const DEFAULT_DESIGN_AKF_BOARD_ID = '1064270065'
 
@@ -97,6 +102,15 @@ type OpportunityLineItemFormState = {
   unitPrice: string
   extPrice: string
   images: CrmQuoteLineImage[]
+}
+
+type QuoteImageShape = 'square' | 'landscape' | 'wide' | 'portrait'
+type QuoteImageDisplaySize = 'small' | 'medium' | 'large'
+
+type PreparedQuoteImage = {
+  file: File
+  shape: QuoteImageShape
+  displaySize: QuoteImageDisplaySize
 }
 
 type OpportunityServiceItemFormState = {
@@ -307,7 +321,7 @@ type LineItemsEditorProps = {
   onAddLineItem: () => void
   onUpdateLineItem: (index: number, field: 'itemNumber' | 'description' | 'qty' | 'unitPrice' | 'extPrice', value: string) => void
   onRemoveLineItem: (index: number) => void
-  onAddImages: (index: number, files: File[]) => void
+  onAddImages: (index: number, images: PreparedQuoteImage[]) => void
   onRemoveImage: (lineIndex: number, imageId: string) => void
   isUploadingImage: boolean
 }
@@ -517,6 +531,41 @@ function createEmptyLineItemFormState(): OpportunityLineItemFormState {
   }
 }
 
+function calculateExtendedPrice(qty: string, unitPrice: string) {
+  const quantity = Number(qty)
+  const price = Number(unitPrice)
+  return qty.trim() && unitPrice.trim() && Number.isFinite(quantity) && Number.isFinite(price)
+    ? String(Number((quantity * price).toFixed(2)))
+    : ''
+}
+
+function updateLineItemPricing(
+  lineItem: OpportunityLineItemFormState,
+  field: 'itemNumber' | 'description' | 'qty' | 'unitPrice' | 'extPrice',
+  value: string,
+) {
+  const nextLineItem = { ...lineItem, [field]: value }
+  if (field === 'qty' || field === 'unitPrice') {
+    nextLineItem.extPrice = calculateExtendedPrice(nextLineItem.qty, nextLineItem.unitPrice)
+  }
+  return nextLineItem
+}
+
+function resolveDealerQuoteCompanyName(dealer: CrmDealer | null | undefined) {
+  const configuredName = String(dealer?.quoteCompanyName || '').trim()
+  if (configuredName) return configuredName
+
+  const accountName = String(dealer?.name || '').trim()
+  if (!accountName) return ''
+
+  return accountName
+    .replace(/\s+(?:-|–|—)\s+.+$/, '')
+    .replace(/\s*\((?:closed|inactive)\)\s*$/i, '')
+    .replace(/(?<!\bof)\s+(?:AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY)\s*$/i, '')
+    .replace(/[;,\s]+$/, '')
+    .trim() || accountName
+}
+
 const defaultAdditionalServiceTemplates = [
   ['Custom Design Fee', 'Includes up to two rendering revisions with a lead time of two weeks. Additional revisions beyond the included revisions are billed separately.'],
   ['Stain to Match', 'Stain matching is available on Arnold standard wood veneers and includes standard strike-offs.'],
@@ -586,6 +635,132 @@ async function readImageDimensions(file: File) {
   } finally {
     URL.revokeObjectURL(objectUrl)
   }
+}
+
+const quoteImageShapeOptions: Array<{ value: QuoteImageShape; label: string; aspect: number }> = [
+  { value: 'square', label: 'Square', aspect: 1 },
+  { value: 'landscape', label: 'Rectangle', aspect: 4 / 3 },
+  { value: 'wide', label: 'Wide', aspect: 16 / 9 },
+  { value: 'portrait', label: 'Portrait', aspect: 4 / 5 },
+]
+
+const quoteImageSizeOptions: Array<{ value: QuoteImageDisplaySize; label: string; description: string }> = [
+  { value: 'small', label: 'Small', description: 'Compact row' },
+  { value: 'medium', label: 'Medium', description: 'Standard row' },
+  { value: 'large', label: 'Large', description: 'Feature image' },
+]
+
+async function cropQuoteImage(file: File, pixels: Area, shape: QuoteImageShape) {
+  const sourceUrl = URL.createObjectURL(file)
+  try {
+    const image = new Image()
+    image.src = sourceUrl
+    await image.decode()
+    const maxDimension = 1800
+    const scale = Math.min(1, maxDimension / Math.max(pixels.width, pixels.height))
+    const canvas = document.createElement('canvas')
+    canvas.width = Math.max(1, Math.round(pixels.width * scale))
+    canvas.height = Math.max(1, Math.round(pixels.height * scale))
+    const context = canvas.getContext('2d')
+    if (!context) throw new Error('Could not prepare this picture.')
+    context.imageSmoothingEnabled = true
+    context.imageSmoothingQuality = 'high'
+    context.drawImage(image, pixels.x, pixels.y, pixels.width, pixels.height, 0, 0, canvas.width, canvas.height)
+    const blob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob((nextBlob) => nextBlob ? resolve(nextBlob) : reject(new Error('Could not crop this picture.')), 'image/jpeg', 0.9)
+    })
+    const baseName = file.name.replace(/\.[^.]+$/, '') || 'quote-picture'
+    return new File([blob], `${baseName}-${shape}.jpg`, { type: 'image/jpeg' })
+  } finally {
+    URL.revokeObjectURL(sourceUrl)
+  }
+}
+
+function QuoteImageCropDialog({
+  file,
+  open,
+  onCancel,
+  onComplete,
+}: {
+  file: File | null
+  open: boolean
+  onCancel: () => void
+  onComplete: (image: PreparedQuoteImage) => void
+}) {
+  const [sourceUrl, setSourceUrl] = useState('')
+  const [crop, setCrop] = useState({ x: 0, y: 0 })
+  const [zoom, setZoom] = useState(1)
+  const [shape, setShape] = useState<QuoteImageShape>('landscape')
+  const [displaySize, setDisplaySize] = useState<QuoteImageDisplaySize>('medium')
+  const [croppedAreaPixels, setCroppedAreaPixels] = useState<Area | null>(null)
+  const [isPreparing, setIsPreparing] = useState(false)
+  const [cropError, setCropError] = useState('')
+  const aspect = quoteImageShapeOptions.find((option) => option.value === shape)?.aspect || 4 / 3
+
+  useEffect(() => {
+    if (!file || !open) {
+      setSourceUrl('')
+      return
+    }
+    const nextUrl = URL.createObjectURL(file)
+    setSourceUrl(nextUrl)
+    setCrop({ x: 0, y: 0 })
+    setZoom(1)
+    setCroppedAreaPixels(null)
+    setCropError('')
+    return () => URL.revokeObjectURL(nextUrl)
+  }, [file, open])
+
+  const handleUsePicture = async () => {
+    if (!file || !croppedAreaPixels) return
+    setIsPreparing(true)
+    setCropError('')
+    try {
+      onComplete({ file: await cropQuoteImage(file, croppedAreaPixels, shape), shape, displaySize })
+    } catch (error) {
+      setCropError(error instanceof Error ? error.message : 'Could not prepare this picture.')
+    } finally {
+      setIsPreparing(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onClose={isPreparing ? undefined : onCancel} maxWidth="md" fullWidth>
+      <DialogTitle>Fit Quote Picture</DialogTitle>
+      <DialogContent dividers>
+        <Stack spacing={2}>
+          {cropError ? <Alert severity="error">{cropError}</Alert> : null}
+          <Box sx={{ position: 'relative', height: { xs: 320, md: 470 }, bgcolor: '#111827', borderRadius: 2, overflow: 'hidden' }}>
+            {sourceUrl ? <Cropper image={sourceUrl} crop={crop} zoom={zoom} aspect={aspect} onCropChange={setCrop} onZoomChange={setZoom} onCropComplete={(_area, pixels) => setCroppedAreaPixels(pixels)} objectFit="contain" /> : null}
+          </Box>
+          <Box>
+            <Typography variant="caption" fontWeight={800}>Shape</Typography>
+            <ToggleButtonGroup exclusive value={shape} onChange={(_event, value: QuoteImageShape | null) => {
+              if (!value) return
+              setShape(value)
+              setCroppedAreaPixels(null)
+            }} size="small" fullWidth sx={{ mt: 0.5 }}>
+              {quoteImageShapeOptions.map((option) => <ToggleButton key={option.value} value={option.value}>{option.label}</ToggleButton>)}
+            </ToggleButtonGroup>
+          </Box>
+          <Box>
+            <Typography variant="caption" fontWeight={800}>Zoom</Typography>
+            <Slider value={zoom} min={1} max={3} step={0.05} onChange={(_event, value) => setZoom(value as number)} aria-label="Picture zoom" />
+          </Box>
+          <Box>
+            <Typography variant="caption" fontWeight={800}>Quote size</Typography>
+            <ToggleButtonGroup exclusive value={displaySize} onChange={(_event, value: QuoteImageDisplaySize | null) => value && setDisplaySize(value)} size="small" fullWidth sx={{ mt: 0.5 }}>
+              {quoteImageSizeOptions.map((option) => <ToggleButton key={option.value} value={option.value}><Stack><span>{option.label}</span><Typography variant="caption" color="text.secondary">{option.description}</Typography></Stack></ToggleButton>)}
+            </ToggleButtonGroup>
+          </Box>
+        </Stack>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onCancel} disabled={isPreparing}>Cancel</Button>
+        <Button variant="contained" onClick={() => void handleUsePicture()} disabled={!croppedAreaPixels || isPreparing}>{isPreparing ? 'Preparing…' : 'Use Picture'}</Button>
+      </DialogActions>
+    </Dialog>
+  )
 }
 
 function toOptionalNumber(value: string) {
@@ -792,7 +967,7 @@ function createEmptyOpportunityForm(): OpportunityFormState {
     contactPhone: '',
     salesRep: '',
     leadTime: '',
-    paymentTerms: '',
+    paymentTerms: DEFAULT_WEBSITE_PAYMENT_TERMS,
     subtotal: '',
     freight: '',
     freightDescription: '',
@@ -837,6 +1012,7 @@ function resolveDateInputFromIso(value: string | null | undefined) {
 }
 
 function createOpportunityDetailsFormState(quote: CrmQuote): OpportunityDetailsFormState {
+  const origin = quote.origin === 'excel' ? 'excel' : 'website'
   const additionalServices = mapServiceItemsToFormState(quote.additionalServices, createDefaultAdditionalServices)
   const storedAdditionalServicesTotal = (quote.additionalServices || []).reduce((sum, item) => sum + Number(item.price || 0), 0)
   const productSubtotal = quote.subtotal === null || quote.subtotal === undefined
@@ -855,15 +1031,15 @@ function createOpportunityDetailsFormState(quote: CrmQuote): OpportunityDetailsF
     salesRep: String(quote.salesRep || ''),
     leadTime: String(quote.leadTime || ''),
     paymentTerms: String(quote.paymentTerms || ''),
-    subtotal: productSubtotal,
-    freight: quote.freight === null || quote.freight === undefined ? '' : String(quote.freight),
+    subtotal: origin === 'excel' ? productSubtotal : '',
+    freight: origin === 'excel' && quote.freight !== null && quote.freight !== undefined ? String(quote.freight) : '',
     freightDescription: String(quote.freightDescription || ''),
     notes: String(quote.notes || ''),
     lineItems: mapQuoteLineItemsToFormState(quote.lineItems),
     additionalServices,
     shippingServices: mapServiceItemsToFormState(quote.shippingServices, createDefaultShippingServices),
     documents: resolveQuoteDocuments(quote),
-    origin: quote.origin === 'excel' ? 'excel' : 'website',
+    origin,
     sourceWorkbookUrl: String(quote.sourceWorkbookUrl || ''),
     sourceWorkbookName: String(quote.sourceWorkbookName || ''),
     convertedPdfUrl: String(quote.convertedPdfUrl || ''),
@@ -1909,6 +2085,7 @@ function LineItemsEditor({
   isUploadingImage,
 }: LineItemsEditorProps) {
   const lineItemsTotal = calculateLineItemsTotal(normalizeLineItemsForPayload(lineItems))
+  const [cropTarget, setCropTarget] = useState<{ index: number; file: File } | null>(null)
 
   return (
     <Stack spacing={0.9}>
@@ -1984,6 +2161,7 @@ function LineItemsEditor({
                             }}
                           >
                             <Box component="img" src={image.url} alt={image.name || 'Line item'} sx={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+                            <Chip label={image.displaySize || 'medium'} size="small" sx={{ position: 'absolute', left: 2, bottom: 2, height: 18, fontSize: 9, bgcolor: 'rgba(255,255,255,.9)' }} />
                             {canEdit ? (
                               <IconButton
                                 size="small"
@@ -2007,11 +2185,10 @@ function LineItemsEditor({
                           hidden
                           type="file"
                           accept="image/jpeg,image/png,image/webp"
-                          multiple
                           onChange={(event) => {
-                            const files = Array.from(event.target.files || []).slice(0, 2 - lineItem.images.length)
+                            const file = event.target.files?.[0]
                             event.target.value = ''
-                            if (files.length > 0) onAddImages(index, files)
+                            if (file) setCropTarget({ index, file })
                           }}
                         />
                       </Button>
@@ -2027,6 +2204,9 @@ function LineItemsEditor({
                       onUpdateLineItem(index, 'description', event.target.value)
                     }}
                     disabled={!canEdit}
+                    multiline
+                    minRows={3}
+                    maxRows={10}
                     fullWidth
                   />
                 </TableCell>
@@ -2067,15 +2247,14 @@ function LineItemsEditor({
                     size="small"
                     type="text"
                     value={lineItem.extPrice}
-                    onChange={(event) => {
-                      onUpdateLineItem(index, 'extPrice', event.target.value)
-                    }}
                     disabled={!canEdit}
                     inputProps={{ inputMode: 'decimal' }}
                     placeholder="0.00"
                     InputProps={{
+                      readOnly: true,
                       startAdornment: <InputAdornment position="start">$</InputAdornment>,
                     }}
+                    helperText="Qty × Unit"
                     fullWidth
                   />
                 </TableCell>
@@ -2096,6 +2275,15 @@ function LineItemsEditor({
           </TableBody>
         </Table>
       </Box>
+      <QuoteImageCropDialog
+        open={Boolean(cropTarget)}
+        file={cropTarget?.file || null}
+        onCancel={() => setCropTarget(null)}
+        onComplete={(image) => {
+          if (cropTarget) onAddImages(cropTarget.index, [image])
+          setCropTarget(null)
+        }}
+      />
     </Stack>
   )
 }
@@ -2107,10 +2295,11 @@ type QuoteServiceItemsEditorProps = {
   canEdit: boolean
   isUploadingImage: boolean
   onChange: (items: OpportunityServiceItemFormState[]) => void
-  onAddImages: (index: number, files: File[]) => void
+  onAddImages: (index: number, images: PreparedQuoteImage[]) => void
 }
 
 function QuoteServiceItemsEditor({ heading, description, items, canEdit, isUploadingImage, onChange, onAddImages }: QuoteServiceItemsEditorProps) {
+  const [cropTarget, setCropTarget] = useState<{ index: number; file: File } | null>(null)
   const updateItem = (index: number, patch: Partial<OpportunityServiceItemFormState>) => {
     onChange(items.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item))
   }
@@ -2156,10 +2345,10 @@ function QuoteServiceItemsEditor({ heading, description, items, canEdit, isUploa
                 {item.images.length < 2 ? (
                   <Button component="label" size="small" variant="text" startIcon={<FileUploadRoundedIcon />} disabled={!canEdit || isUploadingImage} sx={{ alignSelf: 'flex-start', px: 0.4 }}>
                     Add picture
-                    <input hidden type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={(event) => {
-                      const files = Array.from(event.target.files || []).slice(0, 2 - item.images.length)
+                    <input hidden type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => {
+                      const file = event.target.files?.[0]
                       event.target.value = ''
-                      if (files.length > 0) onAddImages(index, files)
+                      if (file) setCropTarget({ index, file })
                     }} />
                   </Button>
                 ) : null}
@@ -2169,6 +2358,15 @@ function QuoteServiceItemsEditor({ heading, description, items, canEdit, isUploa
           </Paper>
         ))}
       </Stack>
+      <QuoteImageCropDialog
+        open={Boolean(cropTarget)}
+        file={cropTarget?.file || null}
+        onCancel={() => setCropTarget(null)}
+        onComplete={(image) => {
+          if (cropTarget) onAddImages(cropTarget.index, [image])
+          setCropTarget(null)
+        }}
+      />
     </Stack>
   )
 }
@@ -4362,7 +4560,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   }, [uploadQuoteDocumentFile])
 
   const uploadLineItemImages = useCallback(async (
-    files: File[],
+    files: Array<File | PreparedQuoteImage>,
     quoteNumber: string,
     companyName: string,
   ): Promise<CrmQuoteLineImage[]> => {
@@ -4373,7 +4571,8 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     const quoteSegment = sanitizeStoragePathSegment(normalizedQuoteNumber, 'opportunity')
     const uploadedImages: CrmQuoteLineImage[] = []
 
-    for (const file of files) {
+    for (const imageInput of files) {
+      const file = imageInput instanceof File ? imageInput : imageInput.file
       if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
         throw new Error(`${file.name} must be a JPG, PNG, or WebP image.`)
       }
@@ -4393,6 +4592,8 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         name: file.name,
         width: dimensions.width,
         height: dimensions.height,
+        shape: imageInput instanceof File ? null : imageInput.shape,
+        displaySize: imageInput instanceof File ? 'medium' : imageInput.displaySize,
       })
     }
 
@@ -4915,7 +5116,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     setAddDialogInitialSnapshot(serializeOpportunityFormState(emptyFormState))
     setIsAddDialogDraftFromExcelSync(false)
     setPendingExcelSyncPromotionQuoteId(null)
-    setShowAddDetails(false)
+    setShowAddDetails(true)
     setIsDialogOpen(true)
   }, [])
 
@@ -5060,10 +5261,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         ...current,
         lineItems: current.lineItems.map((entry, entryIndex) => (
           entryIndex === index
-            ? {
-              ...entry,
-              [field]: value,
-            }
+            ? updateLineItemPricing(entry, field, value)
             : entry
         )),
       }))
@@ -5071,7 +5269,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     [],
   )
 
-  const handleAddFormLineImages = useCallback(async (index: number, files: File[]) => {
+  const handleAddFormLineImages = useCallback(async (index: number, files: PreparedQuoteImage[]) => {
     setErrorMessage(null)
     setIsUploadingLineImage(true)
     try {
@@ -5101,7 +5299,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   const handleAddFormServiceImages = useCallback(async (
     section: 'additionalServices' | 'shippingServices',
     index: number,
-    files: File[],
+    files: PreparedQuoteImage[],
   ) => {
     setErrorMessage(null)
     setIsUploadingLineImage(true)
@@ -5159,10 +5357,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
           ...current,
           lineItems: current.lineItems.map((entry, entryIndex) => (
             entryIndex === index
-              ? {
-                ...entry,
-                [field]: value,
-              }
+              ? updateLineItemPricing(entry, field, value)
               : entry
           )),
         }
@@ -5171,7 +5366,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     [],
   )
 
-  const handleAddDetailsLineImages = useCallback(async (index: number, files: File[]) => {
+  const handleAddDetailsLineImages = useCallback(async (index: number, files: PreparedQuoteImage[]) => {
     if (!opportunityDetailsFormState) return
     setErrorMessage(null)
     setIsUploadingLineImage(true)
@@ -5206,7 +5401,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   const handleAddDetailsServiceImages = useCallback(async (
     section: 'additionalServices' | 'shippingServices',
     index: number,
-    files: File[],
+    files: PreparedQuoteImage[],
   ) => {
     if (!opportunityDetailsFormState) return
     setErrorMessage(null)
@@ -6940,63 +7135,71 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         onClose={() => setQuotePrintPreview(null)}
       />
 
-      <Dialog open={isDialogOpen} onClose={handleCloseDialog} maxWidth="md" fullWidth>
-        <DialogTitle>Add Opportunity</DialogTitle>
-        <DialogContent>
-          <Stack spacing={1.3} sx={{ mt: 0.5 }}>
-            <TextField
-              label="Quote Number"
-              required
-              autoFocus
-              value={formState.quoteNumber}
-              onChange={(event) => {
-                setFormState((current) => ({
-                  ...current,
-                  quoteNumber: event.target.value,
-                }))
-              }}
-              helperText={
-                isAddDialogDraftFromExcelSync
-                  ? 'This synced quote will save directly to Proposal Submitted.'
-                  : 'Enter the quote number to start a Concept. The rest fills in automatically when you sync from the Excel quote.'
-              }
-            />
-
-            <Autocomplete
-              options={excelSyncDealerOptions}
-              value={dealersBySourceId.get(formState.dealerSourceId) ?? null}
-              onChange={(_event, value) => {
-                setFormState((current) => ({
-                  ...current,
-                  dealerSourceId: value?.sourceId || '',
-                  companyName: value?.name || current.companyName,
-                }))
-              }}
-              isOptionEqualToValue={(option, value) => option.sourceId === value.sourceId}
-              getOptionLabel={(option) => resolveDealerSelectionLabel(option)}
-              renderInput={(params) => (
+      <Dialog
+        open={isDialogOpen}
+        onClose={handleCloseDialog}
+        maxWidth={false}
+        fullWidth
+        PaperProps={{ sx: { width: 'min(1440px, 97vw)', height: 'min(920px, 95vh)', borderRadius: 2.5 } }}
+      >
+        <DialogTitle sx={{ borderBottom: 1, borderColor: 'divider', py: 1.5 }}>
+          <Typography variant="h6" fontWeight={800}>Add Opportunity</Typography>
+          <Typography variant="body2" color="text.secondary">Create a clean website quote linked to an existing dealer account.</Typography>
+        </DialogTitle>
+        <DialogContent sx={{ bgcolor: '#f5f8fc', px: { xs: 1.5, md: 2.5 }, py: 2 }}>
+          <Stack spacing={1.5}>
+            <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
+              <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.2}>
                 <TextField
-                  {...params}
+                  label="Quote Number"
                   required
-                  label="Dealer Account"
-                  helperText="Select the CRM dealer account that owns this opportunity."
+                  autoFocus
+                  value={formState.quoteNumber}
+                  onChange={(event) => {
+                    setFormState((current) => ({
+                      ...current,
+                      quoteNumber: event.target.value,
+                    }))
+                  }}
+                  helperText={
+                    isAddDialogDraftFromExcelSync
+                      ? 'This synced quote will save directly to Proposal Submitted.'
+                      : 'Enter the quote number to start a Concept. The rest fills in automatically when you sync from the Excel quote.'
+                  }
+                  sx={{ width: { xs: '100%', md: 280 } }}
                 />
-              )}
-            />
 
-            <Button
-              variant="text"
-              size="small"
-              onClick={() => {
-                setShowAddDetails((current) => !current)
-              }}
-              sx={{ alignSelf: 'flex-start', textTransform: 'none' }}
-            >
-              {showAddDetails ? 'Hide details' : 'Expand details (manual entry)'}
-            </Button>
+                <Autocomplete
+                  sx={{ flex: 1 }}
+                  options={excelSyncDealerOptions}
+                  value={dealersBySourceId.get(formState.dealerSourceId) ?? null}
+                  onChange={(_event, value) => {
+                    setFormState((current) => ({
+                      ...current,
+                      dealerSourceId: value?.sourceId || '',
+                      companyName: value ? resolveDealerQuoteCompanyName(value) : '',
+                      salesRep: value?.salesRep || current.salesRep,
+                      paymentTerms: value?.paymentTerms || DEFAULT_WEBSITE_PAYMENT_TERMS,
+                    }))
+                  }}
+                  isOptionEqualToValue={(option, value) => option.sourceId === value.sourceId}
+                  getOptionLabel={(option) => resolveDealerSelectionLabel(option)}
+                  renderInput={(params) => (
+                    <TextField
+                      {...params}
+                      required
+                      label="Dealer Account"
+                      helperText="Select the CRM dealer account that owns this opportunity."
+                    />
+                  )}
+                />
+              </Stack>
+            </Paper>
 
             {showAddDetails ? (
               <Stack spacing={1.3}>
+                <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
+                  <Stack spacing={1.2}>
                 <TextField
                   label="Project Name"
                   value={formState.title}
@@ -7009,7 +7212,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                   placeholder="Project name from the quote"
                 />
 
-                <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.1}>
+                <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.1}>
                   <TextField
                     label="Quote Date"
                     type="date"
@@ -7026,20 +7229,12 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                     }}
                   />
 
-                  <TextField
-                    label="Company Name"
-                    value={formState.companyName}
-                    onChange={(event) => {
-                      setFormState((current) => ({
-                        ...current,
-                        companyName: event.target.value,
-                      }))
-                    }}
-                    sx={{ flex: 1 }}
-                  />
+                  <TextField select label="Sales Rep" value={formState.salesRep} onChange={(event) => setFormState((current) => ({ ...current, salesRep: event.target.value }))} sx={{ flex: 1 }}>
+                    {excelSyncSalesRepOptions.map((salesRep) => <MenuItem key={salesRep} value={salesRep}>{salesRep}</MenuItem>)}
+                  </TextField>
                 </Stack>
 
-                <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.1}>
+                <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.1}>
                   <TextField
                     label="Contact Name"
                     value={formState.contactName}
@@ -7063,9 +7258,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                     }}
                     sx={{ flex: 1 }}
                   />
-                </Stack>
-
-                <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.1}>
                   <TextField
                     label="Contact Phone"
                     value={formState.contactPhone}
@@ -7073,18 +7265,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                       setFormState((current) => ({
                         ...current,
                         contactPhone: event.target.value,
-                      }))
-                    }}
-                    sx={{ flex: 1 }}
-                  />
-
-                  <TextField
-                    label="Sales Rep"
-                    value={formState.salesRep}
-                    onChange={(event) => {
-                      setFormState((current) => ({
-                        ...current,
-                        salesRep: event.target.value,
                       }))
                     }}
                     sx={{ flex: 1 }}
@@ -7116,40 +7296,32 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                     sx={{ flex: 1 }}
                   />
                 </Stack>
+                  </Stack>
+                </Paper>
 
                 <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.1}>
                   <TextField
-                    label="Sub Net Total"
-                    value={formState.subtotal}
-                    onChange={(event) => {
-                      setFormState((current) => ({
-                        ...current,
-                        subtotal: event.target.value,
-                      }))
-                    }}
+                    label="Subtotal (calculated)"
+                    value={addPricingPreview.subtotal.toFixed(2)}
                     type="text"
                     inputProps={{ inputMode: 'decimal' }}
                     placeholder="0.00"
                     sx={{ flex: 1 }}
                     InputProps={{
+                      readOnly: true,
                       startAdornment: <InputAdornment position="start">$</InputAdornment>,
                     }}
                   />
 
                   <TextField
-                    label="Freight"
-                    value={formState.freight}
-                    onChange={(event) => {
-                      setFormState((current) => ({
-                        ...current,
-                        freight: event.target.value,
-                      }))
-                    }}
+                    label="Freight (calculated)"
+                    value={addPricingPreview.freight.toFixed(2)}
                     type="text"
                     inputProps={{ inputMode: 'decimal' }}
                     placeholder="0.00"
                     sx={{ flex: 1 }}
                     InputProps={{
+                      readOnly: true,
                       startAdornment: <InputAdornment position="start">$</InputAdornment>,
                     }}
                   />
@@ -7658,7 +7830,11 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                       return {
                         ...current,
                         dealerSourceId: value.sourceId,
-                        companyName: value.name || current.companyName,
+                        companyName: resolveDealerQuoteCompanyName(value) || current.companyName,
+                        salesRep: value.salesRep || current.salesRep,
+                        paymentTerms: current.origin === 'excel'
+                          ? current.paymentTerms
+                          : (value.paymentTerms || DEFAULT_WEBSITE_PAYMENT_TERMS),
                       }
                     })
                   }}
@@ -7748,24 +7924,15 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                   }}
                 />
 
-                <TextField
-                  label="Company Name"
-                  value={opportunityDetailsFormState.companyName}
-                  onChange={(event) => {
-                    setOpportunityDetailsFormState((current) => {
-                      if (!current) {
-                        return current
-                      }
-
-                      return {
-                        ...current,
-                        companyName: event.target.value,
-                      }
-                    })
-                  }}
-                  disabled={!canManage}
-                  sx={{ flex: 1 }}
-                />
+                {opportunityDetailsFormState.origin === 'excel' ? (
+                  <TextField
+                    label="Company Name (from Excel)"
+                    value={opportunityDetailsFormState.companyName}
+                    onChange={(event) => setOpportunityDetailsFormState((current) => current ? ({ ...current, companyName: event.target.value }) : current)}
+                    disabled={!canManage}
+                    sx={{ flex: 1 }}
+                  />
+                ) : null}
               </Stack>
 
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.1}>
@@ -7829,6 +7996,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
 
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.1}>
                 <TextField
+                  select
                   label="Sales Rep"
                   value={opportunityDetailsFormState.salesRep}
                   onChange={(event) => {
@@ -7845,7 +8013,9 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                   }}
                   disabled={!canManage}
                   sx={{ flex: 1 }}
-                />
+                >
+                  {[...new Set([...excelSyncSalesRepOptions, opportunityDetailsFormState.salesRep].filter(Boolean))].map((salesRep) => <MenuItem key={salesRep} value={salesRep}>{salesRep}</MenuItem>)}
+                </TextField>
 
                 <TextField
                   label="Lead Time"
@@ -7888,8 +8058,8 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
 
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.1}>
                 <TextField
-                  label="Sub Net Total"
-                  value={opportunityDetailsFormState.subtotal}
+                  label={opportunityDetailsFormState.origin === 'excel' ? 'Sub Net Total' : 'Subtotal (calculated)'}
+                  value={opportunityDetailsFormState.origin === 'excel' ? opportunityDetailsFormState.subtotal : (detailsPricingPreview?.subtotal.toFixed(2) || '0.00')}
                   onChange={(event) => {
                     setOpportunityDetailsFormState((current) => {
                       if (!current) {
@@ -7908,13 +8078,14 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                   placeholder="0.00"
                   sx={{ flex: 1 }}
                   InputProps={{
+                    readOnly: opportunityDetailsFormState.origin !== 'excel',
                     startAdornment: <InputAdornment position="start">$</InputAdornment>,
                   }}
                 />
 
                 <TextField
-                  label="Freight"
-                  value={opportunityDetailsFormState.freight}
+                  label={opportunityDetailsFormState.origin === 'excel' ? 'Freight' : 'Freight (calculated)'}
+                  value={opportunityDetailsFormState.origin === 'excel' ? opportunityDetailsFormState.freight : (detailsPricingPreview?.freight.toFixed(2) || '0.00')}
                   onChange={(event) => {
                     setOpportunityDetailsFormState((current) => {
                       if (!current) {
@@ -7933,6 +8104,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                   placeholder="0.00"
                   sx={{ flex: 1 }}
                   InputProps={{
+                    readOnly: opportunityDetailsFormState.origin !== 'excel',
                     startAdornment: <InputAdornment position="start">$</InputAdornment>,
                   }}
                 />

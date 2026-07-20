@@ -146,6 +146,7 @@ export type CrmOverviewResponse = {
 export type CrmDealer = {
   sourceId: string
   name: string
+  quoteCompanyName?: string | null
   pictureUrl?: string | null
   chatMessageCount?: number
   phone?: string | null
@@ -156,6 +157,7 @@ export type CrmDealer = {
   accountType?: string | null
   accountClass?: string | null
   salesRep?: string | null
+  paymentTerms?: string | null
   website?: string | null
   emails?: string[] | null
   contactCountSource?: number
@@ -413,6 +415,7 @@ export type CrmDealerContactsQueryOptions = {
 export type CrmDealerCreateInput = {
   sourceId?: string | null
   name: string
+  quoteCompanyName?: string | null
   phone?: string | null
   phone2?: string | null
   emails?: string[]
@@ -427,6 +430,7 @@ export type CrmDealerCreateInput = {
   accountClass?: string | null
   accountType?: string | null
   salesRep?: string | null
+  paymentTerms?: string | null
   website?: string | null
   accountText?: string | null
   owner?: string | null
@@ -441,6 +445,7 @@ export type CrmDealerCreateInput = {
 
 export type CrmDealerUpdateInput = Partial<{
   name: string | null
+  quoteCompanyName: string | null
   phone: string | null
   phone2: string | null
   emails: string[]
@@ -455,6 +460,7 @@ export type CrmDealerUpdateInput = Partial<{
   accountClass: string | null
   accountType: string | null
   salesRep: string | null
+  paymentTerms: string | null
   website: string | null
   accountText: string | null
   owner: string | null
@@ -554,6 +560,8 @@ export type CrmQuoteLineImage = {
   name: string | null
   width: number | null
   height: number | null
+  shape?: 'square' | 'landscape' | 'wide' | 'portrait' | null
+  displaySize?: 'small' | 'medium' | 'large' | null
 }
 
 export type CrmQuoteLineItem = {
