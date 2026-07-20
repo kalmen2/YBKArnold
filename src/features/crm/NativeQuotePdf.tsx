@@ -96,6 +96,33 @@ const resolveServiceExtPrice = (service: {
   return null
 }
 
+const resolvePdfImageUri = (rawUrl: string | null | undefined) => {
+  const sourceUrl = String(rawUrl || '').trim()
+
+  if (!sourceUrl || !/^https?:\/\//i.test(sourceUrl)) {
+    return sourceUrl
+  }
+
+  let parsedUrl
+
+  try {
+    parsedUrl = new URL(sourceUrl)
+  } catch {
+    return sourceUrl
+  }
+
+  if (String(parsedUrl.hostname || '').toLowerCase() !== 'firebasestorage.googleapis.com') {
+    return sourceUrl
+  }
+
+  const appOrigin = typeof window !== 'undefined' && window.location?.origin
+    ? window.location.origin
+    : ''
+  const proxyPath = `/api/crm/quote-image-proxy?url=${encodeURIComponent(sourceUrl)}`
+
+  return appOrigin ? `${appOrigin}${proxyPath}` : proxyPath
+}
+
 const plain = (value: unknown, fallback = '-') => String(value ?? '').trim() || fallback
 
 function splitLineItems(lineItems: CrmQuoteLineItem[]) {
@@ -174,7 +201,7 @@ function createStyles(accentColor: string) {
     brandName: { fontSize: 22, fontWeight: 700, letterSpacing: 0.3 },
     brandArnold: { color: '#151515' },
     brandContract: { color: '#b1161b' },
-    brandQuote: { marginTop: 5, fontSize: 17, fontWeight: 700, color: '#172033', letterSpacing: 1.2 },
+    brandQuote: { marginBottom: 5, fontSize: 17, fontWeight: 700, color: '#172033', letterSpacing: 1.2 },
     quoteInfoBox: { width: 192, borderWidth: 1, borderColor: accentColor, borderRadius: 3, overflow: 'hidden' },
     quoteInfoRow: { flexDirection: 'row', minHeight: 20, borderTopWidth: 1, borderTopColor: '#d8e0ea', alignItems: 'center', paddingVertical: 3, paddingHorizontal: 7 },
     quoteInfoRowFirst: { borderTopWidth: 0 },
@@ -298,10 +325,10 @@ export function NativeQuotePdfDocument({
     <Document title={`Quote ${plain(quote.quoteNumber, quote.id)}`} author={resolvedSettings.companyName}>
       <Page size="LETTER" style={styles.page} wrap>
         <View style={styles.header} fixed>
-          {resolvedSettings.logoUrl ? <Image src={resolvedSettings.logoUrl} style={styles.logo} /> : null}
+          {resolvedSettings.logoUrl ? <Image src={resolvePdfImageUri(resolvedSettings.logoUrl)} style={styles.logo} /> : null}
           <View style={styles.brandBlock}>
-            <Text style={styles.brandName}><Text style={styles.brandArnold}>Arnold </Text><Text style={styles.brandContract}>Contract</Text></Text>
             <Text style={styles.brandQuote}>QUOTE</Text>
+            <Text style={styles.brandName}><Text style={styles.brandArnold}>Arnold </Text><Text style={styles.brandContract}>Contract</Text></Text>
           </View>
           <View style={styles.quoteInfoBox}>
             <View style={[styles.quoteInfoRow, styles.quoteInfoRowFirst]}><Text style={styles.quoteInfoLabel}>Quote #</Text><Text style={styles.quoteInfoValue}>{plain(quote.quoteNumber)}</Text></View>
@@ -350,7 +377,7 @@ export function NativeQuotePdfDocument({
             {productHasImages ? (
               <View style={styles.imageColumn}>
                 {(lineItem.images || []).slice(0, 2).map((image) => (
-                  <Image key={image.id} src={{ uri: image.url }} cache={false} style={[styles.lineImage, { height: imageHeight([image], 82, 116) }]} />
+                  <Image key={image.id} src={resolvePdfImageUri(image.url)} cache={false} style={[styles.lineImage, { height: imageHeight([image], 82, 116) }]} />
                 ))}
               </View>
             ) : null}
@@ -378,7 +405,7 @@ export function NativeQuotePdfDocument({
           <View key={service.id} style={styles.serviceRow} wrap={false}>
             {additionalServicesHaveImages ? (
               <View style={styles.serviceImages}>
-                {(service.images || []).slice(0, 2).map((image) => <Image key={image.id} src={{ uri: image.url }} cache={false} style={[styles.serviceImage, { height: imageHeight([image], 68, 96) }]} />)}
+                {(service.images || []).slice(0, 2).map((image) => <Image key={image.id} src={resolvePdfImageUri(image.url)} cache={false} style={[styles.serviceImage, { height: imageHeight([image], 68, 96) }]} />)}
               </View>
             ) : null}
             <View style={styles.serviceText}>
@@ -405,7 +432,7 @@ export function NativeQuotePdfDocument({
           <View key={service.id} style={styles.serviceRow} wrap={false}>
             {shippingServicesHaveImages ? (
               <View style={styles.serviceImages}>
-                {(service.images || []).slice(0, 2).map((image) => <Image key={image.id} src={{ uri: image.url }} cache={false} style={[styles.serviceImage, { height: imageHeight([image], 68, 96) }]} />)}
+                {(service.images || []).slice(0, 2).map((image) => <Image key={image.id} src={resolvePdfImageUri(image.url)} cache={false} style={[styles.serviceImage, { height: imageHeight([image], 68, 96) }]} />)}
               </View>
             ) : null}
             <View style={styles.serviceText}>

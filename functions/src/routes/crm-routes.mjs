@@ -747,6 +747,36 @@ function extractFirebaseStorageObjectFromUrl(rawUrl) {
   }
 }
 
+function inferImageContentTypeFromObjectPath(objectPath) {
+  const normalizedPath = toLowerText(objectPath, 2000)
+
+  if (normalizedPath.endsWith('.png')) {
+    return 'image/png'
+  }
+
+  if (normalizedPath.endsWith('.jpg') || normalizedPath.endsWith('.jpeg')) {
+    return 'image/jpeg'
+  }
+
+  if (normalizedPath.endsWith('.webp')) {
+    return 'image/webp'
+  }
+
+  if (normalizedPath.endsWith('.gif')) {
+    return 'image/gif'
+  }
+
+  if (normalizedPath.endsWith('.bmp')) {
+    return 'image/bmp'
+  }
+
+  if (normalizedPath.endsWith('.svg')) {
+    return 'image/svg+xml'
+  }
+
+  return null
+}
+
 function resolveQuoteDocumentUrls(quote) {
   const source = toOptionalObject(quote)
   const urls = []
@@ -5671,6 +5701,63 @@ export function registerCrmRoutes(app, deps) {
       return res.json({
         settings: normalizeQuotePrintSettings(storedSettings || defaultQuotePrintSettings),
       })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/crm/quote-image-proxy', async (req, res, next) => {
+    try {
+      const imageUrl = toTrimmedText(req.query?.url, 4000)
+
+      if (!imageUrl) {
+        return res.status(400).json({ error: 'url query parameter is required.' })
+      }
+
+      const storageTarget = extractFirebaseStorageObjectFromUrl(imageUrl)
+      const storage = getStorage()
+      const bucket = storage.bucket()
+
+      if (
+        !storageTarget
+        || storageTarget.bucketName !== bucket.name
+        || !storageTarget.objectPath.startsWith('crm/opportunities/')
+      ) {
+        return res.status(400).json({ error: 'Only Opportunity storage images can be proxied.' })
+      }
+
+      const fallbackContentType = inferImageContentTypeFromObjectPath(storageTarget.objectPath)
+
+      if (!fallbackContentType) {
+        return res.status(400).json({ error: 'Only image files can be proxied.' })
+      }
+
+      const imageResponse = await fetch(imageUrl, { signal: AbortSignal.timeout(60_000) })
+
+      if (!imageResponse.ok) {
+        const responseStatus = imageResponse.status === 404 ? 404 : 400
+        return res.status(responseStatus).json({ error: 'The image could not be downloaded.' })
+      }
+
+      const responseContentType = toLowerText(imageResponse.headers.get('content-type'), 200)
+      const contentType = responseContentType.startsWith('image/')
+        ? responseContentType.split(';')[0]
+        : fallbackContentType
+      const imageBytes = Buffer.from(await imageResponse.arrayBuffer())
+
+      if (imageBytes.length === 0) {
+        return res.status(400).json({ error: 'The image file is empty.' })
+      }
+
+      if (imageBytes.length > 15 * 1024 * 1024) {
+        return res.status(413).json({ error: 'Image must be 15 MB or smaller.' })
+      }
+
+      res.set('content-type', contentType)
+      res.set('cache-control', 'private, max-age=300')
+      res.set('x-content-type-options', 'nosniff')
+
+      return res.status(200).send(imageBytes)
     } catch (error) {
       next(error)
     }
