@@ -126,7 +126,7 @@ const resolvePdfImageUri = (rawUrl: string | null | undefined) => {
 const plain = (value: unknown, fallback = '-') => String(value ?? '').trim() || fallback
 
 function splitLineItems(lineItems: CrmQuoteLineItem[]) {
-  return lineItems.flatMap((lineItem) => {
+  return lineItems.flatMap((lineItem, lineItemIndex) => {
     const description = plain(lineItem.description, '').replace(/\r\n?/g, '\n')
     const visualLines = description.split('\n').flatMap((sourceLine) => {
       if (!sourceLine) return ['']
@@ -150,6 +150,7 @@ function splitLineItems(lineItems: CrmQuoteLineItem[]) {
     return chunks.map((chunk, index) => ({
       ...lineItem,
       id: `${lineItem.id || lineItem.itemNumber}-${index}`,
+      displayItemNumber: lineItemIndex + 1,
       description: index === 0 ? chunk : `(continued)\n${chunk}`,
       images: index === 0 ? lineItem.images : [],
       qty: index === 0 ? lineItem.qty : null,
@@ -173,6 +174,41 @@ const imageHeight = (images: CrmQuoteLineItem['images'], landscapeHeight: number
     return heights.length > 0 ? Math.max(...heights) : landscapeHeight
   })()
 )
+
+const resolveProductImageMetrics = (
+  image: {
+    width?: number | null
+    height?: number | null
+    shape?: 'square' | 'landscape' | 'wide' | 'portrait' | null
+    displaySize?: 'small' | 'medium' | 'large' | null
+  },
+  imageCount: number,
+) => {
+  const sizeScale = image.displaySize === 'small'
+    ? 0.62
+    : image.displaySize === 'large'
+      ? 1.45
+      : 1
+  const baseWidth = imageCount > 1 ? 94 : 126
+  const width = Math.max(72, Math.round(baseWidth * sizeScale))
+
+  const inferredPortrait = image.shape === 'portrait'
+    || Number(image.height || 0) > Number(image.width || 0) * 1.15
+  const inferredWide = image.shape === 'wide'
+  const inferredSquare = image.shape === 'square'
+  const heightMultiplier = inferredPortrait
+    ? 1.18
+    : inferredWide
+      ? 0.56
+      : inferredSquare
+        ? 0.88
+        : 0.68
+
+  return {
+    width,
+    height: Math.max(56, Math.round(width * heightMultiplier)),
+  }
+}
 
 function createStyles(accentColor: string) {
   return StyleSheet.create({
@@ -241,10 +277,14 @@ function createStyles(accentColor: string) {
       minHeight: 34,
       alignItems: 'stretch',
     },
-    imageColumn: { width: 104, flexDirection: 'row', gap: 4, paddingRight: 6 },
-    lineImage: { flexGrow: 1, flexShrink: 1, flexBasis: 0, objectFit: 'contain' },
     itemColumn: { width: 30, paddingRight: 5 },
-    descriptionColumn: { flexGrow: 1, flexShrink: 1, flexBasis: 0, paddingRight: 7, lineHeight: 1.35 },
+    descriptionColumn: { flexGrow: 1, flexShrink: 1, flexBasis: 0, paddingRight: 7 },
+    descriptionBody: { flexDirection: 'row', alignItems: 'flex-start' },
+    descriptionText: { flexGrow: 1, flexShrink: 1, flexBasis: 0, lineHeight: 1.35 },
+    descriptionMediaRail: { marginLeft: 7, flexShrink: 0 },
+    descriptionMediaBox: { borderWidth: 1, borderColor: '#d8e0ea', borderRadius: 2, overflow: 'hidden', backgroundColor: '#ffffff' },
+    descriptionMediaBoxSpaced: { marginTop: 4 },
+    descriptionMediaImage: { width: '100%', objectFit: 'contain' },
     qtyColumn: { width: 38, textAlign: 'right', paddingRight: 6 },
     unitColumn: { width: 70, textAlign: 'right', paddingRight: 6 },
     extColumn: { width: 76, textAlign: 'right' },
@@ -310,7 +350,6 @@ export function NativeQuotePdfDocument({
   const rows = splitLineItems(Array.isArray(quote.lineItems) ? quote.lineItems : [])
   const additionalServices = Array.isArray(quote.additionalServices) ? quote.additionalServices : DEFAULT_ADDITIONAL_SERVICES
   const shippingServices = Array.isArray(quote.shippingServices) ? quote.shippingServices : DEFAULT_SHIPPING_SERVICES
-  const productHasImages = hasImages(rows)
   const additionalServicesHaveImages = hasImages(additionalServices)
   const shippingServicesHaveImages = hasImages(shippingServices)
   const servicesTotal = additionalServices.reduce((sum, item) => sum + Number(resolveServiceExtPrice(item) || 0), 0)
@@ -362,7 +401,6 @@ export function NativeQuotePdfDocument({
           <View minPresenceAhead={48}>
             <Text style={styles.sectionTitleFirst}>Products</Text>
             <View style={styles.tableHeader}>
-              {productHasImages ? <Text style={styles.imageColumn}>Picture</Text> : null}
               <Text style={styles.itemColumn}>Item</Text>
               <Text style={styles.descriptionColumn}>Description</Text>
               <Text style={styles.qtyColumn}>Qty</Text>
@@ -374,15 +412,37 @@ export function NativeQuotePdfDocument({
 
         {rows.map((lineItem, index) => (
           <View key={lineItem.id || `${lineItem.itemNumber}-${index}`} style={[styles.row, index % 2 === 1 ? { backgroundColor: '#fbfdff' } : {}]} wrap={false}>
-            {productHasImages ? (
-              <View style={styles.imageColumn}>
-                {(lineItem.images || []).slice(0, 2).map((image) => (
-                  <Image key={image.id} src={resolvePdfImageUri(image.url)} cache={false} style={[styles.lineImage, { height: imageHeight([image], 82, 116) }]} />
-                ))}
+            <Text style={[styles.itemColumn, styles.centeredCell]}>{lineItem.continuation ? '' : lineItem.displayItemNumber}</Text>
+            <View style={styles.descriptionColumn}>
+              <View style={styles.descriptionBody}>
+                <Text style={styles.descriptionText}>{plain(lineItem.description, '')}</Text>
+                {(lineItem.images || []).length > 0 ? (
+                  <View style={styles.descriptionMediaRail}>
+                    {(lineItem.images || []).slice(0, 2).map((image, imageIndex) => {
+                      const metrics = resolveProductImageMetrics(image, (lineItem.images || []).length)
+
+                      return (
+                        <View
+                          key={image.id}
+                          style={imageIndex > 0
+                            ? [
+                              styles.descriptionMediaBox,
+                              styles.descriptionMediaBoxSpaced,
+                              { width: metrics.width, height: metrics.height },
+                            ]
+                            : [
+                              styles.descriptionMediaBox,
+                              { width: metrics.width, height: metrics.height },
+                            ]}
+                        >
+                          <Image src={resolvePdfImageUri(image.url)} cache={false} style={styles.descriptionMediaImage} />
+                        </View>
+                      )
+                    })}
+                  </View>
+                ) : null}
               </View>
-            ) : null}
-            <Text style={[styles.itemColumn, styles.centeredCell]}>{lineItem.continuation ? '' : lineItem.itemNumber || index + 1}</Text>
-            <Text style={styles.descriptionColumn}>{plain(lineItem.description, '')}</Text>
+            </View>
             <Text style={[styles.qtyColumn, styles.centeredCell]}>{plain(lineItem.qty, '')}</Text>
             <Text style={[styles.unitColumn, styles.centeredCell]}>{optionalMoney(lineItem.unitPrice)}</Text>
             <Text style={[styles.extColumn, styles.centeredCell]}>{optionalMoney(lineItem.extPrice)}</Text>

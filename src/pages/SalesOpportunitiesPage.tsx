@@ -321,7 +321,7 @@ type LineItemsEditorProps = {
   lineItems: OpportunityLineItemFormState[]
   canEdit: boolean
   onAddLineItem: () => void
-  onUpdateLineItem: (index: number, field: 'itemNumber' | 'description' | 'qty' | 'unitPrice' | 'extPrice', value: string) => void
+  onUpdateLineItem: (index: number, field: 'description' | 'qty' | 'unitPrice' | 'extPrice', value: string) => void
   onRemoveLineItem: (index: number) => void
   onAddImages: (index: number, images: PreparedQuoteImage[]) => void
   onRemoveImage: (lineIndex: number, imageId: string) => void
@@ -543,7 +543,7 @@ function calculateExtendedPrice(qty: string, unitPrice: string) {
 
 function updateLineItemPricing(
   lineItem: OpportunityLineItemFormState,
-  field: 'itemNumber' | 'description' | 'qty' | 'unitPrice' | 'extPrice',
+  field: 'description' | 'qty' | 'unitPrice' | 'extPrice',
   value: string,
 ) {
   const nextLineItem = { ...lineItem, [field]: value }
@@ -696,8 +696,7 @@ function normalizeServiceItemsForPayload(items: OpportunityServiceItemFormState[
 }
 
 function isBlankLineItem(lineItem: OpportunityLineItemFormState) {
-  return !lineItem.itemNumber.trim()
-    && !lineItem.description.trim()
+  return !lineItem.description.trim()
     && !lineItem.qty.trim()
     && !lineItem.unitPrice.trim()
     && !lineItem.extPrice.trim()
@@ -725,10 +724,22 @@ const quoteImageShapeOptions: Array<{ value: QuoteImageShape; label: string; asp
 ]
 
 const quoteImageSizeOptions: Array<{ value: QuoteImageDisplaySize; label: string; description: string }> = [
-  { value: 'small', label: 'Small', description: 'Compact row' },
-  { value: 'medium', label: 'Medium', description: 'Standard row' },
-  { value: 'large', label: 'Large', description: 'Feature image' },
+  { value: 'small', label: 'Small', description: 'Compact (~60%)' },
+  { value: 'medium', label: 'Medium', description: 'Standard (~100%)' },
+  { value: 'large', label: 'Large', description: 'Large (~145%)' },
 ]
+
+function resolveEditorLineImagePreviewSize(displaySize: QuoteImageDisplaySize | null | undefined) {
+  if (displaySize === 'small') {
+    return { width: 92, height: 68 }
+  }
+
+  if (displaySize === 'large') {
+    return { width: 212, height: 156 }
+  }
+
+  return { width: 148, height: 108 }
+}
 
 async function cropQuoteImage(file: File, pixels: Area, shape: QuoteImageShape) {
   const sourceUrl = URL.createObjectURL(file)
@@ -859,22 +870,6 @@ function toOptionalNumber(value: string) {
   return Number(parsed.toFixed(2))
 }
 
-function toOptionalInteger(value: string) {
-  const normalized = value.trim()
-
-  if (!normalized) {
-    return null
-  }
-
-  const parsed = Number(normalized)
-
-  if (!Number.isFinite(parsed) || parsed < 0 || Math.floor(parsed) !== parsed) {
-    return null
-  }
-
-  return parsed
-}
-
 function normalizeLineItemsForPayload(lineItems: OpportunityLineItemFormState[]): CrmQuoteLineItem[] {
   const normalized: CrmQuoteLineItem[] = []
 
@@ -885,7 +880,8 @@ function normalizeLineItemsForPayload(lineItems: OpportunityLineItemFormState[])
 
     normalized.push({
       id: lineItem.id,
-      itemNumber: toOptionalInteger(lineItem.itemNumber) ?? 0,
+      // Item number is always row order (1, 2, 3, ...).
+      itemNumber: normalized.length + 1,
       description: lineItem.description.trim() || null,
       qty: toOptionalNumber(lineItem.qty),
       unitPrice: toOptionalNumber(lineItem.unitPrice),
@@ -2200,9 +2196,8 @@ function LineItemsEditor({
         <Table size="small" sx={{ minWidth: 980 }}>
           <TableHead>
             <TableRow>
-              <TableCell sx={{ width: 92, fontWeight: 700 }}>Item</TableCell>
-              <TableCell sx={{ width: 190, fontWeight: 700 }}>Pictures</TableCell>
-              <TableCell sx={{ minWidth: 220, fontWeight: 700 }}>Description</TableCell>
+              <TableCell sx={{ width: 62, fontWeight: 700 }}>Item</TableCell>
+              <TableCell sx={{ minWidth: 420, fontWeight: 700 }}>Description</TableCell>
               <TableCell sx={{ width: 90, fontWeight: 700 }}>Qty</TableCell>
               <TableCell sx={{ width: 125, fontWeight: 700 }}>Unit Price</TableCell>
               <TableCell sx={{ width: 135, fontWeight: 700 }}>Ext</TableCell>
@@ -2212,86 +2207,83 @@ function LineItemsEditor({
           <TableBody>
             {lineItems.map((lineItem, index) => (
               <TableRow key={`line-item-${index}`} hover>
-                <TableCell>
-                  <TextField
-                    variant="standard"
-                    size="small"
-                    type="number"
-                    value={lineItem.itemNumber}
-                    onChange={(event) => {
-                      onUpdateLineItem(index, 'itemNumber', event.target.value)
-                    }}
-                    disabled={!canEdit}
-                    fullWidth
-                  />
+                <TableCell sx={{ verticalAlign: 'top' }}>
+                  <Typography variant="body2" sx={{ pt: 0.7, fontWeight: 800, textAlign: 'center' }}>
+                    {index + 1}
+                  </Typography>
                 </TableCell>
                 <TableCell>
-                  <Stack spacing={0.6}>
-                    {lineItem.images.length > 0 ? (
-                      <Stack direction="row" spacing={0.6}>
-                        {lineItem.images.map((image) => (
-                          <Box
-                            key={image.id}
-                            sx={{
-                              position: 'relative',
-                              width: lineItem.images.length === 1 ? 150 : 72,
-                              height: 84,
-                              border: 1,
-                              borderColor: 'divider',
-                              borderRadius: 1,
-                              overflow: 'hidden',
-                              bgcolor: '#fff',
-                            }}
-                          >
-                            <Box component="img" src={image.url} alt={image.name || 'Line item'} sx={{ width: '100%', height: '100%', objectFit: 'contain' }} />
-                            <Chip label={image.displaySize || 'medium'} size="small" sx={{ position: 'absolute', left: 2, bottom: 2, height: 18, fontSize: 9, bgcolor: 'rgba(255,255,255,.9)' }} />
-                            {canEdit ? (
-                              <IconButton
-                                size="small"
-                                color="error"
-                                onClick={() => onRemoveImage(index, image.id)}
-                                sx={{ position: 'absolute', top: 1, right: 1, bgcolor: 'rgba(255,255,255,.9)', p: 0.2 }}
+                  <Stack direction={{ xs: 'column', lg: 'row' }} spacing={0.9} alignItems="flex-start">
+                    <TextField
+                      variant="standard"
+                      size="small"
+                      value={lineItem.description}
+                      onChange={(event) => {
+                        onUpdateLineItem(index, 'description', event.target.value)
+                      }}
+                      disabled={!canEdit}
+                      multiline
+                      minRows={4}
+                      maxRows={12}
+                      fullWidth
+                      sx={{ flexGrow: 1 }}
+                    />
+                    <Stack spacing={0.6} sx={{ width: { xs: '100%', lg: 240 }, flexShrink: 0 }}>
+                      {lineItem.images.length > 0 ? (
+                        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.6 }}>
+                          {lineItem.images.map((image) => {
+                            const previewSize = resolveEditorLineImagePreviewSize(image.displaySize)
+
+                            return (
+                              <Box
+                                key={image.id}
+                                sx={{
+                                  position: 'relative',
+                                  width: previewSize.width,
+                                  height: previewSize.height,
+                                  border: 1,
+                                  borderColor: 'divider',
+                                  borderRadius: 1,
+                                  overflow: 'hidden',
+                                  bgcolor: '#fff',
+                                }}
                               >
-                                <DeleteOutlineRoundedIcon sx={{ fontSize: 15 }} />
-                              </IconButton>
-                            ) : null}
-                          </Box>
-                        ))}
-                      </Stack>
-                    ) : (
-                      <Typography variant="caption" color="text.secondary">Optional</Typography>
-                    )}
-                    {lineItem.images.length < 2 ? (
-                      <Button component="label" size="small" variant="text" startIcon={<FileUploadRoundedIcon />} disabled={!canEdit || isUploadingImage} sx={{ alignSelf: 'flex-start', px: 0.4 }}>
-                        {isUploadingImage ? 'Uploading…' : 'Add picture'}
-                        <input
-                          hidden
-                          type="file"
-                          accept="image/jpeg,image/png,image/webp"
-                          onChange={(event) => {
-                            const file = event.target.files?.[0]
-                            event.target.value = ''
-                            if (file) setCropTarget({ index, file })
-                          }}
-                        />
-                      </Button>
-                    ) : null}
+                                <Box component="img" src={image.url} alt={image.name || 'Line item'} sx={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+                                <Chip label={image.displaySize || 'medium'} size="small" sx={{ position: 'absolute', left: 2, bottom: 2, height: 18, fontSize: 9, bgcolor: 'rgba(255,255,255,.92)' }} />
+                                {canEdit ? (
+                                  <IconButton
+                                    size="small"
+                                    color="error"
+                                    onClick={() => onRemoveImage(index, image.id)}
+                                    sx={{ position: 'absolute', top: 1, right: 1, bgcolor: 'rgba(255,255,255,.92)', p: 0.2 }}
+                                  >
+                                    <DeleteOutlineRoundedIcon sx={{ fontSize: 15 }} />
+                                  </IconButton>
+                                ) : null}
+                              </Box>
+                            )
+                          })}
+                        </Box>
+                      ) : (
+                        <Typography variant="caption" color="text.secondary">Picture optional</Typography>
+                      )}
+                      {lineItem.images.length < 2 ? (
+                        <Button component="label" size="small" variant="text" startIcon={<FileUploadRoundedIcon />} disabled={!canEdit || isUploadingImage} sx={{ alignSelf: 'flex-start', px: 0.4 }}>
+                          {isUploadingImage ? 'Uploading…' : 'Add picture'}
+                          <input
+                            hidden
+                            type="file"
+                            accept="image/jpeg,image/png,image/webp"
+                            onChange={(event) => {
+                              const file = event.target.files?.[0]
+                              event.target.value = ''
+                              if (file) setCropTarget({ index, file })
+                            }}
+                          />
+                        </Button>
+                      ) : null}
+                    </Stack>
                   </Stack>
-                </TableCell>
-                <TableCell>
-                  <TextField
-                    variant="standard"
-                    size="small"
-                    value={lineItem.description}
-                    onChange={(event) => {
-                      onUpdateLineItem(index, 'description', event.target.value)
-                    }}
-                    disabled={!canEdit}
-                    multiline
-                    minRows={3}
-                    maxRows={10}
-                    fullWidth
-                  />
                 </TableCell>
                 <TableCell>
                   <TextField
@@ -5377,7 +5369,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   }, [])
 
   const handleUpdateFormLineItem = useCallback(
-    (index: number, field: 'itemNumber' | 'description' | 'qty' | 'unitPrice' | 'extPrice', value: string) => {
+    (index: number, field: 'description' | 'qty' | 'unitPrice' | 'extPrice', value: string) => {
       setFormState((current) => ({
         ...current,
         lineItems: current.lineItems.map((entry, entryIndex) => (
@@ -5468,7 +5460,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   }, [])
 
   const handleUpdateDetailsLineItem = useCallback(
-    (index: number, field: 'itemNumber' | 'description' | 'qty' | 'unitPrice' | 'extPrice', value: string) => {
+    (index: number, field: 'description' | 'qty' | 'unitPrice' | 'extPrice', value: string) => {
       setOpportunityDetailsFormState((current) => {
         if (!current) {
           return current
