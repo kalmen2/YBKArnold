@@ -627,7 +627,7 @@ export function createOrdersUnifiedService(deps) {
 
       row.in_design = true
       row.Monday_status = 'In Design'
-      row.monday_item_id = row.monday_item_id || matchedItemId
+      row.monday_item_id = matchedItemId
       row.monday_board_id = designBoardId
       row.monday_board_name = snapshot.board?.name || row.monday_board_name
 
@@ -873,7 +873,7 @@ export function createOrdersUnifiedService(deps) {
       row.in_design = true
       row.hazard_reason = null
       row.Monday_status = 'In Design'
-      row.monday_item_id = row.monday_item_id || matchedItemId
+      row.monday_item_id = matchedItemId
       row.monday_board_id = designBoardId
       row.monday_board_name = snapshot.board?.name || row.monday_board_name
 
@@ -1434,7 +1434,7 @@ export function createOrdersUnifiedService(deps) {
             ? existingShipped.shippedAtInferred
             : true
         row.has_monday_record = true
-        row.monday_item_id = row.monday_item_id || matchedItemId
+        row.monday_item_id = matchedItemId || row.monday_item_id
         row.monday_board_id = normalizeText(mondayShippedBoardId, 120) || row.monday_board_id
         row.monday_board_name = row.monday_board_name || 'Shipped Orders'
         row.hazard_reason = null

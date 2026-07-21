@@ -943,7 +943,6 @@ export function registerOrderShippingRoutes(app, {
   app.post(
     '/api/orders/delete',
     requireFirebaseAuth,
-    requireManagerOrAdminRole,
     async (req, res, next) => {
       try {
         const orderIdentityFilter = buildOrderIdentityFilter({
@@ -1474,16 +1473,13 @@ export function registerOrderShippingRoutes(app, {
   app.post(
     '/api/orders/suborder-link',
     requireFirebaseAuth,
-    requireManagerOrAdminRole,
     async (req, res, next) => {
       try {
-        const orderIdentityFilter = buildOrderIdentityFilter({
-          orderKey: req.body?.orderKey,
-          mondayItemId: req.body?.mondayItemId,
-          orderNumber: req.body?.orderNumber,
-        })
+        const requestedOrderKey = String(req.body?.orderKey ?? '').trim()
+        const requestedMondayItemId = String(req.body?.mondayItemId ?? '').trim()
+        const requestedOrderNumber = String(req.body?.orderNumber ?? '').trim()
 
-        if (!orderIdentityFilter) {
+        if (!requestedOrderKey && !requestedMondayItemId && !requestedOrderNumber) {
           return res.status(400).json({
             error: 'orderKey, mondayItemId, or orderNumber is required.',
           })
@@ -1502,17 +1498,33 @@ export function registerOrderShippingRoutes(app, {
 
         const requestedParentOrderNumber = String(req.body?.parentOrderNumber ?? '').trim()
         const { ordersUnifiedCollection } = await getCollections()
-        const orderDocument = await ordersUnifiedCollection.findOne(
-          orderIdentityFilter,
-          {
-            projection: {
-              _id: 0,
-              orderKey: 1,
-              order_number: 1,
-              parent_order_number: 1,
-            },
-          },
-        )
+        const projection = {
+          _id: 0,
+          orderKey: 1,
+          order_number: 1,
+          parent_order_number: 1,
+        }
+
+        // Order number variants can legitimately share a Monday item during
+        // claim/rework setup (for example 250610 and 250610R). Resolve the
+        // immutable order key first instead of using an ambiguous $or query.
+        let orderDocument = requestedOrderKey
+          ? await ordersUnifiedCollection.findOne({ orderKey: requestedOrderKey }, { projection })
+          : null
+
+        if (!orderDocument && requestedOrderNumber) {
+          orderDocument = await ordersUnifiedCollection.findOne(
+            { order_number: new RegExp(`^${escapeRegex(requestedOrderNumber)}$`, 'i') },
+            { projection },
+          )
+        }
+
+        if (!orderDocument && requestedMondayItemId) {
+          orderDocument = await ordersUnifiedCollection.findOne(
+            { monday_item_id: requestedMondayItemId },
+            { projection },
+          )
+        }
 
         if (!orderDocument) {
           return res.status(404).json({ error: 'Order was not found.' })
@@ -1575,8 +1587,13 @@ export function registerOrderShippingRoutes(app, {
         const now = new Date().toISOString()
         const resolvedParentOrderNumber = requestedParentOrderNumber || null
 
+        const resolvedOrderKey = String(orderDocument?.orderKey ?? '').trim()
+        const resolvedOrderFilter = resolvedOrderKey
+          ? { orderKey: resolvedOrderKey }
+          : { order_number: new RegExp(`^${escapeRegex(orderNumber)}$`, 'i') }
+
         await ordersUnifiedCollection.updateOne(
-          orderIdentityFilter,
+          resolvedOrderFilter,
           {
             $set: {
               parent_order_number: resolvedParentOrderNumber,

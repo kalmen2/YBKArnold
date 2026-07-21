@@ -2,9 +2,17 @@ import * as XLSX from 'xlsx'
 import { useQueryClient } from '@tanstack/react-query'
 import {
   Alert,
+  Autocomplete,
+  Button,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   Stack,
+  TextField,
+  Typography,
 } from '@mui/material'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
 import { apiFetch } from '../features/api-client'
@@ -12,6 +20,7 @@ import {
   postOrdersCreate,
   postOrdersDelete,
   postOrdersDeleteRequest,
+  postOrdersSubOrderLink,
   type OrdersMondayProgressStatusBulkQueuedRow,
   type OrdersOverviewOrder,
   type OrdersOverviewResponse,
@@ -119,6 +128,9 @@ export default function OrdersPage() {
   const [addManualOrderDialogOpen, setAddManualOrderDialogOpen] = useState(false)
   const [isCreatingManualOrder, setIsCreatingManualOrder] = useState(false)
   const [deletingOrderKey, setDeletingOrderKey] = useState<string | null>(null)
+  const [linkOrderTarget, setLinkOrderTarget] = useState<OrdersOverviewOrder | null>(null)
+  const [selectedParentOrder, setSelectedParentOrder] = useState<OrdersOverviewOrder | null>(null)
+  const [isLinkingOrder, setIsLinkingOrder] = useState(false)
   const openedDeepLinkRef = useRef<string | null>(null)
 
   const shopDrawingHandle = useRef<ShopDrawingPreviewHandle | null>(null)
@@ -449,7 +461,7 @@ export default function OrdersPage() {
 
     setErrorMessage(null)
 
-    if (order.hasQuickBooksRecord) {
+    if (order.hasQuickBooksRecord && !order.parentOrderNumber) {
       const shouldRequest = window.confirm(
         `Order ${orderLabel} is linked to QuickBooks and cannot be deleted directly. Send delete request to admin?`,
       )
@@ -510,6 +522,78 @@ export default function OrdersPage() {
       setDeletingOrderKey(null)
     }
   }, [deletingOrderKey, queryClient])
+
+  const linkOrderCandidates = useMemo(() => {
+    if (!linkOrderTarget) {
+      return []
+    }
+
+    const targetNumber = String(linkOrderTarget.orderNumber ?? '').trim().toLowerCase()
+
+    return allOrders
+      .filter((order) => {
+        const orderNumber = String(order.orderNumber ?? '').trim()
+
+        return Boolean(orderNumber)
+          && orderNumber.toLowerCase() !== targetNumber
+          && !order.parentOrderNumber
+      })
+      .sort((left, right) => String(left.orderNumber).localeCompare(String(right.orderNumber), undefined, {
+        numeric: true,
+        sensitivity: 'base',
+      }))
+  }, [allOrders, linkOrderTarget])
+
+  const handleOpenLinkOrder = useCallback((order: OrdersOverviewOrder) => {
+    const currentParentNumber = String(order.parentOrderNumber ?? '').trim().toLowerCase()
+    const currentParent = currentParentNumber
+      ? allOrders.find((candidate) => String(candidate.orderNumber ?? '').trim().toLowerCase() === currentParentNumber) ?? null
+      : null
+
+    setLinkOrderTarget(order)
+    setSelectedParentOrder(currentParent)
+    setErrorMessage(null)
+  }, [allOrders])
+
+  const handleCloseLinkOrder = useCallback(() => {
+    if (isLinkingOrder) {
+      return
+    }
+
+    setLinkOrderTarget(null)
+    setSelectedParentOrder(null)
+  }, [isLinkingOrder])
+
+  const saveOrderLink = useCallback(async (parentOrderNumber: string | null) => {
+    if (!linkOrderTarget || isLinkingOrder) {
+      return
+    }
+
+    setIsLinkingOrder(true)
+    setErrorMessage(null)
+
+    try {
+      const response = await postOrdersSubOrderLink({
+        orderKey: linkOrderTarget.id,
+        mondayItemId: linkOrderTarget.mondayItemId,
+        orderNumber: linkOrderTarget.orderNumber,
+        parentOrderNumber,
+      })
+
+      await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.ordersOverview })
+      setSuccessMessage(
+        response.parentOrderNumber
+          ? `Order ${response.orderNumber ?? linkOrderTarget.orderNumber} is now linked to order ${response.parentOrderNumber}.`
+          : `Order ${response.orderNumber ?? linkOrderTarget.orderNumber} is no longer linked to another order.`,
+      )
+      setLinkOrderTarget(null)
+      setSelectedParentOrder(null)
+    } catch (linkError) {
+      setErrorMessage(linkError instanceof Error ? linkError.message : 'Could not link the order.')
+    } finally {
+      setIsLinkingOrder(false)
+    }
+  }, [isLinkingOrder, linkOrderTarget, queryClient])
 
   const handleSavedBulkOrderUpdates = useCallback((summary: {
     updatedCount: number
@@ -712,8 +796,9 @@ export default function OrdersPage() {
         onOpenQuickBooksDialog={handleOpenQuickBooksDialog}
         onCopyOrderNumber={handleCopyOrderNumber}
         onOpenOrderChat={handleOpenOrderChat}
-        canDeleteOrders={canEditMondayStages}
+        canDeleteOrders
         onDeleteOrder={handleDeleteOrder}
+        onLinkOrder={handleOpenLinkOrder}
         onMissingMondayLink={handleMissingMondayLink}
       />
 
@@ -755,6 +840,46 @@ export default function OrdersPage() {
         onClose={handleCloseAddManualOrderDialog}
         onSubmit={handleCreateManualOrder}
       />
+
+      <Dialog open={Boolean(linkOrderTarget)} onClose={handleCloseLinkOrder} fullWidth maxWidth="sm">
+        <DialogTitle>Link to another order</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ pt: 1 }}>
+            <Typography color="text.secondary">
+              Link order <strong>{linkOrderTarget?.orderNumber}</strong> to its original order. Its costs and
+              QuickBooks activity will use the original order's project while it remains a separate order in Monday.
+            </Typography>
+            <Autocomplete
+              options={linkOrderCandidates}
+              value={selectedParentOrder}
+              onChange={(_event, value) => setSelectedParentOrder(value)}
+              getOptionLabel={(option) => {
+                const name = String(option.orderName ?? '').trim()
+                return name ? `${option.orderNumber} — ${name}` : String(option.orderNumber ?? '')
+              }}
+              isOptionEqualToValue={(option, value) => option.id === value.id}
+              renderInput={(params) => (
+                <TextField {...params} label="Original order" placeholder="Search all orders" autoFocus />
+              )}
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          {linkOrderTarget?.parentOrderNumber ? (
+            <Button color="error" disabled={isLinkingOrder} onClick={() => void saveOrderLink(null)}>
+              Remove link
+            </Button>
+          ) : null}
+          <Button onClick={handleCloseLinkOrder} disabled={isLinkingOrder}>Cancel</Button>
+          <Button
+            variant="contained"
+            disabled={!selectedParentOrder || isLinkingOrder}
+            onClick={() => void saveOrderLink(String(selectedParentOrder?.orderNumber ?? '').trim())}
+          >
+            {isLinkingOrder ? 'Saving…' : 'Link order'}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Stack>
   )
 }

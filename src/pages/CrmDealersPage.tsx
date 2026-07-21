@@ -34,6 +34,7 @@ import {
   List,
   ListItemButton,
   ListItemText,
+  Link,
   Menu,
   MenuItem,
   Paper,
@@ -239,6 +240,113 @@ type DealerFormState = {
   socialLinks: DealerSocialLinkDraft[]
   isArchived: boolean
   isFavorite: boolean
+}
+
+function AccountReadOnlyOverview({ account }: { account: DealerFormState }) {
+  const displayValue = (value: string) => value.trim() || 'Not provided'
+  const location = [account.address, account.city, account.state, account.zip, account.country]
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .join(', ')
+
+  const detailGroups = [
+    {
+      title: 'Company',
+      rows: [
+        ['Account name', account.name],
+        ['Quote company name', account.quoteCompanyName],
+        ['Account type', account.accountType === 'designer' ? 'Designer' : 'Dealer'],
+        ['Sales representative', account.salesRep],
+        ['Payment terms', account.paymentTerms],
+      ],
+    },
+    {
+      title: 'Primary contact',
+      rows: [
+        ['Owner', account.owner],
+        ['Owner email', account.ownerEmail],
+        ['Primary email', account.primaryEmail],
+        ['Additional email', account.secondaryEmail],
+        ['Primary phone', account.phone],
+        ['Secondary phone', account.phone2],
+      ],
+    },
+  ]
+
+  return (
+    <Stack spacing={1.25}>
+      <Box
+        sx={{
+          display: 'grid',
+          gridTemplateColumns: { xs: '1fr', md: 'repeat(2, minmax(0, 1fr))' },
+          gap: 1.25,
+        }}
+      >
+        {detailGroups.map((group) => (
+          <Paper key={group.title} variant="outlined" sx={{ p: 1.5, borderRadius: 2, bgcolor: 'background.paper' }}>
+            <Typography variant="overline" color="primary.main" sx={{ fontWeight: 800, letterSpacing: 0.8 }}>
+              {group.title}
+            </Typography>
+            <Stack divider={<Divider flexItem />}>
+              {group.rows.map(([label, value]) => (
+                <Box key={label} sx={{ py: 0.9, display: 'grid', gridTemplateColumns: 'minmax(120px, 0.8fr) minmax(0, 1.4fr)', gap: 1.5 }}>
+                  <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>{label}</Typography>
+                  <Typography variant="body2" sx={{ fontWeight: value.trim() ? 600 : 400, color: value.trim() ? 'text.primary' : 'text.disabled', overflowWrap: 'anywhere' }}>
+                    {displayValue(value)}
+                  </Typography>
+                </Box>
+              ))}
+            </Stack>
+          </Paper>
+        ))}
+      </Box>
+
+      <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
+        <Typography variant="overline" color="primary.main" sx={{ fontWeight: 800, letterSpacing: 0.8 }}>Location & online</Typography>
+        <Box sx={{ mt: 0.5, display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(2, minmax(0, 1fr))' }, gap: 1.5 }}>
+          <Box>
+            <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>Address</Typography>
+            <Typography variant="body2" sx={{ mt: 0.25, fontWeight: location ? 600 : 400, color: location ? 'text.primary' : 'text.disabled' }}>
+              {location || 'Not provided'}
+            </Typography>
+          </Box>
+          <Box>
+            <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>Website</Typography>
+            {normalizeWebsiteHref(account.website) ? (
+              <Link href={normalizeWebsiteHref(account.website)} target="_blank" rel="noopener noreferrer" sx={{ mt: 0.25, display: 'block', fontSize: 14, fontWeight: 600, overflowWrap: 'anywhere' }}>
+                {account.website}
+              </Link>
+            ) : (
+              <Typography variant="body2" color="text.disabled" sx={{ mt: 0.25 }}>Not provided</Typography>
+            )}
+          </Box>
+        </Box>
+        {account.socialLinks.length > 0 ? (
+          <Stack direction="row" flexWrap="wrap" gap={0.75} sx={{ mt: 1.25 }}>
+            {account.socialLinks.map((entry) => (
+              <Chip
+                key={entry.id}
+                size="small"
+                clickable={Boolean(normalizeWebsiteHref(entry.url))}
+                component={normalizeWebsiteHref(entry.url) ? 'a' : 'div'}
+                href={normalizeWebsiteHref(entry.url) || undefined}
+                target={normalizeWebsiteHref(entry.url) ? '_blank' : undefined}
+                label={socialPlatformOptions.find((item) => item.value === resolveSocialPlatformChoice(entry.platform))?.label || 'Link'}
+                variant="outlined"
+              />
+            ))}
+          </Stack>
+        ) : null}
+      </Paper>
+
+      {account.accountText.trim() ? (
+        <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2, bgcolor: (theme) => alpha(theme.palette.warning.main, 0.045) }}>
+          <Typography variant="overline" color="text.secondary" sx={{ fontWeight: 800 }}>Account notes</Typography>
+          <Typography variant="body2" sx={{ mt: 0.35, whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>{account.accountText}</Typography>
+        </Paper>
+      ) : null}
+    </Stack>
+  )
 }
 
 type ContactFormState = {
@@ -2252,6 +2360,7 @@ export default function CrmDealersPage() {
 
               {detailsTab === 'info' ? (
                 dealerForm ? (
+                  isAccountEditing ? (
                   <Stack spacing={1}>
                     <Box>
                       <fieldset
@@ -2660,6 +2769,9 @@ export default function CrmDealersPage() {
                     </fieldset>
                     </Box>
                   </Stack>
+                  ) : (
+                    <AccountReadOnlyOverview account={dealerForm} />
+                  )
                 ) : (
                   <Typography color="text.secondary" sx={{ py: 1 }}>
                     Account form is loading...

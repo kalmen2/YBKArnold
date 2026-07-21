@@ -1925,6 +1925,11 @@ export function JobDetailsDialog({
           <Typography variant="body1" color="text.secondary" sx={{ fontWeight: 600 }}>
             {label}
           </Typography>
+          {order?.parentOrderNumber ? (
+            <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
+              Linked to order {order.parentOrderNumber} · QuickBooks activity uses that order's project
+            </Typography>
+          ) : null}
         </Stack>
       </DialogTitle>
       <DialogContent

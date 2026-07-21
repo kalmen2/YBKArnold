@@ -29,6 +29,28 @@ export function extractOrderNumberToken(value) {
   return best || null
 }
 
+// Preserve meaningful suffixes used for rework/claim orders. A digits-only
+// lookup makes 250610, 250610R, and 250610R_2 indistinguishable.
+export function extractOrderNumberReference(value) {
+  const matches = normalizeText(value, 1000).match(/\d{4,}(?:(?:[a-z][a-z0-9]*)|(?:[_-][a-z0-9]+))*/gi)
+
+  if (!Array.isArray(matches) || matches.length === 0) {
+    return null
+  }
+
+  let best = ''
+
+  for (const match of matches) {
+    const candidate = String(match ?? '').trim()
+
+    if (normalizeOrderNumberKey(candidate).length > normalizeOrderNumberKey(best).length) {
+      best = candidate
+    }
+  }
+
+  return best || null
+}
+
 export function normalizeOrderNumberKey(value) {
   return normalizeText(value, 120)
     .toLowerCase()
@@ -80,7 +102,7 @@ export function resolveOrderNumberFromMondayOrder(orderDocument) {
   if (explicit) {
     return explicit
   }
-  return extractOrderNumberToken(normalizeText(orderDocument?.orderName, 260))
+  return extractOrderNumberReference(normalizeText(orderDocument?.orderName, 260))
 }
 
 export function isShippedOrderDocument(orderDocument, shippedBoardId) {
@@ -193,23 +215,38 @@ export function resolveStatusHistoryForOrder(orderRow, lookups) {
 
 export function buildNameLookupFromMondayItems(items) {
   const byNormalized = new Map()
+  const byOrderNumber = new Map()
   const byDigits = new Map()
 
   ;(Array.isArray(items) ? items : []).forEach((item) => {
     const normalized = normalizeLookupToken(item?.name)
+    const orderNumber = normalizeOrderNumberKey(extractOrderNumberReference(item?.name))
     const digits = extractOrderNumberToken(item?.name)
     if (normalized && !byNormalized.has(normalized)) {
       byNormalized.set(normalized, item)
+    }
+    if (orderNumber && !byOrderNumber.has(orderNumber)) {
+      byOrderNumber.set(orderNumber, item)
     }
     if (digits && !byDigits.has(digits)) {
       byDigits.set(digits, item)
     }
   })
 
-  return { byNormalized, byDigits }
+  return { byNormalized, byOrderNumber, byDigits }
 }
 
 export function findNameLookupMatch(row, lookup) {
+  const orderNumberKey = normalizeOrderNumberKey(row?.order_number)
+
+  if (orderNumberKey) {
+    const exactOrderNumberMatch = lookup.byOrderNumber?.get(orderNumberKey)
+
+    if (exactOrderNumberMatch) {
+      return exactOrderNumberMatch
+    }
+  }
+
   const candidates = buildOrderLookupValues([
     row?.order_number,
     row?.order_name,

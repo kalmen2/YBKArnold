@@ -270,6 +270,13 @@ export default function AppLayout() {
             )}
           </IconButton>
 
+          <Box
+            component="img"
+            src="/arnold-quote-mark.png"
+            alt="Arnold Contract"
+            sx={{ width: 34, height: 34, objectFit: 'contain', display: { xs: 'none', sm: 'block' } }}
+          />
+
           <Typography variant="h6" sx={{ fontWeight: 700, color: 'primary.dark' }}>
             {headerTitle}
           </Typography>

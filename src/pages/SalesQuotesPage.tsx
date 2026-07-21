@@ -487,35 +487,41 @@ export default function SalesQuotesPage() {
       <Paper
         variant="outlined"
         sx={{
-          p: { xs: 1.25, md: 1.5 },
-          borderRadius: 1.75,
-          borderColor: (theme) => alpha(theme.palette.primary.main, 0.25),
-          background: (theme) => `linear-gradient(125deg, ${alpha(theme.palette.info.main, 0.12)} 0%, ${alpha(theme.palette.primary.main, 0.08)} 48%, ${alpha(theme.palette.background.paper, 0.98)} 100%)`,
+          overflow: 'hidden',
+          borderRadius: 2.5,
+          borderColor: alpha('#0f4c81', 0.18),
+          boxShadow: `0 16px 42px ${alpha('#0b2239', 0.08)}`,
         }}
       >
-        <Stack spacing={1}>
+        <Stack spacing={0}>
           <Stack
             direction={{ xs: 'column', md: 'row' }}
             spacing={1}
             justifyContent="space-between"
             alignItems={{ xs: 'stretch', md: 'center' }}
+            sx={{
+              px: { xs: 1.5, md: 2.25 },
+              py: { xs: 1.5, md: 1.8 },
+              color: '#fff',
+              background: 'linear-gradient(120deg, #081f33 0%, #0f4c81 58%, #1876b8 100%)',
+            }}
           >
             <Stack spacing={0.25}>
               <Stack direction="row" spacing={0.8} alignItems="center">
-                <LocalOfferRoundedIcon color="primary" />
-                <Typography variant="h6" sx={{ fontWeight: 800 }}>
-                  Sales Quotes
+                <LocalOfferRoundedIcon sx={{ color: '#8fd0ff' }} />
+                <Typography variant="h6" sx={{ fontWeight: 800, color: 'inherit' }}>
+                  Quote History
                 </Typography>
               </Stack>
-              <Typography variant="body2" color="text.secondary">
-                Central quote view with lifecycle, rep, state, and project-type intelligence.
+              <Typography variant="body2" sx={{ color: alpha('#fff', 0.74) }}>
+                A complete, searchable record of every customer quote and outcome.
               </Typography>
             </Stack>
 
             <Stack direction="row" spacing={0.75} alignItems="center">
               <Button
                 variant="outlined"
-                color="inherit"
+                sx={{ color: '#fff', borderColor: alpha('#fff', 0.45), '&:hover': { borderColor: '#fff', bgcolor: alpha('#fff', 0.08) } }}
                 startIcon={<RefreshRoundedIcon fontSize="small" />}
                 disabled={isRefreshing}
                 onClick={() => {
@@ -527,34 +533,63 @@ export default function SalesQuotesPage() {
             </Stack>
           </Stack>
 
-          <Stack direction="row" flexWrap="wrap" gap={0.75}>
+          <Box
+            sx={{
+              p: { xs: 1.25, md: 1.5 },
+              display: 'grid',
+              gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', md: 'repeat(5, minmax(0, 1fr))' },
+              gap: 0.75,
+              bgcolor: alpha('#eaf4ff', 0.42),
+              borderBottom: '1px solid',
+              borderColor: 'divider',
+            }}
+          >
             {lifecycleOrder.map((lifecycle) => {
               const count = lifecycleCounts[lifecycle]
               const isActive = lifecycleView === lifecycle
 
               return (
-                <Chip
+                <Button
                   key={lifecycle}
-                  clickable
-                  color={isActive ? 'primary' : 'default'}
-                  variant={isActive ? 'filled' : 'outlined'}
-                  label={`${resolveLifecycleLabel(lifecycle)} (${count})`}
+                  variant="text"
                   onClick={() => {
                     setLifecycleView(lifecycle)
                   }}
-                />
+                  sx={{
+                    minHeight: 66,
+                    px: 1.25,
+                    py: 0.8,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'flex-start',
+                    textTransform: 'none',
+                    borderRadius: 1.75,
+                    border: '1px solid',
+                    borderColor: isActive ? '#0f4c81' : alpha('#0f4c81', 0.14),
+                    bgcolor: isActive ? '#fff' : alpha('#fff', 0.62),
+                    boxShadow: isActive ? `0 6px 18px ${alpha('#0f4c81', 0.12)}` : 'none',
+                    color: '#0b2239',
+                  }}
+                >
+                  <Typography variant="h6" sx={{ fontWeight: 850, lineHeight: 1.05 }}>{count}</Typography>
+                  <Typography variant="caption" sx={{ color: isActive ? '#0f4c81' : 'text.secondary', fontWeight: 750 }}>
+                    {resolveLifecycleLabel(lifecycle)}
+                  </Typography>
+                </Button>
               )
             })}
-          </Stack>
+          </Box>
 
           <Box
             sx={{
+              p: { xs: 1.25, md: 1.5 },
               display: 'grid',
               gridTemplateColumns: {
                 xs: '1fr',
                 md: '2fr 1fr 1fr 1fr',
               },
-              gap: 0.8,
+              gap: 1,
+              bgcolor: 'background.paper',
             }}
           >
             <TextField
@@ -621,14 +656,12 @@ export default function SalesQuotesPage() {
         </Stack>
       </Paper>
 
-      <Paper variant="outlined" sx={{ p: 1.1, borderRadius: 1.5 }}>
-        <Stack direction="row" spacing={1} justifyContent="space-between" alignItems="center" sx={{ mb: 0.8 }}>
+      <Paper variant="outlined" sx={{ p: { xs: 1, md: 1.25 }, borderRadius: 2.25, borderColor: alpha('#0f4c81', 0.16), boxShadow: `0 10px 30px ${alpha('#0b2239', 0.055)}` }}>
+        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.5} justifyContent="space-between" alignItems={{ xs: 'flex-start', sm: 'center' }} sx={{ mb: 1 }}>
           <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
-            {rows.length} matching quote{rows.length === 1 ? '' : 's'}
+            {rows.length} quote{rows.length === 1 ? '' : 's'} in this view
           </Typography>
-          <Typography variant="subtitle2" color="text.secondary" sx={{ fontWeight: 700 }}>
-            Visible value {formatCurrency(totalVisibleAmount, 2)}
-          </Typography>
+          <Chip size="small" variant="outlined" label={`Visible value ${formatCurrency(totalVisibleAmount, 2)}`} sx={{ fontWeight: 750, bgcolor: alpha('#eaf4ff', 0.5) }} />
         </Stack>
 
         <StatusAlerts
@@ -649,10 +682,16 @@ export default function SalesQuotesPage() {
               height: '70vh',
               overflow: 'hidden',
               '& .MuiDataGrid-columnHeaders': {
-                borderBottomColor: 'divider',
+                borderBottomColor: alpha('#0f4c81', 0.18),
+                bgcolor: '#f2f7fb',
+                color: '#123a5a',
+                fontWeight: 800,
               },
               '& .MuiDataGrid-cell': {
                 alignItems: 'center',
+              },
+              '& .MuiDataGrid-row:hover': {
+                bgcolor: alpha('#eaf4ff', 0.62),
               },
             }}
           >

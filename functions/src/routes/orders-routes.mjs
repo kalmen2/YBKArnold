@@ -834,6 +834,25 @@ export function registerOrdersRoutes(app, deps) {
       }
 
       childrenByParentKey.get(parentKey).push(row)
+
+      // A linked claim/rework order remains operationally independent in
+      // Monday, but financially points at the main order's QuickBooks project.
+      // Do not copy dollar totals onto the child: that would double-count the
+      // parent's project. We only inherit project identity and navigation.
+      const parent = rowsByOrderNumber.get(parentKey)
+
+      if (parent?.hasQuickBooksRecord) {
+        row.hasQuickBooksRecord = true
+        row.quickBooksProjectId = parent.quickBooksProjectId
+        row.quickBooksProjectName = parent.quickBooksProjectName
+        row.quickBooksProjectIds = [...parent.quickBooksProjectIds]
+        row.quickBooksProjectNames = [...parent.quickBooksProjectNames]
+        row.source = row.hasMondayRecord ? 'merged' : row.source
+
+        if (row.hasMondayRecord && /not found in quickbooks/i.test(String(row.hazardReason ?? ''))) {
+          row.hazardReason = null
+        }
+      }
     })
 
     const sumField = (family, field) => {

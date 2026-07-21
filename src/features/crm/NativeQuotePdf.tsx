@@ -27,15 +27,21 @@ Crated and knocked-down units will be shipped and must be installed on-site by t
 Lead times are based on the volume of orders in-house when the quotation and deposit are received and may change.
 Arnold Contract will acknowledge receipt of your PO and confirm order details once processed.`
 
+const STAIN_TO_MATCH_NOTICE = [
+  'Stain to Match — Net $375.00. S.T.M. is available only on Arnold standard veneers: Cherry, Walnut, Mahogany, Oak, and Maple.',
+  'Does not include reconstituted veneer, multi-step finishes, racking, glazing, matching laminate wood, or proprietary veneer.',
+  'An additional up-charge may apply upon receipt and review of the sample by our Procurement Manager.',
+]
+
+const QUOTE_VALIDITY_NOTICE = 'Quoted prices are subject to change without notice. All pricing is valid for 30 days from the initial quote. (R0) Date'
+
 const DEFAULT_ADDITIONAL_SERVICES = [
-  ['custom-design', 'Custom Design Fee', 'Includes up to two rendering revisions with a lead time of two weeks. Additional revisions are billed separately.'],
-  ['stain-match', 'Stain to Match', 'Stain matching is available on Arnold standard wood veneers and includes standard strike-offs.'],
-  ['paint-sample', 'Paint Sample', 'Paint sample includes one standard paint strike-off. Additional approval samples may incur an extra fee.'],
-  ['field-verification', 'Field Verification & Measurement', 'Includes one-time field verification and measurement during regular business hours.'],
-  ['shop-drawing', 'Shop Drawing', 'Includes up to two revisions with an estimated two-week lead time.'],
-  ['demolition', 'Demolition and Disposal of Existing Furniture', 'Demolition and disposal must be coordinated with delivery and installation. Unforeseen conditions may result in extra charges.'],
-].map(([id, title, description]) => ({ id, title, description, price: null, images: [] }))
-  .map((service) => ({ ...service, qty: null, unitPrice: null, extPrice: null }))
+  ['custom-design', 'Custom Design Fee', 'Includes up to two rendering revisions with a lead time of two weeks. Additional revisions are billed separately.', 175],
+  ['stain-match', 'Stain to Match', 'Available on Arnold standard veneers. See the customer information notice below for exclusions and conditions.', 375],
+  ['paint-sample', 'Paint Sample', 'Paint sample includes one standard paint strike-off. Additional approval samples may incur an extra fee.', 375],
+  ['field-verification', 'FIV — Field Verification & Measurement', 'Includes one-time field verification and measurement during regular business hours.', 850],
+  ['shop-drawing', 'Shop Drawings', 'Includes up to two revisions with an estimated two-week lead time.', 250],
+].map(([id, title, description, price]) => ({ id: String(id), title: String(title), description: String(description), price: 0, images: [], qty: null, unitPrice: Number(price), extPrice: 0 }))
 
 const DEFAULT_SHIPPING_SERVICES = [
   ['blanket-delivery', 'Blanket-Wrapped Dock Delivery', 'Dedicated truck delivery to a local warehouse dock. Customer team unloads the truck.'],
@@ -75,23 +81,69 @@ const money = (value: number | null | undefined) => {
 
 const optionalMoney = (value: number | null | undefined) => value === null || value === undefined ? '' : money(value)
 
+const additionalServiceKey = (value: string | null | undefined) => {
+  const normalized = String(value || '').toLowerCase()
+  if (normalized.includes('custom design')) return 'custom-design'
+  if (normalized.includes('stain to match')) return 'stain-match'
+  if (normalized.includes('paint sample')) return 'paint-sample'
+  if (normalized.includes('field verification') || /\bfiv\b/.test(normalized)) return 'field-verification'
+  if (normalized.includes('shop drawing')) return 'shop-drawing'
+  return normalized.replace(/[^a-z0-9]+/g, '-')
+}
+
+const hydrateAdditionalServices = (items: CrmQuote['additionalServices']) => {
+  const sourceItems = (Array.isArray(items) ? items : [])
+    .filter((service) => service.id !== 'demolition' && !/demolition/i.test(String(service.title || '')))
+  const matchedKeys = new Set<string>()
+  const defaults = DEFAULT_ADDITIONAL_SERVICES.map((standard) => {
+    const key = additionalServiceKey(standard.title)
+    const existing = sourceItems.find((service) => additionalServiceKey(service.title) === key)
+    if (!existing) return standard
+    matchedKeys.add(key)
+    const qty = existing.qty === null || existing.qty === undefined ? null : Number(existing.qty)
+    const existingUnitPrice = Number(existing.unitPrice)
+    const unitPrice = existing.unitPrice !== null && existing.unitPrice !== undefined
+      && Number.isFinite(existingUnitPrice) && existingUnitPrice > 0
+      ? existingUnitPrice
+      : standard.unitPrice
+    const extPrice = qty !== null && Number.isFinite(qty)
+      ? Number((qty * Number(unitPrice)).toFixed(2))
+      : 0
+    return {
+      ...standard,
+      ...existing,
+      title: standard.title,
+      description: existing.description || standard.description,
+      qty,
+      unitPrice,
+      extPrice,
+      price: extPrice,
+    }
+  })
+  return [...defaults, ...sourceItems.filter((service) => !matchedKeys.has(additionalServiceKey(service.title)))]
+}
+
 const resolveServiceExtPrice = (service: {
   qty?: number | null
   unitPrice?: number | null
   extPrice?: number | null
   price?: number | null
 }) => {
+  const hasExtPrice = service.extPrice !== null && service.extPrice !== undefined
   const extPrice = Number(service.extPrice)
-  if (Number.isFinite(extPrice)) return Number(extPrice.toFixed(2))
+  if (hasExtPrice && Number.isFinite(extPrice)) return Number(extPrice.toFixed(2))
 
+  const hasQty = service.qty !== null && service.qty !== undefined
+  const hasUnitPrice = service.unitPrice !== null && service.unitPrice !== undefined
   const qty = Number(service.qty)
   const unitPrice = Number(service.unitPrice)
-  if (Number.isFinite(qty) && Number.isFinite(unitPrice)) {
+  if (hasQty && hasUnitPrice && Number.isFinite(qty) && Number.isFinite(unitPrice)) {
     return Number((qty * unitPrice).toFixed(2))
   }
 
+  const hasLegacyPrice = service.price !== null && service.price !== undefined
   const legacyPrice = Number(service.price)
-  if (Number.isFinite(legacyPrice)) return Number(legacyPrice.toFixed(2))
+  if (hasLegacyPrice && Number.isFinite(legacyPrice)) return Number(legacyPrice.toFixed(2))
 
   return null
 }
@@ -241,7 +293,7 @@ function createStyles(accentColor: string) {
     quoteInfoBox: { width: 192, borderWidth: 1, borderColor: accentColor, borderRadius: 3, overflow: 'hidden' },
     quoteInfoRow: { flexDirection: 'row', minHeight: 20, borderTopWidth: 1, borderTopColor: '#d8e0ea', alignItems: 'center', paddingVertical: 3, paddingHorizontal: 7 },
     quoteInfoRowFirst: { borderTopWidth: 0 },
-    quoteInfoLabel: { width: 52, fontSize: 7, color: '#64748b', textTransform: 'uppercase' },
+    quoteInfoLabel: { width: 52, fontSize: 7.4, color: '#334155', fontWeight: 700, textTransform: 'uppercase' },
     quoteInfoValue: { flexGrow: 1, flexShrink: 1, flexBasis: 0, fontSize: 8.5, lineHeight: 1.15, fontWeight: 700, textAlign: 'right' },
     customerBlock: {
       flexDirection: 'row',
@@ -254,7 +306,7 @@ function createStyles(accentColor: string) {
     customerGroup: { flexGrow: 1, flexShrink: 1, flexBasis: 0, paddingVertical: 8, paddingHorizontal: 9 },
     customerGroupWide: { flexGrow: 1.2, flexShrink: 1, flexBasis: 0, paddingVertical: 8, paddingHorizontal: 9 },
     customerGroupDivider: { borderLeftWidth: 1, borderLeftColor: '#d8e0ea' },
-    label: { fontSize: 7, color: '#64748b', textTransform: 'uppercase', marginBottom: 2 },
+    label: { fontSize: 7.5, color: '#334155', fontWeight: 700, textTransform: 'uppercase', marginBottom: 2 },
     value: { fontSize: 9, lineHeight: 1.2, marginBottom: 5 },
     contactLine: { fontSize: 8, color: '#344155', lineHeight: 1.25, marginBottom: 2 },
     sectionTitleFirst: { paddingVertical: 5, paddingHorizontal: 6, backgroundColor: '#eef2f7', borderWidth: 1, borderColor: '#cbd5e1', fontSize: 10, fontWeight: 700, color: accentColor },
@@ -293,6 +345,8 @@ function createStyles(accentColor: string) {
     totalRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4, borderBottomWidth: 1, borderColor: '#e2e8f0' },
     grandTotal: { flexDirection: 'row', justifyContent: 'space-between', borderTopWidth: 2, borderTopColor: accentColor, paddingTop: 7, paddingBottom: 3, marginTop: 3, fontSize: 14, fontWeight: 700, color: accentColor },
     terms: { marginTop: 12, borderTopWidth: 1, borderTopColor: '#cbd5e1', paddingTop: 8 },
+    validityNotice: { marginBottom: 8, paddingBottom: 7, borderBottomWidth: 1, borderBottomColor: '#efc8ca', color: '#a11218', fontSize: 8.5, lineHeight: 1.4 },
+    validityText: { color: '#a11218', fontSize: 8.5, lineHeight: 1.4, marginBottom: 5 },
     termItem: { flexGrow: 1 },
     sectionTitle: { marginTop: 12, paddingVertical: 5, paddingHorizontal: 6, backgroundColor: '#eef2f7', borderWidth: 1, borderColor: '#cbd5e1', fontSize: 10, fontWeight: 700, color: accentColor },
     serviceRow: { flexDirection: 'row', borderBottomWidth: 1, borderLeftWidth: 1, borderRightWidth: 1, borderColor: '#d8e0ea', padding: 6, minHeight: 34 },
@@ -312,11 +366,12 @@ function createStyles(accentColor: string) {
     serviceUnit: { width: 74, textAlign: 'right', paddingRight: 5 },
     serviceExt: { width: 74, textAlign: 'right', fontWeight: 700 },
     servicePrice: { width: 72, textAlign: 'right', fontWeight: 700 },
-    customerInfo: { marginTop: 14, backgroundColor: '#fff7f7', borderWidth: 1, borderColor: '#efc8ca', borderRadius: 3, paddingVertical: 8, paddingHorizontal: 10 },
-    customerInfoTitle: { color: '#b1161b', fontSize: 9, fontWeight: 700, marginBottom: 6 },
+    customerInfo: { marginTop: 'auto', backgroundColor: '#fffdfb', borderWidth: 1, borderColor: '#e7c8ca', borderRadius: 3, paddingVertical: 9, paddingHorizontal: 10 },
+    customerInfoTitle: { color: '#b1161b', fontSize: 10.5, fontWeight: 700, marginBottom: 7, textAlign: 'center', textTransform: 'uppercase', letterSpacing: 0.6 },
     customerInfoColumns: { flexDirection: 'row', gap: 12 },
     customerInfoColumn: { flexGrow: 1, flexShrink: 1, flexBasis: 0 },
-    customerInfoLine: { color: '#344155', fontSize: 7.4, lineHeight: 1.35, marginBottom: 4 },
+    customerInfoLine: { color: '#a11218', fontSize: 8.2, lineHeight: 1.4, marginBottom: 4 },
+    stainNoticeLine: { color: '#a11218', fontSize: 8.2, lineHeight: 1.4, marginBottom: 3 },
     footer: {
       position: 'absolute',
       bottom: 18,
@@ -348,7 +403,7 @@ export function NativeQuotePdfDocument({
   }
   const styles = createStyles(resolvedSettings.accentColor)
   const rows = splitLineItems(Array.isArray(quote.lineItems) ? quote.lineItems : [])
-  const additionalServices = Array.isArray(quote.additionalServices) ? quote.additionalServices : DEFAULT_ADDITIONAL_SERVICES
+  const additionalServices = hydrateAdditionalServices(quote.additionalServices)
   const shippingServices = Array.isArray(quote.shippingServices) ? quote.shippingServices : DEFAULT_SHIPPING_SERVICES
   const additionalServicesHaveImages = hasImages(additionalServices)
   const shippingServicesHaveImages = hasImages(shippingServices)
@@ -514,6 +569,10 @@ export function NativeQuotePdfDocument({
         {resolvedSettings.customerInformation ? (
           <View style={styles.customerInfo} wrap={false}>
             <Text style={styles.customerInfoTitle}>Customer Information</Text>
+            <View style={styles.validityNotice}>
+              <Text style={styles.validityText}>{QUOTE_VALIDITY_NOTICE}</Text>
+              {STAIN_TO_MATCH_NOTICE.map((line) => <Text key={line} style={styles.stainNoticeLine}>• {line}</Text>)}
+            </View>
             <View style={styles.customerInfoColumns}>
               {customerInfoColumns.map((column, columnIndex) => (
                 <View key={`customer-info-${columnIndex}`} style={styles.customerInfoColumn}>

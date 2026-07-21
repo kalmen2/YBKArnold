@@ -949,6 +949,11 @@ function resolveQuoteStorageTargets(quote) {
 async function deleteQuoteStorageTargets(quote) {
   const targets = resolveQuoteStorageTargets(quote)
 
+  return deleteResolvedQuoteStorageTargets(targets)
+}
+
+async function deleteResolvedQuoteStorageTargets(targets) {
+
   if (targets.length === 0) {
     return {
       attemptedCount: 0,
@@ -6681,6 +6686,24 @@ export function registerCrmRoutes(app, deps) {
           },
         },
       )
+
+      // Remove files that were explicitly removed from a saved quote. Cleanup happens
+      // only after MongoDB accepts the update, so cancelling an edit never breaks an
+      // existing quote and deleted image references cannot accumulate orphaned files.
+      const nextStorageTargetKeys = new Set(
+        resolveQuoteStorageTargets(updatedQuote).map(
+          (target) => `${target.bucketName.toLowerCase()}::${target.objectPath.toLowerCase()}`,
+        ),
+      )
+      const removedStorageTargets = resolveQuoteStorageTargets(existingQuote).filter(
+        (target) => !nextStorageTargetKeys.has(
+          `${target.bucketName.toLowerCase()}::${target.objectPath.toLowerCase()}`,
+        ),
+      )
+
+      if (removedStorageTargets.length > 0) {
+        await deleteResolvedQuoteStorageTargets(removedStorageTargets)
+      }
 
       return res.json({
         quote: normalizeQuoteOpportunityStageForResponse(updatedQuote),

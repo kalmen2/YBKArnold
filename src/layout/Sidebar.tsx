@@ -230,7 +230,13 @@ function SidebarContent({ showText, onNavigate }: SidebarContentProps) {
         background: `linear-gradient(180deg, ${alpha(theme.palette.background.paper, 0.95)} 0%, ${alpha(theme.palette.primary.light, 0.08)} 100%)`,
       }}
     >
-      <Toolbar sx={{ px: 2, py: 0.75 }}>
+      <Toolbar sx={{ px: showText ? 2 : 1, py: 0.75, justifyContent: showText ? 'flex-start' : 'center', gap: 1 }}>
+        <Box
+          component="img"
+          src="/arnold-quote-mark.png"
+          alt="Arnold Contract"
+          sx={{ width: 38, height: 38, objectFit: 'contain', flexShrink: 0 }}
+        />
         <Typography
           variant="subtitle1"
           sx={{
@@ -242,7 +248,7 @@ function SidebarContent({ showText, onNavigate }: SidebarContentProps) {
             letterSpacing: '0.03em',
           }}
         >
-          YBK Arnold
+          Arnold Contract
         </Typography>
       </Toolbar>
 

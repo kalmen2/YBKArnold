@@ -1,19 +1,18 @@
 import StoreRoundedIcon from '@mui/icons-material/StoreRounded'
-import ContactsRoundedIcon from '@mui/icons-material/ContactsRounded'
 import MapRoundedIcon from '@mui/icons-material/MapRounded'
 import WorkspacesRoundedIcon from '@mui/icons-material/WorkspacesRounded'
 import LocalOfferRoundedIcon from '@mui/icons-material/LocalOfferRounded'
-import DescriptionRoundedIcon from '@mui/icons-material/DescriptionRounded'
-import { Box, Tab, Tabs } from '@mui/material'
-import { useMemo } from 'react'
+import { Box, CircularProgress, Stack, Tab, Tabs, Typography } from '@mui/material'
+import { lazy, Suspense, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
-import CrmDealersPage from './CrmDealersPage'
-import CrmContactsPage from './CrmContactsPage'
-import SalesOpportunitiesPage from './SalesOpportunitiesPage'
-import SalesQuotesPage from './SalesQuotesPage'
-import SalesQuoteLayoutPage from './SalesQuoteLayoutPage'
-import SalesRepsPage from './SalesRepsPage'
+
+const CrmDealersPage = lazy(() => import('./CrmDealersPage'))
+const CrmContactsPage = lazy(() => import('./CrmContactsPage'))
+const SalesOpportunitiesPage = lazy(() => import('./SalesOpportunitiesPage'))
+const SalesQuotesPage = lazy(() => import('./SalesQuotesPage'))
+const SalesQuoteLayoutPage = lazy(() => import('./SalesQuoteLayoutPage'))
+const SalesRepsPage = lazy(() => import('./SalesRepsPage'))
 
 type SalesTab = 'dealers' | 'contacts' | 'opportunities' | 'quotes' | 'quote-layout' | 'sales-reps'
 
@@ -66,6 +65,11 @@ export default function SalesPage() {
     return ['dealers', 'contacts', 'opportunities', 'quotes', 'quote-layout', 'sales-reps']
   }, [appUser?.isSalesRep])
   const activeTab = resolveTab(searchParams.get('tab'), allowedTabs)
+  const visibleTab = activeTab === 'contacts'
+    ? 'dealers'
+    : activeTab === 'quote-layout'
+      ? 'opportunities'
+      : activeTab
 
   function handleTabChange(_: React.SyntheticEvent, value: SalesTab) {
     setSearchParams({ tab: value }, { replace: true })
@@ -75,7 +79,7 @@ export default function SalesPage() {
     <Box>
       <Box sx={{ borderBottom: 1, borderColor: 'divider', mb: 2.5 }}>
         <Tabs
-          value={activeTab}
+          value={visibleTab}
           onChange={handleTabChange}
           sx={{ minHeight: 44 }}
         >
@@ -96,13 +100,6 @@ export default function SalesPage() {
             />
           ) : null}
           <Tab
-            value="quote-layout"
-            label="Quote Layout"
-            icon={<DescriptionRoundedIcon fontSize="small" />}
-            iconPosition="start"
-            sx={{ minHeight: 44, textTransform: 'none', fontWeight: 600, gap: 0.75 }}
-          />
-          <Tab
             value="dealers"
             label="Accounts"
             icon={<StoreRoundedIcon fontSize="small" />}
@@ -118,30 +115,30 @@ export default function SalesPage() {
               sx={{ minHeight: 44, textTransform: 'none', fontWeight: 600, gap: 0.75 }}
             />
           ) : null}
-          <Tab
-            value="contacts"
-            label="Contacts"
-            icon={<ContactsRoundedIcon fontSize="small" />}
-            iconPosition="start"
-            sx={{ minHeight: 44, textTransform: 'none', fontWeight: 600, gap: 0.75 }}
-          />
         </Tabs>
       </Box>
 
-      {activeTab === 'dealers'
-        ? <CrmDealersPage />
-        : activeTab === 'contacts'
-          ? <CrmContactsPage />
-          : activeTab === 'opportunities'
-            ? <SalesOpportunitiesPage />
-            : activeTab === 'quotes'
-              ? <>
-                  <SalesQuotesPage />
-                  <SalesOpportunitiesPage detailsOnly />
-                </>
-            : activeTab === 'quote-layout'
-              ? <SalesQuoteLayoutPage />
-            : <SalesRepsPage />}
+      <Suspense fallback={(
+        <Stack direction="row" spacing={1} alignItems="center" justifyContent="center" sx={{ minHeight: 260 }}>
+          <CircularProgress size={20} />
+          <Typography variant="body2" color="text.secondary">Opening Sales workspace...</Typography>
+        </Stack>
+      )}>
+        {activeTab === 'dealers'
+          ? <CrmDealersPage />
+          : activeTab === 'contacts'
+            ? <CrmContactsPage />
+            : activeTab === 'opportunities'
+              ? <SalesOpportunitiesPage />
+              : activeTab === 'quotes'
+                ? <>
+                    <SalesQuotesPage />
+                    {searchParams.get('quoteId') ? <SalesOpportunitiesPage detailsOnly /> : null}
+                  </>
+              : activeTab === 'quote-layout'
+                ? <SalesQuoteLayoutPage />
+              : <SalesRepsPage />}
+      </Suspense>
     </Box>
   )
 }

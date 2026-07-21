@@ -46,8 +46,8 @@ import {
 import { alpha } from '@mui/material/styles'
 import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type MouseEvent } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type MouseEvent } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import Cropper, { type Area } from 'react-easy-crop'
 import { useAuth } from '../auth/useAuth'
 import { firebaseStorage } from '../auth/firebase'
@@ -81,9 +81,8 @@ import {
   type CrmOpportunityStage,
   type CrmQuote,
   type CrmQuoteChatMessage,
+  type CrmQuotePrintSettings,
 } from '../features/crm/api'
-import { parseExcelQuoteForSync } from '../features/crm/excelQuoteParser'
-import { DEFAULT_QUOTE_PRINT_SETTINGS, QuotePdfPreviewDialog } from '../features/crm/NativeQuotePdf'
 import { resolveQuoteAgeDays } from '../features/crm/utils'
 import { resolveFileExtension, sanitizeStoragePathSegment } from '../lib/fileUtils'
 import { formatCurrency } from '../lib/formatters'
@@ -93,6 +92,33 @@ const DEFAULT_OPPORTUNITY_TITLE_PREFIX = 'Opportunity '
 const DEFAULT_WEBSITE_PAYMENT_TERMS = '50% Deposit / 50% CBD'
 const DEFAULT_NEW_ORDERS_2026_BOARD_ID = '18393945685'
 const DEFAULT_DESIGN_AKF_BOARD_ID = '1064270065'
+const QuotePdfPreviewDialog = lazy(() => import('../features/crm/NativeQuotePdf').then((module) => ({
+  default: module.QuotePdfPreviewDialog,
+})))
+const DEFAULT_QUOTE_PRINT_SETTINGS: CrmQuotePrintSettings = {
+  id: 'default',
+  logoUrl: '/arnold-quote-logo.png',
+  logoName: 'Arnold Contract',
+  companyName: 'Arnold Contract',
+  addressLines: [],
+  phone: null,
+  email: null,
+  website: null,
+  headerText: null,
+  footerText: 'Thank you for the opportunity to quote this project.',
+  accentColor: '#0f4c81',
+  showPaymentTerms: true,
+  showLeadTime: true,
+  showFreight: true,
+  customerInformation: '',
+  updatedAt: null,
+  updatedByEmail: null,
+}
+
+async function parseExcelQuoteForSync(file: File) {
+  const parser = await import('../features/crm/excelQuoteParser')
+  return parser.parseExcelQuoteForSync(file)
+}
 
 type OpportunityLineItemFormState = {
   id: string
@@ -560,19 +586,23 @@ function resolveServiceItemExtPrice(item: {
   extPrice?: number | null
   price?: number | null
 }) {
+  const hasExtPrice = item.extPrice !== null && item.extPrice !== undefined
   const extPrice = Number(item.extPrice)
-  if (Number.isFinite(extPrice)) {
+  if (hasExtPrice && Number.isFinite(extPrice)) {
     return Number(extPrice.toFixed(2))
   }
 
+  const hasQuantity = item.qty !== null && item.qty !== undefined
+  const hasUnitPrice = item.unitPrice !== null && item.unitPrice !== undefined
   const quantity = Number(item.qty)
   const unitPrice = Number(item.unitPrice)
-  if (Number.isFinite(quantity) && Number.isFinite(unitPrice)) {
+  if (hasQuantity && hasUnitPrice && Number.isFinite(quantity) && Number.isFinite(unitPrice)) {
     return Number((quantity * unitPrice).toFixed(2))
   }
 
+  const hasLegacyPrice = item.price !== null && item.price !== undefined
   const legacyPrice = Number(item.price)
-  if (Number.isFinite(legacyPrice)) {
+  if (hasLegacyPrice && Number.isFinite(legacyPrice)) {
     return Number(legacyPrice.toFixed(2))
   }
 
@@ -607,12 +637,11 @@ function resolveDealerQuoteCompanyName(dealer: CrmDealer | null | undefined) {
 }
 
 const defaultAdditionalServiceTemplates = [
-  ['Custom Design Fee', 'Includes up to two rendering revisions with a lead time of two weeks. Additional revisions beyond the included revisions are billed separately.'],
-  ['Stain to Match', 'Stain matching is available on Arnold standard wood veneers and includes standard strike-offs.'],
-  ['Paint Sample', 'Paint sample includes one standard paint strike-off. Additional approval samples may incur an extra fee.'],
-  ['Field Verification & Measurement', 'Includes one-time field verification and measurement during regular business hours. The site must be clear and accessible.'],
-  ['Shop Drawing', 'Includes up to two revisions with an estimated two-week lead time. Additional revisions are billed separately.'],
-  ['Demolition and Disposal of Existing Furniture', 'Demolition and disposal must be coordinated with delivery and installation. Unforeseen conditions and additional trips may result in extra charges.'],
+  ['Custom Design Fee', 'Includes up to two rendering revisions with a lead time of two weeks. Additional revisions beyond the included revisions are billed separately.', 175],
+  ['Stain to Match', 'Available on Arnold standard veneers. Exclusions and sample-review conditions appear in Customer Information.', 375],
+  ['Paint Sample', 'Includes one standard paint strike-off. Additional approval samples may incur an extra fee.', 375],
+  ['FIV — Field Verification & Measurement', 'Includes one-time field verification and measurement during regular business hours. The site must be clear and accessible.', 850],
+  ['Shop Drawings', 'Includes up to two revisions with an estimated two-week lead time. Additional revisions are billed separately.', 250],
 ] as const
 
 const defaultShippingServiceTemplates = [
@@ -621,12 +650,13 @@ const defaultShippingServiceTemplates = [
   ['Delivery & Installation', 'Delivery and installation service. Site conditions, access, working hours, and carry-up requirements must be confirmed before scheduling.'],
 ] as const
 
-function createServiceItemFormState(title = '', description = ''): OpportunityServiceItemFormState {
-  return { id: crypto.randomUUID(), title, description, qty: '', unitPrice: '', extPrice: '', images: [] }
+function createServiceItemFormState(title = '', description = '', unitPrice: number | null = null): OpportunityServiceItemFormState {
+  const price = unitPrice === null ? '' : String(unitPrice)
+  return { id: crypto.randomUUID(), title, description, qty: '', unitPrice: price, extPrice: unitPrice === null ? '' : '0', images: [] }
 }
 
 function createDefaultAdditionalServices() {
-  return defaultAdditionalServiceTemplates.map(([title, description]) => createServiceItemFormState(title, description))
+  return defaultAdditionalServiceTemplates.map(([title, description, unitPrice]) => createServiceItemFormState(title, description, unitPrice))
 }
 
 function createDefaultShippingServices() {
@@ -634,36 +664,72 @@ function createDefaultShippingServices() {
 }
 
 function mapServiceItemsToFormState(items: CrmQuoteServiceItem[] | null | undefined, defaults: () => OpportunityServiceItemFormState[]) {
-  if (!Array.isArray(items)) return defaults()
-  if (items.length === 0) return []
-  return items.map((item) => ({
+  const sourceItems = (Array.isArray(items) ? items : [])
+    .filter((item) => item.id !== 'demolition' && !/demolition/i.test(String(item.title || '')))
+  const isStandardAdditionalServices = defaults === createDefaultAdditionalServices
+  const normalizedServiceKey = (value: string | null | undefined) => {
+    const normalized = String(value || '').toLowerCase()
+    if (normalized.includes('custom design')) return 'custom-design'
+    if (normalized.includes('stain to match')) return 'stain-match'
+    if (normalized.includes('paint sample')) return 'paint-sample'
+    if (normalized.includes('field verification') || /\bfiv\b/.test(normalized)) return 'field-verification'
+    if (normalized.includes('shop drawing')) return 'shop-drawing'
+    return normalized.replace(/[^a-z0-9]+/g, '-')
+  }
+  const mappedItems = sourceItems.map((item) => ({
     id: item.id || crypto.randomUUID(),
     title: String(item.title || ''),
     description: String(item.description || ''),
     qty: (() => {
+      if (item.qty === null || item.qty === undefined) return ''
       const quantity = Number(item.qty)
-      if (Number.isFinite(quantity)) {
-        return String(quantity)
-      }
-
-      const fallbackExt = resolveServiceItemExtPrice(item)
-      return fallbackExt !== null ? '1' : ''
+      return Number.isFinite(quantity) ? String(quantity) : ''
     })(),
     unitPrice: (() => {
+      if (item.unitPrice === null || item.unitPrice === undefined) return ''
       const unitPrice = Number(item.unitPrice)
-      if (Number.isFinite(unitPrice)) {
-        return String(unitPrice)
-      }
-
-      const fallbackExt = resolveServiceItemExtPrice(item)
-      return fallbackExt !== null ? String(fallbackExt) : ''
+      return Number.isFinite(unitPrice) ? String(unitPrice) : ''
     })(),
     extPrice: (() => {
-      const extPrice = resolveServiceItemExtPrice(item)
-      return extPrice === null ? '' : String(extPrice)
+      if (item.extPrice !== null && item.extPrice !== undefined) {
+        const extPrice = Number(item.extPrice)
+        if (Number.isFinite(extPrice)) return String(extPrice)
+      }
+      const qty = Number(item.qty)
+      const unitPrice = Number(item.unitPrice)
+      return item.qty !== null && item.qty !== undefined
+        && item.unitPrice !== null && item.unitPrice !== undefined
+        && Number.isFinite(qty) && Number.isFinite(unitPrice)
+        ? String(Number((qty * unitPrice).toFixed(2)))
+        : ''
     })(),
     images: Array.isArray(item.images) ? item.images : [],
   }))
+
+  if (!isStandardAdditionalServices) {
+    return sourceItems.length > 0 ? mappedItems : defaults()
+  }
+
+  const standardDefaults = createDefaultAdditionalServices()
+  const matchedKeys = new Set<string>()
+  const hydratedDefaults = standardDefaults.map((standard) => {
+    const key = normalizedServiceKey(standard.title)
+    const existing = mappedItems.find((item) => normalizedServiceKey(item.title) === key)
+    if (!existing) return standard
+    matchedKeys.add(key)
+    const qty = existing.qty
+    const unitPrice = Number(existing.unitPrice) > 0 ? existing.unitPrice : standard.unitPrice
+    return {
+      ...standard,
+      ...existing,
+      title: standard.title,
+      description: existing.description || standard.description,
+      qty,
+      unitPrice,
+      extPrice: qty ? calculateExtendedPrice(qty, unitPrice) : '0',
+    }
+  })
+  return [...hydratedDefaults, ...mappedItems.filter((item) => !matchedKeys.has(normalizedServiceKey(item.title)))]
 }
 
 function normalizeServiceItemsForPayload(items: OpportunityServiceItemFormState[]): CrmQuoteServiceItem[] {
@@ -2394,22 +2460,44 @@ function QuoteServiceItemsEditor({ heading, description, items, canEdit, isUploa
   }
 
   return (
-    <Stack spacing={1}>
-      <Stack direction="row" justifyContent="space-between" alignItems="flex-start" gap={1}>
+    <Paper
+      variant="outlined"
+      sx={{
+        overflow: 'hidden',
+        borderRadius: 2,
+        borderColor: alpha('#0f4c81', 0.2),
+        boxShadow: '0 8px 24px rgba(15, 76, 129, 0.06)',
+      }}
+    >
+      <Stack
+        direction={{ xs: 'column', sm: 'row' }}
+        justifyContent="space-between"
+        alignItems={{ xs: 'stretch', sm: 'center' }}
+        gap={1}
+        sx={{ px: 1.6, py: 1.3, background: `linear-gradient(135deg, ${alpha('#0f4c81', 0.1)}, ${alpha('#0f4c81', 0.025)})` }}
+      >
         <Box>
-          <Typography variant="subtitle2" fontWeight={800}>{heading}</Typography>
+          <Typography variant="subtitle1" fontWeight={800} color="primary.dark">{heading}</Typography>
           <Typography variant="caption" color="text.secondary">{description}</Typography>
         </Box>
-        <Button size="small" variant="outlined" disabled={!canEdit} onClick={() => onChange([...items, createServiceItemFormState()])}>Add option</Button>
+        <Button size="small" variant="contained" disabled={!canEdit} onClick={() => onChange([...items, createServiceItemFormState()])}>Add service</Button>
       </Stack>
-      <Stack spacing={0.8}>
+      <Box
+        sx={{
+          display: 'grid',
+          gridTemplateColumns: { xs: '1fr', xl: 'repeat(2, minmax(0, 1fr))' },
+          gap: 1,
+          p: 1.2,
+          backgroundColor: '#f8fafc',
+        }}
+      >
         {items.map((item, index) => (
-          <Paper key={item.id} variant="outlined" sx={{ p: 1.1, borderRadius: 1.2 }}>
-            <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} alignItems="flex-start">
+          <Paper key={item.id} variant="outlined" sx={{ p: 1.2, borderRadius: 1.5, borderColor: alpha('#0f4c81', 0.16), bgcolor: '#fff' }}>
+            <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} alignItems="flex-start" height="100%">
               <Stack spacing={0.8} flex={1} width="100%">
                 <TextField size="small" label="Service" value={item.title} disabled={!canEdit} onChange={(event) => updateItemField(index, 'title', event.target.value)} />
-                <TextField size="small" label="Description / conditions" value={item.description} disabled={!canEdit} multiline minRows={2} onChange={(event) => updateItemField(index, 'description', event.target.value)} />
-                <Stack direction={{ xs: 'column', md: 'row' }} spacing={0.8}>
+                <TextField size="small" label="Description / conditions" value={item.description} disabled={!canEdit} multiline minRows={2} maxRows={4} onChange={(event) => updateItemField(index, 'description', event.target.value)} />
+                <Stack direction="row" spacing={0.8}>
                   <TextField
                     size="small"
                     label="Qty"
@@ -2418,7 +2506,7 @@ function QuoteServiceItemsEditor({ heading, description, items, canEdit, isUploa
                     disabled={!canEdit}
                     onChange={(event) => updateItemField(index, 'qty', event.target.value)}
                     inputProps={{ inputMode: 'decimal' }}
-                    sx={{ width: { xs: '100%', md: 96 } }}
+                    sx={{ width: 90 }}
                   />
                   <TextField
                     size="small"
@@ -2429,7 +2517,7 @@ function QuoteServiceItemsEditor({ heading, description, items, canEdit, isUploa
                     onChange={(event) => updateItemField(index, 'unitPrice', event.target.value)}
                     inputProps={{ inputMode: 'decimal' }}
                     InputProps={{ startAdornment: <InputAdornment position="start">$</InputAdornment> }}
-                    sx={{ width: { xs: '100%', md: 150 } }}
+                    sx={{ flex: 1, minWidth: 120 }}
                   />
                   <TextField
                     size="small"
@@ -2442,12 +2530,11 @@ function QuoteServiceItemsEditor({ heading, description, items, canEdit, isUploa
                       readOnly: true,
                       startAdornment: <InputAdornment position="start">$</InputAdornment>,
                     }}
-                    helperText="Qty × Unit"
-                    sx={{ width: { xs: '100%', md: 150 } }}
+                    sx={{ flex: 1, minWidth: 120 }}
                   />
                 </Stack>
               </Stack>
-              <Stack spacing={0.6} sx={{ width: { xs: '100%', md: 170 } }}>
+              <Stack spacing={0.6} sx={{ width: { xs: '100%', md: 150 } }}>
                 {item.images.length > 0 ? (
                   <Stack direction="row" spacing={0.5}>
                     {item.images.map((image) => (
@@ -2469,11 +2556,13 @@ function QuoteServiceItemsEditor({ heading, description, items, canEdit, isUploa
                   </Button>
                 ) : null}
               </Stack>
-              <IconButton color="error" disabled={!canEdit} onClick={() => onChange(items.filter((_entry, itemIndex) => itemIndex !== index))}><DeleteOutlineRoundedIcon /></IconButton>
+              <Tooltip title="Remove service">
+                <span><IconButton size="small" color="error" disabled={!canEdit} onClick={() => onChange(items.filter((_entry, itemIndex) => itemIndex !== index))}><DeleteOutlineRoundedIcon /></IconButton></span>
+              </Tooltip>
             </Stack>
           </Paper>
         ))}
-      </Stack>
+      </Box>
       <QuoteImageCropDialog
         open={Boolean(cropTarget)}
         file={cropTarget?.file || null}
@@ -2483,7 +2572,7 @@ function QuoteServiceItemsEditor({ heading, description, items, canEdit, isUploa
           setCropTarget(null)
         }}
       />
-    </Stack>
+    </Paper>
   )
 }
 
@@ -3376,6 +3465,7 @@ type SalesOpportunitiesPageProps = {
 export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpportunitiesPageProps = {}) {
   const { appUser } = useAuth()
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const deepLinkedQuoteId = String(searchParams.get('quoteId') || '').trim()
 
@@ -3455,8 +3545,12 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   })
 
   const quotesQuery = useQuery({
-    queryKey: QUERY_KEYS.crmOpportunitiesQuotes,
-    queryFn: () => fetchCrmQuotes({ limit: 700, status: 'all' }),
+    queryKey: [...QUERY_KEYS.crmOpportunitiesQuotes, detailsOnly ? 'history-detail' : 'open-pipeline'],
+    queryFn: () => fetchCrmQuotes({
+      limit: 500,
+      status: 'all',
+      lifecycle: detailsOnly ? 'all' : 'open',
+    }),
     staleTime: 60 * 1000,
   })
 
@@ -3476,6 +3570,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     queryKey: QUERY_KEYS.crmOpportunitiesConvertOrderBoards,
     queryFn: () => fetchCrmConvertOrderBoards(),
     staleTime: 5 * 60 * 1000,
+    enabled: isConvertOrderDialogOpen,
   })
 
   const selectedOpportunityChatsQuery = useQuery({
@@ -7185,17 +7280,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
               size="small"
               variant="outlined"
               color="inherit"
-              startIcon={<FileUploadRoundedIcon fontSize="small" />}
-              endIcon={<ArrowDropDownRoundedIcon fontSize="small" />}
-              disabled={!canManage || isSyncingExcelQuote || isUploadingFolderSelection}
-              onClick={handleOpenUploadQuoteActionMenu}
-            >
-              {isSyncingExcelQuote ? 'Syncing Excel...' : (isUploadingFolderSelection ? 'Scanning Folder...' : 'Sync Excel Sheet')}
-            </Button>
-            <Button
-              size="small"
-              variant="outlined"
-              color="inherit"
               startIcon={<RefreshRoundedIcon fontSize="small" />}
               onClick={() => {
                 void handleRefresh()
@@ -7215,6 +7299,20 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
               Add Opportunity
             </Button>
 
+            <Tooltip title="More opportunity actions">
+              <span>
+                <IconButton
+                  size="small"
+                  aria-label="More opportunity actions"
+                  disabled={!canManage || isSyncingExcelQuote || isUploadingFolderSelection}
+                  onClick={handleOpenUploadQuoteActionMenu}
+                  sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 1.25 }}
+                >
+                  <MoreVertRoundedIcon fontSize="small" />
+                </IconButton>
+              </span>
+            </Tooltip>
+
             <Menu
               anchorEl={uploadQuoteActionMenuAnchorEl}
               open={isUploadQuoteActionMenuOpen}
@@ -7233,6 +7331,14 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                 onClick={handleOpenUploadQuoteFolderScanner}
               >
                 Scan Folder
+              </MenuItem>
+              <MenuItem
+                onClick={() => {
+                  handleCloseUploadQuoteActionMenu()
+                  navigate('/sales?tab=quote-layout')
+                }}
+              >
+                Quote Layout
               </MenuItem>
             </Menu>
             <input
@@ -7272,12 +7378,16 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         onOpenChat={handleOpenOpportunityChat}
       />
 
-      <QuotePdfPreviewDialog
-        open={Boolean(quotePrintPreview)}
-        quote={quotePrintPreview}
-        settings={quotePrintSettingsQuery.data?.settings || DEFAULT_QUOTE_PRINT_SETTINGS}
-        onClose={() => setQuotePrintPreview(null)}
-      />
+      {quotePrintPreview ? (
+        <Suspense fallback={null}>
+          <QuotePdfPreviewDialog
+            open
+            quote={quotePrintPreview}
+            settings={quotePrintSettingsQuery.data?.settings || DEFAULT_QUOTE_PRINT_SETTINGS}
+            onClose={() => setQuotePrintPreview(null)}
+          />
+        </Suspense>
+      ) : null}
 
       <Dialog
         open={isDialogOpen}
@@ -7322,7 +7432,9 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                       ...current,
                       dealerSourceId: value?.sourceId || '',
                       companyName: value ? resolveDealerQuoteCompanyName(value) : '',
-                      salesRep: value?.salesRep || current.salesRep,
+                      salesRep: value
+                        ? (resolveMatchingOption(value.salesRep, excelSyncSalesRepOptions) || 'House')
+                        : current.salesRep,
                       paymentTerms: value?.paymentTerms || DEFAULT_WEBSITE_PAYMENT_TERMS,
                     }))
                   }}
@@ -7518,8 +7630,8 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                 />
 
                 <QuoteServiceItemsEditor
-                  heading="Additional Services & Demolition"
-                  description="Optional priced services without quantity fields. Blank prices do not affect the subtotal."
+                  heading="Additional Services"
+                  description="Standard rates are pre-filled. Adjust quantity or unit price only when the project requires it."
                   items={formState.additionalServices}
                   canEdit={!isSavingOpportunity}
                   isUploadingImage={isUploadingLineImage}
@@ -7975,7 +8087,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                         ...current,
                         dealerSourceId: value.sourceId,
                         companyName: resolveDealerQuoteCompanyName(value) || current.companyName,
-                        salesRep: value.salesRep || current.salesRep,
+                        salesRep: resolveMatchingOption(value.salesRep, excelSyncSalesRepOptions) || 'House',
                         paymentTerms: current.origin === 'excel'
                           ? current.paymentTerms
                           : (value.paymentTerms || DEFAULT_WEBSITE_PAYMENT_TERMS),
@@ -8309,8 +8421,8 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
               />
 
               <QuoteServiceItemsEditor
-                heading="Additional Services & Demolition"
-                description="Optional priced services without quantity fields. Blank prices do not affect the subtotal."
+                heading="Additional Services"
+                description="Standard rates are pre-filled. Adjust quantity or unit price only when the project requires it."
                 items={opportunityDetailsFormState.additionalServices}
                 canEdit={canManage}
                 isUploadingImage={isUploadingLineImage}

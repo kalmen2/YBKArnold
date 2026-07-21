@@ -6,6 +6,8 @@ import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded'
 import ChatBubbleOutlineRoundedIcon from '@mui/icons-material/ChatBubbleOutlineRounded'
 import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded'
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
+import MoreVertRoundedIcon from '@mui/icons-material/MoreVertRounded'
+import LinkRoundedIcon from '@mui/icons-material/LinkRounded'
 import {
   Alert,
   Box,
@@ -15,6 +17,7 @@ import {
   FormControl,
   IconButton,
   MenuItem,
+  Menu,
   Paper,
   Popover,
   Select,
@@ -670,6 +673,7 @@ type OrdersGridProps = {
   onOpenOrderChat: (order: OrdersOverviewOrder) => void
   canDeleteOrders: boolean
   onDeleteOrder: (order: OrdersOverviewOrder) => void
+  onLinkOrder: (order: OrdersOverviewOrder) => void
   onMissingMondayLink: () => void
 }
 
@@ -688,6 +692,7 @@ export function OrdersGrid({
   onOpenOrderChat,
   canDeleteOrders,
   onDeleteOrder,
+  onLinkOrder,
   onMissingMondayLink,
 }: OrdersGridProps) {
   const queryClient = useQueryClient()
@@ -705,6 +710,20 @@ export function OrdersGrid({
   const [statusPopoverError, setStatusPopoverError] = useState<string | null>(null)
   const [isStatusPopoverLoading, setIsStatusPopoverLoading] = useState(false)
   const [updatingStatusColumnKey, setUpdatingStatusColumnKey] = useState<string | null>(null)
+  const [actionsAnchorEl, setActionsAnchorEl] = useState<HTMLElement | null>(null)
+  const [actionsOrder, setActionsOrder] = useState<OrdersOverviewOrder | null>(null)
+
+  const handleOpenActionsMenu = useCallback((event: React.MouseEvent<HTMLElement>, order: OrdersOverviewOrder) => {
+    event.preventDefault()
+    event.stopPropagation()
+    setActionsAnchorEl(event.currentTarget)
+    setActionsOrder(order)
+  }, [])
+
+  const handleCloseActionsMenu = useCallback(() => {
+    setActionsAnchorEl(null)
+    setActionsOrder(null)
+  }, [])
 
   const handleOpenStatusPopover = useCallback((event: React.MouseEvent<HTMLElement>, order: OrdersOverviewOrder) => {
     event.preventDefault()
@@ -1013,17 +1032,6 @@ export function OrdersGrid({
           >
             <ChatBubbleOutlineRoundedIcon sx={{ fontSize: '1.18rem' }} />
           </IconButton>
-          {canDeleteOrders ? (
-            <IconButton
-              size="small"
-              aria-label="Delete order"
-              title="Delete order"
-              onClick={() => onDeleteOrder(row)}
-              sx={{ p: 0.2, color: 'error.main' }}
-            >
-              <DeleteOutlineRoundedIcon sx={{ fontSize: '1.08rem' }} />
-            </IconButton>
-          ) : null}
           </Stack>
         )
       },
@@ -1840,7 +1848,7 @@ export function OrdersGrid({
     },
     {
       field: 'mondayLink',
-      headerName: 'Monday',
+      headerName: 'Actions',
       minWidth: 96,
       width: 104,
       sortable: false,
@@ -1849,20 +1857,14 @@ export function OrdersGrid({
       align: 'center',
       headerAlign: 'center',
       renderCell: ({ row }) => {
-        if (!row.mondayItemUrl) {
-          return <Typography variant="body2" color="text.secondary">—</Typography>
-        }
-
         return (
           <IconButton
             size="small"
-            aria-label="Open Monday item"
-            title="Open Monday item"
-            href={row.mondayItemUrl}
-            target="_blank"
-            rel="noreferrer"
+            aria-label={`Actions for order ${row.orderNumber}`}
+            title="Order actions"
+            onClick={(event) => handleOpenActionsMenu(event, row)}
           >
-            <OpenInNewRoundedIcon fontSize="small" />
+            <MoreVertRoundedIcon fontSize="small" />
           </IconButton>
         )
       },
@@ -1880,8 +1882,10 @@ export function OrdersGrid({
     onOpenOrderChat,
     canDeleteOrders,
     onDeleteOrder,
+    onLinkOrder,
     onMissingMondayLink,
     handleOpenStatusPopover,
+    handleOpenActionsMenu,
   ])
 
   const standardColumns = useMemo<GridColDef<OrdersOverviewOrder>[]>(() => {
@@ -1894,6 +1898,7 @@ export function OrdersGrid({
         { field: 'poNumber', label: 'PO Number' },
         { field: 'description', label: 'Description' },
         { field: 'shopDrawingUrl', label: 'Shop Drawings' },
+        { field: 'mondayLink', label: 'Actions' },
       ] as const
       : activeTab === 'warranty'
         ? [
@@ -1903,7 +1908,7 @@ export function OrdersGrid({
           { field: 'warrantyIssueLeadTimeDate', label: 'Lead Time' },
           { field: 'rowStatus', label: 'Warranty Status' },
           { field: 'orderDate', label: 'Order Date' },
-          { field: 'mondayLink', label: 'Monday' },
+          { field: 'mondayLink', label: 'Actions' },
         ] as const
       : [
         { field: 'orderNumber', label: 'Order' },
@@ -1915,7 +1920,7 @@ export function OrdersGrid({
         { field: 'leadTimeDays', label: 'Lead Time' },
         { field: 'orderDate', label: 'Order Date' },
         { field: 'paidInFull', label: 'Paid' },
-        { field: 'mondayLink', label: 'Monday' },
+        { field: 'mondayLink', label: 'Actions' },
       ] as const
 
     const adminColumnsByField = new Map(
@@ -2238,6 +2243,51 @@ export function OrdersGrid({
           }}
         />
       </Box>
+
+      <Menu
+        anchorEl={actionsAnchorEl}
+        open={Boolean(actionsAnchorEl && actionsOrder)}
+        onClose={handleCloseActionsMenu}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+        transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+      >
+        <MenuItem
+          component="a"
+          href={actionsOrder?.mondayItemUrl || undefined}
+          target="_blank"
+          rel="noreferrer"
+          disabled={!actionsOrder?.mondayItemUrl}
+          onClick={handleCloseActionsMenu}
+        >
+          <OpenInNewRoundedIcon fontSize="small" sx={{ mr: 1 }} />
+          Open in Monday
+        </MenuItem>
+        <MenuItem
+          disabled={!actionsOrder}
+          onClick={() => {
+            const order = actionsOrder
+            handleCloseActionsMenu()
+            if (order) onLinkOrder(order)
+          }}
+        >
+          <LinkRoundedIcon fontSize="small" sx={{ mr: 1 }} />
+          {actionsOrder?.parentOrderNumber ? 'Change linked order' : 'Link to another order'}
+        </MenuItem>
+        {canDeleteOrders ? (
+          <MenuItem
+            disabled={!actionsOrder}
+            sx={{ color: 'error.main' }}
+            onClick={() => {
+              const order = actionsOrder
+              handleCloseActionsMenu()
+              if (order) onDeleteOrder(order)
+            }}
+          >
+            <DeleteOutlineRoundedIcon fontSize="small" sx={{ mr: 1 }} />
+            Delete order
+          </MenuItem>
+        ) : null}
+      </Menu>
 
       <Popover
         open={statusPopoverOpen}
