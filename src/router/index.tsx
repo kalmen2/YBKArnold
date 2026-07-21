@@ -14,6 +14,7 @@ import {
   OrdersPage,
   PicturesPage,
   PurchasingPage,
+  Public3dViewerPage,
   SalesNotificationsPage,
   SalesPage,
   SupportPage,
@@ -23,6 +24,11 @@ import RouteErrorBoundary from './RouteErrorBoundary'
 import { withRouteSuspense } from './withRouteSuspense'
 
 export const router = createBrowserRouter([
+  {
+    path: '/3d/:slug',
+    element: withRouteSuspense(<Public3dViewerPage />),
+    errorElement: <RouteErrorBoundary />,
+  },
   {
     path: '/',
     element: withRouteSuspense(<AppLayout />),

@@ -280,6 +280,8 @@ export function createMongoCollectionsService({
         const quickBooksStatesCollection = integrationsDatabase.collection('quickbooks_oauth_states')
         const emailConnectionsCollection = integrationsDatabase.collection('email_oauth_connections')
         const emailOauthStatesCollection = integrationsDatabase.collection('email_oauth_states')
+        const trimbleOauthConnectionsCollection = integrationsDatabase.collection('trimble_oauth_connections')
+        const trimbleOauthStatesCollection = integrationsDatabase.collection('trimble_oauth_states')
         const emailSyncStatesCollection = integrationsDatabase.collection('email_sync_states')
         const emailIntakeMessagesCollection = integrationsDatabase.collection('email_intake_messages')
         const emailIntakeSuggestionsCollection = integrationsDatabase.collection('email_intake_suggestions')
@@ -421,6 +423,10 @@ export function createMongoCollectionsService({
             emailConnectionsCollection.createIndex({ updatedAt: -1 }),
             emailOauthStatesCollection.createIndex({ id: 1 }, { unique: true }),
             emailOauthStatesCollection.createIndex({ provider: 1, createdAt: 1 }),
+            trimbleOauthConnectionsCollection.createIndex({ id: 1 }, { unique: true }),
+            trimbleOauthConnectionsCollection.createIndex({ updatedAt: -1 }),
+            trimbleOauthStatesCollection.createIndex({ id: 1 }, { unique: true }),
+            trimbleOauthStatesCollection.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
             emailSyncStatesCollection.createIndex({ id: 1 }, { unique: true }),
             emailSyncStatesCollection.createIndex({ provider: 1, uid: 1 }, { unique: true }),
             emailSyncStatesCollection.createIndex({ autoSyncEnabled: 1, updatedAt: -1 }),
@@ -522,6 +528,8 @@ export function createMongoCollectionsService({
           quickBooksStatesCollection,
           emailConnectionsCollection,
           emailOauthStatesCollection,
+          trimbleOauthConnectionsCollection,
+          trimbleOauthStatesCollection,
           emailSyncStatesCollection,
           emailIntakeMessagesCollection,
           emailIntakeSuggestionsCollection,

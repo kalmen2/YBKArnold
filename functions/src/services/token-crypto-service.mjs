@@ -17,7 +17,9 @@ let cachedEncryptionKey = null
 
 export function resolveTokenEncryptionSecret() {
   return normalizeText(
-    process.env.EMAIL_OAUTH_TOKEN_ENCRYPTION_KEY || process.env.GOOGLE_OAUTH_TOKEN_ENCRYPTION_KEY,
+    process.env.TRIMBLE_TOKEN_ENCRYPTION_KEY
+      || process.env.EMAIL_OAUTH_TOKEN_ENCRYPTION_KEY
+      || process.env.GOOGLE_OAUTH_TOKEN_ENCRYPTION_KEY,
     4000,
   )
 }

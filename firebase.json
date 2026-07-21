@@ -50,6 +50,10 @@
         "function": "apiV1"
       },
       {
+        "source": "/auth/trimble/callback",
+        "function": "apiV1"
+      },
+      {
         "source": "/api/**",
         "function": "apiV1"
       },

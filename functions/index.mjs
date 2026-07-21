@@ -24,6 +24,7 @@ import { registerQuickBooksRoutes } from './src/routes/quickbooks-routes.mjs'
 import { registerSlackRoutes } from './src/routes/slack-routes.mjs'
 import { registerSmsBridgeRoutes } from './src/routes/sms-bridge-routes.mjs'
 import { registerTimesheetRoutes } from './src/routes/timesheet-routes.mjs'
+import { registerTrimbleRoutes } from './src/routes/trimble-routes.mjs'
 import { registerVisitorsRoutes } from './src/routes/visitors-routes.mjs'
 import { createAuthUtils } from './src/services/auth-utils.mjs'
 import { createApiKeyService } from './src/services/api-key-service.mjs'
@@ -2063,6 +2064,84 @@ async function dispatchDueCrmChatReminders({ asOfDate }) {
   }
 }
 
+async function dispatchDueQuoteFollowUpReminders() {
+  const { authUsersCollection, crmQuotesCollection, mobileAlertsCollection } = await getCollections()
+  const now = new Date()
+  const nowIsoValue = now.toISOString()
+  const [users, quotes] = await Promise.all([
+    authUsersCollection.find(
+      {
+        approvalStatus: authApprovalApproved,
+        'quoteReminderSettings.rules.0': { $exists: true },
+      },
+      { projection: { _id: 0, uid: 1, email: 1, linkedSalesRepName: 1, quoteReminderSettings: 1 } },
+    ).toArray(),
+    crmQuotesCollection.find(
+      { status: { $in: ['draft', 'sent'] } },
+      { projection: { _id: 0, id: 1, quoteNumber: 1, title: 1, salesRep: 1, opportunityDate: 1, sentAt: 1, createdAt: 1, lastFollowedUpAt: 1, followUpReminderNotifications: 1 } },
+    ).limit(5000).toArray(),
+  ])
+
+  const alerts = []
+  const quoteUpdates = []
+
+  for (const user of users) {
+    const uid = String(user.uid ?? '').trim()
+    const linkedSalesRepName = String(user.linkedSalesRepName ?? '').trim().toLowerCase()
+    if (!uid) continue
+    const rules = Array.isArray(user?.quoteReminderSettings?.rules)
+      ? user.quoteReminderSettings.rules.filter((rule) => rule?.kind === 'follow_up_due')
+      : []
+
+    for (const quote of quotes) {
+      if (linkedSalesRepName && String(quote.salesRep ?? '').trim().toLowerCase() !== linkedSalesRepName) continue
+      for (const rule of rules) {
+        const ruleId = String(rule?.id ?? '').trim()
+        if (!ruleId) continue
+        const referenceAt = String(
+          rule?.base === 'last_follow_up'
+            ? quote.lastFollowedUpAt || ''
+            : quote.opportunityDate || quote.sentAt || quote.createdAt || '',
+        ).trim()
+        const referenceTime = referenceAt ? new Date(referenceAt).getTime() : Number.NaN
+        if (!Number.isFinite(referenceTime)) continue
+        const afterDays = Math.min(365, Math.max(0, Number(rule?.days ?? 10)))
+        const ageDays = Math.max(0, Math.floor((now.getTime() - referenceTime) / 86400000))
+        if (ageDays < afterDays) continue
+        const alreadyNotified = Array.isArray(quote.followUpReminderNotifications)
+          && quote.followUpReminderNotifications.some((entry) => String(entry?.uid ?? '').trim() === uid && String(entry?.ruleId ?? '').trim() === ruleId && String(entry?.referenceAt ?? '').trim() === referenceAt)
+        if (alreadyNotified) continue
+
+        const quoteLabel = String(quote.quoteNumber || quote.title || 'Quote').trim()
+        alerts.push({
+          id: randomUUID(),
+          title: `Quote follow-up due: ${quoteLabel}`,
+          message: `${quoteLabel} reached your ${afterDays}-day follow-up reminder.`,
+          isUpdate: false,
+          targetMode: mobileAlertTargetModeSelected,
+          targetUserUids: [uid],
+          createdByUid: null,
+          createdByEmail: null,
+          delivery: { targetUserCount: 1, pushTokenCount: 0, pushAcceptedCount: 0, pushErrorCount: 0, errorSamples: [] },
+          metadata: { source: 'crm_quote_follow_up_due', quoteId: quote.id, quoteNumber: quote.quoteNumber || null, ruleId, referenceAt, ageDays },
+          createdAt: nowIsoValue,
+          updatedAt: nowIsoValue,
+        })
+        quoteUpdates.push({
+          updateOne: {
+            filter: { id: quote.id },
+            update: { $push: { followUpReminderNotifications: { $each: [{ uid, ruleId, referenceAt, notifiedAt: nowIsoValue }], $slice: -500 } } },
+          },
+        })
+      }
+    }
+  }
+
+  if (alerts.length > 0) await mobileAlertsCollection.insertMany(alerts)
+  if (quoteUpdates.length > 0) await crmQuotesCollection.bulkWrite(quoteUpdates, { ordered: false })
+  return { alertedCount: alerts.length, updatedQuoteCount: quoteUpdates.length }
+}
+
 async function appendSystemRunLog({
   startedAt,
   completedAt,
@@ -2234,6 +2313,7 @@ registerQuickBooksRoutes(app, routeDeps)
 registerSlackRoutes(app, routeDeps)
 registerSmsBridgeRoutes(app, routeDeps)
 registerTimesheetRoutes(app, routeDeps)
+registerTrimbleRoutes(app, routeDeps)
 registerVisitorsRoutes(app, routeDeps)
 app.use((error, _req, res, _next) => {
   const status = Number(error?.status ?? 500)
@@ -2323,7 +2403,11 @@ export const dispatchCrmReminderNotifications = functions
   .timeZone(crmReminderDispatchTimeZone)
   .onRun(async () => {
     const asOfDate = formatDateForTimeZone(new Date(), crmReminderDispatchTimeZone)
-    const summary = await dispatchDueCrmChatReminders({ asOfDate })
+    const [chatSummary, quoteSummary] = await Promise.all([
+      dispatchDueCrmChatReminders({ asOfDate }),
+      dispatchDueQuoteFollowUpReminders(),
+    ])
+    const summary = { chat: chatSummary, quotes: quoteSummary }
 
     console.info('dispatchCrmReminderNotifications completed.', {
       asOfDate,

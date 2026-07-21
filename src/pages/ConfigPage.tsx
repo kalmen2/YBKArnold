@@ -4,8 +4,9 @@ import { useLocation, useNavigate } from 'react-router-dom'
 
 const TemplatesPage = lazy(() => import('./TemplatesPage'))
 const VisitorsPage = lazy(() => import('./VisitorsPage'))
+const QuoteReminderSettingsPage = lazy(() => import('./QuoteReminderSettingsPage'))
 
-type ConfigTab = 'templates' | 'visitors'
+type ConfigTab = 'templates' | 'visitors' | 'quote-reminders'
 
 const configTabs: Array<{
   value: ConfigTab
@@ -19,11 +20,19 @@ const configTabs: Array<{
     value: 'templates',
     label: 'Templates',
   },
+  {
+    value: 'quote-reminders',
+    label: 'Quote Reminders',
+  },
 ]
 
 function getConfigTabFromQuery(rawTab: string | null): ConfigTab {
   if (rawTab === 'templates') {
     return 'templates'
+  }
+
+  if (rawTab === 'quote-reminders') {
+    return 'quote-reminders'
   }
 
   return 'visitors'
@@ -72,7 +81,11 @@ export default function ConfigPage() {
           </Paper>
         )}
       >
-        {selectedTab === 'templates' ? <TemplatesPage /> : <VisitorsPage />}
+        {selectedTab === 'templates'
+          ? <TemplatesPage />
+          : selectedTab === 'quote-reminders'
+            ? <QuoteReminderSettingsPage />
+            : <VisitorsPage />}
       </Suspense>
     </Stack>
   )

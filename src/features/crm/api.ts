@@ -562,6 +562,11 @@ export type CrmQuoteLineImage = {
   height: number | null
   shape?: 'square' | 'landscape' | 'wide' | 'portrait' | null
   displaySize?: 'small' | 'medium' | 'large' | null
+  pdfLayout?: {
+    x: number
+    y: number
+    width: number
+  } | null
 }
 
 export type CrmQuoteLineItem = {
@@ -586,6 +591,18 @@ export type CrmQuoteServiceItem = {
 }
 
 export type CrmQuoteOrigin = 'website' | 'excel'
+
+export type CrmQuote3dModel = {
+  status: 'ready' | string
+  fileName: string | null
+  uploadedAt: string | null
+  uploadedByEmail: string | null
+  viewerUrl: string | null
+  models?: Array<{
+    fileName: string
+    label: string
+  }> | null
+}
 
 export type CrmQuotePrintSettings = {
   id: 'default'
@@ -646,6 +663,7 @@ export type CrmQuote = {
   documentUrl?: string | null
   documentName?: string | null
   documents?: CrmQuoteDocument[] | null
+  trimble3d?: CrmQuote3dModel | null
   origin?: CrmQuoteOrigin | null
   sourceWorkbookUrl?: string | null
   sourceWorkbookName?: string | null
@@ -659,6 +677,30 @@ export type CrmQuote = {
   acceptedAt: string | null
   rejectedAt: string | null
   notes: string | null
+  lastFollowedUpAt?: string | null
+  lastLinkOpenedAt?: string | null
+  linkOpenCount?: number | null
+  activityLog?: Array<{
+    id: string
+    type: 'follow_up' | 'public_3d_opened' | string
+    occurredAt: string
+    createdByUid?: string | null
+    createdByEmail?: string | null
+    link?: string | null
+    userAgent?: string | null
+    ipAddress?: string | null
+    browser?: string | null
+    operatingSystem?: string | null
+    deviceType?: string | null
+    referrer?: string | null
+    acceptLanguage?: string | null
+    location?: {
+      city?: string | null
+      region?: string | null
+      country?: string | null
+      coordinates?: string | null
+    } | null
+  }> | null
   lastStatusChangedAt: string
   createdByUid: string | null
   createdByEmail: string | null
@@ -1174,6 +1216,7 @@ export function fetchCrmQuotes(options: {
   dealerState?: string
   projectType?: string
   lifecycle?: string
+  view?: 'cards' | 'full'
 } = {}) {
   return apiRequest<CrmQuotesResponse>(
     withQuery('/api/crm/quotes', {
@@ -1186,8 +1229,40 @@ export function fetchCrmQuotes(options: {
       dealerState: options.dealerState ?? undefined,
       projectType: options.projectType ?? undefined,
       lifecycle: options.lifecycle ?? undefined,
+      view: options.view ?? undefined,
     }),
   )
+}
+
+export function fetchCrmQuoteDetails(quoteId: string) {
+  return apiRequest<{ quote: CrmQuote }>(`/api/crm/quotes/${encodeURIComponent(quoteId)}/details`)
+}
+
+export function markCrmQuoteFollowedUp(quoteId: string) {
+  return apiRequest<{ quote: CrmQuote }>(`/api/crm/quotes/${encodeURIComponent(quoteId)}/follow-up`, {
+    method: 'POST',
+    body: JSON.stringify({ confirmed: true }),
+  })
+}
+
+export type CrmQuoteReminderSettings = {
+  rules: Array<{
+    id: string
+    kind: 'follow_up_due' | 'link_opened'
+    days: number
+    base: 'quote_date' | 'last_follow_up'
+  }>
+}
+
+export function fetchCrmQuoteReminderSettings() {
+  return apiRequest<{ settings: CrmQuoteReminderSettings }>('/api/crm/reminder-settings/me')
+}
+
+export function updateCrmQuoteReminderSettings(settings: CrmQuoteReminderSettings) {
+  return apiRequest<{ settings: CrmQuoteReminderSettings }>('/api/crm/reminder-settings/me', {
+    method: 'PUT',
+    body: JSON.stringify(settings),
+  })
 }
 
 export function fetchCrmQuotePrintSettings() {
@@ -1223,6 +1298,77 @@ export function updateCrmQuote(quoteId: string, input: Partial<CrmQuoteUpsertInp
   return apiRequest<{ quote: CrmQuote }>(`/api/crm/quotes/${encodeURIComponent(quoteId)}`, {
     method: 'PATCH',
     body: JSON.stringify(input),
+  })
+}
+
+export type TrimbleConnectionStatus = {
+  connected: boolean
+  projectName: string
+  connectedAt: string | null
+  connectedByEmail: string | null
+}
+
+export function fetchTrimbleConnectionStatus() {
+  return apiRequest<TrimbleConnectionStatus>('/api/trimble/status')
+}
+
+export function startTrimbleConnection() {
+  return apiRequest<{ authorizationUrl: string }>('/api/trimble/oauth/start', { method: 'POST' })
+}
+
+export function initiateTrimbleQuoteModelUpload(quoteId: string, file: File) {
+  return apiRequest<{ uploadId: string; uploadUrl: string }>(
+    `/api/trimble/quotes/${encodeURIComponent(quoteId)}/uploads/initiate`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ fileName: file.name, fileSize: file.size }),
+    },
+  )
+}
+
+export function commitTrimbleQuoteModelUpload(quoteId: string, uploadId: string) {
+  return apiRequest<{ model: CrmQuote3dModel }>(
+    `/api/trimble/quotes/${encodeURIComponent(quoteId)}/uploads/commit`,
+    { method: 'POST', body: JSON.stringify({ uploadId }) },
+  )
+}
+
+export function uploadTrimbleSavedQuoteModel(
+  quoteId: string,
+  document: CrmQuoteDocument,
+  fileName: string,
+) {
+  return apiRequest<{ model: CrmQuote3dModel }>(
+    `/api/trimble/quotes/${encodeURIComponent(quoteId)}/uploads/from-document`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ documentUrl: document.url, fileName }),
+    },
+  )
+}
+
+export function uploadTrimbleSavedQuoteModels(
+  quoteId: string,
+  documents: Array<{ document: CrmQuoteDocument; fileName: string; label: string }>,
+) {
+  return apiRequest<{ model: CrmQuote3dModel }>(
+    `/api/trimble/quotes/${encodeURIComponent(quoteId)}/uploads/from-documents`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        documents: documents.map(({ document, fileName, label }) => ({
+          documentUrl: document.url,
+          fileName,
+          label,
+        })),
+      }),
+    },
+  )
+}
+
+export function removeTrimbleQuoteModel(quoteId: string) {
+  return apiRequest<{ ok: true }>(`/api/trimble/quotes/${encodeURIComponent(quoteId)}/model`, {
+    method: 'DELETE',
   })
 }
 

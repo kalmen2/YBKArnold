@@ -7,6 +7,8 @@ import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded'
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
 import FileUploadRoundedIcon from '@mui/icons-material/FileUploadRounded'
 import MoreVertRoundedIcon from '@mui/icons-material/MoreVertRounded'
+import OpenWithRoundedIcon from '@mui/icons-material/OpenWithRounded'
+import PreviewRoundedIcon from '@mui/icons-material/PreviewRounded'
 import PrintRoundedIcon from '@mui/icons-material/PrintRounded'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import WorkspacesRoundedIcon from '@mui/icons-material/WorkspacesRounded'
@@ -17,8 +19,10 @@ import {
   Badge,
   Box,
   Button,
+  ButtonGroup,
   Checkbox,
   Chip,
+  CircularProgress,
   Dialog,
   DialogActions,
   DialogContent,
@@ -46,7 +50,7 @@ import {
 import { alpha } from '@mui/material/styles'
 import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type MouseEvent } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type MouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import Cropper, { type Area } from 'react-easy-crop'
 import { useAuth } from '../auth/useAuth'
@@ -55,22 +59,27 @@ import { LoadingPanel } from '../components/LoadingPanel'
 import { StatusAlerts } from '../components/StatusAlerts'
 import {
   createCrmDealer,
+  createCrmDealerContact,
   convertCrmQuoteToOrder,
   createCrmQuote,
   createCrmQuoteChatMessage,
   convertCrmQuoteWorkbook,
   fetchCrmConvertOrderBoards,
   fetchCrmDealers,
+  fetchCrmContacts,
   fetchCrmExcelQuoteLookup,
   fetchCrmQuoteChats,
+  fetchCrmQuoteDetails,
   fetchCrmQuotePrintSettings,
   fetchCrmQuotes,
   fetchCrmSalesReps,
+  markCrmQuoteFollowedUp,
   removeCrmQuoteChatMessage,
   removeCrmQuote,
   syncCrmQuoteFromExcel,
   updateCrmQuote,
   type CrmDealer,
+  type CrmContact,
   type CrmConvertOrderBoardOption,
   type CrmExcelQuoteLookupResponse,
   type CrmExcelQuoteSyncInput,
@@ -84,6 +93,7 @@ import {
   type CrmQuotePrintSettings,
 } from '../features/crm/api'
 import { resolveQuoteAgeDays } from '../features/crm/utils'
+import Quote3dModelPanel from '../features/crm/Quote3dModelPanel'
 import { resolveFileExtension, sanitizeStoragePathSegment } from '../lib/fileUtils'
 import { formatCurrency } from '../lib/formatters'
 import { QUERY_KEYS } from '../lib/queryKeys'
@@ -94,6 +104,9 @@ const DEFAULT_NEW_ORDERS_2026_BOARD_ID = '18393945685'
 const DEFAULT_DESIGN_AKF_BOARD_ID = '1064270065'
 const QuotePdfPreviewDialog = lazy(() => import('../features/crm/NativeQuotePdf').then((module) => ({
   default: module.QuotePdfPreviewDialog,
+})))
+const QuotePdfPictureLayoutDialog = lazy(() => import('../features/crm/NativeQuotePdf').then((module) => ({
+  default: module.QuotePdfPictureLayoutDialog,
 })))
 const DEFAULT_QUOTE_PRINT_SETTINGS: CrmQuotePrintSettings = {
   id: 'default',
@@ -138,6 +151,8 @@ type PreparedQuoteImage = {
   shape: QuoteImageShape
   displaySize: QuoteImageDisplaySize
 }
+
+type QuoteImagePdfLayout = NonNullable<CrmQuoteLineImage['pdfLayout']>
 
 type OpportunityServiceItemFormState = {
   id: string
@@ -235,6 +250,7 @@ type OpportunityCardProps = {
   isBusy: boolean
   onAdvanceStage: (quote: CrmQuote) => void
   onMarkApproved: (quote: CrmQuote) => void
+  onMarkFollowedUp: (quote: CrmQuote) => void
   onDeclineQuote: (quote: CrmQuote) => void
   onDeleteQuote: (quote: CrmQuote) => void
   onPrintQuote: (quote: CrmQuote) => void
@@ -250,6 +266,7 @@ type StageColumnProps = {
   busyQuoteId: string | null
   onAdvanceStage: (quote: CrmQuote) => void
   onMarkApproved: (quote: CrmQuote) => void
+  onMarkFollowedUp: (quote: CrmQuote) => void
   onDeclineQuote: (quote: CrmQuote) => void
   onDeleteQuote: (quote: CrmQuote) => void
   onPrintQuote: (quote: CrmQuote) => void
@@ -284,7 +301,8 @@ type StageColumnFilters = {
   amountValueMax: string
 }
 
-type OpportunityDetailsSaveMode = 'save' | 'decline'
+type OpportunityDetailsSaveMode = 'save' | 'save_close' | 'decline'
+type OpportunitySavePreference = 'save' | 'save_close'
 type QuoteSidebarFolderKey =
   | 'client_doc'
   | 'renderings'
@@ -303,7 +321,7 @@ type QuoteSidebarFolderDefinition = {
   label: string
 }
 
-type OpportunityDetailsTab = 'details' | 'chat' | QuoteSidebarFolderKey
+type OpportunityDetailsTab = 'details' | 'chat' | 'activity' | QuoteSidebarFolderKey
 
 type FolderScanQueueEntry = {
   id: string
@@ -346,12 +364,15 @@ type QuoteNestedFolderGroup = {
 
 type LineItemsEditorProps = {
   lineItems: OpportunityLineItemFormState[]
+  pdfPreviewQuote?: CrmQuote | null
+  pdfSettings?: CrmQuotePrintSettings
   canEdit: boolean
   onAddLineItem: () => void
   onUpdateLineItem: (index: number, field: 'description' | 'qty' | 'unitPrice' | 'extPrice', value: string) => void
   onRemoveLineItem: (index: number) => void
   onAddImages: (index: number, images: PreparedQuoteImage[]) => void
   onRemoveImage: (lineIndex: number, imageId: string) => void
+  onUpdateImageLayout: (lineIndex: number, imageId: string, layout: QuoteImagePdfLayout) => void
   isUploadingImage: boolean
 }
 
@@ -916,6 +937,203 @@ function QuoteImageCropDialog({
       <DialogActions>
         <Button onClick={onCancel} disabled={isPreparing}>Cancel</Button>
         <Button variant="contained" onClick={() => void handleUsePicture()} disabled={!croppedAreaPixels || isPreparing}>{isPreparing ? 'Preparing…' : 'Use Picture'}</Button>
+      </DialogActions>
+    </Dialog>
+  )
+}
+
+const PDF_PRODUCT_LAYOUT_WIDTH = 327
+const PDF_PRODUCT_LAYOUT_HEIGHT = 180
+
+function resolveQuoteImageAspect(image: CrmQuoteLineImage) {
+  const width = Number(image.width || 0)
+  const height = Number(image.height || 0)
+  if (width > 0 && height > 0) return width / height
+  if (image.shape === 'portrait') return 4 / 5
+  if (image.shape === 'wide') return 16 / 9
+  if (image.shape === 'square') return 1
+  return 4 / 3
+}
+
+function resolveDefaultQuoteImagePdfLayout(image: CrmQuoteLineImage): QuoteImagePdfLayout {
+  const width = image.displaySize === 'small' ? 78 : image.displaySize === 'large' ? 170 : 118
+  return {
+    x: PDF_PRODUCT_LAYOUT_WIDTH - width - 6,
+    y: 8,
+    width,
+  }
+}
+
+function normalizeQuoteImagePdfLayout(image: CrmQuoteLineImage, layout: QuoteImagePdfLayout): QuoteImagePdfLayout {
+  const aspect = resolveQuoteImageAspect(image)
+  const width = Math.min(300, Math.max(48, Number(layout.width) || 118))
+  const height = width / aspect
+  return {
+    x: Math.min(PDF_PRODUCT_LAYOUT_WIDTH - width, Math.max(0, Number(layout.x) || 0)),
+    y: Math.min(Math.max(0, PDF_PRODUCT_LAYOUT_HEIGHT - height), Math.max(0, Number(layout.y) || 0)),
+    width,
+  }
+}
+
+function QuotePicturesPdfLayoutDialog({
+  lineItems,
+  quote,
+  settings,
+  open,
+  onCancel,
+  onSave,
+}: {
+  lineItems: OpportunityLineItemFormState[]
+  quote?: CrmQuote | null
+  settings?: CrmQuotePrintSettings
+  open: boolean
+  onCancel: () => void
+  onSave: (layouts: Array<{ lineIndex: number; imageId: string; layout: QuoteImagePdfLayout }>) => void
+}) {
+  const canvasRefs = useRef(new Map<number, HTMLDivElement>())
+  const interactionRef = useRef<{
+    mode: 'move' | 'resize'
+    lineIndex: number
+    image: CrmQuoteLineImage
+    clientX: number
+    clientY: number
+    layout: QuoteImagePdfLayout
+  } | null>(null)
+  const [layouts, setLayouts] = useState<Record<string, QuoteImagePdfLayout>>({})
+  const images = useMemo(() => lineItems.flatMap((lineItem, lineIndex) => (
+    lineItem.images.map((image) => ({ lineIndex, image }))
+  )), [lineItems])
+
+  useEffect(() => {
+    if (!open) return
+    const resetTimer = window.setTimeout(() => {
+      setLayouts(Object.fromEntries(images.map(({ image }) => [
+        image.id,
+        normalizeQuoteImagePdfLayout(image, image.pdfLayout || resolveDefaultQuoteImagePdfLayout(image)),
+      ])))
+      interactionRef.current = null
+    }, 0)
+    return () => window.clearTimeout(resetTimer)
+  }, [images, open])
+
+  const startInteraction = (
+    mode: 'move' | 'resize',
+    lineIndex: number,
+    image: CrmQuoteLineImage,
+    event: ReactPointerEvent<HTMLElement>,
+  ) => {
+    const layout = layouts[image.id]
+    if (!layout) return
+    event.preventDefault()
+    event.stopPropagation()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    interactionRef.current = {
+      mode,
+      lineIndex,
+      image,
+      clientX: event.clientX,
+      clientY: event.clientY,
+      layout,
+    }
+  }
+
+  const continueInteraction = (event: ReactPointerEvent<HTMLElement>) => {
+    const interaction = interactionRef.current
+    const canvas = interaction ? canvasRefs.current.get(interaction.lineIndex) : null
+    if (!interaction || !canvas) return
+    const bounds = canvas.getBoundingClientRect()
+    const dx = (event.clientX - interaction.clientX) * (PDF_PRODUCT_LAYOUT_WIDTH / bounds.width)
+    const dy = (event.clientY - interaction.clientY) * (PDF_PRODUCT_LAYOUT_HEIGHT / bounds.height)
+    const aspect = resolveQuoteImageAspect(interaction.image)
+
+    if (interaction.mode === 'move') {
+      setLayouts((current) => ({
+        ...current,
+        [interaction.image.id]: normalizeQuoteImagePdfLayout(interaction.image, {
+          ...interaction.layout,
+          x: interaction.layout.x + dx,
+          y: interaction.layout.y + dy,
+        }),
+      }))
+      return
+    }
+
+    const widthFromPointer = Math.max(dx, dy * aspect)
+    setLayouts((current) => ({
+      ...current,
+      [interaction.image.id]: normalizeQuoteImagePdfLayout(interaction.image, {
+        ...interaction.layout,
+        width: interaction.layout.width + widthFromPointer,
+      }),
+    }))
+  }
+
+  if (quote && settings) {
+    return (
+      <Suspense fallback={<Dialog open={open} fullScreen><Stack alignItems="center" justifyContent="center" height="100%"><CircularProgress /></Stack></Dialog>}>
+        <QuotePdfPictureLayoutDialog open={open} quote={quote} settings={settings} onCancel={onCancel} onSave={onSave} />
+      </Suspense>
+    )
+  }
+
+  return (
+    <Dialog open={open} onClose={onCancel} maxWidth="lg" fullWidth>
+      <DialogTitle>Preview PDF &amp; Arrange Pictures</DialogTitle>
+      <DialogContent dividers>
+        <Stack spacing={1.5}>
+          <Alert severity="info" icon={<OpenWithRoundedIcon />}>
+            This preview shows all product wording and pictures together. Drag any picture to move it, and drag its red corner to resize it.
+          </Alert>
+          <Box sx={{ overflowX: 'auto', pb: 0.5 }}>
+            <Box sx={{ minWidth: 720, maxWidth: 900, minHeight: 1040, mx: 'auto', p: 3.5, borderRadius: 0.5, overflow: 'hidden', border: '1px solid #cbd5e1', boxShadow: '0 12px 30px rgba(15, 23, 42, .16)', bgcolor: '#fff' }}>
+              <Stack direction="row" justifyContent="space-between" alignItems="flex-start" sx={{ mb: 2.5, pb: 1.5, borderBottom: '3px solid #0f4c81' }}>
+                <Box>
+                  <Typography sx={{ color: '#b1161b', fontSize: 22, fontWeight: 900, letterSpacing: 0.3 }}>ARNOLD <Box component="span" sx={{ color: '#172033' }}>CONTRACT</Box></Typography>
+                  <Typography sx={{ mt: 0.5, fontSize: 9.5, color: '#526071' }}>866-425-6529 &nbsp; • &nbsp; ArnoldContract.us &nbsp; • &nbsp; 120 Coit Street, Irvington, NJ 07111</Typography>
+                </Box>
+                <Box sx={{ textAlign: 'right' }}>
+                  <Typography sx={{ color: '#0f4c81', fontSize: 19, fontWeight: 800 }}>Estimate</Typography>
+                  <Typography sx={{ color: '#475569', fontSize: 10 }}>Picture layout preview</Typography>
+                </Box>
+              </Stack>
+              <Typography sx={{ mb: 0.8, color: '#0f4c81', fontSize: 13, fontWeight: 800 }}>Products</Typography>
+              <Box sx={{ bgcolor: '#0f4c81', color: '#fff', display: 'grid', gridTemplateColumns: '46px 1fr 55px 86px 86px', px: 0.8, py: 0.75, fontSize: 11, fontWeight: 800 }}>
+                <span>Item</span><span>Description and picture</span><span>Qty</span><span>Unit Price</span><span>Ext</span>
+              </Box>
+              {lineItems.map((lineItem, lineIndex) => (
+                <Box key={lineItem.id || lineIndex} sx={{ display: 'grid', gridTemplateColumns: '46px minmax(0, 1fr) 55px 86px 86px', bgcolor: lineIndex % 2 ? '#fbfdff' : '#fff', borderBottom: '1px solid #d8e0ea' }}>
+                  <Box sx={{ p: 1, borderRight: '1px solid #d8e0ea', fontSize: 12, fontWeight: 800 }}>{lineIndex + 1}</Box>
+                  <Box ref={(node: HTMLDivElement | null) => { if (node) canvasRefs.current.set(lineIndex, node); else canvasRefs.current.delete(lineIndex) }} sx={{ position: 'relative', minHeight: 180, borderRight: '1px solid #d8e0ea', overflow: 'hidden', touchAction: 'none' }}>
+                    <Typography sx={{ position: 'absolute', left: 10, top: 10, right: 10, whiteSpace: 'pre-wrap', color: '#334155', fontSize: 11, lineHeight: 1.4, pointerEvents: 'none' }}>{lineItem.description || 'Product description'}</Typography>
+                    {lineItem.images.map((image) => {
+                      const layout = layouts[image.id]
+                      if (!layout) return null
+                      const imageHeight = layout.width / resolveQuoteImageAspect(image)
+                      return (
+                        <Box key={image.id} onPointerDown={(event) => startInteraction('move', lineIndex, image, event)} onPointerMove={continueInteraction} onPointerUp={() => { interactionRef.current = null }} onPointerCancel={() => { interactionRef.current = null }} sx={{ position: 'absolute', left: `${(layout.x / PDF_PRODUCT_LAYOUT_WIDTH) * 100}%`, top: `${(layout.y / PDF_PRODUCT_LAYOUT_HEIGHT) * 100}%`, width: `${(layout.width / PDF_PRODUCT_LAYOUT_WIDTH) * 100}%`, height: `${(imageHeight / PDF_PRODUCT_LAYOUT_HEIGHT) * 100}%`, border: '2px solid #b1161b', borderRadius: 1, bgcolor: '#fff', boxShadow: '0 5px 16px rgba(15,23,42,.2)', cursor: 'grab', userSelect: 'none', '&:active': { cursor: 'grabbing' } }}>
+                          <Box component="img" draggable={false} src={image.url} alt={image.name || `Item ${lineIndex + 1}`} sx={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', pointerEvents: 'none' }} />
+                          <Box onPointerDown={(event) => startInteraction('resize', lineIndex, image, event)} onPointerMove={continueInteraction} onPointerUp={() => { interactionRef.current = null }} onPointerCancel={() => { interactionRef.current = null }} aria-label={`Resize picture for item ${lineIndex + 1}`} sx={{ position: 'absolute', width: 20, height: 20, right: -7, bottom: -7, borderRadius: '50%', bgcolor: '#b1161b', border: '3px solid #fff', boxShadow: '0 1px 5px rgba(0,0,0,.3)', cursor: 'nwse-resize' }} />
+                        </Box>
+                      )
+                    })}
+                  </Box>
+                  <Box sx={{ p: 1, borderRight: '1px solid #d8e0ea', fontSize: 11, textAlign: 'center' }}>{lineItem.qty || '—'}</Box>
+                  <Box sx={{ p: 1, borderRight: '1px solid #d8e0ea', fontSize: 11, textAlign: 'right' }}>{lineItem.unitPrice ? formatCurrency(Number(lineItem.unitPrice), 2) : '—'}</Box>
+                  <Box sx={{ p: 1, bgcolor: '#f8fafc', fontSize: 11, textAlign: 'right' }}>{lineItem.extPrice ? formatCurrency(Number(lineItem.extPrice), 2) : '—'}</Box>
+                </Box>
+              ))}
+            </Box>
+          </Box>
+          <Typography variant="caption" color="text.secondary" textAlign="center">
+            Pictures remain attached to their product row, so descriptions and pricing stay readable when the estimate flows to another page.
+          </Typography>
+        </Stack>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={() => setLayouts(Object.fromEntries(images.map(({ image }) => [image.id, normalizeQuoteImagePdfLayout(image, resolveDefaultQuoteImagePdfLayout(image))])))}>Reset All</Button>
+        <Box sx={{ flex: 1 }} />
+        <Button onClick={onCancel}>Cancel</Button>
+        <Button variant="contained" onClick={() => onSave(images.map(({ lineIndex, image }) => ({ lineIndex, imageId: image.id, layout: normalizeQuoteImagePdfLayout(image, layouts[image.id] || resolveDefaultQuoteImagePdfLayout(image)) })))}>Save Picture Layout</Button>
       </DialogActions>
     </Dialog>
   )
@@ -2110,6 +2328,16 @@ function resolveDealerSelectionLabel(dealer: CrmDealer) {
   return name
 }
 
+function resolveContactSelectionLabel(contact: CrmContact) {
+  const explicitName = String(contact.name || '').trim()
+  const combinedName = [contact.firstName, contact.lastName]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+    .join(' ')
+
+  return explicitName || combinedName || contact.primaryEmail || contact.phone || 'Unnamed contact'
+}
+
 function resolveMatchingOption(preferredValue: string | null | undefined, options: string[]) {
   const normalizedPreferred = normalizeMatchValue(preferredValue)
 
@@ -2224,16 +2452,21 @@ function createEmptyStageColumnFilters(): StageColumnFilters {
 
 function LineItemsEditor({
   lineItems,
+  pdfPreviewQuote,
+  pdfSettings,
   canEdit,
   onAddLineItem,
   onUpdateLineItem,
   onRemoveLineItem,
   onAddImages,
   onRemoveImage,
+  onUpdateImageLayout,
   isUploadingImage,
 }: LineItemsEditorProps) {
   const lineItemsTotal = calculateLineItemsTotal(normalizeLineItemsForPayload(lineItems))
   const [cropTarget, setCropTarget] = useState<{ index: number; file: File } | null>(null)
+  const [isPictureLayoutOpen, setIsPictureLayoutOpen] = useState(false)
+  const pictureCount = lineItems.reduce((total, lineItem) => total + lineItem.images.length, 0)
 
   return (
     <Stack spacing={0.9}>
@@ -2248,9 +2481,14 @@ function LineItemsEditor({
           </Typography>
         </Stack>
 
-        <Button size="small" variant="outlined" onClick={onAddLineItem} disabled={!canEdit}>
-          Add line item
-        </Button>
+        <Stack direction="row" spacing={0.8}>
+          <Button size="small" variant="outlined" startIcon={<PreviewRoundedIcon />} onClick={() => setIsPictureLayoutOpen(true)} disabled={!canEdit || pictureCount === 0}>
+            Preview PDF &amp; Arrange Pictures
+          </Button>
+          <Button size="small" variant="outlined" onClick={onAddLineItem} disabled={!canEdit}>
+            Add line item
+          </Button>
+        </Stack>
       </Stack>
 
       <Box
@@ -2318,16 +2556,17 @@ function LineItemsEditor({
                                 }}
                               >
                                 <Box component="img" src={image.url} alt={image.name || 'Line item'} sx={{ width: '100%', height: '100%', objectFit: 'contain' }} />
-                                <Chip label={image.displaySize || 'medium'} size="small" sx={{ position: 'absolute', left: 2, bottom: 2, height: 18, fontSize: 9, bgcolor: 'rgba(255,255,255,.92)' }} />
                                 {canEdit ? (
-                                  <IconButton
-                                    size="small"
-                                    color="error"
-                                    onClick={() => onRemoveImage(index, image.id)}
-                                    sx={{ position: 'absolute', top: 1, right: 1, bgcolor: 'rgba(255,255,255,.92)', p: 0.2 }}
-                                  >
-                                    <DeleteOutlineRoundedIcon sx={{ fontSize: 15 }} />
-                                  </IconButton>
+                                  <>
+                                    <IconButton
+                                      size="small"
+                                      color="error"
+                                      onClick={() => onRemoveImage(index, image.id)}
+                                      sx={{ position: 'absolute', top: 1, right: 1, bgcolor: 'rgba(255,255,255,.92)', p: 0.2 }}
+                                    >
+                                      <DeleteOutlineRoundedIcon sx={{ fontSize: 15 }} />
+                                    </IconButton>
+                                  </>
                                 ) : null}
                               </Box>
                             )
@@ -2426,6 +2665,17 @@ function LineItemsEditor({
         onComplete={(image) => {
           if (cropTarget) onAddImages(cropTarget.index, [image])
           setCropTarget(null)
+        }}
+      />
+      <QuotePicturesPdfLayoutDialog
+        open={isPictureLayoutOpen}
+        lineItems={lineItems}
+        quote={pdfPreviewQuote}
+        settings={pdfSettings}
+        onCancel={() => setIsPictureLayoutOpen(false)}
+        onSave={(nextLayouts) => {
+          nextLayouts.forEach(({ lineIndex, imageId, layout }) => onUpdateImageLayout(lineIndex, imageId, layout))
+          setIsPictureLayoutOpen(false)
         }}
       />
     </Stack>
@@ -2587,6 +2837,7 @@ function OpportunityCard({
   isBusy,
   onAdvanceStage,
   onMarkApproved,
+  onMarkFollowedUp,
   onDeclineQuote,
   onDeleteQuote,
   onPrintQuote,
@@ -2799,6 +3050,15 @@ function OpportunityCard({
           transformOrigin={{ vertical: 'top', horizontal: 'right' }}
         >
           <MenuItem
+            onClick={(event) => {
+              event.stopPropagation()
+              closeMenu()
+              onMarkFollowedUp(quote)
+            }}
+          >
+            Mark as followed up
+          </MenuItem>
+          <MenuItem
             onClick={() => {
               closeMenu()
               onDeclineQuote(quote)
@@ -2828,6 +3088,7 @@ function StageColumn({
   busyQuoteId,
   onAdvanceStage,
   onMarkApproved,
+  onMarkFollowedUp,
   onDeclineQuote,
   onDeleteQuote,
   onPrintQuote,
@@ -3258,6 +3519,7 @@ function StageColumn({
                 isBusy={busyQuoteId === quote.id}
                 onAdvanceStage={onAdvanceStage}
                 onMarkApproved={onMarkApproved}
+                onMarkFollowedUp={onMarkFollowedUp}
                 onDeclineQuote={onDeclineQuote}
                 onDeleteQuote={onDeleteQuote}
                 onPrintQuote={onPrintQuote}
@@ -3472,6 +3734,11 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   const [isDialogOpen, setIsDialogOpen] = useState(false)
   const [showAddDetails, setShowAddDetails] = useState(false)
   const [formState, setFormState] = useState<OpportunityFormState>(createEmptyOpportunityForm)
+  const [selectedAddContactSourceId, setSelectedAddContactSourceId] = useState('')
+  const [isNewContactDialogOpen, setIsNewContactDialogOpen] = useState(false)
+  const [newContactForm, setNewContactForm] = useState({ name: '', email: '', phone: '' })
+  const [newContactError, setNewContactError] = useState<string | null>(null)
+  const [isSavingNewContact, setIsSavingNewContact] = useState(false)
   const [isAddDialogDraftFromExcelSync, setIsAddDialogDraftFromExcelSync] = useState(false)
   const [addDialogInitialSnapshot, setAddDialogInitialSnapshot] = useState(() => serializeOpportunityFormState(createEmptyOpportunityForm()))
   const [isSyncingExcelQuote, setIsSyncingExcelQuote] = useState(false)
@@ -3502,6 +3769,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   const [isConvertOrderDialogOpen, setIsConvertOrderDialogOpen] = useState(false)
   const [isSubmittingConvertOrder, setIsSubmittingConvertOrder] = useState(false)
   const [busyQuoteId, setBusyQuoteId] = useState<string | null>(null)
+  const [loadingOpportunityId, setLoadingOpportunityId] = useState<string | null>(null)
   const [quotePrintPreview, setQuotePrintPreview] = useState<CrmQuote | null>(null)
   const [selectedOpportunity, setSelectedOpportunity] = useState<CrmQuote | null>(null)
   const [convertOrderTargetQuote, setConvertOrderTargetQuote] = useState<CrmQuote | null>(null)
@@ -3529,6 +3797,11 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   const [deletingSelectedOpportunityChatMessageId, setDeletingSelectedOpportunityChatMessageId] = useState('')
   const [pendingExcelSyncPromotionQuoteId, setPendingExcelSyncPromotionQuoteId] = useState<string | null>(null)
   const [detailsActionMenuAnchorEl, setDetailsActionMenuAnchorEl] = useState<HTMLElement | null>(null)
+  const [saveActionMenuAnchorEl, setSaveActionMenuAnchorEl] = useState<HTMLElement | null>(null)
+  const savePreferenceStorageKey = `arnold:quote-save-action:${appUser?.uid || 'current-user'}`
+  const [preferredSaveAction, setPreferredSaveAction] = useState<OpportunitySavePreference>(() => (
+    window.localStorage.getItem(savePreferenceStorageKey) === 'save_close' ? 'save_close' : 'save'
+  ))
   const [uploadQuoteActionMenuAnchorEl, setUploadQuoteActionMenuAnchorEl] = useState<HTMLElement | null>(null)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
@@ -3537,10 +3810,30 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   const pipelineUploadExcelInputRef = useRef<HTMLInputElement | null>(null)
   const folderScanInputRef = useRef<HTMLInputElement | null>(null)
   const selectedOpportunityId = selectedOpportunity?.id ?? ''
+  const shouldLoadDealers = Boolean(
+    isDialogOpen
+    || selectedOpportunityId
+    || loadingOpportunityId
+    || isExcelAccountDialogOpen
+    || isExcelSyncDialogOpen
+    || isFolderScanSelectionDialogOpen
+  )
 
   const dealersQuery = useQuery({
     queryKey: QUERY_KEYS.crmOpportunitiesDealers,
     queryFn: () => fetchCrmDealers({ limit: 2500, includeArchived: false }),
+    staleTime: 5 * 60 * 1000,
+    enabled: shouldLoadDealers,
+  })
+
+  const addOpportunityContactsQuery = useQuery({
+    queryKey: ['crm', 'dealer-contacts', formState.dealerSourceId],
+    queryFn: () => fetchCrmContacts({
+      dealerSourceId: formState.dealerSourceId,
+      limit: 1000,
+      includeArchived: false,
+    }),
+    enabled: Boolean(isDialogOpen && formState.dealerSourceId),
     staleTime: 5 * 60 * 1000,
   })
 
@@ -3550,6 +3843,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       limit: 500,
       status: 'all',
       lifecycle: detailsOnly ? 'all' : 'open',
+      view: 'cards',
     }),
     staleTime: 60 * 1000,
   })
@@ -3558,12 +3852,14 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     queryKey: QUERY_KEYS.crmSalesReps,
     queryFn: () => fetchCrmSalesReps(),
     staleTime: 5 * 60 * 1000,
+    enabled: shouldLoadDealers,
   })
 
   const quotePrintSettingsQuery = useQuery({
     queryKey: QUERY_KEYS.crmQuotePrintSettings,
     queryFn: fetchCrmQuotePrintSettings,
     staleTime: 5 * 60 * 1000,
+    enabled: Boolean(quotePrintPreview || selectedOpportunityId || isDialogOpen),
   })
 
   const convertOrderBoardsQuery = useQuery({
@@ -3583,17 +3879,13 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     staleTime: 20 * 1000,
   })
 
-  const isLoading = dealersQuery.isLoading
-    || quotesQuery.isLoading
+  const isLoading = quotesQuery.isLoading
   const isRefreshing = (
-    dealersQuery.isFetching
-    || quotesQuery.isFetching
+    quotesQuery.isFetching
   ) && !isLoading
 
   const queryError = [
-    dealersQuery.error,
     quotesQuery.error,
-    salesRepsQuery.error,
   ]
     .find((entry) => entry instanceof Error)
 
@@ -3612,6 +3904,15 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     () => (Array.isArray(quotesQuery.data?.quotes) ? quotesQuery.data.quotes : []),
     [quotesQuery.data?.quotes],
   )
+
+  const loadOpportunityDetails = useCallback(async (summary: CrmQuote) => {
+    const response = await fetchCrmQuoteDetails(summary.id)
+    return {
+      ...summary,
+      ...response.quote,
+      chatMessageCount: summary.chatMessageCount ?? response.quote.chatMessageCount,
+    }
+  }, [])
 
   const convertOrderBoardOptions = useMemo<CrmConvertOrderBoardOption[]>(() => {
     const fromApi = Array.isArray(convertOrderBoardsQuery.data?.boards)
@@ -3724,6 +4025,17 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     })
   }, [dealers, excelSyncDetectedAccountMatches])
 
+  const addOpportunityContactOptions = useMemo(
+    () => [...(addOpportunityContactsQuery.data?.contacts || [])]
+      .sort((left, right) => resolveContactSelectionLabel(left).localeCompare(resolveContactSelectionLabel(right))),
+    [addOpportunityContactsQuery.data?.contacts],
+  )
+
+  const selectedAddOpportunityContact = useMemo(
+    () => addOpportunityContactOptions.find((contact) => contact.sourceId === selectedAddContactSourceId) || null,
+    [addOpportunityContactOptions, selectedAddContactSourceId],
+  )
+
   const selectedExcelSyncDealer = useMemo(
     () => dealersBySourceId.get(excelSyncDealerSourceIdInput) ?? null,
     [dealersBySourceId, excelSyncDealerSourceIdInput],
@@ -3794,6 +4106,20 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   )
 
   const isDetailsActionMenuOpen = Boolean(detailsActionMenuAnchorEl)
+  const isSaveActionMenuOpen = Boolean(saveActionMenuAnchorEl)
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const stored = window.localStorage.getItem(savePreferenceStorageKey)
+      setPreferredSaveAction(stored === 'save_close' ? 'save_close' : 'save')
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [savePreferenceStorageKey])
+
+  const rememberSaveAction = useCallback((action: OpportunitySavePreference) => {
+    setPreferredSaveAction(action)
+    window.localStorage.setItem(savePreferenceStorageKey, action)
+  }, [savePreferenceStorageKey])
   const isUploadQuoteActionMenuOpen = Boolean(uploadQuoteActionMenuAnchorEl)
   const canUseProposalDetailsActions = Boolean(
     canManage
@@ -4253,12 +4579,8 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
 
   const handleRefresh = useCallback(async () => {
     setErrorMessage(null)
-
-    await Promise.all([
-      dealersQuery.refetch(),
-      quotesQuery.refetch(),
-    ])
-  }, [dealersQuery, quotesQuery])
+    await quotesQuery.refetch()
+  }, [quotesQuery])
 
   const initializeExcelSyncFromPayload = useCallback(async (
     excelPayload: CrmExcelQuoteSyncInput,
@@ -4635,8 +4957,8 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         resetExcelSyncDialog()
         setSuccessMessage(
           targetStage === 'concept'
-            ? `Excel data loaded for ${quoteNumber}. Review and click Save Changes to move it to Proposal Submitted.`
-            : `Excel data loaded for ${quoteNumber}. Review and click Save Changes to apply.`,
+            ? `Excel data loaded for ${quoteNumber}. Review and click Save to move it to Proposal Submitted.`
+            : `Excel data loaded for ${quoteNumber}. Review and click Save to apply.`,
         )
         return
       }
@@ -4961,6 +5283,8 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
           throw new Error('Could not resolve the existing quote for this scanned folder.')
         }
 
+        syncedQuote = await loadOpportunityDetails(syncedQuote)
+
         const nextQueue = openFolderScanSelectionDialogForQuote(syncedQuote, scannedFiles)
         const queueLabel = nextQueue.length === 1 ? '1 new file' : `${nextQueue.length} new files`
 
@@ -4986,7 +5310,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     } finally {
       setIsUploadingFolderSelection(false)
     }
-  }, [canManage, initializeExcelSyncFromPayload, openFolderScanSelectionDialogForQuote, queryClient, quotes])
+  }, [canManage, initializeExcelSyncFromPayload, loadOpportunityDetails, openFolderScanSelectionDialogForQuote, queryClient, quotes])
 
   const handleToggleFolderScanEntry = useCallback((entryId: string, checked: boolean) => {
     setFolderScanQueue((current) => current.map((entry) => {
@@ -5324,12 +5648,64 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     setErrorMessage(null)
     setSuccessMessage(null)
     setFormState(emptyFormState)
+    setSelectedAddContactSourceId('')
     setAddDialogInitialSnapshot(serializeOpportunityFormState(emptyFormState))
     setIsAddDialogDraftFromExcelSync(false)
     setPendingExcelSyncPromotionQuoteId(null)
     setShowAddDetails(true)
     setIsDialogOpen(true)
   }, [])
+
+  const handleOpenNewContactDialog = useCallback(() => {
+    setNewContactError(null)
+    setNewContactForm({
+      name: formState.contactName.trim(),
+      email: '',
+      phone: '',
+    })
+    setIsNewContactDialogOpen(true)
+  }, [formState.contactName])
+
+  const handleCreateDealerContact = useCallback(async () => {
+    const dealerSourceId = formState.dealerSourceId.trim()
+    const name = newContactForm.name.trim()
+
+    if (!dealerSourceId) {
+      setNewContactError('Select a dealer before adding a contact.')
+      return
+    }
+
+    if (!name) {
+      setNewContactError('Contact name is required.')
+      return
+    }
+
+    setNewContactError(null)
+    setIsSavingNewContact(true)
+
+    try {
+      const response = await createCrmDealerContact(dealerSourceId, {
+        name,
+        primaryEmail: newContactForm.email.trim() || null,
+        phone: newContactForm.phone.trim() || null,
+      })
+      const contact = response.contact
+      setSelectedAddContactSourceId(contact.sourceId)
+      setFormState((current) => ({
+        ...current,
+        contactName: resolveContactSelectionLabel(contact),
+        contactEmail: contact.primaryEmail || '',
+        contactPhone: contact.phone || '',
+      }))
+      await queryClient.invalidateQueries({ queryKey: ['crm', 'dealer-contacts', dealerSourceId] })
+      setIsNewContactDialogOpen(false)
+      setNewContactForm({ name: '', email: '', phone: '' })
+    } catch (error) {
+      setNewContactError(error instanceof Error ? error.message : 'Failed to add contact.')
+    } finally {
+      setIsSavingNewContact(false)
+    }
+  }, [formState.dealerSourceId, newContactForm.email, newContactForm.name, newContactForm.phone, queryClient])
 
   const clearDeepLinkedQuoteId = useCallback(() => {
     if (!searchParams.has('quoteId')) {
@@ -5341,10 +5717,11 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     setSearchParams(nextSearchParams, { replace: true })
   }, [searchParams, setSearchParams])
 
-  const handleOpenOpportunityDetails = useCallback((quote: CrmQuote, initialTab: OpportunityDetailsTab = 'details') => {
+  const openLoadedOpportunityDetails = useCallback((quote: CrmQuote, initialTab: OpportunityDetailsTab = 'details') => {
     setErrorMessage(null)
     setSuccessMessage(null)
     setDetailsActionMenuAnchorEl(null)
+    setSaveActionMenuAnchorEl(null)
     setUploadQuoteActionMenuAnchorEl(null)
     const nextFormState = createOpportunityDetailsFormState(quote)
     setSelectedOpportunityChatDraft('')
@@ -5360,8 +5737,22 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     setPendingExcelSyncPromotionQuoteId(null)
   }, [])
 
+  const handleOpenOpportunityDetails = useCallback(async (summary: CrmQuote, initialTab: OpportunityDetailsTab = 'details') => {
+    setErrorMessage(null)
+    setBusyQuoteId(summary.id)
+    setLoadingOpportunityId(summary.id)
+    try {
+      openLoadedOpportunityDetails(await loadOpportunityDetails(summary), initialTab)
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to load opportunity details.')
+    } finally {
+      setBusyQuoteId(null)
+      setLoadingOpportunityId(null)
+    }
+  }, [loadOpportunityDetails, openLoadedOpportunityDetails])
+
   const handleOpenOpportunityChat = useCallback((quote: CrmQuote) => {
-    handleOpenOpportunityDetails(quote, 'chat')
+    void handleOpenOpportunityDetails(quote, 'chat')
   }, [handleOpenOpportunityDetails])
 
   useEffect(() => {
@@ -5372,7 +5763,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     const deepLinkedQuote = quotes.find((quote) => quote.id === deepLinkedQuoteId)
 
     if (deepLinkedQuote) {
-      handleOpenOpportunityDetails(deepLinkedQuote)
+      void handleOpenOpportunityDetails(deepLinkedQuote)
       clearDeepLinkedQuoteId()
       return
     }
@@ -5405,6 +5796,9 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     const emptyFormState = createEmptyOpportunityForm()
 
     setFormState(emptyFormState)
+    setSelectedAddContactSourceId('')
+    setIsNewContactDialogOpen(false)
+    setNewContactError(null)
     setAddDialogInitialSnapshot(serializeOpportunityFormState(emptyFormState))
     setIsAddDialogDraftFromExcelSync(false)
     setIsDialogOpen(false)
@@ -5429,6 +5823,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     }
 
     setDetailsActionMenuAnchorEl(null)
+    setSaveActionMenuAnchorEl(null)
     setUploadQuoteActionMenuAnchorEl(null)
     setSelectedOpportunity(null)
     setOpportunityDetailsFormState(null)
@@ -5503,6 +5898,15 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       ...current,
       lineItems: current.lineItems.map((line, index) => index === lineIndex
         ? { ...line, images: line.images.filter((image) => image.id !== imageId) }
+        : line),
+    }))
+  }, [])
+
+  const handleUpdateFormLineImageLayout = useCallback((lineIndex: number, imageId: string, pdfLayout: QuoteImagePdfLayout) => {
+    setFormState((current) => ({
+      ...current,
+      lineItems: current.lineItems.map((line, index) => index === lineIndex
+        ? { ...line, images: line.images.map((image) => image.id === imageId ? { ...image, pdfLayout } : image) }
         : line),
     }))
   }, [])
@@ -5609,6 +6013,15 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     }) : current)
   }, [])
 
+  const handleUpdateDetailsLineImageLayout = useCallback((lineIndex: number, imageId: string, pdfLayout: QuoteImagePdfLayout) => {
+    setOpportunityDetailsFormState((current) => current ? ({
+      ...current,
+      lineItems: current.lineItems.map((line, index) => index === lineIndex
+        ? { ...line, images: line.images.map((image) => image.id === imageId ? { ...image, pdfLayout } : image) }
+        : line),
+    }) : current)
+  }, [])
+
   const handleAddDetailsServiceImages = useCallback(async (
     section: 'additionalServices' | 'shippingServices',
     index: number,
@@ -5632,21 +6045,37 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     }
   }, [opportunityDetailsFormState, uploadLineItemImages])
 
-  const handlePrintQuote = useCallback(async (quote: CrmQuote) => {
+  const handlePrintQuote = useCallback(async (quoteSummary: CrmQuote, detailsAlreadyLoaded = false) => {
     setErrorMessage(null)
+    setBusyQuoteId(quoteSummary.id)
+    setLoadingOpportunityId(quoteSummary.id)
+
+    let quote: CrmQuote
+    try {
+      quote = detailsAlreadyLoaded ? quoteSummary : await loadOpportunityDetails(quoteSummary)
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Could not load this quote for printing.')
+      setBusyQuoteId(null)
+      setLoadingOpportunityId(null)
+      return
+    }
+    setLoadingOpportunityId(null)
 
     if (quote.origin !== 'excel') {
       setQuotePrintPreview(quote)
+      setBusyQuoteId(null)
       return
     }
 
     if (quote.convertedPdfUrl) {
       window.open(quote.convertedPdfUrl, '_blank', 'noopener,noreferrer')
+      setBusyQuoteId(null)
       return
     }
 
     if (!quote.sourceWorkbookUrl || !quote.sourceWorkbookName || !quote.quoteNumber) {
       setErrorMessage('This Excel quote has no source workbook available for printing. Upload and sync the workbook again.')
+      setBusyQuoteId(null)
       return
     }
 
@@ -5677,7 +6106,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     } finally {
       setBusyQuoteId(null)
     }
-  }, [queryClient])
+  }, [loadOpportunityDetails, queryClient])
 
   const handleCreateOpportunity = useCallback(async () => {
     const dealerSourceId = formState.dealerSourceId.trim()
@@ -5772,6 +6201,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
           : 'Opportunity created in Concept stage.',
       )
       setFormState(emptyFormState)
+      setSelectedAddContactSourceId('')
       setAddDialogInitialSnapshot(serializeOpportunityFormState(emptyFormState))
       setIsAddDialogDraftFromExcelSync(false)
       setPendingExcelSyncPromotionQuoteId(null)
@@ -5833,7 +6263,16 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     }
   }, [invalidateOpportunityData])
 
-  const handleAdvanceStage = useCallback(async (quote: CrmQuote) => {
+  const handleAdvanceStage = useCallback(async (quoteSummary: CrmQuote) => {
+    setBusyQuoteId(quoteSummary.id)
+    let quote: CrmQuote
+    try {
+      quote = await loadOpportunityDetails(quoteSummary)
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to load opportunity details.')
+      setBusyQuoteId(null)
+      return
+    }
     const stage = resolveOpportunityStage(quote)
 
     if (stage === 'concept') {
@@ -5841,6 +6280,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
 
       if (missingFields.length > 0) {
         setErrorMessage(`Cannot send proposal. Missing required details: ${missingFields.join(', ')}. Open details and complete them first.`)
+        setBusyQuoteId(null)
         return
       }
 
@@ -5848,8 +6288,10 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         status: 'sent',
         sentAt: new Date().toISOString(),
       })
+      return
     }
-  }, [updateStage])
+    setBusyQuoteId(null)
+  }, [loadOpportunityDetails, updateStage])
 
   const handleCloseConvertOrderDialog = useCallback(() => {
     if (isSubmittingConvertOrder) {
@@ -5962,9 +6404,18 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     invalidateOpportunityData,
   ])
 
-  const handleMarkApproved = useCallback((quote: CrmQuote) => {
-    openConvertOrderDialog(quote)
-  }, [openConvertOrderDialog])
+  const handleMarkApproved = useCallback(async (quoteSummary: CrmQuote) => {
+    setBusyQuoteId(quoteSummary.id)
+    setLoadingOpportunityId(quoteSummary.id)
+    try {
+      openConvertOrderDialog(await loadOpportunityDetails(quoteSummary))
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to load opportunity details.')
+    } finally {
+      setBusyQuoteId(null)
+      setLoadingOpportunityId(null)
+    }
+  }, [loadOpportunityDetails, openConvertOrderDialog])
 
   const handleDeclineQuote = useCallback(async (quote: CrmQuote) => {
     const confirmed = window.confirm(`Mark ${quote.quoteNumber || quote.title} as declined?`)
@@ -5986,6 +6437,25 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       setSuccessMessage('Opportunity marked as declined.')
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Failed to mark opportunity as declined.')
+    } finally {
+      setBusyQuoteId(null)
+    }
+  }, [invalidateOpportunityData])
+
+  const handleMarkFollowedUp = useCallback(async (quote: CrmQuote) => {
+    const confirmed = window.confirm(`Confirm that ${quote.quoteNumber || quote.title} was followed up? The day counter will restart from today.`)
+    if (!confirmed) return
+
+    setErrorMessage(null)
+    setSuccessMessage(null)
+    setBusyQuoteId(quote.id)
+    try {
+      const response = await markCrmQuoteFollowedUp(quote.id)
+      setSelectedOpportunity((current) => current?.id === quote.id ? response.quote : current)
+      await invalidateOpportunityData()
+      setSuccessMessage('Follow-up recorded. The opportunity day counter has restarted.')
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to record the follow-up.')
     } finally {
       setBusyQuoteId(null)
     }
@@ -6094,7 +6564,8 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         notes: opportunityDetailsFormState.notes.trim() || null,
       }
 
-      if (mode === 'save') {
+      let savedQuote: CrmQuote | null = null
+      if (mode === 'save' || mode === 'save_close') {
         const selectedOpportunityStage = resolveOpportunityStage(selectedOpportunity)
         const shouldPromoteFromExcelSync = (
           pendingExcelSyncPromotionQuoteId === selectedOpportunity.id
@@ -6102,15 +6573,17 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         )
 
         if (shouldPromoteFromExcelSync) {
-          await updateCrmQuote(selectedOpportunity.id, {
+          const response = await updateCrmQuote(selectedOpportunity.id, {
             ...detailsPayload,
             opportunityStage: 'proposal_submission',
             status: 'sent',
             sentAt: new Date().toISOString(),
           })
+          savedQuote = response.quote
           setSuccessMessage('Opportunity updated and moved to Proposal Submitted.')
         } else {
-          await updateCrmQuote(selectedOpportunity.id, detailsPayload)
+          const response = await updateCrmQuote(selectedOpportunity.id, detailsPayload)
+          savedQuote = response.quote
           setSuccessMessage('Opportunity updated.')
         }
       } else if (mode === 'decline') {
@@ -6124,10 +6597,15 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
 
       await invalidateOpportunityData()
       setDetailsActionMenuAnchorEl(null)
-        setPendingExcelSyncPromotionQuoteId(null)
-      setSelectedOpportunity(null)
-      setOpportunityDetailsFormState(null)
-      setOpportunityDetailsInitialSnapshot('')
+      setPendingExcelSyncPromotionQuoteId(null)
+      if (mode === 'save') {
+        if (savedQuote) setSelectedOpportunity(savedQuote)
+        setOpportunityDetailsInitialSnapshot(serializeOpportunityDetailsFormState(opportunityDetailsFormState))
+      } else {
+        setSelectedOpportunity(null)
+        setOpportunityDetailsFormState(null)
+        setOpportunityDetailsInitialSnapshot('')
+      }
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Failed to update opportunity.')
     } finally {
@@ -6158,6 +6636,18 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         errorMessage={errorMessage || (queryError instanceof Error ? queryError.message : null)}
         successMessage={successMessage}
       />
+
+      <Dialog open={Boolean(loadingOpportunityId)} maxWidth="xs" fullWidth>
+        <DialogContent>
+          <Stack direction="row" spacing={1.5} alignItems="center" sx={{ py: 1 }}>
+            <CircularProgress size={28} />
+            <Box>
+              <Typography fontWeight={800}>Loading opportunity details</Typography>
+              <Typography variant="body2" color="text.secondary">Opening the selected quote…</Typography>
+            </Box>
+          </Stack>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={isConvertOrderDialogOpen}
@@ -7371,6 +7861,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         busyQuoteId={busyQuoteId}
         onAdvanceStage={handleAdvanceStage}
         onMarkApproved={handleMarkApproved}
+        onMarkFollowedUp={handleMarkFollowedUp}
         onDeclineQuote={handleDeclineQuote}
         onDeleteQuote={handleDeleteQuote}
         onPrintQuote={(quote) => void handlePrintQuote(quote)}
@@ -7428,6 +7919,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                   options={excelSyncDealerOptions}
                   value={dealersBySourceId.get(formState.dealerSourceId) ?? null}
                   onChange={(_event, value) => {
+                    setSelectedAddContactSourceId('')
                     setFormState((current) => ({
                       ...current,
                       dealerSourceId: value?.sourceId || '',
@@ -7436,6 +7928,9 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                         ? (resolveMatchingOption(value.salesRep, excelSyncSalesRepOptions) || 'House')
                         : current.salesRep,
                       paymentTerms: value?.paymentTerms || DEFAULT_WEBSITE_PAYMENT_TERMS,
+                      contactName: '',
+                      contactEmail: '',
+                      contactPhone: '',
                     }))
                   }}
                   isOptionEqualToValue={(option, value) => option.sourceId === value.sourceId}
@@ -7491,15 +7986,78 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                 </Stack>
 
                 <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.1}>
-                  <TextField
-                    label="Contact Name"
-                    value={formState.contactName}
-                    onChange={(event) => {
+                  <Autocomplete
+                    options={addOpportunityContactOptions}
+                    value={selectedAddOpportunityContact}
+                    inputValue={formState.contactName}
+                    disabled={!formState.dealerSourceId}
+                    loading={addOpportunityContactsQuery.isFetching}
+                    onChange={(_event, contact) => {
+                      setSelectedAddContactSourceId(contact?.sourceId || '')
                       setFormState((current) => ({
                         ...current,
-                        contactName: event.target.value,
+                        contactName: contact ? resolveContactSelectionLabel(contact) : '',
+                        contactEmail: contact?.primaryEmail || '',
+                        contactPhone: contact?.phone || '',
                       }))
                     }}
+                    onInputChange={(_event, inputValue, reason) => {
+                      if (reason !== 'input') return
+                      setSelectedAddContactSourceId('')
+                      setFormState((current) => ({
+                        ...current,
+                        contactName: inputValue,
+                        contactEmail: selectedAddContactSourceId ? '' : current.contactEmail,
+                        contactPhone: selectedAddContactSourceId ? '' : current.contactPhone,
+                      }))
+                    }}
+                    isOptionEqualToValue={(option, value) => option.sourceId === value.sourceId}
+                    getOptionLabel={(contact) => resolveContactSelectionLabel(contact)}
+                    renderOption={(props, contact) => (
+                      <Box component="li" {...props} key={contact.sourceId}>
+                        <Stack spacing={0.1}>
+                          <Typography variant="body2" fontWeight={700}>{resolveContactSelectionLabel(contact)}</Typography>
+                          {contact.primaryEmail || contact.phone ? (
+                            <Typography variant="caption" color="text.secondary">
+                              {[contact.primaryEmail, contact.phone].filter(Boolean).join(' • ')}
+                            </Typography>
+                          ) : null}
+                        </Stack>
+                      </Box>
+                    )}
+                    noOptionsText={(
+                      <Stack spacing={0.7} alignItems="flex-start">
+                        <Typography variant="body2">No matching contact.</Typography>
+                        <Button
+                          size="small"
+                          startIcon={<AddRoundedIcon fontSize="small" />}
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={handleOpenNewContactDialog}
+                        >
+                          Add new{formState.contactName.trim() ? `: ${formState.contactName.trim()}` : ' contact'}
+                        </Button>
+                      </Stack>
+                    )}
+                    renderInput={(params) => (
+                      <TextField
+                        {...params}
+                        label="Contact Name"
+                        helperText={!formState.dealerSourceId
+                          ? 'Select a dealer first.'
+                          : addOpportunityContactsQuery.error instanceof Error
+                            ? addOpportunityContactsQuery.error.message
+                            : 'Choose a saved contact or type a new name.'}
+                        InputProps={{
+                          ...params.InputProps,
+                          endAdornment: (
+                            <>
+                              {addOpportunityContactsQuery.isFetching ? <CircularProgress color="inherit" size={18} /> : null}
+                              {params.InputProps.endAdornment}
+                            </>
+                          ),
+                        }}
+                      />
+                    )}
                     sx={{ flex: 1 }}
                   />
 
@@ -7620,12 +8178,14 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
 
                 <LineItemsEditor
                   lineItems={formState.lineItems}
+                  pdfSettings={quotePrintSettingsQuery.data?.settings || DEFAULT_QUOTE_PRINT_SETTINGS}
                   canEdit
                   onAddLineItem={handleAddFormLineItem}
                   onUpdateLineItem={handleUpdateFormLineItem}
                   onRemoveLineItem={handleRemoveFormLineItem}
                   onAddImages={(index, files) => void handleAddFormLineImages(index, files)}
                   onRemoveImage={handleRemoveFormLineImage}
+                  onUpdateImageLayout={handleUpdateFormLineImageLayout}
                   isUploadingImage={isUploadingLineImage}
                 />
 
@@ -7769,6 +8329,53 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
           </Button>
         </DialogActions>
       </Dialog>
+      <Dialog
+        open={isNewContactDialogOpen}
+        onClose={() => {
+          if (!isSavingNewContact) setIsNewContactDialogOpen(false)
+        }}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Add Contact</DialogTitle>
+        <DialogContent>
+          <Stack spacing={1.5} sx={{ pt: 0.8 }}>
+            <Typography variant="body2" color="text.secondary">
+              This contact will be saved under {dealersBySourceId.get(formState.dealerSourceId)?.name || 'the selected dealer'} and available on future quotes.
+            </Typography>
+            {newContactError ? <Alert severity="error">{newContactError}</Alert> : null}
+            <TextField
+              required
+              autoFocus
+              label="Contact Name"
+              value={newContactForm.name}
+              onChange={(event) => setNewContactForm((current) => ({ ...current, name: event.target.value }))}
+            />
+            <TextField
+              label="Email (optional)"
+              type="email"
+              value={newContactForm.email}
+              onChange={(event) => setNewContactForm((current) => ({ ...current, email: event.target.value }))}
+            />
+            <TextField
+              label="Phone (optional)"
+              type="tel"
+              value={newContactForm.phone}
+              onChange={(event) => setNewContactForm((current) => ({ ...current, phone: event.target.value }))}
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button disabled={isSavingNewContact} onClick={() => setIsNewContactDialogOpen(false)}>Cancel</Button>
+          <Button
+            variant="contained"
+            disabled={isSavingNewContact || !newContactForm.name.trim()}
+            onClick={() => void handleCreateDealerContact()}
+          >
+            {isSavingNewContact ? 'Adding...' : 'Add Contact'}
+          </Button>
+        </DialogActions>
+      </Dialog>
       </> : null}
 
       <Dialog
@@ -7814,7 +8421,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                 <IconButton
                   size="medium"
                   disabled={busyQuoteId === selectedOpportunityPrintQuote.id}
-                  onClick={() => void handlePrintQuote(selectedOpportunityPrintQuote)}
+                  onClick={() => void handlePrintQuote(selectedOpportunityPrintQuote, true)}
                 >
                   <PrintRoundedIcon sx={{ fontSize: 20 }} />
                 </IconButton>
@@ -7846,6 +8453,20 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
           anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
           transformOrigin={{ vertical: 'top', horizontal: 'right' }}
         >
+          <MenuItem
+            disabled={
+              !selectedOpportunity
+              || isSavingOpportunityDetails
+              || isUploadingFolderSelection
+              || isSendingSelectedOpportunityChat
+            }
+            onClick={() => {
+              setDetailsActionMenuAnchorEl(null)
+              if (selectedOpportunity) void handleMarkFollowedUp(selectedOpportunity)
+            }}
+          >
+            Mark as followed up
+          </MenuItem>
           <MenuItem
             disabled={
               !canUseProposalDetailsActions
@@ -8015,6 +8636,14 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                     sx={{ justifyContent: 'flex-start', textTransform: 'none', fontWeight: 700 }}
                   >
                     {selectedOpportunityChatCount > 0 ? `Chat (${selectedOpportunityChatCount})` : 'Chat'}
+                  </Button>
+                  <Button
+                    size="small"
+                    variant={selectedOpportunityDetailsTab === 'activity' ? 'contained' : 'text'}
+                    onClick={() => setSelectedOpportunityDetailsTab('activity')}
+                    sx={{ justifyContent: 'flex-start', textTransform: 'none', fontWeight: 700 }}
+                  >
+                    Activity ({Array.isArray(selectedOpportunity.activityLog) ? selectedOpportunity.activityLog.length : 0})
                   </Button>
                 </Stack>
 
@@ -8409,14 +9038,27 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                 </Box>
               ) : null}
 
+              <Quote3dModelPanel
+                quote={selectedOpportunity}
+                canManage={canManage}
+                onChanged={async () => {
+                  const refreshed = await quotesQuery.refetch()
+                  const nextQuote = refreshed.data?.quotes?.find((quote) => quote.id === selectedOpportunity.id)
+                  if (nextQuote) setSelectedOpportunity(nextQuote)
+                }}
+              />
+
               <LineItemsEditor
                 lineItems={opportunityDetailsFormState.lineItems}
+                pdfPreviewQuote={selectedOpportunityPrintQuote}
+                pdfSettings={quotePrintSettingsQuery.data?.settings || DEFAULT_QUOTE_PRINT_SETTINGS}
                 canEdit={canManage}
                 onAddLineItem={handleAddDetailsLineItem}
                 onUpdateLineItem={handleUpdateDetailsLineItem}
                 onRemoveLineItem={handleRemoveDetailsLineItem}
                 onAddImages={(index, files) => void handleAddDetailsLineImages(index, files)}
                 onRemoveImage={handleRemoveDetailsLineImage}
+                onUpdateImageLayout={handleUpdateDetailsLineImageLayout}
                 isUploadingImage={isUploadingLineImage}
               />
 
@@ -8760,6 +9402,63 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
 
               ) : null}
 
+              {selectedOpportunityDetailsTab === 'activity' ? (
+                <Stack spacing={1.2}>
+                  <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" gap={0.7}>
+                    <Box>
+                      <Typography variant="subtitle1" fontWeight={800}>Quote Activity</Typography>
+                      <Typography variant="body2" color="text.secondary">Tracked link openings and staff follow-ups, newest first.</Typography>
+                    </Box>
+                    <Stack direction="row" spacing={0.7} flexWrap="wrap" useFlexGap>
+                      <Chip size="small" label={`${Math.max(0, Number(selectedOpportunity.linkOpenCount || 0))} link opens`} />
+                      {selectedOpportunity.lastLinkOpenedAt ? <Chip size="small" label={`Last opened ${formatQuoteChatTimestamp(selectedOpportunity.lastLinkOpenedAt)}`} /> : null}
+                      {selectedOpportunity.lastFollowedUpAt ? <Chip size="small" color="primary" label={`Last follow-up ${formatQuoteChatTimestamp(selectedOpportunity.lastFollowedUpAt)}`} /> : null}
+                    </Stack>
+                  </Stack>
+                  <Paper variant="outlined" sx={{ overflowX: 'auto', borderRadius: 2 }}>
+                    <Table size="small" sx={{ minWidth: 1180 }}>
+                      <TableHead>
+                        <TableRow>
+                          <TableCell sx={{ fontWeight: 800 }}>Date and time</TableCell>
+                          <TableCell sx={{ fontWeight: 800 }}>Event</TableCell>
+                          <TableCell sx={{ fontWeight: 800 }}>IP address</TableCell>
+                          <TableCell sx={{ fontWeight: 800 }}>Approximate location</TableCell>
+                          <TableCell sx={{ fontWeight: 800 }}>Device</TableCell>
+                          <TableCell sx={{ fontWeight: 800 }}>Browser / OS</TableCell>
+                          <TableCell sx={{ fontWeight: 800 }}>Language</TableCell>
+                          <TableCell sx={{ fontWeight: 800 }}>Referring page</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {Array.isArray(selectedOpportunity.activityLog) && selectedOpportunity.activityLog.length > 0 ? (
+                          [...selectedOpportunity.activityLog]
+                            .sort((left, right) => String(right.occurredAt || '').localeCompare(String(left.occurredAt || '')))
+                            .slice(0, 500)
+                            .map((activity) => {
+                              const location = [activity.location?.city, activity.location?.region, activity.location?.country].filter(Boolean).join(', ')
+                              return (
+                                <TableRow key={activity.id} hover>
+                                  <TableCell sx={{ whiteSpace: 'nowrap' }}>{formatQuoteChatTimestamp(activity.occurredAt)}</TableCell>
+                                  <TableCell>{activity.type === 'public_3d_opened' ? 'Customer 3D link opened' : activity.type === 'follow_up' ? `Follow-up by ${activity.createdByEmail || 'staff'}` : activity.type.replaceAll('_', ' ')}</TableCell>
+                                  <TableCell sx={{ fontFamily: 'monospace' }}>{activity.ipAddress || 'Unavailable'}</TableCell>
+                                  <TableCell>{location || 'Unavailable'}{activity.location?.coordinates ? <Typography variant="caption" display="block" color="text.secondary">{activity.location.coordinates}</Typography> : null}</TableCell>
+                                  <TableCell>{activity.deviceType || 'Unavailable'}</TableCell>
+                                  <TableCell>{[activity.browser, activity.operatingSystem].filter(Boolean).join(' / ') || 'Unavailable'}{activity.userAgent ? <Typography variant="caption" display="block" color="text.secondary" sx={{ maxWidth: 280, wordBreak: 'break-word' }}>{activity.userAgent}</Typography> : null}</TableCell>
+                                  <TableCell>{activity.acceptLanguage || 'Unavailable'}</TableCell>
+                                  <TableCell sx={{ maxWidth: 240, wordBreak: 'break-word' }}>{activity.referrer || 'Direct / unavailable'}</TableCell>
+                                </TableRow>
+                              )
+                            })
+                        ) : (
+                          <TableRow><TableCell colSpan={8}><Typography color="text.secondary" textAlign="center" sx={{ py: 3 }}>No tracked activity yet.</Typography></TableCell></TableRow>
+                        )}
+                      </TableBody>
+                    </Table>
+                  </Paper>
+                  <Alert severity="info">Location is approximate and appears only when the hosting network supplies city, region, or country information. It is not GPS data.</Alert>
+                </Stack>
+              ) : null}
+
               {selectedOpportunityDetailsTab === 'details' ? (
                 <TextField
                   label="Notes"
@@ -8797,11 +9496,8 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
           >
             Close Without Saving
           </Button>
-          <Button
+          <ButtonGroup
             variant="contained"
-            onClick={() => {
-              void handleSaveOpportunityDetails('save')
-            }}
             disabled={
               !canManage
               || isSavingOpportunityDetails
@@ -8810,8 +9506,48 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
               || !opportunityDetailsFormState
             }
           >
-            {isSavingOpportunityDetails ? 'Saving...' : 'Save Changes'}
-          </Button>
+            <Button onClick={() => void handleSaveOpportunityDetails(preferredSaveAction)}>
+              {isSavingOpportunityDetails ? 'Saving...' : preferredSaveAction === 'save_close' ? 'Save and Close' : 'Save'}
+            </Button>
+            <Button
+              size="small"
+              aria-label="Choose save action"
+              aria-haspopup="menu"
+              aria-expanded={isSaveActionMenuOpen ? 'true' : undefined}
+              onClick={(event) => setSaveActionMenuAnchorEl(event.currentTarget)}
+              sx={{ px: 0.8 }}
+            >
+              <ArrowDropDownRoundedIcon />
+            </Button>
+          </ButtonGroup>
+          <Menu
+            anchorEl={saveActionMenuAnchorEl}
+            open={isSaveActionMenuOpen}
+            onClose={() => setSaveActionMenuAnchorEl(null)}
+            anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
+            transformOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+          >
+            <MenuItem
+              selected={preferredSaveAction === 'save'}
+              onClick={() => {
+                setSaveActionMenuAnchorEl(null)
+                rememberSaveAction('save')
+                void handleSaveOpportunityDetails('save')
+              }}
+            >
+              Save
+            </MenuItem>
+            <MenuItem
+              selected={preferredSaveAction === 'save_close'}
+              onClick={() => {
+                setSaveActionMenuAnchorEl(null)
+                rememberSaveAction('save_close')
+                void handleSaveOpportunityDetails('save_close')
+              }}
+            >
+              Save and Close
+            </MenuItem>
+          </Menu>
         </DialogActions>
       </Dialog>
     </Stack>

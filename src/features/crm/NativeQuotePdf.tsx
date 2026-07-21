@@ -1,6 +1,7 @@
 import {
   Document,
   Image,
+  Link,
   Page,
   PDFDownloadLink,
   PDFViewer,
@@ -11,9 +12,10 @@ import {
 } from '@react-pdf/renderer'
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded'
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded'
-import { Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, Stack } from '@mui/material'
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { CrmQuote, CrmQuoteLineItem, CrmQuotePrintSettings } from './api'
+import OpenWithRoundedIcon from '@mui/icons-material/OpenWithRounded'
+import { Alert, Box, Button, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, Stack, Typography } from '@mui/material'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import type { CrmQuote, CrmQuoteLineImage, CrmQuoteLineItem, CrmQuotePrintSettings } from './api'
 const defaultArnoldLogoUrl = '/arnold-quote-logo.png'
 const defaultArnoldMarkUrl = '/arnold-quote-mark.png'
 
@@ -262,10 +264,40 @@ const resolveProductImageMetrics = (
   }
 }
 
+const PDF_PRODUCT_LAYOUT_WIDTH = 327
+
+const resolveProductImageAspect = (image: CrmQuoteLineImage) => {
+  const width = Number(image.width || 0)
+  const height = Number(image.height || 0)
+  if (width > 0 && height > 0) return width / height
+  if (image.shape === 'portrait') return 4 / 5
+  if (image.shape === 'wide') return 16 / 9
+  if (image.shape === 'square') return 1
+  return 4 / 3
+}
+
+const resolveProductImagePlacements = (images: CrmQuoteLineImage[]) => images.slice(0, 2).map((image, index) => {
+  const metrics = resolveProductImageMetrics(image, images.length)
+  const requestedWidth = Number(image.pdfLayout?.width)
+  const width = Math.min(300, Math.max(48, Number.isFinite(requestedWidth) ? requestedWidth : metrics.width))
+  const height = width / resolveProductImageAspect(image)
+  const requestedX = Number(image.pdfLayout?.x)
+  const requestedY = Number(image.pdfLayout?.y)
+  const defaultY = index === 0 ? 8 : metrics.height + 12
+
+  return {
+    image,
+    width,
+    height,
+    x: Math.min(PDF_PRODUCT_LAYOUT_WIDTH - width, Math.max(0, Number.isFinite(requestedX) ? requestedX : PDF_PRODUCT_LAYOUT_WIDTH - width - 6)),
+    y: Math.max(0, Number.isFinite(requestedY) ? requestedY : defaultY),
+  }
+})
+
 function createStyles(accentColor: string) {
   return StyleSheet.create({
     page: {
-      paddingTop: 138,
+      paddingTop: 154,
       paddingBottom: 56,
       paddingHorizontal: 28,
       fontFamily: 'Helvetica',
@@ -274,26 +306,29 @@ function createStyles(accentColor: string) {
     },
     header: {
       position: 'absolute',
-      top: 22,
+      top: 16,
       left: 18,
       right: 28,
-      height: 104,
+      height: 126,
       flexDirection: 'row',
       alignItems: 'center',
       borderBottomWidth: 2,
       borderBottomColor: accentColor,
       paddingBottom: 8,
     },
-    logo: { width: 84, height: 84, objectFit: 'contain' },
-    brandBlock: { paddingLeft: 9, flexGrow: 1, flexShrink: 1, flexBasis: 0, justifyContent: 'center', alignItems: 'center' },
-    brandName: { fontSize: 22, fontWeight: 700, letterSpacing: 0.3 },
-    brandArnold: { color: '#151515' },
-    brandContract: { color: '#b1161b' },
-    brandQuote: { marginBottom: 5, fontSize: 17, fontWeight: 700, color: '#172033', letterSpacing: 1.2 },
-    quoteInfoBox: { width: 192, borderWidth: 1, borderColor: accentColor, borderRadius: 3, overflow: 'hidden' },
+    companyBlock: { width: 166, alignItems: 'center', justifyContent: 'center', paddingRight: 8, paddingBottom: 15 },
+    logo: { width: 72, height: 72, objectFit: 'contain' },
+    brandBlock: { paddingHorizontal: 5, paddingBottom: 15, flexGrow: 1, flexShrink: 1, flexBasis: 0, justifyContent: 'center', alignItems: 'center' },
+    brandName: { marginBottom: 7, fontSize: 18, fontWeight: 700, letterSpacing: 0.25 },
+    brandArnold: { color: '#b1161b' },
+    brandContract: { color: '#151515' },
+    brandEstimate: { fontSize: 21, fontWeight: 700, color: accentColor, letterSpacing: 1.5 },
+    headerContactBar: { position: 'absolute', left: 0, right: 0, bottom: 5, flexDirection: 'row', justifyContent: 'center', alignItems: 'center' },
+    headerContactText: { fontSize: 7.1, lineHeight: 1.2, color: accentColor, fontWeight: 700, textAlign: 'center', letterSpacing: 0.1 },
+    quoteInfoBox: { width: 192, marginBottom: 15, borderWidth: 1, borderColor: accentColor, borderRadius: 3, overflow: 'hidden' },
     quoteInfoRow: { flexDirection: 'row', minHeight: 20, borderTopWidth: 1, borderTopColor: '#d8e0ea', alignItems: 'center', paddingVertical: 3, paddingHorizontal: 7 },
     quoteInfoRowFirst: { borderTopWidth: 0 },
-    quoteInfoLabel: { width: 52, fontSize: 7.4, color: '#334155', fontWeight: 700, textTransform: 'uppercase' },
+    quoteInfoLabel: { width: 66, fontSize: 7.2, color: '#334155', fontWeight: 700, textTransform: 'uppercase' },
     quoteInfoValue: { flexGrow: 1, flexShrink: 1, flexBasis: 0, fontSize: 8.5, lineHeight: 1.15, fontWeight: 700, textAlign: 'right' },
     customerBlock: {
       flexDirection: 'row',
@@ -309,6 +344,9 @@ function createStyles(accentColor: string) {
     label: { fontSize: 7.5, color: '#334155', fontWeight: 700, textTransform: 'uppercase', marginBottom: 2 },
     value: { fontSize: 9, lineHeight: 1.2, marginBottom: 5 },
     contactLine: { fontSize: 8, color: '#344155', lineHeight: 1.25, marginBottom: 2 },
+    modelViewer: { marginBottom: 12, paddingVertical: 8, paddingHorizontal: 10, borderRadius: 3, backgroundColor: '#eef5fa', borderWidth: 1, borderColor: accentColor, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+    modelViewerLabel: { fontSize: 9, fontWeight: 700, color: '#172033' },
+    modelViewerLink: { fontSize: 9, fontWeight: 700, color: accentColor, textDecoration: 'none' },
     sectionTitleFirst: { paddingVertical: 5, paddingHorizontal: 6, backgroundColor: '#eef2f7', borderWidth: 1, borderColor: '#cbd5e1', fontSize: 10, fontWeight: 700, color: accentColor },
     tableHeader: {
       flexDirection: 'row',
@@ -331,12 +369,13 @@ function createStyles(accentColor: string) {
     },
     itemColumn: { width: 30, paddingRight: 5 },
     descriptionColumn: { flexGrow: 1, flexShrink: 1, flexBasis: 0, paddingRight: 7 },
-    descriptionBody: { flexDirection: 'row', alignItems: 'flex-start' },
+    descriptionBody: { flexDirection: 'row', alignItems: 'flex-start', position: 'relative' },
     descriptionText: { flexGrow: 1, flexShrink: 1, flexBasis: 0, lineHeight: 1.35 },
     descriptionMediaRail: { marginLeft: 7, flexShrink: 0 },
     descriptionMediaBox: { borderWidth: 1, borderColor: '#d8e0ea', borderRadius: 2, overflow: 'hidden', backgroundColor: '#ffffff' },
     descriptionMediaBoxSpaced: { marginTop: 4 },
     descriptionMediaImage: { width: '100%', objectFit: 'contain' },
+    descriptionPositionedImage: { position: 'absolute', borderWidth: 1, borderColor: '#d8e0ea', borderRadius: 2, overflow: 'hidden', backgroundColor: '#ffffff' },
     qtyColumn: { width: 38, textAlign: 'right', paddingRight: 6 },
     unitColumn: { width: 70, textAlign: 'right', paddingRight: 6 },
     extColumn: { width: 76, textAlign: 'right' },
@@ -391,9 +430,11 @@ function createStyles(accentColor: string) {
 export function NativeQuotePdfDocument({
   quote,
   settings,
+  pictureLayoutMode = false,
 }: {
   quote: CrmQuote
   settings: CrmQuotePrintSettings
+  pictureLayoutMode?: boolean
 }) {
   const resolvedSettings = {
     ...DEFAULT_QUOTE_PRINT_SETTINGS,
@@ -416,18 +457,23 @@ export function NativeQuotePdfDocument({
   const customerInfoColumns = [customerInfoLines.slice(0, customerInfoMiddle), customerInfoLines.slice(customerInfoMiddle)].filter((column) => column.length > 0)
 
   return (
-    <Document title={`Quote ${plain(quote.quoteNumber, quote.id)}`} author={resolvedSettings.companyName}>
+    <Document title={`Estimate ${plain(quote.quoteNumber, quote.id)}`} author={resolvedSettings.companyName}>
       <Page size="LETTER" style={styles.page} wrap>
         <View style={styles.header} fixed>
-          {resolvedSettings.logoUrl ? <Image src={resolvePdfImageUri(resolvedSettings.logoUrl)} style={styles.logo} /> : null}
+          <View style={styles.companyBlock}>
+            {resolvedSettings.logoUrl ? <Image src={resolvePdfImageUri(resolvedSettings.logoUrl)} style={styles.logo} /> : null}
+          </View>
           <View style={styles.brandBlock}>
-            <Text style={styles.brandQuote}>QUOTE</Text>
             <Text style={styles.brandName}><Text style={styles.brandArnold}>Arnold </Text><Text style={styles.brandContract}>Contract</Text></Text>
+            <Text style={styles.brandEstimate}>ESTIMATE</Text>
           </View>
           <View style={styles.quoteInfoBox}>
-            <View style={[styles.quoteInfoRow, styles.quoteInfoRowFirst]}><Text style={styles.quoteInfoLabel}>Quote #</Text><Text style={styles.quoteInfoValue}>{plain(quote.quoteNumber)}</Text></View>
+            <View style={[styles.quoteInfoRow, styles.quoteInfoRowFirst]}><Text style={styles.quoteInfoLabel}>Quote Number</Text><Text style={styles.quoteInfoValue}>{plain(quote.quoteNumber)}</Text></View>
             <View style={styles.quoteInfoRow}><Text style={styles.quoteInfoLabel}>Date</Text><Text style={styles.quoteInfoValue}>{plain(quote.opportunityDate)?.slice(0, 10)}</Text></View>
             <View style={styles.quoteInfoRow}><Text style={styles.quoteInfoLabel}>Project</Text><Text style={styles.quoteInfoValue}>{plain(quote.title)}</Text></View>
+          </View>
+          <View style={styles.headerContactBar}>
+            <Text style={styles.headerContactText}>866-425-6529   |   ArnoldContract.us   |   120 Coit Street, Irvington, New Jersey 07111</Text>
           </View>
         </View>
 
@@ -452,6 +498,13 @@ export function NativeQuotePdfDocument({
           </View>
         </View>
 
+        {quote.trimble3d?.viewerUrl ? (
+          <View style={styles.modelViewer} wrap={false}>
+            <Text style={styles.modelViewerLabel}>Customer 3D project view</Text>
+            <Link src={quote.trimble3d.viewerUrl} style={styles.modelViewerLink}>Open 3D View</Link>
+          </View>
+        ) : null}
+
         {rows.length > 0 ? (
           <View minPresenceAhead={48}>
             <Text style={styles.sectionTitleFirst}>Products</Text>
@@ -465,16 +518,39 @@ export function NativeQuotePdfDocument({
           </View>
         ) : null}
 
-        {rows.map((lineItem, index) => (
-          <View key={lineItem.id || `${lineItem.itemNumber}-${index}`} style={[styles.row, index % 2 === 1 ? { backgroundColor: '#fbfdff' } : {}]} wrap={false}>
+        {rows.map((lineItem, index) => {
+          const lineImages = (lineItem.images || []).slice(0, 2)
+          const usesCustomImageLayout = lineImages.some((image) => image.pdfLayout)
+          const imagePlacements = usesCustomImageLayout ? resolveProductImagePlacements(lineImages) : []
+          const positionedContentHeight = imagePlacements.length > 0
+            ? Math.max(...imagePlacements.map((placement) => placement.y + placement.height)) + 6
+            : 0
+
+          return (
+          <View key={lineItem.id || `${lineItem.itemNumber}-${index}`} style={[styles.row, positionedContentHeight > 0 ? { minHeight: Math.max(34, positionedContentHeight + 12) } : {}, index % 2 === 1 ? { backgroundColor: '#fbfdff' } : {}]} wrap={false}>
             <Text style={[styles.itemColumn, styles.centeredCell]}>{lineItem.continuation ? '' : lineItem.displayItemNumber}</Text>
             <View style={styles.descriptionColumn}>
-              <View style={styles.descriptionBody}>
+              <View style={[styles.descriptionBody, positionedContentHeight > 0 ? { minHeight: positionedContentHeight } : {}]}>
                 <Text style={styles.descriptionText}>{plain(lineItem.description, '')}</Text>
-                {(lineItem.images || []).length > 0 ? (
+                {pictureLayoutMode ? lineImages.map((image) => (
+                  <Text key={`layout-marker-${image.id}`} style={{ position: 'absolute', left: 0, top: 0, fontSize: 1, color: '#ffffff' }}>
+                    {`__ARNOLD_PICTURE_${image.id}__`}
+                  </Text>
+                )) : null}
+                {!pictureLayoutMode && usesCustomImageLayout ? imagePlacements.map((placement) => (
+                  <View
+                    key={placement.image.id}
+                    style={[
+                      styles.descriptionPositionedImage,
+                      { left: placement.x, top: placement.y, width: placement.width, height: placement.height },
+                    ]}
+                  >
+                    <Image src={resolvePdfImageUri(placement.image.url)} cache={false} style={styles.descriptionMediaImage} />
+                  </View>
+                )) : !pictureLayoutMode && lineImages.length > 0 ? (
                   <View style={styles.descriptionMediaRail}>
-                    {(lineItem.images || []).slice(0, 2).map((image, imageIndex) => {
-                      const metrics = resolveProductImageMetrics(image, (lineItem.images || []).length)
+                    {lineImages.map((image, imageIndex) => {
+                      const metrics = resolveProductImageMetrics(image, lineImages.length)
 
                       return (
                         <View
@@ -502,7 +578,8 @@ export function NativeQuotePdfDocument({
             <Text style={[styles.unitColumn, styles.centeredCell]}>{optionalMoney(lineItem.unitPrice)}</Text>
             <Text style={[styles.extColumn, styles.centeredCell]}>{optionalMoney(lineItem.extPrice)}</Text>
           </View>
-        ))}
+          )
+        })}
 
         {additionalServices.length > 0 ? (
           <View minPresenceAhead={40}>
@@ -592,6 +669,270 @@ export function NativeQuotePdfDocument({
   )
 }
 
+type QuotePicturePdfLayout = NonNullable<CrmQuoteLineImage['pdfLayout']>
+
+const PDF_PRODUCT_LAYOUT_HEIGHT = 180
+const PDF_LAYOUT_RENDER_SCALE = 1.35
+
+function defaultPictureLayout(image: CrmQuoteLineImage): QuotePicturePdfLayout {
+  const width = image.displaySize === 'small' ? 78 : image.displaySize === 'large' ? 170 : 118
+  return { x: PDF_PRODUCT_LAYOUT_WIDTH - width - 6, y: 8, width }
+}
+
+function normalizePictureLayout(image: CrmQuoteLineImage, layout: QuotePicturePdfLayout): QuotePicturePdfLayout {
+  const aspect = resolveProductImageAspect(image)
+  const width = Math.min(300, Math.max(48, Number(layout.width) || 118))
+  const height = width / aspect
+  return {
+    x: Math.min(PDF_PRODUCT_LAYOUT_WIDTH - width, Math.max(0, Number(layout.x) || 0)),
+    y: Math.min(Math.max(0, PDF_PRODUCT_LAYOUT_HEIGHT - height), Math.max(0, Number(layout.y) || 0)),
+    width,
+  }
+}
+
+type RenderedLayoutPage = {
+  pageNumber: number
+  imageUrl: string
+  width: number
+  height: number
+  anchors: Record<string, { x: number; y: number }>
+}
+
+export const QuotePdfPictureLayoutDialog = memo(function QuotePdfPictureLayoutDialog({
+  open,
+  quote,
+  settings,
+  onCancel,
+  onSave,
+}: {
+  open: boolean
+  quote: CrmQuote | null
+  settings: CrmQuotePrintSettings
+  onCancel: () => void
+  onSave: (layouts: Array<{ lineIndex: number; imageId: string; layout: QuotePicturePdfLayout }>) => void
+}) {
+  const pictures = useMemo(() => (quote?.lineItems || []).flatMap((lineItem, lineIndex) => (
+    (lineItem.images || []).map((image) => ({ lineIndex, image }))
+  )), [quote])
+  const [layouts, setLayouts] = useState<Record<string, QuotePicturePdfLayout>>({})
+  const layoutsRef = useRef<Record<string, QuotePicturePdfLayout>>({})
+  const [pages, setPages] = useState<RenderedLayoutPage[]>([])
+  const [isRendering, setIsRendering] = useState(false)
+  const [renderError, setRenderError] = useState('')
+  const interactionRef = useRef<{
+    mode: 'move' | 'resize'
+    image: CrmQuoteLineImage
+    clientX: number
+    clientY: number
+    scale: number
+    layout: QuotePicturePdfLayout
+  } | null>(null)
+
+  const updateLayouts = useCallback((next: Record<string, QuotePicturePdfLayout>) => {
+    layoutsRef.current = next
+    setLayouts(next)
+  }, [])
+
+  useEffect(() => {
+    if (!open) return
+    const next = Object.fromEntries(pictures.map(({ image }) => [
+      image.id,
+      normalizePictureLayout(image, image.pdfLayout || defaultPictureLayout(image)),
+    ]))
+    const resetTimer = window.setTimeout(() => {
+      updateLayouts(next)
+      setPages([])
+      setRenderError('')
+    }, 0)
+    return () => window.clearTimeout(resetTimer)
+  }, [open, pictures, updateLayouts])
+
+  useEffect(() => {
+    if (!open || !quote || pictures.length === 0) return
+    let cancelled = false
+
+    const renderActualPdf = async () => {
+      setIsRendering(true)
+      setRenderError('')
+      try {
+        const previewQuote: CrmQuote = {
+          ...quote,
+          lineItems: (quote.lineItems || []).map((lineItem) => ({
+            ...lineItem,
+            images: (lineItem.images || []).map((image) => ({
+              ...image,
+              pdfLayout: layoutsRef.current[image.id] || image.pdfLayout || defaultPictureLayout(image),
+            })),
+          })),
+        }
+        const blob = await pdf(<NativeQuotePdfDocument quote={previewQuote} settings={settings} pictureLayoutMode />).toBlob()
+        const pdfjs = await import('pdfjs-dist')
+        pdfjs.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString()
+        const pdfDocument = await pdfjs.getDocument({ data: await blob.arrayBuffer() }).promise
+        const renderedPages: RenderedLayoutPage[] = []
+        const anchoredPictureIds = new Set<string>()
+
+        for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber += 1) {
+          const page = await pdfDocument.getPage(pageNumber)
+          const viewport = page.getViewport({ scale: PDF_LAYOUT_RENDER_SCALE })
+          const canvas = document.createElement('canvas')
+          canvas.width = Math.ceil(viewport.width)
+          canvas.height = Math.ceil(viewport.height)
+          const context = canvas.getContext('2d')
+          if (!context) throw new Error('Could not render the estimate page.')
+          await page.render({ canvas, canvasContext: context, viewport }).promise
+          const textContent = await page.getTextContent()
+          const anchors: Record<string, { x: number; y: number }> = {}
+          const positionedTextItems: Array<{ text: string; normalized: string; x: number; y: number; height: number }> = []
+          textContent.items.forEach((item) => {
+            if (!('str' in item)) return
+            const [x, y] = viewport.convertToViewportPoint(item.transform[4], item.transform[5])
+            const normalized = item.str.replace(/\s+/g, ' ').trim().toLowerCase()
+            positionedTextItems.push({
+              text: item.str,
+              normalized,
+              x,
+              y,
+              height: Math.max(PDF_LAYOUT_RENDER_SCALE, Number(item.height || 8) * PDF_LAYOUT_RENDER_SCALE),
+            })
+
+            const markerPrefix = '__ARNOLD_PICTURE_'
+            const markerStart = item.str.indexOf(markerPrefix)
+            if (markerStart < 0) return
+            const idStart = markerStart + markerPrefix.length
+            const markerEnd = item.str.indexOf('__', idStart)
+            if (markerEnd <= idStart) return
+            const imageId = item.str.slice(idStart, markerEnd)
+            anchors[imageId] = { x, y: y - PDF_LAYOUT_RENDER_SCALE }
+            anchoredPictureIds.add(imageId)
+          })
+
+          pictures.forEach(({ lineIndex, image }) => {
+            if (anchoredPictureIds.has(image.id)) return
+            const description = String(previewQuote.lineItems?.[lineIndex]?.description || '')
+              .replace(/\s+/g, ' ')
+              .trim()
+              .toLowerCase()
+            if (!description) return
+            const words = description.split(' ').filter(Boolean)
+            const needle = words.slice(0, Math.min(5, words.length)).join(' ')
+            const shorterNeedle = words.slice(0, Math.min(3, words.length)).join(' ')
+            const descriptionItem = positionedTextItems.find((item) => (
+              (needle.length >= 8 && item.normalized.includes(needle))
+              || (shorterNeedle.length >= 8 && item.normalized.includes(shorterNeedle))
+            ))
+            if (!descriptionItem) return
+            anchors[image.id] = {
+              x: descriptionItem.x,
+              y: descriptionItem.y - descriptionItem.height,
+            }
+            anchoredPictureIds.add(image.id)
+          })
+
+          renderedPages.push({
+            pageNumber,
+            imageUrl: canvas.toDataURL('image/png'),
+            width: viewport.width,
+            height: viewport.height,
+            anchors,
+          })
+        }
+
+        if (!cancelled) {
+          if (anchoredPictureIds.size < pictures.length) {
+            const missingCount = pictures.length - anchoredPictureIds.size
+            throw new Error(`${missingCount} quote picture${missingCount === 1 ? '' : 's'} could not be positioned in the PDF preview. Please close and reopen the quote, then try again.`)
+          }
+          setPages(renderedPages)
+        }
+      } catch (error) {
+        if (!cancelled) setRenderError(error instanceof Error ? error.message : 'Could not render the actual estimate PDF.')
+      } finally {
+        if (!cancelled) setIsRendering(false)
+      }
+    }
+
+    void renderActualPdf()
+    return () => { cancelled = true }
+  }, [open, pictures.length, quote, settings])
+
+  const startInteraction = (mode: 'move' | 'resize', image: CrmQuoteLineImage, scale: number, event: ReactPointerEvent<HTMLElement>) => {
+    const layout = layoutsRef.current[image.id]
+    if (!layout) return
+    event.preventDefault()
+    event.stopPropagation()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    interactionRef.current = { mode, image, clientX: event.clientX, clientY: event.clientY, scale, layout }
+  }
+
+  const continueInteraction = (event: ReactPointerEvent<HTMLElement>) => {
+    const interaction = interactionRef.current
+    if (!interaction) return
+    const dx = (event.clientX - interaction.clientX) / interaction.scale
+    const dy = (event.clientY - interaction.clientY) / interaction.scale
+    const aspect = resolveProductImageAspect(interaction.image)
+    const nextLayout = interaction.mode === 'move'
+      ? { ...interaction.layout, x: interaction.layout.x + dx, y: interaction.layout.y + dy }
+      : { ...interaction.layout, width: interaction.layout.width + Math.max(dx, dy * aspect) }
+    updateLayouts({
+      ...layoutsRef.current,
+      [interaction.image.id]: normalizePictureLayout(interaction.image, nextLayout),
+    })
+  }
+
+  if (!quote) return null
+
+  return (
+    <Dialog open={open} onClose={onCancel} fullScreen>
+      <DialogTitle sx={{ py: 1.2 }}>
+        <Stack direction="row" alignItems="center" justifyContent="space-between">
+          <Box>Actual Estimate PDF — Arrange Pictures</Box>
+          <IconButton onClick={onCancel}><CloseRoundedIcon /></IconButton>
+        </Stack>
+      </DialogTitle>
+      <DialogContent dividers sx={{ p: 0, bgcolor: '#525659' }}>
+        <Box sx={{ position: 'sticky', top: 0, zIndex: 5, px: 2, py: 1, bgcolor: '#eef5fb', borderBottom: '1px solid #b8cadc' }}>
+          <Alert severity="info" icon={<OpenWithRoundedIcon />} sx={{ py: 0 }}>
+            This is the same PDF used for printing. Drag a picture to move it; drag its red corner to resize it.
+          </Alert>
+        </Box>
+        {isRendering ? (
+          <Stack alignItems="center" spacing={1.5} sx={{ py: 8, color: '#fff' }}><CircularProgress color="inherit" /><Typography>Rendering the actual estimate…</Typography></Stack>
+        ) : renderError ? (
+          <Alert severity="error" sx={{ m: 2 }}>{renderError}</Alert>
+        ) : (
+          <Stack spacing={2.5} alignItems="center" sx={{ p: 2.5 }}>
+            {pages.map((page) => (
+              <Box key={page.pageNumber} sx={{ position: 'relative', width: page.width, height: page.height, bgcolor: '#fff', boxShadow: '0 8px 28px rgba(0,0,0,.38)' }}>
+                <Box component="img" src={page.imageUrl} alt={`Estimate page ${page.pageNumber}`} sx={{ display: 'block', width: '100%', height: '100%', pointerEvents: 'none' }} />
+                {pictures.map(({ image }) => {
+                  const anchor = page.anchors[image.id]
+                  const layout = layouts[image.id]
+                  if (!anchor || !layout) return null
+                  const scale = page.width / 612
+                  const height = layout.width / resolveProductImageAspect(image)
+                  return (
+                    <Box key={image.id} onPointerDown={(event) => startInteraction('move', image, scale, event)} onPointerMove={continueInteraction} onPointerUp={() => { interactionRef.current = null }} onPointerCancel={() => { interactionRef.current = null }} sx={{ position: 'absolute', left: anchor.x + layout.x * scale, top: anchor.y + layout.y * scale, width: layout.width * scale, height: height * scale, border: '2px solid #b1161b', borderRadius: 0.5, bgcolor: '#fff', boxShadow: '0 4px 14px rgba(0,0,0,.25)', cursor: 'grab', touchAction: 'none', userSelect: 'none', '&:active': { cursor: 'grabbing' } }}>
+                      <Box component="img" src={image.url} alt={image.name || 'Quote picture'} draggable={false} sx={{ width: '100%', height: '100%', display: 'block', objectFit: 'contain', pointerEvents: 'none' }} />
+                      <Box aria-label="Resize picture" onPointerDown={(event) => startInteraction('resize', image, scale, event)} onPointerMove={continueInteraction} onPointerUp={() => { interactionRef.current = null }} onPointerCancel={() => { interactionRef.current = null }} sx={{ position: 'absolute', right: -8, bottom: -8, width: 20, height: 20, borderRadius: '50%', bgcolor: '#b1161b', border: '3px solid #fff', boxShadow: '0 1px 5px rgba(0,0,0,.35)', cursor: 'nwse-resize' }} />
+                    </Box>
+                  )
+                })}
+              </Box>
+            ))}
+          </Stack>
+        )}
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={() => updateLayouts(Object.fromEntries(pictures.map(({ image }) => [image.id, normalizePictureLayout(image, defaultPictureLayout(image))])))}>Reset All</Button>
+        <Box sx={{ flex: 1 }} />
+        <Button onClick={onCancel}>Cancel</Button>
+        <Button variant="contained" disabled={isRendering || pages.length === 0} onClick={() => onSave(pictures.map(({ lineIndex, image }) => ({ lineIndex, imageId: image.id, layout: normalizePictureLayout(image, layoutsRef.current[image.id] || defaultPictureLayout(image)) })))}>Save Picture Layout</Button>
+      </DialogActions>
+    </Dialog>
+  )
+})
+
 export const QuotePdfPreviewDialog = memo(function QuotePdfPreviewDialog({
   open,
   quote,
@@ -612,7 +953,7 @@ export const QuotePdfPreviewDialog = memo(function QuotePdfPreviewDialog({
   )
 
   const fileName = useMemo(
-    () => (quote ? `Quote-${plain(quote.quoteNumber, quote.id).replace(/[^a-z0-9._-]+/gi, '-')}.pdf` : 'Quote.pdf'),
+    () => (quote ? `Estimate-${plain(quote.quoteNumber, quote.id).replace(/[^a-z0-9._-]+/gi, '-')}.pdf` : 'Estimate.pdf'),
     [quote?.id, quote?.quoteNumber],
   )
 
@@ -655,7 +996,7 @@ export const QuotePdfPreviewDialog = memo(function QuotePdfPreviewDialog({
     <Dialog open={open} onClose={handleClose} fullScreen>
       <DialogTitle sx={{ py: 1.2 }}>
         <Stack direction="row" alignItems="center" justifyContent="space-between">
-          <Box>Quote PDF Preview</Box>
+          <Box>Estimate PDF Preview</Box>
           <IconButton onClick={handleClose}><CloseRoundedIcon /></IconButton>
         </Stack>
       </DialogTitle>

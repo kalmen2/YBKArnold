@@ -1042,6 +1042,22 @@ function normalizeQuoteLineItems(input) {
         displaySize: ['small', 'medium', 'large'].includes(toLowerText(image.displaySize, 20))
           ? toLowerText(image.displaySize, 20)
           : null,
+        pdfLayout: (() => {
+          const layout = toOptionalObject(image.pdfLayout)
+          const x = toNumberOrNull(layout.x)
+          const y = toNumberOrNull(layout.y)
+          const width = toNumberOrNull(layout.width)
+
+          if (x === null || y === null || width === null) {
+            return null
+          }
+
+          return {
+            x: Math.min(327, Math.max(0, Number(x.toFixed(2)))),
+            y: Math.min(180, Math.max(0, Number(y.toFixed(2)))),
+            width: Math.min(300, Math.max(48, Number(width.toFixed(2)))),
+          }
+        })(),
       })
 
       if (images.length >= 2) {
@@ -4684,7 +4700,7 @@ export function registerCrmRoutes(app, deps) {
     }
   })
 
-  app.post('/api/crm/dealers/:dealerSourceId/contacts', requireFirebaseAuth, requireSalesManagerOrAdminRole, async (req, res, next) => {
+  app.post('/api/crm/dealers/:dealerSourceId/contacts', requireFirebaseAuth, async (req, res, next) => {
     try {
       const { isSalesRep, territoryStates } = resolveCrmAccessScope(req)
       const dealerSourceId = toTrimmedText(req.params.dealerSourceId, 160)
@@ -5996,6 +6012,7 @@ export function registerCrmRoutes(app, deps) {
       const salesRep = toTrimmedText(req.query?.salesRep, 200)
       const dealerState = normalizeUsStateCode(req.query?.dealerState)
       const projectType = normalizeProjectType(req.query?.projectType)
+      const cardsOnly = toLowerText(req.query?.view, 40) === 'cards'
       const searchRegex = buildContainsRegex(req.query?.search, 220)
       const limit = Math.min(500, Math.max(1, toNonNegativeInteger(req.query?.limit, 120)))
       const collections = await getCollections()
@@ -6085,9 +6102,33 @@ export function registerCrmRoutes(app, deps) {
         .find(
           filter,
           {
-            projection: {
-              _id: 0,
-            },
+            projection: cardsOnly
+              ? {
+                _id: 0,
+                id: 1,
+                dealerSourceId: 1,
+                dealerName: 1,
+                dealerState: 1,
+                companyName: 1,
+                salesRep: 1,
+                projectType: 1,
+                opportunityDate: 1,
+                opportunityStage: 1,
+                quoteNumber: 1,
+                title: 1,
+                status: 1,
+                totalAmount: 1,
+                currency: 1,
+                lastFollowedUpAt: 1,
+                lastLinkOpenedAt: 1,
+                linkOpenCount: 1,
+                lastStatusChangedAt: 1,
+                createdAt: 1,
+                updatedAt: 1,
+              }
+              : {
+                _id: 0,
+              },
           },
         )
         .sort({ updatedAt: -1, id: -1 })
@@ -6146,6 +6187,117 @@ export function registerCrmRoutes(app, deps) {
       return res.json({
         quotes: quotesWithChatCounts,
       })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/crm/quotes/:quoteId/details', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const quoteId = toTrimmedText(req.params.quoteId, 160)
+      if (!quoteId) return res.status(400).json({ error: 'quoteId is required.' })
+
+      const accessScope = resolveCrmAccessScope(req)
+      const quoteAccessScope = resolveSalesRepQuoteAccessScope(accessScope)
+      if (quoteAccessScope.restrictToLinkedSalesRep && !quoteAccessScope.linkedSalesRepName) {
+        return res.status(403).json({ error: 'Sales rep access is not linked to a CRM sales rep yet.' })
+      }
+
+      const { crmQuotesCollection } = await getCollections()
+      const quote = await crmQuotesCollection.findOne({ id: quoteId }, { projection: { _id: 0 } })
+      if (!quote) return res.status(404).json({ error: 'Quote not found.' })
+      if (!canAccessQuoteBySalesRep(quote, quoteAccessScope)) {
+        return res.status(403).json({ error: 'You can only access opportunities assigned to your linked sales rep.' })
+      }
+
+      return res.json({ quote: normalizeQuoteOpportunityStageForResponse(quote) })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.post('/api/crm/quotes/:quoteId/follow-up', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const quoteId = toTrimmedText(req.params.quoteId, 160)
+      if (!quoteId) return res.status(400).json({ error: 'quoteId is required.' })
+      if (req.body?.confirmed !== true) return res.status(400).json({ error: 'Follow-up confirmation is required.' })
+
+      const accessScope = resolveCrmAccessScope(req)
+      const quoteAccessScope = resolveSalesRepQuoteAccessScope(accessScope)
+      const { crmQuotesCollection } = await getCollections()
+      const quote = await crmQuotesCollection.findOne({ id: quoteId }, { projection: { _id: 0 } })
+      if (!quote) return res.status(404).json({ error: 'Quote not found.' })
+      if (!canAccessQuoteBySalesRep(quote, quoteAccessScope)) {
+        return res.status(403).json({ error: 'You can only update opportunities assigned to your linked sales rep.' })
+      }
+
+      const now = nowIso()
+      const activity = {
+        id: randomUUID(),
+        type: 'follow_up',
+        occurredAt: now,
+        createdByUid: toTrimmedText(req.authUser?.uid, 160) || null,
+        createdByEmail: toTrimmedText(req.authUser?.email, 200) || null,
+      }
+      const updatedQuote = await crmQuotesCollection.findOneAndUpdate(
+        { id: quoteId },
+        {
+          $set: { lastFollowedUpAt: now, updatedAt: now },
+          $push: {
+            followUpHistory: { $each: [activity], $slice: -500 },
+            activityLog: { $each: [activity], $slice: -1000 },
+          },
+        },
+        { returnDocument: 'after', projection: { _id: 0 } },
+      )
+
+      return res.json({ quote: normalizeQuoteOpportunityStageForResponse(updatedQuote) })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/crm/reminder-settings/me', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const uid = toTrimmedText(req.authUser?.uid, 160)
+      const { authUsersCollection } = await getCollections()
+      const user = await authUsersCollection.findOne({ uid }, { projection: { _id: 0, quoteReminderSettings: 1 } })
+      const settings = toOptionalObject(user?.quoteReminderSettings)
+      const rules = Array.isArray(settings.rules) ? settings.rules : []
+      return res.json({
+        settings: {
+          rules: rules.slice(0, 25).map((rule) => ({
+            id: toTrimmedText(rule?.id, 160) || randomUUID(),
+            kind: rule?.kind === 'link_opened' ? 'link_opened' : 'follow_up_due',
+            days: Math.min(365, Math.max(0, toNonNegativeInteger(rule?.days, 10))),
+            base: rule?.base === 'last_follow_up' ? 'last_follow_up' : 'quote_date',
+          })),
+        },
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.put('/api/crm/reminder-settings/me', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const uid = toTrimmedText(req.authUser?.uid, 160)
+      const rawRules = Array.isArray(req.body?.rules) ? req.body.rules : []
+      const settings = {
+        rules: rawRules.slice(0, 25).map((rule) => ({
+          id: toTrimmedText(rule?.id, 160) || randomUUID(),
+          kind: rule?.kind === 'link_opened' ? 'link_opened' : 'follow_up_due',
+          days: Math.min(365, Math.max(0, toNonNegativeInteger(rule?.days, 10))),
+          base: rule?.base === 'last_follow_up' ? 'last_follow_up' : 'quote_date',
+        })),
+      }
+      const now = nowIso()
+      const { authUsersCollection } = await getCollections()
+      await authUsersCollection.updateOne(
+        { uid },
+        { $set: { quoteReminderSettings: settings, updatedAt: now } },
+      )
+      return res.json({ settings })
     } catch (error) {
       next(error)
     }

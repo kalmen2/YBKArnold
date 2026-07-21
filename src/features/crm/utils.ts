@@ -6,6 +6,7 @@ type ContactNameLike = {
 
 type QuoteTimestampLike = {
   opportunityDate?: string | null
+  lastFollowedUpAt?: string | null
 }
 
 export function displayContactName(contact: ContactNameLike) {
@@ -54,7 +55,7 @@ function parseOpportunityDate(rawValue: string) {
 }
 
 export function resolveQuoteAgeDays(quote: QuoteTimestampLike) {
-  const rawQuoteDate = String(quote.opportunityDate || '')
+  const rawQuoteDate = String(quote.lastFollowedUpAt || quote.opportunityDate || '')
   const timestamp = parseOpportunityDate(rawQuoteDate)
 
   if (!timestamp) {
