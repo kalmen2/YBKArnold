@@ -11,10 +11,9 @@ const CrmDealersPage = lazy(() => import('./CrmDealersPage'))
 const CrmContactsPage = lazy(() => import('./CrmContactsPage'))
 const SalesOpportunitiesPage = lazy(() => import('./SalesOpportunitiesPage'))
 const SalesQuotesPage = lazy(() => import('./SalesQuotesPage'))
-const SalesQuoteLayoutPage = lazy(() => import('./SalesQuoteLayoutPage'))
 const SalesRepsPage = lazy(() => import('./SalesRepsPage'))
 
-type SalesTab = 'dealers' | 'contacts' | 'opportunities' | 'quotes' | 'quote-layout' | 'sales-reps'
+type SalesTab = 'dealers' | 'contacts' | 'opportunities' | 'quotes' | 'sales-reps'
 
 function resolveFallbackTab(allowedTabs: SalesTab[]): SalesTab {
   return allowedTabs.includes('opportunities')
@@ -43,10 +42,6 @@ function resolveTab(value: string | null, allowedTabs: SalesTab[]): SalesTab {
     return allowedTabSet.has('quotes') ? 'quotes' : fallbackTab
   }
 
-  if (value === 'quote-layout') {
-    return allowedTabSet.has('quote-layout') ? 'quote-layout' : fallbackTab
-  }
-
   if (value === 'sales-reps') {
     return allowedTabSet.has('sales-reps') ? 'sales-reps' : fallbackTab
   }
@@ -59,17 +54,13 @@ export default function SalesPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const allowedTabs = useMemo<SalesTab[]>(() => {
     if (appUser?.isSalesRep) {
-      return ['dealers', 'contacts', 'opportunities', 'quote-layout']
+      return ['dealers', 'contacts', 'opportunities']
     }
 
-    return ['dealers', 'contacts', 'opportunities', 'quotes', 'quote-layout', 'sales-reps']
+    return ['dealers', 'contacts', 'opportunities', 'quotes', 'sales-reps']
   }, [appUser?.isSalesRep])
   const activeTab = resolveTab(searchParams.get('tab'), allowedTabs)
-  const visibleTab = activeTab === 'contacts'
-    ? 'dealers'
-    : activeTab === 'quote-layout'
-      ? 'opportunities'
-      : activeTab
+  const visibleTab = activeTab === 'contacts' ? 'dealers' : activeTab
 
   function handleTabChange(_: React.SyntheticEvent, value: SalesTab) {
     setSearchParams({ tab: value }, { replace: true })
@@ -135,8 +126,6 @@ export default function SalesPage() {
                     <SalesQuotesPage />
                     {searchParams.get('quoteId') ? <SalesOpportunitiesPage detailsOnly /> : null}
                   </>
-              : activeTab === 'quote-layout'
-                ? <SalesQuoteLayoutPage />
               : <SalesRepsPage />}
       </Suspense>
     </Box>

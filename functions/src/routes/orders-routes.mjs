@@ -803,6 +803,19 @@ export function registerOrdersRoutes(app, deps) {
       quickBooksProjectNames,
       hazardReason,
       parentOrderNumber: String(orderDocument?.parent_order_number ?? '').trim() || null,
+      depositRequired: typeof orderDocument?.deposit_required === 'boolean'
+        ? orderDocument.deposit_required
+        : null,
+      depositPercent: orderDocument?.deposit_percent !== null
+        && orderDocument?.deposit_percent !== undefined
+        && orderDocument?.deposit_percent !== ''
+        && Number.isFinite(Number(orderDocument.deposit_percent))
+        ? Number(orderDocument.deposit_percent)
+        : null,
+      depositRequestUrl: String(orderDocument?.deposit_request_url ?? '').trim() || null,
+      depositRequestName: String(orderDocument?.deposit_request_name ?? '').trim() || null,
+      orderConfirmationUrl: String(orderDocument?.order_confirmation_url ?? '').trim() || null,
+      orderConfirmationName: String(orderDocument?.order_confirmation_name ?? '').trim() || null,
     }
   }
 
@@ -986,6 +999,10 @@ export function registerOrdersRoutes(app, deps) {
               hazard_reason: 1,
               source: 1,
               parent_order_number: 1,
+              deposit_request_url: 1,
+              deposit_request_name: 1,
+              order_confirmation_url: 1,
+              order_confirmation_name: 1,
               qb_project_id: 1,
               qb_project_name: 1,
               qb_project_ids: 1,
@@ -1672,6 +1689,10 @@ export function registerOrdersRoutes(app, deps) {
                     Cut_list: 1,
                     Cut_list_cached: 1,
                     Cut_list_source: 1,
+                    deposit_request_url: 1,
+                    deposit_request_name: 1,
+                    order_confirmation_url: 1,
+                    order_confirmation_name: 1,
                     amountOwed: 1,
                     billBalanceAmount: 1,
                     billAmount: 1,

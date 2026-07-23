@@ -10,6 +10,7 @@ import {
 } from './order-shared.mjs'
 import { MONDAY_BOARDS } from './monday-board-map.mjs'
 import { normalizeOptionalShortText } from '../utils/value-utils.mjs'
+import { getStorage } from 'firebase-admin/storage'
 
 export function registerOrderShippingRoutes(app, {
   authApprovalApproved,
@@ -59,6 +60,35 @@ export function registerOrderShippingRoutes(app, {
 
   function escapeRegex(value) {
     return String(value ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  }
+
+  function extractFirebaseStorageTarget(rawUrl) {
+    try {
+      const parsed = new URL(String(rawUrl ?? '').trim())
+      const match = parsed.hostname === 'firebasestorage.googleapis.com'
+        ? parsed.pathname.match(/^\/v0\/b\/([^/]+)\/o\/([^/]+)$/)
+        : null
+      if (!match) return null
+      const target = { bucketName: decodeURIComponent(match[1]), objectPath: decodeURIComponent(match[2]) }
+      return target.objectPath.startsWith('crm/orders/') ? target : null
+    } catch {
+      return null
+    }
+  }
+
+  async function deleteGeneratedOrderDocuments(orderDocument) {
+    const targets = [orderDocument?.deposit_request_url, orderDocument?.order_confirmation_url]
+      .map(extractFirebaseStorageTarget)
+      .filter(Boolean)
+    const results = await Promise.all(targets.map(async (target) => {
+      try {
+        await getStorage().bucket(target.bucketName).file(target.objectPath).delete({ ignoreNotFound: true })
+        return true
+      } catch {
+        return false
+      }
+    }))
+    return { attemptedCount: targets.length, deletedCount: results.filter(Boolean).length, failedCount: results.filter((result) => !result).length }
   }
 
   function buildManualOrderKey(orderNumber, mondayItemId) {
@@ -600,6 +630,7 @@ export function registerOrderShippingRoutes(app, {
         } = buildManualOrderColumnMap(selectedBoardSnapshot?.columns)
 
         const {
+          crmQuotesCollection,
           mondayOrdersCollection,
           ordersUnifiedCollection,
         } = await getCollections()
@@ -976,6 +1007,14 @@ export function registerOrderShippingRoutes(app, {
               qb_project_id: 1,
               qb_project_ids: 1,
               qb_project_names: 1,
+              canonical_order_id: 1,
+              source_quote_id: 1,
+              selected_line_items: 1,
+              selected_additional_services: 1,
+              selected_shipping_services: 1,
+              include_quote_freight: 1,
+              deposit_request_url: 1,
+              order_confirmation_url: 1,
             },
           },
         )
@@ -1055,6 +1094,50 @@ export function registerOrderShippingRoutes(app, {
           })
         }
 
+        const generatedDocumentCleanup = orderDocument
+          ? await deleteGeneratedOrderDocuments(orderDocument)
+          : { attemptedCount: 0, deletedCount: 0, failedCount: 0 }
+        if (generatedDocumentCleanup.failedCount > 0) {
+          warnings.push(`Could not remove ${generatedDocumentCleanup.failedCount} generated order document${generatedDocumentCleanup.failedCount === 1 ? '' : 's'}.`)
+        }
+
+        const sourceQuoteId = String(orderDocument?.source_quote_id ?? '').trim()
+        if (sourceQuoteId) {
+          const quote = await crmQuotesCollection.findOne({ id: sourceQuoteId }, { projection: { _id: 0 } })
+          if (quote) {
+            const releasedKeys = new Set([
+              ...(Array.isArray(orderDocument?.selected_line_items) ? orderDocument.selected_line_items : []).map((item) => `line:${String(item?.id ?? '').trim()}`).filter((key) => key !== 'line:'),
+              ...(Array.isArray(orderDocument?.selected_additional_services) ? orderDocument.selected_additional_services : []).map((item) => `additional:${String(item?.id ?? '').trim()}`).filter((key) => key !== 'additional:'),
+              ...(Array.isArray(orderDocument?.selected_shipping_services) ? orderDocument.selected_shipping_services : []).map((item) => `shipping:${String(item?.id ?? '').trim()}`).filter((key) => key !== 'shipping:'),
+              ...(orderDocument?.include_quote_freight === true ? ['freight'] : []),
+            ])
+            const remainingKeys = (Array.isArray(quote.convertedItemKeys) ? quote.convertedItemKeys : [])
+              .map((value) => String(value ?? '').trim())
+              .filter((value) => value && !releasedKeys.has(value))
+            const canonicalOrderId = String(orderDocument?.canonical_order_id ?? '').trim()
+            const remainingOrders = (Array.isArray(quote.convertedOrders) ? quote.convertedOrders : [])
+              .filter((entry) => String(entry?.orderId ?? '').trim() !== canonicalOrderId && String(entry?.orderNumber ?? '').trim().toLowerCase() !== String(orderNumber ?? '').trim().toLowerCase())
+            const hasRemainingOrders = remainingKeys.length > 0 || remainingOrders.length > 0
+            await crmQuotesCollection.updateOne(
+              { id: sourceQuoteId },
+              {
+                $set: {
+                  status: hasRemainingOrders ? 'sent' : 'draft',
+                  opportunityStage: hasRemainingOrders ? 'proposal_submission' : 'concept',
+                  acceptedAt: null,
+                  convertedItemKeys: remainingKeys,
+                  convertedOrders: remainingOrders,
+                  lastStatusChangedAt: new Date().toISOString(),
+                  updatedAt: new Date().toISOString(),
+                },
+                $unset: {
+                  convertedOrderId: '', convertedOrderNumber: '', convertedAt: '', orderNumber: '', acknowledgmentNumber: '',
+                },
+              },
+            )
+          }
+        }
+
         const orderKey = String(orderDocument?.orderKey ?? '').trim() || ''
 
         await Promise.all([
@@ -1095,6 +1178,7 @@ export function registerOrderShippingRoutes(app, {
             orderName,
             mondayItemId,
             mondayDeleteMode: String(mondayDeleteResult?.mode ?? '').trim() || null,
+            generatedDocumentCleanup,
           },
           warning: warnings.length > 0 ? warnings[0] : null,
           warnings,

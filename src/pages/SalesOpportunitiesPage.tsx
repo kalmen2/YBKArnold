@@ -94,6 +94,7 @@ import {
 } from '../features/crm/api'
 import { resolveQuoteAgeDays } from '../features/crm/utils'
 import Quote3dModelPanel from '../features/crm/Quote3dModelPanel'
+import { buildOrderDocumentBlob, type OrderDocumentLine } from '../features/crm/OrderConversionDocuments'
 import { resolveFileExtension, sanitizeStoragePathSegment } from '../lib/fileUtils'
 import { formatCurrency } from '../lib/formatters'
 import { QUERY_KEYS } from '../lib/queryKeys'
@@ -124,13 +125,19 @@ const DEFAULT_QUOTE_PRINT_SETTINGS: CrmQuotePrintSettings = {
   showLeadTime: true,
   showFreight: true,
   customerInformation: '',
+  projectManagers: 'Misha Patel, Jose Gonzalez',
+  depositRequestBody: 'To begin processing this order, please send the 50% Product Net deposit shown above at your earliest convenience.',
+  depositRequestTerms: 'Color samples and shop drawings must be received and approved when required. Delays in receiving required approvals may affect the stated lead time.\n\nCustom orders are final and cannot be returned, exchanged, or refunded.',
+  orderConfirmationRequestedInfo: 'Please send the control sample to the address below:\n\nArnold Kolax Furniture Inc.\nAttn: Misha Patel (Ack # {ack})\n120 Coit Street, Irvington, NJ 07111',
+  orderConfirmationNotes: 'Thank you for your order. We appreciate your business and look forward to working with you.',
+  orderConfirmationTerms: 'Lead times begin after final approved shop drawings and finish samples are received.',
   updatedAt: null,
   updatedByEmail: null,
 }
 
-async function parseExcelQuoteForSync(file: File) {
+async function parseExcelQuoteForSync(file: File, preferredQuoteNumber?: string) {
   const parser = await import('../features/crm/excelQuoteParser')
-  return parser.parseExcelQuoteForSync(file)
+  return parser.parseExcelQuoteForSync(file, { preferredQuoteNumber })
 }
 
 type OpportunityLineItemFormState = {
@@ -225,9 +232,15 @@ type OpportunityConvertOrderFormState = {
   acknowledgmentNumber: string
   poDate: string
   poNumber: string
-  leadTimeDate: string
+  leadTime: string
   shipTo: string
   notes: string
+  depositRequirement: '' | 'required' | 'not_required'
+  depositPercent: string
+  selectedLineItemIds: string[]
+  selectedAdditionalServiceIds: string[]
+  selectedShippingServiceIds: string[]
+  includeFreight: boolean
 }
 
 type StageDefinition = {
@@ -1359,9 +1372,15 @@ function createEmptyConvertOrderForm(
     acknowledgmentNumber: String(acknowledgmentNumber || '').trim(),
     poDate: getTodayEasternDateInputValue(),
     poNumber: '',
-    leadTimeDate: '',
+    leadTime: '',
     shipTo: '',
     notes: '',
+    depositRequirement: '',
+    depositPercent: '50',
+    selectedLineItemIds: [],
+    selectedAdditionalServiceIds: [],
+    selectedShippingServiceIds: [],
+    includeFreight: false,
   }
 }
 
@@ -1974,6 +1993,29 @@ function isExcelDocumentFileName(fileName: string | null | undefined): boolean {
   return excelDocumentExtensions.has(extension)
 }
 
+function isIgnoredFolderScanFile(file: File): boolean {
+  const normalizedName = String(file.name ?? '').trim().toLowerCase()
+
+  return !normalizedName
+    || normalizedName === 'thumbs.db'
+    || normalizedName === '.ds_store'
+    || normalizedName === 'desktop.ini'
+    || normalizedName.startsWith('~$')
+    || normalizedName.startsWith('._')
+}
+
+function resolveFolderScanPreferredQuoteNumber(scannedFiles: File[], quotes: CrmQuote[]): string | undefined {
+  const rootFolderKeys = new Set(scannedFiles.map((file) => {
+    const [rootFolder = ''] = resolvePathSegments(file.webkitRelativePath || file.name)
+    return rootFolder.toLowerCase().replace(/[^a-z0-9]+/g, '')
+  }).filter(Boolean))
+
+  return quotes.find((quote) => {
+    const quoteKey = String(quote.quoteNumber ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '')
+    return quoteKey && [...rootFolderKeys].some((rootKey) => rootKey.includes(quoteKey))
+  })?.quoteNumber || undefined
+}
+
 function isAlwaysResyncedQuotesExcelFile(
   relativePath: string | null | undefined,
   fileName: string | null | undefined,
@@ -2066,6 +2108,10 @@ function buildFolderScanQueueEntriesForQuote(targetQuote: CrmQuote, scannedFiles
   const fallbackFolder = quoteSidebarFolderByKey.get('quotes')
 
   return scannedFiles.flatMap((file, index) => {
+    if (isIgnoredFolderScanFile(file)) {
+      return []
+    }
+
     const relativePath = String(file.webkitRelativePath || file.name).trim()
     const documentName = buildFolderScanDocumentName(relativePath, file.name)
     const folderKey = resolveQuoteSidebarFolderKeyFromRelativePath(relativePath) || 'quotes'
@@ -5192,7 +5238,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   }, [])
 
   const handleFolderScanUpload = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
-    const scannedFiles = Array.from(event.target.files ?? [])
+    const scannedFiles = Array.from(event.target.files ?? []).filter((file) => !isIgnoredFolderScanFile(file))
     event.target.value = ''
 
     if (scannedFiles.length === 0) {
@@ -5222,10 +5268,11 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       let parsedExcelPayload: CrmExcelQuoteSyncInput | null = null
       let sourceExcelFileName = ''
       let sourceExcelFile: File | null = null
+      const preferredQuoteNumber = resolveFolderScanPreferredQuoteNumber(scannedFiles, quotes)
 
       for (const file of excelFiles) {
         try {
-          parsedExcelPayload = await parseExcelQuoteForSync(file)
+          parsedExcelPayload = await parseExcelQuoteForSync(file, preferredQuoteNumber)
           sourceExcelFileName = file.name
           sourceExcelFile = file
           break
@@ -6061,52 +6108,9 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     }
     setLoadingOpportunityId(null)
 
-    if (quote.origin !== 'excel') {
-      setQuotePrintPreview(quote)
-      setBusyQuoteId(null)
-      return
-    }
-
-    if (quote.convertedPdfUrl) {
-      window.open(quote.convertedPdfUrl, '_blank', 'noopener,noreferrer')
-      setBusyQuoteId(null)
-      return
-    }
-
-    if (!quote.sourceWorkbookUrl || !quote.sourceWorkbookName || !quote.quoteNumber) {
-      setErrorMessage('This Excel quote has no source workbook available for printing. Upload and sync the workbook again.')
-      setBusyQuoteId(null)
-      return
-    }
-
-    const printWindow = window.open('about:blank', '_blank')
-    if (printWindow) {
-      printWindow.document.title = 'Preparing quote PDF…'
-      printWindow.document.body.textContent = 'Preparing the quote PDF…'
-      printWindow.opener = null
-    }
-
-    setBusyQuoteId(quote.id)
-    try {
-      const converted = await convertCrmQuoteWorkbook({
-        workbookUrl: quote.sourceWorkbookUrl,
-        workbookName: quote.sourceWorkbookName,
-        quoteNumber: quote.quoteNumber,
-      })
-      await updateCrmQuote(quote.id, {
-        convertedPdfUrl: converted.convertedPdfUrl,
-        convertedPdfName: converted.convertedPdfName,
-      })
-      await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.crmOpportunitiesQuotes })
-      if (printWindow) printWindow.location.href = converted.convertedPdfUrl
-      else window.open(converted.convertedPdfUrl, '_blank', 'noopener,noreferrer')
-    } catch (error) {
-      printWindow?.close()
-      setErrorMessage(error instanceof Error ? error.message : 'Could not prepare this workbook for printing.')
-    } finally {
-      setBusyQuoteId(null)
-    }
-  }, [loadOpportunityDetails, queryClient])
+    setQuotePrintPreview(quote)
+    setBusyQuoteId(null)
+  }, [loadOpportunityDetails])
 
   const handleCreateOpportunity = useCallback(async () => {
     const dealerSourceId = formState.dealerSourceId.trim()
@@ -6307,13 +6311,21 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     setErrorMessage(null)
     setSuccessMessage(null)
     setConvertOrderTargetQuote(quote)
-    setConvertOrderFormState(
-      createEmptyConvertOrderForm(
+    const convertedKeys = new Set(Array.isArray(quote.convertedItemKeys) ? quote.convertedItemKeys : [])
+    const nextForm = createEmptyConvertOrderForm(
         convertOrderPrimaryBoardId,
         convertOrderSecondaryBoardId,
         String(quote.acknowledgmentNumber || '').trim(),
-      ),
-    )
+      )
+    nextForm.leadTime = String(quote.leadTime || '').trim()
+    nextForm.selectedLineItemIds = (quote.lineItems || [])
+      .filter((item) => Number(item.qty ?? 1) !== 0)
+      .map((item) => String(item.id || item.itemNumber || '').trim())
+      .filter((id) => id && !convertedKeys.has(`line:${id}`))
+    nextForm.selectedAdditionalServiceIds = (quote.additionalServices || []).filter((item) => Number(resolveServiceItemExtPrice(item) || 0) > 0 && !convertedKeys.has(`additional:${item.id}`)).map((item) => item.id)
+    nextForm.selectedShippingServiceIds = (quote.shippingServices || []).filter((item) => Number(resolveServiceItemExtPrice(item) || 0) > 0 && !convertedKeys.has(`shipping:${item.id}`)).map((item) => item.id)
+    nextForm.includeFreight = Number(quote.freight || 0) > 0 && !convertedKeys.has('freight')
+    setConvertOrderFormState(nextForm)
     setIsConvertOrderDialogOpen(true)
   }, [convertOrderPrimaryBoardId, convertOrderSecondaryBoardId])
 
@@ -6334,8 +6346,10 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
 
     const acknowledgmentNumber = convertOrderFormState.acknowledgmentNumber.trim()
     const poDate = convertOrderFormState.poDate.trim()
-    const leadTimeDate = convertOrderFormState.leadTimeDate.trim()
+    const leadTime = convertOrderFormState.leadTime.trim()
     const shipTo = convertOrderFormState.shipTo.trim()
+    const depositRequired = convertOrderFormState.depositRequirement === 'required'
+    const depositPercent = depositRequired ? Number(convertOrderFormState.depositPercent) : null
 
     if (!acknowledgmentNumber) {
       setErrorMessage('Acknowledgement Number is required.')
@@ -6347,13 +6361,27 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       return
     }
 
-    if (leadTimeDate && !/^\d{4}-\d{2}-\d{2}$/.test(leadTimeDate)) {
-      setErrorMessage('Lead Time must be a valid date when provided.')
+    if (!shipTo) {
+      setErrorMessage('Ship To is required.')
       return
     }
 
-    if (!shipTo) {
-      setErrorMessage('Ship To is required.')
+    if (!convertOrderFormState.depositRequirement) {
+      setErrorMessage('Select whether a deposit is required.')
+      return
+    }
+
+    if (depositRequired && (!Number.isFinite(depositPercent) || Number(depositPercent) <= 0 || Number(depositPercent) > 100)) {
+      setErrorMessage('Deposit percentage must be greater than 0 and no more than 100.')
+      return
+    }
+
+    const selectedCount = convertOrderFormState.selectedLineItemIds.length
+      + convertOrderFormState.selectedAdditionalServiceIds.length
+      + convertOrderFormState.selectedShippingServiceIds.length
+      + (convertOrderFormState.includeFreight ? 1 : 0)
+    if (selectedCount === 0) {
+      setErrorMessage('Select at least one quote line to convert.')
       return
     }
 
@@ -6363,13 +6391,48 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     setBusyQuoteId(convertOrderTargetQuote.id)
 
     try {
+      const selectedProductLines: OrderDocumentLine[] = [
+        ...(convertOrderTargetQuote.lineItems || []).filter((item) => convertOrderFormState.selectedLineItemIds.includes(String(item.id || item.itemNumber || ''))).map((item) => ({ id: String(item.id || item.itemNumber || ''), description: item.description || 'Product', qty: item.qty, unitPrice: item.unitPrice, extPrice: Number(item.extPrice || 0), category: 'product' as const })),
+        ...(convertOrderTargetQuote.additionalServices || []).filter((item) => convertOrderFormState.selectedAdditionalServiceIds.includes(item.id)).map((item) => ({ id: item.id, description: item.title || item.description || 'Additional service', qty: item.qty ?? null, unitPrice: item.unitPrice ?? null, extPrice: Number(resolveServiceItemExtPrice(item) || 0), category: 'additional' as const })),
+      ]
+      const selectedFreightLines: OrderDocumentLine[] = (convertOrderTargetQuote.shippingServices || []).filter((item) => convertOrderFormState.selectedShippingServiceIds.includes(item.id)).map((item) => ({ id: item.id, description: item.title || item.description || 'Freight service', qty: item.qty ?? null, unitPrice: item.unitPrice ?? null, extPrice: Number(resolveServiceItemExtPrice(item) || 0), category: 'freight' as const }))
+      const quoteFreight = convertOrderFormState.includeFreight ? Number(convertOrderTargetQuote.freight || 0) : 0
+      if (quoteFreight > 0) selectedFreightLines.push({ id: 'quote-freight', description: convertOrderTargetQuote.freightDescription || 'Freight', qty: 1, unitPrice: quoteFreight, extPrice: quoteFreight, category: 'freight' })
+      const productNet = selectedProductLines.reduce((sum, line) => sum + line.extPrice, 0)
+      const freightNet = selectedFreightLines.reduce((sum, line) => sum + line.extPrice, 0)
+      const documentData = {
+        documentDate: poDate,
+        companyName: convertOrderTargetQuote.companyName || convertOrderTargetQuote.dealerName || '',
+        contactName: convertOrderTargetQuote.contactName || '', poNumber: convertOrderFormState.poNumber.trim(),
+        projectName: convertOrderTargetQuote.title || '', acknowledgmentNumber,
+        leadTime, freightType: convertOrderTargetQuote.freightDescription || selectedFreightLines.map((line) => line.description).join(' / '), shipTo,
+        productNet, freightNet, grandTotal: productNet + freightNet, depositRequired, depositPercent,
+        lines: [...selectedProductLines, ...selectedFreightLines],
+      }
+      const settings = quotePrintSettingsQuery.data?.settings || DEFAULT_QUOTE_PRINT_SETTINGS
+      const confirmationBlob = await buildOrderDocumentBlob(documentData, settings)
+      const orderPath = sanitizeStoragePathSegment(acknowledgmentNumber, 'order')
+      const confirmationRef = storageRef(firebaseStorage, `crm/orders/${orderPath}/order-confirmation-${Date.now()}.pdf`)
+      await uploadBytes(confirmationRef, confirmationBlob, { contentType: 'application/pdf' })
+      const orderConfirmationUrl = await getDownloadURL(confirmationRef)
+
       await convertCrmQuoteToOrder(convertOrderTargetQuote.id, {
         acknowledgmentNumber,
         poDate,
         poNumber: convertOrderFormState.poNumber.trim() || null,
-        leadTimeDate: leadTimeDate || null,
+        leadTime: leadTime || null,
         shipTo,
         notes: convertOrderFormState.notes.trim() || null,
+        selectedLineItemIds: convertOrderFormState.selectedLineItemIds,
+        selectedAdditionalServiceIds: convertOrderFormState.selectedAdditionalServiceIds,
+        selectedShippingServiceIds: convertOrderFormState.selectedShippingServiceIds,
+        includeFreight: convertOrderFormState.includeFreight,
+        depositRequired,
+        depositPercent,
+        depositRequestUrl: null,
+        depositRequestName: null,
+        orderConfirmationUrl,
+        orderConfirmationName: `Order Confirmation - ${acknowledgmentNumber}.pdf`,
       })
 
       await invalidateOpportunityData()
@@ -6393,15 +6456,22 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     }
   }, [
     convertOrderFormState.acknowledgmentNumber,
-    convertOrderFormState.leadTimeDate,
+    convertOrderFormState.depositPercent,
+    convertOrderFormState.depositRequirement,
+    convertOrderFormState.leadTime,
     convertOrderFormState.notes,
     convertOrderFormState.poDate,
     convertOrderFormState.poNumber,
     convertOrderFormState.shipTo,
+    convertOrderFormState.selectedLineItemIds,
+    convertOrderFormState.selectedAdditionalServiceIds,
+    convertOrderFormState.selectedShippingServiceIds,
+    convertOrderFormState.includeFreight,
     convertOrderPrimaryBoardId,
     convertOrderSecondaryBoardId,
     convertOrderTargetQuote,
     invalidateOpportunityData,
+    quotePrintSettingsQuery.data?.settings,
   ])
 
   const handleMarkApproved = useCallback(async (quoteSummary: CrmQuote) => {
@@ -6452,14 +6522,17 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     try {
       const response = await markCrmQuoteFollowedUp(quote.id)
       setSelectedOpportunity((current) => current?.id === quote.id ? response.quote : current)
-      await invalidateOpportunityData()
+      await Promise.all([
+        invalidateOpportunityData(),
+        queryClient.invalidateQueries({ queryKey: QUERY_KEYS.crmQuoteChats(quote.id) }),
+      ])
       setSuccessMessage('Follow-up recorded. The opportunity day counter has restarted.')
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Failed to record the follow-up.')
     } finally {
       setBusyQuoteId(null)
     }
-  }, [invalidateOpportunityData])
+  }, [invalidateOpportunityData, queryClient])
 
   const handleDeleteQuote = useCallback(async (quote: CrmQuote) => {
     const confirmed = window.confirm(`Delete ${quote.quoteNumber || quote.title}? This cannot be undone.`)
@@ -6626,6 +6699,25 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       || '',
   ).trim()
 
+  const convertOrderSelectableRows = useMemo(() => {
+    if (!convertOrderTargetQuote) return []
+    const converted = new Set(convertOrderTargetQuote.convertedItemKeys || [])
+    return [
+      ...(convertOrderTargetQuote.lineItems || []).filter((item) => Number(item.qty ?? 1) !== 0).map((item) => { const id = String(item.id || item.itemNumber || ''); return { key: `line:${id}`, id, group: 'Product', description: item.description || `Item ${item.itemNumber}`, qty: item.qty, unitPrice: item.unitPrice, amount: Number(item.extPrice || 0), field: 'selectedLineItemIds' as const, converted: converted.has(`line:${id}`) } }),
+      ...(convertOrderTargetQuote.additionalServices || []).filter((item) => Number(resolveServiceItemExtPrice(item) || 0) > 0).map((item) => ({ key: `additional:${item.id}`, id: item.id, group: 'Additional Service', description: item.title || item.description || 'Additional service', qty: item.qty ?? null, unitPrice: item.unitPrice ?? null, amount: Number(resolveServiceItemExtPrice(item) || 0), field: 'selectedAdditionalServiceIds' as const, converted: converted.has(`additional:${item.id}`) })),
+      ...(convertOrderTargetQuote.shippingServices || []).filter((item) => Number(resolveServiceItemExtPrice(item) || 0) > 0).map((item) => ({ key: `shipping:${item.id}`, id: item.id, group: 'Freight / Delivery', description: item.title || item.description || 'Freight service', qty: item.qty ?? null, unitPrice: item.unitPrice ?? null, amount: Number(resolveServiceItemExtPrice(item) || 0), field: 'selectedShippingServiceIds' as const, converted: converted.has(`shipping:${item.id}`) })),
+      ...(Number(convertOrderTargetQuote.freight || 0) > 0 ? [{ key: 'freight', id: 'freight', group: 'Freight', description: convertOrderTargetQuote.freightDescription || 'Quote freight', qty: 1, unitPrice: Number(convertOrderTargetQuote.freight), amount: Number(convertOrderTargetQuote.freight), field: 'includeFreight' as const, converted: converted.has('freight') }] : []),
+    ]
+  }, [convertOrderTargetQuote])
+
+  const convertOrderAvailableRows = convertOrderSelectableRows.filter((row) => !row.converted)
+  const isConvertOrderRowSelected = (row: typeof convertOrderSelectableRows[number]) => row.field === 'includeFreight'
+    ? convertOrderFormState.includeFreight
+    : convertOrderFormState[row.field].includes(row.id)
+  const convertOrderSelectedRows = convertOrderAvailableRows.filter(isConvertOrderRowSelected)
+  const convertOrderProductNet = convertOrderSelectedRows.filter((row) => row.group === 'Product' || row.group === 'Additional Service').reduce((sum, row) => sum + row.amount, 0)
+  const convertOrderFreightNet = convertOrderSelectedRows.filter((row) => row.group === 'Freight' || row.group === 'Freight / Delivery').reduce((sum, row) => sum + row.amount, 0)
+
   if (isLoading && !detailsOnly) {
     return <LoadingPanel loading message="Fetching pipeline opportunities..." />
   }
@@ -6652,8 +6744,9 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       <Dialog
         open={isConvertOrderDialogOpen}
         onClose={handleCloseConvertOrderDialog}
-        maxWidth="sm"
+        maxWidth="lg"
         fullWidth
+        PaperProps={{ sx: { minHeight: { md: '86vh' }, maxHeight: '94vh' } }}
       >
         <DialogTitle>Convert To Order</DialogTitle>
         <DialogContent>
@@ -6763,15 +6856,52 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
               disabled={isSubmittingConvertOrder}
             />
 
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.25}>
+              <TextField
+                required
+                select
+                fullWidth
+                label="Is a deposit required?"
+                value={convertOrderFormState.depositRequirement}
+                onChange={(event) => {
+                  const requirement = event.target.value as OpportunityConvertOrderFormState['depositRequirement']
+                  setConvertOrderFormState((current) => ({
+                    ...current,
+                    depositRequirement: requirement,
+                    depositPercent: requirement === 'required' ? (current.depositPercent || '50') : '',
+                  }))
+                }}
+                helperText="Required for every order."
+                disabled={isSubmittingConvertOrder}
+              >
+                <MenuItem value="" disabled>Select an option</MenuItem>
+                <MenuItem value="required">Yes - deposit required</MenuItem>
+                <MenuItem value="not_required">No deposit required</MenuItem>
+              </TextField>
+
+              {convertOrderFormState.depositRequirement === 'required' ? (
+                <TextField
+                  required
+                  fullWidth
+                  type="number"
+                  label="Deposit Percentage"
+                  value={convertOrderFormState.depositPercent}
+                  onChange={(event) => updateConvertOrderField('depositPercent', event.target.value)}
+                  inputProps={{ min: 1, max: 100, step: 1 }}
+                  helperText="Defaults to 50%; change it for this order if needed."
+                  disabled={isSubmittingConvertOrder}
+                />
+              ) : null}
+            </Stack>
+
             <TextField
               fullWidth
-              label="Lead Time (Optional)"
-              type="date"
-              value={convertOrderFormState.leadTimeDate}
+              label="Lead Time"
+              value={convertOrderFormState.leadTime}
               onChange={(event) => {
-                updateConvertOrderField('leadTimeDate', event.target.value)
+                updateConvertOrderField('leadTime', event.target.value)
               }}
-              InputLabelProps={{ shrink: true }}
+              helperText="Copied from the quote; for example, 12–14 weeks after shop drawing approval + transit time."
               disabled={isSubmittingConvertOrder}
             />
 
@@ -6787,6 +6917,50 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
               minRows={2}
               disabled={isSubmittingConvertOrder}
             />
+
+            <Paper variant="outlined" sx={{ overflow: 'hidden', borderRadius: 2 }}>
+              <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ xs: 'stretch', sm: 'center' }} gap={1} sx={{ px: 1.5, py: 1.1, bgcolor: '#eef4f8' }}>
+                <Box>
+                  <Typography fontWeight={800}>Select Quote Lines</Typography>
+                  <Typography variant="caption" color="text.secondary">Only priced additional services are shown. Previously converted lines remain locked.</Typography>
+                </Box>
+                <FormControlLabel
+                  control={<Checkbox checked={convertOrderAvailableRows.length > 0 && convertOrderSelectedRows.length === convertOrderAvailableRows.length} indeterminate={convertOrderSelectedRows.length > 0 && convertOrderSelectedRows.length < convertOrderAvailableRows.length} onChange={(event) => {
+                    const checked = event.target.checked
+                    setConvertOrderFormState((current) => ({ ...current,
+                      selectedLineItemIds: checked ? convertOrderAvailableRows.filter((row) => row.field === 'selectedLineItemIds').map((row) => row.id) : [],
+                      selectedAdditionalServiceIds: checked ? convertOrderAvailableRows.filter((row) => row.field === 'selectedAdditionalServiceIds').map((row) => row.id) : [],
+                      selectedShippingServiceIds: checked ? convertOrderAvailableRows.filter((row) => row.field === 'selectedShippingServiceIds').map((row) => row.id) : [],
+                      includeFreight: checked && convertOrderAvailableRows.some((row) => row.field === 'includeFreight'),
+                    }))
+                  }} />}
+                  label="Select all available"
+                />
+              </Stack>
+              <Table size="small">
+                <TableHead><TableRow><TableCell padding="checkbox" /><TableCell>Type</TableCell><TableCell>Description</TableCell><TableCell align="right">Qty</TableCell><TableCell align="right">Unit Price</TableCell><TableCell align="right">Extended</TableCell></TableRow></TableHead>
+                <TableBody>{convertOrderSelectableRows.map((row) => <TableRow key={row.key} sx={{ opacity: row.converted ? 0.5 : 1 }}>
+                  <TableCell padding="checkbox"><Checkbox disabled={row.converted || isSubmittingConvertOrder} checked={!row.converted && isConvertOrderRowSelected(row)} onChange={(event) => setConvertOrderFormState((current) => {
+                    if (row.field === 'includeFreight') return { ...current, includeFreight: event.target.checked }
+                    const values = current[row.field]
+                    return { ...current, [row.field]: event.target.checked ? [...new Set([...values, row.id])] : values.filter((id) => id !== row.id) }
+                  })} /></TableCell>
+                  <TableCell>{row.converted ? `${row.group} — already converted` : row.group}</TableCell><TableCell>{row.description}</TableCell><TableCell align="right">{row.qty ?? '—'}</TableCell><TableCell align="right">{row.unitPrice == null ? '—' : formatCurrency(row.unitPrice, 2)}</TableCell><TableCell align="right">{formatCurrency(row.amount, 2)}</TableCell>
+                </TableRow>)}</TableBody>
+              </Table>
+              <Stack direction="row" justifyContent="flex-end" spacing={2.5} sx={{ p: 1.5, bgcolor: '#f8fafc' }}>
+                <Typography>Product Net: <strong>{formatCurrency(convertOrderProductNet, 2)}</strong></Typography>
+                <Typography>Freight Net: <strong>{formatCurrency(convertOrderFreightNet, 2)}</strong></Typography>
+                <Typography color="primary">Grand Total: <strong>{formatCurrency(convertOrderProductNet + convertOrderFreightNet, 2)}</strong></Typography>
+                <Typography color={convertOrderFormState.depositRequirement === 'required' ? 'error' : 'text.secondary'}>
+                  {convertOrderFormState.depositRequirement === 'required'
+                    ? `${convertOrderFormState.depositPercent || '—'}% deposit required`
+                    : convertOrderFormState.depositRequirement === 'not_required'
+                      ? 'No deposit required'
+                      : 'Deposit selection required'}
+                </Typography>
+              </Stack>
+            </Paper>
 
             <TextField
               fullWidth
@@ -6818,6 +6992,13 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
               || !convertOrderFormState.acknowledgmentNumber.trim()
               || !convertOrderFormState.poDate.trim()
               || !convertOrderFormState.shipTo.trim()
+              || !convertOrderFormState.depositRequirement
+              || (convertOrderFormState.depositRequirement === 'required' && (
+                !Number.isFinite(Number(convertOrderFormState.depositPercent))
+                || Number(convertOrderFormState.depositPercent) <= 0
+                || Number(convertOrderFormState.depositPercent) > 100
+              ))
+              || convertOrderSelectedRows.length === 0
             }
           >
             {isSubmittingConvertOrder ? 'Converting...' : 'Convert To Order'}
@@ -7825,10 +8006,10 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
               <MenuItem
                 onClick={() => {
                   handleCloseUploadQuoteActionMenu()
-                  navigate('/sales?tab=quote-layout')
+                  navigate('/config?tab=templates')
                 }}
               >
-                Quote Layout
+                Document Templates
               </MenuItem>
             </Menu>
             <input

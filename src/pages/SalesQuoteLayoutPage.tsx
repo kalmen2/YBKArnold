@@ -2,7 +2,7 @@ import CloudUploadRoundedIcon from '@mui/icons-material/CloudUploadRounded'
 import PictureAsPdfRoundedIcon from '@mui/icons-material/PictureAsPdfRounded'
 import RestartAltRoundedIcon from '@mui/icons-material/RestartAltRounded'
 import SaveRoundedIcon from '@mui/icons-material/SaveRounded'
-import { Alert, Box, Button, Checkbox, FormControlLabel, Paper, Stack, TextField, Typography } from '@mui/material'
+import { Alert, Box, Button, Checkbox, Divider, FormControlLabel, Paper, Stack, TextField, Typography } from '@mui/material'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage'
 import { useEffect, useMemo, useState, type ChangeEvent } from 'react'
@@ -137,6 +137,12 @@ export default function SalesQuoteLayoutPage() {
         showLeadTime: draft.showLeadTime,
         showFreight: draft.showFreight,
         customerInformation: draft.customerInformation,
+        projectManagers: draft.projectManagers,
+        depositRequestBody: draft.depositRequestBody,
+        depositRequestTerms: draft.depositRequestTerms,
+        orderConfirmationRequestedInfo: draft.orderConfirmationRequestedInfo,
+        orderConfirmationNotes: draft.orderConfirmationNotes,
+        orderConfirmationTerms: draft.orderConfirmationTerms,
       })
       setDraft(result.settings)
       setAddressText(result.settings.addressLines.join('\n'))
@@ -159,8 +165,8 @@ export default function SalesQuoteLayoutPage() {
     <Stack spacing={2}>
       <Paper variant="outlined" sx={{ p: 2.2 }}>
         <Stack spacing={0.5}>
-          <Typography variant="h5" fontWeight={700}>Quote Layout</Typography>
-          <Typography color="text.secondary">Shared header, branding, and footer used by website-created quote PDFs.</Typography>
+          <Typography variant="h5" fontWeight={700}>Document Templates</Typography>
+          <Typography color="text.secondary">Shared Arnold letterhead and editable defaults for estimates and order documents.</Typography>
         </Stack>
       </Paper>
 
@@ -189,6 +195,7 @@ export default function SalesQuoteLayoutPage() {
                   <TextField label="Email" value={draft.email || ''} onChange={(event) => setField('email', event.target.value || null)} fullWidth />
                   <TextField label="Website" value={draft.website || ''} onChange={(event) => setField('website', event.target.value || null)} fullWidth />
                 </Stack>
+                <Typography variant="h6" fontWeight={800}>Estimate / Quote</Typography>
                 <TextField label="Footer text" value={draft.footerText || ''} onChange={(event) => setField('footerText', event.target.value || null)} multiline minRows={3} />
                 <TextField label="Customer information" value={draft.customerInformation} onChange={(event) => setField('customerInformation', event.target.value)} multiline minRows={8} helperText="Standard terms printed at the bottom of every website quote" />
                 <TextField label="Accent color" type="color" value={draft.accentColor} onChange={(event) => setField('accentColor', event.target.value)} sx={{ width: 180 }} />
@@ -197,13 +204,19 @@ export default function SalesQuoteLayoutPage() {
                   <FormControlLabel control={<Checkbox checked={draft.showPaymentTerms} onChange={(event) => setField('showPaymentTerms', event.target.checked)} />} label="Show payment terms" />
                   <FormControlLabel control={<Checkbox checked={draft.showFreight} onChange={(event) => setField('showFreight', event.target.checked)} />} label="Show freight" />
                 </Stack>
+                <Divider />
+                <Typography variant="h6" fontWeight={800}>Order Confirmation</Typography>
+                <TextField label="Default project managers" value={draft.projectManagers} onChange={(event) => setField('projectManagers', event.target.value)} helperText="Separate names with commas" />
+                <TextField label="Lead-time terms" value={draft.orderConfirmationTerms} onChange={(event) => setField('orderConfirmationTerms', event.target.value)} multiline minRows={3} helperText="Printed inside the processing terms and conditions at the bottom of the Order Confirmation." />
+                <TextField label="Deposit instructions" value={draft.depositRequestBody} onChange={(event) => setField('depositRequestBody', event.target.value)} multiline minRows={4} helperText="The percentage entered during conversion replaces the percentage in this message. There is no separate Deposit Request document." />
+                <TextField label="Deposit and processing terms" value={draft.depositRequestTerms} onChange={(event) => setField('depositRequestTerms', event.target.value)} multiline minRows={5} />
               </Stack>
             </Stack>
 
             <Stack direction="row" spacing={1} justifyContent="flex-end" useFlexGap flexWrap="wrap">
               <Button variant="text" startIcon={<RestartAltRoundedIcon />} onClick={handleReset}>Reset</Button>
               <Button variant="outlined" startIcon={<PictureAsPdfRoundedIcon />} onClick={() => setPreviewOpen(true)}>Preview PDF</Button>
-              <Button variant="contained" startIcon={<SaveRoundedIcon />} onClick={() => void handleSave()} disabled={saving || !draft.companyName.trim()}>{saving ? 'Saving…' : 'Save Layout'}</Button>
+              <Button variant="contained" startIcon={<SaveRoundedIcon />} onClick={() => void handleSave()} disabled={saving || !draft.companyName.trim()}>{saving ? 'Saving…' : 'Save Templates'}</Button>
             </Stack>
           </Stack>
         </Paper>

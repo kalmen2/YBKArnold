@@ -45,7 +45,14 @@ type LineItemLayout = {
   colTotalLabel: number
 }
 
-const subtotalLabelSet = new Set(['sub net total', 'subnet total', 'sub total', 'subtotal'])
+const subtotalLabelSet = new Set([
+  'sub net total',
+  'subnet total',
+  'sub list total',
+  'sublist total',
+  'sub total',
+  'subtotal',
+])
 
 const defaultLineItemLayout: LineItemLayout = {
   lineItemsStartRow: ROW_LINE_ITEMS_START,
@@ -99,6 +106,38 @@ function isAnyHeaderMatch(label: string, expectedLabels: string[]): boolean {
   return expectedLabels.some((expected) => label === expected)
 }
 
+function resolveNumericColumnOffset(
+  rows: unknown[][],
+  headerRow: number,
+  columns: { qty: number; unitPrice: number; extPrice: number },
+): number {
+  let bestOffset = 0
+  let bestScore = -1
+  const lastRow = Math.min(rows.length, headerRow + 90)
+
+  for (let offset = 0; offset <= 2; offset += 1) {
+    let score = 0
+
+    for (let row = headerRow + 1; row <= lastRow; row += 1) {
+      const qty = toNumberOrNull(getCell(rows, row, columns.qty + offset))
+      const unitPrice = toNumberOrNull(getCell(rows, row, columns.unitPrice + offset))
+      const extPrice = toNumberOrNull(getCell(rows, row, columns.extPrice + offset))
+
+      if (extPrice !== null) score += 3
+      if (unitPrice !== null) score += 2
+      if (qty !== null) score += 1
+      if (qty !== null && unitPrice !== null && extPrice !== null) score += 4
+    }
+
+    if (score > bestScore) {
+      bestOffset = offset
+      bestScore = score
+    }
+  }
+
+  return bestOffset
+}
+
 function findLineItemLayout(rows: unknown[][]): LineItemLayout {
   let bestMatch: {
     row: number
@@ -147,12 +186,12 @@ function findLineItemLayout(rows: unknown[][]): LineItemLayout {
         continue
       }
 
-      if (!colUnitPrice && isAnyHeaderMatch(label, ['unitprice', 'unitnetprice', 'netprice', 'price'])) {
+      if (!colUnitPrice && isAnyHeaderMatch(label, ['unitprice', 'unitnetprice', 'unitlistprice', 'netprice', 'listprice', 'price'])) {
         colUnitPrice = col
         continue
       }
 
-      if (!colExtPrice && isAnyHeaderMatch(label, ['extprice', 'extnetprice', 'extendedprice', 'extendednetprice', 'totalprice', 'totalnetprice', 'linetotal'])) {
+      if (!colExtPrice && isAnyHeaderMatch(label, ['extprice', 'extnetprice', 'extlistprice', 'extendedprice', 'extendednetprice', 'extendedlistprice', 'totalprice', 'totalnetprice', 'totallistprice', 'linetotal'])) {
         colExtPrice = col
       }
     }
@@ -184,13 +223,19 @@ function findLineItemLayout(rows: unknown[][]): LineItemLayout {
     return defaultLineItemLayout
   }
 
+  const numericColumnOffset = resolveNumericColumnOffset(rows, bestMatch.row, {
+    qty: bestMatch.colQty,
+    unitPrice: bestMatch.colUnitPrice,
+    extPrice: bestMatch.colExtPrice,
+  })
+
   return {
     lineItemsStartRow: bestMatch.row + 1,
     colItem: bestMatch.colItem,
     colDescription: bestMatch.colDescription,
-    colQty: bestMatch.colQty,
-    colUnitPrice: bestMatch.colUnitPrice,
-    colExtPrice: bestMatch.colExtPrice,
+    colQty: bestMatch.colQty + numericColumnOffset,
+    colUnitPrice: bestMatch.colUnitPrice + numericColumnOffset,
+    colExtPrice: bestMatch.colExtPrice + numericColumnOffset,
     colTotalLabel: bestMatch.colQty,
   }
 }
@@ -304,6 +349,14 @@ function buildLineItems(rows: unknown[][], layout: LineItemLayout): CrmQuoteLine
 
     const qtyCell = getCell(rows, row, layout.colQty)
     const unitPriceCell = getCell(rows, row, layout.colUnitPrice)
+    const qty = toNumberOrNull(qtyCell)
+
+    // Additional-service defaults in the legacy workbook can carry a price
+    // while their quantity is zero. They are not product lines until selected.
+    if (qty === 0) {
+      continue
+    }
+
     const itemNumber = isPlainInteger(itemCell)
       ? Math.max(0, Math.trunc(toNumberOrNull(itemCell) || 0))
       : lineItems.length + 1
@@ -311,7 +364,7 @@ function buildLineItems(rows: unknown[][], layout: LineItemLayout): CrmQuoteLine
     lineItems.push({
       itemNumber,
       description: toOptionalText(getCell(rows, row, layout.colDescription)) || null,
-      qty: toNumberOrNull(qtyCell),
+      qty,
       unitPrice: toNumberOrNull(unitPriceCell),
       extPrice,
     })
@@ -324,13 +377,24 @@ function findSubtotal(rows: unknown[][], layout: LineItemLayout): { found: boole
   const lastRow = rows.length
 
   for (let row = layout.lineItemsStartRow; row <= lastRow; row += 1) {
-    const labelText = normalizeCellText(rows, row, layout.colTotalLabel)
-
-    if (!subtotalLabelSet.has(labelText)) {
+    const rowValues = rows[row - 1]
+    if (!Array.isArray(rowValues)) {
       continue
     }
 
-    const extPrice = toNumberOrNull(getCell(rows, row, layout.colExtPrice))
+    const subtotalColumnIndex = rowValues.findIndex((value) => subtotalLabelSet.has(
+      toTrimmedText(value).replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase(),
+    ))
+
+    if (subtotalColumnIndex < 0) {
+      continue
+    }
+
+    const extPrice = rowValues
+      .slice(subtotalColumnIndex + 1)
+      .map(toNumberOrNull)
+      .filter((value): value is number => value !== null)
+      .at(-1) ?? null
 
     if (extPrice !== null) {
       return {
@@ -513,7 +577,16 @@ function resolveQuoteNumber(rows: unknown[][]): string | undefined {
   return undefined
 }
 
-function resolvePreferredQuoteSheetName(workbook: XLSX.WorkBook): string {
+function normalizeQuoteNumberKey(value: unknown): string {
+  return toTrimmedText(value).toLowerCase().replace(/[^a-z0-9]+/g, '')
+}
+
+function resolveQuoteRevision(value: unknown): number {
+  const match = toTrimmedText(value).match(/(?:^|[\s_-])R(\d+)(?:$|[\s_-])/i)
+  return match?.[1] ? Number(match[1]) : -1
+}
+
+function resolvePreferredQuoteSheetName(workbook: XLSX.WorkBook, preferredQuoteNumber?: string): string {
   const sheetNames = Array.isArray(workbook.SheetNames)
     ? workbook.SheetNames.map((name) => String(name ?? '').trim()).filter(Boolean)
     : []
@@ -522,39 +595,49 @@ function resolvePreferredQuoteSheetName(workbook: XLSX.WorkBook): string {
     return ''
   }
 
-  const revisionMatches = sheetNames
-    .map((name, index) => {
-      const revisionMatch = name.match(/(?:^|[\s_-])R(\d+)(?:$|[\s_-])/i)
+  const preferredKey = normalizeQuoteNumberKey(preferredQuoteNumber)
+  const candidates = sheetNames.map((name, index) => {
+    const sheet = workbook.Sheets[name]
+    const rows = sheet
+      ? XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null }) as unknown[][]
+      : []
+    const quoteNumber = resolveQuoteNumber(rows)
+    const quoteRevision = resolveQuoteRevision(quoteNumber)
+    const sheetRevision = resolveQuoteRevision(name)
+    const hasLineItemHeader = rows.slice(0, 80).some((row) => (
+      Array.isArray(row)
+      && row.some((value) => normalizeHeaderText(value) === 'item')
+      && row.some((value) => normalizeHeaderText(value) === 'description')
+    ))
 
-      if (!revisionMatch?.[1]) {
-        return null
-      }
-
-      return {
-        name,
-        revision: Number(revisionMatch[1]),
-        index,
-      }
-    })
-    .filter((entry): entry is { name: string; revision: number; index: number } => Boolean(entry))
-    .filter((entry) => Number.isFinite(entry.revision))
-
-  if (revisionMatches.length === 0) {
-    return sheetNames[0]
-  }
-
-  revisionMatches.sort((left, right) => {
-    if (right.revision !== left.revision) {
-      return right.revision - left.revision
+    return {
+      name,
+      index,
+      quoteNumber,
+      quoteRevision,
+      sheetRevision,
+      hasLineItemHeader,
+      exactPreferredMatch: Boolean(preferredKey && normalizeQuoteNumberKey(quoteNumber) === preferredKey),
+      revisionIsConsistent: quoteRevision >= 0 && quoteRevision === sheetRevision,
     }
+  }).filter((entry) => entry.quoteNumber && entry.hasLineItemHeader)
 
+  if (candidates.length === 0) return sheetNames[0]
+
+  candidates.sort((left, right) => {
+    if (left.exactPreferredMatch !== right.exactPreferredMatch) return left.exactPreferredMatch ? -1 : 1
+    if (left.revisionIsConsistent !== right.revisionIsConsistent) return left.revisionIsConsistent ? -1 : 1
+    if (right.quoteRevision !== left.quoteRevision) return right.quoteRevision - left.quoteRevision
     return right.index - left.index
   })
 
-  return revisionMatches[0].name
+  return candidates[0].name
 }
 
-export async function parseExcelQuoteForSync(file: File): Promise<CrmExcelQuoteSyncInput> {
+export async function parseExcelQuoteForSync(
+  file: File,
+  options: { preferredQuoteNumber?: string } = {},
+): Promise<CrmExcelQuoteSyncInput> {
   const fileName = String(file.name ?? '').trim()
   const extension = fileName.includes('.')
     ? fileName.split('.').pop()?.toLowerCase() ?? ''
@@ -576,7 +659,7 @@ export async function parseExcelQuoteForSync(file: File): Promise<CrmExcelQuoteS
     throw new Error('Could not read the uploaded file. Ensure it is a valid .xls, .xlsx, .xlsm, .ods, or .csv file.')
   }
 
-  const preferredSheetName = resolvePreferredQuoteSheetName(workbook)
+  const preferredSheetName = resolvePreferredQuoteSheetName(workbook, options.preferredQuoteNumber)
 
   if (!preferredSheetName) {
     throw new Error('The uploaded workbook has no sheets.')
@@ -617,6 +700,11 @@ export async function parseExcelQuoteForSync(file: File): Promise<CrmExcelQuoteS
   const lineItems = buildLineItems(rows, lineItemLayout)
   const subtotalResult = findSubtotal(rows, lineItemLayout)
   const freightInfo = findFreightInfo(rows, lineItemLayout)
+  const calculatedLineSubtotal = Number(lineItems.reduce((sum, item) => sum + Number(item.extPrice || 0), 0).toFixed(2))
+
+  if (lineItems.length === 0) {
+    throw new Error(`No priced product lines were found on sheet "${preferredSheetName}". The quote was not updated.`)
+  }
 
   const payload: CrmExcelQuoteSyncInput = {
     quoteNumber,
@@ -663,9 +751,9 @@ export async function parseExcelQuoteForSync(file: File): Promise<CrmExcelQuoteS
     payload.leadTime = leadTime
   }
 
-  if (subtotalResult.found) {
-    payload.subtotal = subtotalResult.subtotal
-    payload.totalAmount = Number((subtotalResult.subtotal + freightInfo.freight).toFixed(2))
+  if (subtotalResult.found || lineItems.length > 0) {
+    payload.subtotal = calculatedLineSubtotal
+    payload.totalAmount = Number((calculatedLineSubtotal + freightInfo.freight).toFixed(2))
   }
 
   if (freightInfo.found) {

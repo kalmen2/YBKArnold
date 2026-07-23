@@ -453,6 +453,12 @@ export type OrdersOverviewOrder = {
   quickBooksProjectNames: string[]
   hazardReason: string | null
   parentOrderNumber: string | null
+  depositRequired: boolean | null
+  depositPercent: number | null
+  depositRequestUrl: string | null
+  depositRequestName: string | null
+  orderConfirmationUrl: string | null
+  orderConfirmationName: string | null
   familyRollup?: OrdersFamilyRollup | null
 }
 

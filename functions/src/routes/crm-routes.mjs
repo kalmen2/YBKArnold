@@ -952,6 +952,13 @@ async function deleteQuoteStorageTargets(quote) {
   return deleteResolvedQuoteStorageTargets(targets)
 }
 
+async function deleteGeneratedOrderStorageTargets(order) {
+  const targets = [order?.deposit_request_url, order?.order_confirmation_url]
+    .map((url) => extractFirebaseStorageObjectFromUrl(url))
+    .filter((target) => target && target.objectPath.startsWith('crm/orders/'))
+  return deleteResolvedQuoteStorageTargets(targets)
+}
+
 async function deleteResolvedQuoteStorageTargets(targets) {
 
   if (targets.length === 0) {
@@ -1131,6 +1138,12 @@ function normalizeExcelQuoteLineItems(input, existingLineItems) {
   const existing = normalizeQuoteLineItems(existingLineItems)
   const incoming = normalizeQuoteLineItems(input)
 
+  // A workbook that was recognized but whose price grid was not understood
+  // must never erase previously imported quote lines.
+  if (incoming.length === 0 && existing.length > 0) {
+    return existing
+  }
+
   return incoming.map((lineItem, index) => {
     const matchingLine = existing.find((entry) => entry.id === lineItem.id)
       || existing.find((entry) => entry.itemNumber > 0 && entry.itemNumber === lineItem.itemNumber)
@@ -1160,6 +1173,12 @@ const defaultQuotePrintSettings = Object.freeze({
   showLeadTime: true,
   showFreight: true,
   customerInformation: `Purchase Orders can be sent to sales@arnoldcontract.us.\nArnold Contract requires full payment as a deposit for all change orders, replacements, and add-ons prior to processing.\nAll items are shipped F.O.B. Factory, Irvington NJ.\nCustom-made and custom-finished furniture is non-cancelable and non-returnable. Please ensure specifications are correct before placing your order.\nArnold Contract reserves the right to correct clerical or pricing errors at any time.\nIt is the customer's responsibility to confirm that all furniture will fit into the designated elevator and building.\nCrated and knocked-down units will be shipped and must be installed on-site by the customer's installer.\nLead times are based on the volume of orders in-house when the quotation and deposit are received and may change.\nArnold Contract will acknowledge receipt of your PO and confirm order details once processed.`,
+  projectManagers: 'Misha Patel, Jose Gonzalez',
+  depositRequestBody: 'To begin processing this order, please send the 50% Product Net deposit shown above at your earliest convenience.',
+  depositRequestTerms: 'Color samples and shop drawings must be received and approved when required. Delays in receiving required approvals may affect the stated lead time.\n\nCustom orders are final and cannot be returned, exchanged, or refunded.',
+  orderConfirmationRequestedInfo: 'Please send the control sample to the address below:\n\nArnold Kolax Furniture Inc.\nAttn: Misha Patel (Ack # {ack})\n120 Coit Street, Irvington, NJ 07111',
+  orderConfirmationNotes: 'Thank you for your order. We appreciate your business and look forward to working with you.',
+  orderConfirmationTerms: 'Lead times begin after final approved shop drawings and finish samples are received.',
 })
 
 function normalizeQuoteOrigin(value, fallback = 'website') {
@@ -1193,6 +1212,12 @@ function normalizeQuotePrintSettings(input, metadata = {}) {
     showLeadTime: normalizeBoolean(source.showLeadTime, true),
     showFreight: normalizeBoolean(source.showFreight, true),
     customerInformation: toTrimmedText(source.customerInformation, 8000) || defaultQuotePrintSettings.customerInformation,
+    projectManagers: toTrimmedText(source.projectManagers, 1000) || defaultQuotePrintSettings.projectManagers,
+    depositRequestBody: toTrimmedText(source.depositRequestBody, 8000) || defaultQuotePrintSettings.depositRequestBody,
+    depositRequestTerms: toTrimmedText(source.depositRequestTerms, 8000) || defaultQuotePrintSettings.depositRequestTerms,
+    orderConfirmationRequestedInfo: toTrimmedText(source.orderConfirmationRequestedInfo, 8000) || defaultQuotePrintSettings.orderConfirmationRequestedInfo,
+    orderConfirmationNotes: toTrimmedText(source.orderConfirmationNotes, 8000) || defaultQuotePrintSettings.orderConfirmationNotes,
+    orderConfirmationTerms: toTrimmedText(source.orderConfirmationTerms, 8000) || defaultQuotePrintSettings.orderConfirmationTerms,
     updatedAt: toIsoDateOrNull(metadata.updatedAt ?? source.updatedAt),
     updatedByEmail: toTrimmedText(metadata.updatedByEmail ?? source.updatedByEmail, 200) || null,
   }
@@ -6223,8 +6248,11 @@ export function registerCrmRoutes(app, deps) {
       if (req.body?.confirmed !== true) return res.status(400).json({ error: 'Follow-up confirmation is required.' })
 
       const accessScope = resolveCrmAccessScope(req)
+      const { publicUser } = accessScope
       const quoteAccessScope = resolveSalesRepQuoteAccessScope(accessScope)
-      const { crmQuotesCollection } = await getCollections()
+      const collections = await getCollections()
+      const { crmQuotesCollection } = collections
+      const crmQuoteChatsCollection = await getCrmQuoteChatsCollection(collections)
       const quote = await crmQuotesCollection.findOne({ id: quoteId }, { projection: { _id: 0 } })
       if (!quote) return res.status(404).json({ error: 'Quote not found.' })
       if (!canAccessQuoteBySalesRep(quote, quoteAccessScope)) {
@@ -6232,26 +6260,58 @@ export function registerCrmRoutes(app, deps) {
       }
 
       const now = nowIso()
+      const requesterUid = toTrimmedText(req.authUser?.uid, 200)
+      const requesterEmail = toTrimmedText(req.authUser?.email, 200) || null
+      const requesterName = toTrimmedText(publicUser?.displayName, 200)
+        || requesterEmail
+        || 'A team member'
       const activity = {
         id: randomUUID(),
         type: 'follow_up',
         occurredAt: now,
-        createdByUid: toTrimmedText(req.authUser?.uid, 160) || null,
-        createdByEmail: toTrimmedText(req.authUser?.email, 200) || null,
+        createdByUid: requesterUid || null,
+        createdByEmail: requesterEmail,
+        createdByName: requesterName,
       }
-      const updatedQuote = await crmQuotesCollection.findOneAndUpdate(
-        { id: quoteId },
-        {
-          $set: { lastFollowedUpAt: now, updatedAt: now },
-          $push: {
-            followUpHistory: { $each: [activity], $slice: -500 },
-            activityLog: { $each: [activity], $slice: -1000 },
-          },
-        },
-        { returnDocument: 'after', projection: { _id: 0 } },
-      )
+      const chatMessage = {
+        id: randomUUID(),
+        quoteId: quote.id,
+        dealerSourceId: quote.dealerSourceId,
+        quoteNumber: quote.quoteNumber,
+        message: `${requesterName} followed up on this quote.`,
+        mentionUserUids: [],
+        mentionUserEmails: [],
+        reminder: null,
+        createdAt: now,
+        createdByUid: requesterUid || null,
+        createdByEmail: requesterEmail,
+        createdByName: requesterName,
+      }
 
-      return res.json({ quote: normalizeQuoteOpportunityStageForResponse(updatedQuote) })
+      await crmQuoteChatsCollection.insertOne(chatMessage)
+
+      let updatedQuote
+      try {
+        updatedQuote = await crmQuotesCollection.findOneAndUpdate(
+          { id: quoteId },
+          {
+            $set: { lastFollowedUpAt: now, updatedAt: now },
+            $push: {
+              followUpHistory: { $each: [activity], $slice: -500 },
+              activityLog: { $each: [activity], $slice: -1000 },
+            },
+          },
+          { returnDocument: 'after', projection: { _id: 0 } },
+        )
+      } catch (error) {
+        await crmQuoteChatsCollection.deleteOne({ id: chatMessage.id, quoteId: quote.id })
+        throw error
+      }
+
+      return res.json({
+        quote: normalizeQuoteOpportunityStageForResponse(updatedQuote),
+        chatMessage,
+      })
     } catch (error) {
       next(error)
     }
@@ -6965,14 +7025,7 @@ export function registerCrmRoutes(app, deps) {
       }
 
       const poDate = parsedPoDate || nowIso().slice(0, 10)
-      const rawLeadTimeDate = toTrimmedText(body.leadTimeDate, 80)
-      const parsedLeadTimeDate = toIsoDateOnlyOrNull(rawLeadTimeDate)
-
-      if (rawLeadTimeDate && !parsedLeadTimeDate) {
-        return res.status(400).json({
-          error: 'leadTimeDate must be a valid date when provided.',
-        })
-      }
+      const leadTime = toTrimmedText(body.leadTime, 500) || null
 
       const shipTo = toTrimmedText(body.shipTo, 2000)
 
@@ -6992,6 +7045,21 @@ export function registerCrmRoutes(app, deps) {
 
       const poNumber = toTrimmedText(body.poNumber, 120) || null
       const notes = toTrimmedText(body.notes, 4000) || null
+      if (typeof body.depositRequired !== 'boolean') {
+        return res.status(400).json({ error: 'Select whether a deposit is required.' })
+      }
+      const depositRequired = body.depositRequired
+      const depositPercent = depositRequired ? toNonNegativeNumberOrNull(body.depositPercent) : null
+      if (depositRequired && (depositPercent === null || depositPercent <= 0 || depositPercent > 100)) {
+        return res.status(400).json({ error: 'depositPercent must be greater than 0 and no more than 100.' })
+      }
+      const selectedLineItemIds = [...new Set((Array.isArray(body.selectedLineItemIds) ? body.selectedLineItemIds : []).map((value) => toTrimmedText(value, 160)).filter(Boolean))]
+      const selectedAdditionalServiceIds = [...new Set((Array.isArray(body.selectedAdditionalServiceIds) ? body.selectedAdditionalServiceIds : []).map((value) => toTrimmedText(value, 160)).filter(Boolean))]
+      const selectedShippingServiceIds = [...new Set((Array.isArray(body.selectedShippingServiceIds) ? body.selectedShippingServiceIds : []).map((value) => toTrimmedText(value, 160)).filter(Boolean))]
+      const includeFreight = body.includeFreight === true
+      if (selectedLineItemIds.length + selectedAdditionalServiceIds.length + selectedShippingServiceIds.length + (includeFreight ? 1 : 0) === 0) {
+        return res.status(400).json({ error: 'Select at least one quote line to convert.' })
+      }
       const {
         crmQuotesCollection,
         ordersUnifiedCollection,
@@ -7025,29 +7093,17 @@ export function registerCrmRoutes(app, deps) {
         })
       }
 
-      const existingLinkedOrder = await ordersUnifiedCollection.findOne(
-        {
-          source_quote_id: quoteId,
-        },
-        {
-          projection: {
-            _id: 0,
-          },
-        },
-      )
-
-      if (existingLinkedOrder) {
-        return res.status(409).json({
-          error: 'This quote was already converted to an order.',
-          order: toCrmOrderResponse(existingLinkedOrder),
-        })
-      }
-
       const orderNumber = acknowledgmentNumber
+      const canonicalOrderId = randomUUID()
+      const normalizedOrderNumberKey = orderNumber.toLowerCase().replace(/[^a-z0-9]+/g, '')
+      const canonicalOrderKey = normalizedOrderNumberKey
+        ? `order:${normalizedOrderNumberKey}`
+        : `canonical:${canonicalOrderId}`
 
       const existingOrderWithSameNumber = await ordersUnifiedCollection.findOne(
         {
           order_number: new RegExp(`^${escapeRegex(orderNumber)}$`, 'i'),
+          is_cancelled: { $ne: true },
         },
         {
           projection: {
@@ -7062,6 +7118,80 @@ export function registerCrmRoutes(app, deps) {
           error: `Order number ${orderNumber} already exists. Use a different acknowledgement number.`,
         })
       }
+
+      // Cancelled orders remain in MongoDB as audit history, but their natural
+      // order key must not reserve the acknowledgement number forever. This
+      // also repairs orders cancelled before the key-archiving behavior was
+      // introduced, so the same quote can be converted again immediately.
+      const staleCancelledOrder = await ordersUnifiedCollection.findOne(
+        {
+          orderKey: canonicalOrderKey,
+          is_cancelled: true,
+        },
+        {
+          projection: {
+            _id: 1,
+            canonical_order_id: 1,
+            id: 1,
+          },
+        },
+      )
+
+      if (staleCancelledOrder) {
+        const cancelledOrderIdentity = toTrimmedText(
+          staleCancelledOrder?.canonical_order_id || staleCancelledOrder?.id,
+          160,
+        ) || String(staleCancelledOrder._id)
+
+        await ordersUnifiedCollection.updateOne(
+          {
+            _id: staleCancelledOrder._id,
+            orderKey: canonicalOrderKey,
+            is_cancelled: true,
+          },
+          {
+            $set: {
+              orderKey: `cancelled:${cancelledOrderIdentity}`,
+              canonical_updated_at: nowIso(),
+              updatedAt: nowIso(),
+            },
+          },
+        )
+      }
+
+      const lineItems = normalizeQuoteLineItems(quote?.lineItems)
+      const additionalServices = normalizeQuoteServiceItems(quote?.additionalServices)
+      const shippingServices = normalizeQuoteServiceItems(quote?.shippingServices)
+      const convertedItemKeys = new Set((Array.isArray(quote?.convertedItemKeys) ? quote.convertedItemKeys : []).map((value) => toTrimmedText(value, 240)).filter(Boolean))
+      const selectedLines = lineItems.filter((item) => selectedLineItemIds.includes(item.id) && Number(item.qty ?? 1) !== 0)
+      const selectedAdditionalServices = additionalServices.filter((item) => selectedAdditionalServiceIds.includes(item.id) && (toNonNegativeNumberOrNull(item.extPrice ?? item.price) ?? 0) > 0)
+      const selectedShippingServices = shippingServices.filter((item) => selectedShippingServiceIds.includes(item.id) && (toNonNegativeNumberOrNull(item.extPrice ?? item.price) ?? 0) > 0)
+      const selectedKeys = [
+        ...selectedLines.map((item) => `line:${item.id}`),
+        ...selectedAdditionalServices.map((item) => `additional:${item.id}`),
+        ...selectedShippingServices.map((item) => `shipping:${item.id}`),
+        ...(includeFreight ? ['freight'] : []),
+      ]
+      if (selectedKeys.length === 0 || selectedKeys.some((key) => convertedItemKeys.has(key))) {
+        return res.status(409).json({ error: 'One or more selected lines are unavailable or were already converted.' })
+      }
+      const productValue = Number(([
+        ...selectedLines.map((item) => toNonNegativeNumberOrNull(item.extPrice) ?? 0),
+        ...selectedAdditionalServices.map((item) => toNonNegativeNumberOrNull(item.extPrice ?? item.price) ?? 0),
+      ].reduce((sum, value) => sum + value, 0)).toFixed(2))
+      const freightValue = Number((selectedShippingServices.reduce((sum, item) => sum + (toNonNegativeNumberOrNull(item.extPrice ?? item.price) ?? 0), 0) + (includeFreight ? (toNonNegativeNumberOrNull(quote?.freight) ?? 0) : 0)).toFixed(2))
+      const orderValue = Number((productValue + freightValue).toFixed(2))
+      const depositAmount = depositRequired
+        ? Number((productValue * (depositPercent / 100)).toFixed(2))
+        : 0
+      selectedKeys.forEach((key) => convertedItemKeys.add(key))
+      const allBillableKeys = [
+        ...lineItems.filter((item) => Number(item.qty ?? 1) !== 0).map((item) => `line:${item.id}`),
+        ...additionalServices.filter((item) => (toNonNegativeNumberOrNull(item.extPrice ?? item.price) ?? 0) > 0).map((item) => `additional:${item.id}`),
+        ...shippingServices.filter((item) => (toNonNegativeNumberOrNull(item.extPrice ?? item.price) ?? 0) > 0).map((item) => `shipping:${item.id}`),
+        ...((toNonNegativeNumberOrNull(quote?.freight) ?? 0) > 0 ? ['freight'] : []),
+      ]
+      const isFullyConverted = allBillableKeys.length > 0 && allBillableKeys.every((key) => convertedItemKeys.has(key))
 
       let primaryAckColumnId = mondayNewOrders2026ColumnIds.ack
       let secondaryAckColumnId = mondayDesignAkfColumnIds.orderNumber
@@ -7094,8 +7224,6 @@ export function registerCrmRoutes(app, deps) {
         || toTrimmedText(quote?.description, 2000)
         || `Opportunity ${toTrimmedText(quote?.quoteNumber, 120) || quoteId}`
       const salesRep = toTrimmedText(quote?.salesRep, 200) || null
-      const orderValue = Number((toNonNegativeNumberOrNull(quote?.totalAmount) ?? 0).toFixed(2))
-      const freightValue = toNonNegativeNumberOrNull(quote?.freight)
 
       const updateTextIfPresent = async ({ boardId, itemId, columnId, value }) => {
         const textValue = toTrimmedText(value, 4000)
@@ -7197,7 +7325,7 @@ export function registerCrmRoutes(app, deps) {
         boardId: mondayNewOrders2026BoardId,
         itemId: primaryItemId,
         columnId: mondayNewOrders2026ColumnIds.orderValue,
-        value: orderValue,
+        value: productValue,
       })
       await updateNumberIfPresent({
         boardId: mondayNewOrders2026BoardId,
@@ -7222,12 +7350,6 @@ export function registerCrmRoutes(app, deps) {
         itemId: primaryItemId,
         columnId: mondayNewOrders2026ColumnIds.description,
         value: description,
-      })
-      await updateDateIfPresent({
-        boardId: mondayNewOrders2026BoardId,
-        itemId: primaryItemId,
-        columnId: mondayNewOrders2026ColumnIds.leadTimeDate,
-        value: parsedLeadTimeDate,
       })
       await updateLocationIfPresent({
         boardId: mondayNewOrders2026BoardId,
@@ -7260,11 +7382,12 @@ export function registerCrmRoutes(app, deps) {
         itemId: secondaryItemId,
       })
 
+      const initialDesignStatus = depositRequired ? 'waiting on deposit' : 'no deposit required'
       await updateMondayItemStatusColumn({
         boardId: mondayDesignAkfBoardId,
         itemId: secondaryItemId,
         columnId: mondayDesignAkfColumnIds.designStatus,
-        statusLabel: 'waiting on deposit',
+        statusLabel: initialDesignStatus,
       })
       await updateTextIfPresent({
         boardId: mondayDesignAkfBoardId,
@@ -7304,11 +7427,15 @@ export function registerCrmRoutes(app, deps) {
       })
 
       const now = nowIso()
-      const canonicalOrderId = randomUUID()
-      const normalizedOrderNumberKey = orderNumber.toLowerCase().replace(/[^a-z0-9]+/g, '')
-      const canonicalOrderKey = normalizedOrderNumberKey
-        ? `order:${normalizedOrderNumberKey}`
-        : `canonical:${canonicalOrderId}`
+      const initialProgressStatusDetails = [{
+        key: 'design',
+        label: 'Design',
+        weight: 13,
+        columnId: mondayDesignAkfColumnIds.designStatus,
+        status: initialDesignStatus,
+        options: [],
+        optionStyles: [],
+      }]
       const nextOrder = {
         id: canonicalOrderId,
         dealerSourceId,
@@ -7323,14 +7450,28 @@ export function registerCrmRoutes(app, deps) {
         mondaySecondaryItemId: secondaryItemId,
         poDate: poDate || null,
         poNumber,
-        leadTimeDate: parsedLeadTimeDate || null,
+        leadTime,
         shipTo,
         title: description,
         status: 'pending',
         progressPercent: 5,
+        progressStatusDetails: initialProgressStatusDetails,
         orderValue,
+        productValue,
+        freightValue,
+        depositRequired,
+        depositPercent,
+        depositAmount,
         currency: toTrimmedText(quote?.currency, 16) || 'USD',
-        dueDate: parsedLeadTimeDate || null,
+        dueDate: null,
+        selectedLineItems: selectedLines,
+        selectedAdditionalServices,
+        selectedShippingServices,
+        includeFreight,
+        depositRequestUrl: null,
+        depositRequestName: null,
+        orderConfirmationUrl: toTrimmedText(body.orderConfirmationUrl, 2000) || null,
+        orderConfirmationName: toTrimmedText(body.orderConfirmationName, 500) || null,
         shippedAt: null,
         deliveredAt: null,
         notes: notes || `Created from quote ${toTrimmedText(quote?.quoteNumber, 120) || quoteId}`,
@@ -7343,13 +7484,17 @@ export function registerCrmRoutes(app, deps) {
 
       const quoteSnapshot = {
         ...quote,
-        opportunityStage: 'order_placement',
-        status: 'accepted',
+        lineItems: selectedLines,
+        additionalServices: selectedAdditionalServices,
+        shippingServices: selectedShippingServices,
+        freight: includeFreight ? freightValue : 0,
+        subtotal: productValue,
+        totalAmount: orderValue,
         acceptedAt: toIsoDateOrNull(quote?.acceptedAt) || now,
-        acknowledgmentNumber: orderNumber,
-        orderNumber,
+        acknowledgmentNumber: isFullyConverted ? orderNumber : null,
+        orderNumber: isFullyConverted ? orderNumber : null,
         poNumber,
-        leadTime: parsedLeadTimeDate || null,
+        leadTime,
         updatedAt: now,
       }
       delete quoteSnapshot._id
@@ -7380,6 +7525,11 @@ export function registerCrmRoutes(app, deps) {
         canonical_status: 'pending',
         canonical_progress_percent: 5,
         canonical_order_value: orderValue,
+        canonical_product_value: productValue,
+        canonical_freight_value: freightValue,
+        deposit_required: depositRequired,
+        deposit_percent: depositPercent,
+        deposit_amount: depositAmount,
         canonical_currency: toTrimmedText(quote?.currency, 16) || 'USD',
         canonical_notes: nextOrder.notes,
         canonical_created_at: now,
@@ -7391,17 +7541,26 @@ export function registerCrmRoutes(app, deps) {
         monday_item_id: secondaryItemId,
         monday_board_id: mondayDesignAkfBoardId,
         monday_board_name: 'Design AKF',
-        Monday_status: 'waiting on deposit',
+        Monday_status: initialDesignStatus,
         po_number: poNumber,
+        lead_time_text: leadTime,
         ship_to: shipTo,
         order_date: poDate || null,
-        Due_date: parsedLeadTimeDate || null,
+        Due_date: null,
+        selected_line_items: selectedLines,
+        selected_additional_services: selectedAdditionalServices,
+        selected_shipping_services: selectedShippingServices,
+        include_quote_freight: includeFreight,
+        deposit_request_url: null,
+        deposit_request_name: null,
+        order_confirmation_url: toTrimmedText(body.orderConfirmationUrl, 2000) || null,
+        order_confirmation_name: toTrimmedText(body.orderConfirmationName, 500) || null,
         monday_notes: nextOrder.notes,
         monday_description: description,
         is_shipped: false,
         status: [],
         progress_percent: 5,
-        progress_status_details: [],
+        progress_status_details: initialProgressStatusDetails,
         has_monday_record: true,
         has_quickbooks_record: false,
         in_design: true,
@@ -7413,19 +7572,21 @@ export function registerCrmRoutes(app, deps) {
       })
       createdCanonicalOrderKey = canonicalOrderKey
 
-      const nextQuoteStatus = 'accepted'
+      const nextQuoteStatus = isFullyConverted ? 'accepted' : 'sent'
       const currentQuoteStatus = normalizeStatus(quote?.status, quoteStatuses, 'draft') || 'draft'
       const quoteUpdates = {
-        opportunityStage: 'order_placement',
+        opportunityStage: isFullyConverted ? 'order_placement' : 'proposal_submission',
         status: nextQuoteStatus,
-        acceptedAt: toIsoDateOrNull(quote?.acceptedAt) || now,
-        acknowledgmentNumber: orderNumber,
-        orderNumber,
-        convertedOrderId: canonicalOrderId,
-        convertedOrderNumber: orderNumber,
+        acceptedAt: isFullyConverted ? (toIsoDateOrNull(quote?.acceptedAt) || now) : null,
+        acknowledgmentNumber: isFullyConverted ? orderNumber : null,
+        orderNumber: isFullyConverted ? orderNumber : null,
+        convertedOrderId: isFullyConverted ? canonicalOrderId : null,
+        convertedOrderNumber: isFullyConverted ? orderNumber : null,
+        convertedItemKeys: [...convertedItemKeys],
+        convertedOrders: [...(Array.isArray(quote?.convertedOrders) ? quote.convertedOrders : []), { orderId: canonicalOrderId, orderNumber, convertedAt: now, itemKeys: selectedKeys }].slice(-100),
         convertedAt: now,
         poNumber,
-        leadTime: parsedLeadTimeDate || null,
+        leadTime: leadTime || quote?.leadTime || null,
         updatedAt: now,
       }
 
@@ -7629,6 +7790,11 @@ export function registerCrmRoutes(app, deps) {
         }
       }
 
+      const generatedDocumentCleanup = await deleteGeneratedOrderStorageTargets(order)
+      if (generatedDocumentCleanup.failedCount > 0) {
+        warnings.push(`Could not remove ${generatedDocumentCleanup.failedCount} generated order document${generatedDocumentCleanup.failedCount === 1 ? '' : 's'} from storage.`)
+      }
+
       const canceledByUid = toTrimmedText(req.authUser?.uid, 160) || null
       const canceledByEmail = toTrimmedText(req.authUser?.email, 200) || null
 
@@ -7636,6 +7802,7 @@ export function registerCrmRoutes(app, deps) {
         { _id: order._id },
         {
           $set: {
+            orderKey: `cancelled:${convertedOrderId}`,
             is_cancelled: true,
             cancelled_at: now,
             cancelled_by_uid: canceledByUid,
@@ -7644,22 +7811,42 @@ export function registerCrmRoutes(app, deps) {
             canonical_status: 'cancelled',
             crmStatus: 'cancelled',
             has_monday_record: false,
+            deposit_request_deleted_at: now,
+            order_confirmation_deleted_at: now,
             canonical_updated_at: now,
             updatedAt: now,
           },
           $unset: {
             source_quote_id: '',
             sourceQuoteId: '',
+            deposit_request_url: '',
+            deposit_request_name: '',
+            order_confirmation_url: '',
+            order_confirmation_name: '',
           },
         },
       )
+
+      const canceledItemKeys = [
+        ...(Array.isArray(order?.selected_line_items) ? order.selected_line_items : []).map((item) => `line:${toTrimmedText(item?.id, 160)}`).filter((key) => key !== 'line:'),
+        ...(Array.isArray(order?.selected_additional_services) ? order.selected_additional_services : []).map((item) => `additional:${toTrimmedText(item?.id, 160)}`).filter((key) => key !== 'additional:'),
+        ...(Array.isArray(order?.selected_shipping_services) ? order.selected_shipping_services : []).map((item) => `shipping:${toTrimmedText(item?.id, 160)}`).filter((key) => key !== 'shipping:'),
+        ...(order?.include_quote_freight === true ? ['freight'] : []),
+      ]
+      const canceledItemKeySet = new Set(canceledItemKeys)
+      const remainingConvertedItemKeys = (Array.isArray(quote?.convertedItemKeys) ? quote.convertedItemKeys : [])
+        .map((value) => toTrimmedText(value, 240))
+        .filter((value) => value && !canceledItemKeySet.has(value))
+      const remainingConvertedOrders = (Array.isArray(quote?.convertedOrders) ? quote.convertedOrders : [])
+        .filter((entry) => toTrimmedText(entry?.orderId, 160) !== convertedOrderId)
+      const hasRemainingConvertedOrders = remainingConvertedOrders.length > 0 || remainingConvertedItemKeys.length > 0
 
       const updatedQuote = await crmQuotesCollection.findOneAndUpdate(
         { id: quoteId },
         {
           $set: {
-            status: 'draft',
-            opportunityStage: 'concept',
+            status: hasRemainingConvertedOrders ? 'sent' : 'draft',
+            opportunityStage: hasRemainingConvertedOrders ? 'proposal_submission' : 'concept',
             acceptedAt: null,
             rejectedAt: null,
             cancelledOrderId: convertedOrderId,
@@ -7667,6 +7854,8 @@ export function registerCrmRoutes(app, deps) {
             cancelledOrderAt: now,
             cancelledOrderByUid: canceledByUid,
             cancelledOrderByEmail: canceledByEmail,
+            convertedItemKeys: remainingConvertedItemKeys,
+            convertedOrders: remainingConvertedOrders,
             lastStatusChangedAt: now,
             updatedAt: now,
           },
@@ -7675,6 +7864,7 @@ export function registerCrmRoutes(app, deps) {
             convertedOrderNumber: '',
             convertedAt: '',
             orderNumber: '',
+            acknowledgmentNumber: '',
           },
         },
         { returnDocument: 'after', projection: { _id: 0 } },
@@ -7686,6 +7876,7 @@ export function registerCrmRoutes(app, deps) {
         ok: true,
         quote: normalizeQuoteOpportunityStageForResponse(updatedQuote),
         canceledOrderId: convertedOrderId,
+        generatedDocumentCleanup,
         warnings,
       })
     } catch (error) {

@@ -69,6 +69,12 @@ export const DEFAULT_QUOTE_PRINT_SETTINGS: CrmQuotePrintSettings = {
   showLeadTime: true,
   showFreight: true,
   customerInformation: DEFAULT_CUSTOMER_INFORMATION,
+  projectManagers: 'Misha Patel, Jose Gonzalez',
+  depositRequestBody: 'To begin processing this order, please send the 50% Product Net deposit shown above at your earliest convenience.',
+  depositRequestTerms: 'Color samples and shop drawings must be received and approved when required. Delays in receiving required approvals may affect the stated lead time.\n\nCustom orders are final and cannot be returned, exchanged, or refunded.',
+  orderConfirmationRequestedInfo: 'Please send the control sample to the address below:\n\nArnold Kolax Furniture Inc.\nAttn: Misha Patel (Ack # {ack})\n120 Coit Street, Irvington, NJ 07111',
+  orderConfirmationNotes: 'Thank you for your order. We appreciate your business and look forward to working with you.',
+  orderConfirmationTerms: 'Lead times begin after final approved shop drawings and finish samples are received.',
   updatedAt: null,
   updatedByEmail: null,
 }

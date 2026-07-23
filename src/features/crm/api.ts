@@ -620,6 +620,12 @@ export type CrmQuotePrintSettings = {
   showLeadTime: boolean
   showFreight: boolean
   customerInformation: string
+  projectManagers: string
+  depositRequestBody: string
+  depositRequestTerms: string
+  orderConfirmationRequestedInfo: string
+  orderConfirmationNotes: string
+  orderConfirmationTerms: string
   updatedAt: string | null
   updatedByEmail: string | null
 }
@@ -630,6 +636,7 @@ export type CrmQuote = {
   id: string
   dealerSourceId: string
   dealerName: string
+  convertedItemKeys?: string[]
   chatMessageCount?: number
   dealerState?: string | null
   companyName?: string | null
@@ -884,9 +891,19 @@ export type CrmConvertQuoteToOrderInput = {
   acknowledgmentNumber: string
   poDate?: string | null
   poNumber?: string | null
-  leadTimeDate?: string | null
+  leadTime?: string | null
   shipTo: string
   notes?: string | null
+  selectedLineItemIds: string[]
+  selectedAdditionalServiceIds: string[]
+  selectedShippingServiceIds: string[]
+  includeFreight: boolean
+  depositRequired: boolean
+  depositPercent?: number | null
+  depositRequestUrl?: string | null
+  depositRequestName?: string | null
+  orderConfirmationUrl?: string | null
+  orderConfirmationName?: string | null
 }
 
 export type CrmConvertQuoteToOrderResponse = {

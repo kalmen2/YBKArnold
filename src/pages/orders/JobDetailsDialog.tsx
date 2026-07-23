@@ -1034,6 +1034,8 @@ export function JobDetailsDialog({
     : uploadedCutListName || 'cut-list.pdf'
   const invoiceNumber = String(order?.invoiceNumber ?? '').trim()
   const invoicePreviewUrl = String(order?.invoiceCachedUrl ?? '').trim()
+  const depositRequestUrl = String(order?.depositRequestUrl ?? '').trim()
+  const orderConfirmationUrl = String(order?.orderConfirmationUrl ?? '').trim()
   const hasBolText = Boolean(String(order?.bol ?? '').trim())
   const signedBolUrl = signedBolDeletedLocally
     ? null
@@ -3286,8 +3288,32 @@ export function JobDetailsDialog({
                             gap: 0.8,
                             gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 1fr))' },
                           }}
-                        >
-                          <Paper variant="outlined" sx={{ p: 1, borderRadius: 1 }}>
+                      >
+                      {depositRequestUrl ? (
+                        <Paper variant="outlined" sx={{ p: 1, borderRadius: 1 }}>
+                          <Stack spacing={0.7}>
+                            <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>Deposit Request</Typography>
+                            <Box sx={{ cursor: 'pointer' }} onClick={() => handleOpenDocumentPreview({ title: 'Deposit Request', url: depositRequestUrl, fileName: order?.depositRequestName || 'deposit-request.pdf', mimeType: 'application/pdf' })}>
+                              {renderInlineDocumentMiniPreview({ url: depositRequestUrl, fileName: order?.depositRequestName || 'deposit-request.pdf', emptyLabel: 'Open deposit request' })}
+                            </Box>
+                            <Typography variant="caption" color="text.secondary">{order?.depositRequestName || 'Deposit Request PDF'}</Typography>
+                          </Stack>
+                        </Paper>
+                      ) : null}
+
+                      {orderConfirmationUrl ? (
+                        <Paper variant="outlined" sx={{ p: 1, borderRadius: 1 }}>
+                          <Stack spacing={0.7}>
+                            <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>Order Confirmation</Typography>
+                            <Box sx={{ cursor: 'pointer' }} onClick={() => handleOpenDocumentPreview({ title: 'Order Confirmation', url: orderConfirmationUrl, fileName: order?.orderConfirmationName || 'order-confirmation.pdf', mimeType: 'application/pdf' })}>
+                              {renderInlineDocumentMiniPreview({ url: orderConfirmationUrl, fileName: order?.orderConfirmationName || 'order-confirmation.pdf', emptyLabel: 'Open order confirmation' })}
+                            </Box>
+                            <Typography variant="caption" color="text.secondary">{order?.orderConfirmationName || 'Order Confirmation PDF'}</Typography>
+                          </Stack>
+                        </Paper>
+                      ) : null}
+
+                      <Paper variant="outlined" sx={{ p: 1, borderRadius: 1 }}>
                             <Typography variant="caption" color="text.secondary">Order number</Typography>
                             <Typography variant="body2" sx={{ fontWeight: 700 }}>{orderNumberDraft || '—'}</Typography>
                           </Paper>
