@@ -95,6 +95,7 @@ export type OrdersOrderDetailsUpdateResponse = {
     poNumber: string | null
     notes: string | null
     description: string | null
+    bench: string | null
     orderDate: string | null
     dueDate: string | null
     leadTimeDays: number | null
@@ -197,6 +198,13 @@ export type OrdersShopDrawingManageResponse = {
   warning?: string | null
 }
 
+export type OrdersCutListDocument = {
+  fileName: string
+  mimeType: string
+  url: string
+  uploadedAt: string | null
+}
+
 export type OrdersCutListManageResponse = {
   ok: boolean
   document?: {
@@ -210,6 +218,7 @@ export type OrdersCutListManageResponse = {
     orderNumber: string | null
     cutListCachedUrl: string | null
     cutListUrl: string | null
+    cutListDocuments: OrdersCutListDocument[]
     mondayUpdatedAt: string | null
   }
   warning?: string | null
@@ -235,7 +244,11 @@ export type OrdersWarrantyManageResponse = {
   }
 }
 
-export type OrdersShippingDocumentType = 'signed_bol' | 'inspection_sheet'
+export type OrdersShippingDocumentType =
+  | 'signed_bol'
+  | 'customer_signed_bol'
+  | 'customer_signed_change_order'
+  | 'inspection_sheet'
 
 export type OrdersShippingDocumentUploadResponse = {
   ok: boolean
@@ -254,6 +267,12 @@ export type OrdersShippingDocumentUploadResponse = {
     isShipped: boolean
     signedBol: string | null
     signedBolUrl: string | null
+    customerSignedBol: string | null
+    customerSignedBolUrl: string | null
+    customerSignedChangeOrder: string | null
+    customerSignedChangeOrderUrl: string | null
+    changeVersion: number
+    changeOrderStatus: string | null
     inspectionSheet: string | null
     inspectionSheetUrl: string | null
   }
@@ -273,6 +292,12 @@ export type OrdersShippingDocumentDeleteResponse = {
     isShipped: boolean
     signedBol: string | null
     signedBolUrl: string | null
+    customerSignedBol: string | null
+    customerSignedBolUrl: string | null
+    customerSignedChangeOrder: string | null
+    customerSignedChangeOrderUrl: string | null
+    changeVersion: number
+    changeOrderStatus: string | null
     inspectionSheet: string | null
     inspectionSheetUrl: string | null
   }
@@ -394,14 +419,60 @@ export type OrdersOverviewOrder = {
   bolUrl: string | null
   signedBol: string | null
   signedBolUrl: string | null
+  customerSignedBol: string | null
+  customerSignedBolUrl: string | null
+  changeVersion: number
+  changeOrderStatus: string | null
+  changeOrderUrl: string | null
+  changeOrderName: string | null
+  pendingChangeVersion: number | null
+  pendingOrderChangeLines: Array<{
+    id: string
+    description: string
+    qty: number | null
+    unitPrice: number | null
+    extPrice: number
+    category: 'product' | 'additional' | 'freight'
+  }>
+  pendingChangeProductNet: number | null
+  pendingChangeFreightNet: number | null
+  customerSignedChangeOrder: string | null
+  customerSignedChangeOrderUrl: string | null
   inspectionSheet: string | null
   inspectionSheetUrl: string | null
   poNumber: string | null
+  bench: string | null
   notes: string | null
   description: string | null
+  contactName: string | null
+  contactEmail: string | null
+  contactPhone: string | null
+  leadTime: string | null
+  freightDescription: string | null
+  productValue: number | null
+  productGrossValue?: number | null
+  discountPercent?: number | null
+  discountAmount?: number | null
+  discountScope?: 'products' | 'products_and_freight' | null
+  freightGrossValue?: number | null
+  discountFreightAmount?: number | null
+  orderDocumentLines: Array<{
+    id: string
+    description: string
+    qty: number | null
+    unitPrice: number | null
+    extPrice: number
+    category: 'product' | 'additional' | 'freight'
+  }>
+  orderValue: number | null
+  freightValue: number | null
+  salesRep: string | null
+  depositReceivedDate: string | null
   poAmount: number | null
   billedAmount: number | null
   invoiceAmount: number | null
+  websiteCalculatedOrderTotal: number | null
+  invoiceTotalMatchesOrder: boolean | null
   invoiceNumber: string | null
   invoiceCachedUrl: string | null
   invoiceFileName: string | null
@@ -443,6 +514,7 @@ export type OrdersOverviewOrder = {
   shopDrawingUrl: string | null
   cutListCachedUrl: string | null
   cutListUrl: string | null
+  cutListDocuments: OrdersCutListDocument[]
   source: 'monday' | 'quickbooks' | 'merged' | 'website'
   hasMondayRecord: boolean
   hasQuickBooksRecord: boolean
@@ -459,7 +531,22 @@ export type OrdersOverviewOrder = {
   depositRequestName: string | null
   orderConfirmationUrl: string | null
   orderConfirmationName: string | null
+  workOrderUrl: string | null
+  workOrderName: string | null
+  proformaInvoiceUrl: string | null
+  proformaInvoiceName: string | null
   familyRollup?: OrdersFamilyRollup | null
+}
+
+export type OrderPhoto = {
+  path: string
+  url: string
+  createdAt: string
+}
+
+export type OrderPhotosResponse = {
+  orderId: string
+  photos: OrderPhoto[]
 }
 
 // Present on a main order that has linked sub-orders: the combined money and
@@ -474,6 +561,12 @@ export type OrdersFamilyRollup = {
   invoiceAmount: number | null
   amountOwed: number | null
   billBalanceAmount: number | null
+}
+
+export function fetchOrderPhotos(orderId: string) {
+  return apiRequest<OrderPhotosResponse>(
+    `/api/orders/${encodeURIComponent(orderId)}/photos`,
+  )
 }
 
 export type OrdersSubOrderLinkResponse = {
@@ -556,11 +649,11 @@ export type OrdersJobDetailEntry = {
   jobName: string
   hours: number
   overtimeHours: number
-  payRate: number
+  payRate: number | null
   regularHours: number
   totalHours: number
-  rate: number
-  laborCost: number
+  rate: number | null
+  laborCost: number | null
   notes: string
   createdAt: string
 }
@@ -571,13 +664,14 @@ export type OrdersJobDetailWorker = {
   totalRegularHours: number
   totalOvertimeHours: number
   totalHours: number
-  totalLaborCost: number
+  totalLaborCost: number | null
 }
 
 export type OrdersManagerHistoryRow = OrdersStatusHistoryRow
 
 export type OrdersJobDetailsResponse = {
   generatedAt: string
+  order: OrdersOverviewOrder | null
   job: {
     mondayItemId: string | null
     jobNumber: string | null
@@ -597,7 +691,7 @@ export type OrdersJobDetailsResponse = {
     totalRegularHours: number
     totalOvertimeHours: number
     totalHours: number
-    totalLaborCost: number
+    totalLaborCost: number | null
   }
   workers: OrdersJobDetailWorker[]
   entries: OrdersJobDetailEntry[]
@@ -809,7 +903,7 @@ type UpdateOrdersOrderDetailsInput = {
   poNumber?: string | null
   notes?: string | null
   description?: string | null
-  orderDate?: string | null
+  bench?: string | null
   dueDate?: string | null
   leadTimeDays?: number | string | null
   podDate?: string | null
@@ -842,8 +936,8 @@ export function postOrdersOrderDetailsUpdate(input: UpdateOrdersOrderDetailsInpu
     payload.description = input.description ?? ''
   }
 
-  if (Object.prototype.hasOwnProperty.call(input, 'orderDate')) {
-    payload.orderDate = input.orderDate ?? ''
+  if (Object.prototype.hasOwnProperty.call(input, 'bench')) {
+    payload.bench = input.bench ?? ''
   }
 
   if (Object.prototype.hasOwnProperty.call(input, 'dueDate')) {
@@ -1028,6 +1122,99 @@ export function postOrdersDeleteRequest(input: DeleteOrdersRequestInput) {
   )
 }
 
+export function postOrdersOrderConfirmationUpdate(input: {
+  orderKey: string
+  documentUrl: string
+  documentName: string
+  workOrderUrl: string
+  workOrderName: string
+  proformaInvoiceUrl: string
+  proformaInvoiceName: string
+}) {
+  const orderKey = String(input?.orderKey ?? '').trim()
+  const documentUrl = String(input?.documentUrl ?? '').trim()
+  const documentName = String(input?.documentName ?? '').trim()
+  const workOrderUrl = String(input?.workOrderUrl ?? '').trim()
+  const workOrderName = String(input?.workOrderName ?? '').trim()
+  const proformaInvoiceUrl = String(input?.proformaInvoiceUrl ?? '').trim()
+  const proformaInvoiceName = String(input?.proformaInvoiceName ?? '').trim()
+
+  if (!orderKey || !documentUrl || !documentName || !workOrderUrl || !workOrderName || !proformaInvoiceUrl || !proformaInvoiceName) {
+    throw new Error('Order confirmation, work order, and proforma invoice documents are required.')
+  }
+
+  return apiRequest<{
+    ok: true
+    orderConfirmationUrl: string
+    orderConfirmationName: string
+    workOrderUrl: string
+    workOrderName: string
+    proformaInvoiceUrl: string
+    proformaInvoiceName: string
+  }>(
+    '/api/orders/order-confirmation',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        orderKey,
+        documentUrl,
+        documentName,
+        workOrderUrl,
+        workOrderName,
+        proformaInvoiceUrl,
+        proformaInvoiceName,
+      }),
+    },
+  )
+}
+
+export function postOrdersChangeOrderCreate(input: {
+  orderKey?: string | null
+  mondayItemId?: string | null
+  orderNumber?: string | null
+  lines: OrdersOverviewOrder['orderDocumentLines']
+  changeOrderUrl: string
+  changeOrderName: string
+}) {
+  const orderKey = String(input?.orderKey ?? '').trim()
+  const mondayItemId = String(input?.mondayItemId ?? '').trim()
+  const orderNumber = String(input?.orderNumber ?? '').trim()
+  const changeOrderUrl = String(input?.changeOrderUrl ?? '').trim()
+  const changeOrderName = String(input?.changeOrderName ?? '').trim()
+
+  if (!orderKey && !mondayItemId && !orderNumber) {
+    throw new Error('Order identity is required.')
+  }
+  if (!Array.isArray(input?.lines) || input.lines.length === 0) {
+    throw new Error('At least one order line is required.')
+  }
+  if (!changeOrderUrl || !changeOrderName) {
+    throw new Error('The generated Change Order is required.')
+  }
+
+  return apiRequest<{
+    ok: true
+    version: number
+    status: 'awaiting_customer_signature'
+    changeOrderUrl: string
+    changeOrderName: string
+    productNet: number
+    freightNet: number
+    grandTotal: number
+    lines: OrdersOverviewOrder['orderDocumentLines']
+  }>('/api/orders/change-orders', {
+    method: 'POST',
+    body: JSON.stringify({
+      orderKey: orderKey || undefined,
+      mondayItemId: mondayItemId || undefined,
+      orderNumber: orderNumber || undefined,
+      lines: input.lines,
+      changeOrderUrl,
+      changeOrderName,
+    }),
+  })
+}
+
 type UploadOrdersShopDrawingInput = {
   mondayItemId: string
   fileName: string
@@ -1132,8 +1319,18 @@ export function postOrdersCutListUpload(input: UploadOrdersCutListInput) {
   )
 }
 
-export function postOrdersCutListDelete(input: { mondayItemId: string }) {
+export function postOrdersCutListDelete(input: {
+  mondayItemId: string
+  documentUrl?: string | null
+  orderNumber?: string | null
+  fileName?: string | null
+}) {
   const mondayItemId = String(input?.mondayItemId ?? '').trim()
+  const documentUrl = String(input?.documentUrl ?? '').trim()
+  const processDetail = [
+    String(input?.orderNumber ?? '').trim(),
+    String(input?.fileName ?? '').trim(),
+  ].filter(Boolean).join(' • ')
 
   if (!mondayItemId) {
     throw new Error('mondayItemId is required.')
@@ -1143,7 +1340,16 @@ export function postOrdersCutListDelete(input: { mondayItemId: string }) {
     '/api/orders/monday/cut-list/delete',
     {
       method: 'POST',
-      body: JSON.stringify({ mondayItemId }),
+      body: JSON.stringify({
+        mondayItemId,
+        documentUrl: documentUrl || undefined,
+      }),
+    },
+    {
+      processTracking: {
+        label: 'Deleting cut list',
+        detail: processDetail || `Order item ${mondayItemId}`,
+      },
     },
   )
 }
@@ -1152,12 +1358,14 @@ type CreateOrdersWarrantyIssueInput = {
   mondayItemId: string
   description: string
   reportedDate?: string | null
+  leadTimeDate: string
 }
 
 export function postOrdersWarrantyIssueCreate(input: CreateOrdersWarrantyIssueInput) {
   const mondayItemId = String(input?.mondayItemId ?? '').trim()
   const description = String(input?.description ?? '').trim()
   const reportedDate = String(input?.reportedDate ?? '').trim()
+  const leadTimeDate = String(input?.leadTimeDate ?? '').trim()
 
   if (!mondayItemId) {
     throw new Error('mondayItemId is required.')
@@ -1165,6 +1373,10 @@ export function postOrdersWarrantyIssueCreate(input: CreateOrdersWarrantyIssueIn
 
   if (!description) {
     throw new Error('description is required.')
+  }
+
+  if (!leadTimeDate) {
+    throw new Error('leadTimeDate is required.')
   }
 
   return apiRequest<OrdersWarrantyManageResponse>(
@@ -1175,6 +1387,7 @@ export function postOrdersWarrantyIssueCreate(input: CreateOrdersWarrantyIssueIn
         mondayItemId,
         description,
         reportedDate: reportedDate || undefined,
+        leadTimeDate,
       }),
     },
   )
@@ -1253,8 +1466,13 @@ export function postOrdersShippingDocumentUpload(input: UploadOrdersShippingDocu
     throw new Error('orderKey, mondayItemId, or orderNumber is required.')
   }
 
-  if (documentType !== 'signed_bol' && documentType !== 'inspection_sheet') {
-    throw new Error('documentType must be signed_bol or inspection_sheet.')
+  if (
+    documentType !== 'signed_bol'
+    && documentType !== 'customer_signed_bol'
+    && documentType !== 'customer_signed_change_order'
+    && documentType !== 'inspection_sheet'
+  ) {
+    throw new Error('Unsupported order document type.')
   }
 
   if (!fileName) {
@@ -1304,8 +1522,13 @@ export function postOrdersShippingDocumentDelete(input: DeleteOrdersShippingDocu
     throw new Error('orderKey, mondayItemId, or orderNumber is required.')
   }
 
-  if (documentType !== 'signed_bol' && documentType !== 'inspection_sheet') {
-    throw new Error('documentType must be signed_bol or inspection_sheet.')
+  if (
+    documentType !== 'signed_bol'
+    && documentType !== 'customer_signed_bol'
+    && documentType !== 'customer_signed_change_order'
+    && documentType !== 'inspection_sheet'
+  ) {
+    throw new Error('Unsupported order document type.')
   }
 
   return apiRequest<OrdersShippingDocumentDeleteResponse>(

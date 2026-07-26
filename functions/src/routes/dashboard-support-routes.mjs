@@ -35,6 +35,52 @@ export function registerDashboardSupportRoutes(app, deps) {
   const convCacheSet = (ticketId, payload) => _convCache.set(ticketId, payload, CONV_CACHE_TTL_MS)
   const convCacheDelete = (ticketId) => _convCache.delete(ticketId)
 
+  function redactMondayOrderForShopWorker(order) {
+    if (!order || typeof order !== 'object') {
+      return order
+    }
+
+    const cachedShopDrawingUrl = String(order.shopDrawingCachedUrl ?? '').trim() || null
+
+    return {
+      ...order,
+      poNumber: null,
+      statusLabel: '',
+      stageLabel: null,
+      readyLabel: null,
+      progressPercent: null,
+      itemUrl: null,
+      shopDrawingUrl: cachedShopDrawingUrl,
+      invoiceNumber: null,
+      paidInFull: null,
+      amountOwed: null,
+      poAmount: null,
+    }
+  }
+
+  function redactMondaySnapshotForRequest(snapshot, req) {
+    const publicUser = toPublicAuthUser(req.authUser)
+
+    if (!publicUser?.isShopWorker || !snapshot || typeof snapshot !== 'object') {
+      return snapshot
+    }
+
+    const redactOrders = (orders) => Array.isArray(orders)
+      ? orders.map((order) => redactMondayOrderForShopWorker(order))
+      : []
+
+    return {
+      ...snapshot,
+      orders: redactOrders(snapshot.orders),
+      details: {
+        ...(snapshot.details ?? {}),
+        lateOrders: redactOrders(snapshot.details?.lateOrders),
+        activeOrders: redactOrders(snapshot.details?.activeOrders),
+        missingDueDateOrders: redactOrders(snapshot.details?.missingDueDateOrders),
+      },
+    }
+  }
+
   function normalizeReplyStatus(value) {
     const normalized = String(value ?? '')
       .trim()
@@ -1233,7 +1279,7 @@ app.get('/api/dashboard/monday', requireFirebaseAuth, async (req, res, next) => 
     const cachedSnapshot = await getDashboardSnapshotFromCache('monday')
 
     if (!refreshRequested && cachedSnapshot) {
-      return res.json(cachedSnapshot)
+      return res.json(redactMondaySnapshotForRequest(cachedSnapshot, req))
     }
 
     const snapshot = await buildMondaySnapshotFromUnifiedOrders(cachedSnapshot)
@@ -1247,7 +1293,7 @@ app.get('/api/dashboard/monday', requireFirebaseAuth, async (req, res, next) => 
 
     await setDashboardSnapshotCache('monday', enrichedSnapshot)
 
-    res.json(enrichedSnapshot)
+    res.json(redactMondaySnapshotForRequest(enrichedSnapshot, req))
   } catch (error) {
     next(error)
   }
@@ -1575,10 +1621,6 @@ app.get('/api/dashboard/monday/bol/download', requireFirebaseAuth, async (req, r
         fileName: downloadFileName,
         refreshedFromMonday: forceRefresh && hasStoredSource,
       })
-    }
-
-    if (renderInline) {
-      return res.redirect(302, cachedBolUrl)
     }
 
     const upstreamResponse = await fetch(cachedBolUrl)

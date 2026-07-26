@@ -15,6 +15,7 @@ import {
   MenuItem,
   Paper,
   Stack,
+  Tab,
   Table,
   TableBody,
   TableCell,
@@ -22,6 +23,7 @@ import {
   TableHead,
   TableRow,
   TextField,
+  Tabs,
   Typography,
 } from '@mui/material'
 import { LoadingPanel } from '../components/LoadingPanel'
@@ -56,11 +58,20 @@ type AdminWorkerOption = {
 }
 
 type ClientAccessMode = 'web_and_app' | 'web_only' | 'app_only'
+type UserStage = 'pending' | AppAuthRole
 type ActionsSubmenuSection = 'approval_role' | 'links' | 'access' | 'account_actions'
 type MenuCloseReason = 'backdropClick' | 'escapeKeyDown' | 'tabKeyDown'
 
 const newJerseyTimeZone = 'America/New_York'
 const utcTimeZone = 'UTC'
+const userStages: Array<{ value: UserStage; label: string }> = [
+  { value: 'pending', label: 'Unapproved' },
+  { value: 'shop_worker', label: 'Shop Workers' },
+  { value: 'office_worker', label: 'Office Workers' },
+  { value: 'manager', label: 'Managers' },
+  { value: 'sales_rep', label: 'Sales Reps' },
+  { value: 'admin', label: 'Admins' },
+]
 
 function formatHour(hour: number) {
   return `${String(hour).padStart(2, '0')}:00`
@@ -138,6 +149,7 @@ const hourOptions = Array.from({ length: 24 }, (_, index) => index)
 export default function AdminUsersPage() {
   const { appUser } = useAuth()
   const [users, setUsers] = useState<AppAuthUser[]>([])
+  const [selectedStage, setSelectedStage] = useState<UserStage>('pending')
   const [workerOptions, setWorkerOptions] = useState<AdminWorkerOption[]>([])
   const [salesRepOptions, setSalesRepOptions] = useState<AdminSalesRepOption[]>([])
   const [actionMessage, setActionMessage] = useState<string | null>(null)
@@ -232,7 +244,9 @@ export default function AdminUsersPage() {
               ? 'User approved as Manager.'
               : role === 'sales_rep'
                 ? 'User approved as Sales Rep.'
-              : 'User approved as Standard.',
+                : role === 'shop_worker'
+                  ? 'User approved as Shop Worker.'
+                  : 'User approved as Office Worker.',
         )
       } catch (error) {
         setErrorMessage(
@@ -629,7 +643,7 @@ export default function AdminUsersPage() {
         {
           method: 'PATCH',
           body: JSON.stringify({
-            role: 'standard',
+            role: 'shop_worker',
           }),
         },
       )
@@ -649,7 +663,7 @@ export default function AdminUsersPage() {
           user.uid === linkPayload.user.uid ? linkPayload.user : user,
         ),
       )
-      setActionMessage('User approved as worker login.')
+      setActionMessage('User approved as Shop Worker and linked to the worker record.')
       setWorkerApproveTarget(null)
       setWorkerApproveWorkerId('')
     } catch (error) {
@@ -672,6 +686,27 @@ export default function AdminUsersPage() {
   const pendingCount = useMemo(
     () => users.filter((user) => !user.isApproved).length,
     [users],
+  )
+  const stageCounts = useMemo(
+    () => Object.fromEntries(
+      userStages.map((stage) => [
+        stage.value,
+        users.filter((user) => (
+          stage.value === 'pending'
+            ? !user.isApproved
+            : user.isApproved && user.role === stage.value
+        )).length,
+      ]),
+    ) as Record<UserStage, number>,
+    [users],
+  )
+  const filteredUsers = useMemo(
+    () => users.filter((user) => (
+      selectedStage === 'pending'
+        ? !user.isApproved
+        : user.isApproved && user.role === selectedStage
+    )),
+    [selectedStage, users],
   )
   const zendeskAgents = useMemo(
     () => zendeskAgentsQuery.data?.agents ?? [],
@@ -733,7 +768,7 @@ export default function AdminUsersPage() {
             Admin Users
           </Typography>
           <Typography color="text.secondary">
-            Manage all users in one list. Pending accounts: {pendingCount}
+            Approve new accounts and move people between permission stages. Pending accounts: {pendingCount}
           </Typography>
         </Box>
 
@@ -750,6 +785,26 @@ export default function AdminUsersPage() {
       <StatusAlerts errorMessage={errorMessage} successMessage={actionMessage} />
       <LoadingPanel loading={isLoading} message="Loading users..." padding={4} />
 
+      {!isLoading && users.length > 0 ? (
+        <Paper variant="outlined" sx={{ px: 1 }}>
+          <Tabs
+            value={selectedStage}
+            onChange={(_event, value: UserStage) => setSelectedStage(value)}
+            variant="scrollable"
+            scrollButtons="auto"
+            aria-label="User permission stages"
+          >
+            {userStages.map((stage) => (
+              <Tab
+                key={stage.value}
+                value={stage.value}
+                label={`${stage.label} (${stageCounts[stage.value]})`}
+              />
+            ))}
+          </Tabs>
+        </Paper>
+      ) : null}
+
       {!isLoading && users.length === 0 ? (
         <Paper variant="outlined" sx={{ p: 3 }}>
           <Typography color="text.secondary">
@@ -758,7 +813,15 @@ export default function AdminUsersPage() {
         </Paper>
       ) : null}
 
-      {!isLoading && users.length > 0 ? (
+      {!isLoading && users.length > 0 && filteredUsers.length === 0 ? (
+        <Paper variant="outlined" sx={{ p: 3 }}>
+          <Typography color="text.secondary">
+            No users are currently in this stage.
+          </Typography>
+        </Paper>
+      ) : null}
+
+      {!isLoading && filteredUsers.length > 0 ? (
         <TableContainer component={Paper} variant="outlined">
           <Table size="small">
             <TableHead>
@@ -776,7 +839,7 @@ export default function AdminUsersPage() {
             </TableHead>
 
             <TableBody>
-              {users.map((user) => {
+              {filteredUsers.map((user) => {
                 const isSaving = activeUserId === user.uid
 
                 return (
@@ -953,10 +1016,12 @@ export default function AdminUsersPage() {
                 }
 
                 closeRowActions()
-                void handleApprove(actionsTarget.uid, 'standard')
+                void handleApprove(actionsTarget.uid, 'office_worker')
               }}
             >
-              Set Standard
+              {actionsTarget?.isApproved && actionsTarget.role === 'office_worker'
+                ? 'Office Worker'
+                : 'Set Office Worker'}
             </MenuItem>
 
             <MenuItem
@@ -1016,8 +1081,6 @@ export default function AdminUsersPage() {
               disabled={
                 actionsTargetIsSaving
                 || Boolean(actionsTarget?.isOwner)
-                || Boolean(actionsTarget?.isAdmin)
-                || actionsTarget?.role === 'manager'
               }
               onClick={() => {
                 if (!actionsTarget) {
@@ -1029,7 +1092,9 @@ export default function AdminUsersPage() {
                 setWorkerApproveWorkerId(actionsTarget.linkedWorkerId ?? '')
               }}
             >
-              Approve Worker
+              {actionsTarget?.isApproved && actionsTarget.role === 'shop_worker'
+                ? 'Update Shop Worker Link'
+                : 'Set Shop Worker & Link'}
             </MenuItem>
           </>
         ) : null}
@@ -1376,11 +1441,12 @@ export default function AdminUsersPage() {
         fullWidth
         maxWidth="sm"
       >
-        <DialogTitle>Approve As Worker Login</DialogTitle>
+        <DialogTitle>Set Up Shop Worker</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ pt: 1 }}>
             <Alert severity="info">
-              Approving as worker will set the user role to Standard and require a linked worker.
+              Shop Workers use the app only. They can access production order details and shop
+              drawings, but no order values or other financial information.
             </Alert>
 
             <Typography variant="body2" color="text.secondary">
@@ -1425,7 +1491,7 @@ export default function AdminUsersPage() {
               void handleApproveAsWorker()
             }}
           >
-            Approve As Worker
+            Save Shop Worker
           </Button>
         </DialogActions>
       </Dialog>

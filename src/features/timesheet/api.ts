@@ -48,6 +48,7 @@ export type TimesheetOrderProgress = {
   jobName: string
   readyPercent: number
   isWarranty?: boolean
+  notes?: string | null
   createdAt: string
   updatedAt: string
 }
@@ -65,6 +66,8 @@ export type TimesheetUnifiedOrder = {
   orderNumber: string | null
   orderName: string | null
   mondayItemId: string | null
+  mondayBoardId?: string | null
+  bench?: string | null
   shopDrawingUrl: string | null
   shopDrawingCachedUrl: string | null
   shopDrawingFileName: string | null
@@ -181,6 +184,9 @@ type UpsertOrderProgressInput = {
   jobName: string
   readyPercent: number
   isWarranty?: boolean
+  notes?: string
+  bench?: string
+  mondayItemId?: string | null
 }
 
 type ReportTimesheetOrderMismatchInput = {

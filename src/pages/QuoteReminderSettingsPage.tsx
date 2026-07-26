@@ -21,7 +21,7 @@ export default function QuoteReminderSettingsPage() {
     mutationFn: updateCrmQuoteReminderSettings,
     onSuccess: async (response) => {
       setSettings(response.settings)
-      setSuccessMessage('Your personal quote reminders were saved.')
+      setSuccessMessage('Your personal reminders were saved.')
       await queryClient.invalidateQueries({ queryKey: reminderSettingsKey })
     },
   })
@@ -48,8 +48,8 @@ export default function QuoteReminderSettingsPage() {
     <Stack spacing={2}>
       <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ xs: 'stretch', sm: 'center' }} gap={1}>
         <Box>
-          <Typography variant="h6" fontWeight={800}>My Quote Reminders</Typography>
-          <Typography color="text.secondary">These rules belong only to you. With no rules, all quote reminders are off. Sales-rep users receive reminders for their assigned opportunities; unassigned workers can create rules for the shared opportunity list.</Typography>
+          <Typography variant="h6" fontWeight={800}>My Reminders</Typography>
+          <Typography color="text.secondary">These rules belong only to you. With no rules, all reminders are off. Quote reminders respect each sales representative’s assigned opportunities; order-document reminders use the shipment date.</Typography>
         </Box>
         <Button variant="contained" startIcon={<AddRoundedIcon />} onClick={addReminder}>Add a Reminder</Button>
       </Stack>
@@ -67,15 +67,33 @@ export default function QuoteReminderSettingsPage() {
             <Paper key={rule.id} variant="outlined" sx={{ p: 1.6, borderRadius: 2 }}>
               <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.2} alignItems={{ xs: 'stretch', md: 'center' }}>
                 <Typography fontWeight={800} sx={{ minWidth: 95 }}>Reminder {index + 1}</Typography>
-                <TextField select size="small" label="Event" value={rule.kind} onChange={(event) => updateRule(rule.id, { kind: event.target.value as typeof rule.kind })} sx={{ minWidth: 220 }}>
+                <TextField
+                  select
+                  size="small"
+                  label="Event"
+                  value={rule.kind}
+                  onChange={(event) => {
+                    const kind = event.target.value as typeof rule.kind
+                    updateRule(rule.id, {
+                      kind,
+                      base: kind === 'customer_signed_bol_missing' ? 'shipped_date' : rule.base === 'shipped_date' ? 'last_follow_up' : rule.base,
+                    })
+                  }}
+                  sx={{ minWidth: 250 }}
+                >
                   <MenuItem value="follow_up_due">Follow-up is overdue</MenuItem>
                   <MenuItem value="link_opened">Tracked link is opened</MenuItem>
+                  <MenuItem value="customer_signed_bol_missing">Customer Signed BOL is missing</MenuItem>
                 </TextField>
                 <TextField size="small" type="number" label="After days" value={rule.days} onChange={(event) => updateRule(rule.id, { days: Math.min(365, Math.max(0, Number(event.target.value) || 0)) })} inputProps={{ min: 0, max: 365 }} sx={{ width: 130 }} />
-                <TextField select size="small" label="Count days from" value={rule.base} onChange={(event) => updateRule(rule.id, { base: event.target.value as typeof rule.base })} sx={{ minWidth: 230 }}>
-                  <MenuItem value="quote_date">Quote date</MenuItem>
-                  <MenuItem value="last_follow_up">Latest follow-up date</MenuItem>
-                </TextField>
+                {rule.kind === 'customer_signed_bol_missing' ? (
+                  <TextField size="small" label="Count days from" value="Shipment date" InputProps={{ readOnly: true }} sx={{ minWidth: 230 }} />
+                ) : (
+                  <TextField select size="small" label="Count days from" value={rule.base} onChange={(event) => updateRule(rule.id, { base: event.target.value as typeof rule.base })} sx={{ minWidth: 230 }}>
+                    <MenuItem value="quote_date">Quote date</MenuItem>
+                    <MenuItem value="last_follow_up">Latest follow-up date</MenuItem>
+                  </TextField>
+                )}
                 <IconButton color="error" aria-label={`Remove reminder ${index + 1}`} onClick={() => setSettings((current) => ({ rules: current.rules.filter((entry) => entry.id !== rule.id) }))}><DeleteOutlineRoundedIcon /></IconButton>
               </Stack>
             </Paper>

@@ -8,6 +8,8 @@ export type DashboardOrder = {
   mondayItemId?: string | null
   orderNumber?: string | null
   poNumber?: string | null
+  bench?: string | null
+  boardId?: string | null
   name: string
   mondaySourceBoardType?: 'orders_track' | 'shipped_orders'
   movedToShippedAt?: string | null

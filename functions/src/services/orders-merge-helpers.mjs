@@ -275,6 +275,7 @@ export function createEmptyUnifiedOrder(orderKey) {
     monday_item_id: null,
     Monday_url: null,
     Monday_status: null,
+    job_status: null,
     order_name: null,
     ship_to: null,
     ship_notes: null,
@@ -313,6 +314,13 @@ export function createEmptyUnifiedOrder(orderKey) {
     invoiceNumber: null,
     paidInFull: null,
     poAmount: null,
+    orderValue: null,
+    freightValue: null,
+    sales_rep: null,
+    deposit_received_date: null,
+    new_orders_board_id: null,
+    new_orders_item_id: null,
+    new_orders_financial_synced_at: null,
     shipped_at: null,
     shipped_at_inferred: null,
     has_monday_record: false,
@@ -384,6 +392,12 @@ export function hydrateUnifiedRowFromStoredDocument(stored) {
     invoiceAmount: Number.isFinite(Number(fields?.invoiceAmount)) ? Number(fields.invoiceAmount) : null,
     paymentAmount: Number.isFinite(Number(fields?.paymentAmount)) ? Number(fields.paymentAmount) : null,
     poAmount: Number.isFinite(Number(fields?.poAmount)) ? Number(fields.poAmount) : null,
+    orderValue: Number.isFinite(Number(fields?.orderValue ?? fields?.canonical_order_value))
+      ? Number(fields.orderValue ?? fields.canonical_order_value)
+      : null,
+    freightValue: Number.isFinite(Number(fields?.freightValue ?? fields?.canonical_freight_value))
+      ? Number(fields.freightValue ?? fields.canonical_freight_value)
+      : null,
     paidInFull: toBooleanOrNull(fields?.paidInFull),
     shipped_at_inferred: toBooleanOrNull(fields?.shipped_at_inferred),
     qb_project_ids: qbProjectIds,

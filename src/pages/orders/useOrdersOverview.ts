@@ -143,7 +143,8 @@ export function useOrdersOverview() {
         return !order.isShipped && order.inDesign
       }
 
-      return !order.isShipped && !order.inDesign
+      return order.warrantyIssueActive === true
+        || (!order.isShipped && !order.inDesign)
     })
 
     if (!debouncedSearchText) {
@@ -162,6 +163,7 @@ export function useOrdersOverview() {
     allOrders.forEach((order) => {
       if (order.warrantyIssueActive === true) {
         warranty += 1
+        orders += 1
       }
 
       if (order.isShipped) {
@@ -174,7 +176,9 @@ export function useOrdersOverview() {
         return
       }
 
-      orders += 1
+      if (order.warrantyIssueActive !== true) {
+        orders += 1
+      }
     })
 
     return {

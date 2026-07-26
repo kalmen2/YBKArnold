@@ -1,12 +1,17 @@
 import AddRoundedIcon from '@mui/icons-material/AddRounded'
 import CategoryRoundedIcon from '@mui/icons-material/CategoryRounded'
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
+import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded'
+import ExpandLessRoundedIcon from '@mui/icons-material/ExpandLessRounded'
+import UnfoldMoreRoundedIcon from '@mui/icons-material/UnfoldMoreRounded'
+import UnfoldLessRoundedIcon from '@mui/icons-material/UnfoldLessRounded'
 import FileDownloadRoundedIcon from '@mui/icons-material/FileDownloadRounded'
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded'
 import PrintRoundedIcon from '@mui/icons-material/PrintRounded'
 import VisibilityRoundedIcon from '@mui/icons-material/VisibilityRounded'
 import {
   Alert,
+  Autocomplete,
   Box,
   Button,
   Checkbox,
@@ -34,7 +39,7 @@ import {
   TextField,
   Typography,
 } from '@mui/material'
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { QUERY_KEYS } from '../lib/queryKeys'
 import {
@@ -232,7 +237,12 @@ type ManagerProgressRow = {
   editReadyPercent: number
   savedIsWarranty: boolean
   editIsWarranty: boolean
+  savedNotes: string
+  editNotes: string
+  bench: string
+  editBench: string
   mondayOrderId: string | null
+  mondayBoardId: string | null
   mondayItemName: string | null
   shopDrawingUrl: string | null
   shopDrawingFileName: string | null
@@ -261,6 +271,8 @@ type ManagerOrderMatch = {
   isShippedFallback: boolean
   hazardReason: string | null
   mondayOrderId: string | null
+  mondayBoardId: string | null
+  bench: string
   mondayItemName: string | null
   shopDrawingUrl: string | null
   shopDrawingFileName: string | null
@@ -739,6 +751,9 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
   const [orderProgress, setOrderProgress] = useState<TimesheetOrderProgress[]>([])
   const [managerProgressByJob, setManagerProgressByJob] = useState<Record<string, string>>({})
   const [managerWarrantyByJob, setManagerWarrantyByJob] = useState<Record<string, boolean>>({})
+  const [managerNotesByJob, setManagerNotesByJob] = useState<Record<string, string>>({})
+  const [managerBenchByJob, setManagerBenchByJob] = useState<Record<string, string>>({})
+  const [expandedManagerJobs, setExpandedManagerJobs] = useState<Set<string>>(() => new Set())
   const [isSavingManagerProgress, setIsSavingManagerProgress] = useState(false)
   const [mondayOrders, setMondayOrders] = useState<DashboardOrder[]>([])
   const [unifiedOrders, setUnifiedOrders] = useState<TimesheetUnifiedOrder[]>([])
@@ -753,8 +768,6 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     () => quickBooksQuery.data?.projects ?? [],
     [quickBooksQuery.data],
   )
-  const [managerWorkersPopupRow, setManagerWorkersPopupRow] =
-    useState<ManagerProgressRow | null>(null)
   const [shopDrawingPreviewRow, setShopDrawingPreviewRow] =
     useState<ManagerProgressRow | null>(null)
   const [isShopDrawingPreviewLoading, setIsShopDrawingPreviewLoading] =
@@ -2646,6 +2659,11 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
       isShippedFallback: matchSource === 'shipped_orders',
       hazardReason: unifiedMatchedOrder?.hazardReason ?? null,
       mondayOrderId: unifiedMatchedOrder?.mondayItemId || matchedMondayOrder?.id || null,
+      mondayBoardId:
+        unifiedMatchedOrder?.mondayBoardId
+        || matchedMondayOrder?.boardId
+        || null,
+      bench: String(unifiedMatchedOrder?.bench ?? matchedMondayOrder?.bench ?? '').trim(),
       mondayItemName: unifiedMatchedOrder?.orderName || matchedMondayOrder?.name || null,
       shopDrawingUrl: resolvedShopDrawingUrl,
       shopDrawingFileName:
@@ -2702,6 +2720,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
       const savedProgress = orderProgressByDateJobKey.get(progressKey)
       const savedReadyPercent = savedProgress ? Number(savedProgress.readyPercent) : 0
       const savedIsWarranty = savedProgress?.isWarranty === true
+      const savedNotes = String(savedProgress?.notes ?? '').trim()
       const latestWorkedDate = latestWorkedDateBeforeSelectedByJobKey.get(jobKey) ?? null
       const latestWorkedProgress = latestWorkedDate
         ? orderProgressByDateJobKey.get(`${latestWorkedDate}:${jobKey}`)
@@ -2733,6 +2752,8 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
         : draftWarranty === undefined
           ? savedIsWarranty
           : draftWarranty
+      const editNotes = managerNotesByJob[jobName] ?? savedNotes
+      const editBench = managerBenchByJob[jobName] ?? orderMatch.bench
 
       return {
         jobName,
@@ -2751,7 +2772,12 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
         editReadyPercent,
         savedIsWarranty,
         editIsWarranty,
+        savedNotes,
+        editNotes,
+        bench: orderMatch.bench,
+        editBench,
         mondayOrderId: orderMatch.mondayOrderId,
+        mondayBoardId: orderMatch.mondayBoardId,
         mondayItemName: orderMatch.mondayItemName,
         shopDrawingUrl: orderMatch.shopDrawingUrl,
         shopDrawingFileName: orderMatch.shopDrawingFileName,
@@ -2763,6 +2789,8 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     managerDayJobs,
     latestWorkedDateBeforeSelectedByJobKey,
     managerProgressByJob,
+    managerNotesByJob,
+    managerBenchByJob,
     managerWarrantyByJob,
     managerSelectedDate,
     orderProgressByDateJobKey,
@@ -4075,6 +4103,8 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
   useEffect(() => {
     const nextDraftByJob: Record<string, string> = {}
     const nextWarrantyByJob: Record<string, boolean> = {}
+    const nextNotesByJob: Record<string, string> = {}
+    const nextBenchByJob: Record<string, string> = {}
 
     managerDayJobs.forEach((jobName) => {
       const key = `${managerSelectedDate}:${normalizeJobName(jobName)}`
@@ -4089,11 +4119,16 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
       nextWarrantyByJob[jobName] = readyPercentLocked
         ? false
         : progress?.isWarranty === true
+      nextNotesByJob[jobName] = String(progress?.notes ?? '')
+      nextBenchByJob[jobName] = resolveManagerOrderMatch(jobName).bench
     })
 
     setManagerProgressByJob(nextDraftByJob)
     setManagerWarrantyByJob(nextWarrantyByJob)
-  }, [managerDayJobs, managerSelectedDate, orderProgressByDateJobKey])
+    setManagerNotesByJob(nextNotesByJob)
+    setManagerBenchByJob(nextBenchByJob)
+    setExpandedManagerJobs(new Set())
+  }, [managerDayJobs, managerSelectedDate, orderProgressByDateJobKey, resolveManagerOrderMatch])
 
   const handleBulkRowChange = (
     rowId: string,
@@ -4455,18 +4490,6 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     }
   }, [clearShopDrawingPreviewObjectUrl])
 
-  const handleOpenManagerWorkersPopup = useCallback((row: ManagerProgressRow) => {
-    if (row.workerHoursByWorker.length === 0) {
-      return
-    }
-
-    setManagerWorkersPopupRow(row)
-  }, [])
-
-  const handleCloseManagerWorkersPopup = useCallback(() => {
-    setManagerWorkersPopupRow(null)
-  }, [])
-
   const handleCloseToast = useCallback(() => {
     setToastState((current) => ({
       ...current,
@@ -4513,6 +4536,23 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
       ...current,
       [jobName]: isWarranty,
     }))
+  }
+
+  const handleManagerNotesChange = (jobName: string, notes: string) => {
+    setManagerNotesByJob((current) => ({ ...current, [jobName]: notes }))
+  }
+
+  const handleManagerBenchChange = (jobName: string, bench: string) => {
+    setManagerBenchByJob((current) => ({ ...current, [jobName]: bench }))
+  }
+
+  const toggleManagerWorkers = (jobName: string) => {
+    setExpandedManagerJobs((current) => {
+      const next = new Set(current)
+      if (next.has(jobName)) next.delete(jobName)
+      else next.add(jobName)
+      return next
+    })
   }
 
   const handleSaveManagerProgress = async () => {
@@ -4563,6 +4603,9 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
             jobName: row.jobName,
             readyPercent: Number(String(managerProgressByJob[row.jobName] ?? '').trim()),
             isWarranty: row.editIsWarranty,
+            notes: row.editNotes,
+            bench: row.editBench,
+            mondayItemId: row.mondayOrderId,
           }),
         ),
       )
@@ -4651,9 +4694,14 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
       currentReadyMissingDate: null,
       savedReadyPercent: 0,
       editReadyPercent: 0,
+      savedNotes: '',
+      editNotes: '',
+      bench: '',
+      editBench: '',
       savedIsWarranty: false,
       editIsWarranty: false,
       mondayOrderId: row.mondayOrderId,
+      mondayBoardId: null,
       mondayItemName: row.mondayItemName,
       shopDrawingUrl: row.shopDrawingUrl,
       shopDrawingFileName: row.shopDrawingFileName,
@@ -5474,6 +5522,25 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                       >
                         <Button
                           variant="outlined"
+                          startIcon={
+                            expandedManagerJobs.size === managerProgressRows.length
+                              ? <UnfoldLessRoundedIcon />
+                              : <UnfoldMoreRoundedIcon />
+                          }
+                          onClick={() => {
+                            setExpandedManagerJobs((current) => (
+                              current.size === managerProgressRows.length
+                                ? new Set()
+                                : new Set(managerProgressRows.map((row) => row.jobName))
+                            ))
+                          }}
+                        >
+                          {expandedManagerJobs.size === managerProgressRows.length
+                            ? 'Collapse workers'
+                            : 'Expand workers'}
+                        </Button>
+                        <Button
+                          variant="outlined"
                           onClick={() => setMissingManagerDialogOpen(true)}
                           disabled={missingManagerRows.length === 0}
                         >
@@ -5501,27 +5568,33 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                               <TableCell>Shop Drawing</TableCell>
                               <TableCell align="right">Hours</TableCell>
                               <TableCell align="right">Workers</TableCell>
+                              <TableCell>Bench</TableCell>
                               <TableCell align="right">Current ready %</TableCell>
                               <TableCell align="right">Set ready %</TableCell>
+                              <TableCell>Notes</TableCell>
                               <TableCell align="center">Warranty</TableCell>
+                              <TableCell align="center">Expand</TableCell>
                             </TableRow>
                           </TableHead>
                           <TableBody>
-                            {managerProgressRows.map((row) => (
-                              <TableRow
-                                key={row.jobName}
-                                hover
-                                sx={
-                                  row.isShippedFallback
-                                    ? {
-                                      backgroundColor: 'rgba(245, 158, 11, 0.16)',
-                                      '&:hover': {
-                                        backgroundColor: 'rgba(245, 158, 11, 0.22)',
-                                      },
+                            {managerProgressRows.map((row) => {
+                              const workersExpanded = expandedManagerJobs.has(row.jobName)
+
+                              return (
+                                <Fragment key={row.jobName}>
+                                  <TableRow
+                                    hover
+                                    sx={
+                                      row.isShippedFallback
+                                        ? {
+                                          backgroundColor: 'rgba(245, 158, 11, 0.16)',
+                                          '&:hover': {
+                                            backgroundColor: 'rgba(245, 158, 11, 0.22)',
+                                          },
+                                        }
+                                        : undefined
                                     }
-                                    : undefined
-                                }
-                              >
+                                  >
                                 <TableCell>{row.displayOrderNumber || row.jobName}</TableCell>
                                 <TableCell>
                                   {row.mondayItemName ? (
@@ -5570,9 +5643,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                                     <Button
                                       size="small"
                                       variant="text"
-                                      onClick={() => {
-                                        handleOpenManagerWorkersPopup(row)
-                                      }}
+                                      onClick={() => toggleManagerWorkers(row.jobName)}
                                       sx={{
                                         color: 'primary.main',
                                         fontWeight: 700,
@@ -5591,6 +5662,24 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                                     <Typography variant="body2" color="text.secondary">
                                       0
                                     </Typography>
+                                  )}
+                                </TableCell>
+                                <TableCell sx={{ minWidth: 190 }}>
+                                  {row.readyPercentLocked ? (
+                                    <Typography variant="body2" color="text.secondary">N/A</Typography>
+                                  ) : (
+                                    <Autocomplete
+                                      freeSolo
+                                      size="small"
+                                      options={workers.map((worker) => worker.fullName)}
+                                      value={row.editBench}
+                                      onInputChange={(_event, value) => {
+                                        handleManagerBenchChange(row.jobName, value)
+                                      }}
+                                      renderInput={(params) => (
+                                        <TextField {...params} placeholder="Worker name" />
+                                      )}
+                                    />
                                   )}
                                 </TableCell>
                                 <TableCell align="right">
@@ -5644,6 +5733,25 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                                   )}
                                 </TableCell>
 
+                                <TableCell sx={{ minWidth: 240 }}>
+                                  {row.readyPercentLocked ? (
+                                    <Typography variant="body2" color="text.secondary">N/A</Typography>
+                                  ) : (
+                                    <TextField
+                                      size="small"
+                                      value={row.editNotes}
+                                      placeholder="What was built or next steps"
+                                      multiline
+                                      minRows={1}
+                                      maxRows={4}
+                                      fullWidth
+                                      onChange={(event) => {
+                                        handleManagerNotesChange(row.jobName, event.target.value)
+                                      }}
+                                    />
+                                  )}
+                                </TableCell>
+
                                 <TableCell align="center" sx={{ width: 120 }}>
                                   {row.readyPercentLocked ? (
                                     <Typography variant="body2" color="text.secondary">
@@ -5658,8 +5766,64 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                                     />
                                   )}
                                 </TableCell>
-                              </TableRow>
-                            ))}
+                                <TableCell align="center" sx={{ width: 76 }}>
+                                  <IconButton
+                                    size="small"
+                                    disabled={row.workerCount === 0}
+                                    aria-label={workersExpanded ? 'Collapse workers' : 'Expand workers'}
+                                    onClick={() => toggleManagerWorkers(row.jobName)}
+                                  >
+                                    {workersExpanded
+                                      ? <ExpandLessRoundedIcon />
+                                      : <ExpandMoreRoundedIcon />}
+                                  </IconButton>
+                                </TableCell>
+                                  </TableRow>
+
+                                  {workersExpanded ? (
+                                    <TableRow>
+                                      <TableCell
+                                        colSpan={11}
+                                        sx={{
+                                          py: 1.25,
+                                          backgroundColor: 'rgba(15, 23, 42, 0.025)',
+                                        }}
+                                      >
+                                        <Stack spacing={0.65}>
+                                          <Typography variant="caption" color="text.secondary" fontWeight={800}>
+                                            WORKERS ON THIS ORDER
+                                          </Typography>
+                                          {row.workerHoursByWorker.map((workerRow) => (
+                                            <Stack
+                                              key={`${row.jobName}:${workerRow.workerId}`}
+                                              direction="row"
+                                              justifyContent="space-between"
+                                              alignItems="center"
+                                              sx={{
+                                                maxWidth: 520,
+                                                px: 1.25,
+                                                py: 0.65,
+                                                borderRadius: 1,
+                                                bgcolor: 'background.paper',
+                                                border: '1px solid',
+                                                borderColor: 'divider',
+                                              }}
+                                            >
+                                              <Typography variant="body2" fontWeight={700}>
+                                                {workerRow.workerName}
+                                              </Typography>
+                                              <Typography variant="body2" color="text.secondary">
+                                                {formatHours(workerRow.hours)} h
+                                              </Typography>
+                                            </Stack>
+                                          ))}
+                                        </Stack>
+                                      </TableCell>
+                                    </TableRow>
+                                  ) : null}
+                                </Fragment>
+                              )
+                            })}
                           </TableBody>
                         </Table>
                       </TableContainer>
@@ -7048,44 +7212,6 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setStagesDialogOpen(false)}>Close</Button>
-        </DialogActions>
-      </Dialog>
-
-      <Dialog
-        open={Boolean(managerWorkersPopupRow)}
-        onClose={handleCloseManagerWorkersPopup}
-        fullWidth
-        maxWidth="xs"
-      >
-        <DialogTitle>
-          {managerWorkersPopupRow
-            ? `Workers - ${managerWorkersPopupRow.displayOrderNumber || managerWorkersPopupRow.jobName}`
-            : 'Workers'}
-        </DialogTitle>
-        <DialogContent dividers>
-          {!managerWorkersPopupRow || managerWorkersPopupRow.workerHoursByWorker.length === 0 ? (
-            <Typography color="text.secondary">No workers found for this order.</Typography>
-          ) : (
-            <Table size="small">
-              <TableHead>
-                <TableRow>
-                  <TableCell>Worker</TableCell>
-                  <TableCell align="right">Hours</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {managerWorkersPopupRow.workerHoursByWorker.map((workerRow) => (
-                  <TableRow key={workerRow.workerId}>
-                    <TableCell>{workerRow.workerName}</TableCell>
-                    <TableCell align="right">{formatHours(workerRow.hours)}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={handleCloseManagerWorkersPopup}>Close</Button>
         </DialogActions>
       </Dialog>
 

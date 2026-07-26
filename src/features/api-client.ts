@@ -1,4 +1,5 @@
 import { firebaseAuth } from '../auth/firebase'
+import { finishAppProcess, startAppProcess } from '../lib/appProcesses'
 
 // Cache the Firebase ID token until its real JWT expiry, with a small buffer.
 // This avoids repeated getIdToken() overhead without reusing stale tokens.
@@ -54,6 +55,10 @@ export function clearCachedToken() {
 
 type ApiRequestOptions = {
   timeoutMs?: number
+  processTracking?: false | {
+    label: string
+    detail?: string | null
+  }
 }
 
 type ApiRequestError = Error & {
@@ -134,23 +139,103 @@ export async function apiRequest<T>(
   options: RequestInit = {},
   requestOptions: ApiRequestOptions = {},
 ): Promise<T> {
-  const response = await requestWithAuth(path, options, requestOptions, {
-    'Content-Type': 'application/json',
-    'x-client-platform': 'web',
-  })
-  const payload = await response.json().catch(() => ({}))
-  const payloadError = typeof (payload as { error?: unknown }).error === 'string'
-    ? String((payload as { error?: unknown }).error).trim()
-    : ''
+  const method = String(options.method || 'GET').trim().toUpperCase()
+  const shouldTrackProcess = !['GET', 'HEAD', 'OPTIONS'].includes(method)
+    && requestOptions.processTracking !== false
+  const processDescription = requestOptions.processTracking || describeApiProcess(path, method)
+  const processId = shouldTrackProcess
+    ? startAppProcess(processDescription)
+    : null
 
-  if (!response.ok || payloadError) {
-    const requestError: ApiRequestError = new Error(payloadError || 'Request failed.')
-    requestError.status = response.status
-    requestError.payload = payload
-    throw requestError
+  try {
+    const response = await requestWithAuth(path, options, requestOptions, {
+      'Content-Type': 'application/json',
+      'x-client-platform': 'web',
+    })
+    const payload = await response.json().catch(() => ({}))
+    const payloadError = typeof (payload as { error?: unknown }).error === 'string'
+      ? String((payload as { error?: unknown }).error).trim()
+      : ''
+
+    if (!response.ok || payloadError) {
+      const requestError: ApiRequestError = new Error(payloadError || 'Request failed.')
+      requestError.status = response.status
+      requestError.payload = payload
+      throw requestError
+    }
+
+    return payload as T
+  } finally {
+    if (processId) {
+      finishAppProcess(processId)
+    }
+  }
+}
+
+function decodePathPart(value: string | undefined) {
+  if (!value) return ''
+
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return value
+  }
+}
+
+function describeApiProcess(path: string, method: string) {
+  const normalizedPath = String(path || '').split('?')[0]
+  const quoteMatch = normalizedPath.match(/\/api\/crm\/quotes\/([^/]+)/)
+  const orderMatch = normalizedPath.match(/\/api\/orders\/([^/]+)/)
+  const quoteId = decodePathPart(quoteMatch?.[1])
+  const orderId = decodePathPart(orderMatch?.[1])
+
+  if (/\/convert-to-order$/.test(normalizedPath)) {
+    return { label: 'Converting quote to order', detail: quoteId ? `Quote ${quoteId}` : null }
   }
 
-  return payload as T
+  if (/\/cancel-order$/.test(normalizedPath)) {
+    return { label: 'Canceling order', detail: quoteId ? `Quote ${quoteId}` : null }
+  }
+
+  if (/\/revisions(?:\/|$)/.test(normalizedPath)) {
+    return {
+      label: method === 'DELETE' ? 'Deleting quote revision' : 'Creating quote revision',
+      detail: quoteId ? `Quote ${quoteId}` : null,
+    }
+  }
+
+  if (normalizedPath === '/api/orders/refresh') {
+    return { label: 'Refreshing orders', detail: 'Syncing order information' }
+  }
+
+  if (/shop-drawing/i.test(normalizedPath)) {
+    return { label: method === 'DELETE' ? 'Deleting shop drawing' : 'Saving shop drawing', detail: orderId || null }
+  }
+
+  if (/cut-list/i.test(normalizedPath)) {
+    return { label: method === 'DELETE' ? 'Deleting cut list' : 'Saving cut list', detail: orderId || null }
+  }
+
+  if (/shipping|ship$/i.test(normalizedPath)) {
+    return { label: 'Updating shipping', detail: orderId || null }
+  }
+
+  if (/photos/i.test(normalizedPath)) {
+    return { label: method === 'DELETE' ? 'Deleting picture' : 'Saving picture', detail: orderId || null }
+  }
+
+  if (quoteId) {
+    return { label: method === 'DELETE' ? 'Deleting quote' : 'Saving quote', detail: `Quote ${quoteId}` }
+  }
+
+  if (orderId) {
+    return { label: method === 'DELETE' ? 'Deleting order' : 'Updating order', detail: orderId }
+  }
+
+  return {
+    label: method === 'DELETE' ? 'Deleting information' : 'Saving changes',
+    detail: null,
+  }
 }
 
 // Authenticated fetch for non-JSON responses (file/blob downloads). Shares the

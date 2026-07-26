@@ -605,6 +605,145 @@ export function registerOrdersRoutes(app, deps) {
     return alertDocument
   }
 
+  function mapCutListDocuments(orderDocument) {
+    const seenUrls = new Set()
+    const documents = Array.isArray(orderDocument?.cut_list_documents)
+      ? orderDocument.cut_list_documents
+      : []
+
+    const mappedDocuments = documents
+      .map((document) => {
+        const url = String(document?.url ?? '').trim()
+
+        if (!url || seenUrls.has(url)) {
+          return null
+        }
+
+        seenUrls.add(url)
+
+        return {
+          fileName: String(document?.fileName ?? '').trim() || 'cut-list.pdf',
+          mimeType: String(document?.mimeType ?? '').trim() || 'application/pdf',
+          url,
+          uploadedAt: String(document?.uploadedAt ?? '').trim() || null,
+        }
+      })
+      .filter(Boolean)
+
+    const legacyUrl =
+      String(orderDocument?.Cut_list_cached ?? '').trim()
+      || String(orderDocument?.Cut_list_source ?? '').trim()
+      || String(orderDocument?.Cut_list ?? '').trim()
+      || null
+
+    if (legacyUrl && !seenUrls.has(legacyUrl)) {
+      mappedDocuments.push({
+        fileName: 'cut-list.pdf',
+        mimeType: 'application/pdf',
+        url: legacyUrl,
+        uploadedAt: null,
+      })
+    }
+
+    return mappedDocuments
+  }
+
+  async function recoverStoredCutListDocuments(orderDocument, ordersUnifiedCollection) {
+    if (!orderDocument) {
+      return
+    }
+
+    const existingDocuments = mapCutListDocuments(orderDocument)
+
+    if (existingDocuments.length > 1) {
+      return
+    }
+
+    const bucket = typeof getOrderPhotosBucket === 'function'
+      ? getOrderPhotosBucket()
+      : null
+    const storageOrderId = sanitizeStorageSegment(
+      orderDocument?.order_number || orderDocument?.monday_item_id,
+      'order',
+    )
+
+    if (!bucket || !storageOrderId) {
+      return
+    }
+
+    try {
+      const [files] = await bucket.getFiles({
+        prefix: `orders-cut-lists/${storageOrderId}/`,
+      })
+      const recoveredDocuments = (
+        await Promise.all(
+          files.map(async (file) => {
+            const [metadata] = await file.getMetadata()
+            const token = String(
+              metadata?.metadata?.firebaseStorageDownloadTokens ?? '',
+            ).split(',')[0].trim()
+
+            if (!token) {
+              return null
+            }
+
+            const rawFileName = String(file.name ?? '').split('/').pop() || 'cut-list.pdf'
+            const fileName = rawFileName.replace(/^\d+-/, '') || 'cut-list.pdf'
+
+            return {
+              fileName,
+              mimeType: String(metadata?.contentType ?? '').trim() || 'application/pdf',
+              url: buildFirebaseStorageDownloadUrl(bucket.name, file.name, token),
+              uploadedAt:
+                String(metadata?.timeCreated ?? metadata?.updated ?? '').trim()
+                || null,
+              storagePath: file.name,
+            }
+          }),
+        )
+      )
+        .filter(Boolean)
+        .sort((left, right) => {
+          const leftTime = Date.parse(left.uploadedAt || '') || 0
+          const rightTime = Date.parse(right.uploadedAt || '') || 0
+          return leftTime - rightTime
+        })
+
+      if (recoveredDocuments.length <= existingDocuments.length) {
+        return
+      }
+
+      orderDocument.cut_list_documents = recoveredDocuments
+      await ordersUnifiedCollection.updateOne(
+        { orderKey: orderDocument.orderKey },
+        {
+          $set: {
+            cut_list_documents: recoveredDocuments,
+            updatedAt: new Date().toISOString(),
+          },
+        },
+      )
+    } catch {
+      // Storage recovery is best-effort. The current Monday/website link
+      // remains available if an old file cannot be enumerated.
+    }
+  }
+
+  function resolveOptionalMoney(...values) {
+    for (const value of values) {
+      if (value === null || value === undefined || value === '') {
+        continue
+      }
+
+      const parsed = Number(value)
+      if (Number.isFinite(parsed)) {
+        return parsed
+      }
+    }
+
+    return null
+  }
+
   function mapUnifiedOrderDocumentToOverviewRow(orderDocument, laborLookups) {
     const hasMondayRecord = Boolean(orderDocument?.has_monday_record)
     const hasQuickBooksRecord = Boolean(orderDocument?.has_quickbooks_record)
@@ -656,14 +795,79 @@ export function registerOrdersRoutes(app, deps) {
           : 'quickbooks'
 
     const isShipped = Boolean(orderDocument?.is_shipped)
-    const mondayStatus = String(orderDocument?.Monday_status ?? '').trim() || null
+    const customerSignedBolUrl =
+      String(orderDocument?.Customer_Signed_BOL_source ?? '').trim()
+      || String(orderDocument?.Customer_Signed_BOL ?? '').trim()
+      || null
+    const customerSignedBol = String(orderDocument?.customer_signed_bol ?? '').trim() || null
+    const mondayStatus =
+      String(orderDocument?.job_status ?? '').trim()
+      || String(orderDocument?.Monday_status ?? '').trim()
+      || null
     const inDesign = Boolean(orderDocument?.in_design)
-    const hazardReason = String(orderDocument?.hazard_reason ?? '').trim()
+    const quickBooksInvoiceTotal =
+      orderDocument?.invoiceAmount !== null
+      && orderDocument?.invoiceAmount !== undefined
+      && orderDocument?.invoiceAmount !== ''
+      && Number.isFinite(Number(orderDocument.invoiceAmount))
+      ? Number(orderDocument.invoiceAmount)
+      : null
+    const explicitlyCalculatedOrderTotal =
+      orderDocument?.website_calculated_order_total !== null
+      && orderDocument?.website_calculated_order_total !== undefined
+      && Number.isFinite(Number(orderDocument.website_calculated_order_total))
+        ? Number(orderDocument.website_calculated_order_total)
+        : null
+    const legacyEligibleCalculatedOrderTotal =
+      (
+        String(orderDocument?.source_quote_id ?? '').trim()
+        || Number(orderDocument?.change_version || 0) > 0
+      )
+      && orderDocument?.canonical_order_value !== null
+      && orderDocument?.canonical_order_value !== undefined
+      && orderDocument?.canonical_order_value !== ''
+      && Number.isFinite(Number(orderDocument.canonical_order_value))
+        ? Number(orderDocument.canonical_order_value)
+        : String(orderDocument?.created_via_website_manual_at ?? '').trim()
+          && orderDocument?.orderValue !== null
+          && orderDocument?.orderValue !== undefined
+          && orderDocument?.orderValue !== ''
+          && Number.isFinite(Number(orderDocument.orderValue))
+          ? Number(orderDocument.orderValue) + (
+              orderDocument?.freightValue !== null
+              && orderDocument?.freightValue !== undefined
+              && orderDocument?.freightValue !== ''
+              && Number.isFinite(Number(orderDocument.freightValue))
+                ? Number(orderDocument.freightValue)
+                : 0
+            )
+          : null
+    const websiteCalculatedOrderTotal =
+      explicitlyCalculatedOrderTotal ?? legacyEligibleCalculatedOrderTotal
+    const hasQuickBooksInvoice = Boolean(
+      String(orderDocument?.invoiceNumber ?? '').trim()
+      && quickBooksInvoiceTotal !== null,
+    )
+    const invoiceTotalMismatch = Boolean(
+      websiteCalculatedOrderTotal !== null
+      && hasQuickBooksInvoice
+      && Math.round(quickBooksInvoiceTotal * 100) !== Math.round(websiteCalculatedOrderTotal * 100),
+    )
+    const baseHazardReason = String(orderDocument?.hazard_reason ?? '').trim()
       || (!hasMondayRecord && !inDesign
         ? 'Not found in Monday Order Track.'
         : !hasQuickBooksRecord && !inDesign
           ? 'Not found in QuickBooks projects.'
           : null)
+    const hazardReason = [
+      baseHazardReason,
+      isShipped && !customerSignedBolUrl && !customerSignedBol
+        ? 'Customer Signed BOL is missing after shipment.'
+        : null,
+      invoiceTotalMismatch
+        ? 'The total from QuickBooks does not match the total from the order.'
+        : null,
+    ].filter(Boolean).join(' ') || null
     const amountOwed = Number.isFinite(Number(orderDocument?.amountOwed))
       ? Number(orderDocument.amountOwed)
       : null
@@ -700,6 +904,31 @@ export function registerOrdersRoutes(app, deps) {
         laborLookups.byDigits,
       )
       : null
+    const quoteSnapshot = orderDocument?.source_quote_snapshot
+      && typeof orderDocument.source_quote_snapshot === 'object'
+      ? orderDocument.source_quote_snapshot
+      : {}
+    const toDocumentLine = (item, category, fallbackDescription, index) => ({
+      id: String(item?.id ?? item?.itemNumber ?? `${category}-${index + 1}`).trim(),
+      description: String(item?.description ?? item?.title ?? fallbackDescription).trim() || fallbackDescription,
+      qty: Number.isFinite(Number(item?.qty)) ? Number(item.qty) : null,
+      unitPrice: Number.isFinite(Number(item?.unitPrice)) ? Number(item.unitPrice) : null,
+      extPrice: Number.isFinite(Number(item?.extPrice ?? item?.price))
+        ? Number(item.extPrice ?? item.price)
+        : 0,
+      category,
+    })
+    const orderDocumentLines = [
+      ...(Array.isArray(quoteSnapshot?.lineItems)
+        ? quoteSnapshot.lineItems.map((item, index) => toDocumentLine(item, 'product', 'Product', index))
+        : []),
+      ...(Array.isArray(quoteSnapshot?.additionalServices)
+        ? quoteSnapshot.additionalServices.map((item, index) => toDocumentLine(item, 'additional', 'Additional service', index))
+        : []),
+      ...(Array.isArray(quoteSnapshot?.shippingServices)
+        ? quoteSnapshot.shippingServices.map((item, index) => toDocumentLine(item, 'freight', 'Freight service', index))
+        : []),
+    ]
 
     return {
       id: String(orderDocument?.orderKey ?? resolvedOrderNumber).trim() || resolvedOrderNumber,
@@ -732,14 +961,76 @@ export function registerOrdersRoutes(app, deps) {
         String(orderDocument?.Signed_BOL_source ?? '').trim()
         || String(orderDocument?.Signed_BOL ?? '').trim()
         || null,
+      customerSignedBol,
+      customerSignedBolUrl,
+      changeVersion: Number.isFinite(Number(orderDocument?.change_version))
+        ? Number(orderDocument.change_version)
+        : 0,
+      changeOrderStatus: String(orderDocument?.change_order_status ?? '').trim() || null,
+      changeOrderUrl: String(orderDocument?.change_order_url ?? '').trim() || null,
+      changeOrderName: String(orderDocument?.change_order_name ?? '').trim() || null,
+      pendingChangeVersion: Number.isFinite(Number(orderDocument?.pending_order_change?.version))
+        ? Number(orderDocument.pending_order_change.version)
+        : null,
+      pendingOrderChangeLines: Array.isArray(orderDocument?.pending_order_change?.lines)
+        ? orderDocument.pending_order_change.lines
+        : [],
+      pendingChangeProductNet: Number.isFinite(Number(orderDocument?.pending_order_change?.productNet))
+        ? Number(orderDocument.pending_order_change.productNet)
+        : null,
+      pendingChangeFreightNet: Number.isFinite(Number(orderDocument?.pending_order_change?.freightNet))
+        ? Number(orderDocument.pending_order_change.freightNet)
+        : null,
+      customerSignedChangeOrder:
+        String(orderDocument?.customer_signed_change_order ?? '').trim() || null,
+      customerSignedChangeOrderUrl:
+        String(orderDocument?.customer_signed_change_order_url ?? '').trim()
+        || String(orderDocument?.Customer_Signed_Change_Order ?? '').trim()
+        || null,
       inspectionSheet: String(orderDocument?.inspection_sheet ?? '').trim() || null,
       inspectionSheetUrl:
         String(orderDocument?.Inspection_sheet_source ?? '').trim()
         || String(orderDocument?.Inspection_sheet ?? '').trim()
         || null,
       poNumber: String(orderDocument?.po_number ?? '').trim() || null,
+      bench: String(orderDocument?.bench ?? '').trim() || null,
       notes: String(orderDocument?.monday_notes ?? '').trim() || null,
       description: String(orderDocument?.monday_description ?? '').trim() || null,
+      contactName: String(quoteSnapshot?.contactName ?? '').trim() || null,
+      contactEmail: String(quoteSnapshot?.contactEmail ?? '').trim() || null,
+      contactPhone: String(quoteSnapshot?.contactPhone ?? '').trim() || null,
+      leadTime: String(orderDocument?.lead_time_text ?? quoteSnapshot?.leadTime ?? '').trim() || null,
+      freightDescription: String(quoteSnapshot?.freightDescription ?? '').trim() || null,
+      productValue: resolveOptionalMoney(
+        orderDocument?.canonical_product_value,
+        Number.isFinite(Number(orderDocument?.canonical_order_value))
+          ? Number(orderDocument.canonical_order_value) - Number(orderDocument?.canonical_freight_value || 0)
+          : null,
+      ),
+      productGrossValue: resolveOptionalMoney(orderDocument?.canonical_product_gross_value),
+      discountPercent: resolveOptionalMoney(orderDocument?.discount_percent),
+      discountAmount: resolveOptionalMoney(orderDocument?.discount_amount),
+      discountScope: orderDocument?.discount_scope === 'products_and_freight'
+        ? 'products_and_freight'
+        : 'products',
+      freightGrossValue: resolveOptionalMoney(orderDocument?.canonical_freight_gross_value),
+      discountFreightAmount: resolveOptionalMoney(orderDocument?.discount_freight_amount),
+      orderDocumentLines,
+      orderValue: resolveOptionalMoney(
+        orderDocument?.orderValue,
+        orderDocument?.canonical_order_value,
+        orderDocument?.source_quote_snapshot?.totalAmount,
+        String(orderDocument?.created_via_website_manual_at ?? '').trim()
+          ? orderDocument?.poAmount
+          : null,
+      ),
+      freightValue: resolveOptionalMoney(
+        orderDocument?.freightValue,
+        orderDocument?.canonical_freight_value,
+        orderDocument?.source_quote_snapshot?.freight,
+      ),
+      salesRep: String(orderDocument?.sales_rep ?? '').trim() || null,
+      depositReceivedDate: String(orderDocument?.deposit_received_date ?? '').trim() || null,
       poAmount: Number.isFinite(Number(orderDocument?.poAmount)) ? Number(orderDocument.poAmount) : null,
       billedAmount: Number.isFinite(Number(orderDocument?.billedAmount))
         ? Number(orderDocument.billedAmount)
@@ -747,6 +1038,10 @@ export function registerOrdersRoutes(app, deps) {
           ? Number(orderDocument.billAmount)
           : null,
       invoiceAmount: Number.isFinite(Number(orderDocument?.invoiceAmount)) ? Number(orderDocument.invoiceAmount) : null,
+      websiteCalculatedOrderTotal,
+      invoiceTotalMatchesOrder: websiteCalculatedOrderTotal !== null && hasQuickBooksInvoice
+        ? !invoiceTotalMismatch
+        : null,
       invoiceNumber: String(orderDocument?.invoiceNumber ?? '').trim() || null,
       invoiceCachedUrl: String(orderDocument?.invoice_pdf_cached_url ?? '').trim() || null,
       invoiceFileName: String(orderDocument?.invoice_pdf_file_name ?? '').trim() || null,
@@ -793,6 +1088,7 @@ export function registerOrdersRoutes(app, deps) {
         String(orderDocument?.Cut_list_source ?? '').trim()
         || String(orderDocument?.Cut_list ?? '').trim()
         || null,
+      cutListDocuments: mapCutListDocuments(orderDocument),
       source,
       hasMondayRecord,
       hasQuickBooksRecord,
@@ -816,6 +1112,10 @@ export function registerOrdersRoutes(app, deps) {
       depositRequestName: String(orderDocument?.deposit_request_name ?? '').trim() || null,
       orderConfirmationUrl: String(orderDocument?.order_confirmation_url ?? '').trim() || null,
       orderConfirmationName: String(orderDocument?.order_confirmation_name ?? '').trim() || null,
+      workOrderUrl: String(orderDocument?.work_order_url ?? '').trim() || null,
+      workOrderName: String(orderDocument?.work_order_name ?? '').trim() || null,
+      proformaInvoiceUrl: String(orderDocument?.proforma_invoice_url ?? '').trim() || null,
+      proformaInvoiceName: String(orderDocument?.proforma_invoice_name ?? '').trim() || null,
     }
   }
 
@@ -905,11 +1205,123 @@ export function registerOrdersRoutes(app, deps) {
     })
   }
 
+  function getOrderAccess(req) {
+    const user = toPublicAuthUser(req.authUser)
+
+    return {
+      isSalesRep: Boolean(user?.isSalesRep),
+      isShopWorker: Boolean(user?.isShopWorker),
+      canViewOrderValue: Boolean(user?.canViewOrderValue),
+      canViewLaborCost: Boolean(user?.canViewLaborCost),
+      canViewFullFinancials: Boolean(user?.canViewFullFinancials),
+    }
+  }
+
+  function redactOrderForAccess(order, access) {
+    if (!order) {
+      return null
+    }
+
+    const redacted = {
+      ...order,
+      familyRollup: order.familyRollup
+        ? { ...order.familyRollup }
+        : order.familyRollup,
+    }
+
+    if (!access.canViewOrderValue) {
+      redacted.orderValue = null
+      redacted.productValue = null
+      redacted.freightValue = null
+      redacted.websiteCalculatedOrderTotal = null
+      redacted.invoiceTotalMatchesOrder = null
+      redacted.orderDocumentLines = []
+      redacted.pendingOrderChangeLines = []
+      redacted.pendingChangeProductNet = null
+      redacted.pendingChangeFreightNet = null
+      redacted.salesRep = null
+      redacted.depositReceivedDate = null
+      redacted.poAmount = null
+      if (redacted.familyRollup) {
+        redacted.familyRollup.poAmount = null
+      }
+    }
+
+    if (!access.canViewLaborCost) {
+      redacted.totalLaborCost = null
+      if (redacted.familyRollup) {
+        redacted.familyRollup.totalLaborCost = null
+      }
+    }
+
+    if (!access.canViewFullFinancials) {
+      redacted.billedAmount = null
+      redacted.invoiceAmount = null
+      redacted.invoiceNumber = null
+      redacted.invoiceCachedUrl = null
+      redacted.invoiceFileName = null
+      redacted.amountOwed = null
+      redacted.billBalanceAmount = null
+
+      if (redacted.familyRollup) {
+        redacted.familyRollup.billedAmount = null
+        redacted.familyRollup.invoiceAmount = null
+        redacted.familyRollup.amountOwed = null
+        redacted.familyRollup.billBalanceAmount = null
+      }
+    }
+
+    if (access.isShopWorker) {
+      // Shop Workers only need production-facing order context. Keep the
+      // manager-authored Ready percentage/date, but do not expose Monday
+      // workflow state, customer purchasing references, or labor activity.
+      redacted.poNumber = null
+      redacted.mondayStatus = null
+      redacted.progressPercent = null
+      redacted.rowStatus = null
+      redacted.mondayItemUrl = null
+      redacted.mondayBoardId = null
+      redacted.mondayBoardName = null
+      redacted.totalHours = null
+      redacted.paidInFull = null
+      if (redacted.familyRollup) {
+        redacted.familyRollup.totalHours = null
+      }
+
+      // Never give the app a Monday source URL. If the Firebase copy is not
+      // present yet, the authenticated download endpoint will create it once.
+      redacted.shopDrawingUrl = redacted.shopDrawingCachedUrl || null
+
+      // These generated documents contain customer pricing. Shop Workers only
+      // receive production-facing documents such as shop drawings and cut lists.
+      redacted.depositRequestUrl = null
+      redacted.depositRequestName = null
+      redacted.orderConfirmationUrl = null
+      redacted.orderConfirmationName = null
+      redacted.proformaInvoiceUrl = null
+      redacted.proformaInvoiceName = null
+      redacted.changeOrderUrl = null
+      redacted.changeOrderName = null
+      redacted.customerSignedChangeOrderUrl = null
+      redacted.customerSignedChangeOrder = null
+    }
+
+    return redacted
+  }
+
   // ---- Routes -----------------------------------------------------------
 
   // GET /api/orders/overview — pure DB read. Never triggers Monday/QB.
-  app.get('/api/orders/overview', requireFirebaseAuth, async (_req, res, next) => {
+  app.get('/api/orders/overview', requireFirebaseAuth, async (req, res, next) => {
     try {
+      const access = getOrderAccess(req)
+
+      if (access.isSalesRep) {
+        return res.status(403).json({
+          error: 'Sales Reps access their assigned work from the Sales page.',
+        })
+      }
+
       const {
         dashboardSnapshotsCollection,
         entriesCollection,
@@ -919,7 +1331,10 @@ export function registerOrdersRoutes(app, deps) {
 
       const unifiedOrderDocuments = await ordersUnifiedCollection
         .find(
-          { is_cancelled: { $ne: true } },
+          {
+            is_cancelled: { $ne: true },
+            is_deleted: { $ne: true },
+          },
           {
             projection: {
               _id: 0,
@@ -941,6 +1356,7 @@ export function registerOrdersRoutes(app, deps) {
               monday_item_id: 1,
               Monday_url: 1,
               Monday_status: 1,
+              job_status: 1,
               order_name: 1,
               ship_to: 1,
               ship_notes: 1,
@@ -951,12 +1367,40 @@ export function registerOrdersRoutes(app, deps) {
               signed_bol: 1,
               Signed_BOL: 1,
               Signed_BOL_source: 1,
+              customer_signed_bol: 1,
+              Customer_Signed_BOL: 1,
+              Customer_Signed_BOL_source: 1,
+              change_version: 1,
+              change_order_status: 1,
+              change_order_url: 1,
+              change_order_name: 1,
+              pending_order_change: 1,
+              customer_signed_change_order: 1,
+              customer_signed_change_order_url: 1,
+              Customer_Signed_Change_Order: 1,
               inspection_sheet: 1,
               Inspection_sheet: 1,
               Inspection_sheet_source: 1,
               po_number: 1,
+              bench: 1,
               monday_notes: 1,
               monday_description: 1,
+              orderValue: 1,
+              freightValue: 1,
+              canonical_product_gross_value: 1,
+              discount_percent: 1,
+              discount_amount: 1,
+              discount_scope: 1,
+              discount_freight_amount: 1,
+              canonical_freight_gross_value: 1,
+              sales_rep: 1,
+              deposit_received_date: 1,
+              canonical_order_value: 1,
+              canonical_freight_value: 1,
+              source_quote_snapshot: 1,
+              canonical_product_value: 1,
+              lead_time_text: 1,
+              created_via_website_manual_at: 1,
               is_shipped: 1,
               status: 1,
               Due_date: 1,
@@ -970,12 +1414,14 @@ export function registerOrdersRoutes(app, deps) {
               Cut_list: 1,
               Cut_list_cached: 1,
               Cut_list_source: 1,
+              cut_list_documents: 1,
               amountOwed: 1,
               billBalanceAmount: 1,
               billAmount: 1,
               billedAmount: 1,
               invoiceNumber: 1,
               invoiceAmount: 1,
+              website_calculated_order_total: 1,
               invoice_pdf_cached_url: 1,
               invoice_pdf_file_name: 1,
               paidInFull: 1,
@@ -1003,6 +1449,10 @@ export function registerOrdersRoutes(app, deps) {
               deposit_request_name: 1,
               order_confirmation_url: 1,
               order_confirmation_name: 1,
+              work_order_url: 1,
+              work_order_name: 1,
+              proforma_invoice_url: 1,
+              proforma_invoice_name: 1,
               qb_project_id: 1,
               qb_project_name: 1,
               qb_project_ids: 1,
@@ -1031,8 +1481,11 @@ export function registerOrdersRoutes(app, deps) {
       )?.quickbooks_synced_at
       const laborLookups = await getLaborTotalsLookups(entriesCollection, workersCollection)
 
-      const rows = unifiedOrderDocuments.map((doc) => mapUnifiedOrderDocumentToOverviewRow(doc, laborLookups))
-      attachFamilyRollups(rows)
+      const unredactedRows = unifiedOrderDocuments.map(
+        (doc) => mapUnifiedOrderDocumentToOverviewRow(doc, laborLookups),
+      )
+      attachFamilyRollups(unredactedRows)
+      const rows = unredactedRows.map((row) => redactOrderForAccess(row, access))
       const shippedCount = rows.filter((row) => row.isShipped).length
       const hazardCount = rows.filter((row) => Boolean(row.hazardReason)).length
       const mondayOnlyCount = rows.filter((row) => row.hasMondayRecord && !row.hasQuickBooksRecord).length
@@ -1067,6 +1520,14 @@ export function registerOrdersRoutes(app, deps) {
   // and serve the saved version.
   app.get('/api/orders/invoice/download', requireFirebaseAuth, async (req, res, next) => {
     try {
+      const access = getOrderAccess(req)
+
+      if (!access.canViewFullFinancials || access.isSalesRep) {
+        return res.status(403).json({
+          error: 'Only Admin users can open invoice documents.',
+        })
+      }
+
       const orderId = String(req.query?.orderId ?? '').trim()
       const orderNumber = String(req.query?.orderNumber ?? '').trim()
 
@@ -1371,6 +1832,14 @@ export function registerOrdersRoutes(app, deps) {
     requireFirebaseAuth,
     async (req, res, next) => {
       try {
+        const access = getOrderAccess(req)
+
+        if (access.isSalesRep) {
+          return res.status(403).json({
+            error: 'Sales Reps access their assigned work from the Sales page.',
+          })
+        }
+
         const summary = await refreshOrdersUnifiedCollection()
         const publicUser = toPublicAuthUser(req.authUser)
         const {
@@ -1462,9 +1931,9 @@ export function registerOrdersRoutes(app, deps) {
     pullLiveMondayProgressDetails,
     refreshOrdersUnifiedCollection,
     requireFirebaseAuth,
-    requireManagerOrAdminRole,
     resolveMondayOrderContext,
     syncMondayProgressDetailsToCollections,
+    toPublicAuthUser,
     updateMondayLinkColumnValue,
   })
 
@@ -1506,6 +1975,7 @@ export function registerOrdersRoutes(app, deps) {
     requireFirebaseAuth,
     async (req, res, next) => {
       try {
+        const access = getOrderAccess(req)
         const mondayItemId = String(req.query?.mondayItemId ?? '').trim()
         const jobNumber = String(req.query?.jobNumber ?? '').trim()
         const orderName = String(req.query?.orderName ?? '').trim()
@@ -1660,6 +2130,7 @@ export function registerOrdersRoutes(app, deps) {
                     monday_item_id: 1,
                     Monday_url: 1,
                     Monday_status: 1,
+                    job_status: 1,
                     order_name: 1,
                     ship_to: 1,
                     ship_notes: 1,
@@ -1670,12 +2141,38 @@ export function registerOrdersRoutes(app, deps) {
                     signed_bol: 1,
                     Signed_BOL: 1,
                     Signed_BOL_source: 1,
+                    customer_signed_bol: 1,
+                    Customer_Signed_BOL: 1,
+                    Customer_Signed_BOL_source: 1,
+                    change_version: 1,
+                    change_order_status: 1,
+                    change_order_url: 1,
+                    change_order_name: 1,
+                    pending_order_change: 1,
+                    customer_signed_change_order: 1,
+                    customer_signed_change_order_url: 1,
+                    Customer_Signed_Change_Order: 1,
                     inspection_sheet: 1,
                     Inspection_sheet: 1,
                     Inspection_sheet_source: 1,
                     po_number: 1,
+                    bench: 1,
                     monday_notes: 1,
                     monday_description: 1,
+                    orderValue: 1,
+                    freightValue: 1,
+                    canonical_product_gross_value: 1,
+                    discount_percent: 1,
+                    discount_amount: 1,
+                    discount_scope: 1,
+                    discount_freight_amount: 1,
+                    canonical_freight_gross_value: 1,
+                    sales_rep: 1,
+                    deposit_received_date: 1,
+                    canonical_order_value: 1,
+                    canonical_freight_value: 1,
+                    source_quote_snapshot: 1,
+                    created_via_website_manual_at: 1,
                     is_shipped: 1,
                     status: 1,
                     Due_date: 1,
@@ -1689,16 +2186,22 @@ export function registerOrdersRoutes(app, deps) {
                     Cut_list: 1,
                     Cut_list_cached: 1,
                     Cut_list_source: 1,
+                    cut_list_documents: 1,
                     deposit_request_url: 1,
                     deposit_request_name: 1,
                     order_confirmation_url: 1,
                     order_confirmation_name: 1,
+                    work_order_url: 1,
+                    work_order_name: 1,
+                    proforma_invoice_url: 1,
+                    proforma_invoice_name: 1,
                     amountOwed: 1,
                     billBalanceAmount: 1,
                     billAmount: 1,
                     billedAmount: 1,
                     invoiceNumber: 1,
                     invoiceAmount: 1,
+                    website_calculated_order_total: 1,
                     paidInFull: 1,
                     poAmount: 1,
                     shipped_at: 1,
@@ -1794,10 +2297,38 @@ export function registerOrdersRoutes(app, deps) {
             updatedAt: String(progress?.updatedAt ?? '').trim() || null,
           }))
 
+        await recoverStoredCutListDocuments(
+          unifiedOrderDocument,
+          ordersUnifiedCollection,
+        )
+
         const latestManagerStatus = managerHistory[0] ?? null
         const normalizedOrderDetails = unifiedOrderDocument
-          ? mapUnifiedOrderDocumentToOverviewRow(unifiedOrderDocument, null)
+          ? redactOrderForAccess(
+            mapUnifiedOrderDocumentToOverviewRow(unifiedOrderDocument, null),
+            access,
+          )
           : null
+        const visibleEntries = access.isShopWorker
+          ? []
+          : matchedEntries.map((entry) => ({
+            ...entry,
+            payRate: access.canViewLaborCost ? entry.payRate : null,
+            rate: access.canViewLaborCost ? entry.rate : null,
+            laborCost: access.canViewLaborCost ? entry.laborCost : null,
+          }))
+        const visibleWorkerTotals = access.isShopWorker
+          ? []
+          : [...workerTotalsById.values()]
+            .map((worker) => ({
+              ...worker,
+              totalLaborCost: access.canViewLaborCost ? worker.totalLaborCost : null,
+            }))
+            .sort(
+              (left, right) =>
+                right.totalHours - left.totalHours
+                || left.workerName.localeCompare(right.workerName),
+            )
 
         return res.json({
           generatedAt: new Date().toISOString(),
@@ -1816,19 +2347,15 @@ export function registerOrdersRoutes(app, deps) {
             latestManagerReadyUpdatedAt: latestManagerStatus?.updatedAt ?? null,
           },
           summary: {
-            entryCount: matchedEntries.length,
-            workerCount: workerTotalsById.size,
-            totalRegularHours,
-            totalOvertimeHours,
-            totalHours,
-            totalLaborCost,
+            entryCount: access.isShopWorker ? 0 : matchedEntries.length,
+            workerCount: access.isShopWorker ? 0 : workerTotalsById.size,
+            totalRegularHours: access.isShopWorker ? 0 : totalRegularHours,
+            totalOvertimeHours: access.isShopWorker ? 0 : totalOvertimeHours,
+            totalHours: access.isShopWorker ? 0 : totalHours,
+            totalLaborCost: access.canViewLaborCost ? totalLaborCost : null,
           },
-          workers: [...workerTotalsById.values()].sort(
-            (left, right) =>
-              right.totalHours - left.totalHours
-              || left.workerName.localeCompare(right.workerName),
-          ),
-          entries: matchedEntries,
+          workers: visibleWorkerTotals,
+          entries: visibleEntries,
           managerHistory,
         })
       } catch (error) {

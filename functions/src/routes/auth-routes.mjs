@@ -5,10 +5,12 @@ export function registerAuthRoutes(app, deps) {
     authAccessTimeZoneNewJersey,
     authApprovalApproved,
     authApprovalPending,
+    authClientAccessModeAppOnly,
     authClientAccessModeWebOnly,
     authClientAccessModeWebAndApp,
     authRoleAdmin,
     authRoleSalesRep,
+    authRoleShopWorker,
     authRoleStandard,
     ensureWorkersHaveWorkerNumbers,
     extractRequestIpAddress,
@@ -498,7 +500,7 @@ app.patch('/api/auth/users/:uid/approval', requireFirebaseAuth, requireAdminRole
     const role = normalizeAuthRole(req.body?.role)
 
     if (!role) {
-      return res.status(400).json({ error: "role must be 'standard', 'manager', 'sales_rep', or 'admin'." })
+      return res.status(400).json({ error: "role must be 'shop_worker', 'office_worker', 'manager', 'sales_rep', or 'admin'." })
     }
 
     const existingUser = await requireUserByUid(req, res)
@@ -526,7 +528,15 @@ app.patch('/api/auth/users/:uid/approval', requireFirebaseAuth, requireAdminRole
         ? {
           clientAccessMode: authClientAccessModeWebOnly,
         }
-        : {}),
+        : !isOwnerTarget && role === authRoleShopWorker
+          ? {
+            clientAccessMode: authClientAccessModeAppOnly,
+          }
+          : !isOwnerTarget
+            ? {
+              clientAccessMode: authClientAccessModeWebAndApp,
+            }
+            : {}),
       ...(!isOwnerTarget && role !== authRoleSalesRep
         ? {
           linkedSalesRepId: null,
@@ -559,7 +569,13 @@ app.patch('/api/auth/users/:uid/client-access', requireFirebaseAuth, requireAdmi
     }
 
     return updateUserAndRespond(res, targetUid, {
-      clientAccessMode: existingPublicUser?.isOwner ? authClientAccessModeWebAndApp : requestedAccessMode,
+      clientAccessMode: existingPublicUser?.isOwner
+        ? authClientAccessModeWebAndApp
+        : existingPublicUser?.isShopWorker
+          ? authClientAccessModeAppOnly
+          : existingPublicUser?.isSalesRep
+            ? authClientAccessModeWebOnly
+            : requestedAccessMode,
     })
   } catch (error) {
     next(error)

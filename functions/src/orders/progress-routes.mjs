@@ -645,7 +645,6 @@ export function registerOrderProgressRoutes(app, {
   app.post(
     '/api/orders/monday/order-number',
     requireFirebaseAuth,
-    requireManagerOrAdminRole,
     async (req, res, next) => {
       try {
         const mondayItemId = String(req.body?.mondayItemId ?? '').trim()
@@ -656,6 +655,12 @@ export function registerOrderProgressRoutes(app, {
         if (!publicUser?.isApproved) {
           return res.status(403).json({
             error: 'Approved access is required.',
+          })
+        }
+
+        if (!publicUser.isAdmin && !publicUser.isManager && !publicUser.isOfficeWorker) {
+          return res.status(403).json({
+            error: 'Only office workers, managers, and admins can edit an order number.',
           })
         }
 
@@ -709,6 +714,13 @@ export function registerOrderProgressRoutes(app, {
         const liveOrder = Array.isArray(liveSnapshot?.orders)
           ? liveSnapshot.orders[0]
           : null
+
+        if (existingOrderDocument?.has_quickbooks_record) {
+          return res.status(409).json({
+            error: 'This order already has a QuickBooks project. Change it in QuickBooks first, then refresh the Orders page.',
+            code: 'ORDER_NUMBER_LOCKED_BY_QUICKBOOKS',
+          })
+        }
 
         if (!liveOrder) {
           return res.status(404).json({
@@ -1022,19 +1034,30 @@ export function registerOrderProgressRoutes(app, {
     },
   )
 
-  // POST /api/orders/monday/order-details — manager-only edit endpoint for
-  // key order fields that must write through to Monday first.
+  // POST /api/orders/monday/order-details — office/manager/admin edit endpoint
+  // for key order fields that must write through to Monday first.
   app.post(
     '/api/orders/monday/order-details',
     requireFirebaseAuth,
-    requireManagerOrAdminRole,
     async (req, res, next) => {
       try {
+        const publicUser = toPublicAuthUser(req.authUser)
+
+        if (
+          !publicUser?.isApproved
+          || (!publicUser.isAdmin && !publicUser.isManager && !publicUser.isOfficeWorker)
+        ) {
+          return res.status(403).json({
+            error: 'Only office workers, managers, and admins can edit order information.',
+          })
+        }
+
         const mondayItemId = String(req.body?.mondayItemId ?? '').trim()
         const hasOrderNameField = hasOwnField(req.body, 'orderName')
         const hasPoNumberField = hasOwnField(req.body, 'poNumber')
         const hasNotesField = hasOwnField(req.body, 'notes')
         const hasDescriptionField = hasOwnField(req.body, 'description')
+        const hasBenchField = hasOwnField(req.body, 'bench')
         const hasOrderDateField = hasOwnField(req.body, 'orderDate')
         const hasDueDateField =
           hasOwnField(req.body, 'dueDate')
@@ -1052,6 +1075,7 @@ export function registerOrderProgressRoutes(app, {
           && !hasPoNumberField
           && !hasNotesField
           && !hasDescriptionField
+          && !hasBenchField
           && !hasOrderDateField
           && !hasDueDateField
           && !hasLeadTimeDaysField
@@ -1062,10 +1086,17 @@ export function registerOrderProgressRoutes(app, {
           })
         }
 
+        if (hasOrderDateField) {
+          return res.status(403).json({
+            error: 'Order date is read-only and must be changed at its source.',
+          })
+        }
+
         const rawOrderNameInput = String(req.body?.orderName ?? '').trim()
         const rawPoNumberInput = String(req.body?.poNumber ?? '').trim()
-  const rawNotesInput = String(req.body?.notes ?? '').trim()
+        const rawNotesInput = String(req.body?.notes ?? '').trim()
         const rawDescriptionInput = String(req.body?.description ?? '').trim()
+        const rawBenchInput = String(req.body?.bench ?? '').trim()
         const rawOrderDateInput = String(req.body?.orderDate ?? '').trim()
         const rawDueDateInput = String(
           hasOwnField(req.body, 'dueDate')
@@ -1079,8 +1110,9 @@ export function registerOrderProgressRoutes(app, {
 
         const requestedOrderName = normalizeOptionalShortText(rawOrderNameInput, 250)
         const requestedPoNumber = normalizeOptionalShortText(rawPoNumberInput, 120) || ''
-  const requestedNotes = normalizeOptionalShortText(rawNotesInput, 2000) || ''
+        const requestedNotes = normalizeOptionalShortText(rawNotesInput, 2000) || ''
         const requestedDescription = normalizeOptionalShortText(rawDescriptionInput, 2000) || ''
+        const requestedBench = normalizeOptionalShortText(rawBenchInput, 500) || ''
         const requestedOrderDate = normalizeIsoDateInput(rawOrderDateInput)
         const requestedDueDate = normalizeIsoDateInput(rawDueDateInput)
         const requestedPodDate = normalizeIsoDateInput(rawPodDateInput)
@@ -1151,7 +1183,8 @@ export function registerOrderProgressRoutes(app, {
         }
 
         const poNumberColumnId = String(snapshot?.columnDetection?.poNumberColumnId ?? '').trim()
-  const notesColumnId = String(snapshot?.columnDetection?.notesColumnId ?? '').trim()
+        const notesColumnId = String(snapshot?.columnDetection?.notesColumnId ?? '').trim()
+        const benchColumnId = String(snapshot?.columnDetection?.benchColumnId ?? '').trim()
         const descriptionColumnId = String(snapshot?.columnDetection?.descriptionColumnId ?? '').trim()
         const orderDateColumnId = String(snapshot?.columnDetection?.orderDateColumnId ?? '').trim()
         const dueDateColumnId = String(snapshot?.columnDetection?.dueDateColumnId ?? '').trim()
@@ -1208,6 +1241,21 @@ export function registerOrderProgressRoutes(app, {
             itemId: mondayItemId,
             columnId: descriptionColumnId,
             textValue: requestedDescription,
+          })
+        }
+
+        if (hasBenchField) {
+          if (!benchColumnId) {
+            return res.status(409).json({
+              error: 'Bench column could not be resolved for this board.',
+            })
+          }
+
+          await updateMondayItemTextColumn({
+            boardId: context.boardId,
+            itemId: mondayItemId,
+            columnId: benchColumnId,
+            textValue: requestedBench,
           })
         }
 
@@ -1301,6 +1349,7 @@ export function registerOrderProgressRoutes(app, {
         const refreshedPoNumber = normalizeOptionalShortText(refreshedLiveOrder?.poNumber, 120) || null
         const refreshedNotes = normalizeOptionalShortText(refreshedLiveOrder?.notes, 2000) || null
         const refreshedDescription = normalizeOptionalShortText(refreshedLiveOrder?.description, 2000) || null
+        const refreshedBench = normalizeOptionalShortText(refreshedLiveOrder?.bench, 500) || null
         const refreshedOrderDate = normalizeIsoDateInput(refreshedLiveOrder?.orderDate) || null
         const refreshedDueDate = normalizeIsoDateInput(refreshedLiveOrder?.dueDate) || null
         const refreshedShippedAt = String(refreshedLiveOrder?.shippedAt ?? '').trim() || null
@@ -1322,6 +1371,7 @@ export function registerOrderProgressRoutes(app, {
                 poNumber: refreshedPoNumber,
                 notes: refreshedNotes,
                 description: refreshedDescription,
+                bench: refreshedBench,
                 orderDate: refreshedOrderDate,
                 dueDate: refreshedDueDate,
                 leadTimeDays: refreshedLeadTimeDays,
@@ -1349,6 +1399,7 @@ export function registerOrderProgressRoutes(app, {
                 po_number: refreshedPoNumber,
                 monday_notes: refreshedNotes,
                 monday_description: refreshedDescription,
+                bench: refreshedBench,
                 order_date: refreshedOrderDate,
                 Due_date: refreshedDueDate,
                 Lead_time_days: refreshedLeadTimeDays,
@@ -1381,6 +1432,7 @@ export function registerOrderProgressRoutes(app, {
               po_number: 1,
               monday_notes: 1,
               monday_description: 1,
+              bench: 1,
               order_date: 1,
               Due_date: 1,
               Lead_time_days: 1,
@@ -1402,6 +1454,9 @@ export function registerOrderProgressRoutes(app, {
             description:
               String(updatedOrderDocument?.monday_description ?? '').trim()
               || refreshedDescription,
+            bench:
+              String(updatedOrderDocument?.bench ?? '').trim()
+              || refreshedBench,
             orderDate: String(updatedOrderDocument?.order_date ?? '').trim() || refreshedOrderDate,
             dueDate: String(updatedOrderDocument?.Due_date ?? '').trim() || refreshedDueDate,
             leadTimeDays: Number.isFinite(Number(updatedOrderDocument?.Lead_time_days))

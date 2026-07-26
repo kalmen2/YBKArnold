@@ -99,10 +99,11 @@ export type MobileTimesheetStage = {
 
 export type MobileAuthUser = {
   isApproved: boolean
-  role: 'standard' | 'manager' | 'sales_rep' | 'admin'
+  role: 'standard' | 'manager' | 'sales_rep' | 'shop_worker' | 'admin'
   isAdmin: boolean
   isManager: boolean
   isSalesRep?: boolean
+  isShopWorker?: boolean
 }
 
 export type MobileManagerOrderProgress = {

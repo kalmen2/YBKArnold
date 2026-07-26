@@ -253,6 +253,79 @@ function existingShareIds(model) {
   return [...new Set(ids.map((value) => text(value, 500)).filter(Boolean))]
 }
 
+function requestedRevisionNumber(request) {
+  const rawValue = request?.body?.revisionNumber ?? request?.query?.revisionNumber
+  if (rawValue === undefined || rawValue === null || rawValue === '') return null
+  const parsed = Number.parseInt(String(rawValue), 10)
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : null
+}
+
+function quoteAtRevision(quote, revisionNumber) {
+  if (revisionNumber === null) return quote
+  const revision = (Array.isArray(quote?.revisions) ? quote.revisions : []).find(
+    (entry) => Number(entry?.revisionNumber) === revisionNumber,
+  )
+  if (!revision) return null
+  return {
+    ...quote,
+    ...revision,
+    id: quote.id,
+    documents: quote.documents,
+    revisions: quote.revisions,
+    activeRevisionNumber: quote.activeRevisionNumber,
+  }
+}
+
+async function setQuoteRevisionModel(crmQuotesCollection, quote, quoteId, revisionNumber, model, updatedAt) {
+  if (revisionNumber === null || !Array.isArray(quote?.revisions)) {
+    await crmQuotesCollection.updateOne(
+      { id: quoteId },
+      { $set: { trimble3d: model, updatedAt } },
+    )
+    return
+  }
+
+  const setUpdates = {
+    'revisions.$[revision].trimble3d': model,
+    'revisions.$[revision].updatedAt': updatedAt,
+    updatedAt,
+  }
+  if (Number(quote.activeRevisionNumber) === revisionNumber) {
+    setUpdates.trimble3d = model
+  }
+  await crmQuotesCollection.updateOne(
+    { id: quoteId },
+    { $set: setUpdates },
+    { arrayFilters: [{ 'revision.revisionNumber': revisionNumber }] },
+  )
+}
+
+async function unsetQuoteRevisionModel(crmQuotesCollection, quote, quoteId, revisionNumber, updatedAt) {
+  if (revisionNumber === null || !Array.isArray(quote?.revisions)) {
+    await crmQuotesCollection.updateOne(
+      { id: quoteId },
+      { $unset: { trimble3d: '' }, $set: { updatedAt } },
+    )
+    return
+  }
+
+  const unsetUpdates = { 'revisions.$[revision].trimble3d': '' }
+  if (Number(quote.activeRevisionNumber) === revisionNumber) {
+    unsetUpdates.trimble3d = ''
+  }
+  await crmQuotesCollection.updateOne(
+    { id: quoteId },
+    {
+      $unset: unsetUpdates,
+      $set: {
+        'revisions.$[revision].updatedAt': updatedAt,
+        updatedAt,
+      },
+    },
+    { arrayFilters: [{ 'revision.revisionNumber': revisionNumber }] },
+  )
+}
+
 async function removeTrimbleShares(accessToken, shareIds) {
   await Promise.all(shareIds.map(async (shareId) => {
     const response = await fetch(`${trimbleApiBaseUrl}/shares/${encodeURIComponent(shareId)}`, {
@@ -264,7 +337,7 @@ async function removeTrimbleShares(accessToken, shareIds) {
   }))
 }
 
-async function publishFilesForQuote({ accessToken, authUser, crmQuotesCollection, files, quote, quoteId }) {
+async function publishFilesForQuote({ accessToken, authUser, crmQuotesCollection, files, quote, rootQuote, quoteId, revisionNumber = null }) {
   const previousModel = quote?.trimble3d
   const createdShares = []
 
@@ -317,9 +390,13 @@ async function publishFilesForQuote({ accessToken, authUser, crmQuotesCollection
     uploadedByUid: text(authUser?.uid, 200) || null,
     uploadedByEmail: text(authUser?.email, 320) || null,
   }
-  await crmQuotesCollection.updateOne(
-    { id: quoteId },
-    { $set: { trimble3d: model, updatedAt: uploadedAt } },
+  await setQuoteRevisionModel(
+    crmQuotesCollection,
+    rootQuote || quote,
+    quoteId,
+    revisionNumber,
+    model,
+    uploadedAt,
   )
 
   const newShareIds = new Set(createdShares.map((entry) => entry.shareId))
@@ -398,6 +475,8 @@ async function commitUploadAndPublishViewer({
   quoteId,
   uploadId,
   authUser,
+  rootQuote,
+  revisionNumber,
 }) {
   const file = await trimbleRequest('/files/fs/commit', accessToken, {
     method: 'POST',
@@ -417,7 +496,9 @@ async function commitUploadAndPublishViewer({
       label: modelViewLabel(pending.fileName),
     }],
     quote,
+    rootQuote,
     quoteId,
+    revisionNumber,
   })
 }
 
@@ -530,8 +611,11 @@ export function registerTrimbleRoutes(app, deps) {
       }
 
       const { crmQuotesCollection, trimbleOauthConnectionsCollection } = await getCollections()
-      const quote = await crmQuotesCollection.findOne({ id: quoteId }, { projection: { _id: 0 } })
-      if (!quote) return res.status(404).json({ error: 'Quote not found.' })
+      const rootQuote = await crmQuotesCollection.findOne({ id: quoteId }, { projection: { _id: 0 } })
+      if (!rootQuote) return res.status(404).json({ error: 'Quote not found.' })
+      const revisionNumber = requestedRevisionNumber(req)
+      const quote = quoteAtRevision(rootQuote, revisionNumber)
+      if (!quote) return res.status(404).json({ error: 'Quote revision not found.' })
 
       const { accessToken } = await accessTokenFor(trimbleOauthConnectionsCollection)
       const project = await resolveProject(accessToken, trimbleConfig().projectName)
@@ -551,7 +635,14 @@ export function registerTrimbleRoutes(app, deps) {
         createdAt: nowIso(),
         createdByUid: text(req.authUser?.uid, 200) || null,
       }
-      await crmQuotesCollection.updateOne({ id: quoteId }, { $set: { 'trimble3d.pendingUpload': pendingUpload, updatedAt: nowIso() } })
+      await setQuoteRevisionModel(
+        crmQuotesCollection,
+        rootQuote,
+        quoteId,
+        revisionNumber,
+        { ...(quote.trimble3d || {}), pendingUpload },
+        nowIso(),
+      )
       return res.json({ uploadId: upload.uploadId, uploadUrl: upload.uploadURL })
     } catch (error) {
       next(error)
@@ -563,8 +654,11 @@ export function registerTrimbleRoutes(app, deps) {
       const quoteId = text(req.params.quoteId, 200)
       const uploadId = text(req.body?.uploadId, 4000)
       const { crmQuotesCollection, trimbleOauthConnectionsCollection } = await getCollections()
-      const quote = await crmQuotesCollection.findOne({ id: quoteId }, { projection: { _id: 0 } })
-      if (!quote) return res.status(404).json({ error: 'Quote not found.' })
+      const rootQuote = await crmQuotesCollection.findOne({ id: quoteId }, { projection: { _id: 0 } })
+      if (!rootQuote) return res.status(404).json({ error: 'Quote not found.' })
+      const revisionNumber = requestedRevisionNumber(req)
+      const quote = quoteAtRevision(rootQuote, revisionNumber)
+      if (!quote) return res.status(404).json({ error: 'Quote revision not found.' })
       const pending = quote?.trimble3d?.pendingUpload
       if (!uploadId || uploadId !== pending?.uploadId) return res.status(409).json({ error: 'The model upload session is no longer valid.' })
 
@@ -575,7 +669,9 @@ export function registerTrimbleRoutes(app, deps) {
         crmQuotesCollection,
         pending,
         quote,
+        rootQuote,
         quoteId,
+        revisionNumber,
         uploadId,
       })
       return res.json({ model: safeModelSummary(model) })
@@ -590,8 +686,11 @@ export function registerTrimbleRoutes(app, deps) {
       const documentUrl = text(req.body?.documentUrl, 4000)
       const requestedName = text(req.body?.fileName, 500)
       const { crmQuotesCollection, trimbleOauthConnectionsCollection } = await getCollections()
-      const quote = await crmQuotesCollection.findOne({ id: quoteId }, { projection: { _id: 0 } })
-      if (!quote) return res.status(404).json({ error: 'Quote not found.' })
+      const rootQuote = await crmQuotesCollection.findOne({ id: quoteId }, { projection: { _id: 0 } })
+      if (!rootQuote) return res.status(404).json({ error: 'Quote not found.' })
+      const revisionNumber = requestedRevisionNumber(req)
+      const quote = quoteAtRevision(rootQuote, revisionNumber)
+      if (!quote) return res.status(404).json({ error: 'Quote revision not found.' })
 
       const storedDocument = (Array.isArray(quote.documents) ? quote.documents : []).find(
         (document) => text(document?.url, 4000) === documentUrl,
@@ -618,7 +717,9 @@ export function registerTrimbleRoutes(app, deps) {
         crmQuotesCollection,
         files: [{ ...uploadedFile, label: modelViewLabel(fileName) }],
         quote,
+        rootQuote,
         quoteId,
+        revisionNumber,
       })
       return res.json({ model: safeModelSummary(model) })
     } catch (error) {
@@ -635,9 +736,12 @@ export function registerTrimbleRoutes(app, deps) {
       }
 
       const { crmQuotesCollection, trimbleOauthConnectionsCollection } = await getCollections()
-      const quote = await crmQuotesCollection.findOne({ id: quoteId }, { projection: { _id: 0 } })
-      if (!quote) return res.status(404).json({ error: 'Quote not found.' })
-      const quoteDocuments = Array.isArray(quote.documents) ? quote.documents : []
+      const rootQuote = await crmQuotesCollection.findOne({ id: quoteId }, { projection: { _id: 0 } })
+      if (!rootQuote) return res.status(404).json({ error: 'Quote not found.' })
+      const revisionNumber = requestedRevisionNumber(req)
+      const quote = quoteAtRevision(rootQuote, revisionNumber)
+      if (!quote) return res.status(404).json({ error: 'Quote revision not found.' })
+      const quoteDocuments = Array.isArray(rootQuote.documents) ? rootQuote.documents : []
       const seenUrls = new Set()
       const selections = []
 
@@ -678,7 +782,9 @@ export function registerTrimbleRoutes(app, deps) {
         crmQuotesCollection,
         files: uploadedFiles,
         quote,
+        rootQuote,
         quoteId,
+        revisionNumber,
       })
       return res.json({ model: safeModelSummary(model) })
     } catch (error) {
@@ -690,14 +796,23 @@ export function registerTrimbleRoutes(app, deps) {
     try {
       const quoteId = text(req.params.quoteId, 200)
       const { crmQuotesCollection, trimbleOauthConnectionsCollection } = await getCollections()
-      const quote = await crmQuotesCollection.findOne({ id: quoteId }, { projection: { _id: 0, trimble3d: 1 } })
-      if (!quote) return res.status(404).json({ error: 'Quote not found.' })
+      const rootQuote = await crmQuotesCollection.findOne({ id: quoteId }, { projection: { _id: 0 } })
+      if (!rootQuote) return res.status(404).json({ error: 'Quote not found.' })
+      const revisionNumber = requestedRevisionNumber(req)
+      const quote = quoteAtRevision(rootQuote, revisionNumber)
+      if (!quote) return res.status(404).json({ error: 'Quote revision not found.' })
       const shareIds = existingShareIds(quote.trimble3d)
       if (shareIds.length) {
         const { accessToken } = await accessTokenFor(trimbleOauthConnectionsCollection)
         await removeTrimbleShares(accessToken, shareIds)
       }
-      await crmQuotesCollection.updateOne({ id: quoteId }, { $unset: { trimble3d: '' }, $set: { updatedAt: nowIso() } })
+      await unsetQuoteRevisionModel(
+        crmQuotesCollection,
+        rootQuote,
+        quoteId,
+        revisionNumber,
+        nowIso(),
+      )
       return res.json({ ok: true })
     } catch (error) {
       next(error)
@@ -708,11 +823,22 @@ export function registerTrimbleRoutes(app, deps) {
     try {
       const slug = text(req.params.slug, 200)
       const { authUsersCollection, crmQuotesCollection, mobileAlertsCollection } = await getCollections()
-      const quote = await crmQuotesCollection.findOne(
-        { 'trimble3d.publicSlug': slug, 'trimble3d.status': 'ready' },
-        { projection: { _id: 0, id: 1, quoteNumber: 1, title: 1, companyName: 1, dealerName: 1, salesRep: 1, opportunityDate: 1, sentAt: 1, createdAt: 1, lastFollowedUpAt: 1, trimble3d: 1 } },
+      const rootQuote = await crmQuotesCollection.findOne(
+        {
+          $or: [
+            { 'trimble3d.publicSlug': slug, 'trimble3d.status': 'ready' },
+            { revisions: { $elemMatch: { 'trimble3d.publicSlug': slug, 'trimble3d.status': 'ready' } } },
+          ],
+        },
+        { projection: { _id: 0, id: 1, quoteNumber: 1, title: 1, companyName: 1, dealerName: 1, salesRep: 1, opportunityDate: 1, sentAt: 1, createdAt: 1, lastFollowedUpAt: 1, trimble3d: 1, revisions: 1 } },
       )
-      if (!quote) return res.status(404).json({ error: 'This 3D model link is unavailable.' })
+      if (!rootQuote) return res.status(404).json({ error: 'This 3D model link is unavailable.' })
+      const matchingRevision = (Array.isArray(rootQuote.revisions) ? rootQuote.revisions : []).find(
+        (revision) => revision?.trimble3d?.publicSlug === slug && revision?.trimble3d?.status === 'ready',
+      )
+      const quote = matchingRevision
+        ? { ...rootQuote, ...matchingRevision, id: rootQuote.id, revisions: rootQuote.revisions }
+        : rootQuote
       const openedAt = nowIso()
       const activityId = randomBytes(16).toString('hex')
       const userAgent = text(req.get('user-agent'), 500) || null

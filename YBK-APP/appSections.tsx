@@ -282,6 +282,7 @@ export function OrdersSection({
   ordersPage,
   ordersTotalPages,
   showOrderViewTabs,
+  hidePoNumber,
   onPreviousOrdersPage,
   onNextOrdersPage,
   onOpenOrderDetails,
@@ -308,6 +309,7 @@ export function OrdersSection({
   ordersPage: number
   ordersTotalPages: number
   showOrderViewTabs: boolean
+  hidePoNumber: boolean
   onPreviousOrdersPage: () => void
   onNextOrdersPage: () => void
   onOpenOrderDetails: (order: DashboardOrder) => void
@@ -455,7 +457,9 @@ export function OrdersSection({
                       || String(order.id ?? '').trim()
                     const poFromNameMatch = /\bP\.?\s*O\.?\s*#?\s*[:-]?\s*([A-Za-z0-9-]+)/i.exec(String(order.name ?? ''))
                     const poFromName = String(poFromNameMatch?.[1] ?? '').trim()
-                    const resolvedPoNumber = cachedPoNumber || inlinePoNumber || poFromName || ''
+                    const resolvedPoNumber = hidePoNumber
+                      ? ''
+                      : cachedPoNumber || inlinePoNumber || poFromName || ''
                     const descriptionText = String(order.name ?? '').trim() || `${t('Order', 'Orden')} ${String(order.id ?? '').trim()}`
 
                     return (

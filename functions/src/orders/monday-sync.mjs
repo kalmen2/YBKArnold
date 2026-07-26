@@ -327,7 +327,6 @@ export function createMondaySyncHelpers(deps) {
     const mondayUpdatedAt = String(liveOrder?.updatedAt ?? '').trim() || now
     const isShipped = Boolean(liveOrder?.isDone || liveOrder?.shippedAt)
     const isProductionStarted = Boolean(isShipped || liveOrder?.isProductionStarted)
-    const scheduleEligible = isShipped || isProductionStarted
     const liveShippedAt = String(liveOrder?.shippedAt ?? '').trim() || null
     const shippedSetFields = liveShippedAt
       ? {
@@ -360,14 +359,10 @@ export function createMondaySyncHelpers(deps) {
               ? Number(liveOrder.progressPercent)
               : null,
             orderDate: String(liveOrder?.orderDate ?? '').trim() || null,
-            dueDate: scheduleEligible ? (String(liveOrder?.dueDate ?? '').trim() || null) : null,
-            computedDueDate: scheduleEligible
-              ? (String(liveOrder?.computedDueDate ?? '').trim() || null)
-              : null,
-            effectiveDueDate: scheduleEligible
-              ? (String(liveOrder?.effectiveDueDate ?? '').trim() || null)
-              : null,
-            leadTimeDays: scheduleEligible && Number.isFinite(Number(liveOrder?.leadTimeDays))
+            dueDate: String(liveOrder?.dueDate ?? '').trim() || null,
+            computedDueDate: String(liveOrder?.computedDueDate ?? '').trim() || null,
+            effectiveDueDate: String(liveOrder?.effectiveDueDate ?? '').trim() || null,
+            leadTimeDays: Number.isFinite(Number(liveOrder?.leadTimeDays))
               ? Number(liveOrder.leadTimeDays)
               : null,
             shippedAt: String(liveOrder?.shippedAt ?? '').trim() || null,
@@ -378,6 +373,7 @@ export function createMondaySyncHelpers(deps) {
               ? Number(liveOrder.daysLate)
               : 0,
             mondayItemUrl: String(liveOrder?.itemUrl ?? '').trim() || null,
+            bench: String(liveOrder?.bench ?? '').trim() || null,
             mondayUpdatedAt,
             updatedAt: now,
             lastSeenAt: now,
@@ -398,19 +394,19 @@ export function createMondaySyncHelpers(deps) {
             monday_board_name: boardName,
             Monday_url: String(liveOrder?.itemUrl ?? '').trim() || null,
             Monday_status: isShipped ? 'Shipped' : mondayStatus,
+            job_status: isShipped ? 'Shipped' : mondayStatus,
             is_shipped: isShipped,
             is_production_started: isProductionStarted,
             ...shippedSetFields,
-            Due_date: scheduleEligible
-              ? (String(liveOrder?.dueDate ?? '').trim() || null)
-              : null,
-            Lead_time_days: scheduleEligible && Number.isFinite(Number(liveOrder?.leadTimeDays))
+            Due_date: String(liveOrder?.dueDate ?? '').trim() || null,
+            Lead_time_days: Number.isFinite(Number(liveOrder?.leadTimeDays))
               ? Number(liveOrder.leadTimeDays)
               : null,
             progress_percent: Number.isFinite(Number(liveOrder?.progressPercent))
               ? Number(liveOrder.progressPercent)
               : null,
             progress_status_details: progressStatusDetails,
+            bench: String(liveOrder?.bench ?? '').trim() || null,
             order_date: String(liveOrder?.orderDate ?? '').trim() || null,
             monday_updated_at: mondayUpdatedAt,
             updatedAt: now,

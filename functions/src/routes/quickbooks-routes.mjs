@@ -1100,8 +1100,8 @@ export function registerQuickBooksRoutes(app, deps) {
   const {
     getCollections,
     randomUUID,
+    requireAdminRole,
     requireFirebaseAuth,
-    requireManagerOrAdminRole,
   } = deps
 
   async function getQuickBooksCollections() {
@@ -1224,7 +1224,7 @@ export function registerQuickBooksRoutes(app, deps) {
     })
   }
 
-  app.get('/api/quickbooks/status', requireFirebaseAuth, requireManagerOrAdminRole, async (req, res, next) => {
+  app.get('/api/quickbooks/status', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
     try {
       const clientId = normalizeText(process.env.QUICKBOOKS_CLIENT_ID, 300)
       const clientSecret = normalizeText(process.env.QUICKBOOKS_CLIENT_SECRET, 300)
@@ -1267,7 +1267,7 @@ export function registerQuickBooksRoutes(app, deps) {
     }
   })
 
-  app.get('/api/quickbooks/oauth/start', requireFirebaseAuth, requireManagerOrAdminRole, async (req, res, next) => {
+  app.get('/api/quickbooks/oauth/start', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
     try {
       const quickBooksConfig = getQuickBooksConfig(req)
       const { quickBooksStatesCollection } = await getQuickBooksCollections()
@@ -1425,7 +1425,7 @@ export function registerQuickBooksRoutes(app, deps) {
     }
   })
 
-  app.get('/api/quickbooks/overview', requireFirebaseAuth, requireManagerOrAdminRole, async (req, res, next) => {
+  app.get('/api/quickbooks/overview', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
     try {
       const forceRefresh = String(req.query?.refresh ?? '').trim() === '1'
       const includeFullOverview = String(req.query?.full ?? '').trim() === '1'
@@ -2773,7 +2773,7 @@ export function registerQuickBooksRoutes(app, deps) {
     }
   })
 
-  app.get('/api/quickbooks/history', requireFirebaseAuth, requireManagerOrAdminRole, async (req, res, next) => {
+  app.get('/api/quickbooks/history', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
     try {
       const cachedOverview = await loadCachedQuickBooksOverview()
 

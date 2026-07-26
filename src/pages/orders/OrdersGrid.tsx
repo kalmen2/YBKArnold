@@ -8,10 +8,17 @@ import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded'
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
 import MoreVertRoundedIcon from '@mui/icons-material/MoreVertRounded'
 import LinkRoundedIcon from '@mui/icons-material/LinkRounded'
+import DragIndicatorRoundedIcon from '@mui/icons-material/DragIndicatorRounded'
+import RestartAltRoundedIcon from '@mui/icons-material/RestartAltRounded'
+import EditRoundedIcon from '@mui/icons-material/EditRounded'
+import SaveRoundedIcon from '@mui/icons-material/SaveRounded'
+import CloseRoundedIcon from '@mui/icons-material/CloseRounded'
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined'
 import {
   Alert,
   Box,
   Button,
+  Checkbox,
   Chip,
   CircularProgress,
   FormControl,
@@ -22,6 +29,7 @@ import {
   Popover,
   Select,
   Stack,
+  TextField,
   Tooltip,
   Typography,
 } from '@mui/material'
@@ -38,6 +46,7 @@ import {
   fetchOrdersJobDetails,
   fetchOrdersMondayProgressDetails,
   ordersJobDetailsQueryKey,
+  postOrdersOrderDetailsUpdate,
   type OrdersOverviewOrder,
   type OrdersOverviewResponse,
   postOrdersMondayProgressStatusUpdate,
@@ -124,19 +133,6 @@ function buildTrackedProgressStageStates(
       }
     })
     .filter((stage): stage is TrackedProgressStageState => Boolean(stage))
-}
-
-function resolveNewestTrackedStuckStageLabel(
-  progressStatusDetails: OrdersOverviewOrder['progressStatusDetails'] | null | undefined,
-) {
-  const stuckStages = buildTrackedProgressStageStates(progressStatusDetails)
-    .filter((stage) => stage.status === 'stuck')
-
-  if (stuckStages.length === 0) {
-    return null
-  }
-
-  return stuckStages[stuckStages.length - 1]?.label ?? null
 }
 
 function resolveNewestTrackedRowStatusLabel(
@@ -230,7 +226,6 @@ function resolveRowStatusVisual(rowStatus: string | null | undefined) {
   if (!rawStatus) {
     return {
       tone: 'neutral' as RowStatusVisualTone,
-      topLabel: 'Status',
       stageLabel: 'Open',
       isFinalReady: false,
     }
@@ -239,7 +234,6 @@ function resolveRowStatusVisual(rowStatus: string | null | undefined) {
   if (normalizedStatus === 'ready') {
     return {
       tone: 'finalReady' as RowStatusVisualTone,
-      topLabel: 'Ready',
       stageLabel: 'Ready',
       isFinalReady: true,
     }
@@ -252,23 +246,28 @@ function resolveRowStatusVisual(rowStatus: string | null | undefined) {
 
     return {
       tone: 'working' as RowStatusVisualTone,
-      topLabel: 'Working on it',
       stageLabel: stageLabel || rawStatus,
       isFinalReady: false,
     }
   }
 
-  if (normalizedStatus.endsWith(' stuck') || normalizedStatus.endsWith(' stock')) {
+  if (
+    normalizedStatus === 'stuck'
+    || normalizedStatus === 'stock'
+    || normalizedStatus.endsWith(' stuck')
+    || normalizedStatus.endsWith(' stock')
+  ) {
     const stuckSuffix = normalizedStatus.endsWith(' stock')
       ? ' stock'
-      : ' stuck'
-    const stageLabel = rawStatus
-      .slice(0, rawStatus.length - stuckSuffix.length)
-      .trim()
+      : normalizedStatus.endsWith(' stuck')
+        ? ' stuck'
+        : ''
+    const stageLabel = stuckSuffix
+      ? rawStatus.slice(0, rawStatus.length - stuckSuffix.length).trim()
+      : rawStatus
 
     return {
       tone: 'stuck' as RowStatusVisualTone,
-      topLabel: 'Stuck',
       stageLabel: stageLabel || rawStatus,
       isFinalReady: false,
     }
@@ -281,7 +280,6 @@ function resolveRowStatusVisual(rowStatus: string | null | undefined) {
 
     return {
       tone: 'stageReady' as RowStatusVisualTone,
-      topLabel: 'Ready',
       stageLabel: stageLabel || rawStatus,
       isFinalReady: false,
     }
@@ -289,7 +287,6 @@ function resolveRowStatusVisual(rowStatus: string | null | undefined) {
 
   return {
     tone: 'neutral' as RowStatusVisualTone,
-    topLabel: 'Status',
     stageLabel: rawStatus,
     isFinalReady: false,
   }
@@ -316,14 +313,11 @@ function resolveRowStatusPalette(tone: RowStatusVisualTone) {
 
   const stagePalette = tone === 'stuck'
     ? redPalette
-    : tone === 'finalReady'
+    : tone === 'finalReady' || tone === 'stageReady'
       ? greenPalette
       : defaultYellowPalette
 
-  return {
-    topText: '#1976d2',
-    ...stagePalette,
-  }
+  return stagePalette
 }
 
 function normalizeProgressStatusOptions(options: unknown) {
@@ -531,6 +525,10 @@ function resolveSourceLabel(order: OrdersOverviewOrder) {
 // "When does this order have to be ready?"
 //  - use only the explicit due date from Monday
 function resolveLeadTimeDueDate(order: OrdersOverviewOrder) {
+  if (order.warrantyIssueActive) {
+    return order.warrantyIssueLeadTimeDate || null
+  }
+
   return order.dueDate || null
 }
 
@@ -550,7 +548,7 @@ function daysUntil(isoDate: string | null) {
 }
 
 function resolveLeadTimeSortValue(order: OrdersOverviewOrder) {
-  if (order.isShipped) {
+  if (order.isShipped && !order.warrantyIssueActive) {
     return null
   }
 
@@ -660,6 +658,10 @@ type OrdersGridProps = {
   activeTab: OrdersListTab
   viewMode: OrdersViewMode
   canEditMondayStages: boolean
+  canEditOrderInfo: boolean
+  columnPreferenceKey: string
+  canViewOrderValue: boolean
+  canViewFullFinancials: boolean
   lastRefreshedAt: string | null
   isLoading: boolean
   shopDrawingHandle: React.MutableRefObject<ShopDrawingPreviewHandle | null>
@@ -682,6 +684,10 @@ export function OrdersGrid({
   activeTab,
   viewMode,
   canEditMondayStages,
+  canEditOrderInfo,
+  columnPreferenceKey,
+  canViewOrderValue,
+  canViewFullFinancials,
   lastRefreshedAt,
   isLoading,
   shopDrawingHandle,
@@ -700,7 +706,7 @@ export function OrdersGrid({
     ? 'Ship Date'
     : activeTab === 'warranty'
       ? 'Warranty'
-      : 'Monday Status'
+      : 'Job Status'
   const [rowSelectionModel, setRowSelectionModel] = useState<GridRowSelectionModel>({
     type: 'include',
     ids: new Set(),
@@ -712,6 +718,16 @@ export function OrdersGrid({
   const [updatingStatusColumnKey, setUpdatingStatusColumnKey] = useState<string | null>(null)
   const [actionsAnchorEl, setActionsAnchorEl] = useState<HTMLElement | null>(null)
   const [actionsOrder, setActionsOrder] = useState<OrdersOverviewOrder | null>(null)
+  const [columnsMenuAnchorEl, setColumnsMenuAnchorEl] = useState<HTMLElement | null>(null)
+  const [columnOrder, setColumnOrder] = useState<string[]>([])
+  const [hiddenColumnFields, setHiddenColumnFields] = useState<Set<string>>(() => new Set())
+  const [columnWidths, setColumnWidths] = useState<Record<string, number>>({})
+  const [draggedColumnField, setDraggedColumnField] = useState<string | null>(null)
+  const [loadedColumnStorageKey, setLoadedColumnStorageKey] = useState('')
+  const [editingBenchOrderId, setEditingBenchOrderId] = useState('')
+  const [benchDraft, setBenchDraft] = useState('')
+  const [savingBenchOrderId, setSavingBenchOrderId] = useState('')
+  const [benchEditError, setBenchEditError] = useState<string | null>(null)
 
   const handleOpenActionsMenu = useCallback((event: React.MouseEvent<HTMLElement>, order: OrdersOverviewOrder) => {
     event.preventDefault()
@@ -740,6 +756,35 @@ export function OrdersGrid({
     setIsStatusPopoverLoading(false)
     setUpdatingStatusColumnKey(null)
   }, [])
+
+  const handleSaveBench = useCallback(async (order: OrdersOverviewOrder) => {
+    const mondayItemId = String(order.mondayItemId ?? '').trim()
+    const orderId = String(order.id ?? '').trim()
+
+    if (!canEditOrderInfo || !mondayItemId || !orderId) {
+      setBenchEditError('This order is not linked to Monday, so Bench cannot be updated.')
+      return
+    }
+
+    setSavingBenchOrderId(orderId)
+    setBenchEditError(null)
+
+    try {
+      await postOrdersOrderDetailsUpdate({
+        mondayItemId,
+        bench: benchDraft.trim(),
+      })
+      setEditingBenchOrderId('')
+      setBenchDraft('')
+      await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.ordersOverview })
+    } catch (error) {
+      setBenchEditError(
+        error instanceof Error ? error.message : 'Could not update Bench.',
+      )
+    } finally {
+      setSavingBenchOrderId('')
+    }
+  }, [benchDraft, canEditOrderInfo, queryClient])
 
   const applyProgressDetailsToOrder = useCallback(
     (order: OrdersOverviewOrder, nextOrder: {
@@ -1013,6 +1058,14 @@ export function OrdersGrid({
               <WarningAmberRoundedIcon sx={{ color: 'warning.main', fontSize: '0.72rem' }} />
             </Tooltip>
           ) : null}
+          {row.warrantyIssueActive ? (
+            <Chip
+              size="small"
+              color="warning"
+              label="Warranty"
+              sx={{ height: 22, fontWeight: 800 }}
+            />
+          ) : null}
           <IconButton
             size="small"
             aria-label="Copy order number"
@@ -1038,7 +1091,7 @@ export function OrdersGrid({
     },
     {
       field: 'orderName',
-      headerName: 'Order Name',
+      headerName: 'Customer Name',
       minWidth: 190,
       width: 220,
       sortable: false,
@@ -1048,7 +1101,9 @@ export function OrdersGrid({
           sx={{ fontSize: '0.78rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
           title={resolveSourceLabel(row)}
         >
-          {resolveDisplayOrderName(row)}
+          {row.warrantyIssueActive
+            ? `Warranty — ${resolveDisplayOrderName(row)}`
+            : resolveDisplayOrderName(row)}
         </Typography>
       ),
     },
@@ -1070,7 +1125,7 @@ export function OrdersGrid({
     },
     {
       field: 'mondayStatus',
-      headerName: 'Monday Status',
+      headerName: 'Job Status',
       minWidth: 170,
       width: 190,
       sortable: false,
@@ -1199,7 +1254,7 @@ export function OrdersGrid({
     },
     {
       field: 'notes',
-      headerName: 'Notes',
+      headerName: 'Internal Note',
       minWidth: 220,
       width: 260,
       sortable: false,
@@ -1256,6 +1311,264 @@ export function OrdersGrid({
           </Button>
         )
       },
+    },
+    {
+      field: 'bench',
+      headerName: 'Bench',
+      minWidth: 150,
+      width: 230,
+      sortable: false,
+      renderCell: ({ row }) => {
+        const orderId = String(row.id ?? '').trim()
+        const isEditing = editingBenchOrderId === orderId
+        const isSaving = savingBenchOrderId === orderId
+
+        if (isEditing) {
+          return (
+            <Stack
+              direction="row"
+              spacing={0.25}
+              alignItems="center"
+              sx={{ width: '100%' }}
+              onClick={(event) => event.stopPropagation()}
+            >
+              <TextField
+                size="small"
+                value={benchDraft}
+                autoFocus
+                fullWidth
+                placeholder="Bench"
+                disabled={isSaving}
+                onChange={(event) => setBenchDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault()
+                    void handleSaveBench(row)
+                  } else if (event.key === 'Escape') {
+                    setEditingBenchOrderId('')
+                    setBenchDraft('')
+                  }
+                }}
+              />
+              <IconButton
+                size="small"
+                color="primary"
+                disabled={isSaving}
+                aria-label="Save Bench"
+                onClick={() => void handleSaveBench(row)}
+              >
+                {isSaving ? <CircularProgress size={15} /> : <SaveRoundedIcon fontSize="small" />}
+              </IconButton>
+              <IconButton
+                size="small"
+                disabled={isSaving}
+                aria-label="Cancel Bench edit"
+                onClick={() => {
+                  setEditingBenchOrderId('')
+                  setBenchDraft('')
+                }}
+              >
+                <CloseRoundedIcon fontSize="small" />
+              </IconButton>
+            </Stack>
+          )
+        }
+
+        return (
+          <Stack direction="row" spacing={0.35} alignItems="center" sx={{ width: '100%', minWidth: 0 }}>
+            <Typography variant="body2" title={row.bench ?? ''} noWrap sx={{ flex: 1 }}>
+              {row.bench || '—'}
+            </Typography>
+            {canEditOrderInfo && row.hasMondayRecord ? (
+              <Tooltip title="Edit Bench">
+                <IconButton
+                  size="small"
+                  aria-label={`Edit Bench for ${row.orderNumber}`}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    setBenchEditError(null)
+                    setEditingBenchOrderId(orderId)
+                    setBenchDraft(String(row.bench ?? ''))
+                  }}
+                >
+                  <EditRoundedIcon fontSize="small" />
+                </IconButton>
+              </Tooltip>
+            ) : null}
+          </Stack>
+        )
+      },
+    },
+    {
+      field: 'orderType',
+      headerName: 'Order Type',
+      minWidth: 130,
+      sortable: false,
+      valueGetter: (_value, row) => (
+        row.warrantyIssueActive
+          ? 'Warranty'
+          : row.isShipped
+            ? 'Shipped'
+            : row.inDesign
+              ? 'Design'
+              : 'Production'
+      ),
+      renderCell: ({ row }) => (
+        <Chip
+          size="small"
+          variant="outlined"
+          label={
+            row.warrantyIssueActive
+              ? 'Warranty'
+              : row.isShipped
+                ? 'Shipped'
+                : row.inDesign
+                  ? 'Design'
+                  : 'Production'
+          }
+        />
+      ),
+    },
+    {
+      field: 'salesRep',
+      headerName: 'Sales Representative',
+      minWidth: 170,
+      width: 190,
+      renderCell: ({ row }) => row.salesRep || '—',
+    },
+    {
+      field: 'depositReceivedDate',
+      headerName: 'Deposit Receipt',
+      minWidth: 145,
+      renderCell: ({ row }) => row.depositReceivedDate
+        ? formatDate(row.depositReceivedDate)
+        : '—',
+    },
+    {
+      field: 'depositTerms',
+      headerName: 'Deposit Terms',
+      minWidth: 150,
+      sortable: false,
+      valueGetter: (_value, row) => (
+        row.depositRequired === false
+          ? 'No deposit required'
+          : Number.isFinite(Number(row.depositPercent))
+            ? `${Number(row.depositPercent)}% required`
+            : row.depositRequired === true
+              ? 'Deposit required'
+              : ''
+      ),
+      renderCell: ({ row }) => (
+        row.depositRequired === false
+          ? 'No deposit required'
+          : Number.isFinite(Number(row.depositPercent))
+            ? `${Number(row.depositPercent)}% required`
+            : row.depositRequired === true
+              ? 'Deposit required'
+              : '—'
+      ),
+    },
+    {
+      field: 'orderValue',
+      headerName: 'Order Value',
+      minWidth: 130,
+      type: 'number',
+      renderCell: ({ row }) => Number.isFinite(Number(row.orderValue))
+        ? formatCurrency(Number(row.orderValue), 2)
+        : '—',
+    },
+    {
+      field: 'freightValue',
+      headerName: 'Freight Value',
+      minWidth: 130,
+      type: 'number',
+      renderCell: ({ row }) => Number.isFinite(Number(row.freightValue))
+        ? formatCurrency(Number(row.freightValue), 2)
+        : '—',
+    },
+    {
+      field: 'cutListDocument',
+      headerName: 'Cut List',
+      minWidth: 115,
+      sortable: false,
+      renderCell: ({ row }) => (
+        <Chip
+          size="small"
+          color={row.cutListCachedUrl || row.cutListUrl ? 'success' : 'default'}
+          variant={row.cutListCachedUrl || row.cutListUrl ? 'filled' : 'outlined'}
+          label={row.cutListCachedUrl || row.cutListUrl ? 'Available' : 'Missing'}
+        />
+      ),
+    },
+    {
+      field: 'invoiceDocument',
+      headerName: 'Invoice',
+      minWidth: 110,
+      sortable: false,
+      renderCell: ({ row }) => (
+        <Chip
+          size="small"
+          color={row.invoiceCachedUrl || row.invoiceNumber ? 'success' : 'default'}
+          variant={row.invoiceCachedUrl || row.invoiceNumber ? 'filled' : 'outlined'}
+          label={row.invoiceCachedUrl || row.invoiceNumber ? 'Available' : 'Missing'}
+        />
+      ),
+    },
+    {
+      field: 'orderConfirmationDocument',
+      headerName: 'Order Confirmation',
+      minWidth: 165,
+      sortable: false,
+      renderCell: ({ row }) => (
+        <Chip
+          size="small"
+          color={row.orderConfirmationUrl ? 'success' : 'default'}
+          variant={row.orderConfirmationUrl ? 'filled' : 'outlined'}
+          label={row.orderConfirmationUrl ? 'Available' : 'Missing'}
+        />
+      ),
+    },
+    {
+      field: 'signedBolDocument',
+      headerName: 'Driver Signed BOL',
+      minWidth: 145,
+      sortable: false,
+      renderCell: ({ row }) => (
+        <Chip
+          size="small"
+          color={row.signedBolUrl || row.signedBol ? 'success' : 'default'}
+          variant={row.signedBolUrl || row.signedBol ? 'filled' : 'outlined'}
+          label={row.signedBolUrl || row.signedBol ? 'Available' : 'Missing'}
+        />
+      ),
+    },
+    {
+      field: 'customerSignedBolDocument',
+      headerName: 'Customer Signed BOL',
+      minWidth: 160,
+      sortable: false,
+      renderCell: ({ row }) => (
+        <Chip
+          size="small"
+          color={row.customerSignedBolUrl || row.customerSignedBol ? 'success' : 'default'}
+          variant={row.customerSignedBolUrl || row.customerSignedBol ? 'filled' : 'outlined'}
+          label={row.customerSignedBolUrl || row.customerSignedBol ? 'Available' : 'Missing'}
+        />
+      ),
+    },
+    {
+      field: 'inspectionDocument',
+      headerName: 'BOL Inspection',
+      minWidth: 135,
+      sortable: false,
+      renderCell: ({ row }) => (
+        <Chip
+          size="small"
+          color={row.inspectionSheetUrl || row.inspectionSheet ? 'success' : 'default'}
+          variant={row.inspectionSheetUrl || row.inspectionSheet ? 'filled' : 'outlined'}
+          label={row.inspectionSheetUrl || row.inspectionSheet ? 'Available' : 'Missing'}
+        />
+      ),
     },
     {
       field: 'shipTo',
@@ -1387,8 +1700,28 @@ export function OrdersGrid({
     {
       field: 'rowStatus',
       headerName: statusColumnHeader,
-      minWidth: 170,
+      minWidth: 185,
       sortable: false,
+      renderHeader: () => (
+        <Stack direction="row" spacing={0.5} alignItems="center">
+          <Typography component="span" variant="caption" fontWeight={800}>
+            {statusColumnHeader}
+          </Typography>
+          {activeTab !== 'shipped' && activeTab !== 'warranty' ? (
+            <Tooltip
+              title={
+                <Stack spacing={0.35} sx={{ py: 0.25 }}>
+                  <Typography variant="caption"><strong>Working on it</strong> — yellow</Typography>
+                  <Typography variant="caption"><strong>Ready</strong> — green</Typography>
+                  <Typography variant="caption"><strong>Stock</strong> — red</Typography>
+                </Stack>
+              }
+            >
+              <InfoOutlinedIcon sx={{ fontSize: 16, color: 'text.secondary' }} />
+            </Tooltip>
+          ) : null}
+        </Stack>
+      ),
       renderCell: ({ row }) => {
         if (activeTab === 'warranty') {
           const leadTimeDate = String(row.warrantyIssueLeadTimeDate ?? '').trim()
@@ -1404,6 +1737,18 @@ export function OrdersGrid({
               label={warrantyLabel}
               color={row.warrantyIssueActive ? 'warning' : 'success'}
               variant="filled"
+            />
+          )
+        }
+
+        if (row.warrantyIssueActive) {
+          const leadTimeDate = String(row.warrantyIssueLeadTimeDate ?? '').trim()
+          return (
+            <Chip
+              size="small"
+              color="warning"
+              variant="filled"
+              label={leadTimeDate ? `Warranty • Due ${formatDate(leadTimeDate)}` : 'Warranty'}
             />
           )
         }
@@ -1442,13 +1787,6 @@ export function OrdersGrid({
             designStageProgressEntry?.optionStyles ?? [],
           )
           : null
-        const newestTrackedStuckStageLabel = row.isShipped
-          || activeTab === 'design'
-          ? null
-          : resolveNewestTrackedStuckStageLabel(row.progressStatusDetails)
-        const stuckStageLabel = newestTrackedStuckStageLabel
-          || (rowStatusVisual.tone === 'stuck' ? rowStatusVisual.stageLabel : null)
-
         const tooltipTitle = row.isShipped && isWarningShippedDate
           ? shippedDateLabel
             ? `Ship Date is missing in Monday; fallback date is anchored to first shipped detection (${shippedDateLabel}).`
@@ -1480,18 +1818,18 @@ export function OrdersGrid({
                 position: 'relative',
                 width: '100%',
                 minWidth: 132,
-                minHeight: showStageChrome
-                  ? (rowStatusVisual.isFinalReady ? 50 : 45)
-                  : 34,
-                pt: showStageChrome ? 0.9 : 0,
-                pb: showStageChrome ? 0.1 : 0,
-                px: showStageChrome ? 0 : 0.35,
+                minHeight: 34,
+                px: 0.5,
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 cursor: row.hasMondayRecord ? 'pointer' : 'default',
                 ...(showStageChrome
-                  ? {}
+                  ? {
+                    borderRadius: 1,
+                    border: `1px solid ${rowStatusPalette.stageBorder}`,
+                    bgcolor: rowStatusPalette.stageBg,
+                  }
                   : {
                     borderRadius: 1,
                     border: `1px solid ${designStatusVisual?.borderColor || 'rgba(15, 23, 42, 0.18)'}`,
@@ -1499,41 +1837,6 @@ export function OrdersGrid({
                   }),
               }}
             >
-              {showStageChrome ? (
-                <Typography
-                  variant="caption"
-                  sx={{
-                    position: 'absolute',
-                    top: 0.02,
-                    left: 6,
-                    fontSize: '0.62rem',
-                    fontWeight: 800,
-                    color: rowStatusPalette.topText,
-                    lineHeight: 1,
-                    px: 0.35,
-                    py: 0.05,
-                    borderRadius: 0.7,
-                    bgcolor: 'background.paper',
-                  }}
-                >
-                  {rowStatusVisual.topLabel}
-                </Typography>
-              ) : null}
-
-              {showStageChrome && stuckStageLabel ? (
-                <Tooltip title={`${stuckStageLabel} stuck`}>
-                  <WarningAmberRoundedIcon
-                    sx={{
-                      position: 'absolute',
-                      top: 0.02,
-                      right: 6,
-                      color: 'error.main',
-                      fontSize: '0.72rem',
-                    }}
-                  />
-                </Tooltip>
-              ) : null}
-
               <Typography
                 component="span"
                 variant="body2"
@@ -1541,20 +1844,16 @@ export function OrdersGrid({
                   display: 'inline-flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  px: showStageChrome ? 1.05 : 0.35,
-                  py: showStageChrome ? 0.16 : 0.45,
-                  width: showStageChrome ? 'auto' : '100%',
-                  borderRadius: showStageChrome ? 999 : 0.8,
-                  border: showStageChrome
-                    ? `1px solid ${rowStatusPalette.stageBorder}`
-                    : 'none',
-                  bgcolor: showStageChrome
-                    ? rowStatusPalette.stageBg
-                    : 'transparent',
+                  px: 0.35,
+                  py: 0.45,
+                  width: '100%',
+                  borderRadius: 0.8,
+                  border: 'none',
+                  bgcolor: 'transparent',
                   color: showStageChrome
                     ? rowStatusPalette.stageText
                     : (designStatusVisual?.textColor || '#ffffff'),
-                  fontSize: rowStatusVisual.isFinalReady ? '0.96rem' : '0.84rem',
+                  fontSize: rowStatusVisual.isFinalReady ? '1rem' : '0.92rem',
                   fontWeight: 900,
                   lineHeight: 1.08,
                 }}
@@ -1625,7 +1924,7 @@ export function OrdersGrid({
       valueGetter: (_value, row) => resolveLeadTimeSortValue(row),
       filterOperators: leadTimeFilterOperators,
       renderCell: ({ row }) => {
-        if (row.isShipped) {
+        if (row.isShipped && !row.warrantyIssueActive) {
           const shippedDate = row.shippedAt ? formatDate(row.shippedAt) : null
           const shippedLabel = shippedDate ? `Shipped (${shippedDate})` : 'Shipped'
 
@@ -1640,7 +1939,11 @@ export function OrdersGrid({
 
         const targetDate = resolveLeadTimeDueDate(row)
         if (!targetDate) {
-          return <Typography variant="body2" color="text.secondary">—</Typography>
+          return (
+            <Typography variant="body2" color={row.warrantyIssueActive ? 'warning.dark' : 'text.secondary'}>
+              {row.warrantyIssueActive ? 'Warranty lead time not set' : '—'}
+            </Typography>
+          )
         }
         const days = daysUntil(targetDate)
         const formattedTarget = formatDate(targetDate)
@@ -1886,13 +2189,18 @@ export function OrdersGrid({
     onMissingMondayLink,
     handleOpenStatusPopover,
     handleOpenActionsMenu,
+    canEditOrderInfo,
+    editingBenchOrderId,
+    savingBenchOrderId,
+    benchDraft,
+    handleSaveBench,
   ])
 
   const standardColumns = useMemo<GridColDef<OrdersOverviewOrder>[]>(() => {
     const standardColumnSpecs = activeTab === 'design'
       ? [
         { field: 'orderNumber', label: 'Order #' },
-        { field: 'orderName', label: 'Name' },
+        { field: 'orderName', label: 'Customer Name' },
         { field: 'rowStatus', label: 'Design' },
         { field: 'orderDate', label: 'PO Date' },
         { field: 'poNumber', label: 'PO Number' },
@@ -1903,16 +2211,14 @@ export function OrdersGrid({
       : activeTab === 'warranty'
         ? [
           { field: 'orderNumber', label: 'Order #' },
-          { field: 'orderName', label: 'Order Name' },
-          { field: 'warrantyIssueDescription', label: 'Issue' },
-          { field: 'warrantyIssueLeadTimeDate', label: 'Lead Time' },
+          { field: 'orderName', label: 'Customer Name' },
           { field: 'rowStatus', label: 'Warranty Status' },
           { field: 'orderDate', label: 'Order Date' },
           { field: 'mondayLink', label: 'Actions' },
         ] as const
       : [
         { field: 'orderNumber', label: 'Order' },
-        { field: 'orderName', label: 'Order Name' },
+        { field: 'orderName', label: 'Customer Name' },
         { field: 'poNumber', label: 'PO Number' },
         { field: 'shopDrawingUrl', label: 'Drawings' },
         { field: 'rowStatus', label: statusColumnHeader },
@@ -1995,20 +2301,184 @@ export function OrdersGrid({
     [],
   )
 
-  const visibleAdminColumns = useMemo(
-    () => adminColumns.filter((column) => {
+  const availableColumns = useMemo(() => {
+    const standardFields = new Set(
+      standardColumns.map((column) => String(column.field)),
+    )
+    const optionalFields = new Set([
+      'description',
+      'notes',
+      'bench',
+      'salesRep',
+      'depositReceivedDate',
+      'orderValue',
+      'freightValue',
+      'cutListDocument',
+      'invoiceDocument',
+      'orderConfirmationDocument',
+      'signedBolDocument',
+      'customerSignedBolDocument',
+      'inspectionDocument',
+      'shipTo',
+      'shipNotes',
+      'bol',
+      'totalHours',
+    ])
+    const adminOnlyFields = new Set([
+      'invoiceNumber',
+      'billedAmount',
+      'billBalanceAmount',
+      'remainingToBill',
+      'poAmount',
+      'invoiceAmount',
+      'amountOwed',
+      'totalLaborCost',
+      'totalProfit',
+    ])
+    const orderValueFields = new Set([
+      'orderValue',
+      'freightValue',
+      'salesRep',
+      'depositReceivedDate',
+    ])
+    const eligibleAdminColumns = adminColumns.filter((column) => {
       const field = String(column.field)
-      return field !== 'shipTo'
-        && field !== 'shipNotes'
-        && field !== 'bol'
-        && field !== 'description'
-        && field !== 'notes'
-    }),
-    [adminColumns],
+      if (!standardFields.has(field) && !optionalFields.has(field) && !adminOnlyFields.has(field)) {
+        return false
+      }
+      if (adminOnlyFields.has(field) && !canViewFullFinancials) return false
+      if (field === 'invoiceDocument' && !canViewFullFinancials) return false
+      if (orderValueFields.has(field) && !canViewOrderValue) return false
+      return true
+    })
+    const eligibleByField = new Map(
+      eligibleAdminColumns.map((column) => [String(column.field), column]),
+    )
+    const preferredBase = viewMode === 'admin' ? eligibleAdminColumns : standardColumns
+    const result: GridColDef<OrdersOverviewOrder>[] = []
+    const seen = new Set<string>()
+
+    ;[...preferredBase, ...eligibleAdminColumns].forEach((column) => {
+      const field = String(column.field)
+      const eligibleColumn = eligibleByField.get(field)
+      if (!eligibleColumn || seen.has(field)) return
+      seen.add(field)
+      result.push(
+        preferredBase.includes(column)
+          ? column
+          : eligibleColumn,
+      )
+    })
+
+    return result
+  }, [
+    adminColumns,
+    canViewFullFinancials,
+    canViewOrderValue,
+    standardColumns,
+    viewMode,
+  ])
+
+  const columnStorageKey = useMemo(
+    () => `arnold:orders-columns:v2:${columnPreferenceKey || 'anonymous'}:${activeTab}:${viewMode}`,
+    [activeTab, columnPreferenceKey, viewMode],
   )
 
-  const columns = viewMode === 'admin' ? visibleAdminColumns : standardColumns
-  const columnGroupingModel = viewMode === 'admin' ? adminColumnGroupingModel : undefined
+  const defaultVisibleColumnFields = useMemo(
+    () => standardColumns
+      .map((column) => String(column.field))
+      .filter((field) => availableColumns.some((column) => String(column.field) === field)),
+    [availableColumns, standardColumns],
+  )
+
+  useEffect(() => {
+    const availableFields = availableColumns.map((column) => String(column.field))
+    let savedOrder: string[] = []
+    let savedHidden: string[] = []
+    let savedWidths: Record<string, number> = {}
+    let hasSavedPreferences = false
+
+    try {
+      const raw = window.localStorage.getItem(columnStorageKey)
+      if (raw) {
+        hasSavedPreferences = true
+        const parsed = JSON.parse(raw) as { order?: unknown; hidden?: unknown; widths?: unknown }
+        savedOrder = Array.isArray(parsed.order)
+          ? parsed.order.map((field) => String(field)).filter((field) => availableFields.includes(field))
+          : []
+        savedHidden = Array.isArray(parsed.hidden)
+          ? parsed.hidden.map((field) => String(field)).filter((field) => availableFields.includes(field))
+          : []
+        savedWidths = parsed.widths && typeof parsed.widths === 'object' && !Array.isArray(parsed.widths)
+          ? Object.fromEntries(
+            Object.entries(parsed.widths)
+              .map(([field, width]) => [field, Number(width)] as const)
+              .filter(([field, width]) => (
+                availableFields.includes(field)
+                && Number.isFinite(width)
+                && width >= 50
+              )),
+          )
+          : {}
+      }
+    } catch {
+      // Ignore malformed local preferences and use the professional default.
+    }
+
+    setColumnOrder([
+      ...savedOrder,
+      ...availableFields.filter((field) => !savedOrder.includes(field)),
+    ])
+    setHiddenColumnFields(new Set(
+      hasSavedPreferences
+        ? savedHidden
+        : availableFields.filter((field) => !defaultVisibleColumnFields.includes(field)),
+    ))
+    setColumnWidths(savedWidths)
+    setLoadedColumnStorageKey(columnStorageKey)
+  }, [availableColumns, columnStorageKey, defaultVisibleColumnFields])
+
+  useEffect(() => {
+    if (columnOrder.length === 0 || loadedColumnStorageKey !== columnStorageKey) return
+    window.localStorage.setItem(
+      columnStorageKey,
+      JSON.stringify({
+        order: columnOrder,
+        hidden: [...hiddenColumnFields],
+        widths: columnWidths,
+      }),
+    )
+  }, [columnOrder, columnStorageKey, columnWidths, hiddenColumnFields, loadedColumnStorageKey])
+
+  const availableColumnByField = useMemo(
+    () => new Map(availableColumns.map((column) => [String(column.field), column])),
+    [availableColumns],
+  )
+  const columns = useMemo(
+    () => {
+      const orderedVisibleColumns = columnOrder
+      .map((field) => availableColumnByField.get(field))
+      .filter((column): column is GridColDef<OrdersOverviewOrder> => Boolean(column))
+        .filter((column) => String(column.field) !== 'mondayLink')
+        .filter((column) => !hiddenColumnFields.has(String(column.field)))
+      const actionsColumn = availableColumnByField.get('mondayLink')
+      const applySavedWidth = (column: GridColDef<OrdersOverviewOrder>) => {
+        const savedWidth = columnWidths[String(column.field)]
+
+        return Number.isFinite(savedWidth)
+          ? { ...column, width: savedWidth }
+          : column
+      }
+
+      return actionsColumn
+        ? [...orderedVisibleColumns, actionsColumn].map(applySavedWidth)
+        : orderedVisibleColumns.map(applySavedWidth)
+    },
+    [availableColumnByField, columnOrder, columnWidths, hiddenColumnFields],
+  )
+  const columnGroupingModel = viewMode === 'admin' && columnOrder.length === 0
+    ? adminColumnGroupingModel
+    : undefined
   const isStandardView = viewMode === 'standard'
   const statusPopoverOpen = Boolean(statusPopoverAnchorEl && statusPopoverOrder)
 
@@ -2137,6 +2607,47 @@ export function OrdersGrid({
       ? 'two selected'
       : `${selectedCount} selected`
 
+  const moveColumn = (sourceField: string, targetField: string) => {
+    if (
+      !sourceField
+      || !targetField
+      || sourceField === targetField
+      || sourceField === 'mondayLink'
+      || targetField === 'mondayLink'
+    ) return
+    setColumnOrder((current) => {
+      const sourceIndex = current.indexOf(sourceField)
+      const targetIndex = current.indexOf(targetField)
+      if (sourceIndex < 0 || targetIndex < 0) return current
+      const next = [...current]
+      next.splice(sourceIndex, 1)
+      next.splice(targetIndex, 0, sourceField)
+      return next
+    })
+  }
+
+  const toggleColumnVisibility = (field: string) => {
+    setHiddenColumnFields((current) => {
+      const next = new Set(current)
+      if (next.has(field)) {
+        next.delete(field)
+      } else {
+        next.add(field)
+      }
+      return next
+    })
+  }
+
+  const resetColumns = () => {
+    setColumnOrder(availableColumns.map((column) => String(column.field)))
+    setHiddenColumnFields(new Set(
+      availableColumns
+        .map((column) => String(column.field))
+        .filter((field) => !defaultVisibleColumnFields.includes(field)),
+    ))
+    setColumnWidths({})
+  }
+
   return (
     <Paper
       variant="outlined"
@@ -2163,6 +2674,38 @@ export function OrdersGrid({
         </Stack>
       ) : null}
 
+      {benchEditError ? (
+        <Alert
+          severity="error"
+          onClose={() => setBenchEditError(null)}
+          sx={{ borderRadius: 0 }}
+        >
+          {benchEditError}
+        </Alert>
+      ) : null}
+
+      <Stack
+        direction="row"
+        alignItems="center"
+        justifyContent="flex-end"
+        sx={{
+          minHeight: 42,
+          px: 1,
+          borderBottom: '1px solid rgba(15, 23, 42, 0.08)',
+          backgroundColor: '#fff',
+        }}
+      >
+        <Tooltip title="Choose and reorder columns">
+          <IconButton
+            size="small"
+            aria-label="Choose and reorder columns"
+            onClick={(event) => setColumnsMenuAnchorEl(event.currentTarget)}
+          >
+            <MoreVertRoundedIcon />
+          </IconButton>
+        </Tooltip>
+      </Stack>
+
       <Box sx={{ flex: 1, minHeight: 0 }}>
         <DataGrid
           rows={prioritizedRows}
@@ -2176,6 +2719,16 @@ export function OrdersGrid({
           rowSelectionModel={rowSelectionModel}
           onRowSelectionModelChange={(nextModel) => {
             setRowSelectionModel(nextModel)
+          }}
+          onColumnWidthChange={(params) => {
+            const field = String(params.colDef.field)
+            const width = Math.round(Number(params.width))
+            if (!field || !Number.isFinite(width) || width < 50) return
+            setColumnWidths((current) => (
+              current[field] === width
+                ? current
+                : { ...current, [field]: width }
+            ))
           }}
           density={isStandardView ? 'standard' : 'compact'}
           rowHeight={isStandardView ? 52 : 38}
@@ -2243,6 +2796,116 @@ export function OrdersGrid({
           }}
         />
       </Box>
+
+      <Popover
+        open={Boolean(columnsMenuAnchorEl)}
+        anchorEl={columnsMenuAnchorEl}
+        onClose={() => {
+          setColumnsMenuAnchorEl(null)
+          setDraggedColumnField(null)
+        }}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+        transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+        PaperProps={{
+          sx: {
+            mt: 0.5,
+            width: 330,
+            maxWidth: 'calc(100vw - 24px)',
+            maxHeight: 'min(680px, calc(100vh - 100px))',
+            overflow: 'hidden',
+          },
+        }}
+      >
+        <Stack
+          direction="row"
+          alignItems="center"
+          justifyContent="space-between"
+          sx={{ px: 1.5, py: 1.15, borderBottom: '1px solid rgba(15, 23, 42, 0.1)' }}
+        >
+          <Box>
+            <Typography variant="subtitle2" fontWeight={800}>
+              Order columns
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              Check columns and drag them into your preferred order.
+            </Typography>
+          </Box>
+          <Tooltip title="Restore default columns and order">
+            <IconButton size="small" onClick={resetColumns} aria-label="Reset order columns">
+              <RestartAltRoundedIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+        </Stack>
+
+        <Box sx={{ overflowY: 'auto', maxHeight: 'min(590px, calc(100vh - 190px))', py: 0.5 }}>
+          {columnOrder.map((field) => {
+            const column = availableColumnByField.get(field)
+            if (!column) return null
+            const isActionsColumn = field === 'mondayLink'
+            const isVisible = isActionsColumn || !hiddenColumnFields.has(field)
+
+            return (
+              <Stack
+                key={field}
+                direction="row"
+                alignItems="center"
+                draggable={!isActionsColumn}
+                onDragStart={(event) => {
+                  setDraggedColumnField(field)
+                  event.dataTransfer.effectAllowed = 'move'
+                  event.dataTransfer.setData('text/plain', field)
+                }}
+                onDragOver={(event) => {
+                  event.preventDefault()
+                  event.dataTransfer.dropEffect = 'move'
+                }}
+                onDrop={(event) => {
+                  event.preventDefault()
+                  const sourceField = draggedColumnField || event.dataTransfer.getData('text/plain')
+                  moveColumn(sourceField, field)
+                  setDraggedColumnField(null)
+                }}
+                onDragEnd={() => setDraggedColumnField(null)}
+                sx={{
+                  minHeight: 38,
+                  px: 0.75,
+                  mx: 0.5,
+                  borderRadius: 1,
+                  cursor: isActionsColumn ? 'default' : 'grab',
+                  opacity: draggedColumnField === field ? 0.45 : 1,
+                  '&:hover': { backgroundColor: 'rgba(15, 23, 42, 0.045)' },
+                }}
+              >
+                <DragIndicatorRoundedIcon
+                  fontSize="small"
+                  sx={{ color: 'text.disabled', mr: 0.25 }}
+                />
+                <Checkbox
+                  size="small"
+                  checked={isVisible}
+                  disabled={isActionsColumn}
+                  onChange={() => toggleColumnVisibility(field)}
+                  inputProps={{ 'aria-label': `Show ${column.headerName || field}` }}
+                />
+                <Typography
+                  variant="body2"
+                  onClick={() => {
+                    if (!isActionsColumn) toggleColumnVisibility(field)
+                  }}
+                  sx={{
+                    flex: 1,
+                    cursor: isActionsColumn ? 'default' : 'pointer',
+                    userSelect: 'none',
+                  }}
+                >
+                  {column.headerName || field}
+                  {isActionsColumn ? ' (always last)' : ''}
+                </Typography>
+              </Stack>
+            )
+          })}
+        </Box>
+      </Popover>
 
       <Menu
         anchorEl={actionsAnchorEl}

@@ -1,4 +1,5 @@
 import { AppError } from '../utils/app-error.mjs'
+import { resolveBoardMapById } from '../orders/monday-board-map.mjs'
 
 export function registerTimesheetRoutes(app, deps) {
   const {
@@ -25,6 +26,7 @@ export function registerTimesheetRoutes(app, deps) {
     setDashboardSnapshotCache,
     toPublicAuthUser,
     toPublicMobileAlert,
+    updateMondayItemTextColumn,
     validateEntryFields,
     validateEntryInput,
     validateWorkerInput,
@@ -204,6 +206,8 @@ export function registerTimesheetRoutes(app, deps) {
       orderNumber,
       orderName,
       mondayItemId,
+      mondayBoardId: normalizeOptionalShortText(document?.monday_board_id, 120) || null,
+      bench: normalizeOptionalShortText(document?.bench, 500) || null,
       shopDrawingCachedUrl,
       shopDrawingUrl: shopDrawingSourceUrl,
       shopDrawingFileName: resolveShopDrawingFileName({
@@ -250,6 +254,8 @@ export function registerTimesheetRoutes(app, deps) {
             order_number: 1,
             order_name: 1,
             monday_item_id: 1,
+            monday_board_id: 1,
+            bench: 1,
             Shop_drawing: 1,
             Shop_drawing_cached: 1,
             Shop_drawing_source: 1,
@@ -706,12 +712,14 @@ export function registerTimesheetRoutes(app, deps) {
     const primaryOrders = Array.isArray(primarySnapshot?.orders)
       ? primarySnapshot.orders.map((order) => ({
         ...order,
+        boardId: String(primarySnapshot?.board?.id ?? '').trim() || null,
         mondaySourceBoardType: 'orders_track',
       }))
       : []
     const shippedOrders = Array.isArray(shippedSnapshot?.orders)
       ? shippedSnapshot.orders.map((order) => ({
         ...order,
+        boardId: String(shippedSnapshot?.board?.id ?? '').trim() || null,
         mondaySourceBoardType: 'shipped_orders',
       }))
       : []
@@ -869,6 +877,12 @@ app.put('/api/timesheet/order-progress', requireFirebaseAuth, requireManagerOrAd
     const jobName = String(req.body?.jobName ?? '').trim()
     const readyPercent = Number(req.body?.readyPercent)
     const isWarranty = req.body?.isWarranty === true
+    const notes = normalizeOptionalShortText(req.body?.notes, 2000) || null
+    const hasBenchInput = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'bench')
+    const bench = hasBenchInput
+      ? normalizeOptionalShortText(req.body?.bench, 500) || null
+      : null
+    const requestedMondayItemId = normalizeOptionalShortText(req.body?.mondayItemId, 120) || null
 
     if (!date) {
       return res.status(400).json({ error: 'date is required.' })
@@ -895,6 +909,52 @@ app.put('/api/timesheet/order-progress', requireFirebaseAuth, requireManagerOrAd
     })
     const resolvedReadyPercent = shouldForceToComplete ? 100 : roundedReadyPercent
     const now = new Date().toISOString()
+    let unifiedOrder = null
+
+    if (hasBenchInput) {
+      unifiedOrder = requestedMondayItemId
+        ? await ordersUnifiedCollection.findOne({ monday_item_id: requestedMondayItemId })
+        : await ordersUnifiedCollection.findOne({
+          $or: [
+            { order_number: jobName },
+            { order_number: extractOrderDigits(jobName) },
+          ],
+        })
+
+      const mondayItemId = String(unifiedOrder?.monday_item_id ?? requestedMondayItemId ?? '').trim()
+      const mondayBoardId = String(unifiedOrder?.monday_board_id ?? '').trim()
+      const mondayBoard = resolveBoardMapById(mondayBoardId)
+      const benchColumnId = String(mondayBoard?.columns?.bench ?? '').trim()
+
+      if (mondayItemId && mondayBoardId && benchColumnId) {
+        if (typeof updateMondayItemTextColumn !== 'function') {
+          return res.status(503).json({ error: 'Monday Bench updates are unavailable.' })
+        }
+
+        await updateMondayItemTextColumn({
+          boardId: mondayBoardId,
+          itemId: mondayItemId,
+          columnId: benchColumnId,
+          textValue: bench || '',
+        })
+      } else if (bench) {
+        return res.status(409).json({
+          error: 'This order is not linked to a mapped Monday board, so Bench could not be saved.',
+        })
+      }
+
+      if (unifiedOrder) {
+        await ordersUnifiedCollection.updateOne(
+          { _id: unifiedOrder._id },
+          {
+            $set: {
+              bench,
+              updatedAt: now,
+            },
+          },
+        )
+      }
+    }
 
     await orderProgressCollection.updateOne(
       {
@@ -908,6 +968,7 @@ app.put('/api/timesheet/order-progress', requireFirebaseAuth, requireManagerOrAd
           normalizedJobName,
           readyPercent: resolvedReadyPercent,
           isWarranty,
+          notes,
           updatedAt: now,
         },
         $setOnInsert: {

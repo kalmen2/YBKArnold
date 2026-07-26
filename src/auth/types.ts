@@ -1,4 +1,9 @@
-export type AppAuthRole = 'standard' | 'manager' | 'sales_rep' | 'admin'
+export type AppAuthRole =
+  | 'shop_worker'
+  | 'office_worker'
+  | 'manager'
+  | 'sales_rep'
+  | 'admin'
 
 export type AppAuthApprovalStatus = 'pending' | 'approved'
 
@@ -13,6 +18,11 @@ export type AppAuthUser = {
   isAdmin: boolean
   isManager: boolean
   isSalesRep: boolean
+  isShopWorker: boolean
+  isOfficeWorker: boolean
+  canViewOrderValue: boolean
+  canViewLaborCost: boolean
+  canViewFullFinancials: boolean
   isApproved: boolean
   approvedAt: string | null
   createdAt: string | null

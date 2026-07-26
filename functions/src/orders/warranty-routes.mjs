@@ -19,6 +19,7 @@ export function registerOrderWarrantyRoutes(app, {
       const mondayItemId = String(req.body?.mondayItemId ?? '').trim()
       const description = normalizeOptionalShortText(req.body?.description, 2000)
       const requestedReportedDate = normalizeIsoDateInput(req.body?.reportedDate)
+      const requestedLeadTimeDate = normalizeIsoDateInput(req.body?.leadTimeDate)
 
       if (!mondayItemId) {
         return res.status(400).json({ error: 'mondayItemId is required.' })
@@ -26,6 +27,10 @@ export function registerOrderWarrantyRoutes(app, {
 
       if (!description) {
         return res.status(400).json({ error: 'description is required.' })
+      }
+
+      if (!requestedLeadTimeDate) {
+        return res.status(400).json({ error: 'leadTimeDate is required and must be YYYY-MM-DD.' })
       }
 
       const { ordersUnifiedCollection } = await getCollections()
@@ -78,7 +83,7 @@ export function registerOrderWarrantyRoutes(app, {
             warranty_issue_active: true,
             warranty_issue_description: description,
             warranty_issue_reported_at: reportedDate,
-            warranty_issue_lead_time_date: null,
+            warranty_issue_lead_time_date: requestedLeadTimeDate,
             warranty_issue_done_at: null,
             updatedAt: now,
             lastSyncedAt: now,

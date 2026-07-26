@@ -4,6 +4,7 @@ import {
   Alert,
   Autocomplete,
   Button,
+  CircularProgress,
   Dialog,
   DialogActions,
   DialogContent,
@@ -128,6 +129,7 @@ export default function OrdersPage() {
   const [addManualOrderDialogOpen, setAddManualOrderDialogOpen] = useState(false)
   const [isCreatingManualOrder, setIsCreatingManualOrder] = useState(false)
   const [deletingOrderKey, setDeletingOrderKey] = useState<string | null>(null)
+  const [deletingOrderLabel, setDeletingOrderLabel] = useState<string | null>(null)
   const [linkOrderTarget, setLinkOrderTarget] = useState<OrdersOverviewOrder | null>(null)
   const [selectedParentOrder, setSelectedParentOrder] = useState<OrdersOverviewOrder | null>(null)
   const [isLinkingOrder, setIsLinkingOrder] = useState(false)
@@ -444,6 +446,7 @@ export default function OrdersPage() {
     const pendingKey = orderKey || mondayItemId || orderNumber || 'order-delete'
     const sendDeleteRequest = async () => {
       setDeletingOrderKey(pendingKey)
+      setDeletingOrderLabel(orderLabel)
 
       try {
         await postOrdersDeleteRequest(requestPayload)
@@ -456,6 +459,7 @@ export default function OrdersPage() {
         )
       } finally {
         setDeletingOrderKey(null)
+        setDeletingOrderLabel(null)
       }
     }
 
@@ -483,6 +487,7 @@ export default function OrdersPage() {
     }
 
     setDeletingOrderKey(pendingKey)
+    setDeletingOrderLabel(orderLabel)
 
     try {
       const response = await postOrdersDelete(requestPayload)
@@ -520,6 +525,7 @@ export default function OrdersPage() {
       )
     } finally {
       setDeletingOrderKey(null)
+      setDeletingOrderLabel(null)
     }
   }, [deletingOrderKey, queryClient])
 
@@ -713,7 +719,7 @@ export default function OrdersPage() {
           : ''
       return {
         'Order #': order.orderNumber ?? '',
-        'Order Name': order.orderName ?? '',
+        'Customer Name': order.orderName ?? '',
         'PO Number': order.poNumber ?? '',
         'Description': order.description ?? '',
         'Notes': order.notes ?? '',
@@ -721,7 +727,7 @@ export default function OrdersPage() {
         'Ship Notes': order.shipNotes ?? '',
         'BOL': order.bol ?? '',
         'BOL URL': order.bolCachedUrl ?? order.bolUrl ?? '',
-        'Monday Status': order.rowStatus ?? '',
+        'Job Status': order.rowStatus ?? '',
         'Invoice #': order.invoiceNumber ?? '',
         'PO Amount': Number.isFinite(Number(order.poAmount)) ? Number(order.poAmount) : '',
         'Billed Amount': Number.isFinite(billed) ? billed : '',
@@ -782,12 +788,29 @@ export default function OrdersPage() {
       {successMessage ? <Alert severity="success">{successMessage}</Alert> : null}
       {overview.queryError ? <Alert severity="error">{overview.queryError}</Alert> : null}
       {warningMessage ? <Alert severity="warning">{warningMessage}</Alert> : null}
+      {deletingOrderLabel ? (
+        <Alert
+          severity="info"
+          icon={<CircularProgress size={18} color="inherit" />}
+          sx={{ position: 'sticky', top: 8, zIndex: 20, fontWeight: 700 }}
+        >
+          Deleting order {deletingOrderLabel} from the website and Monday…
+        </Alert>
+      ) : null}
 
       <OrdersGrid
         orders={overview.visibleOrders}
         activeTab={overview.activeTab}
         viewMode={viewMode}
         canEditMondayStages={canEditMondayStages}
+        canEditOrderInfo={
+          appUser?.isOfficeWorker === true
+          || appUser?.isManager === true
+          || appUser?.isAdmin === true
+        }
+        columnPreferenceKey={appUser?.uid ?? appUser?.email ?? 'anonymous'}
+        canViewOrderValue={appUser?.canViewOrderValue === true}
+        canViewFullFinancials={appUser?.canViewFullFinancials === true}
         lastRefreshedAt={overview.lastRefreshedAt}
         isLoading={overview.isLoading || overview.isFetching || overview.isRefreshing}
         shopDrawingHandle={shopDrawingHandle}

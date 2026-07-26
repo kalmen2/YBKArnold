@@ -16,6 +16,38 @@ const ORDER_TRACK_BOARD_ID = '1062951447'
 const DESIGN_BOARD_ID = '1064270065'
 const SHIPPED_BOARD_ID = '1072680042'
 
+// Financial source boards used only to enrich the unified Orders records.
+// They are matched by ACK, never by the mutable Monday board name.
+export const NEW_ORDERS_FINANCIAL_BOARDS_BY_PREFIX = Object.freeze({
+  24: Object.freeze({
+    year: 2024,
+    boardId: '5770735058',
+    ackColumnId: 'text9',
+    orderValueColumnId: 'numbers',
+    freightValueColumnId: 'numbers5',
+    depositReceivedColumnId: 'date2',
+    salesRepColumnId: null,
+  }),
+  25: Object.freeze({
+    year: 2025,
+    boardId: '8142996505',
+    ackColumnId: 'text9',
+    orderValueColumnId: 'numbers',
+    freightValueColumnId: 'numbers5',
+    depositReceivedColumnId: 'date2',
+    salesRepColumnId: null,
+  }),
+  26: Object.freeze({
+    year: 2026,
+    boardId: '18393945685',
+    ackColumnId: 'text9',
+    orderValueColumnId: 'numbers',
+    freightValueColumnId: 'numbers5',
+    depositReceivedColumnId: 'date2',
+    salesRepColumnId: 'text_mm3x9wep',
+  }),
+})
+
 // --- Order Track AKF (production working set) ------------------------------
 const orderTrackColumns = Object.freeze({
   ackNumber: 'text9', // "ACK" — the order number (YYMM##)
@@ -128,13 +160,25 @@ export const MONDAY_BOARDS = Object.freeze({
   }),
 })
 
-// Website-owned fields that must NEVER be overwritten from Monday: signed BOL
-// and inspection sheet documents live only in Firebase Storage + Mongo. The
-// sync adapter must treat them as off-limits.
+// Website-owned fields that must NEVER be overwritten from Monday. Customer
+// documents and order-change state live only in Firebase Storage + Mongo.
 export const WEBSITE_OWNED_ORDER_FIELDS = Object.freeze([
   'signed_bol',
   'Signed_BOL_source',
   'Signed_BOL',
+  'customer_signed_bol',
+  'Customer_Signed_BOL_source',
+  'Customer_Signed_BOL',
+  'change_version',
+  'change_order_status',
+  'change_order_url',
+  'change_order_name',
+  'change_order_history',
+  'pending_order_change',
+  'customer_signed_change_order',
+  'customer_signed_change_order_url',
+  'Customer_Signed_Change_Order',
+  'customer_signed_change_order_uploaded_at',
   'inspection_sheet',
   'Inspection_sheet_source',
   'Inspection_sheet',
@@ -204,11 +248,13 @@ export function buildDetectedColumnsForBoard(boardId, columnOverrides = {}) {
     shipToColumnId: columns.shipTo ?? null,
     shipNotesColumnId: columns.shipNotes ?? null,
     bolColumnId: columns.bol ?? null,
-    // Signed BOL and inspection sheet are website-owned documents; they have
+    // Driver Signed BOL, Customer Signed BOL, and inspection sheet are
+    // website-owned documents; they have
     // no Monday columns and must never be read from Monday.
     signedBolColumnId: null,
     inspectionSheetColumnId: null,
     poNumberColumnId: override(columnOverrides.poNumberColumnId) || columns.poNumber || null,
+    benchColumnId: columns.bench ?? null,
     notesColumnId: columns.notes ?? null,
     descriptionColumnId: override(columnOverrides.descriptionColumnId) || columns.description || null,
     orderDateColumnId: override(columnOverrides.orderDateColumnId) || columns.poDate || null,

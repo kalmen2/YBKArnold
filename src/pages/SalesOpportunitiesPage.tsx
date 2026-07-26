@@ -62,6 +62,7 @@ import {
   createCrmDealerContact,
   convertCrmQuoteToOrder,
   createCrmQuote,
+  createCrmQuoteRevision,
   createCrmQuoteChatMessage,
   convertCrmQuoteWorkbook,
   fetchCrmConvertOrderBoards,
@@ -76,6 +77,7 @@ import {
   markCrmQuoteFollowedUp,
   removeCrmQuoteChatMessage,
   removeCrmQuote,
+  removeCrmQuoteRevision,
   syncCrmQuoteFromExcel,
   updateCrmQuote,
   type CrmDealer,
@@ -94,9 +96,15 @@ import {
 } from '../features/crm/api'
 import { resolveQuoteAgeDays } from '../features/crm/utils'
 import Quote3dModelPanel from '../features/crm/Quote3dModelPanel'
-import { buildOrderDocumentBlob, type OrderDocumentLine } from '../features/crm/OrderConversionDocuments'
+import {
+  buildOrderDocumentBlob,
+  buildProformaInvoiceBlob,
+  buildWorkOrderDocumentBlob,
+  type OrderDocumentLine,
+} from '../features/crm/OrderConversionDocuments'
 import { resolveFileExtension, sanitizeStoragePathSegment } from '../lib/fileUtils'
 import { formatCurrency } from '../lib/formatters'
+import { runAppProcess } from '../lib/appProcesses'
 import { QUERY_KEYS } from '../lib/queryKeys'
 
 const DEFAULT_OPPORTUNITY_TITLE_PREFIX = 'Opportunity '
@@ -184,6 +192,8 @@ type OpportunityFormState = {
   leadTime: string
   paymentTerms: string
   subtotal: string
+  discountPercent: string
+  discountScope: 'products' | 'products_and_freight'
   freight: string
   freightDescription: string
   notes: string
@@ -212,6 +222,8 @@ type OpportunityDetailsFormState = {
   leadTime: string
   paymentTerms: string
   subtotal: string
+  discountPercent: string
+  discountScope: 'products' | 'products_and_freight'
   freight: string
   freightDescription: string
   notes: string
@@ -316,6 +328,9 @@ type StageColumnFilters = {
 
 type OpportunityDetailsSaveMode = 'save' | 'save_close' | 'decline'
 type OpportunitySavePreference = 'save' | 'save_close'
+type PendingRevisionSave = {
+  mode: OpportunitySavePreference
+}
 type QuoteSidebarFolderKey =
   | 'client_doc'
   | 'renderings'
@@ -1226,6 +1241,8 @@ function resolveQuotePricing(
   fallbackTotal = 0,
   additionalServices: OpportunityServiceItemFormState[] = [],
   shippingServices: OpportunityServiceItemFormState[] = [],
+  discountPercentInput = '',
+  discountScope: 'products' | 'products_and_freight' = 'products',
 ) {
   const normalizedLineItems = normalizeLineItemsForPayload(lineItems)
   const lineItemsTotal = calculateLineItemsTotal(normalizedLineItems)
@@ -1237,16 +1254,30 @@ function resolveQuotePricing(
     .reduce((sum, item) => sum + Number(resolveServiceItemExtPrice(item) || 0), 0)
   const enteredSubtotal = toOptionalNumber(subtotalInput)
   const enteredFreight = toOptionalNumber(freightInput)
-  const subtotal = Number(((enteredSubtotal ?? lineItemsTotal) + additionalServicesTotal).toFixed(2))
+  const grossSubtotal = Number(((enteredSubtotal ?? lineItemsTotal) + additionalServicesTotal).toFixed(2))
+  const parsedDiscountPercent = toOptionalNumber(discountPercentInput)
+  const discountPercent = Math.min(100, Math.max(0, parsedDiscountPercent ?? 0))
+  const productDiscountAmount = Number((grossSubtotal * (discountPercent / 100)).toFixed(2))
+  const subtotal = Number((grossSubtotal - productDiscountAmount).toFixed(2))
   const freight = Number((shippingServicesTotal || enteredFreight || 0).toFixed(2))
+  const discountFreightAmount = discountScope === 'products_and_freight'
+    ? Number((freight * (discountPercent / 100)).toFixed(2))
+    : 0
+  const discountAmount = Number((productDiscountAmount + discountFreightAmount).toFixed(2))
   const baseSubtotal = subtotal
-  const computedTotal = Number((baseSubtotal + (freight ?? 0)).toFixed(2))
+  const computedTotal = Number((baseSubtotal + (freight ?? 0) - discountFreightAmount).toFixed(2))
 
   return {
     normalizedLineItems,
     normalizedAdditionalServices,
     normalizedShippingServices,
     lineItemsTotal,
+    grossSubtotal,
+    discountPercent,
+    discountAmount,
+    productDiscountAmount,
+    discountFreightAmount,
+    discountScope,
     subtotal,
     freight,
     totalAmount: Number.isFinite(computedTotal)
@@ -1345,6 +1376,8 @@ function createEmptyOpportunityForm(): OpportunityFormState {
     leadTime: '',
     paymentTerms: DEFAULT_WEBSITE_PAYMENT_TERMS,
     subtotal: '',
+    discountPercent: '',
+    discountScope: 'products',
     freight: '',
     freightDescription: '',
     notes: '',
@@ -1400,9 +1433,11 @@ function createOpportunityDetailsFormState(quote: CrmQuote): OpportunityDetailsF
   const additionalServices = mapServiceItemsToFormState(quote.additionalServices, createDefaultAdditionalServices)
   const storedAdditionalServicesTotal = (quote.additionalServices || [])
     .reduce((sum, item) => sum + Number(resolveServiceItemExtPrice(item) || 0), 0)
+  const storedProductDiscountAmount = Number(quote.discountAmount || 0) - Number(quote.discountFreightAmount || 0)
+  const grossStoredSubtotal = Number(quote.subtotal || 0) + storedProductDiscountAmount
   const productSubtotal = quote.subtotal === null || quote.subtotal === undefined
     ? ''
-    : String(Math.max(0, Number(quote.subtotal) - storedAdditionalServicesTotal))
+    : String(Math.max(0, grossStoredSubtotal - storedAdditionalServicesTotal))
 
   return {
     dealerSourceId: String(quote.dealerSourceId || ''),
@@ -1417,6 +1452,8 @@ function createOpportunityDetailsFormState(quote: CrmQuote): OpportunityDetailsF
     leadTime: String(quote.leadTime || ''),
     paymentTerms: String(quote.paymentTerms || ''),
     subtotal: origin === 'excel' ? productSubtotal : '',
+    discountPercent: quote.discountPercent === null || quote.discountPercent === undefined ? '' : String(quote.discountPercent),
+    discountScope: quote.discountScope === 'products_and_freight' ? 'products_and_freight' : 'products',
     freight: origin === 'excel' && quote.freight !== null && quote.freight !== undefined ? String(quote.freight) : '',
     freightDescription: String(quote.freightDescription || ''),
     notes: String(quote.notes || ''),
@@ -1429,6 +1466,33 @@ function createOpportunityDetailsFormState(quote: CrmQuote): OpportunityDetailsF
     sourceWorkbookName: String(quote.sourceWorkbookName || ''),
     convertedPdfUrl: String(quote.convertedPdfUrl || ''),
     convertedPdfName: String(quote.convertedPdfName || ''),
+  }
+}
+
+function resolveQuoteRevision(quote: CrmQuote, revisionNumber: number): CrmQuote {
+  const revision = (quote.revisions || []).find(
+    (entry) => Number(entry.revisionNumber) === Number(revisionNumber),
+  )
+
+  if (!revision) {
+    return quote
+  }
+
+  return {
+    ...quote,
+    ...revision,
+    id: quote.id,
+    documents: quote.documents,
+    opportunityStage: quote.opportunityStage,
+    convertedItemKeys: quote.convertedItemKeys,
+    convertedOrderId: quote.convertedOrderId,
+    convertedOrderNumber: quote.convertedOrderNumber,
+    convertedAt: quote.convertedAt,
+    baseQuoteNumber: quote.baseQuoteNumber,
+    activeRevisionNumber: quote.activeRevisionNumber,
+    revisionCount: quote.revisionCount,
+    revisions: quote.revisions,
+    updatedAt: revision.updatedAt || quote.updatedAt,
   }
 }
 
@@ -1585,6 +1649,10 @@ function resolveQuoteChatAuthorLabel(message: CrmQuoteChatMessage) {
 
 function normalizeMatchValue(value: string | null | undefined) {
   return String(value ?? '').trim().toLowerCase()
+}
+
+function normalizeQuoteFamilyValue(value: string | null | undefined) {
+  return normalizeMatchValue(value).replace(/[-_\s]*r\d+$/i, '')
 }
 
 function resolveQuoteNumberSortValue(quote: CrmQuote) {
@@ -2987,6 +3055,13 @@ function OpportunityCard({
           </Stack>
 
           <Stack direction="row" spacing={0.5} alignItems="center" sx={{ pt: 0.1 }}>
+            <Chip
+              size="small"
+              label={`R${Number(quote.activeRevisionNumber ?? quote.revisionCount ?? 0)}`}
+              color="primary"
+              variant="outlined"
+              sx={{ height: 19, fontSize: 10, fontWeight: 800 }}
+            />
             {ageDays > 30 ? (
               <Chip size="small" label={`${ageDays}d`} color="warning" sx={{ height: 19, fontSize: 10 }} />
             ) : (
@@ -3818,6 +3893,11 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   const [loadingOpportunityId, setLoadingOpportunityId] = useState<string | null>(null)
   const [quotePrintPreview, setQuotePrintPreview] = useState<CrmQuote | null>(null)
   const [selectedOpportunity, setSelectedOpportunity] = useState<CrmQuote | null>(null)
+  const [selectedRevisionNumber, setSelectedRevisionNumber] = useState(0)
+  const [pendingRevisionSave, setPendingRevisionSave] = useState<PendingRevisionSave | null>(null)
+  const [saveTargetRevisionNumber, setSaveTargetRevisionNumber] = useState(0)
+  const [isCreatingRevision, setIsCreatingRevision] = useState(false)
+  const [isDeletingRevision, setIsDeletingRevision] = useState(false)
   const [convertOrderTargetQuote, setConvertOrderTargetQuote] = useState<CrmQuote | null>(null)
   const [convertOrderFormState, setConvertOrderFormState] = useState<OpportunityConvertOrderFormState>(() => (
     createEmptyConvertOrderForm()
@@ -4150,6 +4230,14 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     () => (selectedOpportunity ? resolveOpportunityStage(selectedOpportunity) : null),
     [selectedOpportunity],
   )
+  const selectedRevisionQuote = useMemo(
+    () => (selectedOpportunity
+      ? resolveQuoteRevision(selectedOpportunity, selectedRevisionNumber)
+      : null),
+    [selectedOpportunity, selectedRevisionNumber],
+  )
+  const activeRevisionNumber = Number(selectedOpportunity?.activeRevisionNumber ?? 0)
+  const isSelectedRevisionActive = selectedRevisionNumber === activeRevisionNumber
 
   const isDetailsActionMenuOpen = Boolean(detailsActionMenuAnchorEl)
   const isSaveActionMenuOpen = Boolean(saveActionMenuAnchorEl)
@@ -4457,13 +4545,18 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   const canUploadQuoteDocument = Boolean(formState.quoteNumber.trim())
 
   const addPricingPreview = useMemo(() => {
-    const pricing = resolveQuotePricing(formState.lineItems, formState.subtotal, formState.freight, 0, formState.additionalServices, formState.shippingServices)
+    const pricing = resolveQuotePricing(formState.lineItems, formState.subtotal, formState.freight, 0, formState.additionalServices, formState.shippingServices, formState.discountPercent, formState.discountScope)
     return {
+      grossSubtotal: pricing.grossSubtotal,
+      discountPercent: pricing.discountPercent,
+      discountAmount: pricing.discountAmount,
+      discountFreightAmount: pricing.discountFreightAmount,
+      discountScope: pricing.discountScope,
       subtotal: pricing.subtotal ?? pricing.lineItemsTotal,
       freight: pricing.freight ?? 0,
       totalAmount: pricing.totalAmount,
     }
-  }, [formState.additionalServices, formState.freight, formState.lineItems, formState.shippingServices, formState.subtotal])
+  }, [formState.additionalServices, formState.discountPercent, formState.discountScope, formState.freight, formState.lineItems, formState.shippingServices, formState.subtotal])
 
   const detailsPricingPreview = useMemo(() => {
     if (!opportunityDetailsFormState) {
@@ -4477,9 +4570,16 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       Number(selectedOpportunity?.totalAmount || 0),
       opportunityDetailsFormState.additionalServices,
       opportunityDetailsFormState.shippingServices,
+      opportunityDetailsFormState.discountPercent,
+      opportunityDetailsFormState.discountScope,
     )
 
     return {
+      grossSubtotal: pricing.grossSubtotal,
+      discountPercent: pricing.discountPercent,
+      discountAmount: pricing.discountAmount,
+      discountFreightAmount: pricing.discountFreightAmount,
+      discountScope: pricing.discountScope,
       subtotal: pricing.subtotal ?? pricing.lineItemsTotal,
       freight: pricing.freight ?? 0,
       totalAmount: pricing.totalAmount,
@@ -4487,33 +4587,39 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   }, [opportunityDetailsFormState, selectedOpportunity?.totalAmount])
 
   const selectedOpportunityPrintQuote = useMemo<CrmQuote | null>(() => {
-    if (!selectedOpportunity || !opportunityDetailsFormState || selectedOpportunity.origin === 'excel') {
-      return selectedOpportunity
+    if (!selectedRevisionQuote || !opportunityDetailsFormState || selectedRevisionQuote.origin === 'excel') {
+      return selectedRevisionQuote
     }
 
     const pricing = resolveQuotePricing(
       opportunityDetailsFormState.lineItems,
       opportunityDetailsFormState.subtotal,
       opportunityDetailsFormState.freight,
-      Number(selectedOpportunity.totalAmount || 0),
+      Number(selectedRevisionQuote.totalAmount || 0),
       opportunityDetailsFormState.additionalServices,
       opportunityDetailsFormState.shippingServices,
+      opportunityDetailsFormState.discountPercent,
+      opportunityDetailsFormState.discountScope,
     )
 
     return {
-      ...selectedOpportunity,
-      dealerSourceId: opportunityDetailsFormState.dealerSourceId.trim() || selectedOpportunity.dealerSourceId,
+      ...selectedRevisionQuote,
+      dealerSourceId: opportunityDetailsFormState.dealerSourceId.trim() || selectedRevisionQuote.dealerSourceId,
       companyName: opportunityDetailsFormState.companyName.trim() || null,
       contactName: opportunityDetailsFormState.contactName.trim() || null,
       contactEmail: opportunityDetailsFormState.contactEmail.trim() || null,
       contactPhone: opportunityDetailsFormState.contactPhone.trim() || null,
       salesRep: opportunityDetailsFormState.salesRep.trim() || null,
       quoteNumber: opportunityDetailsFormState.quoteNumber.trim() || null,
-      title: opportunityDetailsFormState.title.trim() || selectedOpportunity.title,
+      title: opportunityDetailsFormState.title.trim() || selectedRevisionQuote.title,
       opportunityDate: opportunityDetailsFormState.opportunityDateInput.trim() || null,
       leadTime: opportunityDetailsFormState.leadTime.trim() || null,
       paymentTerms: opportunityDetailsFormState.paymentTerms.trim() || null,
       subtotal: pricing.subtotal,
+      discountPercent: pricing.discountPercent,
+      discountAmount: pricing.discountAmount,
+      discountScope: pricing.discountScope,
+      discountFreightAmount: pricing.discountFreightAmount,
       freight: pricing.freight,
       freightDescription: opportunityDetailsFormState.freightDescription.trim() || null,
       lineItems: pricing.normalizedLineItems,
@@ -4522,7 +4628,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       totalAmount: pricing.totalAmount,
       notes: opportunityDetailsFormState.notes.trim() || null,
     }
-  }, [opportunityDetailsFormState, selectedOpportunity])
+  }, [opportunityDetailsFormState, selectedRevisionQuote])
 
   const invalidateOpportunityData = useCallback(async () => {
     await Promise.all([
@@ -5769,14 +5875,18 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     setSuccessMessage(null)
     setDetailsActionMenuAnchorEl(null)
     setSaveActionMenuAnchorEl(null)
+    setPendingRevisionSave(null)
     setUploadQuoteActionMenuAnchorEl(null)
-    const nextFormState = createOpportunityDetailsFormState(quote)
+    const nextRevisionNumber = Number(quote.activeRevisionNumber ?? quote.revisionCount ?? 0)
+    const nextRevisionQuote = resolveQuoteRevision(quote, nextRevisionNumber)
+    const nextFormState = createOpportunityDetailsFormState(nextRevisionQuote)
     setSelectedOpportunityChatDraft('')
     setSelectedOpportunityRefreshOnSend(false)
     setDeletingSelectedOpportunityChatMessageId('')
     setSelectedOpportunityDetailsTab(initialTab)
     setSelectedOpportunityNestedFolderPath(null)
     setSelectedOpportunity(quote)
+    setSelectedRevisionNumber(nextRevisionNumber)
     setOpportunityDetailsFormState(nextFormState)
     setOpportunityDetailsInitialSnapshot(serializeOpportunityDetailsFormState(nextFormState))
     setFolderScanQueue([])
@@ -6112,11 +6222,120 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     setBusyQuoteId(null)
   }, [loadOpportunityDetails])
 
+  const handleSelectRevision = useCallback((nextRevisionNumber: number) => {
+    if (!selectedOpportunity || nextRevisionNumber === selectedRevisionNumber) {
+      return
+    }
+
+    if (isOpportunityDetailsDirty) {
+      const confirmed = window.confirm('Discard the unsaved changes and open another revision?')
+      if (!confirmed) return
+    }
+
+    const revisionQuote = resolveQuoteRevision(selectedOpportunity, nextRevisionNumber)
+    const nextFormState = createOpportunityDetailsFormState(revisionQuote)
+    setSelectedRevisionNumber(nextRevisionNumber)
+    setOpportunityDetailsFormState(nextFormState)
+    setOpportunityDetailsInitialSnapshot(serializeOpportunityDetailsFormState(nextFormState))
+    setErrorMessage(null)
+    setSuccessMessage(null)
+  }, [isOpportunityDetailsDirty, selectedOpportunity, selectedRevisionNumber])
+
+  const handleCreateRevision = useCallback(async () => {
+    if (!selectedOpportunity || !selectedOpportunityPrintQuote) return
+
+    if (isOpportunityDetailsDirty) {
+      setErrorMessage('Save the current revision before creating the next revision.')
+      return
+    }
+
+    const confirmed = window.confirm(
+      `Create Revision ${Number(selectedOpportunity.revisionCount ?? activeRevisionNumber) + 1} from Revision ${selectedRevisionNumber}?`,
+    )
+    if (!confirmed) return
+
+    setErrorMessage(null)
+    setSuccessMessage(null)
+    setIsCreatingRevision(true)
+    setBusyQuoteId(selectedOpportunity.id)
+
+    try {
+      const response = await createCrmQuoteRevision(selectedOpportunity.id, {
+        sourceRevisionNumber: selectedRevisionNumber,
+      })
+      const nextQuote = response.quote
+      const nextRevisionNumber = Number(nextQuote.activeRevisionNumber ?? nextQuote.revisionCount ?? 0)
+      const nextRevisionQuote = resolveQuoteRevision(nextQuote, nextRevisionNumber)
+      const nextFormState = createOpportunityDetailsFormState(nextRevisionQuote)
+
+      setSelectedOpportunity(nextQuote)
+      setSelectedRevisionNumber(nextRevisionNumber)
+      setOpportunityDetailsFormState(nextFormState)
+      setOpportunityDetailsInitialSnapshot(serializeOpportunityDetailsFormState(nextFormState))
+      await invalidateOpportunityData()
+      setSuccessMessage(`Revision ${nextRevisionNumber} created. Add a SketchUp model when this revision is ready for a public 3D view.`)
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to create the new revision.')
+    } finally {
+      setIsCreatingRevision(false)
+      setBusyQuoteId(null)
+    }
+  }, [
+    activeRevisionNumber,
+    invalidateOpportunityData,
+    isOpportunityDetailsDirty,
+    selectedOpportunity,
+    selectedOpportunityPrintQuote,
+    selectedRevisionNumber,
+  ])
+
+  const handleDeleteRevision = useCallback(async () => {
+    if (!selectedOpportunity) return
+    const revisions = selectedOpportunity.revisions || []
+
+    if (revisions.length <= 1) {
+      setErrorMessage('Revision 0 is the only revision. Delete the whole opportunity if you want to remove it.')
+      return
+    }
+
+    const warning = selectedRevisionNumber === 0
+      ? 'Delete Revision 0? Every remaining revision will jump back one number. This cannot be undone.'
+      : `Delete Revision ${selectedRevisionNumber}? Every later revision will jump back one number. This cannot be undone.`
+    if (!window.confirm(warning)) return
+
+    setErrorMessage(null)
+    setSuccessMessage(null)
+    setIsDeletingRevision(true)
+    setBusyQuoteId(selectedOpportunity.id)
+
+    try {
+      const response = await removeCrmQuoteRevision(selectedOpportunity.id, selectedRevisionNumber)
+      const nextQuote = response.quote
+      const nextRevisionNumber = Math.min(
+        selectedRevisionNumber,
+        Number(nextQuote.revisionCount ?? 0),
+      )
+      const nextRevisionQuote = resolveQuoteRevision(nextQuote, nextRevisionNumber)
+      const nextFormState = createOpportunityDetailsFormState(nextRevisionQuote)
+      setSelectedOpportunity(nextQuote)
+      setSelectedRevisionNumber(nextRevisionNumber)
+      setOpportunityDetailsFormState(nextFormState)
+      setOpportunityDetailsInitialSnapshot(serializeOpportunityDetailsFormState(nextFormState))
+      await invalidateOpportunityData()
+      setSuccessMessage(`Revision deleted. The remaining revisions are now numbered 0 through ${nextQuote.revisionCount ?? 0}.`)
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to delete the revision.')
+    } finally {
+      setIsDeletingRevision(false)
+      setBusyQuoteId(null)
+    }
+  }, [invalidateOpportunityData, selectedOpportunity, selectedRevisionNumber])
+
   const handleCreateOpportunity = useCallback(async () => {
     const dealerSourceId = formState.dealerSourceId.trim()
     const quoteNumber = formState.quoteNumber.trim()
     const opportunityDateInput = formState.opportunityDateInput.trim()
-    const pricing = resolveQuotePricing(formState.lineItems, formState.subtotal, formState.freight, 0, formState.additionalServices, formState.shippingServices)
+    const pricing = resolveQuotePricing(formState.lineItems, formState.subtotal, formState.freight, 0, formState.additionalServices, formState.shippingServices, formState.discountPercent, formState.discountScope)
     const lineItems = pricing.normalizedLineItems
     const totalAmount = pricing.totalAmount
 
@@ -6133,7 +6352,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     }
 
     const isDuplicateQuoteNumber = quotes.some(
-      (entry) => normalizeMatchValue(entry.quoteNumber) === normalizeMatchValue(quoteNumber),
+      (entry) => normalizeQuoteFamilyValue(entry.quoteNumber) === normalizeQuoteFamilyValue(quoteNumber),
     )
 
     if (isDuplicateQuoteNumber) {
@@ -6171,6 +6390,10 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         leadTime: formState.leadTime.trim() || null,
         paymentTerms: formState.paymentTerms.trim() || null,
         subtotal: pricing.subtotal,
+        discountPercent: pricing.discountPercent,
+        discountAmount: pricing.discountAmount,
+        discountScope: pricing.discountScope,
+        discountFreightAmount: pricing.discountFreightAmount,
         freight: pricing.freight,
         freightDescription: formState.freightDescription.trim() || null,
         status: targetStatus,
@@ -6389,64 +6612,103 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     setSuccessMessage(null)
     setIsSubmittingConvertOrder(true)
     setBusyQuoteId(convertOrderTargetQuote.id)
+    setIsConvertOrderDialogOpen(false)
+    setConvertOrderTargetQuote(null)
+    setConvertOrderFormState(createEmptyConvertOrderForm(convertOrderPrimaryBoardId, convertOrderSecondaryBoardId))
+    setDetailsActionMenuAnchorEl(null)
+    setUploadQuoteActionMenuAnchorEl(null)
+    setSelectedOpportunity(null)
+    setOpportunityDetailsFormState(null)
+    setOpportunityDetailsInitialSnapshot('')
+    setSelectedOpportunityDetailsTab('details')
+    setSelectedOpportunityNestedFolderPath(null)
+    setPendingExcelSyncPromotionQuoteId(null)
+    setIsSubmittingConvertOrder(false)
+    setBusyQuoteId(null)
 
     try {
-      const selectedProductLines: OrderDocumentLine[] = [
+      await runAppProcess({
+        label: `Converting ${convertOrderTargetQuote.quoteNumber || convertOrderTargetQuote.title || 'quote'} to order`,
+        detail: `Acknowledgement ${acknowledgmentNumber}`,
+      }, async () => {
+        const selectedProductLines: OrderDocumentLine[] = [
         ...(convertOrderTargetQuote.lineItems || []).filter((item) => convertOrderFormState.selectedLineItemIds.includes(String(item.id || item.itemNumber || ''))).map((item) => ({ id: String(item.id || item.itemNumber || ''), description: item.description || 'Product', qty: item.qty, unitPrice: item.unitPrice, extPrice: Number(item.extPrice || 0), category: 'product' as const })),
         ...(convertOrderTargetQuote.additionalServices || []).filter((item) => convertOrderFormState.selectedAdditionalServiceIds.includes(item.id)).map((item) => ({ id: item.id, description: item.title || item.description || 'Additional service', qty: item.qty ?? null, unitPrice: item.unitPrice ?? null, extPrice: Number(resolveServiceItemExtPrice(item) || 0), category: 'additional' as const })),
-      ]
-      const selectedFreightLines: OrderDocumentLine[] = (convertOrderTargetQuote.shippingServices || []).filter((item) => convertOrderFormState.selectedShippingServiceIds.includes(item.id)).map((item) => ({ id: item.id, description: item.title || item.description || 'Freight service', qty: item.qty ?? null, unitPrice: item.unitPrice ?? null, extPrice: Number(resolveServiceItemExtPrice(item) || 0), category: 'freight' as const }))
-      const quoteFreight = convertOrderFormState.includeFreight ? Number(convertOrderTargetQuote.freight || 0) : 0
-      if (quoteFreight > 0) selectedFreightLines.push({ id: 'quote-freight', description: convertOrderTargetQuote.freightDescription || 'Freight', qty: 1, unitPrice: quoteFreight, extPrice: quoteFreight, category: 'freight' })
-      const productNet = selectedProductLines.reduce((sum, line) => sum + line.extPrice, 0)
-      const freightNet = selectedFreightLines.reduce((sum, line) => sum + line.extPrice, 0)
-      const documentData = {
-        documentDate: poDate,
-        companyName: convertOrderTargetQuote.companyName || convertOrderTargetQuote.dealerName || '',
-        contactName: convertOrderTargetQuote.contactName || '', poNumber: convertOrderFormState.poNumber.trim(),
-        projectName: convertOrderTargetQuote.title || '', acknowledgmentNumber,
-        leadTime, freightType: convertOrderTargetQuote.freightDescription || selectedFreightLines.map((line) => line.description).join(' / '), shipTo,
-        productNet, freightNet, grandTotal: productNet + freightNet, depositRequired, depositPercent,
-        lines: [...selectedProductLines, ...selectedFreightLines],
-      }
-      const settings = quotePrintSettingsQuery.data?.settings || DEFAULT_QUOTE_PRINT_SETTINGS
-      const confirmationBlob = await buildOrderDocumentBlob(documentData, settings)
-      const orderPath = sanitizeStoragePathSegment(acknowledgmentNumber, 'order')
-      const confirmationRef = storageRef(firebaseStorage, `crm/orders/${orderPath}/order-confirmation-${Date.now()}.pdf`)
-      await uploadBytes(confirmationRef, confirmationBlob, { contentType: 'application/pdf' })
-      const orderConfirmationUrl = await getDownloadURL(confirmationRef)
+        ]
+        const selectedFreightLines: OrderDocumentLine[] = (convertOrderTargetQuote.shippingServices || []).filter((item) => convertOrderFormState.selectedShippingServiceIds.includes(item.id)).map((item) => ({ id: item.id, description: item.title || item.description || 'Freight service', qty: item.qty ?? null, unitPrice: item.unitPrice ?? null, extPrice: Number(resolveServiceItemExtPrice(item) || 0), category: 'freight' as const }))
+        const quoteFreight = convertOrderFormState.includeFreight ? Number(convertOrderTargetQuote.freight || 0) : 0
+        if (quoteFreight > 0) selectedFreightLines.push({ id: 'quote-freight', description: convertOrderTargetQuote.freightDescription || 'Freight', qty: 1, unitPrice: quoteFreight, extPrice: quoteFreight, category: 'freight' })
+        const productGross = selectedProductLines.reduce((sum, line) => sum + line.extPrice, 0)
+        const discountPercent = Math.min(100, Math.max(0, Number(convertOrderTargetQuote.discountPercent || 0)))
+        const discountAmount = Number((productGross * (discountPercent / 100)).toFixed(2))
+        const productNet = Number((productGross - discountAmount).toFixed(2))
+        const freightGross = selectedFreightLines.reduce((sum, line) => sum + line.extPrice, 0)
+        const freightDiscountAmount = convertOrderTargetQuote.discountScope === 'products_and_freight'
+          ? Number((freightGross * (discountPercent / 100)).toFixed(2))
+          : 0
+        const freightNet = Number((freightGross - freightDiscountAmount).toFixed(2))
+        const documentData = {
+          documentDate: poDate,
+          companyName: convertOrderTargetQuote.companyName || convertOrderTargetQuote.dealerName || '',
+          contactName: convertOrderTargetQuote.contactName || '',
+          contactEmail: convertOrderTargetQuote.contactEmail || '',
+          contactPhone: convertOrderTargetQuote.contactPhone || '',
+          description: convertOrderTargetQuote.description || convertOrderTargetQuote.title || '',
+          poNumber: convertOrderFormState.poNumber.trim(),
+          projectName: convertOrderTargetQuote.title || '', acknowledgmentNumber,
+          leadTime, freightType: convertOrderTargetQuote.freightDescription || selectedFreightLines.map((line) => line.description).join(' / '), shipTo,
+          productGross, discountPercent, discountAmount,
+          freightGross, freightDiscountAmount,
+          productNet, freightNet, grandTotal: productNet + freightNet, depositRequired, depositPercent,
+          lines: [...selectedProductLines, ...selectedFreightLines],
+        }
+        const settings = quotePrintSettingsQuery.data?.settings || DEFAULT_QUOTE_PRINT_SETTINGS
+        const [confirmationBlob, workOrderBlob, proformaInvoiceBlob] = await Promise.all([
+          buildOrderDocumentBlob(documentData, settings),
+          buildWorkOrderDocumentBlob(documentData, settings),
+          buildProformaInvoiceBlob(documentData, settings),
+        ])
+        const orderPath = sanitizeStoragePathSegment(acknowledgmentNumber, 'order')
+        const generatedAt = Date.now()
+        const confirmationRef = storageRef(firebaseStorage, `crm/orders/${orderPath}/order-confirmation-${generatedAt}.pdf`)
+        const workOrderRef = storageRef(firebaseStorage, `crm/orders/${orderPath}/work-order-${generatedAt}.pdf`)
+        const proformaInvoiceRef = storageRef(firebaseStorage, `crm/orders/${orderPath}/proforma-invoice-${generatedAt}.pdf`)
+        await Promise.all([
+          uploadBytes(confirmationRef, confirmationBlob, { contentType: 'application/pdf' }),
+          uploadBytes(workOrderRef, workOrderBlob, { contentType: 'application/pdf' }),
+          uploadBytes(proformaInvoiceRef, proformaInvoiceBlob, { contentType: 'application/pdf' }),
+        ])
+        const [orderConfirmationUrl, workOrderUrl, proformaInvoiceUrl] = await Promise.all([
+          getDownloadURL(confirmationRef),
+          getDownloadURL(workOrderRef),
+          getDownloadURL(proformaInvoiceRef),
+        ])
 
-      await convertCrmQuoteToOrder(convertOrderTargetQuote.id, {
-        acknowledgmentNumber,
-        poDate,
-        poNumber: convertOrderFormState.poNumber.trim() || null,
-        leadTime: leadTime || null,
-        shipTo,
-        notes: convertOrderFormState.notes.trim() || null,
-        selectedLineItemIds: convertOrderFormState.selectedLineItemIds,
-        selectedAdditionalServiceIds: convertOrderFormState.selectedAdditionalServiceIds,
-        selectedShippingServiceIds: convertOrderFormState.selectedShippingServiceIds,
-        includeFreight: convertOrderFormState.includeFreight,
-        depositRequired,
-        depositPercent,
-        depositRequestUrl: null,
-        depositRequestName: null,
-        orderConfirmationUrl,
-        orderConfirmationName: `Order Confirmation - ${acknowledgmentNumber}.pdf`,
+        await convertCrmQuoteToOrder(convertOrderTargetQuote.id, {
+          acknowledgmentNumber,
+          poDate,
+          poNumber: convertOrderFormState.poNumber.trim() || null,
+          leadTime: leadTime || null,
+          shipTo,
+          notes: convertOrderFormState.notes.trim() || null,
+          selectedLineItemIds: convertOrderFormState.selectedLineItemIds,
+          selectedAdditionalServiceIds: convertOrderFormState.selectedAdditionalServiceIds,
+          selectedShippingServiceIds: convertOrderFormState.selectedShippingServiceIds,
+          includeFreight: convertOrderFormState.includeFreight,
+          depositRequired,
+          depositPercent,
+          depositRequestUrl: null,
+          depositRequestName: null,
+          orderConfirmationUrl,
+          orderConfirmationName: `Order Confirmation - ${acknowledgmentNumber}.pdf`,
+          workOrderUrl,
+          workOrderName: `Work Order - ${acknowledgmentNumber}.pdf`,
+          proformaInvoiceUrl,
+          proformaInvoiceName: `Proforma Invoice - ${acknowledgmentNumber}.pdf`,
+        })
       })
 
       await invalidateOpportunityData()
-      setIsConvertOrderDialogOpen(false)
-      setConvertOrderTargetQuote(null)
-      setConvertOrderFormState(createEmptyConvertOrderForm(convertOrderPrimaryBoardId, convertOrderSecondaryBoardId))
-      setDetailsActionMenuAnchorEl(null)
-      setUploadQuoteActionMenuAnchorEl(null)
-      setSelectedOpportunity(null)
-      setOpportunityDetailsFormState(null)
-      setOpportunityDetailsInitialSnapshot('')
-      setSelectedOpportunityDetailsTab('details')
-      setSelectedOpportunityNestedFolderPath(null)
-      setPendingExcelSyncPromotionQuoteId(null)
       setSuccessMessage('Opportunity converted to order and pushed to New Orders 2026 + Design AKF.')
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Failed to convert opportunity to order.')
@@ -6556,7 +6818,10 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     }
   }, [invalidateOpportunityData])
 
-  const handleSaveOpportunityDetails = useCallback(async (mode: OpportunityDetailsSaveMode = 'save') => {
+  const handleSaveOpportunityDetails = useCallback(async (
+    mode: OpportunityDetailsSaveMode = 'save',
+    targetRevisionNumber = selectedRevisionNumber,
+  ) => {
     if (!selectedOpportunity || !opportunityDetailsFormState) {
       return
     }
@@ -6570,6 +6835,8 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       Number(selectedOpportunity.totalAmount || 0),
       opportunityDetailsFormState.additionalServices,
       opportunityDetailsFormState.shippingServices,
+      opportunityDetailsFormState.discountPercent,
+      opportunityDetailsFormState.discountScope,
     )
     const lineItems = pricing.normalizedLineItems
     const totalAmount = pricing.totalAmount
@@ -6610,6 +6877,10 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     try {
       const selectedDealerSourceId = opportunityDetailsFormState.dealerSourceId.trim()
       const detailsPayload = {
+        revisionNumber: targetRevisionNumber,
+        ...((mode === 'save' || mode === 'save_close')
+          ? { activeRevisionNumber: targetRevisionNumber }
+          : {}),
         ...(selectedDealerSourceId ? { dealerSourceId: selectedDealerSourceId } : {}),
         quoteNumber: quoteNumber || null,
         title,
@@ -6621,6 +6892,10 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         leadTime: opportunityDetailsFormState.leadTime.trim() || null,
         paymentTerms: opportunityDetailsFormState.paymentTerms.trim() || null,
         subtotal: pricing.subtotal,
+        discountPercent: pricing.discountPercent,
+        discountAmount: pricing.discountAmount,
+        discountScope: pricing.discountScope,
+        discountFreightAmount: pricing.discountFreightAmount,
         freight: pricing.freight,
         freightDescription: opportunityDetailsFormState.freightDescription.trim() || null,
         opportunityDate: opportunityDateInput || null,
@@ -6672,8 +6947,17 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       setDetailsActionMenuAnchorEl(null)
       setPendingExcelSyncPromotionQuoteId(null)
       if (mode === 'save') {
-        if (savedQuote) setSelectedOpportunity(savedQuote)
-        setOpportunityDetailsInitialSnapshot(serializeOpportunityDetailsFormState(opportunityDetailsFormState))
+        if (savedQuote) {
+          const savedRevisionQuote = resolveQuoteRevision(savedQuote, targetRevisionNumber)
+          const savedFormState = createOpportunityDetailsFormState(savedRevisionQuote)
+          setSelectedOpportunity(savedQuote)
+          setSelectedRevisionNumber(targetRevisionNumber)
+          setOpportunityDetailsFormState(savedFormState)
+          setOpportunityDetailsInitialSnapshot(serializeOpportunityDetailsFormState(savedFormState))
+          setSuccessMessage(`Opportunity saved with Revision ${targetRevisionNumber} as the current version.`)
+        } else {
+          setOpportunityDetailsInitialSnapshot(serializeOpportunityDetailsFormState(opportunityDetailsFormState))
+        }
       } else {
         setSelectedOpportunity(null)
         setOpportunityDetailsFormState(null)
@@ -6690,6 +6974,27 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     opportunityDetailsFormState,
     pendingExcelSyncPromotionQuoteId,
     selectedOpportunity,
+    selectedRevisionNumber,
+  ])
+
+  const handleRequestSaveOpportunityDetails = useCallback((mode: OpportunitySavePreference) => {
+    if (!selectedOpportunity) {
+      return
+    }
+
+    const revisions = selectedOpportunity.revisions || []
+    if (revisions.length > 1 && selectedRevisionNumber !== activeRevisionNumber) {
+      setSaveTargetRevisionNumber(selectedRevisionNumber)
+      setPendingRevisionSave({ mode })
+      return
+    }
+
+    void handleSaveOpportunityDetails(mode, selectedRevisionNumber)
+  }, [
+    activeRevisionNumber,
+    handleSaveOpportunityDetails,
+    selectedOpportunity,
+    selectedRevisionNumber,
   ])
 
   const convertOrderQuoteLabel = String(
@@ -6739,6 +7044,77 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
             </Box>
           </Stack>
         </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(pendingRevisionSave)}
+        onClose={() => {
+          if (!isSavingOpportunityDetails) {
+            setPendingRevisionSave(null)
+          }
+        }}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>Choose the saved quote version</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ pt: 0.5 }}>
+            <Typography variant="body2" color="text.secondary">
+              You are editing Revision {selectedRevisionNumber}, while Revision {activeRevisionNumber} is currently shown
+              on the opportunity. Select which revision should receive these changes and become the current version.
+            </Typography>
+            <TextField
+              select
+              autoFocus
+              fullWidth
+              label="Save changes on"
+              value={saveTargetRevisionNumber}
+              onChange={(event) => setSaveTargetRevisionNumber(Number(event.target.value))}
+            >
+              {(selectedOpportunity?.revisions || []).map((revision) => {
+                const revisionNumber = Number(revision.revisionNumber)
+                const labels = [
+                  revisionNumber === selectedRevisionNumber ? 'currently open' : '',
+                  revisionNumber === activeRevisionNumber ? 'currently active' : '',
+                ].filter(Boolean)
+
+                return (
+                  <MenuItem key={revision.id} value={revisionNumber}>
+                    R{revisionNumber}{labels.length > 0 ? ` — ${labels.join(', ')}` : ''}
+                  </MenuItem>
+                )
+              })}
+            </TextField>
+            <Alert severity={saveTargetRevisionNumber === selectedRevisionNumber ? 'info' : 'warning'}>
+              {saveTargetRevisionNumber === selectedRevisionNumber
+                ? `R${saveTargetRevisionNumber} will become the version shown on the opportunity card and used by Print.`
+                : `The details currently open from R${selectedRevisionNumber} will replace the saved details in R${saveTargetRevisionNumber}. R${saveTargetRevisionNumber} will then become the current version.`}
+            </Alert>
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button
+            disabled={isSavingOpportunityDetails}
+            onClick={() => setPendingRevisionSave(null)}
+          >
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            disabled={isSavingOpportunityDetails}
+            onClick={() => {
+              const pendingSave = pendingRevisionSave
+              setPendingRevisionSave(null)
+              if (pendingSave) {
+                void handleSaveOpportunityDetails(pendingSave.mode, saveTargetRevisionNumber)
+              }
+            }}
+          >
+            {pendingRevisionSave?.mode === 'save_close'
+              ? `Save R${saveTargetRevisionNumber} and Close`
+              : `Save on R${saveTargetRevisionNumber}`}
+          </Button>
+        </DialogActions>
       </Dialog>
 
       <Dialog
@@ -8320,7 +8696,38 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                       startAdornment: <InputAdornment position="start">$</InputAdornment>,
                     }}
                   />
+
+                  <TextField
+                    label="Discount"
+                    value={formState.discountPercent}
+                    onChange={(event) => {
+                      const value = event.target.value
+                      if (value === '' || (/^\d{0,3}(?:\.\d{0,2})?$/.test(value) && Number(value) <= 100)) {
+                        setFormState((current) => ({ ...current, discountPercent: value }))
+                      }
+                    }}
+                    type="text"
+                    inputProps={{ inputMode: 'decimal' }}
+                    placeholder="0"
+                    sx={{ flex: 0.7 }}
+                    InputProps={{ endAdornment: <InputAdornment position="end">%</InputAdornment> }}
+                    helperText="Enter the discount percentage"
+                  />
                 </Stack>
+                {formState.discountPercent ? (
+                  <ToggleButtonGroup
+                    exclusive
+                    size="small"
+                    value={formState.discountScope}
+                    onChange={(_, value: 'products' | 'products_and_freight' | null) => {
+                      if (value) setFormState((current) => ({ ...current, discountScope: value }))
+                    }}
+                    sx={{ alignSelf: 'flex-end' }}
+                  >
+                    <ToggleButton value="products">Products only</ToggleButton>
+                    <ToggleButton value="products_and_freight">Products + freight</ToggleButton>
+                  </ToggleButtonGroup>
+                ) : null}
 
                 <TextField
                   label="Freight Description"
@@ -8346,8 +8753,13 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                 >
                   <Stack direction="row" spacing={1} justifyContent="space-between" alignItems="center" flexWrap="wrap" useFlexGap>
                     <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
-                      Sub Net: {formatCurrency(addPricingPreview.subtotal, 2)}
+                      Product: {formatCurrency(addPricingPreview.grossSubtotal, 2)}
                     </Typography>
+                    {addPricingPreview.discountAmount > 0 ? (
+                      <Typography variant="caption" sx={{ fontWeight: 800, color: '#b51f2e' }}>
+                        Discount ({addPricingPreview.discountPercent}%): -{formatCurrency(addPricingPreview.discountAmount, 2)}
+                      </Typography>
+                    ) : null}
                     <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
                       Freight: {formatCurrency(addPricingPreview.freight, 2)}
                     </Typography>
@@ -8579,6 +8991,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
+            position: 'relative',
             gap: 1,
             py: 1.6,
             px: 2,
@@ -8596,7 +9009,64 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                 : 'Update details here. Upload quote packages from the pipeline header.'}
             </Typography>
           </Stack>
+          {selectedOpportunity ? (
+            <Stack
+              direction="row"
+              spacing={1}
+              alignItems="center"
+              sx={{
+                position: { md: 'absolute' },
+                left: { md: '50%' },
+                transform: { md: 'translateX(-50%)' },
+              }}
+            >
+              <TextField
+                select
+                size="small"
+                label="Revision"
+                value={selectedRevisionNumber}
+                onChange={(event) => handleSelectRevision(Number(event.target.value))}
+                sx={{
+                  minWidth: 132,
+                  '& .MuiOutlinedInput-root': { bgcolor: alpha('#ffffff', 0.72) },
+                }}
+              >
+                {(selectedOpportunity.revisions || []).map((revision) => (
+                  <MenuItem key={revision.id} value={revision.revisionNumber}>
+                    Revision {revision.revisionNumber}
+                  </MenuItem>
+                ))}
+              </TextField>
+              {isSelectedRevisionActive ? <Chip size="small" color="primary" label="Current" /> : null}
+            </Stack>
+          ) : null}
           <Stack direction="row" spacing={0.6} alignItems="center">
+            {selectedOpportunity ? (
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<AddRoundedIcon />}
+                disabled={isCreatingRevision || isSavingOpportunityDetails}
+                onClick={() => void handleCreateRevision()}
+                sx={{ bgcolor: alpha('#ffffff', 0.65), whiteSpace: 'nowrap' }}
+              >
+                {isCreatingRevision ? 'Creating…' : 'Create Revision'}
+              </Button>
+            ) : null}
+            {selectedOpportunity && (selectedOpportunity.revisions || []).length > 1 ? (
+              <Tooltip title={`Delete Revision ${selectedRevisionNumber}`}>
+                <span>
+                  <IconButton
+                    size="small"
+                    color="error"
+                    disabled={isDeletingRevision || isCreatingRevision || isSavingOpportunityDetails}
+                    onClick={() => void handleDeleteRevision()}
+                  >
+                    <DeleteOutlineRoundedIcon sx={{ fontSize: 19 }} />
+                  </IconButton>
+                </span>
+              </Tooltip>
+            ) : null}
             {selectedOpportunityPrintQuote ? (
               <Tooltip title="Print quote">
                 <IconButton
@@ -9174,7 +9644,42 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                     startAdornment: <InputAdornment position="start">$</InputAdornment>,
                   }}
                 />
+
+                <TextField
+                  label="Discount"
+                  value={opportunityDetailsFormState.discountPercent}
+                  onChange={(event) => {
+                    const value = event.target.value
+                    if (value === '' || (/^\d{0,3}(?:\.\d{0,2})?$/.test(value) && Number(value) <= 100)) {
+                      setOpportunityDetailsFormState((current) => current ? ({ ...current, discountPercent: value }) : current)
+                    }
+                  }}
+                  disabled={!canManage}
+                  type="text"
+                  inputProps={{ inputMode: 'decimal' }}
+                  placeholder="0"
+                  sx={{ flex: 0.7 }}
+                  InputProps={{ endAdornment: <InputAdornment position="end">%</InputAdornment> }}
+                  helperText="Enter the discount percentage"
+                />
               </Stack>
+              {opportunityDetailsFormState.discountPercent ? (
+                <ToggleButtonGroup
+                  exclusive
+                  size="small"
+                  value={opportunityDetailsFormState.discountScope}
+                  onChange={(_, value: 'products' | 'products_and_freight' | null) => {
+                    if (value) {
+                      setOpportunityDetailsFormState((current) => current ? ({ ...current, discountScope: value }) : current)
+                    }
+                  }}
+                  disabled={!canManage}
+                  sx={{ alignSelf: 'flex-end' }}
+                >
+                  <ToggleButton value="products">Products only</ToggleButton>
+                  <ToggleButton value="products_and_freight">Products + freight</ToggleButton>
+                </ToggleButtonGroup>
+              ) : null}
 
               <TextField
                 label="Freight Description"
@@ -9207,8 +9712,13 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                 >
                   <Stack direction="row" spacing={1} justifyContent="space-between" alignItems="center" flexWrap="wrap" useFlexGap>
                     <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
-                      Sub Net: {formatCurrency(detailsPricingPreview.subtotal, 2)}
+                      Product: {formatCurrency(detailsPricingPreview.grossSubtotal, 2)}
                     </Typography>
+                    {detailsPricingPreview.discountAmount > 0 ? (
+                      <Typography variant="caption" sx={{ fontWeight: 800, color: '#b51f2e' }}>
+                        Discount ({detailsPricingPreview.discountPercent}%): -{formatCurrency(detailsPricingPreview.discountAmount, 2)}
+                      </Typography>
+                    ) : null}
                     <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
                       Freight: {formatCurrency(detailsPricingPreview.freight, 2)}
                     </Typography>
@@ -9220,12 +9730,13 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
               ) : null}
 
               <Quote3dModelPanel
-                quote={selectedOpportunity}
+                quote={selectedRevisionQuote || selectedOpportunity}
+                revisionNumber={selectedRevisionNumber}
                 canManage={canManage}
                 onChanged={async () => {
-                  const refreshed = await quotesQuery.refetch()
-                  const nextQuote = refreshed.data?.quotes?.find((quote) => quote.id === selectedOpportunity.id)
-                  if (nextQuote) setSelectedOpportunity(nextQuote)
+                  const response = await fetchCrmQuoteDetails(selectedOpportunity.id)
+                  setSelectedOpportunity(response.quote)
+                  await quotesQuery.refetch()
                 }}
               />
 
@@ -9687,7 +10198,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
               || !opportunityDetailsFormState
             }
           >
-            <Button onClick={() => void handleSaveOpportunityDetails(preferredSaveAction)}>
+            <Button onClick={() => handleRequestSaveOpportunityDetails(preferredSaveAction)}>
               {isSavingOpportunityDetails ? 'Saving...' : preferredSaveAction === 'save_close' ? 'Save and Close' : 'Save'}
             </Button>
             <Button
@@ -9713,7 +10224,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
               onClick={() => {
                 setSaveActionMenuAnchorEl(null)
                 rememberSaveAction('save')
-                void handleSaveOpportunityDetails('save')
+                handleRequestSaveOpportunityDetails('save')
               }}
             >
               Save
@@ -9723,7 +10234,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
               onClick={() => {
                 setSaveActionMenuAnchorEl(null)
                 rememberSaveAction('save_close')
-                void handleSaveOpportunityDetails('save_close')
+                handleRequestSaveOpportunityDetails('save_close')
               }}
             >
               Save and Close

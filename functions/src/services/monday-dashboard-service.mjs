@@ -47,6 +47,8 @@ export function createMondayDashboardService({
       findColumnById(columnValues, columnMap.inspectionSheetColumnId)
     const poNumberColumn =
       findColumnById(columnValues, columnMap.poNumberColumnId)
+    const benchColumn =
+      findColumnById(columnValues, columnMap.benchColumnId)
     const notesColumn =
       findColumnById(columnValues, columnMap.notesColumnId)
     const descriptionColumn =
@@ -79,9 +81,8 @@ export function createMondayDashboardService({
     ).trim() || null
     const isDone = Boolean(shippedAt)
     const isProductionStarted = resolveProductionStartedFromProgressDetails(progressStatusDetails)
-    const scheduleEligible = isDone || isProductionStarted
-    const leadTimeDays = scheduleEligible ? rawLeadTimeDays : null
-    const directDueDate = scheduleEligible ? rawDueDate : null
+    const leadTimeDays = rawLeadTimeDays
+    const directDueDate = rawDueDate
     const computedDueDate = null
     const effectiveDueDate = directDueDate || computedDueDate
     const daysUntilDue = effectiveDueDate
@@ -99,6 +100,7 @@ export function createMondayDashboardService({
     const signedBol = readTextFromColumn(signedBolColumn) || null
     const inspectionSheet = readTextFromColumn(inspectionSheetColumn) || null
     const poNumber = readTextFromColumn(poNumberColumn) || null
+    const bench = readTextFromColumn(benchColumn) || null
     const notes = readTextFromColumn(notesColumn) || null
     const description = readTextFromColumn(descriptionColumn) || null
     const jobNumber = String(acknowledgmentColumn?.text ?? '').trim() || null
@@ -140,6 +142,7 @@ export function createMondayDashboardService({
       inspectionSheetUrl: inspectionSheetDocument.url,
       inspectionSheetFileName: inspectionSheetDocument.fileName,
       poNumber,
+      bench,
       notes,
       description,
       shopDrawingUrl: shopDrawing.url,

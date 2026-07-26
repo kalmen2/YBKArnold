@@ -6,6 +6,7 @@ export function createAuthRequestService({
   authClientPlatformWeb,
   authRoleAdmin,
   authRoleSalesRep,
+  authRoleShopWorker,
   authRoleStandard,
   formatAuthLoginHoursWindow,
   getAuth,

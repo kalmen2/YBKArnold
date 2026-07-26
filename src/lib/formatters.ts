@@ -108,7 +108,8 @@ export function roleLabel(role: AppAuthRole): string {
   if (role === 'admin') return 'Admin'
   if (role === 'manager') return 'Manager'
   if (role === 'sales_rep') return 'Sales Rep'
-  return 'Standard'
+  if (role === 'shop_worker') return 'Shop Worker'
+  return 'Office Worker'
 }
 
 export function roleColor(role: AppAuthRole): 'default' | 'primary' | 'secondary' {

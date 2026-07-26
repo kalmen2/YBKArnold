@@ -319,6 +319,7 @@ export function createMondaySnapshotService({
       'signedBolColumnId',
       'inspectionSheetColumnId',
       'poNumberColumnId',
+      'benchColumnId',
       'notesColumnId',
       'descriptionColumnId',
       'orderDateColumnId',
@@ -837,13 +838,20 @@ mutation ArchiveMondayItem($itemId: ID!) {
     }
   }
 
-  async function updateMondayItemStatusColumn({ boardId, itemId, columnId, statusLabel }) {
+  async function updateMondayItemStatusColumn({
+    boardId,
+    itemId,
+    columnId,
+    statusIndex = null,
+    statusLabel,
+  }) {
     ensureMondayConfiguration()
 
     const normalizedBoardId = String(boardId ?? '').trim()
     const normalizedItemId = String(itemId ?? '').trim()
     const normalizedColumnId = String(columnId ?? '').trim()
     const normalizedStatusLabel = String(statusLabel ?? '').trim()
+    const normalizedStatusIndex = String(statusIndex ?? '').trim()
 
     if (!normalizedBoardId) {
       throw {
@@ -866,7 +874,7 @@ mutation ArchiveMondayItem($itemId: ID!) {
       }
     }
 
-    if (normalizedStatusLabel) {
+    if (normalizedStatusLabel || normalizedStatusIndex) {
       await callMondayGraphql(
         `
 mutation UpdateMondayItemStatusColumn($boardId: ID!, $itemId: ID!, $columnId: String!, $value: JSON!) {
@@ -884,7 +892,11 @@ mutation UpdateMondayItemStatusColumn($boardId: ID!, $itemId: ID!, $columnId: St
           boardId: normalizedBoardId,
           itemId: normalizedItemId,
           columnId: normalizedColumnId,
-          value: JSON.stringify({ label: normalizedStatusLabel }),
+          value: normalizedStatusIndex
+            ? JSON.stringify({ index: Number.isFinite(Number(normalizedStatusIndex))
+              ? Number(normalizedStatusIndex)
+              : normalizedStatusIndex })
+            : JSON.stringify({ label: normalizedStatusLabel }),
         },
       )
     } else {
@@ -1507,6 +1519,119 @@ query GetBoardItemNames($boardId: ID!, $limit: Int!, $cursor: String) {
     return snapshot
   }
 
+  // Fetches a deliberately small, caller-selected set of columns for every
+  // item on one board. This keeps yearly New Orders enrichment inexpensive
+  // while still matching by the board's authoritative ACK column.
+  async function fetchMondayBoardSelectedColumns({
+    boardId,
+    boardUrl = null,
+    boardName = null,
+    columnIds = [],
+  }) {
+    ensureMondayConfiguration()
+
+    const normalizedBoardId = String(boardId ?? '').trim()
+    const normalizedColumnIds = [...new Set(
+      (Array.isArray(columnIds) ? columnIds : [])
+        .map((columnId) => String(columnId ?? '').trim())
+        .filter(Boolean),
+    )]
+
+    if (!normalizedBoardId) {
+      throw { status: 500, message: 'Missing Monday board id for selected-column lookup.' }
+    }
+
+    if (normalizedColumnIds.length === 0) {
+      throw { status: 400, message: 'At least one Monday column id is required.' }
+    }
+
+    const idsLiteral = `[${normalizedColumnIds.map((id) => JSON.stringify(id)).join(', ')}]`
+    const selectedColumnsQuery = `
+query GetBoardSelectedColumns($boardId: ID!, $limit: Int!, $cursor: String) {
+  boards(ids: [$boardId]) {
+    id
+    name
+    items_page(limit: $limit, cursor: $cursor) {
+      cursor
+      items {
+        id
+        name
+        column_values(ids: ${idsLiteral}) {
+          id
+          type
+          text
+          value
+        }
+      }
+    }
+  }
+}
+`
+
+    let cursor = null
+    let pageCount = 0
+    const collectedItems = []
+    const seenCursors = new Set()
+    let board = null
+
+    while (pageCount < mondayItemsMaxPages) {
+      const data = await callMondayGraphql(selectedColumnsQuery, {
+        boardId: normalizedBoardId,
+        limit: mondayItemsPageLimit,
+        cursor,
+      })
+      const boardData = data?.boards?.[0]
+
+      if (!boardData) {
+        throw { status: 404, message: `Monday board ${normalizedBoardId} was not found.` }
+      }
+
+      if (!board) {
+        board = {
+          id: String(boardData.id ?? normalizedBoardId),
+          name: String(boardData.name ?? boardName ?? ''),
+          url: boardUrl,
+        }
+      }
+
+      const items = Array.isArray(boardData.items_page?.items)
+        ? boardData.items_page.items
+        : []
+      const nextCursor = String(boardData.items_page?.cursor ?? '').trim() || null
+
+      collectedItems.push(...items)
+      pageCount += 1
+
+      if (!nextCursor || nextCursor === cursor || seenCursors.has(nextCursor)) {
+        break
+      }
+
+      if (items.length < mondayItemsPageLimit) {
+        break
+      }
+
+      seenCursors.add(nextCursor)
+      cursor = nextCursor
+    }
+
+    return {
+      board,
+      generatedAt: new Date().toISOString(),
+      items: dedupeMondayItems(collectedItems).map((item) => ({
+        id: String(item?.id ?? '').trim(),
+        name: String(item?.name ?? '').trim(),
+        columnValues: (Array.isArray(item?.column_values) ? item.column_values : [])
+          .map((columnValue) => ({
+            id: String(columnValue?.id ?? '').trim(),
+            type: String(columnValue?.type ?? '').trim() || null,
+            text: String(columnValue?.text ?? '').trim() || null,
+            value: columnValue?.value ?? null,
+          }))
+          .filter((columnValue) => Boolean(columnValue.id)),
+      })),
+    }
+  }
+
   function invalidateMondayBoardNamesCache(boardId) {
     if (boardId) {
       cachedBoardNamesByBoard.delete(String(boardId).trim())
@@ -1652,6 +1777,7 @@ query GetItemsByIds($itemIds: [ID!]!) {
     fetchMondayBoardColumns,
     fetchMondayBoardItemNames,
     fetchMondayBoardItemsByIds,
+    fetchMondayBoardSelectedColumns,
     fetchMondayBoardsCatalog,
     fetchMondayDashboardSnapshot,
     fetchMondayStatusColumnOptions,

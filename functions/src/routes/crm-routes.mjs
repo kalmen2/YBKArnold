@@ -377,13 +377,215 @@ function normalizeOpportunityStage(value, fallbackStage = 'concept') {
   return normalizeStatus(normalized, opportunityStages, fallbackStage)
 }
 
+const quoteRevisionSnapshotFields = [
+  'dealerSourceId',
+  'dealerName',
+  'dealerState',
+  'companyName',
+  'salesRep',
+  'projectType',
+  'opportunityDate',
+  'contactSourceId',
+  'contactName',
+  'contactEmail',
+  'contactPhone',
+  'quoteNumber',
+  'paymentTerms',
+  'leadTime',
+  'subtotal',
+  'discountPercent',
+  'discountAmount',
+  'discountScope',
+  'discountFreightAmount',
+  'freight',
+  'freightDescription',
+  'lineItems',
+  'additionalServices',
+  'shippingServices',
+  'title',
+  'description',
+  'conceptImageUrl',
+  'conceptImageName',
+  'origin',
+  'sourceWorkbookUrl',
+  'sourceWorkbookName',
+  'convertedPdfUrl',
+  'convertedPdfName',
+  'trimble3d',
+  'status',
+  'totalAmount',
+  'currency',
+  'sentAt',
+  'acceptedAt',
+  'rejectedAt',
+  'notes',
+]
+
+function parseQuoteRevisionIdentity(value) {
+  const normalized = toTrimmedText(value, 120)
+  const match = normalized.match(/^(.+?)(?:[-_\s]*)r(\d+)$/i)
+  const baseQuoteNumber = toTrimmedText(match?.[1] || normalized, 110)
+    .replace(/[-_\s]+$/g, '')
+
+  return {
+    baseQuoteNumber,
+    revisionNumber: match ? toNonNegativeInteger(match[2], 0) : 0,
+    hasRevisionSuffix: Boolean(match),
+  }
+}
+
+function formatQuoteRevisionNumber(baseQuoteNumber, revisionNumber) {
+  const normalizedBase = toTrimmedText(baseQuoteNumber, 110).replace(/[-_\s]+$/g, '')
+
+  if (!normalizedBase) {
+    return null
+  }
+
+  return `${normalizedBase}_R${toNonNegativeInteger(revisionNumber, 0)}`
+}
+
+function cloneQuoteRevisionValue(value) {
+  if (value === undefined) {
+    return undefined
+  }
+
+  return JSON.parse(JSON.stringify(value))
+}
+
+function buildQuoteRevisionSnapshot(source, options = {}) {
+  const sourceObject = toOptionalObject(source)
+  const parsedIdentity = parseQuoteRevisionIdentity(
+    options.baseQuoteNumber || sourceObject.baseQuoteNumber || sourceObject.quoteNumber,
+  )
+  const revisionNumber = toNonNegativeInteger(
+    options.revisionNumber ?? sourceObject.revisionNumber ?? parsedIdentity.revisionNumber,
+    0,
+  )
+  const baseQuoteNumber = toTrimmedText(
+    options.baseQuoteNumber || sourceObject.baseQuoteNumber || parsedIdentity.baseQuoteNumber,
+    110,
+  )
+  const snapshot = {
+    id: toTrimmedText(options.id || sourceObject.id, 160) || randomUUID(),
+    revisionNumber,
+    quoteNumber: formatQuoteRevisionNumber(baseQuoteNumber, revisionNumber),
+  }
+
+  for (const fieldName of quoteRevisionSnapshotFields) {
+    if (fieldName === 'quoteNumber') {
+      continue
+    }
+
+    if (Object.prototype.hasOwnProperty.call(sourceObject, fieldName)) {
+      snapshot[fieldName] = cloneQuoteRevisionValue(sourceObject[fieldName])
+    }
+  }
+
+  snapshot.createdAt = toTrimmedText(
+    options.createdAt || sourceObject.createdAt || sourceObject.updatedAt,
+    80,
+  ) || nowIso()
+  snapshot.createdByUid = toTrimmedText(
+    options.createdByUid ?? sourceObject.createdByUid,
+    160,
+  ) || null
+  snapshot.createdByEmail = toTrimmedText(
+    options.createdByEmail ?? sourceObject.createdByEmail,
+    200,
+  ) || null
+  snapshot.updatedAt = toTrimmedText(
+    options.updatedAt || sourceObject.updatedAt,
+    80,
+  ) || snapshot.createdAt
+  snapshot.updatedByUid = toTrimmedText(
+    options.updatedByUid ?? sourceObject.updatedByUid,
+    160,
+  ) || null
+  snapshot.updatedByEmail = toTrimmedText(
+    options.updatedByEmail ?? sourceObject.updatedByEmail,
+    200,
+  ) || null
+
+  return snapshot
+}
+
+function resolveQuoteRevisionState(quote) {
+  const sourceQuote = toOptionalObject(quote)
+  const parsedIdentity = parseQuoteRevisionIdentity(
+    sourceQuote.baseQuoteNumber || sourceQuote.quoteNumber,
+  )
+  const baseQuoteNumber = toTrimmedText(
+    sourceQuote.baseQuoteNumber || parsedIdentity.baseQuoteNumber,
+    110,
+  )
+  const storedRevisions = Array.isArray(sourceQuote.revisions)
+    ? sourceQuote.revisions
+      .map((revision) => buildQuoteRevisionSnapshot(revision, { baseQuoteNumber }))
+      .sort((left, right) => left.revisionNumber - right.revisionNumber)
+    : []
+  const fallbackActiveRevisionNumber = storedRevisions.length > 0
+    ? storedRevisions[storedRevisions.length - 1].revisionNumber
+    : parsedIdentity.revisionNumber
+  const activeRevisionNumber = toNonNegativeInteger(
+    sourceQuote.activeRevisionNumber,
+    fallbackActiveRevisionNumber,
+  )
+  let revisions = storedRevisions
+
+  if (revisions.length === 0) {
+    revisions = [
+      buildQuoteRevisionSnapshot(sourceQuote, {
+        baseQuoteNumber,
+        revisionNumber: activeRevisionNumber,
+      }),
+    ]
+  } else {
+    // The root quote intentionally mirrors the active revision for compatibility
+    // with existing cards, exports, and integrations. Merge it back into the
+    // active snapshot so changes made by older routes (such as 3D uploads) are
+    // never lost.
+    revisions = revisions.map((revision) => (
+      revision.revisionNumber === activeRevisionNumber
+        ? {
+          ...revision,
+          ...buildQuoteRevisionSnapshot(
+            { ...revision, ...sourceQuote },
+            {
+              id: revision.id,
+              baseQuoteNumber,
+              revisionNumber: activeRevisionNumber,
+              createdAt: revision.createdAt,
+              createdByUid: revision.createdByUid,
+              createdByEmail: revision.createdByEmail,
+            },
+          ),
+        }
+        : revision
+    ))
+  }
+
+  return {
+    baseQuoteNumber,
+    activeRevisionNumber,
+    revisionCount: Math.max(0, ...revisions.map((revision) => revision.revisionNumber)),
+    revisions,
+  }
+}
+
 function normalizeQuoteOpportunityStageForResponse(quote) {
   if (!quote || typeof quote !== 'object') {
     return quote
   }
 
+  const revisionState = resolveQuoteRevisionState(quote)
+
   return {
     ...quote,
+    ...revisionState,
+    quoteNumber: formatQuoteRevisionNumber(
+      revisionState.baseQuoteNumber,
+      revisionState.activeRevisionNumber,
+    ) || quote.quoteNumber,
     opportunityStage: normalizeOpportunityStage(quote.opportunityStage, 'concept') || 'concept',
   }
 }
@@ -898,7 +1100,12 @@ function resolveQuoteDocumentUrls(quote) {
     toTrimmedText(source.documentUrl ?? source.document_url, 2000),
     toTrimmedText(source.sourceWorkbookUrl, 2000),
     toTrimmedText(source.convertedPdfUrl, 2000),
+    toTrimmedText(source.archivedPdfUrl, 2000),
   ]
+
+  for (const revision of Array.isArray(source.revisions) ? source.revisions : []) {
+    legacyUrls.push(...resolveQuoteDocumentUrls(revision))
+  }
 
   for (const itemCollection of [source.lineItems, source.additionalServices, source.shippingServices]) {
     for (const item of Array.isArray(itemCollection) ? itemCollection : []) {
@@ -953,7 +1160,7 @@ async function deleteQuoteStorageTargets(quote) {
 }
 
 async function deleteGeneratedOrderStorageTargets(order) {
-  const targets = [order?.deposit_request_url, order?.order_confirmation_url]
+  const targets = [order?.deposit_request_url, order?.order_confirmation_url, order?.work_order_url, order?.proforma_invoice_url]
     .map((url) => extractFirebaseStorageObjectFromUrl(url))
     .filter((target) => target && target.objectPath.startsWith('crm/orders/'))
   return deleteResolvedQuoteStorageTargets(targets)
@@ -1159,13 +1366,13 @@ function normalizeExcelQuoteLineItems(input, existingLineItems) {
 
 const defaultQuotePrintSettings = Object.freeze({
   id: 'default',
-  logoUrl: null,
-  logoName: null,
+  logoUrl: 'https://ybkarnold.com/arnold-quote-mark.png',
+  logoName: 'Arnold Contract mark',
   companyName: 'Arnold Contract',
-  addressLines: [],
-  phone: null,
+  addressLines: ['120 Coit Street, Irvington, New Jersey 07111'],
+  phone: '866-425-6529',
   email: null,
-  website: null,
+  website: 'ArnoldContract.us',
   headerText: null,
   footerText: 'Thank you for the opportunity to quote this project.',
   accentColor: '#0f4c81',
@@ -1195,16 +1402,13 @@ function normalizeQuotePrintSettings(input, metadata = {}) {
 
   return {
     id: 'default',
-    logoUrl: toTrimmedText(source.logoUrl, 2000) || null,
-    logoName: toTrimmedText(source.logoName, 500) || null,
+    logoUrl: defaultQuotePrintSettings.logoUrl,
+    logoName: defaultQuotePrintSettings.logoName,
     companyName: toTrimmedText(source.companyName, 240) || defaultQuotePrintSettings.companyName,
-    addressLines: (Array.isArray(source.addressLines) ? source.addressLines : [])
-      .map((entry) => toTrimmedText(entry, 240))
-      .filter(Boolean)
-      .slice(0, 5),
-    phone: toTrimmedText(source.phone, 80) || null,
+    addressLines: [...defaultQuotePrintSettings.addressLines],
+    phone: defaultQuotePrintSettings.phone,
     email: toTrimmedText(source.email, 200) || null,
-    website: toTrimmedText(source.website, 300) || null,
+    website: defaultQuotePrintSettings.website,
     headerText: toTrimmedText(source.headerText, 1000) || null,
     footerText: toTrimmedText(source.footerText, 4000) || null,
     accentColor: /^#[0-9a-f]{6}$/i.test(accentColor) ? accentColor.toLowerCase() : defaultQuotePrintSettings.accentColor,
@@ -1904,6 +2108,7 @@ export function registerCrmRoutes(app, deps) {
     getCollections,
     fetchMondayBoardsCatalog,
     fetchMondayBoardColumns,
+    fetchMondayStatusColumnOptions,
     createMondayItem,
     updateMondayItemStatusColumn,
     updateMondayItemTextColumn,
@@ -1928,6 +2133,28 @@ export function registerCrmRoutes(app, deps) {
       isSalesRep,
       territoryStates,
     }
+  }
+
+  function requireOfficeManagerOrAdminRole(req, _res, next) {
+    const publicUser = toPublicAuthUser(req.authUser)
+    const hasAccess = Boolean(
+      publicUser?.isApproved
+      && (
+        publicUser?.isOwner
+        || publicUser?.isAdmin
+        || publicUser?.isManager
+        || publicUser?.isOfficeWorker
+      ),
+    )
+
+    if (!hasAccess) {
+      return next({
+        status: 403,
+        message: 'Office, manager, or admin access is required.',
+      })
+    }
+
+    next()
   }
 
   function resolveSalesRepQuoteAccessScope(accessScope) {
@@ -6140,6 +6367,9 @@ export function registerCrmRoutes(app, deps) {
                 opportunityDate: 1,
                 opportunityStage: 1,
                 quoteNumber: 1,
+                baseQuoteNumber: 1,
+                activeRevisionNumber: 1,
+                revisionCount: 1,
                 title: 1,
                 status: 1,
                 totalAmount: 1,
@@ -6328,9 +6558,17 @@ export function registerCrmRoutes(app, deps) {
         settings: {
           rules: rules.slice(0, 25).map((rule) => ({
             id: toTrimmedText(rule?.id, 160) || randomUUID(),
-            kind: rule?.kind === 'link_opened' ? 'link_opened' : 'follow_up_due',
+            kind: rule?.kind === 'customer_signed_bol_missing'
+              ? 'customer_signed_bol_missing'
+              : rule?.kind === 'link_opened'
+                ? 'link_opened'
+                : 'follow_up_due',
             days: Math.min(365, Math.max(0, toNonNegativeInteger(rule?.days, 10))),
-            base: rule?.base === 'last_follow_up' ? 'last_follow_up' : 'quote_date',
+            base: rule?.kind === 'customer_signed_bol_missing'
+              ? 'shipped_date'
+              : rule?.base === 'last_follow_up'
+                ? 'last_follow_up'
+                : 'quote_date',
           })),
         },
       })
@@ -6346,9 +6584,17 @@ export function registerCrmRoutes(app, deps) {
       const settings = {
         rules: rawRules.slice(0, 25).map((rule) => ({
           id: toTrimmedText(rule?.id, 160) || randomUUID(),
-          kind: rule?.kind === 'link_opened' ? 'link_opened' : 'follow_up_due',
+          kind: rule?.kind === 'customer_signed_bol_missing'
+            ? 'customer_signed_bol_missing'
+            : rule?.kind === 'link_opened'
+              ? 'link_opened'
+              : 'follow_up_due',
           days: Math.min(365, Math.max(0, toNonNegativeInteger(rule?.days, 10))),
-          base: rule?.base === 'last_follow_up' ? 'last_follow_up' : 'quote_date',
+          base: rule?.kind === 'customer_signed_bol_missing'
+            ? 'shipped_date'
+            : rule?.base === 'last_follow_up'
+              ? 'last_follow_up'
+              : 'quote_date',
         })),
       }
       const now = nowIso()
@@ -6414,6 +6660,27 @@ export function registerCrmRoutes(app, deps) {
         crmQuotesCollection,
       } = await getCollections()
 
+      if (quoteNumber) {
+        const requestedIdentity = parseQuoteRevisionIdentity(quoteNumber)
+        const existingQuoteWithNumber = await crmQuotesCollection.findOne(
+          {
+            $or: [
+              { baseQuoteNumber: new RegExp(`^${escapeRegex(requestedIdentity.baseQuoteNumber)}$`, 'i') },
+              { quoteNumber: new RegExp(`^${escapeRegex(requestedIdentity.baseQuoteNumber)}(?:[-_\\s]*R\\d+)?$`, 'i') },
+              { 'revisions.quoteNumber': new RegExp(`^${escapeRegex(requestedIdentity.baseQuoteNumber)}[-_\\s]*R\\d+$`, 'i') },
+            ],
+          },
+          { projection: { _id: 0, id: 1, quoteNumber: 1 } },
+        )
+
+        if (existingQuoteWithNumber) {
+          return res.status(409).json({
+            error: `Quote number ${quoteNumber} already exists in another opportunity. Open that opportunity and create a revision instead.`,
+            quoteId: existingQuoteWithNumber.id,
+          })
+        }
+      }
+
       const requestedDealerSourceId = toTrimmedText(body.dealerSourceId, 160)
       const dealer = requestedDealerSourceId
         ? await resolveDealerOrThrow(crmAccountsCollection, requestedDealerSourceId)
@@ -6472,6 +6739,11 @@ export function registerCrmRoutes(app, deps) {
 
       const primaryDocument = normalizedDocuments[0] || null
       const lineItems = normalizeQuoteLineItems(body.lineItems)
+      const discountPercent = toNonNegativeNumberOrNull(body.discountPercent)
+
+      if (discountPercent !== null && discountPercent > 100) {
+        return res.status(400).json({ error: 'discountPercent must be between 0 and 100.' })
+      }
 
       const nextQuote = {
         id: randomUUID(),
@@ -6496,6 +6768,10 @@ export function registerCrmRoutes(app, deps) {
         paymentTerms: toTrimmedText(body.paymentTerms, 240) || null,
         leadTime: toTrimmedText(body.leadTime, 240) || null,
         subtotal: toNonNegativeNumberOrNull(body.subtotal),
+        discountPercent,
+        discountAmount: toNonNegativeNumberOrNull(body.discountAmount),
+        discountScope: body.discountScope === 'products_and_freight' ? 'products_and_freight' : 'products',
+        discountFreightAmount: toNonNegativeNumberOrNull(body.discountFreightAmount),
         freight: toNonNegativeNumberOrNull(body.freight),
         freightDescription: toTrimmedText(body.freightDescription, 1200) || null,
         lineItems,
@@ -6530,6 +6806,27 @@ export function registerCrmRoutes(app, deps) {
         createdByEmail: toTrimmedText(req.authUser?.email, 200) || null,
         updatedAt: now,
       }
+
+      const initialRevisionIdentity = parseQuoteRevisionIdentity(nextQuote.quoteNumber)
+      nextQuote.baseQuoteNumber = initialRevisionIdentity.baseQuoteNumber
+      nextQuote.activeRevisionNumber = initialRevisionIdentity.revisionNumber
+      nextQuote.revisionCount = initialRevisionIdentity.revisionNumber
+      nextQuote.quoteNumber = formatQuoteRevisionNumber(
+        initialRevisionIdentity.baseQuoteNumber,
+        initialRevisionIdentity.revisionNumber,
+      ) || nextQuote.quoteNumber
+      nextQuote.revisions = [
+        buildQuoteRevisionSnapshot(nextQuote, {
+          baseQuoteNumber: nextQuote.baseQuoteNumber,
+          revisionNumber: nextQuote.activeRevisionNumber,
+          createdAt: now,
+          createdByUid: nextQuote.createdByUid,
+          createdByEmail: nextQuote.createdByEmail,
+          updatedAt: now,
+          updatedByUid: nextQuote.createdByUid,
+          updatedByEmail: nextQuote.createdByEmail,
+        }),
+      ]
 
       await crmQuotesCollection.insertOne(nextQuote)
 
@@ -6592,6 +6889,26 @@ export function registerCrmRoutes(app, deps) {
 
       const updates = {}
       const now = nowIso()
+      const existingRevisionState = resolveQuoteRevisionState(existingQuote)
+      const requestedRevisionNumber = Object.prototype.hasOwnProperty.call(body, 'revisionNumber')
+        ? toNonNegativeInteger(body.revisionNumber, -1)
+        : existingRevisionState.activeRevisionNumber
+      const requestedRevision = existingRevisionState.revisions.find(
+        (revision) => revision.revisionNumber === requestedRevisionNumber,
+      )
+      const requestedActiveRevisionNumber = Object.prototype.hasOwnProperty.call(body, 'activeRevisionNumber')
+        ? toNonNegativeInteger(body.activeRevisionNumber, -1)
+        : existingRevisionState.activeRevisionNumber
+
+      if (!requestedRevision) {
+        return res.status(404).json({ error: 'The selected revision was not found.' })
+      }
+
+      if (!existingRevisionState.revisions.some(
+        (revision) => revision.revisionNumber === requestedActiveRevisionNumber,
+      )) {
+        return res.status(404).json({ error: 'The revision selected as current was not found.' })
+      }
       const hasDocumentsInput = Object.prototype.hasOwnProperty.call(body, 'documents')
       const hasLegacyDocumentUrlInput = Object.prototype.hasOwnProperty.call(body, 'documentUrl')
       const hasLegacyDocumentNameInput = Object.prototype.hasOwnProperty.call(body, 'documentName')
@@ -6652,6 +6969,28 @@ export function registerCrmRoutes(app, deps) {
 
       if (Object.prototype.hasOwnProperty.call(body, 'subtotal')) {
         updates.subtotal = toNonNegativeNumberOrNull(body.subtotal)
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'discountPercent')) {
+        const discountPercent = toNonNegativeNumberOrNull(body.discountPercent)
+        if (discountPercent !== null && discountPercent > 100) {
+          return res.status(400).json({ error: 'discountPercent must be between 0 and 100.' })
+        }
+        updates.discountPercent = discountPercent
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'discountAmount')) {
+        updates.discountAmount = toNonNegativeNumberOrNull(body.discountAmount)
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'discountScope')) {
+        updates.discountScope = body.discountScope === 'products_and_freight'
+          ? 'products_and_freight'
+          : 'products'
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'discountFreightAmount')) {
+        updates.discountFreightAmount = toNonNegativeNumberOrNull(body.discountFreightAmount)
       }
 
       if (Object.prototype.hasOwnProperty.call(body, 'freight')) {
@@ -6883,13 +7222,73 @@ export function registerCrmRoutes(app, deps) {
       }
 
       updates.updatedAt = now
+      const requestedQuoteIdentity = parseQuoteRevisionIdentity(
+        updates.quoteNumber || existingRevisionState.baseQuoteNumber || existingQuote.quoteNumber,
+      )
+      const nextBaseQuoteNumber = requestedQuoteIdentity.baseQuoteNumber || existingRevisionState.baseQuoteNumber
+      const nextRequestedSnapshot = buildQuoteRevisionSnapshot(
+        {
+          ...requestedRevision,
+          ...updates,
+        },
+        {
+          id: requestedRevision.id,
+          baseQuoteNumber: nextBaseQuoteNumber,
+          revisionNumber: requestedRevisionNumber,
+          createdAt: requestedRevision.createdAt,
+          createdByUid: requestedRevision.createdByUid,
+          createdByEmail: requestedRevision.createdByEmail,
+          updatedAt: now,
+          updatedByUid: toTrimmedText(req.authUser?.uid, 160) || null,
+          updatedByEmail: toTrimmedText(req.authUser?.email, 200) || null,
+        },
+      )
+      const nextRevisions = existingRevisionState.revisions.map((revision) => {
+        const nextRevision = revision.revisionNumber === requestedRevisionNumber
+          ? nextRequestedSnapshot
+          : revision
+
+        return {
+          ...nextRevision,
+          quoteNumber: formatQuoteRevisionNumber(nextBaseQuoteNumber, nextRevision.revisionNumber),
+        }
+      })
+      const rootUpdates = { ...updates }
+      const nextActiveRevision = nextRevisions.find(
+        (revision) => revision.revisionNumber === requestedActiveRevisionNumber,
+      )
+
+      if (requestedRevisionNumber !== requestedActiveRevisionNumber) {
+        // Revision-specific fields update only the chosen revision. Opportunity
+        // folders and lifecycle fields remain shared at the root.
+        for (const fieldName of quoteRevisionSnapshotFields) {
+          delete rootUpdates[fieldName]
+        }
+      }
+
+      if (nextActiveRevision) {
+        for (const fieldName of quoteRevisionSnapshotFields) {
+          if (Object.prototype.hasOwnProperty.call(nextActiveRevision, fieldName)) {
+            rootUpdates[fieldName] = cloneQuoteRevisionValue(nextActiveRevision[fieldName])
+          }
+        }
+      }
+
+      rootUpdates.baseQuoteNumber = nextBaseQuoteNumber
+      rootUpdates.activeRevisionNumber = requestedActiveRevisionNumber
+      rootUpdates.revisionCount = existingRevisionState.revisionCount
+      rootUpdates.revisions = nextRevisions
+      rootUpdates.quoteNumber = formatQuoteRevisionNumber(
+        nextBaseQuoteNumber,
+        requestedActiveRevisionNumber,
+      ) || existingQuote.quoteNumber
 
       const updatedQuote = await crmQuotesCollection.findOneAndUpdate(
         {
           id: quoteId,
         },
         {
-          $set: updates,
+          $set: rootUpdates,
         },
         {
           returnDocument: 'after',
@@ -6919,6 +7318,225 @@ export function registerCrmRoutes(app, deps) {
 
       return res.json({
         quote: normalizeQuoteOpportunityStageForResponse(updatedQuote),
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.post('/api/crm/quotes/:quoteId/revisions', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const quoteId = toTrimmedText(req.params.quoteId, 160)
+
+      if (!quoteId) {
+        return res.status(400).json({ error: 'quoteId is required.' })
+      }
+
+      const accessScope = resolveCrmAccessScope(req)
+      const quoteAccessScope = resolveSalesRepQuoteAccessScope(accessScope)
+      const body = toOptionalObject(req.body)
+      const { crmQuotesCollection } = await getCollections()
+      const existingQuote = await crmQuotesCollection.findOne(
+        { id: quoteId },
+        { projection: { _id: 0 } },
+      )
+
+      if (!existingQuote) {
+        return res.status(404).json({ error: 'Quote not found.' })
+      }
+
+      if (!canAccessQuoteBySalesRep(existingQuote, quoteAccessScope)) {
+        return res.status(403).json({
+          error: 'You can only access opportunities assigned to your linked sales rep.',
+        })
+      }
+
+      const revisionState = resolveQuoteRevisionState(existingQuote)
+      const sourceRevisionNumber = Object.prototype.hasOwnProperty.call(body, 'sourceRevisionNumber')
+        ? toNonNegativeInteger(body.sourceRevisionNumber, -1)
+        : revisionState.activeRevisionNumber
+      const sourceRevision = revisionState.revisions.find(
+        (revision) => revision.revisionNumber === sourceRevisionNumber,
+      )
+
+      if (!sourceRevision) {
+        return res.status(404).json({ error: 'The selected source revision was not found.' })
+      }
+
+      const now = nowIso()
+      const actorUid = toTrimmedText(req.authUser?.uid, 160) || null
+      const actorEmail = toTrimmedText(req.authUser?.email, 200) || null
+      const nextRevisionNumber = revisionState.revisionCount + 1
+      const nextRevision = buildQuoteRevisionSnapshot(
+        {
+          ...sourceRevision,
+          // A new revision intentionally starts without a SketchUp/public 3D
+          // model. Everything else is copied from the chosen revision.
+          trimble3d: null,
+        },
+        {
+          id: randomUUID(),
+          baseQuoteNumber: revisionState.baseQuoteNumber,
+          revisionNumber: nextRevisionNumber,
+          archivedPdfUrl: null,
+          archivedPdfName: null,
+          createdAt: now,
+          createdByUid: actorUid,
+          createdByEmail: actorEmail,
+          updatedAt: now,
+          updatedByUid: actorUid,
+          updatedByEmail: actorEmail,
+        },
+      )
+      const revisions = [...revisionState.revisions]
+      revisions.push(nextRevision)
+
+      const rootUpdates = {
+        baseQuoteNumber: revisionState.baseQuoteNumber,
+        activeRevisionNumber: nextRevisionNumber,
+        revisionCount: nextRevisionNumber,
+        revisions,
+        updatedAt: now,
+      }
+
+      for (const fieldName of quoteRevisionSnapshotFields) {
+        if (Object.prototype.hasOwnProperty.call(nextRevision, fieldName)) {
+          rootUpdates[fieldName] = cloneQuoteRevisionValue(nextRevision[fieldName])
+        }
+      }
+
+      rootUpdates.quoteNumber = nextRevision.quoteNumber
+
+      const updatedQuote = await crmQuotesCollection.findOneAndUpdate(
+        { id: quoteId },
+        { $set: rootUpdates },
+        { returnDocument: 'after', projection: { _id: 0 } },
+      )
+
+      cacheDelete(OVERVIEW_CACHE_KEY)
+
+      return res.status(201).json({
+        quote: normalizeQuoteOpportunityStageForResponse(updatedQuote),
+        revision: nextRevision,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.delete('/api/crm/quotes/:quoteId/revisions/:revisionNumber', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const quoteId = toTrimmedText(req.params.quoteId, 160)
+      const revisionNumber = toNonNegativeInteger(req.params.revisionNumber, -1)
+
+      if (!quoteId || revisionNumber < 0) {
+        return res.status(400).json({ error: 'A valid quoteId and revision number are required.' })
+      }
+
+      const accessScope = resolveCrmAccessScope(req)
+      const quoteAccessScope = resolveSalesRepQuoteAccessScope(accessScope)
+      const { crmQuotesCollection } = await getCollections()
+      const existingQuote = await crmQuotesCollection.findOne(
+        { id: quoteId },
+        { projection: { _id: 0 } },
+      )
+
+      if (!existingQuote) {
+        return res.status(404).json({ error: 'Quote not found.' })
+      }
+
+      if (!canAccessQuoteBySalesRep(existingQuote, quoteAccessScope)) {
+        return res.status(403).json({
+          error: 'You can only access opportunities assigned to your linked sales rep.',
+        })
+      }
+
+      const revisionState = resolveQuoteRevisionState(existingQuote)
+      const revisionToDelete = revisionState.revisions.find(
+        (revision) => revision.revisionNumber === revisionNumber,
+      )
+
+      if (!revisionToDelete) {
+        return res.status(404).json({ error: 'The selected revision was not found.' })
+      }
+
+      if (revisionState.revisions.length <= 1) {
+        return res.status(409).json({
+          error: 'Revision 0 is the only revision. Delete the entire opportunity instead.',
+        })
+      }
+
+      const remainingOriginalRevisions = revisionState.revisions
+        .filter((revision) => revision.id !== revisionToDelete.id)
+        .sort((left, right) => left.revisionNumber - right.revisionNumber)
+      const activeOriginalRevision = revisionState.revisions.find(
+        (revision) => revision.revisionNumber === revisionState.activeRevisionNumber,
+      )
+      const nextActiveOriginalId = activeOriginalRevision?.id === revisionToDelete.id
+        ? remainingOriginalRevisions[remainingOriginalRevisions.length - 1].id
+        : activeOriginalRevision?.id
+      const now = nowIso()
+      const actorUid = toTrimmedText(req.authUser?.uid, 160) || null
+      const actorEmail = toTrimmedText(req.authUser?.email, 200) || null
+      const renumberedRevisions = remainingOriginalRevisions.map((revision, index) => (
+        buildQuoteRevisionSnapshot(revision, {
+          id: revision.id,
+          baseQuoteNumber: revisionState.baseQuoteNumber,
+          revisionNumber: index,
+          createdAt: revision.createdAt,
+          createdByUid: revision.createdByUid,
+          createdByEmail: revision.createdByEmail,
+          updatedAt: now,
+          updatedByUid: actorUid,
+          updatedByEmail: actorEmail,
+        })
+      ))
+      const nextActiveRevision = renumberedRevisions.find(
+        (revision) => revision.id === nextActiveOriginalId,
+      ) || renumberedRevisions[renumberedRevisions.length - 1]
+      const rootUpdates = {
+        baseQuoteNumber: revisionState.baseQuoteNumber,
+        activeRevisionNumber: nextActiveRevision.revisionNumber,
+        revisionCount: renumberedRevisions.length - 1,
+        revisions: renumberedRevisions,
+        updatedAt: now,
+      }
+
+      for (const fieldName of quoteRevisionSnapshotFields) {
+        if (Object.prototype.hasOwnProperty.call(nextActiveRevision, fieldName)) {
+          rootUpdates[fieldName] = cloneQuoteRevisionValue(nextActiveRevision[fieldName])
+        }
+      }
+      rootUpdates.quoteNumber = nextActiveRevision.quoteNumber
+
+      const updatedQuote = await crmQuotesCollection.findOneAndUpdate(
+        { id: quoteId },
+        { $set: rootUpdates },
+        { returnDocument: 'after', projection: { _id: 0 } },
+      )
+
+      const nextStorageTargetKeys = new Set(
+        resolveQuoteStorageTargets(updatedQuote).map(
+          (target) => `${target.bucketName.toLowerCase()}::${target.objectPath.toLowerCase()}`,
+        ),
+      )
+      const removedStorageTargets = resolveQuoteStorageTargets(existingQuote).filter(
+        (target) => !nextStorageTargetKeys.has(
+          `${target.bucketName.toLowerCase()}::${target.objectPath.toLowerCase()}`,
+        ),
+      )
+
+      if (removedStorageTargets.length > 0) {
+        await deleteResolvedQuoteStorageTargets(removedStorageTargets)
+      }
+
+      cacheDelete(OVERVIEW_CACHE_KEY)
+
+      return res.json({
+        ok: true,
+        quote: normalizeQuoteOpportunityStageForResponse(updatedQuote),
+        deletedRevisionNumber: revisionNumber,
+        revisionsRenumbered: true,
       })
     } catch (error) {
       next(error)
@@ -7104,6 +7722,7 @@ export function registerCrmRoutes(app, deps) {
         {
           order_number: new RegExp(`^${escapeRegex(orderNumber)}$`, 'i'),
           is_cancelled: { $ne: true },
+          is_deleted: { $ne: true },
         },
         {
           projection: {
@@ -7175,11 +7794,21 @@ export function registerCrmRoutes(app, deps) {
       if (selectedKeys.length === 0 || selectedKeys.some((key) => convertedItemKeys.has(key))) {
         return res.status(409).json({ error: 'One or more selected lines are unavailable or were already converted.' })
       }
-      const productValue = Number(([
+      const productGrossValue = Number(([
         ...selectedLines.map((item) => toNonNegativeNumberOrNull(item.extPrice) ?? 0),
         ...selectedAdditionalServices.map((item) => toNonNegativeNumberOrNull(item.extPrice ?? item.price) ?? 0),
       ].reduce((sum, value) => sum + value, 0)).toFixed(2))
-      const freightValue = Number((selectedShippingServices.reduce((sum, item) => sum + (toNonNegativeNumberOrNull(item.extPrice ?? item.price) ?? 0), 0) + (includeFreight ? (toNonNegativeNumberOrNull(quote?.freight) ?? 0) : 0)).toFixed(2))
+      const discountPercent = Math.min(100, Math.max(0, toNonNegativeNumberOrNull(quote?.discountPercent) ?? 0))
+      const discountAmount = Number((productGrossValue * (discountPercent / 100)).toFixed(2))
+      const productValue = Number((productGrossValue - discountAmount).toFixed(2))
+      const freightGrossValue = Number((selectedShippingServices.reduce((sum, item) => sum + (toNonNegativeNumberOrNull(item.extPrice ?? item.price) ?? 0), 0) + (includeFreight ? (toNonNegativeNumberOrNull(quote?.freight) ?? 0) : 0)).toFixed(2))
+      const discountScope = quote?.discountScope === 'products_and_freight'
+        ? 'products_and_freight'
+        : 'products'
+      const freightDiscountAmount = discountScope === 'products_and_freight'
+        ? Number((freightGrossValue * (discountPercent / 100)).toFixed(2))
+        : 0
+      const freightValue = Number((freightGrossValue - freightDiscountAmount).toFixed(2))
       const orderValue = Number((productValue + freightValue).toFixed(2))
       const depositAmount = depositRequired
         ? Number((productValue * (depositPercent / 100)).toFixed(2))
@@ -7382,11 +8011,43 @@ export function registerCrmRoutes(app, deps) {
         itemId: secondaryItemId,
       })
 
-      const initialDesignStatus = depositRequired ? 'waiting on deposit' : 'no deposit required'
+      const requestedInitialDesignStatus = depositRequired
+        ? 'waiting on deposit'
+        : 'NO DEPOSIT REQUIRED'
+      let initialDesignStatus = requestedInitialDesignStatus
+      let initialDesignStatusIndex = null
+
+      if (typeof fetchMondayStatusColumnOptions === 'function') {
+        const statusOptionsByColumn = await fetchMondayStatusColumnOptions({
+          boardId: mondayDesignAkfBoardId,
+          columnIds: [mondayDesignAkfColumnIds.designStatus],
+        })
+        const statusOptions = Array.isArray(
+          statusOptionsByColumn?.[mondayDesignAkfColumnIds.designStatus],
+        )
+          ? statusOptionsByColumn[mondayDesignAkfColumnIds.designStatus]
+          : []
+        const matchedStatus = statusOptions.find(
+          (option) => String(option?.label ?? '').trim().toLowerCase()
+            === requestedInitialDesignStatus.toLowerCase(),
+        )
+
+        if (!matchedStatus) {
+          throw {
+            status: 409,
+            message: `Monday Design status "${requestedInitialDesignStatus}" is not configured.`,
+          }
+        }
+
+        initialDesignStatus = String(matchedStatus.label).trim()
+        initialDesignStatusIndex = matchedStatus.index
+      }
+
       await updateMondayItemStatusColumn({
         boardId: mondayDesignAkfBoardId,
         itemId: secondaryItemId,
         columnId: mondayDesignAkfColumnIds.designStatus,
+        statusIndex: initialDesignStatusIndex,
         statusLabel: initialDesignStatus,
       })
       await updateTextIfPresent({
@@ -7458,6 +8119,12 @@ export function registerCrmRoutes(app, deps) {
         progressStatusDetails: initialProgressStatusDetails,
         orderValue,
         productValue,
+        productGrossValue,
+        discountPercent,
+        discountAmount,
+        discountScope,
+        freightGrossValue,
+        freightDiscountAmount,
         freightValue,
         depositRequired,
         depositPercent,
@@ -7472,6 +8139,10 @@ export function registerCrmRoutes(app, deps) {
         depositRequestName: null,
         orderConfirmationUrl: toTrimmedText(body.orderConfirmationUrl, 2000) || null,
         orderConfirmationName: toTrimmedText(body.orderConfirmationName, 500) || null,
+        workOrderUrl: toTrimmedText(body.workOrderUrl, 2000) || null,
+        workOrderName: toTrimmedText(body.workOrderName, 500) || null,
+        proformaInvoiceUrl: toTrimmedText(body.proformaInvoiceUrl, 2000) || null,
+        proformaInvoiceName: toTrimmedText(body.proformaInvoiceName, 500) || null,
         shippedAt: null,
         deliveredAt: null,
         notes: notes || `Created from quote ${toTrimmedText(quote?.quoteNumber, 120) || quoteId}`,
@@ -7525,8 +8196,16 @@ export function registerCrmRoutes(app, deps) {
         canonical_status: 'pending',
         canonical_progress_percent: 5,
         canonical_order_value: orderValue,
+        website_calculated_order_total: orderValue,
+        website_calculated_order_total_at: now,
         canonical_product_value: productValue,
+        canonical_product_gross_value: productGrossValue,
+        discount_percent: discountPercent,
+        discount_amount: discountAmount,
+        discount_scope: discountScope,
+        discount_freight_amount: freightDiscountAmount,
         canonical_freight_value: freightValue,
+        canonical_freight_gross_value: freightGrossValue,
         deposit_required: depositRequired,
         deposit_percent: depositPercent,
         deposit_amount: depositAmount,
@@ -7555,6 +8234,10 @@ export function registerCrmRoutes(app, deps) {
         deposit_request_name: null,
         order_confirmation_url: toTrimmedText(body.orderConfirmationUrl, 2000) || null,
         order_confirmation_name: toTrimmedText(body.orderConfirmationName, 500) || null,
+        work_order_url: toTrimmedText(body.workOrderUrl, 2000) || null,
+        work_order_name: toTrimmedText(body.workOrderName, 500) || null,
+        proforma_invoice_url: toTrimmedText(body.proformaInvoiceUrl, 2000) || null,
+        proforma_invoice_name: toTrimmedText(body.proformaInvoiceName, 500) || null,
         monday_notes: nextOrder.notes,
         monday_description: description,
         is_shipped: false,
@@ -7726,7 +8409,7 @@ export function registerCrmRoutes(app, deps) {
     }
   })
 
-  app.post('/api/crm/quotes/:quoteId/cancel-order', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+  app.post('/api/crm/quotes/:quoteId/cancel-order', requireFirebaseAuth, requireOfficeManagerOrAdminRole, async (req, res, next) => {
     try {
       const quoteId = toTrimmedText(req.params.quoteId, 160)
 
@@ -7813,6 +8496,8 @@ export function registerCrmRoutes(app, deps) {
             has_monday_record: false,
             deposit_request_deleted_at: now,
             order_confirmation_deleted_at: now,
+            work_order_deleted_at: now,
+            proforma_invoice_deleted_at: now,
             canonical_updated_at: now,
             updatedAt: now,
           },
@@ -7823,6 +8508,10 @@ export function registerCrmRoutes(app, deps) {
             deposit_request_name: '',
             order_confirmation_url: '',
             order_confirmation_name: '',
+            work_order_url: '',
+            work_order_name: '',
+            proforma_invoice_url: '',
+            proforma_invoice_name: '',
           },
         },
       )
@@ -7839,14 +8528,45 @@ export function registerCrmRoutes(app, deps) {
         .filter((value) => value && !canceledItemKeySet.has(value))
       const remainingConvertedOrders = (Array.isArray(quote?.convertedOrders) ? quote.convertedOrders : [])
         .filter((entry) => toTrimmedText(entry?.orderId, 160) !== convertedOrderId)
-      const hasRemainingConvertedOrders = remainingConvertedOrders.length > 0 || remainingConvertedItemKeys.length > 0
+      const revisionState = resolveQuoteRevisionState(quote)
+      const activeRevision = revisionState.revisions.find(
+        (revision) => revision.revisionNumber === revisionState.activeRevisionNumber,
+      )
+      const reopenedActiveRevision = activeRevision
+        ? buildQuoteRevisionSnapshot(
+          {
+            ...activeRevision,
+            status: 'sent',
+            acceptedAt: null,
+            rejectedAt: null,
+          },
+          {
+            id: activeRevision.id,
+            baseQuoteNumber: revisionState.baseQuoteNumber,
+            revisionNumber: revisionState.activeRevisionNumber,
+            createdAt: activeRevision.createdAt,
+            createdByUid: activeRevision.createdByUid,
+            createdByEmail: activeRevision.createdByEmail,
+            updatedAt: now,
+            updatedByUid: canceledByUid,
+            updatedByEmail: canceledByEmail,
+          },
+        )
+        : null
+      const reopenedRevisions = reopenedActiveRevision
+        ? revisionState.revisions.map((revision) => (
+          revision.revisionNumber === revisionState.activeRevisionNumber
+            ? reopenedActiveRevision
+            : revision
+        ))
+        : revisionState.revisions
 
       const updatedQuote = await crmQuotesCollection.findOneAndUpdate(
         { id: quoteId },
         {
           $set: {
-            status: hasRemainingConvertedOrders ? 'sent' : 'draft',
-            opportunityStage: hasRemainingConvertedOrders ? 'proposal_submission' : 'concept',
+            status: 'sent',
+            opportunityStage: 'proposal_submission',
             acceptedAt: null,
             rejectedAt: null,
             cancelledOrderId: convertedOrderId,
@@ -7856,6 +8576,7 @@ export function registerCrmRoutes(app, deps) {
             cancelledOrderByEmail: canceledByEmail,
             convertedItemKeys: remainingConvertedItemKeys,
             convertedOrders: remainingConvertedOrders,
+            revisions: reopenedRevisions,
             lastStatusChangedAt: now,
             updatedAt: now,
           },
@@ -7918,6 +8639,7 @@ export function registerCrmRoutes(app, deps) {
       normalized,
       baseNumber,
       hasRevisionSuffix: true,
+      revisionNumber: toNonNegativeInteger(match[2], 0),
     }
   }
 
@@ -7940,7 +8662,11 @@ export function registerCrmRoutes(app, deps) {
 
     if (!parsed?.baseNumber || !parsed.hasRevisionSuffix) {
       return {
-        quoteNumber: new RegExp(`^${escapeRegex(quoteNumberText)}$`, 'i'),
+        $or: [
+          { quoteNumber: new RegExp(`^${escapeRegex(quoteNumberText)}(?:[-_\\s]*R0)?$`, 'i') },
+          { baseQuoteNumber: new RegExp(`^${escapeRegex(quoteNumberText)}$`, 'i') },
+          { 'revisions.quoteNumber': new RegExp(`^${escapeRegex(quoteNumberText)}(?:[-_\\s]*R0)?$`, 'i') },
+        ],
       }
     }
 
@@ -7953,7 +8679,12 @@ export function registerCrmRoutes(app, deps) {
     }
 
     return {
-      quoteNumber: new RegExp(`^${basePattern}[-_\\s]*R\\d+$`, 'i'),
+      $or: [
+        { quoteNumber: new RegExp(`^${escapeRegex(quoteNumberText)}$`, 'i') },
+        { 'revisions.quoteNumber': new RegExp(`^${escapeRegex(quoteNumberText)}$`, 'i') },
+        { baseQuoteNumber: new RegExp(`^${basePattern}$`, 'i') },
+        { quoteNumber: new RegExp(`^${basePattern}[-_\\s]*R\\d+$`, 'i') },
+      ],
     }
   }
 
@@ -8237,6 +8968,23 @@ export function registerCrmRoutes(app, deps) {
           updatedAt: now,
         }
 
+        const initialRevisionIdentity = parseQuoteRevisionIdentity(nextQuote.quoteNumber)
+        nextQuote.baseQuoteNumber = initialRevisionIdentity.baseQuoteNumber
+        nextQuote.activeRevisionNumber = initialRevisionIdentity.revisionNumber
+        nextQuote.revisionCount = initialRevisionIdentity.revisionNumber
+        nextQuote.quoteNumber = formatQuoteRevisionNumber(
+          initialRevisionIdentity.baseQuoteNumber,
+          initialRevisionIdentity.revisionNumber,
+        ) || nextQuote.quoteNumber
+        nextQuote.revisions = [
+          buildQuoteRevisionSnapshot(nextQuote, {
+            baseQuoteNumber: nextQuote.baseQuoteNumber,
+            revisionNumber: nextQuote.activeRevisionNumber,
+            createdAt: now,
+            updatedAt: now,
+          }),
+        ]
+
         await crmQuotesCollection.insertOne(nextQuote)
         cacheDelete(OVERVIEW_CACHE_KEY)
 
@@ -8403,7 +9151,16 @@ export function registerCrmRoutes(app, deps) {
       }
     }
 
-    if (Object.keys(updates).length === 0) {
+    const syncIdentity = parseExcelQuoteNumberParts(quoteNumber)
+    const revisionState = resolveQuoteRevisionState(existingQuote)
+    const requestedSyncRevisionNumber = syncIdentity.hasRevisionSuffix
+      ? toNonNegativeInteger(syncIdentity.revisionNumber, revisionState.activeRevisionNumber)
+      : revisionState.activeRevisionNumber
+
+    if (
+      Object.keys(updates).length === 0
+      && requestedSyncRevisionNumber === revisionState.activeRevisionNumber
+    ) {
       return {
         status: 200,
         body: {
@@ -8419,6 +9176,59 @@ export function registerCrmRoutes(app, deps) {
     }
 
     updates.updatedAt = now
+    const targetRevisionNumber = requestedSyncRevisionNumber
+    const existingTargetRevision = revisionState.revisions.find(
+      (revision) => revision.revisionNumber === targetRevisionNumber,
+    )
+    const sourceRevision = existingTargetRevision
+      || revisionState.revisions.find(
+        (revision) => revision.revisionNumber === revisionState.activeRevisionNumber,
+      )
+      || buildQuoteRevisionSnapshot(existingQuote, {
+        baseQuoteNumber: revisionState.baseQuoteNumber,
+        revisionNumber: revisionState.activeRevisionNumber,
+      })
+    const nextTargetRevision = buildQuoteRevisionSnapshot(
+      {
+        ...sourceRevision,
+        ...updates,
+      },
+      {
+        id: existingTargetRevision?.id || randomUUID(),
+        baseQuoteNumber: revisionState.baseQuoteNumber,
+        revisionNumber: targetRevisionNumber,
+        archivedPdfUrl: existingTargetRevision?.archivedPdfUrl || null,
+        archivedPdfName: existingTargetRevision?.archivedPdfName || null,
+        createdAt: existingTargetRevision?.createdAt || now,
+        createdByUid: existingTargetRevision?.createdByUid || null,
+        createdByEmail: existingTargetRevision?.createdByEmail || null,
+        updatedAt: now,
+      },
+    )
+    const nextRevisions = revisionState.revisions.filter(
+      (revision) => revision.revisionNumber !== targetRevisionNumber,
+    )
+    nextRevisions.push(nextTargetRevision)
+    nextRevisions.sort((left, right) => left.revisionNumber - right.revisionNumber)
+    updates.baseQuoteNumber = revisionState.baseQuoteNumber
+    updates.revisions = nextRevisions
+    updates.revisionCount = Math.max(revisionState.revisionCount, targetRevisionNumber)
+
+    if (targetRevisionNumber >= revisionState.activeRevisionNumber) {
+      updates.activeRevisionNumber = targetRevisionNumber
+      updates.quoteNumber = nextTargetRevision.quoteNumber
+      for (const fieldName of quoteRevisionSnapshotFields) {
+        if (Object.prototype.hasOwnProperty.call(nextTargetRevision, fieldName)) {
+          updates[fieldName] = cloneQuoteRevisionValue(nextTargetRevision[fieldName])
+        }
+      }
+    } else {
+      // Re-uploading an older workbook updates only that archived revision. The
+      // opportunity continues to display its current revision.
+      for (const fieldName of quoteRevisionSnapshotFields) {
+        delete updates[fieldName]
+      }
+    }
 
     const updatedQuote = await crmQuotesCollection.findOneAndUpdate(
       { id: existingQuote.id },
@@ -8586,6 +9396,8 @@ export function registerCrmRoutes(app, deps) {
         crmStatus: nextOrder.status,
         canonical_progress_percent: nextOrder.progressPercent,
         canonical_order_value: nextOrder.orderValue,
+        website_calculated_order_total: nextOrder.orderValue,
+        website_calculated_order_total_at: now,
         canonical_currency: nextOrder.currency,
         canonical_notes: nextOrder.notes,
         canonical_created_at: now,

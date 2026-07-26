@@ -1,6 +1,8 @@
-import { Pressable, ScrollView, Text, View } from 'react-native'
+import { Ionicons } from '@expo/vector-icons'
+import { useState } from 'react'
+import { Modal, Pressable, ScrollView, Text, View } from 'react-native'
 import { styles } from '../appStyles'
-import type { MobileChatMessage, MobileChatThread } from '../appTypes'
+import type { MobileChatMessage, MobileChatThread, MobileChatUser } from '../appTypes'
 import { InlineLoading } from '../appSections'
 import { ChatThreadScreen } from './ChatThreadScreen'
 
@@ -33,12 +35,14 @@ type ChatSectionProps = {
   isChatRecordingVoice: boolean
   isChatSendingMessage: boolean
   chatMessage: string | null
+  availableChatUsers: MobileChatUser[]
   currentUserEmail: string
   currentUserUid: string
   resolveChatThreadTitle: (thread: MobileChatThread | null) => string
   resolveChatThreadSubtitle: (thread: MobileChatThread | null) => string
   onSelectThread: (threadId: string) => void
   onBackToList: () => void
+  onStartChat: (targetUid: string) => void
   onComposerTextChange: (value: string) => void
   onOpenAttachmentMenu: () => void
   onRemoveAttachmentDraft: () => void
@@ -68,12 +72,14 @@ export function ChatSection({
   isChatRecordingVoice,
   isChatSendingMessage,
   chatMessage,
+  availableChatUsers,
   currentUserEmail,
   currentUserUid,
   resolveChatThreadTitle,
   resolveChatThreadSubtitle,
   onSelectThread,
   onBackToList,
+  onStartChat,
   onComposerTextChange,
   onOpenAttachmentMenu,
   onRemoveAttachmentDraft,
@@ -83,10 +89,30 @@ export function ChatSection({
   onToggleVoicePlayback,
   onDeleteMessage,
 }: ChatSectionProps) {
+  const [isNewChatOpen, setIsNewChatOpen] = useState(false)
+
   if (chatViewMode === 'list') {
     return (
       <>
-        <Text style={styles.sectionTitle}>{t('Chat', 'Chat')}</Text>
+        <View style={styles.chatListHeader}>
+          <View>
+            <Text style={styles.sectionTitle}>{t('Messages', 'Mensajes')}</Text>
+            <Text style={styles.chatListSubtitle}>
+              {t('Arnold team conversations', 'Conversaciones del equipo Arnold')}
+            </Text>
+          </View>
+          {isAdminUser ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t('Start a new chat', 'Iniciar un chat nuevo')}
+              style={styles.chatNewButton}
+              onPress={() => setIsNewChatOpen(true)}
+            >
+              <Ionicons name="chatbubble-ellipses" size={19} color="#ffffff" />
+              <Text style={styles.chatNewButtonText}>{t('New chat', 'Nuevo chat')}</Text>
+            </Pressable>
+          ) : null}
+        </View>
 
         <View style={[styles.chatCard, { height: chatCardHeight }]}> 
           <View style={styles.chatThreadsPanel}>
@@ -129,8 +155,14 @@ export function ChatSection({
 
                 {sortedChatThreads.length === 0 ? (
                   <View style={styles.chatThreadEmptyCard}>
+                    <Ionicons name="chatbubbles-outline" size={30} color="#82918b" />
                     <Text style={styles.chatThreadEmptyText}>
-                      {t('No chats yet.', 'Aun no hay chats.')}
+                      {isAdminUser
+                        ? t('No chats yet. Start one with a worker.', 'Aun no hay chats. Inicia uno con un trabajador.')
+                        : t(
+                          'No chats yet. An administrator will start the conversation.',
+                          'Aun no hay chats. Un administrador iniciara la conversacion.',
+                        )}
                     </Text>
                   </View>
                 ) : null}
@@ -140,6 +172,59 @@ export function ChatSection({
 
           {chatMessage ? <Text style={styles.chatInlineMessage}>{chatMessage}</Text> : null}
         </View>
+
+        <Modal
+          visible={isNewChatOpen}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setIsNewChatOpen(false)}
+        >
+          <View style={styles.chatContactModalBackdrop}>
+            <View style={styles.chatContactModalCard}>
+              <View style={styles.chatContactModalHeader}>
+                <View>
+                  <Text style={styles.chatContactModalTitle}>{t('New chat', 'Nuevo chat')}</Text>
+                  <Text style={styles.chatContactModalSubtitle}>
+                    {t('Choose a team member', 'Elige un miembro del equipo')}
+                  </Text>
+                </View>
+                <Pressable
+                  style={styles.chatContactModalClose}
+                  onPress={() => setIsNewChatOpen(false)}
+                >
+                  <Ionicons name="close" size={22} color="#33443e" />
+                </Pressable>
+              </View>
+              <ScrollView style={styles.chatContactList} showsVerticalScrollIndicator={false}>
+                {availableChatUsers
+                  .filter((user) => user.uid && user.uid !== currentUserUid)
+                  .map((user) => (
+                    <Pressable
+                      key={`chat-contact-${user.uid}`}
+                      style={styles.chatContactRow}
+                      onPress={() => {
+                        setIsNewChatOpen(false)
+                        onStartChat(user.uid)
+                      }}
+                    >
+                      <View style={styles.chatContactAvatar}>
+                        <Text style={styles.chatContactAvatarText}>
+                          {(user.displayName || user.email || 'A').charAt(0).toUpperCase()}
+                        </Text>
+                      </View>
+                      <View style={styles.chatContactText}>
+                        <Text style={styles.chatContactName} numberOfLines={1}>
+                          {user.displayName || user.email}
+                        </Text>
+                        <Text style={styles.chatContactEmail} numberOfLines={1}>{user.email}</Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={18} color="#9aa6a1" />
+                    </Pressable>
+                  ))}
+              </ScrollView>
+            </View>
+          </View>
+        </Modal>
       </>
     )
   }

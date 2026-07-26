@@ -77,7 +77,11 @@ export function registerOrderShippingRoutes(app, {
   }
 
   async function deleteGeneratedOrderDocuments(orderDocument) {
-    const targets = [orderDocument?.deposit_request_url, orderDocument?.order_confirmation_url]
+    const targets = [
+      orderDocument?.deposit_request_url,
+      orderDocument?.order_confirmation_url,
+      orderDocument?.work_order_url,
+    ]
       .map(extractFirebaseStorageTarget)
       .filter(Boolean)
     const results = await Promise.all(targets.map(async (target) => {
@@ -130,6 +134,28 @@ export function registerOrderShippingRoutes(app, {
       value: Number(parsed.toFixed(2)),
       error: null,
     }
+  }
+
+  function requireOfficeManagerOrAdminRole(req, _res, next) {
+    const publicUser = toPublicAuthUser(req.authUser)
+    const hasAccess = Boolean(
+      publicUser?.isApproved
+      && (
+        publicUser?.isOwner
+        || publicUser?.isAdmin
+        || publicUser?.isManager
+        || publicUser?.isOfficeWorker
+      ),
+    )
+
+    if (!hasAccess) {
+      return next({
+        status: 403,
+        message: 'Office, manager, or admin access is required.',
+      })
+    }
+
+    next()
   }
 
   function normalizeBoardLabel(value) {
@@ -637,6 +663,7 @@ export function registerOrderShippingRoutes(app, {
         const duplicateOrder = await ordersUnifiedCollection.findOne(
           {
             order_number: new RegExp(`^${escapeRegex(requestedAcknowledgement)}$`, 'i'),
+            is_deleted: { $ne: true },
           },
           {
             projection: {
@@ -912,7 +939,15 @@ export function registerOrderShippingRoutes(app, {
                 monday_board_name: selectedBoardName,
                 monday_updated_at: mondayUpdatedAt,
                 poAmount: parsedOrderValue.value,
+                orderValue: parsedOrderValue.value,
                 freightValue: parsedFreightValue.value,
+                website_calculated_order_total: parsedOrderValue.value === null
+                  ? null
+                  : Number((
+                    Number(parsedOrderValue.value)
+                    + Number(parsedFreightValue.value || 0)
+                  ).toFixed(2)),
+                website_calculated_order_total_at: parsedOrderValue.value === null ? null : now,
                 sales_rep: requestedSalesRep,
                 created_via_website_manual_at: now,
                 created_via_website_manual_by_uid: String(publicUser?.uid ?? '').trim() || null,
@@ -969,6 +1004,86 @@ export function registerOrderShippingRoutes(app, {
     },
   )
 
+  // POST /api/orders/order-confirmation — save the generated customer
+  // confirmation and internal work-order PDFs for an order.
+  app.post(
+    '/api/orders/order-confirmation',
+    requireFirebaseAuth,
+    requireOfficeManagerOrAdminRole,
+    async (req, res, next) => {
+      try {
+        const orderKey = normalizeOptionalShortText(req.body?.orderKey, 260)
+        const documentUrl = normalizeOptionalShortText(req.body?.documentUrl, 2000)
+        const documentName = normalizeOptionalShortText(req.body?.documentName, 500)
+        const workOrderUrl = normalizeOptionalShortText(req.body?.workOrderUrl, 2000)
+        const workOrderName = normalizeOptionalShortText(req.body?.workOrderName, 500)
+        const proformaInvoiceUrl = normalizeOptionalShortText(req.body?.proformaInvoiceUrl, 2000)
+        const proformaInvoiceName = normalizeOptionalShortText(req.body?.proformaInvoiceName, 500)
+
+        if (!orderKey || !documentUrl || !documentName || !workOrderUrl || !workOrderName || !proformaInvoiceUrl || !proformaInvoiceName) {
+          return res.status(400).json({
+            error: 'Order confirmation, work order, and proforma invoice documents are required.',
+          })
+        }
+
+        let parsedDocumentUrl
+        let parsedWorkOrderUrl
+        let parsedProformaInvoiceUrl
+        try {
+          parsedDocumentUrl = new URL(documentUrl)
+          parsedWorkOrderUrl = new URL(workOrderUrl)
+          parsedProformaInvoiceUrl = new URL(proformaInvoiceUrl)
+        } catch {
+          return res.status(400).json({ error: 'Document URLs must be valid URLs.' })
+        }
+
+        if (parsedDocumentUrl.protocol !== 'https:' || parsedWorkOrderUrl.protocol !== 'https:' || parsedProformaInvoiceUrl.protocol !== 'https:') {
+          return res.status(400).json({ error: 'Document URLs must use HTTPS.' })
+        }
+
+        const { ordersUnifiedCollection } = await getCollections()
+        const now = new Date().toISOString()
+        const result = await ordersUnifiedCollection.updateOne(
+          {
+            orderKey,
+            is_cancelled: { $ne: true },
+            is_deleted: { $ne: true },
+          },
+          {
+            $set: {
+              order_confirmation_url: documentUrl,
+              order_confirmation_name: documentName,
+              order_confirmation_generated_at: now,
+              work_order_url: workOrderUrl,
+              work_order_name: workOrderName,
+              work_order_generated_at: now,
+              proforma_invoice_url: proformaInvoiceUrl,
+              proforma_invoice_name: proformaInvoiceName,
+              proforma_invoice_generated_at: now,
+              updatedAt: now,
+            },
+          },
+        )
+
+        if (result.matchedCount !== 1) {
+          return res.status(404).json({ error: 'Order was not found.' })
+        }
+
+        return res.json({
+          ok: true,
+          orderConfirmationUrl: documentUrl,
+          orderConfirmationName: documentName,
+          workOrderUrl,
+          workOrderName,
+          proformaInvoiceUrl,
+          proformaInvoiceName,
+        })
+      } catch (error) {
+        next(error)
+      }
+    },
+  )
+
   // POST /api/orders/delete — remove an order from website collections and
   // Monday (blocked when linked to QuickBooks).
   app.post(
@@ -989,12 +1104,18 @@ export function registerOrderShippingRoutes(app, {
         }
 
         const {
+          crmQuotesCollection,
           mondayOrdersCollection,
           orderProgressCollection,
           ordersUnifiedCollection,
         } = await getCollections()
         const orderDocument = await ordersUnifiedCollection.findOne(
-          orderIdentityFilter,
+          {
+            $and: [
+              orderIdentityFilter,
+              { is_deleted: { $ne: true } },
+            ],
+          },
           {
             projection: {
               _id: 0,
@@ -1015,6 +1136,7 @@ export function registerOrderShippingRoutes(app, {
               include_quote_freight: 1,
               deposit_request_url: 1,
               order_confirmation_url: 1,
+              work_order_url: 1,
             },
           },
         )
@@ -1139,36 +1261,25 @@ export function registerOrderShippingRoutes(app, {
         }
 
         const orderKey = String(orderDocument?.orderKey ?? '').trim() || ''
+        const deletedOrderFilter = orderKey
+          ? { orderKey }
+          : mondayItemId
+            ? { monday_item_id: mondayItemId }
+            : {
+              order_number: new RegExp(`^${escapeRegex(orderNumber)}$`, 'i'),
+            }
 
         await Promise.all([
           mondayItemId
             ? mondayOrdersCollection.deleteOne({ mondayItemId })
             : Promise.resolve(),
-          orderKey
-            ? ordersUnifiedCollection.deleteOne({ orderKey })
-            : mondayItemId
-              ? ordersUnifiedCollection.deleteMany({ monday_item_id: mondayItemId })
-              : orderNumber
-                ? ordersUnifiedCollection.deleteMany({
-                  order_number: new RegExp(`^${escapeRegex(orderNumber)}$`, 'i'),
-                })
-                : Promise.resolve(),
+          ordersUnifiedCollection.deleteMany(deletedOrderFilter),
           orderNumber
             ? orderProgressCollection.deleteMany({
               jobName: new RegExp(`^${escapeRegex(orderNumber)}$`, 'i'),
             })
             : Promise.resolve(),
         ])
-
-        try {
-          await refreshOrdersUnifiedCollection()
-        } catch (refreshError) {
-          warnings.push(
-            refreshError instanceof Error
-              ? refreshError.message
-              : 'Order was deleted, but orders refresh failed.',
-          )
-        }
 
         return res.json({
           ok: true,
@@ -1379,7 +1490,7 @@ export function registerOrderShippingRoutes(app, {
 
         if (!signedBolValue && !signedBolUrl) {
           return res.status(409).json({
-            error: 'Signed BOL must be uploaded before shipping.',
+            error: 'Driver Signed BOL must be uploaded before shipping.',
           })
         }
 

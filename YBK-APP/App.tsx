@@ -31,7 +31,7 @@ import {
   View,
 } from 'react-native'
 import { GestureHandlerRootView } from 'react-native-gesture-handler'
-import { SafeAreaView } from 'react-native-safe-area-context'
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context'
 import {
   GoogleAuthProvider,
   OAuthProvider,
@@ -800,6 +800,7 @@ export default function App() {
   const [alertsUnreadCount, setAlertsUnreadCount] = useState(0)
   const [showReadAlerts, setShowReadAlerts] = useState(false)
   const [chatThreads, setChatThreads] = useState<MobileChatThread[]>([])
+  const [chatUsers, setChatUsers] = useState<MobileChatUser[]>([])
   const [chatMessagesByThreadId, setChatMessagesByThreadId] = useState<Record<string, MobileChatMessage[]>>({})
   const [chatSelectedThreadId, setChatSelectedThreadId] = useState<string | null>(null)
   const [chatViewMode, setChatViewMode] = useState<'list' | 'thread'>('list')
@@ -877,6 +878,7 @@ export default function App() {
   const hasApprovedSessionAccess = Boolean(authProfile?.isApproved) && !isBiometricLocked
   const isAdminUser = Boolean(authProfile?.isAdmin)
   const isStandardUser = authProfile?.role === 'standard'
+  const isShopWorker = Boolean(authProfile?.isShopWorker) || authProfile?.role === 'shop_worker'
   const hasManagerSheetAccess = !isAdminUser && Boolean(authProfile?.isManager)
   const hasAdminOrderDetailsAccess = Boolean(authProfile?.isAdmin)
   const profileDisplayName = useMemo(
@@ -2600,6 +2602,8 @@ export default function App() {
           role?: unknown
           isAdmin?: unknown
           isManager?: unknown
+          isSalesRep?: unknown
+          isShopWorker?: unknown
         }
       }>('/api/auth/me')
 
@@ -2611,8 +2615,8 @@ export default function App() {
       }
 
       const roleValue = String(payload?.user?.role ?? '').trim().toLowerCase()
-      const normalizedRole = ['standard', 'manager', 'admin'].includes(roleValue)
-        ? (roleValue as 'standard' | 'manager' | 'admin')
+      const normalizedRole = ['standard', 'manager', 'sales_rep', 'shop_worker', 'admin'].includes(roleValue)
+        ? (roleValue as MobileAuthUser['role'])
         : 'standard'
       const isAdmin = payload?.user?.isAdmin === true || normalizedRole === 'admin'
       const isManager = payload?.user?.isManager === true || normalizedRole === 'manager'
@@ -2622,6 +2626,8 @@ export default function App() {
         role: normalizedRole,
         isAdmin,
         isManager,
+        isSalesRep: payload?.user?.isSalesRep === true || normalizedRole === 'sales_rep',
+        isShopWorker: payload?.user?.isShopWorker === true || normalizedRole === 'shop_worker',
       })
       setAuthMessage(null)
     } catch (error) {
@@ -3813,55 +3819,17 @@ export default function App() {
 
       const nextUsers = Array.isArray(usersPayload.users) ? usersPayload.users : []
       const nextThreads = Array.isArray(threadsPayload.threads) ? threadsPayload.threads : []
-      const requesterUid = normalizeTextValue(firebaseUser?.uid)
-      const requesterEmail = normalizeTextValue(firebaseUser?.email).toLowerCase()
-      let resolvedThreads = nextThreads
-
-      if (!isAdminUser && requesterUid && !isChatOwnerEmail(requesterEmail)) {
-        const ownerUser = nextUsers.find((user) => isChatOwnerEmail(user.email))
-        const hasOwnerThread = resolvedThreads.some((thread) => isOwnerDirectThread(thread, requesterUid))
-
-        if (ownerUser?.uid && !hasOwnerThread) {
-          await requestWithSession(
-            '/api/chat/threads/direct',
-            false,
-            {
-              method: 'POST',
-              body: JSON.stringify({
-                targetUid: ownerUser.uid,
-              }),
-            },
-          )
-
-          const refreshedThreadsPayload = await requestWithSession<{ threads?: MobileChatThread[] }>(
-            '/api/chat/threads',
-            false,
-          )
-
-          resolvedThreads = Array.isArray(refreshedThreadsPayload.threads)
-            ? refreshedThreadsPayload.threads
-            : []
-        }
-      }
-
-      setChatThreads(resolvedThreads)
+      setChatUsers(nextUsers)
+      setChatThreads(nextThreads)
       setChatMessage(null)
       setChatSelectedThreadId((current) => {
-        if (current && resolvedThreads.some((thread) => thread.id === current)) {
+        if (current && nextThreads.some((thread) => thread.id === current)) {
           return current
         }
-
-        if (!isAdminUser && requesterUid) {
-          const ownerThread = resolvedThreads.find((thread) => isOwnerDirectThread(thread, requesterUid))
-
-          if (ownerThread) {
-            return ownerThread.id
-          }
-        }
-
-        return resolvedThreads[0]?.id ?? null
+        return nextThreads[0]?.id ?? null
       })
     } catch (error) {
+      setChatUsers([])
       setChatThreads([])
       setChatSelectedThreadId(null)
       setChatMessage(
@@ -3875,7 +3843,37 @@ export default function App() {
       setIsChatLoading(false)
       setIsRefreshing(false)
     }
-  }, [firebaseUser?.email, firebaseUser?.uid, getErrorMessage, isAdminUser, requestWithSession])
+  }, [getErrorMessage, requestWithSession])
+
+  const handleStartDirectChat = useCallback(async (targetUid: string) => {
+    const normalizedTargetUid = String(targetUid ?? '').trim()
+    if (!isAdminUser || !normalizedTargetUid) return
+
+    setIsChatLoading(true)
+    setChatMessage(null)
+
+    try {
+      const payload = await requestWithSession<{ thread?: MobileChatThread }>(
+        '/api/chat/threads/direct',
+        false,
+        {
+          method: 'POST',
+          body: JSON.stringify({ targetUid: normalizedTargetUid }),
+        },
+      )
+      await loadChatState(false)
+      if (payload.thread?.id) {
+        setChatSelectedThreadId(payload.thread.id)
+        setChatViewMode('thread')
+      }
+    } catch (error) {
+      setChatMessage(
+        getErrorMessage(error, 'Could not start this chat.', 'No se pudo iniciar este chat.'),
+      )
+    } finally {
+      setIsChatLoading(false)
+    }
+  }, [getErrorMessage, isAdminUser, loadChatState, requestWithSession])
 
   const loadChatMessages = useCallback(async (threadId: string, refreshRequested = false) => {
     const normalizedThreadId = String(threadId ?? '').trim()
@@ -6724,10 +6722,9 @@ export default function App() {
   ) => {
     const detailsOrder = detailsSnapshot?.order ?? null
     const cachedPreviewUrl = String(detailsOrder?.shopDrawingCachedUrl ?? order.shopDrawingCachedUrl ?? '').trim()
-    const sourcePreviewUrl = String(detailsOrder?.shopDrawingUrl ?? order.shopDrawingUrl ?? '').trim()
     const orderId = String(detailsOrder?.mondayItemId ?? order.id ?? '').trim()
 
-    if (!cachedPreviewUrl && !sourcePreviewUrl && !orderId) {
+    if (!cachedPreviewUrl && !orderId) {
       setOrdersDetailMessage(
         t(
           'This order is not linked to Monday yet.',
@@ -6742,11 +6739,6 @@ export default function App() {
     try {
       if (cachedPreviewUrl) {
         await WebBrowser.openBrowserAsync(cachedPreviewUrl)
-        return
-      }
-
-      if (sourcePreviewUrl) {
-        await WebBrowser.openBrowserAsync(sourcePreviewUrl)
         return
       }
 
@@ -7387,21 +7379,29 @@ export default function App() {
     || (activeScreen === 'chat' && (isChatLoading || isChatMessagesLoading || isChatSendingMessage || isChatProcessingVoice))
     || (activeScreen === 'settings' && (isCheckingForUpdates || isInstallingUpdate))
   const isChatThreadScreen = activeScreen === 'chat' && chatViewMode === 'thread' && Boolean(selectedChatThread)
+  const ScreenContent = isChatThreadScreen ? View : ScrollView
 
   return (
-    <GestureHandlerRootView style={styles.gestureRoot}>
+    <SafeAreaProvider>
+      <GestureHandlerRootView style={styles.gestureRoot}>
       <SafeAreaView style={styles.safeArea} edges={['top']}>
         <StatusBar style="dark" />
         <View style={styles.shell}>
         <View style={styles.contentPane}>
-          <ScrollView
-            ref={screenScrollRef}
-            style={usesNestedListScroll ? styles.picturesScreenScroll : undefined}
-            contentContainerStyle={[
-              styles.scrollContent,
-              usesNestedListScroll ? styles.scrollContentPictures : null,
-            ]}
-            scrollEnabled={!usesNestedListScroll}
+          <ScreenContent
+            {...(isChatThreadScreen
+              ? {
+                style: [styles.picturesScreenScroll, styles.scrollContent, styles.scrollContentPictures],
+              }
+              : {
+                ref: screenScrollRef,
+                style: usesNestedListScroll ? styles.picturesScreenScroll : undefined,
+                contentContainerStyle: [
+                  styles.scrollContent,
+                  usesNestedListScroll ? styles.scrollContentPictures : null,
+                ],
+                scrollEnabled: !usesNestedListScroll,
+              })}
           >
             {!isChatThreadScreen ? (
               <View style={styles.topBarCard}>
@@ -7515,6 +7515,7 @@ export default function App() {
                 orderViewFilter={ordersViewFilter}
                 onOrderViewFilterChange={setOrdersViewFilter}
                 showOrderViewTabs={!isStandardUser}
+                hidePoNumber={isShopWorker}
                 poNumberByOrderId={poNumberByOrderId}
                 ordersCardHeight={ordersCardHeight}
                 managerInsightsByOrderId={orderManagerInsightsByOrderId}
@@ -7620,6 +7621,7 @@ export default function App() {
                 currentUserEmail={String(firebaseUser?.email ?? '')}
                 currentUserUid={String(firebaseUser?.uid ?? '')}
                 isAdminUser={isAdminUser}
+                availableChatUsers={chatUsers}
                 isChatLoading={isChatLoading}
                 isChatMessagesLoading={isChatMessagesLoading}
                 isChatProcessingVoice={isChatProcessingVoice}
@@ -7628,6 +7630,9 @@ export default function App() {
                 locale={locale}
                 onBackToList={() => {
                   setChatViewMode('list')
+                }}
+                onStartChat={(targetUid) => {
+                  void handleStartDirectChat(targetUid)
                 }}
                 onComposerTextChange={setChatComposerText}
                 onDeleteMessage={(messageId) => {
@@ -7995,7 +8000,7 @@ export default function App() {
                 onSelectSettingsMenu={setActiveSettingsMenuId}
               />
             ) : null}
-          </ScrollView>
+          </ScreenContent>
         </View>
 
         {!isChatThreadScreen ? (
@@ -8738,9 +8743,17 @@ export default function App() {
                     <Text style={styles.orderDetailSummaryMeta}>
                       {t('Order', 'Orden')}: #{selectedOrderOverviewDetails.orderNumber || selectedOrderForDetails.id}
                     </Text>
-                    {selectedOrderOverviewDetails.mondayStatus ? (
+                    {!isShopWorker && selectedOrderOverviewDetails.mondayStatus ? (
                       <Text style={styles.orderDetailSummaryMeta}>
                         {t('Monday status', 'Estado de Monday')}: {selectedOrderOverviewDetails.mondayStatus}
+                      </Text>
+                    ) : null}
+                    {isShopWorker && selectedOrderOverviewDetails.managerReadyPercent !== null ? (
+                      <Text style={styles.orderDetailSummaryMeta}>
+                        {t('Ready', 'Listo')}: {selectedOrderOverviewDetails.managerReadyPercent}%
+                        {selectedOrderOverviewDetails.managerReadyDate
+                          ? ` • ${formatDisplayDate(selectedOrderOverviewDetails.managerReadyDate, locale)}`
+                          : ''}
                       </Text>
                     ) : null}
                   </View>
@@ -8853,14 +8866,18 @@ export default function App() {
                           <Text style={styles.orderDetailInfoLabel}>{t('Order name', 'Nombre de orden')}</Text>
                           <Text style={styles.orderDetailInfoValue}>{selectedOrderOverviewDetails.orderName || '-'}</Text>
                         </View>
-                        <View style={styles.orderDetailInfoRow}>
-                          <Text style={styles.orderDetailInfoLabel}>{t('P.O. number', 'Numero de P.O.')}</Text>
-                          <Text style={styles.orderDetailInfoValue}>{selectedOrderOverviewDetails.poNumber || '-'}</Text>
-                        </View>
-                        <View style={styles.orderDetailInfoRow}>
-                          <Text style={styles.orderDetailInfoLabel}>{t('Monday status', 'Estado de Monday')}</Text>
-                          <Text style={styles.orderDetailInfoValue}>{selectedOrderOverviewDetails.mondayStatus || '-'}</Text>
-                        </View>
+                        {!isShopWorker ? (
+                          <>
+                            <View style={styles.orderDetailInfoRow}>
+                              <Text style={styles.orderDetailInfoLabel}>{t('P.O. number', 'Numero de P.O.')}</Text>
+                              <Text style={styles.orderDetailInfoValue}>{selectedOrderOverviewDetails.poNumber || '-'}</Text>
+                            </View>
+                            <View style={styles.orderDetailInfoRow}>
+                              <Text style={styles.orderDetailInfoLabel}>{t('Monday status', 'Estado de Monday')}</Text>
+                              <Text style={styles.orderDetailInfoValue}>{selectedOrderOverviewDetails.mondayStatus || '-'}</Text>
+                            </View>
+                          </>
+                        ) : null}
                         <View style={styles.orderDetailInfoRow}>
                           <Text style={styles.orderDetailInfoLabel}>{t('Lead time', 'Lead time')}</Text>
                           <Text style={styles.orderDetailInfoValue}>
@@ -8874,34 +8891,48 @@ export default function App() {
                       </View>
 
                       <View style={styles.orderDetailInfoCard}>
-                        <Text style={styles.orderDetailSectionTitle}>{t('Status and progress', 'Estado y progreso')}</Text>
+                        <Text style={styles.orderDetailSectionTitle}>{t('Progress', 'Progreso')}</Text>
+                        {!isShopWorker ? (
+                          <View style={styles.orderDetailInfoRow}>
+                            <Text style={styles.orderDetailInfoLabel}>{t('Monday status', 'Estado de Monday')}</Text>
+                            <Text style={styles.orderDetailInfoValue}>{selectedOrderOverviewDetails.mondayStatus || '-'}</Text>
+                          </View>
+                        ) : null}
                         <View style={styles.orderDetailInfoRow}>
-                          <Text style={styles.orderDetailInfoLabel}>{t('Monday status', 'Estado de Monday')}</Text>
-                          <Text style={styles.orderDetailInfoValue}>{selectedOrderOverviewDetails.mondayStatus || '-'}</Text>
-                        </View>
-                        <View style={styles.orderDetailInfoRow}>
-                          <Text style={styles.orderDetailInfoLabel}>{t('Manager status', 'Estado de gerente')}</Text>
+                          <Text style={styles.orderDetailInfoLabel}>{t('Ready', 'Listo')}</Text>
                           <Text style={styles.orderDetailInfoValue}>
                             {selectedOrderOverviewDetails.managerReadyPercent !== null
                               ? `${selectedOrderOverviewDetails.managerReadyPercent}%`
                               : '-'}
                           </Text>
                         </View>
-                      </View>
-
-                      <View style={styles.orderDetailInfoCard}>
-                        <Text style={styles.orderDetailSectionTitle}>{t('Finance', 'Finanzas')}</Text>
                         <View style={styles.orderDetailInfoRow}>
-                          <Text style={styles.orderDetailInfoLabel}>{t('Paid in full', 'Pagado completo')}</Text>
+                          <Text style={styles.orderDetailInfoLabel}>{t('Updated', 'Actualizado')}</Text>
                           <Text style={styles.orderDetailInfoValue}>
-                            {selectedOrderOverviewDetails.paidInFull === null
-                              ? t('Unknown', 'Desconocido')
-                              : selectedOrderOverviewDetails.paidInFull
-                                ? t('Yes', 'Si')
-                                : t('No', 'No')}
+                            {formatDisplayDate(
+                              selectedOrderOverviewDetails.managerReadyDate
+                                || selectedOrderOverviewDetails.managerReadyUpdatedAt,
+                              locale,
+                            )}
                           </Text>
                         </View>
                       </View>
+
+                      {!isShopWorker ? (
+                        <View style={styles.orderDetailInfoCard}>
+                          <Text style={styles.orderDetailSectionTitle}>{t('Finance', 'Finanzas')}</Text>
+                          <View style={styles.orderDetailInfoRow}>
+                            <Text style={styles.orderDetailInfoLabel}>{t('Paid in full', 'Pagado completo')}</Text>
+                            <Text style={styles.orderDetailInfoValue}>
+                              {selectedOrderOverviewDetails.paidInFull === null
+                                ? t('Unknown', 'Desconocido')
+                                : selectedOrderOverviewDetails.paidInFull
+                                  ? t('Yes', 'Si')
+                                  : t('No', 'No')}
+                            </Text>
+                          </View>
+                        </View>
+                      ) : null}
 
                       {(selectedOrderOverviewDetails.shippedAt
                         || selectedOrderOverviewDetails.shipTo
@@ -8967,18 +8998,20 @@ export default function App() {
                                         ? `${historyRow.readyPercent}%`
                                         : t('No %', 'Sin %')}
                                     </Text>
-                                    <Text style={styles.orderDetailHistoryExpandText}>
-                                      {isExpanded
-                                        ? t('Hide', 'Ocultar')
-                                        : t('Workers', 'Trabajadores')}
-                                    </Text>
+                                    {!isShopWorker ? (
+                                      <Text style={styles.orderDetailHistoryExpandText}>
+                                        {isExpanded
+                                          ? t('Hide', 'Ocultar')
+                                          : t('Workers', 'Trabajadores')}
+                                      </Text>
+                                    ) : null}
                                   </View>
 
                                   <Text style={styles.orderDetailHistorySecondary}>
                                     {historyRow.jobName || selectedOrderOverviewDetails.orderName || t('Order', 'Orden')}
                                   </Text>
 
-                                  {isExpanded ? (
+                                  {!isShopWorker && isExpanded ? (
                                     <View style={styles.orderDetailHistoryWorkersList}>
                                       {workerRows.length > 0 ? (
                                         workerRows.map((workerRow) => (
@@ -9797,7 +9830,7 @@ export default function App() {
         ) : null}
         </View>
       </SafeAreaView>
-    </GestureHandlerRootView>
+      </GestureHandlerRootView>
+    </SafeAreaProvider>
   )
 }
-

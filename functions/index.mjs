@@ -205,7 +205,8 @@ const firebaseStorageBucketName = String(
   process.env.APP_STORAGE_BUCKET ?? '',
 ).trim()
 const ownerEmail = String(process.env.OWNER_EMAIL ?? '').trim()
-const authRoleStandard = 'standard'
+const authRoleStandard = 'office_worker'
+const authRoleShopWorker = 'shop_worker'
 const authRoleManager = 'manager'
 const authRoleAdmin = 'admin'
 const authRoleSalesRep = 'sales_rep'
@@ -333,6 +334,7 @@ const {
   authRoleAdmin,
   authRoleManager,
   authRoleSalesRep,
+  authRoleShopWorker,
   authRoleStandard,
   normalizeWorkerNumber,
   ownerEmail,
@@ -561,6 +563,7 @@ const {
   fetchMondayBoardColumns,
   fetchMondayBoardItemNames,
   fetchMondayBoardItemsByIds,
+  fetchMondayBoardSelectedColumns,
   fetchMondayBoardsCatalog,
   fetchMondayDashboardSnapshot,
   fetchMondayStatusColumnOptions,
@@ -605,6 +608,7 @@ const { persistNewMondayOrders } = createMondayOrderPersistenceService({
 const { refreshOrdersUnifiedCollection } = createOrdersUnifiedService({
   fetchMondayBoardItemNames,
   fetchMondayBoardItemsByIds,
+  fetchMondayBoardSelectedColumns,
   fetchMondayDashboardSnapshot,
   getCollections,
   invalidateMondayBoardNamesCache,
@@ -633,6 +637,7 @@ const {
   authClientPlatformWeb,
   authRoleAdmin,
   authRoleSalesRep,
+  authRoleShopWorker,
   authRoleStandard,
   formatAuthLoginHoursWindow,
   getAuth,
@@ -1648,11 +1653,13 @@ const routeDeps = {
   authAccessTimeZoneNewJersey,
   authApprovalApproved,
   authApprovalPending,
+  authClientAccessModeAppOnly,
   authClientAccessModeWebOnly,
   authClientAccessModeWebAndApp,
   authClientPlatformApp,
   authRoleAdmin,
   authRoleSalesRep,
+  authRoleShopWorker,
   authRoleStandard,
   buildOrderPhotoDownloadFileName,
   clearSupportSnapshotCache,
@@ -2142,6 +2149,149 @@ async function dispatchDueQuoteFollowUpReminders() {
   return { alertedCount: alerts.length, updatedQuoteCount: quoteUpdates.length }
 }
 
+async function dispatchMissingCustomerSignedBolReminders() {
+  const {
+    authUsersCollection,
+    ordersUnifiedCollection,
+    mobileAlertsCollection,
+  } = await getCollections()
+  const now = new Date()
+  const nowIsoValue = now.toISOString()
+  const [users, orders] = await Promise.all([
+    authUsersCollection.find(
+      {
+        approvalStatus: authApprovalApproved,
+        'quoteReminderSettings.rules': {
+          $elemMatch: { kind: 'customer_signed_bol_missing' },
+        },
+      },
+      {
+        projection: {
+          _id: 0,
+          uid: 1,
+          quoteReminderSettings: 1,
+        },
+      },
+    ).toArray(),
+    ordersUnifiedCollection.find(
+      {
+        is_cancelled: { $ne: true },
+        is_deleted: { $ne: true },
+        is_shipped: true,
+      },
+      {
+        projection: {
+          _id: 0,
+          orderKey: 1,
+          order_number: 1,
+          order_name: 1,
+          shipped_at: 1,
+          customer_signed_bol: 1,
+          Customer_Signed_BOL: 1,
+          Customer_Signed_BOL_source: 1,
+          customer_signed_bol_reminder_notifications: 1,
+        },
+      },
+    ).limit(5000).toArray(),
+  ])
+
+  const alerts = []
+  const orderUpdates = []
+
+  for (const user of users) {
+    const uid = String(user?.uid ?? '').trim()
+    if (!uid) continue
+
+    const rules = Array.isArray(user?.quoteReminderSettings?.rules)
+      ? user.quoteReminderSettings.rules.filter((rule) => rule?.kind === 'customer_signed_bol_missing')
+      : []
+
+    for (const order of orders) {
+      const hasCustomerSignedBol = Boolean(
+        String(order?.customer_signed_bol ?? '').trim()
+        || String(order?.Customer_Signed_BOL_source ?? '').trim()
+        || String(order?.Customer_Signed_BOL ?? '').trim(),
+      )
+      if (hasCustomerSignedBol) continue
+
+      const referenceAt = String(order?.shipped_at ?? '').trim()
+      const referenceTime = referenceAt ? new Date(referenceAt).getTime() : Number.NaN
+      if (!Number.isFinite(referenceTime)) continue
+
+      for (const rule of rules) {
+        const ruleId = String(rule?.id ?? '').trim()
+        if (!ruleId) continue
+
+        const afterDays = Math.min(365, Math.max(0, Number(rule?.days ?? 10)))
+        const ageDays = Math.max(0, Math.floor((now.getTime() - referenceTime) / 86400000))
+        if (ageDays < afterDays) continue
+
+        const alreadyNotified = Array.isArray(order?.customer_signed_bol_reminder_notifications)
+          && order.customer_signed_bol_reminder_notifications.some((entry) =>
+            String(entry?.uid ?? '').trim() === uid
+            && String(entry?.ruleId ?? '').trim() === ruleId
+            && String(entry?.referenceAt ?? '').trim() === referenceAt
+          )
+        if (alreadyNotified) continue
+
+        const orderLabel = String(order?.order_number || order?.order_name || 'Order').trim()
+        const orderKey = String(order?.orderKey ?? '').trim()
+        const orderNumber = String(order?.order_number ?? '').trim()
+        if (!orderKey && !orderNumber) continue
+
+        alerts.push({
+          id: randomUUID(),
+          title: `Customer Signed BOL missing: ${orderLabel}`,
+          message: `${orderLabel} was shipped ${ageDays} day${ageDays === 1 ? '' : 's'} ago and is still missing the Customer Signed BOL.`,
+          isUpdate: false,
+          targetMode: mobileAlertTargetModeSelected,
+          targetUserUids: [uid],
+          createdByUid: null,
+          createdByEmail: null,
+          delivery: {
+            targetUserCount: 1,
+            pushTokenCount: 0,
+            pushAcceptedCount: 0,
+            pushErrorCount: 0,
+            errorSamples: [],
+          },
+          metadata: {
+            source: 'orders_customer_signed_bol_missing',
+            orderKey: String(order?.orderKey ?? '').trim() || null,
+            orderNumber: String(order?.order_number ?? '').trim() || null,
+            ruleId,
+            referenceAt,
+            ageDays,
+          },
+          createdAt: nowIsoValue,
+          updatedAt: nowIsoValue,
+        })
+        orderUpdates.push({
+          updateOne: {
+            filter: orderKey ? { orderKey } : { order_number: orderNumber },
+            update: {
+              $push: {
+                customer_signed_bol_reminder_notifications: {
+                  $each: [{ uid, ruleId, referenceAt, notifiedAt: nowIsoValue }],
+                  $slice: -500,
+                },
+              },
+            },
+          },
+        })
+      }
+    }
+  }
+
+  if (alerts.length > 0) await mobileAlertsCollection.insertMany(alerts)
+  if (orderUpdates.length > 0) await ordersUnifiedCollection.bulkWrite(orderUpdates, { ordered: false })
+
+  return {
+    alertedCount: alerts.length,
+    updatedOrderCount: orderUpdates.length,
+  }
+}
+
 async function appendSystemRunLog({
   startedAt,
   completedAt,
@@ -2403,11 +2553,16 @@ export const dispatchCrmReminderNotifications = functions
   .timeZone(crmReminderDispatchTimeZone)
   .onRun(async () => {
     const asOfDate = formatDateForTimeZone(new Date(), crmReminderDispatchTimeZone)
-    const [chatSummary, quoteSummary] = await Promise.all([
+    const [chatSummary, quoteSummary, orderDocumentSummary] = await Promise.all([
       dispatchDueCrmChatReminders({ asOfDate }),
       dispatchDueQuoteFollowUpReminders(),
+      dispatchMissingCustomerSignedBolReminders(),
     ])
-    const summary = { chat: chatSummary, quotes: quoteSummary }
+    const summary = {
+      chat: chatSummary,
+      quotes: quoteSummary,
+      orderDocuments: orderDocumentSummary,
+    }
 
     console.info('dispatchCrmReminderNotifications completed.', {
       asOfDate,

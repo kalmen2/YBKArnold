@@ -22,6 +22,7 @@ import {
   normalizeProgressStageKey,
   normalizeProgressStageStatus,
 } from '../orders/stage-registry.mjs'
+import { NEW_ORDERS_FINANCIAL_BOARDS_BY_PREFIX } from '../orders/monday-board-map.mjs'
 import { createQuickBooksProjectsService } from './quickbooks-projects-service.mjs'
 import {
   buildNameLookupFromMondayItems,
@@ -31,6 +32,7 @@ import {
   findNameLookupMatch,
   hydrateUnifiedRowFromStoredDocument,
   isShippedOrderDocument,
+  normalizeOrderNumberKey,
   normalizeText,
   resolveOrderNumberFromMondayOrder,
   resolveStatusHistoryForOrder,
@@ -40,6 +42,56 @@ import {
   toTimestampMs,
 } from './orders-merge-helpers.mjs'
 import { toMoneyOrNull as toMoney } from '../utils/value-utils.mjs'
+
+function selectedMondayColumn(item, columnId) {
+  const normalizedColumnId = normalizeText(columnId, 120)
+
+  if (!normalizedColumnId) {
+    return null
+  }
+
+  return (Array.isArray(item?.columnValues) ? item.columnValues : [])
+    .find((columnValue) => normalizeText(columnValue?.id, 120) === normalizedColumnId) ?? null
+}
+
+function selectedMondayColumnText(item, columnId) {
+  const column = selectedMondayColumn(item, columnId)
+  const directText = normalizeText(column?.text, 1000)
+
+  if (directText) {
+    return directText
+  }
+
+  if (!column?.value) {
+    return null
+  }
+
+  try {
+    const parsed = typeof column.value === 'string'
+      ? JSON.parse(column.value)
+      : column.value
+    return normalizeText(
+      parsed?.date
+      ?? parsed?.text
+      ?? parsed?.label
+      ?? parsed?.value,
+      1000,
+    ) || null
+  } catch {
+    return null
+  }
+}
+
+function selectedMondayMoney(item, columnId) {
+  const rawValue = selectedMondayColumnText(item, columnId)
+
+  if (!rawValue) {
+    return null
+  }
+
+  const parsed = Number(String(rawValue).replace(/[$,\s]/g, ''))
+  return Number.isFinite(parsed) ? parsed : null
+}
 
 function shouldReplaceMondayDetails(existing, incoming) {
   if (!existing?.has_monday_record) {
@@ -242,6 +294,7 @@ export function createOrdersUnifiedService(deps) {
   const {
     fetchMondayBoardItemNames,
     fetchMondayBoardItemsByIds,
+    fetchMondayBoardSelectedColumns,
     fetchMondayDashboardSnapshot,
     getCollections,
     invalidateMondayBoardNamesCache,
@@ -257,6 +310,122 @@ export function createOrdersUnifiedService(deps) {
   const { fetchProjectsFinancials } = createQuickBooksProjectsService({ getCollections })
 
   let inFlightRefresh = null
+
+  async function enrichFromNewOrdersBoards(mergedByKey, refreshedAt, warnings) {
+    if (typeof fetchMondayBoardSelectedColumns !== 'function') {
+      warnings.push('New Orders financial enrichment is unavailable.')
+      return {
+        checkedBoardCount: 0,
+        matchedOrderCount: 0,
+        updatedOrderCount: 0,
+      }
+    }
+
+    const rowsByPrefix = new Map()
+
+    mergedByKey.forEach((row) => {
+      const orderNumber = normalizeText(row?.order_number, 120)
+      const prefix = orderNumber?.slice(0, 2)
+
+      if (!orderNumber || !NEW_ORDERS_FINANCIAL_BOARDS_BY_PREFIX[prefix]) {
+        return
+      }
+
+      if (!rowsByPrefix.has(prefix)) {
+        rowsByPrefix.set(prefix, [])
+      }
+
+      rowsByPrefix.get(prefix).push(row)
+    })
+
+    let checkedBoardCount = 0
+    let matchedOrderCount = 0
+    let updatedOrderCount = 0
+
+    for (const [prefix, rows] of rowsByPrefix.entries()) {
+      const board = NEW_ORDERS_FINANCIAL_BOARDS_BY_PREFIX[prefix]
+      const columnIds = [
+        board.ackColumnId,
+        board.orderValueColumnId,
+        board.freightValueColumnId,
+        board.depositReceivedColumnId,
+        board.salesRepColumnId,
+      ].filter(Boolean)
+
+      try {
+        const snapshot = await fetchMondayBoardSelectedColumns({
+          boardId: board.boardId,
+          boardName: `New Orders ${board.year}`,
+          columnIds,
+        })
+        checkedBoardCount += 1
+
+        const itemByAck = new Map()
+
+        ;(Array.isArray(snapshot?.items) ? snapshot.items : []).forEach((item) => {
+          const ack = selectedMondayColumnText(item, board.ackColumnId)
+          const ackKey = normalizeOrderNumberKey(ack)
+
+          if (ackKey && !itemByAck.has(ackKey)) {
+            itemByAck.set(ackKey, item)
+          }
+        })
+
+        rows.forEach((row) => {
+          const orderKey = normalizeOrderNumberKey(row?.order_number)
+          const item = orderKey ? itemByAck.get(orderKey) : null
+
+          if (!item) {
+            return
+          }
+
+          matchedOrderCount += 1
+          const orderValue = selectedMondayMoney(item, board.orderValueColumnId)
+          const freightValue = selectedMondayMoney(item, board.freightValueColumnId)
+          const depositReceivedDate = toIsoDateOnly(
+            selectedMondayColumnText(item, board.depositReceivedColumnId),
+          )
+          const salesRep = selectedMondayColumnText(item, board.salesRepColumnId)
+          let changed = false
+
+          if (orderValue !== null) {
+            row.orderValue = orderValue
+            changed = true
+          }
+          if (freightValue !== null) {
+            row.freightValue = freightValue
+            changed = true
+          }
+          if (depositReceivedDate) {
+            row.deposit_received_date = depositReceivedDate
+            changed = true
+          }
+          if (salesRep) {
+            row.sales_rep = salesRep
+            changed = true
+          }
+
+          row.new_orders_board_id = board.boardId
+          row.new_orders_item_id = normalizeText(item?.id, 120) || null
+          row.new_orders_financial_synced_at = refreshedAt
+
+          if (changed) {
+            updatedOrderCount += 1
+          }
+        })
+      } catch (error) {
+        warnings.push(
+          `New Orders ${board.year} enrichment failed: ${normalizeText(error?.message, 400) || 'unknown error'}`,
+        )
+      }
+    }
+
+    return {
+      checkedBoardCount,
+      matchedOrderCount,
+      updatedOrderCount,
+    }
+  }
 
   // -- Order Track pull -----------------------------------------------------
 
@@ -321,7 +490,6 @@ export function createOrdersUnifiedService(deps) {
         typeof order?.isProductionStarted === 'boolean'
           ? order.isProductionStarted
           : resolveProductionStartedFromProgressStatusDetails(progressStatusDetails)
-      const scheduleEligible = isShipped || isProductionStarted
       const incoming = {
         order_number: orderNumber,
         monday_item_id: mondayItemId,
@@ -338,14 +506,13 @@ export function createOrdersUnifiedService(deps) {
         inspection_sheet: normalizeText(order?.inspectionSheet, 200) || null,
         Inspection_sheet_source: normalizeText(order?.inspectionSheetUrl, 800) || null,
         po_number: normalizeText(order?.poNumber, 120) || null,
+        bench: normalizeText(order?.bench, 500) || null,
         monday_notes: normalizeText(order?.notes, 2000) || null,
         monday_description: normalizeText(order?.description, 2000) || null,
         is_shipped: isShipped,
         is_production_started: isShipped || isProductionStarted,
-        Due_date: scheduleEligible
-          ? toIsoOrNull(order?.dueDate)
-          : null,
-        Lead_time_days: scheduleEligible && Number.isFinite(Number(order?.leadTimeDays))
+        Due_date: toIsoOrNull(order?.dueDate),
+        Lead_time_days: Number.isFinite(Number(order?.leadTimeDays))
           ? Number(order.leadTimeDays)
           : null,
         progress_percent: Number.isFinite(Number(order?.progressPercent))
@@ -403,6 +570,7 @@ export function createOrdersUnifiedService(deps) {
           Inspection_sheet_source: incoming.Inspection_sheet_source || null,
           Inspection_sheet: incoming.Inspection_sheet || row.Inspection_sheet,
           po_number: incoming.po_number || row.po_number,
+          bench: incoming.bench,
           monday_notes: incoming.monday_notes || row.monday_notes,
           monday_description: incoming.monday_description || row.monday_description,
           is_production_started: incoming.is_production_started,
@@ -732,6 +900,7 @@ export function createOrdersUnifiedService(deps) {
         row.signed_bol = normalizeText(detail?.signedBol, 200) || row.signed_bol
         row.inspection_sheet = normalizeText(detail?.inspectionSheet, 200) || row.inspection_sheet
         row.po_number = normalizeText(detail?.poNumber, 120) || row.po_number
+        row.bench = normalizeText(detail?.bench, 500) || null
         row.monday_notes = normalizeText(detail?.notes, 2000) || row.monday_notes
         row.monday_description = normalizeText(detail?.description, 2000) || row.monday_description
         row.Monday_url = normalizeText(detail?.itemUrl, 500) || row.Monday_url
@@ -743,19 +912,13 @@ export function createOrdersUnifiedService(deps) {
           typeof detail?.isProductionStarted === 'boolean'
             ? detail.isProductionStarted
             : resolveProductionStartedFromProgressStatusDetails(progressStatusDetails)
-        const scheduleEligible = row.is_shipped || isProductionStarted
-
-        row.is_production_started = Boolean(scheduleEligible)
-        row.Due_date = scheduleEligible
-          ? toIsoOrNull(detail?.dueDate)
-          : null
+        row.is_production_started = Boolean(row.is_shipped || isProductionStarted)
+        row.Due_date = toIsoOrNull(detail?.dueDate)
 
         const leadTimeDays = Number(detail?.leadTimeDays)
 
-        if (scheduleEligible && Number.isFinite(leadTimeDays)) {
+        if (Number.isFinite(leadTimeDays)) {
           row.Lead_time_days = leadTimeDays
-        } else if (!scheduleEligible) {
-          row.Lead_time_days = null
         }
 
         const progressPercent = Number(detail?.progressPercent)
@@ -956,6 +1119,7 @@ export function createOrdersUnifiedService(deps) {
         row.signed_bol = normalizeText(detail?.signedBol, 200) || row.signed_bol
         row.inspection_sheet = normalizeText(detail?.inspectionSheet, 200) || row.inspection_sheet
         row.po_number = normalizeText(detail?.poNumber, 120) || row.po_number
+        row.bench = normalizeText(detail?.bench, 500) || null
         row.monday_notes = normalizeText(detail?.notes, 2000) || row.monday_notes
         row.monday_description = normalizeText(detail?.description, 2000) || row.monday_description
         row.Monday_url = normalizeText(detail?.itemUrl, 500) || row.Monday_url
@@ -1172,10 +1336,14 @@ export function createOrdersUnifiedService(deps) {
       ordersUnifiedCollection.find({
         is_shipped: { $ne: true },
         is_cancelled: { $ne: true },
+        is_deleted: { $ne: true },
       }).toArray(),
       ordersUnifiedCollection
         .find(
-          { is_shipped: true },
+          {
+            is_shipped: true,
+            is_deleted: { $ne: true },
+          },
           {
             projection: {
               _id: 0,
@@ -1222,6 +1390,7 @@ export function createOrdersUnifiedService(deps) {
       inspectionSheet: order?.inspectionSheet,
       inspectionSheetUrl: order?.inspectionSheetUrl,
       poNumber: order?.poNumber,
+      bench: order?.bench,
       notes: order?.notes,
       description: order?.description,
       orderDate: order?.orderDate,
@@ -1249,6 +1418,7 @@ export function createOrdersUnifiedService(deps) {
       mergedByKey,
     )
     const staleQuickBooksOrderKeysToDelete = new Set()
+    const designBoardId = normalizeText(mondayPreproductionBoardId, 120)
 
     // Targeted design-board lookup for QB-only non-shipped rows.
     const designStats = await flagDesignBoardMatches(mergedByKey, warnings)
@@ -1357,7 +1527,6 @@ export function createOrdersUnifiedService(deps) {
       carryoverCandidates.push(row)
     })
 
-    const designBoardId = normalizeText(mondayPreproductionBoardId, 120)
     const pendingManualPlacementRows = carryoverCandidates.filter((row) => isPendingManualPlacementRow(row, {
       orderTrackBoardId,
       designBoardId,
@@ -1497,6 +1666,11 @@ export function createOrdersUnifiedService(deps) {
       refreshedAt,
       warnings,
     })
+    const newOrdersEnrichmentStats = await enrichFromNewOrdersBoards(
+      mergedByKey,
+      refreshedAt,
+      warnings,
+    )
 
     const mondayMovedToShippedOutsideWebsiteOrders = [...new Map(
       movedToShippedOutsideWebsiteRows
@@ -1611,6 +1785,7 @@ export function createOrdersUnifiedService(deps) {
           : row.is_canonical_order
             ? 'website'
             : 'monday'
+      row.job_status = normalizeText(row?.Monday_status, 260) || null
       row.lastSyncedAt = refreshedAt
       row.updatedAt = refreshedAt
       row.quickbooks_synced_at = quickBooksData?.generatedAt || null
@@ -1674,6 +1849,9 @@ export function createOrdersUnifiedService(deps) {
       quickBooksOnlyShippedCheckedCount: quickBooksOnlyCandidates.length,
       quickBooksOnlyMarkedShippedCount,
       shippedDetailEnrichedCount,
+      newOrdersFinancialBoardCount: newOrdersEnrichmentStats.checkedBoardCount,
+      newOrdersFinancialMatchedCount: newOrdersEnrichmentStats.matchedOrderCount,
+      newOrdersFinancialUpdatedCount: newOrdersEnrichmentStats.updatedOrderCount,
       mondayMovedToShippedOutsideWebsiteCount,
       mondayMovedToShippedOutsideWebsiteOrders,
       shippedProgressTrackedOrderCount: shippedProgressFloorStats.shippedProgressTrackedOrderCount,

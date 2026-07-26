@@ -11,7 +11,6 @@ const chatMessageTypeVoice = 'voice'
 const chatMessageTypeMixed = 'mixed'
 const chatMessageTypeDeleted = 'deleted'
 const maxChatAttachmentBytes = 6 * 1024 * 1024
-const defaultChatOwnerEmail = 'cal@arnoldcontract.us'
 
 export function registerChatRoutes(app, deps) {
   const {
@@ -58,14 +57,6 @@ export function registerChatRoutes(app, deps) {
 
   function normalizeChatName(value) {
     return String(normalizeOptionalShortText(value, 120) ?? '').trim().slice(0, 120)
-  }
-
-  function isDefaultChatOwnerEmail(value) {
-    return normalizeEmail(value) === defaultChatOwnerEmail
-  }
-
-  function isDefaultChatOwnerUser(user) {
-    return Boolean(user?.isAdmin && isDefaultChatOwnerEmail(user?.email))
   }
 
   function normalizeChatOffset(value) {
@@ -581,13 +572,9 @@ export function registerChatRoutes(app, deps) {
       const users = userDocuments
         .map((document) => normalizeChatUserRecord(toPublicAuthUser(document)))
         .filter(Boolean)
-        .filter((user) => {
-          if (publicUser?.isAdmin) {
-            return true
-          }
-
-          return isDefaultChatOwnerUser(user)
-        })
+        // Only admins may browse the user directory and initiate a chat.
+        // Workers can reply inside threads an admin has already opened.
+        .filter(() => Boolean(publicUser?.isAdmin))
         .sort((left, right) => {
           const leftLabel = String(left.displayName || left.email).toLowerCase()
           const rightLabel = String(right.displayName || right.email).toLowerCase()
@@ -671,19 +658,7 @@ export function registerChatRoutes(app, deps) {
           thread,
         })),
       )
-      const visibleThreads = threads
-        .filter(Boolean)
-        .filter((thread) => {
-          if (publicUser?.isAdmin) {
-            return true
-          }
-
-          if (normalizeChatType(thread.type) !== chatTypeDirect) {
-            return true
-          }
-
-          return thread.memberProfiles.some((member) => isDefaultChatOwnerEmail(member?.email))
-        })
+      const visibleThreads = threads.filter(Boolean)
 
       return res.json({
         threads: visibleThreads,
@@ -700,6 +675,12 @@ export function registerChatRoutes(app, deps) {
       if (!publicUser?.isApproved) {
         return res.status(403).json({
           error: 'Approved access is required.',
+        })
+      }
+
+      if (!publicUser?.isAdmin) {
+        return res.status(403).json({
+          error: 'Only admins can start a new chat. You can reply when an admin starts a conversation with you.',
         })
       }
 
@@ -735,20 +716,6 @@ export function registerChatRoutes(app, deps) {
         return res.status(404).json({
           error: 'Both users must be approved before starting a chat.',
         })
-      }
-
-      if (!publicUser?.isAdmin) {
-        if (!targetParticipant.isAdmin) {
-          return res.status(403).json({
-            error: 'Workers can only start direct chats with admins.',
-          })
-        }
-
-        if (!isDefaultChatOwnerEmail(targetParticipant.email)) {
-          return res.status(403).json({
-            error: 'Workers can only start direct chats with Owner.',
-          })
-        }
       }
 
       const memberUids = [requesterUid, targetUid].sort((left, right) => left.localeCompare(right))

@@ -658,6 +658,10 @@ export type CrmQuote = {
   paymentTerms?: string | null
   leadTime?: string | null
   subtotal?: number | null
+  discountPercent?: number | null
+  discountAmount?: number | null
+  discountScope?: 'products' | 'products_and_freight' | null
+  discountFreightAmount?: number | null
   freight?: number | null
   freightDescription?: string | null
   lineItems?: CrmQuoteLineItem[] | null
@@ -676,6 +680,9 @@ export type CrmQuote = {
   sourceWorkbookName?: string | null
   convertedPdfUrl?: string | null
   convertedPdfName?: string | null
+  baseQuoteNumber?: string | null
+  activeRevisionNumber?: number | null
+  revisions?: CrmQuoteRevision[] | null
   revisionCount?: number | null
   status: CrmQuoteStatus
   totalAmount: number
@@ -715,11 +722,24 @@ export type CrmQuote = {
   updatedAt: string
 }
 
+export type CrmQuoteRevision = Partial<Omit<CrmQuote, 'revisions'>> & {
+  id: string
+  revisionNumber: number
+  quoteNumber: string | null
+  createdAt?: string | null
+  createdByUid?: string | null
+  createdByEmail?: string | null
+  updatedByUid?: string | null
+  updatedByEmail?: string | null
+}
+
 export type CrmQuotesResponse = {
   quotes: CrmQuote[]
 }
 
 export type CrmQuoteUpsertInput = {
+  revisionNumber?: number
+  activeRevisionNumber?: number | null
   dealerSourceId?: string | null
   title: string
   dealerState?: string | null
@@ -739,6 +759,10 @@ export type CrmQuoteUpsertInput = {
   paymentTerms?: string | null
   leadTime?: string | null
   subtotal?: number | null
+  discountPercent?: number | null
+  discountAmount?: number | null
+  discountScope?: 'products' | 'products_and_freight' | null
+  discountFreightAmount?: number | null
   freight?: number | null
   freightDescription?: string | null
   lineItems?: CrmQuoteLineItem[] | null
@@ -904,6 +928,10 @@ export type CrmConvertQuoteToOrderInput = {
   depositRequestName?: string | null
   orderConfirmationUrl?: string | null
   orderConfirmationName?: string | null
+  workOrderUrl?: string | null
+  workOrderName?: string | null
+  proformaInvoiceUrl?: string | null
+  proformaInvoiceName?: string | null
 }
 
 export type CrmConvertQuoteToOrderResponse = {
@@ -1265,9 +1293,9 @@ export function markCrmQuoteFollowedUp(quoteId: string) {
 export type CrmQuoteReminderSettings = {
   rules: Array<{
     id: string
-    kind: 'follow_up_due' | 'link_opened'
+    kind: 'follow_up_due' | 'link_opened' | 'customer_signed_bol_missing'
     days: number
-    base: 'quote_date' | 'last_follow_up'
+    base: 'quote_date' | 'last_follow_up' | 'shipped_date'
   }>
 }
 
@@ -1318,6 +1346,25 @@ export function updateCrmQuote(quoteId: string, input: Partial<CrmQuoteUpsertInp
   })
 }
 
+export function createCrmQuoteRevision(quoteId: string, input: {
+  sourceRevisionNumber: number
+}) {
+  return apiRequest<{ quote: CrmQuote; revision: CrmQuoteRevision }>(
+    `/api/crm/quotes/${encodeURIComponent(quoteId)}/revisions`,
+    {
+      method: 'POST',
+      body: JSON.stringify(input),
+    },
+  )
+}
+
+export function removeCrmQuoteRevision(quoteId: string, revisionNumber: number) {
+  return apiRequest<{ ok: true; quote: CrmQuote; deletedRevisionNumber: number; revisionsRenumbered: true }>(
+    `/api/crm/quotes/${encodeURIComponent(quoteId)}/revisions/${revisionNumber}`,
+    { method: 'DELETE' },
+  )
+}
+
 export type TrimbleConnectionStatus = {
   connected: boolean
   projectName: string
@@ -1333,20 +1380,20 @@ export function startTrimbleConnection() {
   return apiRequest<{ authorizationUrl: string }>('/api/trimble/oauth/start', { method: 'POST' })
 }
 
-export function initiateTrimbleQuoteModelUpload(quoteId: string, file: File) {
+export function initiateTrimbleQuoteModelUpload(quoteId: string, file: File, revisionNumber?: number) {
   return apiRequest<{ uploadId: string; uploadUrl: string }>(
     `/api/trimble/quotes/${encodeURIComponent(quoteId)}/uploads/initiate`,
     {
       method: 'POST',
-      body: JSON.stringify({ fileName: file.name, fileSize: file.size }),
+      body: JSON.stringify({ fileName: file.name, fileSize: file.size, revisionNumber }),
     },
   )
 }
 
-export function commitTrimbleQuoteModelUpload(quoteId: string, uploadId: string) {
+export function commitTrimbleQuoteModelUpload(quoteId: string, uploadId: string, revisionNumber?: number) {
   return apiRequest<{ model: CrmQuote3dModel }>(
     `/api/trimble/quotes/${encodeURIComponent(quoteId)}/uploads/commit`,
-    { method: 'POST', body: JSON.stringify({ uploadId }) },
+    { method: 'POST', body: JSON.stringify({ uploadId, revisionNumber }) },
   )
 }
 
@@ -1367,6 +1414,7 @@ export function uploadTrimbleSavedQuoteModel(
 export function uploadTrimbleSavedQuoteModels(
   quoteId: string,
   documents: Array<{ document: CrmQuoteDocument; fileName: string; label: string }>,
+  revisionNumber?: number,
 ) {
   return apiRequest<{ model: CrmQuote3dModel }>(
     `/api/trimble/quotes/${encodeURIComponent(quoteId)}/uploads/from-documents`,
@@ -1378,13 +1426,15 @@ export function uploadTrimbleSavedQuoteModels(
           fileName,
           label,
         })),
+        revisionNumber,
       }),
     },
   )
 }
 
-export function removeTrimbleQuoteModel(quoteId: string) {
-  return apiRequest<{ ok: true }>(`/api/trimble/quotes/${encodeURIComponent(quoteId)}/model`, {
+export function removeTrimbleQuoteModel(quoteId: string, revisionNumber?: number) {
+  const query = revisionNumber === undefined ? '' : `?revisionNumber=${encodeURIComponent(String(revisionNumber))}`
+  return apiRequest<{ ok: true }>(`/api/trimble/quotes/${encodeURIComponent(quoteId)}/model${query}`, {
     method: 'DELETE',
   })
 }
@@ -1429,7 +1479,7 @@ export function convertCrmQuoteToOrder(quoteId: string, input: CrmConvertQuoteTo
   return apiRequest<CrmConvertQuoteToOrderResponse>(`/api/crm/quotes/${encodeURIComponent(quoteId)}/convert-to-order`, {
     method: 'POST',
     body: JSON.stringify(input),
-  })
+  }, { processTracking: false })
 }
 
 export function fetchCrmOrders(options: { limit?: number; status?: string; dealerSourceId?: string } = {}) {

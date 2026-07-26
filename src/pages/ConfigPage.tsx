@@ -22,7 +22,7 @@ const configTabs: Array<{
   },
   {
     value: 'quote-reminders',
-    label: 'Quote Reminders',
+    label: 'Reminders',
   },
 ]
 

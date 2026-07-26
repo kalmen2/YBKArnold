@@ -4,6 +4,7 @@ import DoneAllRoundedIcon from '@mui/icons-material/DoneAllRounded'
 import LogoutRoundedIcon from '@mui/icons-material/LogoutRounded'
 import MenuRoundedIcon from '@mui/icons-material/MenuRounded'
 import NotificationsRoundedIcon from '@mui/icons-material/NotificationsRounded'
+import SyncRoundedIcon from '@mui/icons-material/SyncRounded'
 import TaskAltRoundedIcon from '@mui/icons-material/TaskAltRounded'
 import {
   Avatar,
@@ -29,6 +30,7 @@ import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
 import { fetchMyAlerts, markMyAlertRead } from '../features/alerts/api'
 import { formatDateTime } from '../lib/formatters'
+import { useAppProcesses } from '../lib/appProcesses'
 import { QUERY_KEYS } from '../lib/queryKeys'
 import { navItems } from '../navigation/navItems'
 import Sidebar from './Sidebar'
@@ -48,10 +50,12 @@ export default function AppLayout() {
   const [isSigningOut, setIsSigningOut] = useState(false)
   const [profileMenuAnchorEl, setProfileMenuAnchorEl] = useState<HTMLElement | null>(null)
   const [alertsMenuAnchorEl, setAlertsMenuAnchorEl] = useState<HTMLElement | null>(null)
+  const [processesMenuAnchorEl, setProcessesMenuAnchorEl] = useState<HTMLElement | null>(null)
   const [markingAlertId, setMarkingAlertId] = useState<string | null>(null)
   const [isMarkingAllRead, setIsMarkingAllRead] = useState(false)
   const alertsLimit = 30
   const queryClient = useQueryClient()
+  const activeProcesses = useAppProcesses()
 
   const isSupportRoute =
     location.pathname === '/support' || location.pathname.startsWith('/support/')
@@ -284,6 +288,27 @@ export default function AppLayout() {
           <Box sx={{ flexGrow: 1 }} />
 
           <Stack direction="row" spacing={0.25} alignItems="center">
+            {activeProcesses.length > 0 ? (
+              <Button
+                size="small"
+                variant="outlined"
+                color="primary"
+                startIcon={<CircularProgress size={14} thickness={5} />}
+                onClick={(event) => setProcessesMenuAnchorEl(event.currentTarget)}
+                sx={{
+                  mr: 0.5,
+                  minWidth: 0,
+                  px: { xs: 1, sm: 1.25 },
+                  borderRadius: 999,
+                  textTransform: 'none',
+                  fontWeight: 750,
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {activeProcesses.length} {activeProcesses.length === 1 ? 'process' : 'processes'} running
+              </Button>
+            ) : null}
+
             <IconButton
               size="small"
               color="inherit"
@@ -321,6 +346,66 @@ export default function AppLayout() {
               </Avatar>
             </IconButton>
           </Stack>
+
+          <Menu
+            anchorEl={processesMenuAnchorEl}
+            open={Boolean(processesMenuAnchorEl) && activeProcesses.length > 0}
+            onClose={() => setProcessesMenuAnchorEl(null)}
+            anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+            transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+            PaperProps={{ sx: { mt: 0.75, width: 380, maxWidth: 'calc(100vw - 24px)', maxHeight: 430 } }}
+          >
+            <Box sx={{ px: 2, py: 1.4 }}>
+              <Stack direction="row" spacing={1} alignItems="center">
+                <Box
+                  sx={{
+                    width: 34,
+                    height: 34,
+                    borderRadius: 1.5,
+                    display: 'grid',
+                    placeItems: 'center',
+                    bgcolor: alpha(theme.palette.primary.main, 0.1),
+                    color: 'primary.main',
+                  }}
+                >
+                  <SyncRoundedIcon fontSize="small" />
+                </Box>
+                <Box>
+                  <Typography variant="subtitle2" fontWeight={800}>
+                    Background processes
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    You can keep working while these finish.
+                  </Typography>
+                </Box>
+              </Stack>
+            </Box>
+            <Divider />
+            {activeProcesses.map((process) => (
+              <MenuItem
+                key={process.id}
+                disableRipple
+                sx={{ py: 1.15, alignItems: 'flex-start', cursor: 'default' }}
+              >
+                <Stack direction="row" spacing={1.25} alignItems="flex-start" sx={{ width: '100%', minWidth: 0 }}>
+                  <CircularProgress size={19} thickness={5} sx={{ mt: 0.3, flexShrink: 0 }} />
+                  <Stack spacing={0.2} sx={{ minWidth: 0 }}>
+                    <Typography variant="body2" fontWeight={750}>
+                      {process.label}
+                    </Typography>
+                    {process.detail ? (
+                      <Typography variant="caption" color="text.secondary" sx={{ overflowWrap: 'anywhere' }}>
+                        {process.detail}
+                      </Typography>
+                    ) : null}
+                    <Typography variant="caption" color="text.secondary">
+                      Started {formatDateTime(process.startedAt)}
+                    </Typography>
+                  </Stack>
+                </Stack>
+              </MenuItem>
+            ))}
+          </Menu>
 
           <Menu
             anchorEl={alertsMenuAnchorEl}

@@ -11,6 +11,7 @@ export function createAuthUtils({
   authRoleAdmin,
   authRoleManager,
   authRoleSalesRep,
+  authRoleShopWorker,
   authRoleStandard,
   normalizeWorkerNumber,
   ownerEmail,
@@ -47,8 +48,13 @@ export function createAuthUtils({
       || normalized === authRoleManager
       || normalized === authRoleSalesRep
       || normalized === authRoleStandard
+      || normalized === authRoleShopWorker
     ) {
       return normalized
+    }
+
+    if (normalized === 'standard') {
+      return authRoleStandard
     }
 
     return null
@@ -268,6 +274,8 @@ export function createAuthUtils({
     const isAdmin = normalizedRole === authRoleAdmin
     const isManager = normalizedRole === authRoleManager
     const isSalesRep = normalizedRole === authRoleSalesRep
+    const isShopWorker = normalizedRole === authRoleShopWorker
+    const isOfficeWorker = normalizedRole === authRoleStandard
     const normalizedApprovalStatus =
       String(document.approvalStatus ?? '').trim().toLowerCase() === authApprovalApproved
         ? authApprovalApproved
@@ -309,6 +317,8 @@ export function createAuthUtils({
       ? authClientAccessModeWebAndApp
       : normalizedRole === authRoleSalesRep
         ? authClientAccessModeWebOnly
+        : normalizedRole === authRoleShopWorker
+          ? authClientAccessModeAppOnly
         : resolveAuthClientAccessMode(document)
     const allowedClientPlatforms = getAllowedAuthClientPlatforms(clientAccessMode)
     const lastActivityAt = String(document.lastActivityAt ?? '').trim() || null
@@ -351,6 +361,11 @@ export function createAuthUtils({
       isAdmin,
       isManager,
       isSalesRep,
+      isShopWorker,
+      isOfficeWorker,
+      canViewOrderValue: !isShopWorker,
+      canViewLaborCost: isOwner || isAdmin || isManager,
+      canViewFullFinancials: isOwner || isAdmin,
       isApproved: normalizedApprovalStatus === authApprovalApproved,
       approvedAt: String(document.approvedAt ?? '').trim() || null,
       createdAt: String(document.createdAt ?? '').trim() || null,

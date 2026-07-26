@@ -361,7 +361,7 @@ export function ChatThreadScreen({
             onPress={onOpenAttachmentMenu}
             disabled={isSendingMessage || isProcessingVoice}
           >
-            <Ionicons name="add" size={20} color="#23457f" />
+            <Ionicons name="add" size={20} color="#18775b" />
           </Pressable>
 
           <TextInput
@@ -436,7 +436,7 @@ export function ChatThreadScreen({
     <View style={[styles.chatCard, styles.chatThreadScreen, { height: threadCardHeight }]}> 
       <View style={styles.chatThreadHeaderRow}>
         <Pressable style={styles.chatThreadBackButton} onPress={onBack}>
-          <Ionicons name="arrow-back" size={18} color="#1f3567" />
+          <Ionicons name="arrow-back" size={18} color="#ffffff" />
         </Pressable>
 
         <View style={styles.chatThreadHeaderTextWrap}>

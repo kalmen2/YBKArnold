@@ -32,6 +32,7 @@ import {
 
 type Props = {
   quote: CrmQuote
+  revisionNumber: number
   canManage: boolean
   onChanged: () => void | Promise<void>
 }
@@ -70,7 +71,7 @@ function renderingFileType(name: string | null | undefined) {
   return extension || 'FILE'
 }
 
-export default function Quote3dModelPanel({ quote, canManage, onChanged }: Props) {
+export default function Quote3dModelPanel({ quote, revisionNumber, canManage, onChanged }: Props) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [connected, setConnected] = useState<boolean | null>(null)
   const [projectName, setProjectName] = useState('Arnold Contract – Customer 3D Models')
@@ -112,10 +113,10 @@ export default function Quote3dModelPanel({ quote, canManage, onChanged }: Props
     setBusy(true)
     setError('')
     try {
-      const session = await initiateTrimbleQuoteModelUpload(quote.id, file)
+      const session = await initiateTrimbleQuoteModelUpload(quote.id, file, revisionNumber)
       const uploadResponse = await fetch(session.uploadUrl, { method: 'PUT', body: file })
       if (!uploadResponse.ok) throw new Error(`SketchUp upload failed (${uploadResponse.status}).`)
-      await commitTrimbleQuoteModelUpload(quote.id, session.uploadId)
+      await commitTrimbleQuoteModelUpload(quote.id, session.uploadId, revisionNumber)
       await onChanged()
     } catch (requestError) {
       setError(errorMessage(requestError))
@@ -130,7 +131,7 @@ export default function Quote3dModelPanel({ quote, canManage, onChanged }: Props
     setBusy(true)
     setError('')
     try {
-      await removeTrimbleQuoteModel(quote.id)
+      await removeTrimbleQuoteModel(quote.id, revisionNumber)
       await onChanged()
     } catch (requestError) {
       setError(errorMessage(requestError))
@@ -180,6 +181,7 @@ export default function Quote3dModelPanel({ quote, canManage, onChanged }: Props
           fileName: savedSketchUpName(document.name),
           label: sketchUpViewLabel(document.name, null, index),
         })),
+        revisionNumber,
       )
       setPickerOpen(false)
       await onChanged()
