@@ -2062,7 +2062,11 @@ export function JobDetailsDialog({
       })
 
       applyWarrantyOrderPayload(response.order)
-      setWarrantyActionSuccess('Warranty issue added.')
+      setWarrantyActionSuccess(
+        response.createdOrder
+          ? `Warranty order ${response.createdOrder.orderNumber} was created in Orders and linked to ${response.createdOrder.parentOrderNumber}.`
+          : 'Warranty order created.',
+      )
 
       await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.ordersOverview })
     } catch (error) {
@@ -4250,7 +4254,7 @@ export function JobDetailsDialog({
                     ) : (
                       <>
                         <Typography variant="body2" color="text.secondary">
-                          Describe why the order needs warranty attention. Once saved, it will appear in the Warranty queue.
+                          Describe the warranty work. Saving creates a new order ending in _WR in the Orders tab and links its costs to this order.
                         </Typography>
 
                         <TextField

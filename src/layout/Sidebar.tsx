@@ -8,15 +8,16 @@ import {
   ListItemButton,
   ListItemIcon,
   ListItemText,
+  Stack,
   Toolbar,
   Typography,
   useTheme,
 } from '@mui/material'
 import { alpha } from '@mui/material/styles'
 import AdminPanelSettingsRoundedIcon from '@mui/icons-material/AdminPanelSettingsRounded'
+import ScienceRoundedIcon from '@mui/icons-material/ScienceRounded'
 import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded'
 import KeyboardArrowRightRoundedIcon from '@mui/icons-material/KeyboardArrowRightRounded'
-import SupportAgentRoundedIcon from '@mui/icons-material/SupportAgentRounded'
 import { useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
@@ -64,31 +65,46 @@ function SidebarContent({ showText, onNavigate }: SidebarContentProps) {
 
   const visibleNavItems = navItems.filter(canAccessNavItem)
   const regularNavItems = visibleNavItems.filter(
-    (item) => !item.adminOnly && !item.adminSection,
+    (item) => !item.adminOnly && !item.adminSection && !item.testingSection,
   )
   const adminNavItems = visibleNavItems.filter(
-    (item) => item.adminOnly || item.adminSection,
+    (item) => !item.testingSection && (item.adminOnly || item.adminSection),
+  )
+  const testingNavItems = visibleNavItems.filter(
+    (item) => item.testingSection,
   )
 
-  const supportPaths = new Set(['/support', '/pictures'])
+  const isPathActive = (path: string) => {
+    const [targetPathname, targetSearch = ''] = path.split('?')
+    const pathnameMatches = location.pathname === targetPathname
+      || location.pathname.startsWith(`${targetPathname}/`)
+    if (!pathnameMatches) return false
 
-  const supportNavItems = regularNavItems.filter((item) => supportPaths.has(item.path))
-  const primaryNavItems = regularNavItems.filter((item) => !supportPaths.has(item.path))
+    const targetParams = new URLSearchParams(targetSearch)
+    const targetTab = targetParams.get('tab')
+    const currentTab = new URLSearchParams(location.search).get('tab')
+    if (targetTab) return currentTab === targetTab
+    if (targetPathname === '/admin/settings') {
+      return !['email', 'ai-config', 'ai-council', 'sms-bridge'].includes(currentTab || '')
+    }
+    return true
+  }
 
-  const isPathActive = (path: string) => (
-    location.pathname === path
-    || location.pathname.startsWith(`${path}/`)
-  )
-
-  const isSupportRouteActive = supportNavItems.some((item) => isPathActive(item.path))
   const isAdminRouteActive = adminNavItems.some((item) => isPathActive(item.path))
+  const isTestingRouteActive = testingNavItems.some((item) => isPathActive(item.path))
 
-  const [supportExpanded, setSupportExpanded] = useState(isSupportRouteActive)
   const [adminExpanded, setAdminExpanded] = useState(isAdminRouteActive)
-  const supportGroupExpanded = supportExpanded || isSupportRouteActive
+  const [testingExpanded, setTestingExpanded] = useState(isTestingRouteActive)
   const adminGroupExpanded = adminExpanded || isAdminRouteActive
+  const testingGroupExpanded = testingExpanded || isTestingRouteActive
 
-  const renderItem = (path: string, label: string, Icon: (typeof navItems)[number]['icon'], nested = false) => {
+  const renderItem = (
+    path: string,
+    label: string,
+    Icon: (typeof navItems)[number]['icon'],
+    nested = false,
+    badge?: string,
+  ) => {
     const isSelected = isPathActive(path)
 
     return (
@@ -138,13 +154,35 @@ function SidebarContent({ showText, onNavigate }: SidebarContentProps) {
           </ListItemIcon>
 
           <ListItemText
-            primary={label}
+            disableTypography
+            primary={(
+              <Stack direction="row" spacing={0.75} alignItems="center">
+                <Typography component="span" sx={{ fontSize: 14, fontWeight: 500 }}>
+                  {label}
+                </Typography>
+                {badge ? (
+                  <Box
+                    component="span"
+                    sx={{
+                      px: 0.65,
+                      py: 0.1,
+                      borderRadius: 5,
+                      bgcolor: alpha(theme.palette.warning.main, 0.14),
+                      color: 'warning.dark',
+                      fontSize: 9,
+                      fontWeight: 800,
+                      lineHeight: 1.5,
+                      letterSpacing: '0.04em',
+                      textTransform: 'uppercase',
+                    }}
+                  >
+                    {badge}
+                  </Box>
+                ) : null}
+              </Stack>
+            )}
             sx={{
               display: showText ? 'block' : 'none',
-              '& .MuiListItemText-primary': {
-                fontSize: 14,
-                fontWeight: 500,
-              },
             }}
           />
         </ListItemButton>
@@ -214,7 +252,7 @@ function SidebarContent({ showText, onNavigate }: SidebarContentProps) {
 
         <Collapse in={expanded} timeout="auto" unmountOnExit>
           <List disablePadding>
-            {items.map((item) => renderItem(item.path, item.label, item.icon, true))}
+            {items.map((item) => renderItem(item.path, item.label, item.icon, true, item.badge))}
           </List>
         </Collapse>
       </>
@@ -256,24 +294,11 @@ function SidebarContent({ showText, onNavigate }: SidebarContentProps) {
 
       <List sx={{ px: 1, py: 1.5 }}>
         {!showText
-          ? visibleNavItems.map((item) => renderItem(item.path, item.label, item.icon))
+          ? visibleNavItems.map((item) => renderItem(item.path, item.label, item.icon, false, item.badge))
           : null}
 
         {showText
-          ? primaryNavItems.map((item) => renderItem(item.path, item.label, item.icon))
-          : null}
-
-        {showText
-          ? renderGroup(
-            'Support',
-            SupportAgentRoundedIcon,
-            supportNavItems,
-            supportGroupExpanded,
-            () => {
-              setSupportExpanded((current) => !current)
-            },
-            isSupportRouteActive,
-          )
+          ? regularNavItems.map((item) => renderItem(item.path, item.label, item.icon, false, item.badge))
           : null}
 
         {showText
@@ -286,6 +311,19 @@ function SidebarContent({ showText, onNavigate }: SidebarContentProps) {
               setAdminExpanded((current) => !current)
             },
             isAdminRouteActive,
+          )
+          : null}
+
+        {showText
+          ? renderGroup(
+            'Testing',
+            ScienceRoundedIcon,
+            testingNavItems,
+            testingGroupExpanded,
+            () => {
+              setTestingExpanded((current) => !current)
+            },
+            isTestingRouteActive,
           )
           : null}
       </List>

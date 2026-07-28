@@ -28,7 +28,7 @@ const sampleQuote: CrmQuote = {
   salesRep: 'House',
   projectType: 'Conference Table',
   opportunityDate: new Date().toISOString().slice(0, 10),
-  opportunityStage: 'concept',
+  opportunityStage: 'proposal_submission',
   quoteNumber: 'SAMPLE-R0',
   title: 'Sample Conference Room',
   description: null,

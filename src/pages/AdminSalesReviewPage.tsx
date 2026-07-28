@@ -7,12 +7,15 @@ import {
   Chip,
   Paper,
   Stack,
+  Tab,
   Table,
   TableBody,
   TableCell,
   TableContainer,
   TableHead,
+  TablePagination,
   TableRow,
+  Tabs,
   Typography,
 } from '@mui/material'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -33,8 +36,10 @@ import { QUERY_KEYS } from '../lib/queryKeys'
 
 type EntityType = 'dealer' | 'contact'
 type ActionType = 'confirm' | 'restore'
+type QueueView = 'dealer' | 'contact'
 
 const deletionQueueLimit = 500
+const defaultRowsPerPage = 10
 
 function byRequestedAtDescending<T extends { deleteRequestedAt: string | null; updatedAt: string | null }>(rows: T[]) {
   return [...rows].sort((a, b) => {
@@ -51,6 +56,10 @@ export default function AdminSalesReviewPage() {
   const [processingActionKeys, setProcessingActionKeys] = useState<string[]>([])
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
+  const [queueView, setQueueView] = useState<QueueView>('dealer')
+  const [dealerPage, setDealerPage] = useState(0)
+  const [contactPage, setContactPage] = useState(0)
+  const [rowsPerPage, setRowsPerPage] = useState(defaultRowsPerPage)
 
   const deletionQueueQuery = useQuery({
     queryKey: QUERY_KEYS.crmDeletionQueue(deletionQueueLimit),
@@ -70,6 +79,18 @@ export default function AdminSalesReviewPage() {
   )
 
   const queueTotal = deletionQueueQuery.data?.total ?? 0
+  const activeRows = queueView === 'dealer' ? deletionQueueDealers : deletionQueueContacts
+  const requestedPage = queueView === 'dealer' ? dealerPage : contactPage
+  const pageCount = Math.max(1, Math.ceil(activeRows.length / rowsPerPage))
+  const activePage = Math.min(requestedPage, pageCount - 1)
+  const visibleDealers = deletionQueueDealers.slice(
+    activePage * rowsPerPage,
+    activePage * rowsPerPage + rowsPerPage,
+  )
+  const visibleContacts = deletionQueueContacts.slice(
+    activePage * rowsPerPage,
+    activePage * rowsPerPage + rowsPerPage,
+  )
 
   const makeActionKey = useCallback((action: ActionType, entityType: EntityType, sourceId: string) => {
     return `${action}:${entityType}:${sourceId}`
@@ -173,226 +194,255 @@ export default function AdminSalesReviewPage() {
     return <Navigate to="/dashboard" replace />
   }
 
-  return (
-    <Stack spacing={2}>
-      <Paper variant="outlined" sx={{ p: { xs: 2, md: 2.5 } }}>
-        <Stack spacing={1.5}>
-          <Stack
-            direction={{ xs: 'column', sm: 'row' }}
-            spacing={1}
-            justifyContent="space-between"
-            alignItems={{ xs: 'flex-start', sm: 'center' }}
-          >
-            <Stack direction="row" spacing={1.2} alignItems="center">
-              <FactCheckRoundedIcon color="primary" />
-              <Box>
-                <Typography variant="h5" fontWeight={700}>
-                  Sales Governance Review
-                </Typography>
-                <Typography color="text.secondary">
-                  Review deletion requests across accounts and contacts.
-                </Typography>
-              </Box>
-            </Stack>
+  const compactCellSx = {
+    py: 0.75,
+    px: 1.25,
+    fontSize: '0.78rem',
+    whiteSpace: 'nowrap',
+  }
 
+  const handlePageChange = (_event: unknown, nextPage: number) => {
+    if (queueView === 'dealer') {
+      setDealerPage(nextPage)
+    } else {
+      setContactPage(nextPage)
+    }
+  }
+
+  return (
+    <Stack spacing={1.25}>
+      <StatusAlerts errorMessage={errorMessage} successMessage={successMessage} />
+
+      <Paper variant="outlined" sx={{ overflow: 'hidden' }}>
+        <Stack
+          direction={{ xs: 'column', sm: 'row' }}
+          spacing={1}
+          justifyContent="space-between"
+          alignItems={{ xs: 'stretch', sm: 'center' }}
+          sx={{ px: 1.5, py: 1 }}
+        >
+          <Stack direction="row" spacing={1} alignItems="center" minWidth={0}>
+            <FactCheckRoundedIcon color="primary" sx={{ fontSize: 20 }} />
+            <Box minWidth={0}>
+              <Typography variant="subtitle1" fontWeight={700} lineHeight={1.2}>
+                Sales Review
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                Confirm or restore account and contact deletion requests.
+              </Typography>
+            </Box>
+          </Stack>
+
+          <Stack direction="row" spacing={0.75} alignItems="center">
+            <Chip size="small" label={`${queueTotal} pending`} />
             <Button
-              variant="outlined"
+              variant="text"
               size="small"
               startIcon={<RefreshRoundedIcon />}
               disabled={deletionQueueQuery.isFetching}
               onClick={refreshData}
+              sx={{ minWidth: 88 }}
             >
-              {deletionQueueQuery.isFetching ? 'Refreshing...' : 'Refresh'}
+              {deletionQueueQuery.isFetching ? 'Refreshing' : 'Refresh'}
             </Button>
           </Stack>
-
-          <StatusAlerts errorMessage={errorMessage} successMessage={successMessage} />
-
-          <Chip variant="outlined" size="small" label={`Deletion Queue (${queueTotal})`} sx={{ width: 'fit-content' }} />
         </Stack>
+
+        <Box sx={{ borderTop: 1, borderBottom: 1, borderColor: 'divider', px: 1 }}>
+          <Tabs
+            value={queueView}
+            onChange={(_event, nextView: QueueView) => setQueueView(nextView)}
+            sx={{
+              minHeight: 38,
+              '& .MuiTab-root': {
+                minHeight: 38,
+                minWidth: 0,
+                px: 1.5,
+                py: 0.5,
+                fontSize: '0.78rem',
+                textTransform: 'none',
+              },
+            }}
+          >
+            <Tab value="dealer" label={`Accounts (${deletionQueueDealers.length})`} />
+            <Tab value="contact" label={`Contacts (${deletionQueueContacts.length})`} />
+          </Tabs>
+        </Box>
+
+        <LoadingPanel
+          loading={deletionQueueQuery.isLoading}
+          message="Loading deletion queue..."
+          contained
+        />
+
+        {!deletionQueueQuery.isLoading && activeRows.length === 0 ? (
+          <Box sx={{ px: 2, py: 3, textAlign: 'center' }}>
+            <Typography variant="body2" color="text.secondary">
+              No {queueView === 'dealer' ? 'accounts' : 'contacts'} are waiting for confirmation.
+            </Typography>
+          </Box>
+        ) : null}
+
+        {!deletionQueueQuery.isLoading && activeRows.length > 0 ? (
+          <>
+            <TableContainer sx={{ maxHeight: 520 }}>
+              <Table
+                size="small"
+                stickyHeader
+                sx={{
+                  '& .MuiTableCell-head': {
+                    ...compactCellSx,
+                    color: 'text.secondary',
+                    fontWeight: 700,
+                    bgcolor: 'background.default',
+                  },
+                  '& .MuiTableCell-body': compactCellSx,
+                }}
+              >
+                <TableHead>
+                  <TableRow>
+                    <TableCell>{queueView === 'dealer' ? 'Account' : 'Contact'}</TableCell>
+                    <TableCell>{queueView === 'dealer' ? 'Type' : 'Account'}</TableCell>
+                    <TableCell>State</TableCell>
+                    <TableCell>Requested by</TableCell>
+                    <TableCell>Requested</TableCell>
+                    <TableCell>Updated</TableCell>
+                    <TableCell align="right" sx={{ width: 220 }}>Actions</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {queueView === 'dealer'
+                    ? visibleDealers.map((dealer: CrmDeletionQueueRecordDealer) => {
+                        const rowLabel = formatOptional(dealer.name) !== '-'
+                          ? formatOptional(dealer.name)
+                          : dealer.sourceId
+
+                        return (
+                          <TableRow key={dealer.sourceId} hover>
+                            <TableCell>
+                              <Typography variant="body2" fontWeight={600} lineHeight={1.2}>
+                                {rowLabel}
+                              </Typography>
+                              <Typography variant="caption" color="text.secondary" lineHeight={1.1}>
+                                {dealer.sourceId}
+                              </Typography>
+                            </TableCell>
+                            <TableCell>{formatOptional(dealer.accountType || dealer.accountClass)}</TableCell>
+                            <TableCell>{formatOptional(dealer.state)}</TableCell>
+                            <TableCell>{formatOptional(dealer.deleteRequestedByEmail)}</TableCell>
+                            <TableCell>{formatDateTime(dealer.deleteRequestedAt)}</TableCell>
+                            <TableCell>{formatDateTime(dealer.updatedAt)}</TableCell>
+                            <TableCell align="right">
+                              <Stack direction="row" spacing={0.5} justifyContent="flex-end">
+                                <Button
+                                  size="small"
+                                  color="error"
+                                  variant="text"
+                                  disabled={isActionProcessing('confirm', 'dealer', dealer.sourceId)}
+                                  onClick={() => {
+                                    void handleConfirmDeletion('dealer', dealer.sourceId, rowLabel)
+                                  }}
+                                  sx={{ minWidth: 0, px: 1, fontSize: '0.72rem' }}
+                                >
+                                  {isActionProcessing('confirm', 'dealer', dealer.sourceId) ? 'Deleting...' : 'Delete'}
+                                </Button>
+                                <Button
+                                  size="small"
+                                  variant="text"
+                                  startIcon={<RestoreRoundedIcon sx={{ fontSize: '15px !important' }} />}
+                                  disabled={isActionProcessing('restore', 'dealer', dealer.sourceId)}
+                                  onClick={() => {
+                                    void handleRestoreDeletion('dealer', dealer.sourceId, rowLabel)
+                                  }}
+                                  sx={{ minWidth: 0, px: 1, fontSize: '0.72rem' }}
+                                >
+                                  {isActionProcessing('restore', 'dealer', dealer.sourceId) ? 'Restoring...' : 'Restore'}
+                                </Button>
+                              </Stack>
+                            </TableCell>
+                          </TableRow>
+                        )
+                      })
+                    : visibleContacts.map((contact: CrmDeletionQueueRecordContact) => {
+                        const rowLabel = formatOptional(contact.name) !== '-'
+                          ? formatOptional(contact.name)
+                          : contact.sourceId
+
+                        return (
+                          <TableRow key={contact.sourceId} hover>
+                            <TableCell>
+                              <Typography variant="body2" fontWeight={600} lineHeight={1.2}>
+                                {rowLabel}
+                              </Typography>
+                              <Typography variant="caption" color="text.secondary" lineHeight={1.1}>
+                                {contact.sourceId}
+                              </Typography>
+                            </TableCell>
+                            <TableCell>{formatOptional(contact.accountName || contact.accountSourceId)}</TableCell>
+                            <TableCell>{formatOptional(contact.state)}</TableCell>
+                            <TableCell>{formatOptional(contact.deleteRequestedByEmail)}</TableCell>
+                            <TableCell>{formatDateTime(contact.deleteRequestedAt)}</TableCell>
+                            <TableCell>{formatDateTime(contact.updatedAt)}</TableCell>
+                            <TableCell align="right">
+                              <Stack direction="row" spacing={0.5} justifyContent="flex-end">
+                                <Button
+                                  size="small"
+                                  color="error"
+                                  variant="text"
+                                  disabled={isActionProcessing('confirm', 'contact', contact.sourceId)}
+                                  onClick={() => {
+                                    void handleConfirmDeletion('contact', contact.sourceId, rowLabel)
+                                  }}
+                                  sx={{ minWidth: 0, px: 1, fontSize: '0.72rem' }}
+                                >
+                                  {isActionProcessing('confirm', 'contact', contact.sourceId) ? 'Deleting...' : 'Delete'}
+                                </Button>
+                                <Button
+                                  size="small"
+                                  variant="text"
+                                  startIcon={<RestoreRoundedIcon sx={{ fontSize: '15px !important' }} />}
+                                  disabled={isActionProcessing('restore', 'contact', contact.sourceId)}
+                                  onClick={() => {
+                                    void handleRestoreDeletion('contact', contact.sourceId, rowLabel)
+                                  }}
+                                  sx={{ minWidth: 0, px: 1, fontSize: '0.72rem' }}
+                                >
+                                  {isActionProcessing('restore', 'contact', contact.sourceId) ? 'Restoring...' : 'Restore'}
+                                </Button>
+                              </Stack>
+                            </TableCell>
+                          </TableRow>
+                        )
+                      })}
+                </TableBody>
+              </Table>
+            </TableContainer>
+
+            <TablePagination
+              component="div"
+              count={activeRows.length}
+              page={activePage}
+              rowsPerPage={rowsPerPage}
+              rowsPerPageOptions={[10, 25, 50]}
+              onPageChange={handlePageChange}
+              onRowsPerPageChange={(event) => {
+                setRowsPerPage(Number(event.target.value))
+                setDealerPage(0)
+                setContactPage(0)
+              }}
+              sx={{
+                borderTop: 1,
+                borderColor: 'divider',
+                minHeight: 44,
+                '& .MuiTablePagination-toolbar': { minHeight: 44 },
+                '& .MuiTablePagination-selectLabel, & .MuiTablePagination-displayedRows': {
+                  fontSize: '0.75rem',
+                },
+              }}
+            />
+          </>
+        ) : null}
       </Paper>
-
-      <Stack spacing={1.5}>
-          <LoadingPanel
-            loading={deletionQueueQuery.isLoading}
-            message="Loading deletion queue..."
-            contained
-          />
-
-          {!deletionQueueQuery.isLoading ? (
-            <>
-              <Paper variant="outlined" sx={{ p: 1.5 }}>
-                <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.8} alignItems={{ xs: 'flex-start', sm: 'center' }}>
-                  <Chip variant="outlined" size="small" label={`Queue total: ${queueTotal}`} />
-                  <Chip variant="outlined" size="small" label={`Accounts: ${deletionQueueDealers.length}`} />
-                  <Chip variant="outlined" size="small" label={`Contacts: ${deletionQueueContacts.length}`} />
-                </Stack>
-              </Paper>
-
-              <Paper variant="outlined" sx={{ p: 1.5 }}>
-                <Stack spacing={1}>
-                  <Typography variant="h6" fontWeight={700}>
-                    Account Deletion Queue
-                  </Typography>
-
-                  {deletionQueueDealers.length === 0 ? (
-                    <Typography color="text.secondary">No accounts are waiting for admin confirmation.</Typography>
-                  ) : (
-                    <TableContainer>
-                      <Table size="small" stickyHeader>
-                        <TableHead>
-                          <TableRow>
-                            <TableCell sx={{ fontWeight: 700 }}>Account</TableCell>
-                            <TableCell sx={{ fontWeight: 700 }}>Type</TableCell>
-                            <TableCell sx={{ fontWeight: 700 }}>State</TableCell>
-                            <TableCell sx={{ fontWeight: 700 }}>Requested By</TableCell>
-                            <TableCell sx={{ fontWeight: 700 }}>Requested At</TableCell>
-                            <TableCell sx={{ fontWeight: 700 }}>Updated</TableCell>
-                            <TableCell align="right" sx={{ fontWeight: 700, width: 250 }}>Actions</TableCell>
-                          </TableRow>
-                        </TableHead>
-                        <TableBody>
-                          {deletionQueueDealers.map((dealer: CrmDeletionQueueRecordDealer) => {
-                            const rowLabel = formatOptional(dealer.name) !== '-'
-                              ? formatOptional(dealer.name)
-                              : dealer.sourceId
-
-                            return (
-                              <TableRow key={dealer.sourceId} hover>
-                                <TableCell>
-                                  <Stack spacing={0.25}>
-                                    <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                                      {rowLabel}
-                                    </Typography>
-                                    <Typography variant="caption" color="text.secondary">
-                                      ID: {dealer.sourceId}
-                                    </Typography>
-                                  </Stack>
-                                </TableCell>
-                                <TableCell>{formatOptional(dealer.accountType || dealer.accountClass)}</TableCell>
-                                <TableCell>{formatOptional(dealer.state)}</TableCell>
-                                <TableCell>{formatOptional(dealer.deleteRequestedByEmail)}</TableCell>
-                                <TableCell>{formatDateTime(dealer.deleteRequestedAt)}</TableCell>
-                                <TableCell>{formatDateTime(dealer.updatedAt)}</TableCell>
-                                <TableCell align="right">
-                                  <Stack direction="row" spacing={0.7} justifyContent="flex-end">
-                                    <Button
-                                      size="small"
-                                      color="error"
-                                      variant="contained"
-                                      disabled={isActionProcessing('confirm', 'dealer', dealer.sourceId)}
-                                      onClick={() => {
-                                        void handleConfirmDeletion('dealer', dealer.sourceId, rowLabel)
-                                      }}
-                                    >
-                                      {isActionProcessing('confirm', 'dealer', dealer.sourceId) ? 'Confirming...' : 'Confirm Delete'}
-                                    </Button>
-                                    <Button
-                                      size="small"
-                                      variant="outlined"
-                                      startIcon={<RestoreRoundedIcon fontSize="small" />}
-                                      disabled={isActionProcessing('restore', 'dealer', dealer.sourceId)}
-                                      onClick={() => {
-                                        void handleRestoreDeletion('dealer', dealer.sourceId, rowLabel)
-                                      }}
-                                    >
-                                      {isActionProcessing('restore', 'dealer', dealer.sourceId) ? 'Restoring...' : 'Restore'}
-                                    </Button>
-                                  </Stack>
-                                </TableCell>
-                              </TableRow>
-                            )
-                          })}
-                        </TableBody>
-                      </Table>
-                    </TableContainer>
-                  )}
-                </Stack>
-              </Paper>
-
-              <Paper variant="outlined" sx={{ p: 1.5 }}>
-                <Stack spacing={1}>
-                  <Typography variant="h6" fontWeight={700}>
-                    Contact Deletion Queue
-                  </Typography>
-
-                  {deletionQueueContacts.length === 0 ? (
-                    <Typography color="text.secondary">No contacts are waiting for admin confirmation.</Typography>
-                  ) : (
-                    <TableContainer>
-                      <Table size="small" stickyHeader>
-                        <TableHead>
-                          <TableRow>
-                            <TableCell sx={{ fontWeight: 700 }}>Contact</TableCell>
-                            <TableCell sx={{ fontWeight: 700 }}>Account</TableCell>
-                            <TableCell sx={{ fontWeight: 700 }}>State</TableCell>
-                            <TableCell sx={{ fontWeight: 700 }}>Requested By</TableCell>
-                            <TableCell sx={{ fontWeight: 700 }}>Requested At</TableCell>
-                            <TableCell sx={{ fontWeight: 700 }}>Updated</TableCell>
-                            <TableCell align="right" sx={{ fontWeight: 700, width: 250 }}>Actions</TableCell>
-                          </TableRow>
-                        </TableHead>
-                        <TableBody>
-                          {deletionQueueContacts.map((contact: CrmDeletionQueueRecordContact) => {
-                            const rowLabel = formatOptional(contact.name) !== '-'
-                              ? formatOptional(contact.name)
-                              : contact.sourceId
-
-                            return (
-                              <TableRow key={contact.sourceId} hover>
-                                <TableCell>
-                                  <Stack spacing={0.25}>
-                                    <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                                      {rowLabel}
-                                    </Typography>
-                                    <Typography variant="caption" color="text.secondary">
-                                      ID: {contact.sourceId}
-                                    </Typography>
-                                  </Stack>
-                                </TableCell>
-                                <TableCell>{formatOptional(contact.accountName || contact.accountSourceId)}</TableCell>
-                                <TableCell>{formatOptional(contact.state)}</TableCell>
-                                <TableCell>{formatOptional(contact.deleteRequestedByEmail)}</TableCell>
-                                <TableCell>{formatDateTime(contact.deleteRequestedAt)}</TableCell>
-                                <TableCell>{formatDateTime(contact.updatedAt)}</TableCell>
-                                <TableCell align="right">
-                                  <Stack direction="row" spacing={0.7} justifyContent="flex-end">
-                                    <Button
-                                      size="small"
-                                      color="error"
-                                      variant="contained"
-                                      disabled={isActionProcessing('confirm', 'contact', contact.sourceId)}
-                                      onClick={() => {
-                                        void handleConfirmDeletion('contact', contact.sourceId, rowLabel)
-                                      }}
-                                    >
-                                      {isActionProcessing('confirm', 'contact', contact.sourceId) ? 'Confirming...' : 'Confirm Delete'}
-                                    </Button>
-                                    <Button
-                                      size="small"
-                                      variant="outlined"
-                                      startIcon={<RestoreRoundedIcon fontSize="small" />}
-                                      disabled={isActionProcessing('restore', 'contact', contact.sourceId)}
-                                      onClick={() => {
-                                        void handleRestoreDeletion('contact', contact.sourceId, rowLabel)
-                                      }}
-                                    >
-                                      {isActionProcessing('restore', 'contact', contact.sourceId) ? 'Restoring...' : 'Restore'}
-                                    </Button>
-                                  </Stack>
-                                </TableCell>
-                              </TableRow>
-                            )
-                          })}
-                        </TableBody>
-                      </Table>
-                    </TableContainer>
-                  )}
-                </Stack>
-              </Paper>
-            </>
-          ) : null}
-        </Stack>
     </Stack>
   )
 }

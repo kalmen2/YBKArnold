@@ -822,7 +822,11 @@ export function registerTrimbleRoutes(app, deps) {
   app.get('/api/public/3d/:slug', async (req, res, next) => {
     try {
       const slug = text(req.params.slug, 200)
-      const { authUsersCollection, crmQuotesCollection, mobileAlertsCollection } = await getCollections()
+      const {
+        authUsersCollection,
+        crmQuotesCollection,
+        mobileAlertsCollection,
+      } = await getCollections()
       const rootQuote = await crmQuotesCollection.findOne(
         {
           $or: [
@@ -839,43 +843,44 @@ export function registerTrimbleRoutes(app, deps) {
       const quote = matchingRevision
         ? { ...rootQuote, ...matchingRevision, id: rootQuote.id, revisions: rootQuote.revisions }
         : rootQuote
-      const openedAt = nowIso()
-      const activityId = randomBytes(16).toString('hex')
-      const userAgent = text(req.get('user-agent'), 500) || null
-      const device = describeViewerDevice(userAgent)
-      const activity = {
-        id: activityId,
-        type: 'public_3d_opened',
-        occurredAt: openedAt,
-        link: `/3d/${slug}`,
-        ipAddress: text(extractRequestIpAddress(req), 120) || null,
-        userAgent,
-        browser: device.browser,
-        operatingSystem: device.operatingSystem,
-        deviceType: device.deviceType,
-        referrer: text(req.get('referer'), 1000) || null,
-        acceptLanguage: text(req.get('accept-language'), 300) || null,
-        location: {
-          city: text(req.get('x-appengine-city'), 160) || null,
-          region: text(req.get('x-appengine-region'), 160) || null,
-          country: text(req.get('x-appengine-country'), 80) || null,
-          coordinates: text(req.get('x-appengine-citylatlong'), 100) || null,
-        },
-      }
-      await crmQuotesCollection.updateOne(
-        { id: quote.id },
-        {
-          $set: { lastLinkOpenedAt: openedAt },
-          $inc: { linkOpenCount: 1 },
-          $push: {
-            linkOpenLogs: { $each: [activity], $slice: -1000 },
-            activityLog: { $each: [activity], $slice: -1000 },
+      const isReadinessPoll = text(req.query?.poll, 20) === '1'
+      if (!isReadinessPoll) {
+        const openedAt = nowIso()
+        const activityId = randomBytes(16).toString('hex')
+        const userAgent = text(req.get('user-agent'), 500) || null
+        const device = describeViewerDevice(userAgent)
+        const activity = {
+          id: activityId,
+          type: 'public_3d_opened',
+          occurredAt: openedAt,
+          link: `/3d/${slug}`,
+          ipAddress: text(extractRequestIpAddress(req), 120) || null,
+          userAgent,
+          browser: device.browser,
+          operatingSystem: device.operatingSystem,
+          deviceType: device.deviceType,
+          referrer: text(req.get('referer'), 1000) || null,
+          acceptLanguage: text(req.get('accept-language'), 300) || null,
+          location: {
+            city: text(req.get('x-appengine-city'), 160) || null,
+            region: text(req.get('x-appengine-region'), 160) || null,
+            country: text(req.get('x-appengine-country'), 80) || null,
+            coordinates: text(req.get('x-appengine-citylatlong'), 100) || null,
           },
-        },
-      )
+        }
+        await crmQuotesCollection.updateOne(
+          { id: quote.id },
+          {
+            $set: { lastLinkOpenedAt: openedAt },
+            $inc: { linkOpenCount: 1 },
+            $push: {
+              linkOpenLogs: { $each: [activity], $slice: -1000 },
+              activityLog: { $each: [activity], $slice: -1000 },
+            },
+          },
+        )
 
-      const salesRepName = text(quote.salesRep, 200)
-      {
+        const salesRepName = text(quote.salesRep, 200)
         const assignedUsers = await authUsersCollection.find(
           {
             approvalStatus: authApprovalApproved,
@@ -917,16 +922,24 @@ export function registerTrimbleRoutes(app, deps) {
           })
         }
       }
+
       const model = quote.trimble3d
       const hasStoredModels = Array.isArray(model.models) && model.models.length
       const storedModels = hasStoredModels ? model.models : [model]
+      // Trimble's Core file status can remain PROCESSING after its 3D viewer is
+      // already able to display the converted model. Do not gate a valid share
+      // link on that field; let the viewer load it and expose a manual reload in
+      // the customer page for the short conversion window after a fresh upload.
       const publicModels = storedModels.map((entry, index) => ({
-        label: modelViewLabel(entry?.fileName, entry?.label, index),
-        fileName: text(entry?.fileName, 500) || `3D option ${index + 1}`,
-        embedUrl: `${trimbleViewerBaseUrl}/projects/${encodeURIComponent(model.projectId)}/viewer/3d/?embed=true&stoken=${encodeURIComponent(entry.shareToken)}`,
+          label: modelViewLabel(entry?.fileName, entry?.label, index),
+          fileName: text(entry?.fileName, 500) || `3D option ${index + 1}`,
+          status: 'ready',
+          embedUrl: `${trimbleViewerBaseUrl}/projects/${encodeURIComponent(model.projectId)}/viewer/3d/?embed=true&stoken=${encodeURIComponent(entry.shareToken)}`,
       }))
-      const embedUrl = publicModels[0]?.embedUrl
-      if (!embedUrl) return res.status(404).json({ error: 'This 3D model link is unavailable.' })
+      const embedUrl = publicModels.find((entry) => entry.embedUrl)?.embedUrl || null
+      if (!embedUrl) {
+        return res.status(404).json({ error: 'This 3D model link is unavailable.' })
+      }
       res.set('Cache-Control', 'private, no-store')
       res.set('X-Robots-Tag', 'noindex, nofollow, noarchive')
       return res.json({
@@ -934,6 +947,7 @@ export function registerTrimbleRoutes(app, deps) {
         projectName: text(quote.title, 240) || 'Custom furniture project',
         customerName: text(quote.companyName || quote.dealerName, 240) || null,
         fileName: text(model.fileName, 500) || null,
+        status: 'ready',
         embedUrl,
         models: publicModels,
       })

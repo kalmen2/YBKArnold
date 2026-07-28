@@ -14,6 +14,8 @@ import EditRoundedIcon from '@mui/icons-material/EditRounded'
 import SaveRoundedIcon from '@mui/icons-material/SaveRounded'
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded'
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined'
+import ArchiveRoundedIcon from '@mui/icons-material/ArchiveRounded'
+import UnarchiveRoundedIcon from '@mui/icons-material/UnarchiveRounded'
 import {
   Alert,
   Box,
@@ -675,6 +677,7 @@ type OrdersGridProps = {
   onOpenOrderChat: (order: OrdersOverviewOrder) => void
   canDeleteOrders: boolean
   onDeleteOrder: (order: OrdersOverviewOrder) => void
+  onArchiveOrder: (order: OrdersOverviewOrder, archived: boolean) => void
   onLinkOrder: (order: OrdersOverviewOrder) => void
   onMissingMondayLink: () => void
 }
@@ -698,14 +701,15 @@ export function OrdersGrid({
   onOpenOrderChat,
   canDeleteOrders,
   onDeleteOrder,
+  onArchiveOrder,
   onLinkOrder,
   onMissingMondayLink,
 }: OrdersGridProps) {
   const queryClient = useQueryClient()
   const statusColumnHeader = activeTab === 'shipped'
     ? 'Ship Date'
-    : activeTab === 'warranty'
-      ? 'Warranty'
+    : activeTab === 'archive'
+      ? 'Archived'
       : 'Job Status'
   const [rowSelectionModel, setRowSelectionModel] = useState<GridRowSelectionModel>({
     type: 'include',
@@ -1707,7 +1711,7 @@ export function OrdersGrid({
           <Typography component="span" variant="caption" fontWeight={800}>
             {statusColumnHeader}
           </Typography>
-          {activeTab !== 'shipped' && activeTab !== 'warranty' ? (
+          {activeTab !== 'shipped' && activeTab !== 'archive' ? (
             <Tooltip
               title={
                 <Stack spacing={0.35} sx={{ py: 0.25 }}>
@@ -1723,20 +1727,13 @@ export function OrdersGrid({
         </Stack>
       ),
       renderCell: ({ row }) => {
-        if (activeTab === 'warranty') {
-          const leadTimeDate = String(row.warrantyIssueLeadTimeDate ?? '').trim()
-          const warrantyLabel = row.warrantyIssueActive
-            ? leadTimeDate
-              ? `Due ${formatDate(leadTimeDate)}`
-              : 'In progress'
-            : 'Done'
-
+        if (activeTab === 'archive') {
           return (
             <Chip
               size="small"
-              label={warrantyLabel}
-              color={row.warrantyIssueActive ? 'warning' : 'success'}
-              variant="filled"
+              label={row.archivedAt ? formatDate(row.archivedAt) : 'Archived'}
+              color="default"
+              variant="outlined"
             />
           )
         }
@@ -2208,11 +2205,11 @@ export function OrdersGrid({
         { field: 'shopDrawingUrl', label: 'Shop Drawings' },
         { field: 'mondayLink', label: 'Actions' },
       ] as const
-      : activeTab === 'warranty'
+      : activeTab === 'archive'
         ? [
           { field: 'orderNumber', label: 'Order #' },
           { field: 'orderName', label: 'Customer Name' },
-          { field: 'rowStatus', label: 'Warranty Status' },
+          { field: 'rowStatus', label: 'Archived' },
           { field: 'orderDate', label: 'Order Date' },
           { field: 'mondayLink', label: 'Actions' },
         ] as const
@@ -2935,6 +2932,21 @@ export function OrdersGrid({
         >
           <LinkRoundedIcon fontSize="small" sx={{ mr: 1 }} />
           {actionsOrder?.parentOrderNumber ? 'Change linked order' : 'Link to another order'}
+        </MenuItem>
+        <MenuItem
+          disabled={!actionsOrder}
+          onClick={() => {
+            const order = actionsOrder
+            handleCloseActionsMenu()
+            if (order) onArchiveOrder(order, !order.isArchived)
+          }}
+        >
+          {actionsOrder?.isArchived ? (
+            <UnarchiveRoundedIcon fontSize="small" sx={{ mr: 1 }} />
+          ) : (
+            <ArchiveRoundedIcon fontSize="small" sx={{ mr: 1 }} />
+          )}
+          {actionsOrder?.isArchived ? 'Unarchive order' : 'Archive order'}
         </MenuItem>
         {canDeleteOrders ? (
           <MenuItem

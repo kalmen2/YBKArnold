@@ -800,6 +800,8 @@ export function registerOrdersRoutes(app, deps) {
       || String(orderDocument?.Customer_Signed_BOL ?? '').trim()
       || null
     const customerSignedBol = String(orderDocument?.customer_signed_bol ?? '').trim() || null
+    const customerSignedBolRequired =
+      isShipped && orderDocument?.customer_signed_bol_required !== false
     const mondayStatus =
       String(orderDocument?.job_status ?? '').trim()
       || String(orderDocument?.Monday_status ?? '').trim()
@@ -861,7 +863,7 @@ export function registerOrdersRoutes(app, deps) {
           : null)
     const hazardReason = [
       baseHazardReason,
-      isShipped && !customerSignedBolUrl && !customerSignedBol
+      customerSignedBolRequired && !customerSignedBolUrl && !customerSignedBol
         ? 'Customer Signed BOL is missing after shipment.'
         : null,
       invoiceTotalMismatch
@@ -1073,6 +1075,12 @@ export function registerOrdersRoutes(app, deps) {
           ? Boolean(orderDocument.shipped_at_inferred)
           : null,
       ...mapWarrantyStateFromOrderDocument(orderDocument),
+      isWarrantyOrder: Boolean(orderDocument?.is_warranty_order),
+      warrantyParentOrderNumber:
+        String(orderDocument?.warranty_parent_order_number ?? '').trim() || null,
+      isArchived: Boolean(String(orderDocument?.archived_at ?? '').trim()),
+      archivedAt: String(orderDocument?.archived_at ?? '').trim() || null,
+      archivedByEmail: String(orderDocument?.archived_by_email ?? '').trim() || null,
       mondayBoardId: String(orderDocument?.monday_board_id ?? '').trim() || null,
       mondayBoardName: String(orderDocument?.monday_board_name ?? '').trim() || null,
       mondayUpdatedAt: String(orderDocument?.monday_updated_at ?? '').trim() || null,
@@ -1370,6 +1378,7 @@ export function registerOrdersRoutes(app, deps) {
               customer_signed_bol: 1,
               Customer_Signed_BOL: 1,
               Customer_Signed_BOL_source: 1,
+              customer_signed_bol_required: 1,
               change_version: 1,
               change_order_status: 1,
               change_order_url: 1,
@@ -1439,6 +1448,11 @@ export function registerOrdersRoutes(app, deps) {
               warranty_last_completed_done_at: 1,
               warranty_last_completed_duration_days: 1,
               warranty_last_completed_lead_time_variance_days: 1,
+              is_warranty_order: 1,
+              warranty_parent_order_number: 1,
+              archived_at: 1,
+              archived_by_uid: 1,
+              archived_by_email: 1,
               has_monday_record: 1,
               has_quickbooks_record: 1,
               in_design: 1,
@@ -1487,7 +1501,7 @@ export function registerOrdersRoutes(app, deps) {
       attachFamilyRollups(unredactedRows)
       const rows = unredactedRows.map((row) => redactOrderForAccess(row, access))
       const shippedCount = rows.filter((row) => row.isShipped).length
-      const hazardCount = rows.filter((row) => Boolean(row.hazardReason)).length
+      const hazardCount = rows.filter((row) => !row.isArchived && Boolean(row.hazardReason)).length
       const mondayOnlyCount = rows.filter((row) => row.hasMondayRecord && !row.hasQuickBooksRecord).length
       const quickBooksOnlyCount = rows.filter((row) => !row.hasMondayRecord && row.hasQuickBooksRecord).length
 
@@ -1918,8 +1932,13 @@ export function registerOrdersRoutes(app, deps) {
   })
 
   registerOrderWarrantyRoutes(app, {
+    createMondayItem,
     getCollections,
+    refreshOrdersUnifiedCollection,
     requireFirebaseAuth,
+    updateMondayItemJsonColumn,
+    updateMondayItemName,
+    updateMondayItemTextColumn,
   })
 
   registerOrderDocumentRoutes(app, {
@@ -2144,6 +2163,7 @@ export function registerOrdersRoutes(app, deps) {
                     customer_signed_bol: 1,
                     Customer_Signed_BOL: 1,
                     Customer_Signed_BOL_source: 1,
+                    customer_signed_bol_required: 1,
                     change_version: 1,
                     change_order_status: 1,
                     change_order_url: 1,

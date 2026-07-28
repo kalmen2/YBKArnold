@@ -288,7 +288,7 @@ export default function SalesQuotesPage() {
     try {
       await updateCrmQuote(selectedActionQuote.id, {
         status: 'draft',
-        opportunityStage: 'concept',
+        opportunityStage: 'proposal_submission',
       })
 
       await queryClient.invalidateQueries({ queryKey: ['crm', 'quotes'] })
@@ -308,7 +308,7 @@ export default function SalesQuotesPage() {
 
     const quoteLabel = selectedActionQuote.quoteNumber || selectedActionQuote.title || selectedActionQuote.id
     const confirmed = window.confirm(
-      `Cancel the order created from ${quoteLabel}? The order will be removed from active Orders and the quote will return to Opportunities under Proposal Submitted.`,
+      `Cancel the order created from ${quoteLabel}? The order will be removed from active Orders and the quote will return to Opportunities.`,
     )
 
     if (!confirmed) {
@@ -331,7 +331,7 @@ export default function SalesQuotesPage() {
       const warning = Array.isArray(response.warnings) && response.warnings.length > 0
         ? ` ${response.warnings[0]}`
         : ''
-      setActionSuccessMessage(`Order canceled. Quote returned to Proposal Submitted.${warning}`)
+      setActionSuccessMessage(`Order canceled. Quote returned to Opportunities.${warning}`)
       handleCloseQuoteActionMenu()
     } catch (error) {
       setActionErrorMessage(error instanceof Error ? error.message : 'Failed to cancel order.')

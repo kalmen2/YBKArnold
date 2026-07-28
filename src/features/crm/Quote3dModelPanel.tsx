@@ -211,7 +211,7 @@ export default function Quote3dModelPanel({ quote, revisionNumber, canManage, on
             <Box sx={{ flex: 1, minWidth: 0 }}>
               <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
                 <Typography variant="subtitle1" fontWeight={800}>Customer 3D Viewer</Typography>
-                {model ? <Chip label={`${publishedModels.length || 1} view${publishedModels.length === 1 ? '' : 's'} live`} color="success" size="small" /> : null}
+                {model ? <Chip label={`${publishedModels.length || 1} view${publishedModels.length === 1 ? '' : 's'} published`} color="success" size="small" /> : null}
               </Stack>
               <Typography variant="body2" color="text.secondary">
                 {model

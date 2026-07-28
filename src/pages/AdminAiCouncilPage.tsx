@@ -13,6 +13,10 @@ import {
   Box,
   Button,
   Chip,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   Divider,
   IconButton,
   List,
@@ -104,6 +108,7 @@ export default function AdminAiCouncilPage() {
   const [ruleDraftError, setRuleDraftError] = useState<string | null>(null)
   const [chatMenuAnchor, setChatMenuAnchor] = useState<HTMLElement | null>(null)
   const [menuChat, setMenuChat] = useState<AiCouncilChat | null>(null)
+  const [instructionsOpen, setInstructionsOpen] = useState(false)
   const [councilRunStage, setCouncilRunStage] = useState<string | null>(null)
   const [chatMode, setChatMode] = useState<AiCouncilChatType>('council')
   const [directChatMember, setDirectChatMember] = useState<AiCouncilAiMember>('claude')
@@ -328,9 +333,12 @@ export default function AdminAiCouncilPage() {
           <Stack direction="row" spacing={1.2} alignItems="center">
             <SmartToyRoundedIcon color="primary" />
             <Box>
-              <Typography variant="h6" fontWeight={700}>
-                AI Council
-              </Typography>
+              <Stack direction="row" spacing={0.8} alignItems="center">
+                <Typography variant="h6" fontWeight={700}>
+                  AI Council
+                </Typography>
+                <Chip label="Beta" size="small" color="warning" variant="outlined" />
+              </Stack>
               <Typography color="text.secondary">
                 Admin council chats, member instructions, and Google Drive readiness.
               </Typography>
@@ -397,7 +405,7 @@ export default function AdminAiCouncilPage() {
         sx={{
           display: 'grid',
           gap: 2,
-          gridTemplateColumns: { xs: '1fr', lg: '280px minmax(0, 1fr) 340px' },
+          gridTemplateColumns: { xs: '1fr', lg: '280px minmax(0, 1fr)' },
           alignItems: 'start',
           minHeight: 0,
         }}
@@ -525,17 +533,28 @@ export default function AdminAiCouncilPage() {
                 </Typography>
               ) : null}
             </Box>
-            {selectedChat ? (
-              <Button
-                size="small"
-                variant="outlined"
-                startIcon={<CheckCircleRoundedIcon />}
-                disabled={updateChatMutation.isPending}
-                onClick={() => updateChatMutation.mutate({ chatId: selectedChat.id, status: 'finished' })}
-              >
-                Finish
-              </Button>
-            ) : null}
+            <Stack direction="row" spacing={0.5} alignItems="center">
+              {selectedChat ? (
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<CheckCircleRoundedIcon />}
+                  disabled={updateChatMutation.isPending}
+                  onClick={() => updateChatMutation.mutate({ chatId: selectedChat.id, status: 'finished' })}
+                >
+                  Finish
+                </Button>
+              ) : null}
+              <Tooltip title="Council instructions">
+                <IconButton
+                  size="small"
+                  aria-label="Open council instructions"
+                  onClick={() => setInstructionsOpen(true)}
+                >
+                  <MoreVertRoundedIcon fontSize="small" />
+                </IconButton>
+              </Tooltip>
+            </Stack>
           </Stack>
           <Divider />
 
@@ -666,102 +685,6 @@ export default function AdminAiCouncilPage() {
           </Stack>
         </Paper>
 
-        <Paper
-          variant="outlined"
-          sx={{
-            p: 1.5,
-            maxHeight: { lg: 'calc(100vh - 230px)' },
-            overflow: 'auto',
-          }}
-        >
-          <Stack spacing={1.5}>
-            <Box>
-              <Typography fontWeight={700}>Instructions</Typography>
-              <Typography variant="body2" color="text.secondary">
-                Local behavior rules for each AI. Company knowledge belongs in Drive.
-              </Typography>
-            </Box>
-
-            <ToggleButtonGroup
-              exclusive
-              size="small"
-              value={selectedMember}
-              onChange={(_, value: AiCouncilMember | null) => {
-                if (value) setSelectedMember(value)
-              }}
-              fullWidth
-            >
-              {members.map((member) => (
-                <ToggleButton key={member.key} value={member.key}>
-                  {member.label}
-                </ToggleButton>
-              ))}
-            </ToggleButtonGroup>
-
-            <Stack spacing={0.5}>
-              <Typography variant="body2" fontWeight={700}>
-                {selectedRule?.label ?? selectedMember}
-              </Typography>
-              <Typography variant="caption" color="text.secondary">
-                {selectedRule?.role ?? 'Council member'} - {(selectedRule?.provider ?? 'openai')} / {selectedRule?.model ?? 'gpt-4o'}
-              </Typography>
-            </Stack>
-
-            <TextField
-              multiline
-              minRows={16}
-              value={instructionDraft}
-              onChange={(event) => setInstructionDraft(event.target.value)}
-              disabled={rulesQuery.isLoading || saveRuleMutation.isPending}
-            />
-
-            {selectedMember !== 'moderator' ? (
-              <TextField
-                label="Turn instructions JSON"
-                multiline
-                minRows={8}
-                value={turnInstructionsDraft}
-                onChange={(event) => setTurnInstructionsDraft(event.target.value)}
-                disabled={rulesQuery.isLoading || saveRuleMutation.isPending}
-                spellCheck={false}
-              />
-            ) : null}
-
-            {selectedMember === 'moderator' ? (
-              <>
-                <TextField
-                  label="Moderator tags JSON"
-                  multiline
-                  minRows={8}
-                  value={tagsDraft}
-                  onChange={(event) => setTagsDraft(event.target.value)}
-                  disabled={rulesQuery.isLoading || saveRuleMutation.isPending}
-                  spellCheck={false}
-                />
-                <TextField
-                  label="Runtime instructions JSON"
-                  multiline
-                  minRows={6}
-                  value={runtimeInstructionsDraft}
-                  onChange={(event) => setRuntimeInstructionsDraft(event.target.value)}
-                  disabled={rulesQuery.isLoading || saveRuleMutation.isPending}
-                  spellCheck={false}
-                />
-              </>
-            ) : null}
-
-            {ruleDraftError ? <Alert severity="error">{ruleDraftError}</Alert> : null}
-
-            <Button
-              variant="contained"
-              startIcon={<SaveRoundedIcon />}
-              disabled={!instructionDraft.trim() || saveRuleMutation.isPending}
-              onClick={() => saveRuleMutation.mutate()}
-            >
-              {saveRuleMutation.isPending ? 'Saving...' : 'Save Instructions'}
-            </Button>
-          </Stack>
-        </Paper>
       </Box>
 
       <Menu
@@ -792,6 +715,109 @@ export default function AdminAiCouncilPage() {
           Delete
         </MenuItem>
       </Menu>
+
+      <Dialog
+        open={instructionsOpen}
+        onClose={() => setInstructionsOpen(false)}
+        fullWidth
+        maxWidth="md"
+      >
+        <DialogTitle>
+          <Typography variant="h6" fontWeight={700}>
+            Council Instructions
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            Local behavior rules for each AI. Company knowledge belongs in Drive.
+          </Typography>
+        </DialogTitle>
+        <DialogContent dividers>
+          <Stack spacing={1.5}>
+            <ToggleButtonGroup
+              exclusive
+              size="small"
+              value={selectedMember}
+              onChange={(_, value: AiCouncilMember | null) => {
+                if (value) setSelectedMember(value)
+              }}
+              fullWidth
+            >
+              {members.map((member) => (
+                <ToggleButton key={member.key} value={member.key}>
+                  {member.label}
+                </ToggleButton>
+              ))}
+            </ToggleButtonGroup>
+
+            <Stack spacing={0.25}>
+              <Typography variant="body2" fontWeight={700}>
+                {selectedRule?.label ?? selectedMember}
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                {selectedRule?.role ?? 'Council member'} - {(selectedRule?.provider ?? 'openai')} / {selectedRule?.model ?? 'gpt-4o'}
+              </Typography>
+            </Stack>
+
+            <TextField
+              label="Instructions"
+              multiline
+              minRows={12}
+              value={instructionDraft}
+              onChange={(event) => setInstructionDraft(event.target.value)}
+              disabled={rulesQuery.isLoading || saveRuleMutation.isPending}
+            />
+
+            {selectedMember !== 'moderator' ? (
+              <TextField
+                label="Turn instructions JSON"
+                multiline
+                minRows={6}
+                value={turnInstructionsDraft}
+                onChange={(event) => setTurnInstructionsDraft(event.target.value)}
+                disabled={rulesQuery.isLoading || saveRuleMutation.isPending}
+                spellCheck={false}
+              />
+            ) : null}
+
+            {selectedMember === 'moderator' ? (
+              <>
+                <TextField
+                  label="Moderator tags JSON"
+                  multiline
+                  minRows={6}
+                  value={tagsDraft}
+                  onChange={(event) => setTagsDraft(event.target.value)}
+                  disabled={rulesQuery.isLoading || saveRuleMutation.isPending}
+                  spellCheck={false}
+                />
+                <TextField
+                  label="Runtime instructions JSON"
+                  multiline
+                  minRows={5}
+                  value={runtimeInstructionsDraft}
+                  onChange={(event) => setRuntimeInstructionsDraft(event.target.value)}
+                  disabled={rulesQuery.isLoading || saveRuleMutation.isPending}
+                  spellCheck={false}
+                />
+              </>
+            ) : null}
+
+            {ruleDraftError ? <Alert severity="error">{ruleDraftError}</Alert> : null}
+          </Stack>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, py: 1.5 }}>
+          <Button onClick={() => setInstructionsOpen(false)}>
+            Close
+          </Button>
+          <Button
+            variant="contained"
+            startIcon={<SaveRoundedIcon />}
+            disabled={!instructionDraft.trim() || saveRuleMutation.isPending}
+            onClick={() => saveRuleMutation.mutate()}
+          >
+            {saveRuleMutation.isPending ? 'Saving...' : 'Save Instructions'}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Stack>
   )
 }

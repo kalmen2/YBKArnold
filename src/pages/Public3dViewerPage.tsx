@@ -9,7 +9,8 @@ import { useParams } from 'react-router-dom'
 type ViewerModel = {
   label: string
   fileName: string
-  embedUrl: string
+  embedUrl: string | null
+  status?: 'processing' | 'ready' | 'failed'
 }
 
 type ViewerData = {
@@ -17,7 +18,8 @@ type ViewerData = {
   projectName: string
   customerName: string | null
   fileName: string | null
-  embedUrl: string
+  status?: 'processing' | 'ready' | 'failed'
+  embedUrl: string | null
   models?: ViewerModel[]
 }
 
@@ -32,6 +34,8 @@ export default function Public3dViewerPage() {
   const { slug = '' } = useParams()
   const [data, setData] = useState<ViewerData | null>(null)
   const [error, setError] = useState('')
+  const [statusCheckNonce, setStatusCheckNonce] = useState(0)
+  const [checkingStatus, setCheckingStatus] = useState(true)
   const [activeIndex, setActiveIndex] = useState(0)
   const [viewerNonce, setViewerNonce] = useState(0)
   const [viewerLoading, setViewerLoading] = useState(true)
@@ -54,7 +58,8 @@ export default function Public3dViewerPage() {
 
   useEffect(() => {
     const controller = new AbortController()
-    fetch(`/api/public/3d/${encodeURIComponent(slug)}?embed=1`, { signal: controller.signal })
+    const pollSuffix = statusCheckNonce > 0 ? '&poll=1' : ''
+    fetch(`/api/public/3d/${encodeURIComponent(slug)}?embed=1${pollSuffix}`, { signal: controller.signal })
       .then(async (response) => {
         const payload = await response.json().catch(() => ({}))
         if (!response.ok) throw new Error(payload?.error || 'This 3D model link is unavailable.')
@@ -64,8 +69,11 @@ export default function Public3dViewerPage() {
       .catch((requestError) => {
         if (requestError?.name !== 'AbortError') setError(requestError instanceof Error ? requestError.message : 'The 3D viewer could not be loaded.')
       })
+      .finally(() => {
+        if (!controller.signal.aborted) setCheckingStatus(false)
+      })
     return () => controller.abort()
-  }, [slug])
+  }, [slug, statusCheckNonce])
 
   const models = useMemo<ViewerModel[]>(() => {
     if (!data) return []
@@ -76,7 +84,7 @@ export default function Public3dViewerPage() {
   }, [data])
   const activeModel = models[Math.min(activeIndex, Math.max(0, models.length - 1))]
   useEffect(() => {
-    if (!activeModel) return undefined
+    if (!activeModel?.embedUrl) return undefined
     if (revealTimerRef.current !== null) window.clearTimeout(revealTimerRef.current)
     const slowTimer = window.setTimeout(() => setTakingLonger(true), 6_000)
     return () => {
@@ -105,6 +113,12 @@ export default function Public3dViewerPage() {
     setViewerLoading(true)
     setTakingLonger(false)
     setViewerNonce((value) => value + 1)
+  }
+
+  const checkModelStatus = () => {
+    setCheckingStatus(true)
+    setError('')
+    setStatusCheckNonce((value) => value + 1)
   }
 
   return (
@@ -178,10 +192,48 @@ export default function Public3dViewerPage() {
           <Box sx={{ maxWidth: 680, mx: 'auto', mt: 8 }}>
             <Alert severity="error" icon={<ArrowBackRoundedIcon />}>{error}</Alert>
           </Box>
-        ) : !data || !activeModel ? (
+        ) : !data ? (
           <Stack alignItems="center" justifyContent="center" spacing={2} sx={{ height: '100%' }}>
             <CircularProgress sx={{ color: '#b5262d' }} />
             <Typography sx={{ color: '#71808b' }}>Preparing your 3D presentation…</Typography>
+          </Stack>
+        ) : data.status === 'failed' ? (
+          <Box sx={{ maxWidth: 680, mx: 'auto', mt: 8 }}>
+            <Alert
+              severity="error"
+              action={<Button color="inherit" size="small" onClick={checkModelStatus}>Try again</Button>}
+            >
+              Trimble could not prepare this 3D model. Please try again or contact Arnold Contract.
+            </Alert>
+          </Box>
+        ) : data.status === 'processing' || !activeModel?.embedUrl ? (
+          <Stack
+            alignItems="center"
+            justifyContent="center"
+            spacing={2}
+            sx={{ height: '100%', px: 3, textAlign: 'center', bgcolor: '#f0ece4' }}
+          >
+            <Box sx={{ width: 72, height: 72, borderRadius: '50%', display: 'grid', placeItems: 'center', bgcolor: '#fff', boxShadow: '0 14px 36px rgba(38,55,70,.14)' }}>
+              {checkingStatus ? <CircularProgress size={34} sx={{ color: '#b5262d' }} /> : <ViewInArRoundedIcon sx={{ fontSize: 38, color: '#b5262d' }} />}
+            </Box>
+            <Stack spacing={0.6} alignItems="center">
+              <Typography variant="h5" fontWeight={900}>Still preparing your 3D model</Typography>
+              <Typography sx={{ maxWidth: 620, color: '#526471' }}>
+                Trimble is converting the SketchUp file for web viewing. Larger models can take several minutes to become available.
+              </Typography>
+              <Typography variant="body2" sx={{ color: '#71808b' }}>
+                This page will not refresh automatically. Click below when you are ready to check again.
+              </Typography>
+            </Stack>
+            <Button
+              variant="contained"
+              startIcon={checkingStatus ? <CircularProgress size={16} color="inherit" /> : <ReplayRoundedIcon />}
+              disabled={checkingStatus}
+              onClick={checkModelStatus}
+              sx={{ mt: 1, textTransform: 'none', bgcolor: '#b5262d', '&:hover': { bgcolor: '#982027' } }}
+            >
+              {checkingStatus ? 'Checking…' : 'Try again'}
+            </Button>
           </Stack>
         ) : (
           <Box
@@ -241,6 +293,27 @@ export default function Public3dViewerPage() {
                 })}
               </Stack>
             ) : null}
+
+            <Button
+              size="small"
+              variant="contained"
+              startIcon={<ReplayRoundedIcon />}
+              onClick={retryViewer}
+              sx={{
+                position: 'absolute',
+                zIndex: 3,
+                bottom: 14,
+                right: 14,
+                textTransform: 'none',
+                borderRadius: 1.5,
+                bgcolor: 'rgba(38,55,70,.9)',
+                boxShadow: '0 5px 18px rgba(38,55,70,.16)',
+                backdropFilter: 'blur(10px)',
+                '&:hover': { bgcolor: '#263746' },
+              }}
+            >
+              Reload 3D
+            </Button>
 
             {viewerLoading ? (
               <Stack alignItems="center" justifyContent="center" spacing={2} sx={{ position: 'absolute', zIndex: 4, inset: 0, bgcolor: '#f0ece4', color: '#263746' }}>

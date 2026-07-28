@@ -1,10 +1,8 @@
 import AdminPanelSettingsRoundedIcon from '@mui/icons-material/AdminPanelSettingsRounded'
 import AlternateEmailRoundedIcon from '@mui/icons-material/AlternateEmailRounded'
 import FactCheckRoundedIcon from '@mui/icons-material/FactCheckRounded'
-import ForumRoundedIcon from '@mui/icons-material/ForumRounded'
 import PeopleAltRoundedIcon from '@mui/icons-material/PeopleAltRounded'
 import ManageHistoryRoundedIcon from '@mui/icons-material/ManageHistoryRounded'
-import NotificationsActiveRoundedIcon from '@mui/icons-material/NotificationsActiveRounded'
 import SmsRoundedIcon from '@mui/icons-material/SmsRounded'
 import SmartToyRoundedIcon from '@mui/icons-material/SmartToyRounded'
 import SupervisedUserCircleRoundedIcon from '@mui/icons-material/SupervisedUserCircleRounded'
@@ -14,26 +12,22 @@ import { useLocation, useNavigate } from 'react-router-dom'
 
 const AdminUsersPage = lazy(() => import('./AdminUsersPage'))
 const AdminLogsPage = lazy(() => import('./AdminLogsPage'))
-const AdminAlertsPage = lazy(() => import('./AdminAlertsPage'))
 const AdminVisitorsPage = lazy(() => import('./AdminVisitorsPage'))
 const AdminEmailSettingsPage = lazy(() => import('./AdminEmailSettingsPage'))
 const AdminSmsBridgePage = lazy(() => import('./AdminSmsBridgePage'))
 const AdminSalesReviewPage = lazy(() => import('./AdminSalesReviewPage'))
 const AiConfigPage = lazy(() => import('./AiConfigPage'))
-const AdminAiCouncilPage = lazy(() => import('./AdminAiCouncilPage'))
 
 type AdminSettingsTab =
   | 'users'
   | 'logs'
-  | 'notifications'
   | 'visitors'
   | 'email'
   | 'ai-config'
-  | 'ai-council'
   | 'sms-bridge'
   | 'sales-review'
 
-const adminSettingsTabs: Array<{
+const productionTabs: Array<{
   value: AdminSettingsTab
   label: string
   icon: typeof SupervisedUserCircleRoundedIcon
@@ -49,34 +43,9 @@ const adminSettingsTabs: Array<{
     icon: ManageHistoryRoundedIcon,
   },
   {
-    value: 'notifications',
-    label: 'Notifications',
-    icon: NotificationsActiveRoundedIcon,
-  },
-  {
     value: 'visitors',
     label: 'Visitors',
     icon: PeopleAltRoundedIcon,
-  },
-  {
-    value: 'email',
-    label: 'Email',
-    icon: AlternateEmailRoundedIcon,
-  },
-  {
-    value: 'ai-config',
-    label: 'AI Config',
-    icon: SmartToyRoundedIcon,
-  },
-  {
-    value: 'ai-council',
-    label: 'AI Council',
-    icon: ForumRoundedIcon,
-  },
-  {
-    value: 'sms-bridge',
-    label: 'SMS Bridge',
-    icon: SmsRoundedIcon,
   },
   {
     value: 'sales-review',
@@ -85,15 +54,31 @@ const adminSettingsTabs: Array<{
   },
 ]
 
+const testingTabs: typeof productionTabs = [
+  {
+    value: 'email',
+    label: 'Email Settings',
+    icon: AlternateEmailRoundedIcon,
+  },
+  {
+    value: 'ai-config',
+    label: 'AI Config',
+    icon: SmartToyRoundedIcon,
+  },
+  {
+    value: 'sms-bridge',
+    label: 'SMS Bridge',
+    icon: SmsRoundedIcon,
+  },
+]
+
 function getTabFromQuery(rawTab: string | null): AdminSettingsTab {
   if (
     rawTab === 'users'
     || rawTab === 'logs'
-    || rawTab === 'notifications'
     || rawTab === 'visitors'
     || rawTab === 'email'
     || rawTab === 'ai-config'
-    || rawTab === 'ai-council'
     || rawTab === 'sms-bridge'
     || rawTab === 'sales-review'
   ) {
@@ -112,10 +97,6 @@ function renderAdminSettingsTab(selectedTab: AdminSettingsTab) {
     return <AdminLogsPage />
   }
 
-  if (selectedTab === 'notifications') {
-    return <AdminAlertsPage />
-  }
-
   if (selectedTab === 'visitors') {
     return <AdminVisitorsPage />
   }
@@ -126,10 +107,6 @@ function renderAdminSettingsTab(selectedTab: AdminSettingsTab) {
 
   if (selectedTab === 'ai-config') {
     return <AiConfigPage />
-  }
-
-  if (selectedTab === 'ai-council') {
-    return <AdminAiCouncilPage />
   }
 
   if (selectedTab === 'sms-bridge') {
@@ -147,6 +124,8 @@ export default function AdminSettingsPage() {
     const params = new URLSearchParams(location.search)
     return getTabFromQuery(params.get('tab'))
   }, [location.search])
+  const isTestingTab = testingTabs.some((tab) => tab.value === selectedTab)
+  const visibleTabs = isTestingTab ? testingTabs : productionTabs
 
   const handleTabChange = (nextTab: AdminSettingsTab) => {
     const params = new URLSearchParams(location.search)
@@ -162,10 +141,12 @@ export default function AdminSettingsPage() {
             <AdminPanelSettingsRoundedIcon color="primary" />
             <Box>
               <Typography variant="h5" fontWeight={700}>
-                Admin Settings
+                {isTestingTab ? 'Testing Tools' : 'Admin Settings'}
               </Typography>
               <Typography color="text.secondary">
-                Manage users, notifications, visitors, logs, email integrations, SMS bridge activity, and sales review in one place.
+                {isTestingTab
+                  ? 'Configure and review tools that are still being tested.'
+                  : 'Manage users, logs, visitors, and sales review.'}
               </Typography>
             </Box>
           </Stack>
@@ -178,7 +159,7 @@ export default function AdminSettingsPage() {
               handleTabChange(value as AdminSettingsTab)
             }}
           >
-            {adminSettingsTabs.map((tab) => {
+            {visibleTabs.map((tab) => {
               const Icon = tab.icon
 
               return (

@@ -659,7 +659,11 @@ export function registerDashboardSupportRoutes(app, deps) {
     const { ordersUnifiedCollection } = await getCollections()
     const unifiedOrderDocuments = await ordersUnifiedCollection
       .find(
-        {},
+        {
+          archived_at: { $in: [null, ''] },
+          is_cancelled: { $ne: true },
+          is_deleted: { $ne: true },
+        },
         {
           projection: {
             _id: 0,

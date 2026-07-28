@@ -1,7 +1,7 @@
 import AlternateEmailRoundedIcon from '@mui/icons-material/AlternateEmailRounded'
 import MarkEmailUnreadRoundedIcon from '@mui/icons-material/MarkEmailUnreadRounded'
 import SmartToyRoundedIcon from '@mui/icons-material/SmartToyRounded'
-import { Box, Paper, Stack, Tab, Tabs, Typography } from '@mui/material'
+import { Box, Chip, Paper, Stack, Tab, Tabs, Typography } from '@mui/material'
 import { Suspense, lazy, useMemo } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 
@@ -65,9 +65,12 @@ export default function AdminEmailWorkspacePage() {
           <Stack direction="row" spacing={1.2} alignItems="center">
             <AlternateEmailRoundedIcon color="primary" />
             <Box>
-              <Typography variant="h5" fontWeight={700}>
-                Admin Email
-              </Typography>
+              <Stack direction="row" spacing={0.8} alignItems="center">
+                <Typography variant="h5" fontWeight={700}>
+                  Email Workspace
+                </Typography>
+                <Chip label="Beta" size="small" color="warning" variant="outlined" />
+              </Stack>
               <Typography color="text.secondary">
                 Review mailbox intake triage and manage email-intake AI rules.
               </Typography>

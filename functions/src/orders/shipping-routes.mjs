@@ -1245,7 +1245,7 @@ export function registerOrderShippingRoutes(app, {
               {
                 $set: {
                   status: hasRemainingOrders ? 'sent' : 'draft',
-                  opportunityStage: hasRemainingOrders ? 'proposal_submission' : 'concept',
+                  opportunityStage: 'proposal_submission',
                   acceptedAt: null,
                   convertedItemKeys: remainingKeys,
                   convertedOrders: remainingOrders,
@@ -1608,6 +1608,7 @@ export function registerOrderShippingRoutes(app, {
                 Monday_url: String(movedOrder?.itemUrl ?? '').trim() || String(orderDocument?.Monday_url ?? '').trim() || null,
                 Monday_status: 'Shipped',
                 is_shipped: true,
+                customer_signed_bol_required: true,
                 shipped_at: shippedAt,
                 shipped_at_inferred: String(movedOrder?.shippedAt ?? '').trim() ? false : true,
                 Due_date: String(movedOrder?.dueDate ?? '').trim() || null,

@@ -9,6 +9,7 @@ import FileDownloadRoundedIcon from '@mui/icons-material/FileDownloadRounded'
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded'
 import PrintRoundedIcon from '@mui/icons-material/PrintRounded'
 import VisibilityRoundedIcon from '@mui/icons-material/VisibilityRounded'
+import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded'
 import {
   Alert,
   Autocomplete,
@@ -720,6 +721,8 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     message: '',
   })
   const [isLoading, setIsLoading] = useState(true)
+  const [unknownOrderNumbersPending, setUnknownOrderNumbersPending] = useState<string[]>([])
+  const [managerContactConfirmed, setManagerContactConfirmed] = useState(false)
 
   const [stagesDialogOpen, setStagesDialogOpen] = useState(false)
   const [jobDetailsOpen, setJobDetailsOpen] = useState(false)
@@ -2543,6 +2546,41 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     }
   }, [mondayOrders])
 
+  const timesheetOrderNumberOptions = useMemo(() => {
+    const options = new Set<string>(['0'])
+
+    mondayOrders.forEach((order) => {
+      const orderNumber =
+        String(order.orderNumber ?? '').trim()
+        || String(order.name ?? '').trim()
+
+      if (orderNumber) {
+        options.add(orderNumber)
+      }
+    })
+
+    return [...options].sort((left, right) =>
+      left.localeCompare(right, undefined, { numeric: true, sensitivity: 'base' }),
+    )
+  }, [mondayOrders])
+
+  const isKnownTimesheetOrderNumber = useCallback((jobName: string) => {
+    const trimmedJobName = String(jobName ?? '').trim()
+    const jobKey = normalizeJobName(trimmedJobName)
+    const jobDigits = extractDigits(trimmedJobName)
+
+    if (!trimmedJobName || (jobDigits && /^0+$/.test(jobDigits))) {
+      return true
+    }
+
+    return Boolean(
+      mondayOrderLookup.primaryByNormalizedKey.get(jobKey)
+      || (jobDigits ? mondayOrderLookup.primaryByDigits.get(jobDigits) : null)
+      || mondayOrderLookup.shippedByNormalizedKey.get(jobKey)
+      || (jobDigits ? mondayOrderLookup.shippedByDigits.get(jobDigits) : null),
+    )
+  }, [mondayOrderLookup])
+
   const unifiedOrderLookup = useMemo(() => {
     const byNormalizedKey = new Map<string, TimesheetUnifiedOrder>()
     const byDigits = new Map<string, TimesheetUnifiedOrder>()
@@ -4213,7 +4251,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     })
   }
 
-  const handleSaveDailySheet = async () => {
+  const handleSaveDailySheet = async (managerExceptionConfirmed = false) => {
     setError('')
     setSuccess('')
 
@@ -4277,25 +4315,14 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
 
     const unmatchedOrderNumbers = findUnmatchedOrderNumbers(syncRows)
 
-    if (unmatchedOrderNumbers.length > 0) {
-      const preview = unmatchedOrderNumbers.slice(0, 8)
-      const extraCount = unmatchedOrderNumbers.length - preview.length
-      const confirmMessage = [
-        'Some entered order numbers were not found in Orders Track or Shipped:',
-        preview.join(', '),
-        extraCount > 0 ? `+${extraCount} more` : '',
-        '',
-        'Do you want to save anyway? Admin will be notified.',
-      ]
-        .filter(Boolean)
-        .join('\n')
-
-      const confirmed = window.confirm(confirmMessage)
-
-      if (!confirmed) {
-        return
-      }
+    if (unmatchedOrderNumbers.length > 0 && !managerExceptionConfirmed) {
+      setUnknownOrderNumbersPending(unmatchedOrderNumbers)
+      setManagerContactConfirmed(false)
+      return
     }
+
+    setUnknownOrderNumbersPending([])
+    setManagerContactConfirmed(false)
 
     try {
       const response = await syncDailyEntries(bulkDate, syncRows)
@@ -5272,6 +5299,9 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                           workersById.get(row.workerId)?.fullName ?? 'Unknown worker'
                         const workerNumber =
                           String(workersById.get(row.workerId)?.workerNumber ?? '').trim() || '----'
+                        const hasUnknownOrderNumber =
+                          Boolean(String(row.jobName ?? '').trim())
+                          && !isKnownTimesheetOrderNumber(row.jobName)
 
                         return (
                           <TableRow key={row.id} hover>
@@ -5326,19 +5356,40 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
                                 ))}
                               </TextField>
                             </TableCell>
-                            <TableCell>
-                              <TextField
+                            <TableCell sx={{ minWidth: 220 }}>
+                              <Autocomplete
+                                freeSolo
                                 size="small"
-                                fullWidth
-                                placeholder="Job Number"
+                                options={timesheetOrderNumberOptions}
                                 value={row.jobName}
-                                onChange={(event) =>
+                                inputValue={row.jobName}
+                                autoHighlight
+                                openOnFocus
+                                clearOnBlur={false}
+                                onChange={(_event, value) =>
                                   handleBulkRowChange(
                                     row.id,
                                     'jobName',
-                                    event.target.value,
+                                    String(value ?? ''),
                                   )
                                 }
+                                onInputChange={(_event, value) =>
+                                  handleBulkRowChange(row.id, 'jobName', value)
+                                }
+                                noOptionsText="No matching order number"
+                                renderInput={(params) => (
+                                  <TextField
+                                    {...params}
+                                    fullWidth
+                                    placeholder="Search order number"
+                                    error={hasUnknownOrderNumber}
+                                    helperText={
+                                      hasUnknownOrderNumber
+                                        ? 'Not in the current order list. Manager confirmation is required to save.'
+                                        : 'Start typing to narrow the order list.'
+                                    }
+                                  />
+                                )}
                               />
                             </TableCell>
                             <TableCell align="right" sx={{ minWidth: 140 }}>
@@ -5408,7 +5459,12 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
               </TableContainer>
 
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
-                <Button variant="contained" onClick={handleSaveDailySheet}>
+                <Button
+                  variant="contained"
+                  onClick={() => {
+                    void handleSaveDailySheet(false)
+                  }}
+                >
                   Save Daily Sheet
                 </Button>
               </Stack>
@@ -7113,6 +7169,91 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
           ) : null}
         </Box>
       </Paper>
+
+      <Dialog
+        open={unknownOrderNumbersPending.length > 0}
+        onClose={() => {
+          setUnknownOrderNumbersPending([])
+          setManagerContactConfirmed(false)
+        }}
+        fullWidth
+        maxWidth="sm"
+      >
+        <DialogTitle>
+          <Stack direction="row" spacing={1} alignItems="center">
+            <WarningAmberRoundedIcon color="warning" />
+            <Typography component="span" variant="h6" fontWeight={800}>
+              Order Number Not Found
+            </Typography>
+          </Stack>
+        </DialogTitle>
+        <DialogContent dividers>
+          <Stack spacing={2}>
+            <Alert severity="warning">
+              The following order number{unknownOrderNumbersPending.length === 1 ? ' is' : 's are'} not
+              on the current Orders Track or Shipped Orders page.
+            </Alert>
+
+            <Stack direction="row" spacing={0.8} useFlexGap flexWrap="wrap">
+              {unknownOrderNumbersPending.map((orderNumber) => (
+                <Box
+                  key={orderNumber}
+                  sx={{
+                    px: 1.2,
+                    py: 0.65,
+                    borderRadius: 1,
+                    border: 1,
+                    borderColor: 'warning.main',
+                    bgcolor: 'warning.50',
+                    color: 'warning.dark',
+                    fontWeight: 800,
+                  }}
+                >
+                  {orderNumber}
+                </Box>
+              ))}
+            </Stack>
+
+            <Typography variant="body2">
+              Check the number carefully. If this is a valid exception, you must speak with a manager
+              before saving it. An admin will be notified after it is submitted.
+            </Typography>
+
+            <Stack direction="row" spacing={1} alignItems="flex-start">
+              <Checkbox
+                checked={managerContactConfirmed}
+                onChange={(event) => setManagerContactConfirmed(event.target.checked)}
+                inputProps={{ 'aria-label': 'Confirm manager approval' }}
+              />
+              <Box sx={{ pt: 0.7 }}>
+                <Typography variant="body2" fontWeight={700}>
+                  I confirm that I spoke with a manager about this order number.
+                </Typography>
+              </Box>
+            </Stack>
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={() => {
+              setUnknownOrderNumbersPending([])
+              setManagerContactConfirmed(false)
+            }}
+          >
+            Go Back
+          </Button>
+          <Button
+            variant="contained"
+            color="warning"
+            disabled={!managerContactConfirmed}
+            onClick={() => {
+              void handleSaveDailySheet(true)
+            }}
+          >
+            Confirm and Save
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <Dialog
         open={stagesDialogOpen}

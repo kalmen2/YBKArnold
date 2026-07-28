@@ -11,7 +11,7 @@ import { useDebounceValue } from '../../hooks/useDebounceValue'
 import { QUERY_KEYS } from '../../lib/queryKeys'
 
 export type UseOrdersOverview = ReturnType<typeof useOrdersOverview>
-export type OrdersListTab = 'orders' | 'design' | 'shipped' | 'warranty'
+export type OrdersListTab = 'orders' | 'design' | 'shipped' | 'archive'
 
 function normalizeSearchValue(value: unknown) {
   return String(value ?? '').trim().toLowerCase()
@@ -131,8 +131,12 @@ export function useOrdersOverview() {
 
   const visibleOrders = useMemo(() => {
     const tabFilteredOrders = allOrders.filter((order) => {
-      if (activeTab === 'warranty') {
-        return order.warrantyIssueActive === true
+      if (activeTab === 'archive') {
+        return order.isArchived === true
+      }
+
+      if (order.isArchived === true) {
+        return false
       }
 
       if (activeTab === 'shipped') {
@@ -143,8 +147,7 @@ export function useOrdersOverview() {
         return !order.isShipped && order.inDesign
       }
 
-      return order.warrantyIssueActive === true
-        || (!order.isShipped && !order.inDesign)
+      return !order.isShipped && !order.inDesign
     })
 
     if (!debouncedSearchText) {
@@ -158,12 +161,12 @@ export function useOrdersOverview() {
     let orders = 0
     let design = 0
     let shipped = 0
-    let warranty = 0
+    let archive = 0
 
     allOrders.forEach((order) => {
-      if (order.warrantyIssueActive === true) {
-        warranty += 1
-        orders += 1
+      if (order.isArchived === true) {
+        archive += 1
+        return
       }
 
       if (order.isShipped) {
@@ -176,16 +179,14 @@ export function useOrdersOverview() {
         return
       }
 
-      if (order.warrantyIssueActive !== true) {
-        orders += 1
-      }
+      orders += 1
     })
 
     return {
       orders,
       design,
       shipped,
-      warranty,
+      archive,
     }
   }, [allOrders])
 

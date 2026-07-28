@@ -6,8 +6,9 @@ import ForumRoundedIcon from '@mui/icons-material/ForumRounded'
 import Inventory2RoundedIcon from '@mui/icons-material/Inventory2Rounded'
 import MarkEmailUnreadRoundedIcon from '@mui/icons-material/MarkEmailUnreadRounded'
 import NotificationsActiveRoundedIcon from '@mui/icons-material/NotificationsActiveRounded'
-import PhotoLibraryRoundedIcon from '@mui/icons-material/PhotoLibraryRounded'
 import SettingsRoundedIcon from '@mui/icons-material/SettingsRounded'
+import SmsRoundedIcon from '@mui/icons-material/SmsRounded'
+import SmartToyRoundedIcon from '@mui/icons-material/SmartToyRounded'
 import StoreRoundedIcon from '@mui/icons-material/StoreRounded'
 import ShoppingCartRoundedIcon from '@mui/icons-material/ShoppingCartRounded'
 import PaidRoundedIcon from '@mui/icons-material/PaidRounded'
@@ -22,6 +23,8 @@ export type NavItem = {
   icon: ElementType
   adminOnly?: boolean
   adminSection?: boolean
+  testingSection?: boolean
+  badge?: string
   managerOnly?: boolean
   managerOrAdminOnly?: boolean
 }
@@ -73,29 +76,10 @@ export const navItems: NavItem[] = [
     icon: SupportAgentRoundedIcon,
   },
   {
-    label: 'Pictures',
-    path: '/pictures',
-    icon: PhotoLibraryRoundedIcon,
-  },
-  {
     label: 'Admin Settings',
     path: '/admin/settings',
     icon: AdminPanelSettingsRoundedIcon,
     adminOnly: true,
-  },
-  {
-    label: 'AI Council',
-    path: '/admin/settings?tab=ai-council',
-    icon: ForumRoundedIcon,
-    adminOnly: true,
-    adminSection: true,
-  },
-  {
-    label: 'Admin Email',
-    path: '/admin/email',
-    icon: MarkEmailUnreadRoundedIcon,
-    adminOnly: true,
-    adminSection: true,
   },
   {
     label: 'Reports',
@@ -105,16 +89,54 @@ export const navItems: NavItem[] = [
     adminOnly: true,
   },
   {
+    label: 'AI Council',
+    path: '/admin/ai-council',
+    icon: ForumRoundedIcon,
+    adminOnly: true,
+    adminSection: true,
+    badge: 'Beta',
+  },
+  {
+    label: 'Email Workspace',
+    path: '/admin/email',
+    icon: MarkEmailUnreadRoundedIcon,
+    adminOnly: true,
+    adminSection: true,
+    badge: 'Beta',
+  },
+  {
+    label: 'Email Settings',
+    path: '/admin/settings?tab=email',
+    icon: SettingsRoundedIcon,
+    adminOnly: true,
+    testingSection: true,
+  },
+  {
+    label: 'AI Config',
+    path: '/admin/settings?tab=ai-config',
+    icon: SmartToyRoundedIcon,
+    adminOnly: true,
+    testingSection: true,
+  },
+  {
+    label: 'SMS Bridge',
+    path: '/admin/settings?tab=sms-bridge',
+    icon: SmsRoundedIcon,
+    adminOnly: true,
+    testingSection: true,
+  },
+  {
     label: 'API',
     path: '/admin/api',
     icon: ApiRoundedIcon,
     adminOnly: true,
-    adminSection: true,
+    testingSection: true,
   },
   {
     label: 'Operating Costs',
     path: '/admin/operating-costs',
     icon: PaidRoundedIcon,
     adminOnly: true,
+    testingSection: true,
   },
 ]

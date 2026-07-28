@@ -4,6 +4,7 @@ import {
 } from './RouteGuards'
 import {
   AdminApiPage,
+  AdminAiCouncilPage,
   AdminEmailWorkspacePage,
   AdminSettingsPage,
   AppLayout,
@@ -12,7 +13,6 @@ import {
   DashboardPage,
   OperatingCostsPage,
   OrdersPage,
-  PicturesPage,
   PurchasingPage,
   Public3dViewerPage,
   SalesNotificationsPage,
@@ -92,7 +92,7 @@ export const router = createBrowserRouter([
       },
       {
         path: 'pictures',
-        element: withRouteSuspense(<PicturesPage />),
+        element: <Navigate to="/orders" replace />,
       },
       {
         path: 'sales',
@@ -125,7 +125,7 @@ export const router = createBrowserRouter([
       },
       {
         path: 'admin/alerts',
-        element: <Navigate to="/admin/settings?tab=notifications" replace />,
+        element: <Navigate to="/notifications" replace />,
       },
       {
         path: 'admin/api',
@@ -145,7 +145,7 @@ export const router = createBrowserRouter([
       },
       {
         path: 'admin/issues',
-        element: <Navigate to="/admin/settings?tab=notifications" replace />,
+        element: <Navigate to="/notifications" replace />,
       },
       {
         path: 'admin/logs',
@@ -174,6 +174,14 @@ export const router = createBrowserRouter([
       {
         path: 'admin/ai-config',
         element: <Navigate to="/admin/settings?tab=ai-config" replace />,
+      },
+      {
+        path: 'admin/ai-council',
+        element: withRouteSuspense(
+          <RequireAdminRoute>
+            <AdminAiCouncilPage />
+          </RequireAdminRoute>,
+        ),
       },
       {
         path: 'admin/email',

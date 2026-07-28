@@ -242,6 +242,12 @@ export type OrdersWarrantyManageResponse = {
     warrantyLastCompletedDurationDays: number | null
     warrantyLastCompletedLeadTimeVarianceDays: number | null
   }
+  createdOrder?: {
+    orderNumber: string
+    mondayItemId: string
+    parentOrderNumber: string
+    mondayItemUrl: string
+  }
 }
 
 export type OrdersShippingDocumentType =
@@ -505,6 +511,11 @@ export type OrdersOverviewOrder = {
   warrantyLastCompletedDoneAt: string | null
   warrantyLastCompletedDurationDays: number | null
   warrantyLastCompletedLeadTimeVarianceDays: number | null
+  isWarrantyOrder: boolean
+  warrantyParentOrderNumber: string | null
+  isArchived: boolean
+  archivedAt: string | null
+  archivedByEmail: string | null
   mondayBoardId: string | null
   mondayBoardName: string | null
   mondayUpdatedAt: string | null
@@ -1438,6 +1449,36 @@ export function postOrdersWarrantyMarkDone(input: MarkOrdersWarrantyDoneInput) {
       body: JSON.stringify({
         mondayItemId,
         doneDate: doneDate || undefined,
+      }),
+    },
+  )
+}
+
+type UpdateOrdersArchiveInput = {
+  orderKey?: string | null
+  mondayItemId?: string | null
+  orderNumber?: string | null
+  archived: boolean
+}
+
+export function postOrdersArchiveUpdate(input: UpdateOrdersArchiveInput) {
+  const orderKey = String(input?.orderKey ?? '').trim()
+  const mondayItemId = String(input?.mondayItemId ?? '').trim()
+  const orderNumber = String(input?.orderNumber ?? '').trim()
+
+  if (!orderKey && !mondayItemId && !orderNumber) {
+    throw new Error('An order identifier is required.')
+  }
+
+  return apiRequest<{ ok: boolean; archived: boolean; archivedAt: string | null }>(
+    '/api/orders/archive',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        orderKey: orderKey || undefined,
+        mondayItemId: mondayItemId || undefined,
+        orderNumber: orderNumber || undefined,
+        archived: input.archived,
       }),
     },
   )

@@ -545,7 +545,6 @@ export type CrmDeletionQueueResponse = {
 export type CrmQuoteStatus = 'draft' | 'sent' | 'accepted' | 'rejected' | 'cancelled'
 
 export type CrmOpportunityStage =
-  | 'concept'
   | 'proposal_submission'
   | 'order_placement'
 
@@ -636,6 +635,7 @@ export type CrmQuote = {
   id: string
   dealerSourceId: string
   dealerName: string
+  dealerPictureUrl?: string | null
   convertedItemKeys?: string[]
   chatMessageCount?: number
   dealerState?: string | null
@@ -669,8 +669,6 @@ export type CrmQuote = {
   shippingServices?: CrmQuoteServiceItem[] | null
   title: string
   description: string | null
-  conceptImageUrl?: string | null
-  conceptImageName?: string | null
   documentUrl?: string | null
   documentName?: string | null
   documents?: CrmQuoteDocument[] | null
@@ -769,8 +767,6 @@ export type CrmQuoteUpsertInput = {
   additionalServices?: CrmQuoteServiceItem[] | null
   shippingServices?: CrmQuoteServiceItem[] | null
   description?: string | null
-  conceptImageUrl?: string | null
-  conceptImageName?: string | null
   documentUrl?: string | null
   documentName?: string | null
   documents?: CrmQuoteDocument[] | null
@@ -792,7 +788,6 @@ export type CrmQuoteUpsertInput = {
 export type CrmExcelQuoteSyncInput = {
   quoteNumber: string
   origin?: CrmQuoteOrigin | null
-  allowCreateWhenMissingConcept?: boolean
   title?: string | null
   companyName?: string | null
   salesRep?: string | null

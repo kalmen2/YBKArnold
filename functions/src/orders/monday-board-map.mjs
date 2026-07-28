@@ -169,6 +169,8 @@ export const WEBSITE_OWNED_ORDER_FIELDS = Object.freeze([
   'customer_signed_bol',
   'Customer_Signed_BOL_source',
   'Customer_Signed_BOL',
+  'customer_signed_bol_required',
+  'customer_signed_bol_requirement_grandfathered_at',
   'change_version',
   'change_order_status',
   'change_order_url',
@@ -190,6 +192,11 @@ export const WEBSITE_OWNED_ORDER_FIELDS = Object.freeze([
   'warranty_issue_lead_time_date',
   'warranty_issue_done_at',
   'parent_order_number',
+  'is_warranty_order',
+  'warranty_parent_order_number',
+  'archived_at',
+  'archived_by_uid',
+  'archived_by_email',
 ])
 
 export function resolveBoardMapById(boardId) {

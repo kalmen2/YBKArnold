@@ -19,7 +19,6 @@ const maxConflictGroupsInResponse = 200
 const maxIdsPerConflictGroup = 25
 const quoteStatuses = ['draft', 'sent', 'accepted', 'rejected', 'cancelled']
 const opportunityStages = [
-  'concept',
   'proposal_submission',
   'order_placement',
 ]
@@ -367,7 +366,7 @@ function normalizeStatus(value, allowedStatuses, fallbackStatus) {
     : null
 }
 
-function normalizeOpportunityStage(value, fallbackStage = 'concept') {
+function normalizeOpportunityStage(value, fallbackStage = 'proposal_submission') {
   const normalized = toLowerText(value, 80)
 
   if (normalized === 'revision') {
@@ -404,8 +403,6 @@ const quoteRevisionSnapshotFields = [
   'shippingServices',
   'title',
   'description',
-  'conceptImageUrl',
-  'conceptImageName',
   'origin',
   'sourceWorkbookUrl',
   'sourceWorkbookName',
@@ -586,7 +583,10 @@ function normalizeQuoteOpportunityStageForResponse(quote) {
       revisionState.baseQuoteNumber,
       revisionState.activeRevisionNumber,
     ) || quote.quoteNumber,
-    opportunityStage: normalizeOpportunityStage(quote.opportunityStage, 'concept') || 'concept',
+    opportunityStage: normalizeOpportunityStage(
+      quote.opportunityStage,
+      'proposal_submission',
+    ) || 'proposal_submission',
   }
 }
 
@@ -3100,6 +3100,7 @@ export function registerCrmRoutes(app, deps) {
                 website: 1,
                 emails: 1,
                 pictureUrl: 1,
+                pictureUrlSource: 1,
                 contactCountSource: 1,
                 isArchived: 1,
                 lastImportedAt: 1,
@@ -3148,6 +3149,10 @@ export function registerCrmRoutes(app, deps) {
 
       const dealersWithChatCounts = dealers.map((dealer) => ({
         ...dealer,
+        pictureUrl:
+          toTrimmedText(dealer?.pictureUrl, 1200)
+          || toTrimmedText(dealer?.pictureUrlSource, 1200)
+          || null,
         chatMessageCount: chatCountByDealerSourceId.get(toTrimmedText(dealer.sourceId, 160)) ?? 0,
       }))
 
@@ -3993,7 +3998,7 @@ export function registerCrmRoutes(app, deps) {
       const offset = toNonNegativeInteger(req.query?.offset, 0)
       const limit = Math.min(500, Math.max(1, toNonNegativeInteger(req.query?.limit, 150)))
       const collections = await getCollections()
-      const { crmQuotesCollection } = collections
+      const { crmAccountsCollection, crmQuotesCollection } = collections
       const crmQuoteChatsCollection = await getCrmQuoteChatsCollection(collections)
       const quote = await resolveQuoteOrThrow(crmQuotesCollection, quoteId)
       assertCanAccessQuoteBySalesRep(quote, quoteAccessScope)
@@ -6393,11 +6398,18 @@ export function registerCrmRoutes(app, deps) {
       const quoteIds = quotes
         .map((quote) => toTrimmedText(quote?.id, 160))
         .filter(Boolean)
+      const dealerSourceIds = [...new Set(
+        quotes
+          .map((quote) => toTrimmedText(quote?.dealerSourceId, 160))
+          .filter(Boolean),
+      )]
       const chatMessageCountByQuoteId = new Map()
+      const dealerPictureUrlBySourceId = new Map()
 
-      if (quoteIds.length > 0) {
-        const crmQuoteChatsCollection = await getCrmQuoteChatsCollection(collections)
-        const groupedCounts = await crmQuoteChatsCollection
+      const [groupedCounts, dealerPictures] = await Promise.all([
+        quoteIds.length > 0
+          ? getCrmQuoteChatsCollection(collections).then((crmQuoteChatsCollection) =>
+            crmQuoteChatsCollection
           .aggregate([
             {
               $match: {
@@ -6415,24 +6427,58 @@ export function registerCrmRoutes(app, deps) {
               },
             },
           ])
-          .toArray()
+          .toArray())
+          : [],
+        dealerSourceIds.length > 0
+          ? crmAccountsCollection
+            .find(
+              {
+                sourceId: { $in: dealerSourceIds },
+                recordStatus: { $ne: crmRecordStatusDeleted },
+              },
+              {
+                projection: {
+                  _id: 0,
+                  sourceId: 1,
+                  pictureUrl: 1,
+                  pictureUrlSource: 1,
+                },
+              },
+            )
+            .toArray()
+          : [],
+      ])
 
-        groupedCounts.forEach((entry) => {
-          const quoteId = toTrimmedText(entry?._id, 160)
+      groupedCounts.forEach((entry) => {
+        const quoteId = toTrimmedText(entry?._id, 160)
 
-          if (!quoteId) {
-            return
-          }
+        if (!quoteId) {
+          return
+        }
 
-          chatMessageCountByQuoteId.set(quoteId, Number(entry?.total ?? 0))
-        })
-      }
+        chatMessageCountByQuoteId.set(quoteId, Number(entry?.total ?? 0))
+      })
+
+      dealerPictures.forEach((dealer) => {
+        const sourceId = toTrimmedText(dealer?.sourceId, 160)
+        const pictureUrl =
+          toTrimmedText(dealer?.pictureUrl, 1200)
+          || toTrimmedText(dealer?.pictureUrlSource, 1200)
+
+        if (sourceId && pictureUrl) {
+          dealerPictureUrlBySourceId.set(sourceId, pictureUrl)
+        }
+      })
 
       const quotesWithChatCounts = quotes.map((quote) => {
         const quoteId = toTrimmedText(quote?.id, 160)
+        const quoteDealerSourceId = toTrimmedText(quote?.dealerSourceId, 160)
 
         return normalizeQuoteOpportunityStageForResponse({
           ...quote,
+          dealerPictureUrl: quoteDealerSourceId
+            ? dealerPictureUrlBySourceId.get(quoteDealerSourceId) ?? null
+            : null,
           chatMessageCount: quoteId
             ? Number(chatMessageCountByQuoteId.get(quoteId) ?? 0)
             : 0,
@@ -6622,7 +6668,7 @@ export function registerCrmRoutes(app, deps) {
         || (quoteNumber ? `Opportunity ${quoteNumber}` : 'Untitled opportunity')
 
       const status = normalizeStatus(body.status, quoteStatuses, 'draft')
-      const opportunityStage = normalizeOpportunityStage(body.opportunityStage, 'concept')
+      const opportunityStage = normalizeOpportunityStage(body.opportunityStage, 'proposal_submission')
 
       if (!status) {
         return res.status(400).json({
@@ -6779,8 +6825,6 @@ export function registerCrmRoutes(app, deps) {
         shippingServices: normalizeQuoteServiceItems(body.shippingServices),
         title,
         description: toTrimmedText(body.description, 2000) || null,
-        conceptImageUrl: toTrimmedText(body.conceptImageUrl, 2000) || null,
-        conceptImageName: toTrimmedText(body.conceptImageName, 240) || null,
         documentUrl: primaryDocument?.url || explicitDocumentUrl || null,
         documentName: primaryDocument?.name || explicitDocumentName || null,
         documents: normalizedDocuments,
@@ -6931,7 +6975,11 @@ export function registerCrmRoutes(app, deps) {
       }
 
       if (Object.prototype.hasOwnProperty.call(body, 'opportunityStage')) {
-        const currentStage = normalizeOpportunityStage(existingQuote.opportunityStage, 'concept') || 'concept'
+        const currentStage =
+          normalizeOpportunityStage(
+            existingQuote.opportunityStage,
+            'proposal_submission',
+          ) || 'proposal_submission'
         const nextStage = normalizeOpportunityStage(body.opportunityStage, currentStage)
 
         if (!nextStage) {
@@ -7064,14 +7112,6 @@ export function registerCrmRoutes(app, deps) {
 
       if (Object.prototype.hasOwnProperty.call(body, 'opportunityDate')) {
         updates.opportunityDate = toIsoDateOrNull(body.opportunityDate)
-      }
-
-      if (Object.prototype.hasOwnProperty.call(body, 'conceptImageUrl')) {
-        updates.conceptImageUrl = toTrimmedText(body.conceptImageUrl, 2000) || null
-      }
-
-      if (Object.prototype.hasOwnProperty.call(body, 'conceptImageName')) {
-        updates.conceptImageName = toTrimmedText(body.conceptImageName, 240) || null
       }
 
       if (Object.prototype.hasOwnProperty.call(body, 'currency')) {
@@ -8794,7 +8834,10 @@ export function registerCrmRoutes(app, deps) {
         found: true,
         id: quote.id,
         quoteNumber: quote.quoteNumber || null,
-        opportunityStage: normalizeOpportunityStage(quote.opportunityStage, 'concept') || 'concept',
+        opportunityStage: normalizeOpportunityStage(
+          quote.opportunityStage,
+          'proposal_submission',
+        ) || 'proposal_submission',
         status: quote.status || null,
         dealerName: quote.dealerName || null,
         title: quote.title || null,
@@ -8906,9 +8949,6 @@ export function registerCrmRoutes(app, deps) {
     )
 
     if (!existingQuote) {
-      const allowCreateWhenMissingConcept = toBoolean(body.allowCreateWhenMissingConcept)
-
-      if (allowCreateWhenMissingConcept) {
         const now = nowIso()
         const subtotal = toNonNegativeNumberOrNull(body.subtotal)
         const freight = toNonNegativeNumberOrNull(body.freight)
@@ -8944,8 +8984,6 @@ export function registerCrmRoutes(app, deps) {
           lineItems: normalizeQuoteLineItems(body.lineItems),
           title: toTrimmedText(body.title, 240) || `Opportunity ${quoteNumber}`,
           description: null,
-          conceptImageUrl: null,
-          conceptImageName: null,
           documentUrl: null,
           documentName: null,
           documents: [],
@@ -8998,18 +9036,9 @@ export function registerCrmRoutes(app, deps) {
             toStage: 'proposal_submission',
             quoteNumber,
             quote: normalizeQuoteOpportunityStageForResponse(nextQuote),
-            message: 'Quote was not found in Concept and was created directly from the uploaded file.',
+            message: 'A new opportunity was created directly from the uploaded file.',
           },
         }
-      }
-
-      return {
-        status: 404,
-        body: {
-          found: false,
-          error: `Quote number ${quoteNumber} was not found in Concept. Please add it first, then sync again.`,
-        },
-      }
     }
 
     if (!canAccessQuoteBySalesRep(existingQuote, quoteAccessScope)) {
@@ -9021,7 +9050,11 @@ export function registerCrmRoutes(app, deps) {
       }
     }
 
-    const fromStage = normalizeOpportunityStage(existingQuote.opportunityStage, 'concept') || 'concept'
+    const fromStage =
+      normalizeOpportunityStage(
+        existingQuote.opportunityStage,
+        'proposal_submission',
+      ) || 'proposal_submission'
     const now = nowIso()
     const updates = {}
 
@@ -9131,13 +9164,7 @@ export function registerCrmRoutes(app, deps) {
 
     let toStage = fromStage
 
-    if (fromStage === 'concept') {
-      toStage = 'proposal_submission'
-      updates.opportunityStage = 'proposal_submission'
-      updates.status = 'sent'
-      updates.sentAt = now
-      updates.lastStatusChangedAt = now
-    } else if (fromStage === 'proposal_submission') {
+    if (fromStage === 'proposal_submission') {
       toStage = 'proposal_submission'
     } else {
       return {

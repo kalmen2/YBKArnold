@@ -18,6 +18,7 @@ import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
 import { apiFetch } from '../features/api-client'
 import {
+  postOrdersArchiveUpdate,
   postOrdersCreate,
   postOrdersDelete,
   postOrdersDeleteRequest,
@@ -130,6 +131,7 @@ export default function OrdersPage() {
   const [isCreatingManualOrder, setIsCreatingManualOrder] = useState(false)
   const [deletingOrderKey, setDeletingOrderKey] = useState<string | null>(null)
   const [deletingOrderLabel, setDeletingOrderLabel] = useState<string | null>(null)
+  const [archivingOrderKey, setArchivingOrderKey] = useState<string | null>(null)
   const [linkOrderTarget, setLinkOrderTarget] = useState<OrdersOverviewOrder | null>(null)
   const [selectedParentOrder, setSelectedParentOrder] = useState<OrdersOverviewOrder | null>(null)
   const [isLinkingOrder, setIsLinkingOrder] = useState(false)
@@ -262,7 +264,15 @@ export default function OrdersPage() {
     }
 
     openedDeepLinkRef.current = requestedOrderId
-    setActiveTab(targetOrder.isShipped ? 'shipped' : targetOrder.inDesign ? 'design' : 'orders')
+    setActiveTab(
+      targetOrder.isArchived
+        ? 'archive'
+        : targetOrder.isShipped
+          ? 'shipped'
+          : targetOrder.inDesign
+            ? 'design'
+            : 'orders',
+    )
     setJobDialogMode('details')
     setJobDialogInitialTab('info')
     setSelectedOrder(targetOrder)
@@ -528,6 +538,53 @@ export default function OrdersPage() {
       setDeletingOrderLabel(null)
     }
   }, [deletingOrderKey, queryClient])
+
+  const handleArchiveOrder = useCallback(async (
+    order: OrdersOverviewOrder,
+    archived: boolean,
+  ) => {
+    const operationKey = String(order.id || order.mondayItemId || order.orderNumber).trim()
+
+    if (!operationKey || archivingOrderKey) {
+      return
+    }
+
+    const orderLabel = String(order.orderNumber || order.orderName || 'this order').trim()
+    const actionLabel = archived ? 'Archive' : 'Unarchive'
+    const shouldContinue = window.confirm(
+      `${actionLabel} order ${orderLabel}? This only changes the website and will not change Monday.`,
+    )
+
+    if (!shouldContinue) {
+      return
+    }
+
+    setArchivingOrderKey(operationKey)
+    setErrorMessage(null)
+
+    try {
+      await postOrdersArchiveUpdate({
+        orderKey: order.id,
+        mondayItemId: order.mondayItemId,
+        orderNumber: order.orderNumber,
+        archived,
+      })
+      await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.ordersOverview })
+      setSuccessMessage(
+        archived
+          ? `Order ${orderLabel} was archived.`
+          : `Order ${orderLabel} was returned to its normal order tab.`,
+      )
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error
+          ? error.message
+          : `Could not ${archived ? 'archive' : 'unarchive'} the order.`,
+      )
+    } finally {
+      setArchivingOrderKey(null)
+    }
+  }, [archivingOrderKey, queryClient])
 
   const linkOrderCandidates = useMemo(() => {
     if (!linkOrderTarget) {
@@ -821,6 +878,7 @@ export default function OrdersPage() {
         onOpenOrderChat={handleOpenOrderChat}
         canDeleteOrders
         onDeleteOrder={handleDeleteOrder}
+        onArchiveOrder={handleArchiveOrder}
         onLinkOrder={handleOpenLinkOrder}
         onMissingMondayLink={handleMissingMondayLink}
       />

@@ -30,7 +30,7 @@ type OrdersToolbarProps = {
     orders: number
     design: number
     shipped: number
-    warranty: number
+    archive: number
   }
   viewMode: OrdersViewMode
   onViewModeChange: (next: OrdersViewMode) => void
@@ -98,7 +98,7 @@ export function OrdersToolbar({
           <Tab value="orders" label={`Orders (${tabCounts.orders})`} />
           <Tab value="design" label={`Design (${tabCounts.design})`} />
           <Tab value="shipped" label={`Shipped (${tabCounts.shipped})`} />
-          <Tab value="warranty" label={`Warranty (${tabCounts.warranty})`} />
+          <Tab value="archive" label={`Archive (${tabCounts.archive})`} />
         </Tabs>
 
         <Stack

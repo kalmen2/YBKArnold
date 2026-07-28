@@ -273,7 +273,6 @@ type OpportunityCardProps = {
   stage: CrmOpportunityStage
   canManage: boolean
   isBusy: boolean
-  onAdvanceStage: (quote: CrmQuote) => void
   onMarkApproved: (quote: CrmQuote) => void
   onMarkFollowedUp: (quote: CrmQuote) => void
   onDeclineQuote: (quote: CrmQuote) => void
@@ -289,7 +288,6 @@ type StageColumnProps = {
   dealersBySourceId: Map<string, CrmDealer>
   canManage: boolean
   busyQuoteId: string | null
-  onAdvanceStage: (quote: CrmQuote) => void
   onMarkApproved: (quote: CrmQuote) => void
   onMarkFollowedUp: (quote: CrmQuote) => void
   onDeclineQuote: (quote: CrmQuote) => void
@@ -406,16 +404,8 @@ type LineItemsEditorProps = {
 
 const stageDefinitions: StageDefinition[] = [
   {
-    id: 'concept',
-    label: '1. Concept',
-    probability: 10,
-    description: 'Send concept/picture and align on direction.',
-    headerColor: '#0b5f93',
-    panelColor: '#eef5fb',
-  },
-  {
     id: 'proposal_submission',
-    label: '2. Proposal Submitted',
+    label: 'Opportunities',
     probability: 20,
     description: 'Final quote has been sent to customer.',
     headerColor: '#0a6c99',
@@ -1284,82 +1274,6 @@ function resolveQuotePricing(
       ? computedTotal
       : Number(fallbackTotal || 0),
   }
-}
-
-function isGeneratedOpportunityTitle(title: string, quoteNumber: string) {
-  const normalizedTitle = normalizeMatchValue(title)
-  const generatedTitle = normalizeMatchValue(`${DEFAULT_OPPORTUNITY_TITLE_PREFIX}${quoteNumber}`)
-
-  return Boolean(generatedTitle) && normalizedTitle === generatedTitle
-}
-
-function getMissingSendProposalFields(quote: CrmQuote) {
-  const missing: string[] = []
-  const quoteNumber = String(quote.quoteNumber || '').trim()
-  const title = String(quote.title || '').trim()
-
-  if (!quoteNumber) {
-    missing.push('Quote Number')
-  }
-
-  if (!title || isGeneratedOpportunityTitle(title, quoteNumber)) {
-    missing.push('Project Name')
-  }
-
-  if (!String(quote.opportunityDate || '').trim()) {
-    missing.push('Quote Date')
-  }
-
-  if (!String(quote.companyName || '').trim()) {
-    missing.push('Company Name')
-  }
-
-  if (!String(quote.contactName || '').trim()) {
-    missing.push('Contact Name')
-  }
-
-  if (!String(quote.contactEmail || '').trim()) {
-    missing.push('Contact Email')
-  }
-
-  if (!String(quote.contactPhone || '').trim()) {
-    missing.push('Contact Phone')
-  }
-
-  if (!String(quote.salesRep || '').trim()) {
-    missing.push('Sales Rep')
-  }
-
-  if (!String(quote.leadTime || '').trim()) {
-    missing.push('Lead Time')
-  }
-
-  if (!String(quote.paymentTerms || '').trim()) {
-    missing.push('Payment Terms')
-  }
-
-  const lineItems = Array.isArray(quote.lineItems) ? quote.lineItems : []
-
-  if (lineItems.length === 0) {
-    missing.push('Line Items')
-  } else {
-    const hasIncompleteLineItems = lineItems.some((lineItem) => {
-      const itemNumber = Number(lineItem.itemNumber)
-      const hasItemNumber = Number.isFinite(itemNumber) && itemNumber > 0
-      const hasDescription = Boolean(String(lineItem.description || '').trim())
-      const hasQty = lineItem.qty !== null && Number.isFinite(Number(lineItem.qty))
-      const hasUnitPrice = lineItem.unitPrice !== null && Number.isFinite(Number(lineItem.unitPrice))
-      const hasExtPrice = lineItem.extPrice !== null && Number.isFinite(Number(lineItem.extPrice))
-
-      return !hasItemNumber || !hasDescription || !hasQty || !hasUnitPrice || !hasExtPrice
-    })
-
-    if (hasIncompleteLineItems) {
-      missing.push('Complete Line Items')
-    }
-  }
-
-  return missing
 }
 
 function createEmptyOpportunityForm(): OpportunityFormState {
@@ -2550,7 +2464,7 @@ function resolveOpportunityStage(quote: CrmQuote): CrmOpportunityStage {
     return 'proposal_submission'
   }
 
-  return 'concept'
+  return 'proposal_submission'
 }
 
 function createEmptyStageColumnFilters(): StageColumnFilters {
@@ -2949,7 +2863,6 @@ function OpportunityCard({
   stage,
   canManage,
   isBusy,
-  onAdvanceStage,
   onMarkApproved,
   onMarkFollowedUp,
   onDeclineQuote,
@@ -3013,6 +2926,7 @@ function OpportunityCard({
             src={dealerPictureUrl || undefined}
             alt={dealerName}
             variant="rounded"
+            imgProps={{ loading: 'lazy', referrerPolicy: 'no-referrer' }}
             sx={{
               width: 52,
               height: 52,
@@ -3118,25 +3032,6 @@ function OpportunityCard({
           </Stack>
         </Stack>
 
-        {canManage ? (
-          <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap onClick={preventCardClick}>
-            {stage === 'concept' ? (
-              <Button
-                size="small"
-                variant="contained"
-                disabled={isBusy}
-                onClick={() => {
-                  onAdvanceStage(quote)
-                }}
-                endIcon={<ArrowForwardRoundedIcon sx={{ fontSize: 12 }} />}
-                sx={{ minHeight: 24, px: 0.8, fontSize: 11, textTransform: 'none' }}
-              >
-                Send Proposal
-              </Button>
-            ) : null}
-          </Stack>
-        ) : null}
-
         <Stack direction="row" justifyContent="space-between" alignItems="center" onClick={preventCardClick}>
           <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.1 }}>
             Quote Date: {quoteDateLabel}
@@ -3207,7 +3102,6 @@ function StageColumn({
   dealersBySourceId,
   canManage,
   busyQuoteId,
-  onAdvanceStage,
   onMarkApproved,
   onMarkFollowedUp,
   onDeclineQuote,
@@ -3617,14 +3511,18 @@ function StageColumn({
             }}
           >
             <Typography variant="caption" color="text.secondary">
-              No opportunities in this stage.
+              No opportunities found.
             </Typography>
           </Paper>
         ) : (
           visibleRows.map((quote) => {
             const dealer = dealersBySourceId.get(quote.dealerSourceId)
             const dealerName = dealer?.name || quote.dealerName || quote.dealerSourceId
-            const dealerPictureUrl = String(dealer?.pictureUrl ?? '').trim() || null
+            const dealerPictureUrl = String(
+              dealer?.pictureUrl
+              ?? quote.dealerPictureUrl
+              ?? '',
+            ).trim() || null
             const ageDays = resolveQuoteAgeDays(quote)
 
             return (
@@ -3638,7 +3536,6 @@ function StageColumn({
                 stage={stage.id}
                 canManage={canManage}
                 isBusy={busyQuoteId === quote.id}
-                onAdvanceStage={onAdvanceStage}
                 onMarkApproved={onMarkApproved}
                 onMarkFollowedUp={onMarkFollowedUp}
                 onDeclineQuote={onDeclineQuote}
@@ -3865,8 +3762,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   const [isSyncingExcelQuote, setIsSyncingExcelQuote] = useState(false)
   const [isExcelAccountDialogOpen, setIsExcelAccountDialogOpen] = useState(false)
   const [isExcelSyncDialogOpen, setIsExcelSyncDialogOpen] = useState(false)
-  const [isExcelMissingConceptDialogOpen, setIsExcelMissingConceptDialogOpen] = useState(false)
-  const [excelSyncAllowCreateWhenMissingConcept, setExcelSyncAllowCreateWhenMissingConcept] = useState(false)
   const [excelSyncDraft, setExcelSyncDraft] = useState<CrmExcelQuoteSyncInput | null>(null)
   const [excelSyncLookupResult, setExcelSyncLookupResult] = useState<CrmExcelQuoteLookupResponse | null>(null)
   const [excelSyncSourceFileName, setExcelSyncSourceFileName] = useState('')
@@ -3921,7 +3816,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   const [selectedOpportunityRefreshOnSend, setSelectedOpportunityRefreshOnSend] = useState(false)
   const [isSendingSelectedOpportunityChat, setIsSendingSelectedOpportunityChat] = useState(false)
   const [deletingSelectedOpportunityChatMessageId, setDeletingSelectedOpportunityChatMessageId] = useState('')
-  const [pendingExcelSyncPromotionQuoteId, setPendingExcelSyncPromotionQuoteId] = useState<string | null>(null)
   const [detailsActionMenuAnchorEl, setDetailsActionMenuAnchorEl] = useState<HTMLElement | null>(null)
   const [saveActionMenuAnchorEl, setSaveActionMenuAnchorEl] = useState<HTMLElement | null>(null)
   const savePreferenceStorageKey = `arnold:quote-save-action:${appUser?.uid || 'current-user'}`
@@ -3932,7 +3826,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
   const [globalSearch, setGlobalSearch] = useState('')
-  const [activePipelineStage, setActivePipelineStage] = useState<CrmOpportunityStage>('proposal_submission')
+  const activePipelineStage: CrmOpportunityStage = 'proposal_submission'
   const pipelineUploadExcelInputRef = useRef<HTMLInputElement | null>(null)
   const folderScanInputRef = useRef<HTMLInputElement | null>(null)
   const selectedOpportunityId = selectedOpportunity?.id ?? ''
@@ -4198,7 +4092,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
 
   const stageBuckets = useMemo(() => {
     const base: Record<CrmOpportunityStage, CrmQuote[]> = {
-      concept: [],
       proposal_submission: [],
       order_placement: [],
     }
@@ -4214,15 +4107,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
 
     return base
   }, [filteredActiveQuotes])
-
-  const stageSummaries = useMemo(() => new Map(
-    stageDefinitions.map((stage) => {
-      const stageRows = stageBuckets[stage.id]
-      return [stage.id, {
-        count: stageRows.length,
-      }]
-    }),
-  ), [stageBuckets])
 
   const activePipelineStageDefinition = stageById.get(activePipelineStage) || stageDefinitions[0]
 
@@ -4639,12 +4523,10 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   }, [queryClient])
 
   const resetExcelSyncDialog = useCallback(() => {
-    setIsExcelMissingConceptDialogOpen(false)
     setIsExcelAccountDialogOpen(false)
     setIsExcelSyncDialogOpen(false)
     setExcelSyncLaunchMode('excel_file')
     setPendingFolderScanFiles(null)
-    setExcelSyncAllowCreateWhenMissingConcept(false)
     setExcelSyncDraft(null)
     setExcelSyncLookupResult(null)
     setExcelSyncSourceFileName('')
@@ -4750,7 +4632,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     }
 
     const lookupResult = await fetchCrmExcelQuoteLookup(quoteNumberFromExcel)
-    const isMissingFromConcept = !lookupResult.found
     const salesRepFromExcel = String(excelPayload.salesRep ?? '').trim()
     const defaultSalesRep = resolveMatchingOption(salesRepFromExcel, excelSyncSalesRepOptions)
     const accountNameFromExcel = String(excelPayload.companyName ?? '').trim()
@@ -4789,13 +4670,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
 
     setExcelSyncDialogError(null)
 
-    if (isMissingFromConcept) {
-      setExcelSyncAllowCreateWhenMissingConcept(true)
-      setIsExcelMissingConceptDialogOpen(true)
-      return
-    }
-
-    setExcelSyncAllowCreateWhenMissingConcept(false)
     setIsExcelAccountDialogOpen(true)
   }, [dealers, excelSyncSalesRepOptions])
 
@@ -5042,7 +4916,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
 
       const syncInput: CrmExcelQuoteSyncInput = {
         ...excelSyncDraft,
-        allowCreateWhenMissingConcept: excelSyncAllowCreateWhenMissingConcept,
         quoteNumber,
         salesRep: selectedSalesRep,
         dealerState: dealerStateCode,
@@ -5100,69 +4973,56 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
           dealerSourceId: resolvedDealerSourceId,
           companyName: resolvedCompanyName,
         })
-        const targetStage = resolveOpportunityStage(targetQuote)
-
         setSelectedOpportunity(targetQuote)
         setOpportunityDetailsInitialSnapshot(serializeOpportunityDetailsFormState(baseFormState))
         setOpportunityDetailsFormState(stagedFormState)
-        setPendingExcelSyncPromotionQuoteId(targetStage === 'concept' ? targetQuote.id : null)
         resetExcelSyncDialog()
-        setSuccessMessage(
-          targetStage === 'concept'
-            ? `Excel data loaded for ${quoteNumber}. Review and click Save to move it to Proposal Submitted.`
-            : `Excel data loaded for ${quoteNumber}. Review and click Save to apply.`,
-        )
+        setSuccessMessage(`Excel data loaded for ${quoteNumber}. Review and click Save to apply.`)
         return
       }
 
-      if (excelSyncAllowCreateWhenMissingConcept) {
-        const baseFormState = createEmptyOpportunityForm()
-        const stagedLineItems = Array.isArray(syncInput.lineItems) && syncInput.lineItems.length > 0
-          ? mapQuoteLineItemsToFormState(syncInput.lineItems)
-          : baseFormState.lineItems
+      const baseFormState = createEmptyOpportunityForm()
+      const stagedLineItems = Array.isArray(syncInput.lineItems) && syncInput.lineItems.length > 0
+        ? mapQuoteLineItemsToFormState(syncInput.lineItems)
+        : baseFormState.lineItems
 
-        setFormState({
-          ...baseFormState,
-          dealerSourceId: resolvedDealerSourceId,
-          quoteNumber,
-          title: String(syncInput.title ?? '').trim(),
-          opportunityDateInput: syncInput.opportunityDate
-            ? resolveDateInputFromIso(syncInput.opportunityDate)
-            : baseFormState.opportunityDateInput,
-          companyName: resolvedCompanyName || String(syncInput.companyName ?? '').trim(),
-          contactName: String(syncInput.contactName ?? '').trim(),
-          contactEmail: String(syncInput.contactEmail ?? '').trim(),
-          contactPhone: String(syncInput.contactPhone ?? '').trim(),
-          salesRep: selectedSalesRep,
-          leadTime: String(syncInput.leadTime ?? '').trim(),
-          paymentTerms: String(syncInput.paymentTerms ?? '').trim(),
-          subtotal: syncInput.subtotal === null || syncInput.subtotal === undefined
-            ? ''
-            : String(syncInput.subtotal),
-          freight: syncInput.freight === null || syncInput.freight === undefined
-            ? ''
-            : String(syncInput.freight),
-          freightDescription: String(syncInput.freightDescription ?? '').trim(),
-          lineItems: stagedLineItems,
-          quoteDocumentUrl: '',
-          quoteDocumentName: '',
-          origin: syncInput.origin === 'excel' ? 'excel' : 'website',
-          sourceWorkbookUrl: String(syncInput.sourceWorkbookUrl || ''),
-          sourceWorkbookName: String(syncInput.sourceWorkbookName || ''),
-          convertedPdfUrl: String(syncInput.convertedPdfUrl || ''),
-          convertedPdfName: String(syncInput.convertedPdfName || ''),
-        })
-        setPendingExcelSyncPromotionQuoteId(null)
-        setIsAddDialogDraftFromExcelSync(true)
-        setAddDialogInitialSnapshot(serializeOpportunityFormState(baseFormState))
-        setShowAddDetails(true)
-        setIsDialogOpen(true)
-        resetExcelSyncDialog()
-        setSuccessMessage(`Excel data loaded for ${quoteNumber}. Review and click Create In Proposal Submitted to save.`)
-        return
-      }
-
-      setErrorMessage('Could not find a matching concept opportunity for this quote. Use Continue for missing concept to stage a new opportunity draft.')
+      setFormState({
+        ...baseFormState,
+        dealerSourceId: resolvedDealerSourceId,
+        quoteNumber,
+        title: String(syncInput.title ?? '').trim(),
+        opportunityDateInput: syncInput.opportunityDate
+          ? resolveDateInputFromIso(syncInput.opportunityDate)
+          : baseFormState.opportunityDateInput,
+        companyName: resolvedCompanyName || String(syncInput.companyName ?? '').trim(),
+        contactName: String(syncInput.contactName ?? '').trim(),
+        contactEmail: String(syncInput.contactEmail ?? '').trim(),
+        contactPhone: String(syncInput.contactPhone ?? '').trim(),
+        salesRep: selectedSalesRep,
+        leadTime: String(syncInput.leadTime ?? '').trim(),
+        paymentTerms: String(syncInput.paymentTerms ?? '').trim(),
+        subtotal: syncInput.subtotal === null || syncInput.subtotal === undefined
+          ? ''
+          : String(syncInput.subtotal),
+        freight: syncInput.freight === null || syncInput.freight === undefined
+          ? ''
+          : String(syncInput.freight),
+        freightDescription: String(syncInput.freightDescription ?? '').trim(),
+        lineItems: stagedLineItems,
+        quoteDocumentUrl: '',
+        quoteDocumentName: '',
+        origin: syncInput.origin === 'excel' ? 'excel' : 'website',
+        sourceWorkbookUrl: String(syncInput.sourceWorkbookUrl || ''),
+        sourceWorkbookName: String(syncInput.sourceWorkbookName || ''),
+        convertedPdfUrl: String(syncInput.convertedPdfUrl || ''),
+        convertedPdfName: String(syncInput.convertedPdfName || ''),
+      })
+      setIsAddDialogDraftFromExcelSync(true)
+      setAddDialogInitialSnapshot(serializeOpportunityFormState(baseFormState))
+      setShowAddDetails(true)
+      setIsDialogOpen(true)
+      resetExcelSyncDialog()
+      setSuccessMessage(`Excel data loaded for ${quoteNumber}. Review and create the opportunity.`)
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Failed to sync quote file.')
     } finally {
@@ -5175,7 +5035,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     excelSyncDraft,
     excelSyncSourceFile,
     excelSyncLookupResult,
-    excelSyncAllowCreateWhenMissingConcept,
     excelSyncAccountMode,
     excelSyncProjectTypeInput,
     excelSyncQuoteNumberInput,
@@ -5804,7 +5663,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     setSelectedAddContactSourceId('')
     setAddDialogInitialSnapshot(serializeOpportunityFormState(emptyFormState))
     setIsAddDialogDraftFromExcelSync(false)
-    setPendingExcelSyncPromotionQuoteId(null)
     setShowAddDetails(true)
     setIsDialogOpen(true)
   }, [])
@@ -5891,7 +5749,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     setOpportunityDetailsInitialSnapshot(serializeOpportunityDetailsFormState(nextFormState))
     setFolderScanQueue([])
     setIsUploadingFolderSelection(false)
-    setPendingExcelSyncPromotionQuoteId(null)
   }, [])
 
   const handleOpenOpportunityDetails = useCallback(async (summary: CrmQuote, initialTab: OpportunityDetailsTab = 'details') => {
@@ -5991,7 +5848,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     setSelectedOpportunityRefreshOnSend(false)
     setFolderScanQueue([])
     setIsUploadingFolderSelection(false)
-    setPendingExcelSyncPromotionQuoteId(null)
   }, [
     isSendingSelectedOpportunityChat,
     isOpportunityDetailsDirty,
@@ -6339,8 +6195,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     const lineItems = pricing.normalizedLineItems
     const totalAmount = pricing.totalAmount
 
-    // Manual concepts require an account link and quote number. The remaining
-    // details can still be filled in later from the Excel quote sync.
     if (!dealerSourceId) {
       setErrorMessage('Dealer account is required.')
       return
@@ -6366,7 +6220,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     }
 
     const title = formState.title.trim() || `${DEFAULT_OPPORTUNITY_TITLE_PREFIX}${quoteNumber}`
-    const targetStage: CrmOpportunityStage = isAddDialogDraftFromExcelSync ? 'proposal_submission' : 'concept'
+    const targetStage: CrmOpportunityStage = 'proposal_submission'
     const targetStatus = isAddDialogDraftFromExcelSync ? 'sent' : 'draft'
     const sentAt = isAddDialogDraftFromExcelSync ? new Date().toISOString() : null
 
@@ -6422,16 +6276,11 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
 
       const emptyFormState = createEmptyOpportunityForm()
 
-      setSuccessMessage(
-        isAddDialogDraftFromExcelSync
-          ? 'Opportunity created in Proposal Submitted stage.'
-          : 'Opportunity created in Concept stage.',
-      )
+      setSuccessMessage('Opportunity created.')
       setFormState(emptyFormState)
       setSelectedAddContactSourceId('')
       setAddDialogInitialSnapshot(serializeOpportunityFormState(emptyFormState))
       setIsAddDialogDraftFromExcelSync(false)
-      setPendingExcelSyncPromotionQuoteId(null)
       setShowAddDetails(false)
       setIsDialogOpen(false)
     } catch (error) {
@@ -6469,56 +6318,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     isAddDialogDraftFromExcelSync,
     quotes,
   ])
-
-  const updateStage = useCallback(async (quote: CrmQuote, nextStage: CrmOpportunityStage, patch: Partial<CrmQuote> = {}) => {
-    setErrorMessage(null)
-    setSuccessMessage(null)
-    setBusyQuoteId(quote.id)
-
-    try {
-      await updateCrmQuote(quote.id, {
-        opportunityStage: nextStage,
-        ...patch,
-      })
-
-      await invalidateOpportunityData()
-      setSuccessMessage(`Moved to ${stageById.get(nextStage)?.label || nextStage}.`)
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Failed to move opportunity stage.')
-    } finally {
-      setBusyQuoteId(null)
-    }
-  }, [invalidateOpportunityData])
-
-  const handleAdvanceStage = useCallback(async (quoteSummary: CrmQuote) => {
-    setBusyQuoteId(quoteSummary.id)
-    let quote: CrmQuote
-    try {
-      quote = await loadOpportunityDetails(quoteSummary)
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Failed to load opportunity details.')
-      setBusyQuoteId(null)
-      return
-    }
-    const stage = resolveOpportunityStage(quote)
-
-    if (stage === 'concept') {
-      const missingFields = getMissingSendProposalFields(quote)
-
-      if (missingFields.length > 0) {
-        setErrorMessage(`Cannot send proposal. Missing required details: ${missingFields.join(', ')}. Open details and complete them first.`)
-        setBusyQuoteId(null)
-        return
-      }
-
-      await updateStage(quote, 'proposal_submission', {
-        status: 'sent',
-        sentAt: new Date().toISOString(),
-      })
-      return
-    }
-    setBusyQuoteId(null)
-  }, [loadOpportunityDetails, updateStage])
 
   const handleCloseConvertOrderDialog = useCallback(() => {
     if (isSubmittingConvertOrder) {
@@ -6622,7 +6421,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     setOpportunityDetailsInitialSnapshot('')
     setSelectedOpportunityDetailsTab('details')
     setSelectedOpportunityNestedFolderPath(null)
-    setPendingExcelSyncPromotionQuoteId(null)
     setIsSubmittingConvertOrder(false)
     setBusyQuoteId(null)
 
@@ -6914,26 +6712,9 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
 
       let savedQuote: CrmQuote | null = null
       if (mode === 'save' || mode === 'save_close') {
-        const selectedOpportunityStage = resolveOpportunityStage(selectedOpportunity)
-        const shouldPromoteFromExcelSync = (
-          pendingExcelSyncPromotionQuoteId === selectedOpportunity.id
-          && selectedOpportunityStage === 'concept'
-        )
-
-        if (shouldPromoteFromExcelSync) {
-          const response = await updateCrmQuote(selectedOpportunity.id, {
-            ...detailsPayload,
-            opportunityStage: 'proposal_submission',
-            status: 'sent',
-            sentAt: new Date().toISOString(),
-          })
-          savedQuote = response.quote
-          setSuccessMessage('Opportunity updated and moved to Proposal Submitted.')
-        } else {
-          const response = await updateCrmQuote(selectedOpportunity.id, detailsPayload)
-          savedQuote = response.quote
-          setSuccessMessage('Opportunity updated.')
-        }
+        const response = await updateCrmQuote(selectedOpportunity.id, detailsPayload)
+        savedQuote = response.quote
+        setSuccessMessage('Opportunity updated.')
       } else if (mode === 'decline') {
         await updateCrmQuote(selectedOpportunity.id, {
           ...detailsPayload,
@@ -6945,7 +6726,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
 
       await invalidateOpportunityData()
       setDetailsActionMenuAnchorEl(null)
-      setPendingExcelSyncPromotionQuoteId(null)
       if (mode === 'save') {
         if (savedQuote) {
           const savedRevisionQuote = resolveQuoteRevision(savedQuote, targetRevisionNumber)
@@ -6972,7 +6752,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   }, [
     invalidateOpportunityData,
     opportunityDetailsFormState,
-    pendingExcelSyncPromotionQuoteId,
     selectedOpportunity,
     selectedRevisionNumber,
   ])
@@ -7378,43 +7157,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
             }
           >
             {isSubmittingConvertOrder ? 'Converting...' : 'Convert To Order'}
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      <Dialog
-        open={isExcelMissingConceptDialogOpen}
-        onClose={handleRequestCloseExcelSyncDialog}
-        maxWidth="xs"
-        fullWidth
-      >
-        <DialogTitle>Quote Not Found In Concept</DialogTitle>
-        <DialogContent>
-          <Stack spacing={1} sx={{ mt: 0.6 }}>
-            <Typography variant="body2">
-              Quote number <strong>{excelSyncQuoteNumberInput || 'N/A'}</strong> was not found in Concept.
-            </Typography>
-            <Typography variant="body2">
-              Are you sure you want to continue and create it directly from this uploaded file?
-            </Typography>
-          </Stack>
-        </DialogContent>
-        <DialogActions>
-          <Button
-            onClick={resetExcelSyncDialog}
-            disabled={isSyncingExcelQuote}
-          >
-            No
-          </Button>
-          <Button
-            variant="contained"
-            onClick={() => {
-              setIsExcelMissingConceptDialogOpen(false)
-              setIsExcelAccountDialogOpen(true)
-            }}
-            disabled={isSyncingExcelQuote}
-          >
-            Yes, Continue
           </Button>
         </DialogActions>
       </Dialog>
@@ -8074,12 +7816,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         <DialogTitle>Step 2: Review Quote Sync</DialogTitle>
         <DialogContent>
           <Stack spacing={1.2} sx={{ mt: 0.6 }}>
-            {excelSyncAllowCreateWhenMissingConcept ? (
-              <Typography variant="caption" color="warning.main">
-                This quote will be created directly from the uploaded file because it was not found in Concept.
-              </Typography>
-            ) : null}
-
             {excelSyncSourceFileName ? (
               <Typography variant="caption" color="text.secondary">
                 File: {excelSyncSourceFileName}
@@ -8217,77 +7953,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
           boxShadow: '0 12px 36px rgba(15, 76, 129, 0.08)',
         }}
       >
-        <Box
-          sx={{
-            p: 0.55,
-            display: 'grid',
-            gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 1fr))' },
-            gap: 0.55,
-            borderBottom: 1,
-            borderColor: alpha('#0f4c81', 0.1),
-            backgroundColor: alpha('#eaf4ff', 0.55),
-          }}
-        >
-          {stageDefinitions.map((stage) => {
-            const summary = stageSummaries.get(stage.id) || { count: 0 }
-            const isActive = activePipelineStage === stage.id
-
-            return (
-              <Button
-                key={stage.id}
-                onClick={() => setActivePipelineStage(stage.id)}
-                variant="text"
-                aria-pressed={isActive}
-                sx={{
-                  px: 1,
-                  py: 0.5,
-                  justifyContent: 'stretch',
-                  textTransform: 'none',
-                  color: '#0b2239',
-                  borderRadius: 1.5,
-                  border: '1px solid',
-                  borderColor: isActive ? alpha(stage.headerColor, 0.48) : alpha('#0f4c81', 0.12),
-                  backgroundColor: isActive ? '#ffffff' : 'transparent',
-                  boxShadow: isActive ? `0 4px 14px ${alpha(stage.headerColor, 0.11)}` : 'none',
-                  '&:hover': {
-                    backgroundColor: '#ffffff',
-                    borderColor: alpha(stage.headerColor, 0.38),
-                  },
-                }}
-              >
-                <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1} sx={{ width: '100%' }}>
-                  <Stack direction="row" spacing={0.75} alignItems="center" sx={{ minWidth: 0 }}>
-                    <Box
-                      sx={{
-                        width: 22,
-                        height: 22,
-                        borderRadius: 1,
-                        display: 'grid',
-                        placeItems: 'center',
-                        flexShrink: 0,
-                        fontWeight: 800,
-                        color: isActive ? '#ffffff' : stage.headerColor,
-                        backgroundColor: isActive ? stage.headerColor : alpha(stage.headerColor, 0.1),
-                        fontSize: 12,
-                      }}
-                    >
-                      {stage.id === 'concept' ? '1' : '2'}
-                    </Box>
-                    <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
-                      {stage.label.replace(/^\d+\.\s*/, '')}
-                    </Typography>
-                  </Stack>
-                  <Chip
-                    size="small"
-                    label={summary.count}
-                    sx={{ height: 20, minWidth: 30, fontWeight: 800, color: stage.headerColor, backgroundColor: alpha(stage.headerColor, 0.08) }}
-                  />
-                </Stack>
-              </Button>
-            )
-          })}
-        </Box>
-
         <Stack
           direction={{ xs: 'column', lg: 'row' }}
           spacing={0.7}
@@ -8416,7 +8081,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         dealersBySourceId={dealersBySourceId}
         canManage={canManage}
         busyQuoteId={busyQuoteId}
-        onAdvanceStage={handleAdvanceStage}
         onMarkApproved={handleMarkApproved}
         onMarkFollowedUp={handleMarkFollowedUp}
         onDeclineQuote={handleDeclineQuote}
@@ -8465,8 +8129,8 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                   }}
                   helperText={
                     isAddDialogDraftFromExcelSync
-                      ? 'This synced quote will save directly to Proposal Submitted.'
-                      : 'Enter the quote number to start a Concept. The rest fills in automatically when you sync from the Excel quote.'
+                      ? 'This synced quote will be added to Opportunities.'
+                      : 'Enter the quote number to create an opportunity. Details can also be filled from Excel sync.'
                   }
                   sx={{ width: { xs: '100%', md: 280 } }}
                 />
@@ -8918,7 +8582,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
           >
             {isSavingOpportunity
               ? 'Creating...'
-              : (isAddDialogDraftFromExcelSync ? 'Create In Proposal Submitted' : 'Create Opportunity')}
+              : 'Create Opportunity'}
           </Button>
         </DialogActions>
       </Dialog>
@@ -9386,12 +9050,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                     />
                   )}
                   disabled={!canManage}
-                  sx={{ flex: 1 }}
-                />
-                <TextField
-                  label="Stage"
-                  value={selectedOpportunityStage ? (stageById.get(selectedOpportunityStage)?.label || selectedOpportunityStage) : ''}
-                  InputProps={{ readOnly: true }}
                   sx={{ flex: 1 }}
                 />
               </Stack>
