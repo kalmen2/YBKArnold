@@ -482,6 +482,7 @@ export type OrdersOverviewOrder = {
   invoiceNumber: string | null
   invoiceCachedUrl: string | null
   invoiceFileName: string | null
+  hasInvoiceDocument: boolean
   paidInFull: boolean | null
   amountOwed: number | null
   billBalanceAmount: number | null
@@ -1141,6 +1142,8 @@ export function postOrdersOrderConfirmationUpdate(input: {
   workOrderName: string
   proformaInvoiceUrl: string
   proformaInvoiceName: string
+  bolUrl: string
+  bolName: string
 }) {
   const orderKey = String(input?.orderKey ?? '').trim()
   const documentUrl = String(input?.documentUrl ?? '').trim()
@@ -1149,9 +1152,11 @@ export function postOrdersOrderConfirmationUpdate(input: {
   const workOrderName = String(input?.workOrderName ?? '').trim()
   const proformaInvoiceUrl = String(input?.proformaInvoiceUrl ?? '').trim()
   const proformaInvoiceName = String(input?.proformaInvoiceName ?? '').trim()
+  const bolUrl = String(input?.bolUrl ?? '').trim()
+  const bolName = String(input?.bolName ?? '').trim()
 
-  if (!orderKey || !documentUrl || !documentName || !workOrderUrl || !workOrderName || !proformaInvoiceUrl || !proformaInvoiceName) {
-    throw new Error('Order confirmation, work order, and proforma invoice documents are required.')
+  if (!orderKey || !documentUrl || !documentName || !workOrderUrl || !workOrderName || !proformaInvoiceUrl || !proformaInvoiceName || !bolUrl || !bolName) {
+    throw new Error('Order confirmation, work order, proforma invoice, and BOL documents are required.')
   }
 
   return apiRequest<{
@@ -1162,6 +1167,8 @@ export function postOrdersOrderConfirmationUpdate(input: {
     workOrderName: string
     proformaInvoiceUrl: string
     proformaInvoiceName: string
+    bolUrl: string
+    bolName: string
   }>(
     '/api/orders/order-confirmation',
     {
@@ -1174,6 +1181,8 @@ export function postOrdersOrderConfirmationUpdate(input: {
         workOrderName,
         proformaInvoiceUrl,
         proformaInvoiceName,
+        bolUrl,
+        bolName,
       }),
     },
   )

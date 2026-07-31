@@ -1123,21 +1123,20 @@ export default function CrmDealersPage() {
     callback: (items: MentionSuggestionOption[]) => void,
   ) => {
     const normalizedQuery = normalizeMentionAlias(query)
+    const everyoneOption = !normalizedQuery || 'all'.startsWith(normalizedQuery)
+      ? [{ id: '__mention_all__', display: 'all' }]
+      : []
 
-    if (!normalizedQuery) {
-      callback([])
-      return
-    }
-
-    callback(
-      mentionSuggestionSource
-        .filter((entry) => entry.normalizedDisplay.startsWith(normalizedQuery))
+    callback([
+      ...everyoneOption,
+      ...mentionSuggestionSource
+        .filter((entry) => !normalizedQuery || entry.normalizedDisplay.startsWith(normalizedQuery))
         .slice(0, 8)
         .map((entry) => ({
           id: entry.id,
           display: entry.display,
         })),
-    )
+    ])
   }
 
   const orderRows = useMemo(
@@ -1623,6 +1622,7 @@ export default function CrmDealersPage() {
     try {
       const mentionUserUidsFromMarkup = extractMentionUserUidsFromMarkup(dealerChatDraftMarkup)
       const mentionAliases = extractMentionAliases(finalMessage)
+      const mentionsEveryone = mentionUserUidsFromMarkup.includes('__mention_all__') || mentionAliases.includes('all')
       const mentionUserUidsFromAliases = [...new Set(
         mentionAliases.flatMap((alias) => {
           const matchedUsers = mentionAliasToUsers.get(alias) ?? []
@@ -1632,7 +1632,11 @@ export default function CrmDealersPage() {
             : []
         }),
       )]
-      const mentionUserUids = [...new Set([...mentionUserUidsFromMarkup, ...mentionUserUidsFromAliases])]
+      const mentionUserUids = [...new Set([
+        ...mentionUserUidsFromMarkup.filter((uid) => uid !== '__mention_all__'),
+        ...mentionUserUidsFromAliases,
+        ...(mentionsEveryone ? chatUsers.map((user) => user.uid) : []),
+      ])]
 
       await createCrmDealerChatMessage(selectedDealerId, {
         message: finalMessage,

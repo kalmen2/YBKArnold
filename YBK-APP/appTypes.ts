@@ -137,6 +137,7 @@ export type MobileChatUser = {
   uid: string
   email: string
   displayName: string | null
+  imageUrl: string | null
   role: 'standard' | 'manager' | 'sales_rep' | 'shop_worker' | 'admin'
   isAdmin: boolean
   isManager: boolean
@@ -148,10 +149,11 @@ export type MobileChatUser = {
 }
 
 export type MobileChatAttachment = {
-  kind: 'image' | 'voice'
+  kind: 'image' | 'voice' | 'file'
   mimeType: string | null
   fileName: string | null
   sizeBytes: number | null
+  durationMillis: number | null
   dataUrl: string | null
   deletedAt: string | null
   deletedByUid: string | null
@@ -168,19 +170,38 @@ export type MobileChatThread = {
   updatedAt: string | null
   lastMessageAt: string | null
   lastMessagePreview: string | null
-  lastMessageType: 'text' | 'image' | 'voice' | 'mixed' | 'deleted'
+  lastMessageType: 'text' | 'image' | 'voice' | 'file' | 'mixed' | 'deleted'
   createdByUid: string | null
   createdByEmail: string | null
   createdByName: string | null
   pinned: boolean
 }
 
+export type MobileChatTypingUser = {
+  uid: string
+  displayName: string | null
+  email: string | null
+}
+
 export type MobileChatMessage = {
   id: string
   chatId: string
   text: string | null
-  messageType: 'text' | 'image' | 'voice' | 'mixed' | 'deleted'
+  messageType: 'text' | 'image' | 'voice' | 'file' | 'mixed' | 'deleted'
   attachment: MobileChatAttachment
+  replyTo: {
+    messageId: string
+    text: string | null
+    messageType: 'text' | 'image' | 'voice' | 'file' | 'mixed' | 'deleted'
+    createdByName: string | null
+    createdByEmail: string | null
+  } | null
+  deliveryStatus: 'sent' | 'delivered' | 'seen' | 'sending' | 'error'
+  reactions: Array<{
+    emoji: string
+    count: number
+    reactedByMe: boolean
+  }>
   createdAt: string | null
   createdByUid: string | null
   createdByEmail: string | null

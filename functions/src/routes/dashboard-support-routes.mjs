@@ -1307,6 +1307,7 @@ app.get('/api/dashboard/monday/shop-drawing/download', requireFirebaseAuth, asyn
   try {
     const orderId = String(req.query?.orderId ?? '').trim()
     const renderInline = String(req.query?.inline ?? '').trim() === '1'
+    const resolveOnly = String(req.query?.resolveOnly ?? '').trim() === '1'
 
     if (!orderId) {
       return res.status(400).json({ error: 'orderId is required.' })
@@ -1372,6 +1373,10 @@ app.get('/api/dashboard/monday/shop-drawing/download', requireFirebaseAuth, asyn
 
     if (!cachedDrawingUrl) {
       return res.status(404).json({ error: 'No shop drawing source found for this order.' })
+    }
+
+    if (resolveOnly) {
+      return res.json({ cachedUrl: cachedDrawingUrl })
     }
 
     if (renderInline) {

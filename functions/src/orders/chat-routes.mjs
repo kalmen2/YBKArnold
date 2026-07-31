@@ -345,7 +345,7 @@ export function registerOrderChatRoutes(app, {
         ? req.body
         : {}
       const messageText = normalizeOrderChatMessage(body.message)
-      const requestedMentionUserUids = normalizeOrderChatUidList(body.mentionUserUids, 25)
+      const requestedMentionUserUids = normalizeOrderChatUidList(body.mentionUserUids, 300)
       const requestedReminder = normalizeOrderChatReminderInput(body.reminder)
       const orderContext = normalizeOrderChatContext(body)
 
@@ -377,7 +377,7 @@ export function registerOrderChatRoutes(app, {
       const requestedRecipientUids = normalizeOrderChatUidList([
         ...requestedMentionUserUids,
         ...(requestedReminder?.targetUserUids ?? []),
-      ], 50)
+      ], 350)
       const recipientUsers = requestedRecipientUids.length > 0
         ? await authUsersCollection
           .find(

@@ -8,9 +8,11 @@ const chatTypeGroup = 'group'
 const chatMessageTypeText = 'text'
 const chatMessageTypeImage = 'image'
 const chatMessageTypeVoice = 'voice'
+const chatMessageTypeFile = 'file'
 const chatMessageTypeMixed = 'mixed'
 const chatMessageTypeDeleted = 'deleted'
 const maxChatAttachmentBytes = 6 * 1024 * 1024
+const allowedChatReactionEmojis = ['👍', '❤️', '😂', '😮', '😢', '🙏']
 
 export function registerChatRoutes(app, deps) {
   const {
@@ -38,6 +40,10 @@ export function registerChatRoutes(app, deps) {
 
     if (normalized === chatMessageTypeVoice) {
       return chatMessageTypeVoice
+    }
+
+    if (normalized === chatMessageTypeFile) {
+      return chatMessageTypeFile
     }
 
     if (normalized === chatMessageTypeMixed) {
@@ -101,6 +107,10 @@ export function registerChatRoutes(app, deps) {
 
     if (normalized === chatMessageTypeVoice) {
       return chatMessageTypeVoice
+    }
+
+    if (normalized === chatMessageTypeFile) {
+      return chatMessageTypeFile
     }
 
     return null
@@ -197,6 +207,18 @@ export function registerChatRoutes(app, deps) {
       }
     }
 
+    if (kind === chatMessageTypeFile) {
+      const fileMimeType = normalizedMimeType || 'application/octet-stream'
+
+      return {
+        kind: chatMessageTypeFile,
+        mimeType: fileMimeType,
+        fileName: sanitizeChatAttachmentFileName(source.fileName) || 'attachment',
+        sizeBytes,
+        dataUrl: `data:${fileMimeType};base64,${base64Payload}`,
+      }
+    }
+
     const voiceMimeType = normalizedMimeType.startsWith('audio/')
       ? normalizedMimeType
       : 'audio/mp4'
@@ -206,6 +228,7 @@ export function registerChatRoutes(app, deps) {
       mimeType: voiceMimeType,
       fileName: sanitizeChatAttachmentFileName(source.fileName),
       sizeBytes,
+      durationMillis: toBoundedInteger(source.durationMillis, 0, 3_600_000, 0),
       dataUrl: `data:${voiceMimeType};base64,${base64Payload}`,
     }
   }
@@ -225,6 +248,10 @@ export function registerChatRoutes(app, deps) {
 
     if (attachment?.kind === chatMessageTypeVoice) {
       return chatMessageTypeVoice
+    }
+
+    if (attachment?.kind === chatMessageTypeFile) {
+      return chatMessageTypeFile
     }
 
     return chatMessageTypeText
@@ -249,6 +276,10 @@ export function registerChatRoutes(app, deps) {
       return 'Voice note'
     }
 
+    if (message?.attachment?.kind === chatMessageTypeFile) {
+      return message.attachment.fileName || 'File'
+    }
+
     return 'Message'
   }
 
@@ -264,6 +295,7 @@ export function registerChatRoutes(app, deps) {
       uid,
       email,
       displayName: String(normalizeOptionalShortText(user?.displayName, 220) ?? '').trim() || null,
+      imageUrl: String(normalizeOptionalShortText(user?.photoURL, 1000) ?? '').trim() || null,
       role: String(normalizeOptionalShortText(user?.role, 40) ?? '').trim() || 'standard',
       isAdmin: Boolean(user?.isAdmin),
       isManager: Boolean(user?.isManager),
@@ -300,6 +332,87 @@ export function registerChatRoutes(app, deps) {
     }
 
     return normalizedMembers.join('::')
+  }
+
+  function buildChatUidFieldKey(uid) {
+    const normalizedUid = String(normalizeOptionalShortText(uid, 220) ?? '').trim()
+
+    if (!normalizedUid) {
+      return null
+    }
+
+    return `uid_${Buffer.from(normalizedUid, 'utf8').toString('base64url')}`
+  }
+
+  function getChatHistoryClearedAt(thread, uid) {
+    const fieldKey = buildChatUidFieldKey(uid)
+    const clearedAtByUid = thread?.historyClearedAtByUid
+
+    if (!fieldKey || !clearedAtByUid || typeof clearedAtByUid !== 'object') {
+      return null
+    }
+
+    return String(clearedAtByUid[fieldKey] ?? '').trim() || null
+  }
+
+  function getChatUidTimestamp(record, uid) {
+    const fieldKey = buildChatUidFieldKey(uid)
+
+    if (!fieldKey || !record || typeof record !== 'object') {
+      return null
+    }
+
+    return String(record[fieldKey] ?? '').trim() || null
+  }
+
+  function normalizeChatReactions(value, requesterUid = null) {
+    if (!Array.isArray(value)) {
+      return []
+    }
+
+    return value
+      .map((reaction) => {
+        const emoji = String(reaction?.emoji ?? '').trim()
+        const userUids = normalizeChatUidList(reaction?.userUids, 250)
+
+        if (!allowedChatReactionEmojis.includes(emoji) || userUids.length === 0) {
+          return null
+        }
+
+        return {
+          emoji,
+          count: userUids.length,
+          reactedByMe: Boolean(requesterUid && userUids.includes(requesterUid)),
+        }
+      })
+      .filter(Boolean)
+  }
+
+  function resolveChatMessageDeliveryStatus(message, thread, requesterUid = null) {
+    const authorUid = String(normalizeOptionalShortText(message?.createdByUid, 220) ?? '').trim()
+    const memberUids = normalizeChatUidList(thread?.memberUids, 250)
+    const recipientUids = memberUids.filter((uid) => uid !== authorUid)
+    const messageCreatedAt = String(message?.createdAt ?? '').trim()
+
+    if (!authorUid || !requesterUid || authorUid !== requesterUid || recipientUids.length === 0 || !messageCreatedAt) {
+      return 'sent'
+    }
+
+    const wasSeenByAll = recipientUids.every((uid) => {
+      const readAt = getChatUidTimestamp(thread?.readAtByUid, uid)
+      return Boolean(readAt && readAt >= messageCreatedAt)
+    })
+
+    if (wasSeenByAll) {
+      return 'seen'
+    }
+
+    const wasDeliveredToAll = recipientUids.every((uid) => {
+      const deliveredAt = getChatUidTimestamp(thread?.deliveredAtByUid, uid)
+      return Boolean(deliveredAt && deliveredAt >= messageCreatedAt)
+    })
+
+    return wasDeliveredToAll ? 'delivered' : 'sent'
   }
 
   async function getChatCollections(collectionsFromCaller = null) {
@@ -403,6 +516,9 @@ export function registerChatRoutes(app, deps) {
     const memberProfiles = memberUids
       .map((uid) => latestUserMapByUid.get(uid) || fallbackMemberMapByUid.get(uid) || null)
       .filter(Boolean)
+    const historyClearedAt = getChatHistoryClearedAt(thread, requesterUid)
+    const lastMessageAt = String(thread.lastMessageAt ?? '').trim() || null
+    const hasVisibleLastMessage = !historyClearedAt || Boolean(lastMessageAt && lastMessageAt > historyClearedAt)
 
     return {
       id: thread.id,
@@ -412,9 +528,13 @@ export function registerChatRoutes(app, deps) {
       memberProfiles,
       createdAt: String(thread.createdAt ?? '').trim() || null,
       updatedAt: String(thread.updatedAt ?? '').trim() || null,
-      lastMessageAt: String(thread.lastMessageAt ?? '').trim() || null,
-      lastMessagePreview: String(normalizeOptionalShortText(thread.lastMessagePreview, 400) ?? '').trim() || null,
-      lastMessageType: normalizeChatMessageType(thread.lastMessageType),
+      lastMessageAt: hasVisibleLastMessage ? lastMessageAt : null,
+      lastMessagePreview: hasVisibleLastMessage
+        ? String(normalizeOptionalShortText(thread.lastMessagePreview, 400) ?? '').trim() || null
+        : null,
+      lastMessageType: hasVisibleLastMessage
+        ? normalizeChatMessageType(thread.lastMessageType)
+        : chatMessageTypeText,
       createdByUid: String(normalizeOptionalShortText(thread.createdByUid, 220) ?? '').trim() || null,
       createdByEmail: normalizeEmail(thread.createdByEmail) || null,
       createdByName: String(normalizeOptionalShortText(thread.createdByName, 220) ?? '').trim() || null,
@@ -422,7 +542,10 @@ export function registerChatRoutes(app, deps) {
     }
   }
 
-  function toPublicChatMessage(message) {
+  function toPublicChatMessage(message, {
+    requesterUid = null,
+    thread = null,
+  } = {}) {
     if (!message || typeof message !== 'object') {
       return null
     }
@@ -447,10 +570,26 @@ export function registerChatRoutes(app, deps) {
           sizeBytes: Number.isFinite(Number(attachmentSource?.sizeBytes))
             ? Math.max(0, Math.floor(Number(attachmentSource.sizeBytes)))
             : null,
+          durationMillis: attachmentKind === chatMessageTypeVoice
+            ? toBoundedInteger(attachmentSource?.durationMillis, 0, 3_600_000, 0)
+            : null,
           dataUrl: attachmentDataUrl || null,
           deletedAt: String(attachmentSource?.deletedAt ?? '').trim() || null,
           deletedByUid: String(normalizeOptionalShortText(attachmentSource?.deletedByUid, 220) ?? '').trim() || null,
           deletedByEmail: normalizeEmail(attachmentSource?.deletedByEmail) || null,
+        }
+      : null
+    const replySource = message.replyTo && typeof message.replyTo === 'object'
+      ? message.replyTo
+      : null
+    const replyMessageId = String(normalizeOptionalShortText(replySource?.messageId, 220) ?? '').trim()
+    const replyTo = replyMessageId
+      ? {
+          messageId: replyMessageId,
+          text: normalizeChatText(replySource?.text) || null,
+          messageType: normalizeChatMessageType(replySource?.messageType),
+          createdByName: String(normalizeOptionalShortText(replySource?.createdByName, 220) ?? '').trim() || null,
+          createdByEmail: normalizeEmail(replySource?.createdByEmail) || null,
         }
       : null
 
@@ -460,6 +599,9 @@ export function registerChatRoutes(app, deps) {
       text: normalizeChatText(message.text) || null,
       messageType: normalizeChatMessageType(message.messageType),
       attachment,
+      replyTo,
+      deliveryStatus: resolveChatMessageDeliveryStatus(message, thread, requesterUid),
+      reactions: normalizeChatReactions(message.reactions, requesterUid),
       createdAt: String(message.createdAt ?? '').trim() || null,
       createdByUid: String(normalizeOptionalShortText(message.createdByUid, 220) ?? '').trim() || null,
       createdByEmail: normalizeEmail(message.createdByEmail) || null,
@@ -661,12 +803,35 @@ export function registerChatRoutes(app, deps) {
               lastMessagePreview: 1,
               lastMessageType: 1,
               pinnedByUids: 1,
+              historyClearedAtByUid: 1,
+              deliveredAtByUid: 1,
+              readAtByUid: 1,
             },
           },
         )
         .sort({ updatedAt: -1, lastMessageAt: -1, createdAt: -1 })
         .limit(400)
         .toArray()
+
+      if (threadDocuments.length > 0) {
+        const deliveredFieldKey = buildChatUidFieldKey(requesterUid)
+
+        if (deliveredFieldKey) {
+          await chatThreadsCollection.updateMany(
+            {
+              id: {
+                $in: threadDocuments.map((thread) => thread.id).filter(Boolean),
+              },
+              memberUids: requesterUid,
+            },
+            {
+              $set: {
+                [`deliveredAtByUid.${deliveredFieldKey}`]: new Date().toISOString(),
+              },
+            },
+          )
+        }
+      }
 
       const threads = await Promise.all(
         threadDocuments.map((thread) => resolveChatThreadWithMembers({
@@ -675,7 +840,7 @@ export function registerChatRoutes(app, deps) {
           thread,
         })),
       )
-      const visibleThreads = threads.filter(Boolean)
+      const visibleThreads = threads.filter((thread) => Boolean(thread?.lastMessageAt))
 
       return res.json({
         threads: visibleThreads,
@@ -756,13 +921,14 @@ export function registerChatRoutes(app, deps) {
       )
 
       if (existingThread) {
+        const now = new Date().toISOString()
         await chatThreadsCollection.updateOne(
           {
             id: existingThread.id,
           },
           {
-            $pull: {
-              hiddenForUids: requesterUid,
+            $set: {
+              updatedAt: now,
             },
           },
         )
@@ -771,8 +937,7 @@ export function registerChatRoutes(app, deps) {
           requesterUid,
           thread: {
             ...existingThread,
-            hiddenForUids: normalizeChatUidList(existingThread.hiddenForUids, 300)
-              .filter((uid) => uid !== requesterUid),
+            updatedAt: now,
           },
         })
 
@@ -1145,18 +1310,57 @@ export function registerChatRoutes(app, deps) {
         return res.status(400).json({ error: 'threadId is required.' })
       }
 
+      const deleteForEveryone = req.body?.deleteForEveryone === true
+
+      if (deleteForEveryone && !publicUser?.isAdmin) {
+        return res.status(403).json({ error: 'Only admins can delete a chat for everyone.' })
+      }
+
       const { chatThreadsCollection } = await getChatCollections()
+      const thread = await chatThreadsCollection.findOne(
+        {
+          id: threadId,
+          memberUids: requesterUid,
+        },
+        {
+          projection: {
+            _id: 0,
+            id: 1,
+            memberUids: 1,
+          },
+        },
+      )
+
+      if (!thread) {
+        return res.status(404).json({ error: 'Chat thread not found.' })
+      }
+
+      const affectedUids = deleteForEveryone
+        ? normalizeChatUidList(thread.memberUids, 250)
+        : [requesterUid]
+      const now = new Date().toISOString()
+      const historyBoundaryFields = Object.fromEntries(
+        affectedUids
+          .map((uid) => buildChatUidFieldKey(uid))
+          .filter(Boolean)
+          .map((fieldKey) => [`historyClearedAtByUid.${fieldKey}`, now]),
+      )
       const result = await chatThreadsCollection.updateOne(
         {
           id: threadId,
           memberUids: requesterUid,
         },
         {
+          $set: historyBoundaryFields,
           $addToSet: {
-            hiddenForUids: requesterUid,
+            hiddenForUids: {
+              $each: affectedUids,
+            },
           },
           $pull: {
-            pinnedByUids: requesterUid,
+            pinnedByUids: {
+              $in: affectedUids,
+            },
           },
         },
       )
@@ -1168,6 +1372,121 @@ export function registerChatRoutes(app, deps) {
       return res.json({
         ok: true,
         threadId,
+        deletedForEveryone: deleteForEveryone,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.patch('/api/chat/threads/:threadId/typing', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const publicUser = toPublicAuthUser(req.authUser)
+      const threadId = String(normalizeOptionalShortText(req.params.threadId, 220) ?? '').trim()
+      const requesterUid = String(normalizeOptionalShortText(req.authUser?.uid, 220) ?? '').trim()
+
+      if (!publicUser?.isApproved) {
+        return res.status(403).json({ error: 'Approved access is required.' })
+      }
+
+      if (!threadId || !requesterUid) {
+        return res.status(400).json({ error: 'threadId and authenticated user are required.' })
+      }
+
+      const typingFieldKey = buildChatUidFieldKey(requesterUid)
+      const { chatThreadsCollection } = await getChatCollections()
+      const now = new Date().toISOString()
+      const result = await chatThreadsCollection.updateOne(
+        {
+          id: threadId,
+          memberUids: requesterUid,
+        },
+        {
+          $set: {
+            [`typingByUid.${typingFieldKey}`]: {
+              uid: requesterUid,
+              displayName: String(normalizeOptionalShortText(publicUser?.displayName, 220) ?? '').trim() || null,
+              email: normalizeEmail(req.authUser?.email) || null,
+              isTyping: req.body?.isTyping === true,
+              updatedAt: now,
+            },
+          },
+        },
+      )
+
+      if (!result.matchedCount) {
+        return res.status(404).json({ error: 'Chat thread not found.' })
+      }
+
+      return res.json({
+        ok: true,
+        isTyping: req.body?.isTyping === true,
+        updatedAt: now,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/chat/threads/:threadId/activity', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const publicUser = toPublicAuthUser(req.authUser)
+      const threadId = String(normalizeOptionalShortText(req.params.threadId, 220) ?? '').trim()
+      const requesterUid = String(normalizeOptionalShortText(req.authUser?.uid, 220) ?? '').trim()
+
+      if (!publicUser?.isApproved) {
+        return res.status(403).json({ error: 'Approved access is required.' })
+      }
+
+      if (!threadId || !requesterUid) {
+        return res.status(400).json({ error: 'threadId and authenticated user are required.' })
+      }
+
+      const { chatThreadsCollection } = await getChatCollections()
+      const thread = await chatThreadsCollection.findOne(
+        {
+          id: threadId,
+          memberUids: requesterUid,
+        },
+        {
+          projection: {
+            _id: 0,
+            typingByUid: 1,
+          },
+        },
+      )
+
+      if (!thread) {
+        return res.status(404).json({ error: 'Chat thread not found.' })
+      }
+
+      const nowMs = Date.now()
+      const typingUsers = Object.values(
+        thread.typingByUid && typeof thread.typingByUid === 'object'
+          ? thread.typingByUid
+          : {},
+      )
+        .filter((entry) => {
+          const entryUid = String(normalizeOptionalShortText(entry?.uid, 220) ?? '').trim()
+          const updatedAtMs = Date.parse(String(entry?.updatedAt ?? '').trim())
+
+          return Boolean(
+            entryUid
+            && entryUid !== requesterUid
+            && entry?.isTyping === true
+            && Number.isFinite(updatedAtMs)
+            && nowMs - updatedAtMs <= 6500,
+          )
+        })
+        .map((entry) => ({
+          uid: String(normalizeOptionalShortText(entry?.uid, 220) ?? '').trim(),
+          displayName: String(normalizeOptionalShortText(entry?.displayName, 220) ?? '').trim() || null,
+          email: normalizeEmail(entry?.email) || null,
+        }))
+
+      return res.json({
+        generatedAt: new Date().toISOString(),
+        typingUsers,
       })
     } catch (error) {
       next(error)
@@ -1221,8 +1540,51 @@ export function registerChatRoutes(app, deps) {
         })
       }
 
+      const receiptTimestamp = new Date().toISOString()
+      const receiptFieldKey = buildChatUidFieldKey(requesterUid)
+      const receiptThread = receiptFieldKey
+        ? {
+            ...thread,
+            deliveredAtByUid: {
+              ...(thread.deliveredAtByUid && typeof thread.deliveredAtByUid === 'object'
+                ? thread.deliveredAtByUid
+                : {}),
+              [receiptFieldKey]: receiptTimestamp,
+            },
+            readAtByUid: {
+              ...(thread.readAtByUid && typeof thread.readAtByUid === 'object'
+                ? thread.readAtByUid
+                : {}),
+              [receiptFieldKey]: receiptTimestamp,
+            },
+          }
+        : thread
+
+      if (receiptFieldKey) {
+        await chatThreadsCollection.updateOne(
+          {
+            id: threadId,
+            memberUids: requesterUid,
+          },
+          {
+            $set: {
+              [`deliveredAtByUid.${receiptFieldKey}`]: receiptTimestamp,
+              [`readAtByUid.${receiptFieldKey}`]: receiptTimestamp,
+            },
+          },
+        )
+      }
+
+      const historyClearedAt = getChatHistoryClearedAt(thread, requesterUid)
       const filter = {
         chatId: threadId,
+        ...(historyClearedAt
+          ? {
+              createdAt: {
+                $gt: historyClearedAt,
+              },
+            }
+          : {}),
       }
       const [total, messagesRaw] = await Promise.all([
         chatMessagesCollection.countDocuments(filter),
@@ -1235,19 +1597,23 @@ export function registerChatRoutes(app, deps) {
               },
             },
           )
-          .sort({ createdAt: 1, id: 1 })
+          .sort({ createdAt: -1, id: -1 })
           .skip(offset)
           .limit(limit)
           .toArray(),
       ])
 
       const messages = messagesRaw
-        .map((message) => toPublicChatMessage(message))
+        .reverse()
+        .map((message) => toPublicChatMessage(message, {
+          requesterUid,
+          thread: receiptThread,
+        }))
         .filter(Boolean)
       const hydratedThread = await resolveChatThreadWithMembers({
         authUsersCollection,
         requesterUid,
-        thread,
+        thread: receiptThread,
       })
 
       return res.json({
@@ -1278,6 +1644,8 @@ export function registerChatRoutes(app, deps) {
       const requesterEmail = normalizeEmail(req.authUser?.email) || null
       const messageText = normalizeChatText(req.body?.text)
       const attachment = normalizeChatAttachmentInput(req.body?.attachment)
+      const replyToMessageId = String(normalizeOptionalShortText(req.body?.replyToMessageId, 220) ?? '').trim()
+      const requestedMentionUserUids = normalizeChatUidList(req.body?.mentionUserUids, 300)
 
       if (!threadId) {
         return res.status(400).json({
@@ -1303,7 +1671,8 @@ export function registerChatRoutes(app, deps) {
         })
       }
 
-      const { chatThreadsCollection, chatMessagesCollection } = await getChatCollections()
+      const { collections, chatThreadsCollection, chatMessagesCollection } = await getChatCollections()
+      const { authUsersCollection, mobileAlertsCollection } = collections
       const thread = await chatThreadsCollection.findOne(
         {
           id: threadId,
@@ -1315,6 +1684,7 @@ export function registerChatRoutes(app, deps) {
             id: 1,
             memberUids: 1,
             type: 1,
+            name: 1,
           },
         },
       )
@@ -1325,7 +1695,61 @@ export function registerChatRoutes(app, deps) {
         })
       }
 
+      const replyTarget = replyToMessageId
+        ? await chatMessagesCollection.findOne(
+            {
+              id: replyToMessageId,
+              chatId: threadId,
+            },
+            {
+              projection: {
+                _id: 0,
+                id: 1,
+                text: 1,
+                messageType: 1,
+                createdByName: 1,
+                createdByEmail: 1,
+              },
+            },
+          )
+        : null
+
+      if (replyToMessageId && !replyTarget) {
+        return res.status(400).json({
+          error: 'The message being replied to was not found.',
+        })
+      }
+
       const now = new Date().toISOString()
+      const mentionUsers = requestedMentionUserUids.length > 0
+        ? await authUsersCollection
+          .find(
+            {
+              uid: { $in: requestedMentionUserUids },
+              approvalStatus: authApprovalApproved,
+            },
+            {
+              projection: {
+                _id: 0,
+                uid: 1,
+                email: 1,
+              },
+            },
+          )
+          .toArray()
+        : []
+      const mentionRecipientUids = normalizeChatUidList(
+        mentionUsers
+          .map((user) => String(user?.uid ?? '').trim())
+          .filter((uid) => uid && uid !== requesterUid),
+        300,
+      )
+      const mentionEmailByUid = new Map(
+        mentionUsers.map((user) => [String(user?.uid ?? '').trim(), normalizeEmail(user?.email)]),
+      )
+      const mentionRecipientEmails = mentionRecipientUids
+        .map((uid) => mentionEmailByUid.get(uid))
+        .filter(Boolean)
       const messageDocument = {
         id: randomUUID(),
         chatId: threadId,
@@ -1333,6 +1757,15 @@ export function registerChatRoutes(app, deps) {
         attachment: attachment
           ? {
               ...attachment,
+            }
+          : null,
+        replyTo: replyTarget
+          ? {
+              messageId: replyTarget.id,
+              text: normalizeChatText(replyTarget.text) || null,
+              messageType: normalizeChatMessageType(replyTarget.messageType),
+              createdByName: String(normalizeOptionalShortText(replyTarget.createdByName, 220) ?? '').trim() || null,
+              createdByEmail: normalizeEmail(replyTarget.createdByEmail) || null,
             }
           : null,
         messageType: resolveChatMessageType({
@@ -1351,9 +1784,42 @@ export function registerChatRoutes(app, deps) {
         deletedAt: null,
         deletedByUid: null,
         deletedByEmail: null,
+        mentionUserUids: mentionRecipientUids,
+        mentionUserEmails: mentionRecipientEmails,
       }
 
       await chatMessagesCollection.insertOne(messageDocument)
+
+      if (mentionRecipientUids.length > 0) {
+        const authorName = String(normalizeOptionalShortText(publicUser?.displayName || requesterEmail || 'A teammate', 120) ?? '').trim()
+        const chatLabel = String(normalizeOptionalShortText(thread.name, 120) ?? '').trim() || 'chat'
+        const alertNow = new Date().toISOString()
+
+        await mobileAlertsCollection.insertOne({
+          id: randomUUID(),
+          title: `Mentioned in ${chatLabel}`,
+          message: `${authorName} mentioned you: ${(messageText || 'Sent an attachment').slice(0, 300)}`,
+          isUpdate: false,
+          targetMode: 'selected',
+          targetUserUids: mentionRecipientUids,
+          createdByUid: requesterUid,
+          createdByEmail: requesterEmail,
+          delivery: {
+            targetUserCount: mentionRecipientUids.length,
+            pushTokenCount: 0,
+            pushAcceptedCount: 0,
+            pushErrorCount: 0,
+            errorSamples: [],
+          },
+          metadata: {
+            source: 'app_chat_mention',
+            chatThreadId: threadId,
+            chatMessageId: messageDocument.id,
+          },
+          createdAt: alertNow,
+          updatedAt: alertNow,
+        })
+      }
 
       await chatThreadsCollection.updateOne(
         {
@@ -1375,7 +1841,122 @@ export function registerChatRoutes(app, deps) {
       )
 
       return res.status(201).json({
-        message: toPublicChatMessage(messageDocument),
+        message: toPublicChatMessage(messageDocument, {
+          requesterUid,
+          thread,
+        }),
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.patch('/api/chat/messages/:messageId/reactions', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const publicUser = toPublicAuthUser(req.authUser)
+      const messageId = String(normalizeOptionalShortText(req.params.messageId, 220) ?? '').trim()
+      const requesterUid = String(normalizeOptionalShortText(req.authUser?.uid, 220) ?? '').trim()
+      const emoji = String(req.body?.emoji ?? '').trim()
+
+      if (!publicUser?.isApproved) {
+        return res.status(403).json({ error: 'Approved access is required.' })
+      }
+
+      if (!messageId || !requesterUid) {
+        return res.status(400).json({ error: 'messageId and authenticated user are required.' })
+      }
+
+      if (!allowedChatReactionEmojis.includes(emoji)) {
+        return res.status(400).json({ error: 'Unsupported reaction.' })
+      }
+
+      const { chatThreadsCollection, chatMessagesCollection } = await getChatCollections()
+      const message = await chatMessagesCollection.findOne(
+        {
+          id: messageId,
+        },
+        {
+          projection: {
+            _id: 0,
+          },
+        },
+      )
+
+      if (!message || message.deletedAt) {
+        return res.status(404).json({ error: 'Chat message not found.' })
+      }
+
+      const thread = await chatThreadsCollection.findOne(
+        {
+          id: message.chatId,
+          memberUids: requesterUid,
+        },
+        {
+          projection: {
+            _id: 0,
+          },
+        },
+      )
+
+      if (!thread) {
+        return res.status(404).json({ error: 'Chat thread not found.' })
+      }
+
+      const reactions = Array.isArray(message.reactions)
+        ? message.reactions
+          .map((reaction) => ({
+            emoji: String(reaction?.emoji ?? '').trim(),
+            userUids: normalizeChatUidList(reaction?.userUids, 250),
+          }))
+          .filter((reaction) => allowedChatReactionEmojis.includes(reaction.emoji))
+        : []
+      const reactionIndex = reactions.findIndex((reaction) => reaction.emoji === emoji)
+
+      if (reactionIndex >= 0) {
+        const existingUserIndex = reactions[reactionIndex].userUids.indexOf(requesterUid)
+
+        if (existingUserIndex >= 0) {
+          reactions[reactionIndex].userUids.splice(existingUserIndex, 1)
+        } else {
+          reactions[reactionIndex].userUids.push(requesterUid)
+        }
+
+        if (reactions[reactionIndex].userUids.length === 0) {
+          reactions.splice(reactionIndex, 1)
+        }
+      } else {
+        reactions.push({
+          emoji,
+          userUids: [requesterUid],
+        })
+      }
+
+      const now = new Date().toISOString()
+      await chatMessagesCollection.updateOne(
+        {
+          id: messageId,
+          chatId: message.chatId,
+        },
+        {
+          $set: {
+            reactions,
+            updatedAt: now,
+          },
+        },
+      )
+
+      return res.json({
+        message: toPublicChatMessage(
+          {
+            ...message,
+            reactions,
+            updatedAt: now,
+          },
+          {
+            requesterUid,
+            thread,
+          },
+        ),
       })
     } catch (error) {
       next(error)
@@ -1475,6 +2056,9 @@ export function registerChatRoutes(app, deps) {
             fileName: sanitizeChatAttachmentFileName(existingAttachment.fileName),
             sizeBytes: Number.isFinite(Number(existingAttachment.sizeBytes))
               ? Math.max(0, Math.floor(Number(existingAttachment.sizeBytes)))
+              : null,
+            durationMillis: normalizeChatAttachmentKind(existingAttachment.kind) === chatMessageTypeVoice
+              ? toBoundedInteger(existingAttachment.durationMillis, 0, 3_600_000, 0)
               : null,
             dataUrl: null,
             deletedAt: now,

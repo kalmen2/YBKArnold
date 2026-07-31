@@ -3644,7 +3644,7 @@ export function registerCrmRoutes(app, deps) {
       const dealerSourceId = toTrimmedText(req.params.dealerSourceId, 160)
       const body = toOptionalObject(req.body)
       const messageText = toTrimmedText(body.message, 4000)
-      const requestedMentionUserUids = normalizeUidList(body.mentionUserUids, 25)
+      const requestedMentionUserUids = normalizeUidList(body.mentionUserUids, 300)
       const requestedReminder = normalizeChatReminderInput(body.reminder)
 
       if (!dealerSourceId) {
@@ -3689,7 +3689,7 @@ export function registerCrmRoutes(app, deps) {
       const requestedRecipientUids = normalizeUidList([
         ...requestedMentionUserUids,
         ...(requestedReminder?.targetUserUids ?? []),
-      ], 50)
+      ], 350)
       const recipientUsers = requestedRecipientUids.length > 0
         ? await authUsersCollection
           .find(
@@ -4059,7 +4059,7 @@ export function registerCrmRoutes(app, deps) {
       const quoteId = toTrimmedText(req.params.quoteId, 160)
       const body = toOptionalObject(req.body)
       const messageText = toTrimmedText(body.message, 4000)
-      const requestedMentionUserUids = normalizeUidList(body.mentionUserUids, 25)
+      const requestedMentionUserUids = normalizeUidList(body.mentionUserUids, 300)
       const requestedReminder = normalizeChatReminderInput(body.reminder)
 
       if (!quoteId) {
@@ -4095,7 +4095,7 @@ export function registerCrmRoutes(app, deps) {
       const requestedRecipientUids = normalizeUidList([
         ...requestedMentionUserUids,
         ...(requestedReminder?.targetUserUids ?? []),
-      ], 50)
+      ], 350)
       const recipientUsers = requestedRecipientUids.length > 0
         ? await authUsersCollection
           .find(

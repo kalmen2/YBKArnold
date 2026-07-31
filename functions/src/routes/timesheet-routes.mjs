@@ -45,6 +45,28 @@ export function registerTimesheetRoutes(app, deps) {
     return new AppError(duplicateConstraintMessage, 400)
   }
 
+  function requireOfficeManagerOrAdminRole(req, _res, next) {
+    const publicUser = toPublicAuthUser(req.authUser)
+    const hasAccess = Boolean(
+      publicUser?.isApproved
+      && (
+        publicUser?.isOwner
+        || publicUser?.isAdmin
+        || publicUser?.isManager
+        || publicUser?.isOfficeWorker
+      ),
+    )
+
+    if (!hasAccess) {
+      return next({
+        status: 403,
+        message: 'Office worker, manager, or admin access is required.',
+      })
+    }
+
+    next()
+  }
+
   function extractOrderDigits(value) {
     return String(value ?? '').replace(/\D+/g, '').trim()
   }
@@ -1461,7 +1483,7 @@ app.post('/api/timesheet/entries/bulk', requireFirebaseAuth, requireAdminRole, a
   }
 })
 
-app.post('/api/timesheet/entries/sync', requireFirebaseAuth, requireManagerOrAdminRole, async (req, res, next) => {
+app.post('/api/timesheet/entries/sync', requireFirebaseAuth, requireOfficeManagerOrAdminRole, async (req, res, next) => {
   try {
     const { workersCollection, entriesCollection, stagesCollection } = await getCollections()
     const date = String(req.body?.date ?? '').trim()

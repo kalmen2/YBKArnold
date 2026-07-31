@@ -7,7 +7,7 @@
       "com.googleusercontent.apps.304964900278-hbvsdpihhnbnrgkq7i7ncdibki9p5e7v",
       "com.googleusercontent.apps.304964900278-70krkc9nf553bcb0vo5s1reajgqs2j8q"
     ],
-    "version": "3.26",
+    "version": "3.36",
     "runtimeVersion": {
       "policy": "appVersion"
     },
@@ -46,7 +46,7 @@
         "backgroundColor": "#ffffff"
       },
       "predictiveBackGestureEnabled": false,
-      "versionCode": 70
+      "versionCode": 80
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -60,7 +60,8 @@
       "@react-native-community/datetimepicker",
       "expo-apple-authentication",
       "expo-notifications",
-      "expo-web-browser"
+      "expo-web-browser",
+      "expo-sharing"
     ]
   }
 }

@@ -593,6 +593,7 @@ export type CrmQuoteOrigin = 'website' | 'excel'
 
 export type CrmQuote3dModel = {
   status: 'ready' | string
+  viewerType?: 'trimble' | 'glb' | string | null
   fileName: string | null
   uploadedAt: string | null
   uploadedByEmail: string | null
@@ -600,6 +601,7 @@ export type CrmQuote3dModel = {
   models?: Array<{
     fileName: string
     label: string
+    viewerType?: 'trimble' | 'glb' | string | null
   }> | null
 }
 
@@ -1389,6 +1391,20 @@ export function commitTrimbleQuoteModelUpload(quoteId: string, uploadId: string,
   return apiRequest<{ model: CrmQuote3dModel }>(
     `/api/trimble/quotes/${encodeURIComponent(quoteId)}/uploads/commit`,
     { method: 'POST', body: JSON.stringify({ uploadId, revisionNumber }) },
+  )
+}
+
+export function publishGlbQuoteModels(
+  quoteId: string,
+  models: Array<{ fileName: string; fileSize?: number | null; downloadUrl: string; label?: string }>,
+  revisionNumber?: number,
+) {
+  return apiRequest<{ model: CrmQuote3dModel }>(
+    `/api/trimble/quotes/${encodeURIComponent(quoteId)}/web-models`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ models, revisionNumber }),
+    },
   )
 }
 

@@ -19,11 +19,15 @@ import {
   Stack,
   Typography,
 } from '@mui/material'
+import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage'
 import { useEffect, useRef, useState } from 'react'
+import { firebaseStorage } from '../../auth/firebase'
+import { sanitizeStoragePathSegment } from '../../lib/fileUtils'
 import {
   commitTrimbleQuoteModelUpload,
   fetchTrimbleConnectionStatus,
   initiateTrimbleQuoteModelUpload,
+  publishGlbQuoteModels,
   removeTrimbleQuoteModel,
   startTrimbleConnection,
   uploadTrimbleSavedQuoteModels,
@@ -52,12 +56,16 @@ function sketchUpViewLabel(name: string | null | undefined, storedLabel?: string
   if (normalizedStoredLabel && !/^(?:option\s*\d+|primary\s+view)$/i.test(normalizedStoredLabel)) {
     return normalizedStoredLabel
   }
-  return savedSketchUpName(name).replace(/\.skp$/i, '').trim() || `Sketch${index + 1}`
+  return savedSketchUpName(name).replace(/\.(?:skp|glb)$/i, '').trim() || `Sketch${index + 1}`
 }
 
-function isSketchUpDocument(document: { name?: string | null; url?: string | null }) {
-  return /\.skp(?:$|[?#])/i.test(String(document.url || ''))
-    || /\.skp$/i.test(savedSketchUpName(document.name))
+function isCustomer3dDocument(document: { name?: string | null; url?: string | null }) {
+  return /\.(?:skp|glb)(?:$|[?#])/i.test(String(document.url || ''))
+    || /\.(?:skp|glb)$/i.test(savedSketchUpName(document.name))
+}
+
+function isGlbName(name: string | null | undefined) {
+  return /\.glb$/i.test(savedSketchUpName(name))
 }
 
 function isRenderingDocument(name: string | null | undefined) {
@@ -74,7 +82,6 @@ function renderingFileType(name: string | null | undefined) {
 export default function Quote3dModelPanel({ quote, revisionNumber, canManage, onChanged }: Props) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [connected, setConnected] = useState<boolean | null>(null)
-  const [projectName, setProjectName] = useState('Arnold Contract – Customer 3D Models')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [pickerOpen, setPickerOpen] = useState(false)
@@ -86,7 +93,6 @@ export default function Quote3dModelPanel({ quote, revisionNumber, canManage, on
       .then((status) => {
         if (!active) return
         setConnected(status.connected)
-        setProjectName(status.projectName)
       })
       .catch((requestError) => {
         if (!active) return
@@ -113,10 +119,32 @@ export default function Quote3dModelPanel({ quote, revisionNumber, canManage, on
     setBusy(true)
     setError('')
     try {
-      const session = await initiateTrimbleQuoteModelUpload(quote.id, file, revisionNumber)
-      const uploadResponse = await fetch(session.uploadUrl, { method: 'PUT', body: file })
-      if (!uploadResponse.ok) throw new Error(`SketchUp upload failed (${uploadResponse.status}).`)
-      await commitTrimbleQuoteModelUpload(quote.id, session.uploadId, revisionNumber)
+      if (/\.glb$/i.test(file.name)) {
+        if (file.size <= 0 || file.size > 2 * 1024 * 1024 * 1024) {
+          throw new Error('The GLB file must be between 1 byte and 2 GB.')
+        }
+        const quoteSegment = sanitizeStoragePathSegment(quote.id, 'quote')
+        const fileSegment = sanitizeStoragePathSegment(file.name.replace(/\.glb$/i, ''), 'model')
+        const target = storageRef(
+          firebaseStorage,
+          `crm/opportunities/3d-models/${quoteSegment}/${Date.now()}-${fileSegment}.glb`,
+        )
+        await uploadBytes(target, file, { contentType: file.type || 'model/gltf-binary' })
+        const downloadUrl = await getDownloadURL(target)
+        await publishGlbQuoteModels(
+          quote.id,
+          [{ fileName: file.name, fileSize: file.size, downloadUrl }],
+          revisionNumber,
+        )
+      } else if (/\.skp$/i.test(file.name)) {
+        if (!connected) throw new Error('Connect Trimble before publishing a SketchUp .skp file, or upload a smooth .glb web model instead.')
+        const session = await initiateTrimbleQuoteModelUpload(quote.id, file, revisionNumber)
+        const uploadResponse = await fetch(session.uploadUrl, { method: 'PUT', body: file })
+        if (!uploadResponse.ok) throw new Error(`SketchUp upload failed (${uploadResponse.status}).`)
+        await commitTrimbleQuoteModelUpload(quote.id, session.uploadId, revisionNumber)
+      } else {
+        throw new Error('Select a SketchUp .skp file or a smooth web .glb file.')
+      }
       await onChanged()
     } catch (requestError) {
       setError(errorMessage(requestError))
@@ -127,7 +155,7 @@ export default function Quote3dModelPanel({ quote, revisionNumber, canManage, on
   }
 
   const remove = async () => {
-    if (!window.confirm('Remove this customer 3D viewer link? The SketchUp files will remain safely stored in Trimble Connect.')) return
+    if (!window.confirm('Remove this customer 3D viewer link? The uploaded source file will remain safely stored.')) return
     setBusy(true)
     setError('')
     try {
@@ -145,8 +173,8 @@ export default function Quote3dModelPanel({ quote, revisionNumber, canManage, on
   const detectedRenderingDocuments = allDocuments.filter((document) => isRenderingDocument(document.name))
   const renderingDocuments = detectedRenderingDocuments.length
     ? detectedRenderingDocuments
-    : allDocuments.filter((document) => isSketchUpDocument(document))
-  const savedSketchUpDocuments = renderingDocuments.filter((document) => isSketchUpDocument(document))
+    : allDocuments.filter((document) => isCustomer3dDocument(document))
+  const saved3dDocuments = renderingDocuments.filter((document) => isCustomer3dDocument(document))
   const publishedModels = model?.models?.length
     ? model.models
     : (model?.fileName ? [{ fileName: model.fileName, label: sketchUpViewLabel(model.fileName) }] : [])
@@ -167,22 +195,39 @@ export default function Quote3dModelPanel({ quote, revisionNumber, canManage, on
 
   const publishSelected = async () => {
     const selectedDocuments = selectedUrls
-      .map((url) => savedSketchUpDocuments.find((document) => document.url === url))
+      .map((url) => saved3dDocuments.find((document) => document.url === url))
       .filter((document): document is NonNullable<typeof document> => Boolean(document))
     if (!selectedDocuments.length) return
 
     setBusy(true)
     setError('')
     try {
-      await uploadTrimbleSavedQuoteModels(
-        quote.id,
-        selectedDocuments.map((document, index) => ({
-          document,
-          fileName: savedSketchUpName(document.name),
-          label: sketchUpViewLabel(document.name, null, index),
-        })),
-        revisionNumber,
-      )
+      const glbDocuments = selectedDocuments.filter((document) => isGlbName(document.name))
+      if (glbDocuments.length && glbDocuments.length !== selectedDocuments.length) {
+        throw new Error('Publish GLB and SKP models separately. GLB files use the smooth customer viewer.')
+      }
+      if (glbDocuments.length) {
+        await publishGlbQuoteModels(
+          quote.id,
+          glbDocuments.map((document, index) => ({
+            fileName: savedSketchUpName(document.name),
+            downloadUrl: document.url,
+            label: sketchUpViewLabel(document.name, null, index),
+          })),
+          revisionNumber,
+        )
+      } else {
+        if (!connected) throw new Error('Connect Trimble before publishing SketchUp .skp files.')
+        await uploadTrimbleSavedQuoteModels(
+          quote.id,
+          selectedDocuments.map((document, index) => ({
+            document,
+            fileName: savedSketchUpName(document.name),
+            label: sketchUpViewLabel(document.name, null, index),
+          })),
+          revisionNumber,
+        )
+      }
       setPickerOpen(false)
       await onChanged()
     } catch (requestError) {
@@ -216,7 +261,7 @@ export default function Quote3dModelPanel({ quote, revisionNumber, canManage, on
               <Typography variant="body2" color="text.secondary">
                 {model
                   ? 'Customers receive a permanent Arnold link with view-only rotation and zoom.'
-                  : `Publish one or more .skp renderings through ${projectName}.`}
+                  : 'Publish a smooth .glb web model, or use a .skp model through Trimble.'}
               </Typography>
               {publishedModels.length ? (
                 <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ mt: 1 }}>
@@ -232,14 +277,14 @@ export default function Quote3dModelPanel({ quote, revisionNumber, canManage, on
                   Open 3D view
                 </Button>
               ) : null}
-              {canManage && connected ? (
+              {canManage ? (
                 <Button disabled={busy} variant={model ? 'outlined' : 'contained'} startIcon={busy ? <CircularProgress size={16} /> : <CloudUploadRoundedIcon />} onClick={openPicker} sx={{ textTransform: 'none' }}>
                   {model ? 'Change 3D views' : 'Publish 3D views'}
                 </Button>
               ) : null}
               {canManage && connected === false ? (
                 <Button disabled={busy} variant="contained" onClick={() => void connect()} sx={{ textTransform: 'none' }}>
-                  Connect Trimble
+                  Connect Trimble for SKP
                 </Button>
               ) : null}
               {canManage && model ? (
@@ -255,7 +300,7 @@ export default function Quote3dModelPanel({ quote, revisionNumber, canManage, on
           ref={inputRef}
           hidden
           type="file"
-          accept=".skp,application/octet-stream"
+          accept=".glb,.skp,model/gltf-binary,model/gltf+json,application/octet-stream"
           onChange={(event) => {
             const file = event.target.files?.[0]
             if (file) void upload(file)
@@ -266,7 +311,7 @@ export default function Quote3dModelPanel({ quote, revisionNumber, canManage, on
       <Dialog open={pickerOpen} onClose={busy ? undefined : () => setPickerOpen(false)} fullWidth maxWidth="sm">
         <DialogTitle sx={{ pb: 1 }}>
           <Typography variant="h6" fontWeight={900}>Publish customer 3D views</Typography>
-          <Typography variant="body2" color="text.secondary">Upload a new SketchUp file, or select up to five SketchUp models already saved under Renderings.</Typography>
+          <Typography variant="body2" color="text.secondary">Upload a smooth GLB web model, or publish up to five compatible models already saved under Renderings.</Typography>
         </DialogTitle>
         <DialogContent>
           <Stack spacing={2}>
@@ -278,20 +323,23 @@ export default function Quote3dModelPanel({ quote, revisionNumber, canManage, on
               onClick={() => inputRef.current?.click()}
               sx={{ justifyContent: 'flex-start', textTransform: 'none', py: 1.4 }}
             >
-              Upload a new SketchUp file
+              Upload a .glb or .skp file
             </Button>
+            <Alert severity="success">
+              For smooth curves without segment lines, export from SketchUp as GLTF Binary (.glb), then upload that file here.
+            </Alert>
             <Divider><Typography variant="caption" color="text.secondary">OR USE CURRENT RENDERINGS</Typography></Divider>
             {!renderingDocuments.length ? (
               <Alert severity="info">No files are currently saved in this quote’s Renderings section.</Alert>
             ) : (
               <Stack spacing={1}>
-                <Alert severity={savedSketchUpDocuments.length ? 'info' : 'warning'}>
-                  {savedSketchUpDocuments.length
-                    ? `${savedSketchUpDocuments.length} SketchUp 3D ${savedSketchUpDocuments.length === 1 ? 'model' : 'models'} found among ${renderingDocuments.length} rendering ${renderingDocuments.length === 1 ? 'file' : 'files'}.`
-                    : `There are ${renderingDocuments.length} rendering files, but none are SketchUp (.skp) models.`}
+                <Alert severity={saved3dDocuments.length ? 'info' : 'warning'}>
+                  {saved3dDocuments.length
+                    ? `${saved3dDocuments.length} compatible 3D ${saved3dDocuments.length === 1 ? 'model' : 'models'} found among ${renderingDocuments.length} rendering ${renderingDocuments.length === 1 ? 'file' : 'files'}.`
+                    : `There are ${renderingDocuments.length} rendering files, but none are GLB or SketchUp models.`}
                 </Alert>
                 {renderingDocuments.map((document, index) => {
-                  const selectable = isSketchUpDocument(document)
+                  const selectable = isCustomer3dDocument(document)
                   const checked = selectedUrls.includes(document.url)
                   const selectedPosition = selectedUrls.indexOf(document.url)
                   return (
@@ -316,7 +364,7 @@ export default function Quote3dModelPanel({ quote, revisionNumber, canManage, on
                         <Box sx={{ flex: 1, minWidth: 0 }}>
                           <Typography variant="body2" fontWeight={800} noWrap>{savedSketchUpName(document.name)}</Typography>
                           <Typography variant="caption" color="text.secondary">
-                            {selectable ? 'SketchUp 3D model' : 'Preview/document only — not a 3D model'}
+                            {selectable ? (isGlbName(document.name) ? 'Smooth GLB web model' : 'SketchUp 3D model') : 'Preview/document only — not a 3D model'}
                           </Typography>
                         </Box>
                         <Chip size="small" variant="outlined" label={renderingFileType(document.name)} />

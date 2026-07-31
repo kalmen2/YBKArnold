@@ -13,6 +13,11 @@ import {
   Box,
   Button,
   Chip,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogContentText,
+  DialogTitle,
   Divider,
   IconButton,
   List,
@@ -25,6 +30,7 @@ import {
 } from '@mui/material'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { Mention, MentionsInput } from 'react-mentions'
 import { useAuth } from '../auth/useAuth'
 import {
   createChatGroup,
@@ -44,6 +50,70 @@ import {
 import { QUERY_KEYS } from '../lib/queryKeys'
 
 const maxAttachmentSizeBytes = 6 * 1024 * 1024
+const mentionAllId = '__mention_all__'
+
+const chatMentionsInputStyle = {
+  control: {
+    width: '100%',
+    fontFamily: 'inherit',
+    fontSize: 14,
+    lineHeight: 1.45,
+  },
+  '&multiLine': {
+    control: {
+      minHeight: 76,
+      maxHeight: 180,
+      border: '1px solid rgba(15, 23, 42, 0.26)',
+      borderRadius: 8,
+      backgroundColor: '#ffffff',
+      overflowY: 'auto',
+    },
+    highlighter: {
+      padding: '10px 12px',
+      border: '1px solid transparent',
+      boxSizing: 'border-box',
+      whiteSpace: 'pre-wrap',
+      overflowWrap: 'anywhere',
+      color: 'transparent',
+    },
+    input: {
+      padding: '10px 12px',
+      minHeight: 76,
+      border: '1px solid transparent',
+      outline: 0,
+      boxSizing: 'border-box',
+      fontFamily: 'inherit',
+      fontSize: 14,
+      lineHeight: 1.45,
+      color: '#0f172a',
+      backgroundColor: 'transparent',
+    },
+  },
+  suggestions: {
+    list: {
+      zIndex: 1600,
+      backgroundColor: '#fff',
+      border: '1px solid rgba(15, 23, 42, 0.2)',
+      borderRadius: 8,
+      boxShadow: '0 10px 28px rgba(15, 23, 42, 0.16)',
+      maxHeight: 240,
+      overflowY: 'auto',
+      padding: 4,
+    },
+    item: {
+      padding: '8px 10px',
+      borderRadius: 6,
+    },
+  },
+} as const
+
+function extractMentionUids(markup: string) {
+  return [...new Set(
+    Array.from(String(markup ?? '').matchAll(/@\[[^\]]+\]\(([^)]+)\)/g))
+      .map((entry) => String(entry[1] ?? '').trim())
+      .filter(Boolean),
+  )]
+}
 
 type AttachmentDraft = {
   kind: AppChatAttachmentKind
@@ -142,6 +212,7 @@ export default function ChatPage() {
   const messageBottomRef = useRef<HTMLDivElement | null>(null)
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null)
   const [messageDraft, setMessageDraft] = useState('')
+  const [messageDraftMarkup, setMessageDraftMarkup] = useState('')
   const [attachmentDraft, setAttachmentDraft] = useState<AttachmentDraft | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [newDirectUserUid, setNewDirectUserUid] = useState<string | null>(null)
@@ -149,6 +220,7 @@ export default function ChatPage() {
   const [newGroupMemberUids, setNewGroupMemberUids] = useState<string[]>([])
   const [groupDraftName, setGroupDraftName] = useState('')
   const [groupDraftMemberUids, setGroupDraftMemberUids] = useState<string[]>([])
+  const [adminDeleteThread, setAdminDeleteThread] = useState<AppChatThread | null>(null)
   const currentUid = String(appUser?.uid ?? '').trim()
   const currentEmail = normalizeEmail(appUser?.email)
   const isAdmin = Boolean(appUser?.isAdmin)
@@ -228,6 +300,13 @@ export default function ChatPage() {
     () => users.filter((user) => user.uid !== currentUid),
     [currentUid, users],
   )
+  const mentionOptions = useMemo(() => [
+    { id: mentionAllId, display: 'all' },
+    ...users.map((user) => ({
+      id: user.uid,
+      display: String(user.displayName || user.email.split('@')[0] || user.email).trim(),
+    })),
+  ], [users])
 
   const createDirectMutation = useMutation({
     mutationFn: createDirectChat,
@@ -256,11 +335,18 @@ export default function ChatPage() {
   })
 
   const deleteThreadMutation = useMutation({
-    mutationFn: deleteChatThread,
-    onSuccess: async (_payload, threadId) => {
+    mutationFn: ({
+      threadId,
+      deleteForEveryone,
+    }: {
+      threadId: string
+      deleteForEveryone: boolean
+    }) => deleteChatThread(threadId, deleteForEveryone),
+    onSuccess: async (_payload, { threadId }) => {
       if (selectedThreadId === threadId) {
         setSelectedThreadId(null)
       }
+      setAdminDeleteThread(null)
       setActionError(null)
       await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.chatThreads('all') })
     },
@@ -311,6 +397,7 @@ export default function ChatPage() {
       threadId: string
       payload: {
         text?: string
+        mentionUserUids?: string[]
         attachment?: {
           kind: AppChatAttachmentKind
           dataUrl: string
@@ -322,6 +409,7 @@ export default function ChatPage() {
     onSuccess: async () => {
       setActionError(null)
       setMessageDraft('')
+      setMessageDraftMarkup('')
       setAttachmentDraft(null)
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: QUERY_KEYS.chatThreads('all') }),
@@ -410,6 +498,12 @@ export default function ChatPage() {
     sendMessageMutation.mutate({
       threadId: selectedThreadId,
       payload: {
+        mentionUserUids: (() => {
+          const ids = extractMentionUids(messageDraftMarkup)
+          return ids.includes(mentionAllId)
+            ? [...new Set(users.map((user) => user.uid))]
+            : ids
+        })(),
         ...(normalizedText
           ? {
               text: normalizedText,
@@ -701,8 +795,13 @@ export default function ChatPage() {
                       aria-label="Delete chat"
                       onClick={(event) => {
                         event.stopPropagation()
-                        if (window.confirm('Remove this chat from your list?')) {
-                          deleteThreadMutation.mutate(thread.id)
+                        if (isAdmin) {
+                          setAdminDeleteThread(thread)
+                        } else if (window.confirm('Delete this chat for you? Its existing messages will stay hidden if you start the chat again.')) {
+                          deleteThreadMutation.mutate({
+                            threadId: thread.id,
+                            deleteForEveryone: false,
+                          })
                         }
                       }}
                     >
@@ -939,6 +1038,20 @@ export default function ChatPage() {
                         />
                       </Box>
                     ) : null}
+
+                    {!deleted && attachment?.kind === 'file' && attachment.dataUrl ? (
+                      <Button
+                        component="a"
+                        href={attachment.dataUrl}
+                        download={attachment.fileName || 'attachment'}
+                        size="small"
+                        variant="outlined"
+                        startIcon={<AttachFileRoundedIcon />}
+                        sx={{ mt: message.text ? 1 : 0 }}
+                      >
+                        {attachment.fileName || 'Download file'}
+                      </Button>
+                    ) : null}
                   </Paper>
                 </Stack>
               )
@@ -999,16 +1112,24 @@ export default function ChatPage() {
                 </Paper>
               ) : null}
 
-              <TextField
-                multiline
-                minRows={2}
-                maxRows={6}
-                value={messageDraft}
-                onChange={(event) => {
-                  setMessageDraft(event.target.value)
+              <MentionsInput
+                value={messageDraftMarkup}
+                onChange={(_event, nextMarkup, nextPlainText) => {
+                  setMessageDraftMarkup(nextMarkup)
+                  setMessageDraft(nextPlainText)
                 }}
-                placeholder="Write a message..."
-              />
+                placeholder="Write a message... Use @ to tag someone or @all to notify everyone."
+                style={chatMentionsInputStyle}
+                allowSuggestionsAboveCursor
+              >
+                <Mention
+                  trigger="@"
+                  markup="@[__display__](__id__)"
+                  displayTransform={(_id, display) => `@${display}`}
+                  data={mentionOptions}
+                  appendSpaceOnAdd
+                />
+              </MentionsInput>
 
               <Stack direction="row" spacing={1} justifyContent="space-between">
                 <input
@@ -1040,6 +1161,60 @@ export default function ChatPage() {
           ) : null}
         </Paper>
       </Box>
+
+      <Dialog
+        open={Boolean(adminDeleteThread)}
+        onClose={() => {
+          if (!deleteThreadMutation.isPending) {
+            setAdminDeleteThread(null)
+          }
+        }}
+      >
+        <DialogTitle>Delete chat</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            Delete this chat only for you, or clear and remove it for every member?
+            Existing messages will not return if the chat is started again.
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={() => setAdminDeleteThread(null)}
+            disabled={deleteThreadMutation.isPending}
+          >
+            Cancel
+          </Button>
+          <Button
+            color="error"
+            disabled={!adminDeleteThread || deleteThreadMutation.isPending}
+            onClick={() => {
+              if (adminDeleteThread) {
+                deleteThreadMutation.mutate({
+                  threadId: adminDeleteThread.id,
+                  deleteForEveryone: false,
+                })
+              }
+            }}
+          >
+            Delete for me
+          </Button>
+          <Button
+            color="error"
+            variant="contained"
+            disabled={!adminDeleteThread || deleteThreadMutation.isPending}
+            onClick={() => {
+              if (adminDeleteThread) {
+                deleteThreadMutation.mutate({
+                  threadId: adminDeleteThread.id,
+                  deleteForEveryone: true,
+                })
+              }
+            }}
+          >
+            Delete for everyone
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Stack>
   )
 }

@@ -12,6 +12,7 @@ import PreviewRoundedIcon from '@mui/icons-material/PreviewRounded'
 import PrintRoundedIcon from '@mui/icons-material/PrintRounded'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import WorkspacesRoundedIcon from '@mui/icons-material/WorkspacesRounded'
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined'
 import {
   Alert,
   Autocomplete,
@@ -36,6 +37,8 @@ import {
   Paper,
   Slider,
   Stack,
+  Tab,
+  Tabs,
   Table,
   TableBody,
   TableCell,
@@ -53,6 +56,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type MouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import Cropper, { type Area } from 'react-easy-crop'
+import { Mention, MentionsInput } from 'react-mentions'
 import { useAuth } from '../auth/useAuth'
 import { firebaseStorage } from '../auth/firebase'
 import { LoadingPanel } from '../components/LoadingPanel'
@@ -66,6 +70,7 @@ import {
   createCrmQuoteChatMessage,
   convertCrmQuoteWorkbook,
   fetchCrmConvertOrderBoards,
+  fetchCrmChatUsers,
   fetchCrmDealers,
   fetchCrmContacts,
   fetchCrmExcelQuoteLookup,
@@ -79,6 +84,8 @@ import {
   removeCrmQuote,
   removeCrmQuoteRevision,
   syncCrmQuoteFromExcel,
+  updateCrmContact,
+  updateCrmDealer,
   updateCrmQuote,
   type CrmDealer,
   type CrmContact,
@@ -111,6 +118,27 @@ const DEFAULT_OPPORTUNITY_TITLE_PREFIX = 'Opportunity '
 const DEFAULT_WEBSITE_PAYMENT_TERMS = '50% Deposit / 50% CBD'
 const DEFAULT_NEW_ORDERS_2026_BOARD_ID = '18393945685'
 const DEFAULT_DESIGN_AKF_BOARD_ID = '1064270065'
+const MENTION_ALL_ID = '__mention_all__'
+const quoteChatMentionsInputStyle = {
+  control: { width: '100%', fontFamily: 'inherit', fontSize: 14, lineHeight: 1.45 },
+  '&multiLine': {
+    control: { minHeight: 76, maxHeight: 180, border: '1px solid rgba(15, 23, 42, 0.26)', borderRadius: 8, backgroundColor: '#fff', overflowY: 'auto' },
+    highlighter: { padding: '10px 12px', border: '1px solid transparent', boxSizing: 'border-box', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', color: 'transparent' },
+    input: { padding: '10px 12px', minHeight: 76, border: '1px solid transparent', outline: 0, boxSizing: 'border-box', fontFamily: 'inherit', fontSize: 14, lineHeight: 1.45, color: '#0f172a', backgroundColor: 'transparent' },
+  },
+  suggestions: {
+    list: { zIndex: 1700, backgroundColor: '#fff', border: '1px solid rgba(15, 23, 42, 0.2)', borderRadius: 8, boxShadow: '0 10px 28px rgba(15, 23, 42, 0.16)', maxHeight: 240, overflowY: 'auto', padding: 4 },
+    item: { padding: '8px 10px', borderRadius: 6 },
+  },
+} as const
+
+function extractQuoteChatMentionUids(markup: string) {
+  return [...new Set(
+    Array.from(String(markup ?? '').matchAll(/@\[[^\]]+\]\(([^)]+)\)/g))
+      .map((entry) => String(entry[1] ?? '').trim())
+      .filter(Boolean),
+  )]
+}
 const QuotePdfPreviewDialog = lazy(() => import('../features/crm/NativeQuotePdf').then((module) => ({
   default: module.QuotePdfPreviewDialog,
 })))
@@ -207,6 +235,27 @@ type OpportunityFormState = {
   sourceWorkbookName: string
   convertedPdfUrl: string
   convertedPdfName: string
+  sketchupDocumentUrl: string
+  sketchupDocumentName: string
+}
+
+type AddOpportunityStage = 0 | 1 | 2 | 3
+
+const ADD_OPPORTUNITY_STAGES = [
+  'Account Information',
+  'Quote Lines',
+  'Services & Delivery',
+  'Review & Submit',
+] as const
+
+type NewDealerFormState = {
+  name: string
+  email: string
+  phone: string
+  city: string
+  state: string
+  salesRep: string
+  paymentTerms: string
 }
 
 type OpportunityDetailsFormState = {
@@ -400,6 +449,7 @@ type LineItemsEditorProps = {
   onRemoveImage: (lineIndex: number, imageId: string) => void
   onUpdateImageLayout: (lineIndex: number, imageId: string, layout: QuoteImagePdfLayout) => void
   isUploadingImage: boolean
+  showPdfLayoutAction?: boolean
 }
 
 const stageDefinitions: StageDefinition[] = [
@@ -791,14 +841,7 @@ function normalizeServiceItemsForPayload(items: OpportunityServiceItemFormState[
       price: extPrice,
       images: item.images,
     }
-  }).filter((item) => (
-    item.title
-    || item.description
-    || item.qty !== null
-    || item.unitPrice !== null
-    || item.extPrice !== null
-    || (item.images?.length || 0) > 0
-  ))
+  }).filter((item) => item.title && item.qty !== null && item.qty > 0 && item.unitPrice !== null)
 }
 
 function isBlankLineItem(lineItem: OpportunityLineItemFormState) {
@@ -807,6 +850,10 @@ function isBlankLineItem(lineItem: OpportunityLineItemFormState) {
     && !lineItem.unitPrice.trim()
     && !lineItem.extPrice.trim()
     && lineItem.images.length === 0
+}
+
+function isValidEmailAddress(value: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim())
 }
 
 async function readImageDimensions(file: File) {
@@ -1295,7 +1342,7 @@ function createEmptyOpportunityForm(): OpportunityFormState {
     freight: '',
     freightDescription: '',
     notes: '',
-    lineItems: [createEmptyLineItemFormState()],
+    lineItems: Array.from({ length: 4 }, () => createEmptyLineItemFormState()),
     additionalServices: createDefaultAdditionalServices(),
     shippingServices: createDefaultShippingServices(),
     quoteDocumentUrl: '',
@@ -1305,6 +1352,8 @@ function createEmptyOpportunityForm(): OpportunityFormState {
     sourceWorkbookName: '',
     convertedPdfUrl: '',
     convertedPdfName: '',
+    sketchupDocumentUrl: '',
+    sketchupDocumentName: '',
   }
 }
 
@@ -2490,6 +2539,7 @@ function LineItemsEditor({
   onRemoveImage,
   onUpdateImageLayout,
   isUploadingImage,
+  showPdfLayoutAction = true,
 }: LineItemsEditorProps) {
   const lineItemsTotal = calculateLineItemsTotal(normalizeLineItemsForPayload(lineItems))
   const [cropTarget, setCropTarget] = useState<{ index: number; file: File } | null>(null)
@@ -2510,9 +2560,11 @@ function LineItemsEditor({
         </Stack>
 
         <Stack direction="row" spacing={0.8}>
-          <Button size="small" variant="outlined" startIcon={<PreviewRoundedIcon />} onClick={() => setIsPictureLayoutOpen(true)} disabled={!canEdit || pictureCount === 0}>
-            Preview PDF &amp; Arrange Pictures
-          </Button>
+          {showPdfLayoutAction ? (
+            <Button size="small" variant="outlined" startIcon={<PreviewRoundedIcon />} onClick={() => setIsPictureLayoutOpen(true)} disabled={!canEdit || pictureCount === 0}>
+              Preview PDF &amp; Arrange Pictures
+            </Button>
+          ) : null}
           <Button size="small" variant="outlined" onClick={onAddLineItem} disabled={!canEdit}>
             Add line item
           </Button>
@@ -2850,6 +2902,199 @@ function QuoteServiceItemsEditor({ heading, description, items, canEdit, isUploa
           setCropTarget(null)
         }}
       />
+    </Paper>
+  )
+}
+
+function QuoteServiceCardSelector({
+  heading,
+  description,
+  items,
+  canEdit,
+  onChange,
+  addButtonLabel,
+  itemLabel,
+}: {
+  heading: string
+  description: string
+  items: OpportunityServiceItemFormState[]
+  canEdit: boolean
+  onChange: (items: OpportunityServiceItemFormState[]) => void
+  addButtonLabel: string
+  itemLabel: string
+}) {
+  const [draft, setDraft] = useState<OpportunityServiceItemFormState | null>(null)
+  const activeIndex = draft ? items.findIndex((item) => item.id === draft.id) : -1
+  const quantity = Number(draft?.qty)
+  const unitPrice = Number(draft?.unitPrice)
+  const canSave = Boolean(
+    draft?.title.trim()
+    && draft?.qty.trim()
+    && Number.isFinite(quantity)
+    && quantity > 0
+    && draft?.unitPrice.trim()
+    && Number.isFinite(unitPrice)
+    && unitPrice >= 0,
+  )
+
+  const saveDraft = () => {
+    if (!draft) return
+    const normalizedDraft = updateServiceItemPricing(draft, 'unitPrice', draft.unitPrice)
+    onChange(activeIndex >= 0
+      ? items.map((item, index) => index === activeIndex ? normalizedDraft : item)
+      : [...items, normalizedDraft])
+    setDraft(null)
+  }
+
+  return (
+    <Paper
+      variant="outlined"
+      sx={{
+        overflow: 'hidden',
+        borderRadius: 2.5,
+        borderColor: alpha('#0f4c81', 0.2),
+        boxShadow: '0 10px 30px rgba(15, 76, 129, 0.07)',
+      }}
+    >
+      <Box sx={{ px: 2, py: 1.6, background: `linear-gradient(135deg, ${alpha('#0f4c81', 0.12)}, ${alpha('#0f4c81', 0.025)})` }}>
+        <Typography variant="h6" fontWeight={850} color="primary.dark">{heading}</Typography>
+        <Typography variant="body2" color="text.secondary">{description}</Typography>
+      </Box>
+      <Box
+        sx={{
+          display: 'grid',
+          gridTemplateColumns: { xs: '1fr', md: 'repeat(2, minmax(0, 1fr))', xl: 'repeat(3, minmax(0, 1fr))' },
+          gap: 1.4,
+          p: 1.8,
+          bgcolor: '#f8fafc',
+        }}
+      >
+        {items.map((item) => {
+          const isSelected = Number(item.qty) > 0
+          return (
+            <Paper
+              key={item.id}
+              component="button"
+              type="button"
+              disabled={!canEdit}
+              onClick={() => setDraft({ ...item, images: [...item.images] })}
+              variant="outlined"
+              sx={{
+                appearance: 'none',
+                textAlign: 'left',
+                width: '100%',
+                minHeight: 150,
+                p: 1.5,
+                borderRadius: 2,
+                cursor: canEdit ? 'pointer' : 'default',
+                borderColor: isSelected ? 'primary.main' : alpha('#0f4c81', 0.18),
+                bgcolor: isSelected ? alpha('#0f4c81', 0.055) : '#fff',
+                boxShadow: isSelected ? `0 0 0 1px ${alpha('#0f4c81', 0.3)}` : '0 3px 12px rgba(15, 76, 129, 0.05)',
+                transition: 'transform 140ms ease, box-shadow 140ms ease',
+                '&:hover': canEdit ? {
+                  transform: 'translateY(-2px)',
+                  boxShadow: '0 10px 25px rgba(15, 76, 129, 0.12)',
+                  borderColor: 'primary.main',
+                } : undefined,
+              }}
+            >
+              <Stack spacing={1} height="100%">
+                <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>
+                  <Typography variant="subtitle1" fontWeight={850} color="primary.dark">{item.title || `Custom ${itemLabel}`}</Typography>
+                  {isSelected ? <Chip size="small" color="primary" label={`Qty ${item.qty}`} /> : <Chip size="small" variant="outlined" label="Select" />}
+                </Stack>
+                <Typography variant="body2" color="text.secondary" sx={{ flex: 1 }}>
+                  {item.description || `Add the details for this ${itemLabel}.`}
+                </Typography>
+                <Typography variant="body2" fontWeight={750}>
+                  {item.unitPrice.trim() ? `${formatCurrency(Number(item.unitPrice), 2)} each` : 'Enter price when selected'}
+                </Typography>
+              </Stack>
+            </Paper>
+          )
+        })}
+      </Box>
+      <Box sx={{ px: 1.8, pb: 1.8, bgcolor: '#f8fafc' }}>
+        <Button
+          fullWidth
+          variant="outlined"
+          startIcon={<AddRoundedIcon />}
+          disabled={!canEdit}
+          onClick={() => setDraft(createServiceItemFormState())}
+          sx={{ py: 1.1, borderStyle: 'dashed', fontWeight: 800 }}
+        >
+          {addButtonLabel}
+        </Button>
+      </Box>
+
+      <Dialog open={Boolean(draft)} onClose={() => setDraft(null)} maxWidth="sm" fullWidth>
+        <DialogTitle sx={{ pb: 0.8 }}>
+          <Typography variant="h6" fontWeight={850}>{draft?.title || `Add custom ${itemLabel}`}</Typography>
+          <Typography variant="body2" color="text.secondary">
+            Review the details, then enter the quantity and unit price.
+          </Typography>
+        </DialogTitle>
+        <DialogContent>
+          {draft ? (
+            <Stack spacing={1.5} sx={{ pt: 1 }}>
+              <TextField
+                required
+                label={itemLabel === 'delivery option' ? 'Delivery Option' : 'Service'}
+                value={draft.title}
+                onChange={(event) => setDraft((current) => current ? { ...current, title: event.target.value } : current)}
+              />
+              <TextField
+                label="Description"
+                value={draft.description}
+                onChange={(event) => setDraft((current) => current ? { ...current, description: event.target.value } : current)}
+                multiline
+                minRows={3}
+              />
+              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.2}>
+                <TextField
+                  required
+                  autoFocus
+                  label="Quantity"
+                  type="number"
+                  value={draft.qty}
+                  onChange={(event) => setDraft((current) => current ? updateServiceItemPricing(current, 'qty', event.target.value) : current)}
+                  inputProps={{ min: 0, step: 1, inputMode: 'decimal' }}
+                  sx={{ flex: 1 }}
+                />
+                <TextField
+                  required
+                  label="Unit Price"
+                  type="number"
+                  value={draft.unitPrice}
+                  onChange={(event) => setDraft((current) => current ? updateServiceItemPricing(current, 'unitPrice', event.target.value) : current)}
+                  inputProps={{ min: 0, step: 0.01, inputMode: 'decimal' }}
+                  InputProps={{ startAdornment: <InputAdornment position="start">$</InputAdornment> }}
+                  sx={{ flex: 1 }}
+                />
+              </Stack>
+              <Alert severity="info">
+                The extended price will be calculated automatically and shown on the final quote.
+              </Alert>
+            </Stack>
+          ) : null}
+        </DialogContent>
+        <DialogActions>
+          {activeIndex >= 0 && Number(items[activeIndex]?.qty) > 0 ? (
+            <Button
+              color="error"
+              onClick={() => {
+                onChange(items.map((item, index) => index === activeIndex ? { ...item, qty: '', extPrice: '' } : item))
+                setDraft(null)
+              }}
+            >
+              Remove from quote
+            </Button>
+          ) : null}
+          <Box sx={{ flex: 1 }} />
+          <Button onClick={() => setDraft(null)}>Cancel</Button>
+          <Button variant="contained" disabled={!canSave} onClick={saveDraft}>Add to quote</Button>
+        </DialogActions>
+      </Dialog>
     </Paper>
   )
 }
@@ -3750,13 +3995,32 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   const deepLinkedQuoteId = String(searchParams.get('quoteId') || '').trim()
 
   const [isDialogOpen, setIsDialogOpen] = useState(false)
-  const [showAddDetails, setShowAddDetails] = useState(false)
   const [formState, setFormState] = useState<OpportunityFormState>(createEmptyOpportunityForm)
+  const [addOpportunityStage, setAddOpportunityStage] = useState<AddOpportunityStage>(0)
+  const [addOpportunitySubmitAttempted, setAddOpportunitySubmitAttempted] = useState(false)
+  const [isAddPictureLayoutOpen, setIsAddPictureLayoutOpen] = useState(false)
+  const [dealerSearchInput, setDealerSearchInput] = useState('')
+  const [isNewDealerDialogOpen, setIsNewDealerDialogOpen] = useState(false)
+  const [newDealerForm, setNewDealerForm] = useState<NewDealerFormState>({
+    name: '',
+    email: '',
+    phone: '',
+    city: '',
+    state: '',
+    salesRep: '',
+    paymentTerms: DEFAULT_WEBSITE_PAYMENT_TERMS,
+  })
+  const [newDealerError, setNewDealerError] = useState<string | null>(null)
+  const [isSavingNewDealer, setIsSavingNewDealer] = useState(false)
   const [selectedAddContactSourceId, setSelectedAddContactSourceId] = useState('')
   const [isNewContactDialogOpen, setIsNewContactDialogOpen] = useState(false)
   const [newContactForm, setNewContactForm] = useState({ name: '', email: '', phone: '' })
   const [newContactError, setNewContactError] = useState<string | null>(null)
   const [isSavingNewContact, setIsSavingNewContact] = useState(false)
+  const [isPaymentTermsDialogOpen, setIsPaymentTermsDialogOpen] = useState(false)
+  const [paymentTermsDraft, setPaymentTermsDraft] = useState('')
+  const [paymentTermsApplyMode, setPaymentTermsApplyMode] = useState<'quote' | 'dealer'>('quote')
+  const [isSavingPaymentTerms, setIsSavingPaymentTerms] = useState(false)
   const [isAddDialogDraftFromExcelSync, setIsAddDialogDraftFromExcelSync] = useState(false)
   const [addDialogInitialSnapshot, setAddDialogInitialSnapshot] = useState(() => serializeOpportunityFormState(createEmptyOpportunityForm()))
   const [isSyncingExcelQuote, setIsSyncingExcelQuote] = useState(false)
@@ -3813,6 +4077,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   const [folderScanUploadProgress, setFolderScanUploadProgress] = useState({ completed: 0, total: 0 })
   const [opportunityDetailsInitialSnapshot, setOpportunityDetailsInitialSnapshot] = useState('')
   const [selectedOpportunityChatDraft, setSelectedOpportunityChatDraft] = useState('')
+  const [selectedOpportunityChatDraftMarkup, setSelectedOpportunityChatDraftMarkup] = useState('')
   const [selectedOpportunityRefreshOnSend, setSelectedOpportunityRefreshOnSend] = useState(false)
   const [isSendingSelectedOpportunityChat, setIsSendingSelectedOpportunityChat] = useState(false)
   const [deletingSelectedOpportunityChatMessageId, setDeletingSelectedOpportunityChatMessageId] = useState('')
@@ -3897,6 +4162,12 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     }),
     enabled: Boolean(selectedOpportunityId),
     staleTime: 20 * 1000,
+  })
+  const quoteChatUsersQuery = useQuery({
+    queryKey: ['crm', 'chat-users'],
+    queryFn: fetchCrmChatUsers,
+    enabled: Boolean(selectedOpportunityId && selectedOpportunityDetailsTab === 'chat'),
+    staleTime: 2 * 60 * 1000,
   })
 
   const isLoading = quotesQuery.isLoading
@@ -4428,6 +4699,14 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   )
 
   const selectedOpportunityChatCount = selectedOpportunityChatMessages.length
+  const quoteChatUsers = quoteChatUsersQuery.data?.users ?? []
+  const quoteChatMentionOptions = useMemo(() => [
+    { id: MENTION_ALL_ID, display: 'all' },
+    ...quoteChatUsers.map((user) => ({
+      id: user.uid,
+      display: String(user.displayName || user.email.split('@')[0] || user.email).trim(),
+    })),
+  ], [quoteChatUsers])
 
   const selectedOpportunityChatErrorMessage = selectedOpportunityChatsQuery.error instanceof Error
     ? selectedOpportunityChatsQuery.error.message
@@ -4453,6 +4732,126 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       totalAmount: pricing.totalAmount,
     }
   }, [formState.additionalServices, formState.discountPercent, formState.discountScope, formState.freight, formState.lineItems, formState.shippingServices, formState.subtotal])
+
+  const addOpportunityMissingByStage = useMemo(() => {
+    const accountMissing: string[] = []
+    const quoteNumber = formState.quoteNumber.trim()
+    const selectedDealerExists = Boolean(
+      formState.dealerSourceId.trim()
+      && dealersBySourceId.has(formState.dealerSourceId.trim()),
+    )
+    const selectedContactExists = Boolean(
+      selectedAddContactSourceId
+      && addOpportunityContactOptions.some((contact) => contact.sourceId === selectedAddContactSourceId),
+    )
+
+    if (!quoteNumber) accountMissing.push('Quote number')
+    if (quoteNumber && quotes.some(
+      (entry) => normalizeQuoteFamilyValue(entry.quoteNumber) === normalizeQuoteFamilyValue(quoteNumber),
+    )) {
+      accountMissing.push('Unique quote number')
+    }
+    if (!selectedDealerExists) accountMissing.push('Saved dealer account')
+    if (!formState.title.trim()) accountMissing.push('Project name')
+    if (!formState.salesRep.trim()) accountMissing.push('Sales rep')
+    if (!formState.opportunityDateInput.trim()) accountMissing.push('Quote date')
+    if (!selectedContactExists) accountMissing.push('Saved contact name')
+    if (!formState.contactEmail.trim()) {
+      accountMissing.push('Contact email')
+    } else if (!isValidEmailAddress(formState.contactEmail)) {
+      accountMissing.push('Valid contact email')
+    }
+    if (!formState.paymentTerms.trim()) accountMissing.push('Payment terms')
+    if (!formState.leadTime.trim()) accountMissing.push('Lead time')
+
+    const quoteLinesMissing: string[] = []
+    const enteredLineItems = formState.lineItems.filter((lineItem) => !isBlankLineItem(lineItem))
+
+    if (enteredLineItems.length === 0) {
+      quoteLinesMissing.push('At least one quote line')
+    } else {
+      enteredLineItems.forEach((lineItem, index) => {
+        if (!lineItem.description.trim()) quoteLinesMissing.push(`Line ${index + 1} description`)
+        if (!lineItem.qty.trim() || !Number.isFinite(Number(lineItem.qty)) || Number(lineItem.qty) <= 0) {
+          quoteLinesMissing.push(`Line ${index + 1} quantity`)
+        }
+        if (!lineItem.unitPrice.trim() || !Number.isFinite(Number(lineItem.unitPrice)) || Number(lineItem.unitPrice) < 0) {
+          quoteLinesMissing.push(`Line ${index + 1} unit price`)
+        }
+      })
+    }
+
+    return [accountMissing, quoteLinesMissing, [], []] as const
+  }, [
+    addOpportunityContactOptions,
+    dealersBySourceId,
+    formState.contactEmail,
+    formState.dealerSourceId,
+    formState.leadTime,
+    formState.lineItems,
+    formState.opportunityDateInput,
+    formState.paymentTerms,
+    formState.quoteNumber,
+    formState.salesRep,
+    formState.title,
+    quotes,
+    selectedAddContactSourceId,
+  ])
+
+  const addOpportunityTotalMissing = addOpportunityMissingByStage
+    .reduce((total, missingFields) => total + missingFields.length, 0)
+
+  const addOpportunityPreviewQuote = useMemo(() => ({
+    id: 'new-opportunity-preview',
+    dealerSourceId: formState.dealerSourceId || null,
+    quoteNumber: formState.quoteNumber.trim() || null,
+    title: formState.title.trim() || `${DEFAULT_OPPORTUNITY_TITLE_PREFIX}${formState.quoteNumber.trim() || 'Preview'}`,
+    companyName: formState.companyName.trim() || null,
+    contactName: formState.contactName.trim() || null,
+    contactEmail: formState.contactEmail.trim() || null,
+    contactPhone: formState.contactPhone.trim() || null,
+    salesRep: formState.salesRep.trim() || null,
+    opportunityDate: formState.opportunityDateInput.trim() || null,
+    leadTime: formState.leadTime.trim() || null,
+    paymentTerms: formState.paymentTerms.trim() || null,
+    subtotal: addPricingPreview.subtotal,
+    discountPercent: addPricingPreview.discountPercent,
+    discountAmount: addPricingPreview.discountAmount,
+    discountScope: addPricingPreview.discountScope,
+    discountFreightAmount: addPricingPreview.discountFreightAmount,
+    freight: addPricingPreview.freight,
+    freightDescription: formState.freightDescription.trim() || null,
+    lineItems: normalizeLineItemsForPayload(formState.lineItems),
+    additionalServices: normalizeServiceItemsForPayload(formState.additionalServices),
+    shippingServices: normalizeServiceItemsForPayload(formState.shippingServices),
+    totalAmount: addPricingPreview.totalAmount,
+    notes: formState.notes.trim() || null,
+    status: 'draft',
+    origin: formState.origin,
+    documents: [],
+    revisions: [],
+    revisionCount: 0,
+    activeRevisionNumber: 0,
+  } as unknown as CrmQuote), [
+    addPricingPreview,
+    formState.additionalServices,
+    formState.companyName,
+    formState.contactEmail,
+    formState.contactName,
+    formState.contactPhone,
+    formState.dealerSourceId,
+    formState.freightDescription,
+    formState.leadTime,
+    formState.lineItems,
+    formState.notes,
+    formState.opportunityDateInput,
+    formState.origin,
+    formState.paymentTerms,
+    formState.quoteNumber,
+    formState.salesRep,
+    formState.shippingServices,
+    formState.title,
+  ])
 
   const detailsPricingPreview = useMemo(() => {
     if (!opportunityDetailsFormState) {
@@ -5031,7 +5430,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       })
       setIsAddDialogDraftFromExcelSync(true)
       setAddDialogInitialSnapshot(serializeOpportunityFormState(baseFormState))
-      setShowAddDetails(true)
       setIsDialogOpen(true)
       resetExcelSyncDialog()
       setSuccessMessage(`Excel data loaded for ${quoteNumber}. Review and create the opportunity.`)
@@ -5114,6 +5512,52 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       setIsUploadingQuoteDocument(false)
     }
   }, [uploadQuoteDocumentFile])
+
+  const handleSketchupDocumentUpload = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+
+    if (!file) {
+      return
+    }
+
+    setErrorMessage(null)
+    setIsUploadingQuoteDocument(true)
+
+    try {
+      if (!/\.(?:skp|glb)$/i.test(file.name)) {
+        throw new Error('Select a SketchUp .skp file or a smooth web .glb file.')
+      }
+      if (file.size > 2 * 1024 * 1024 * 1024) {
+        throw new Error('The 3D model must be 2 GB or smaller.')
+      }
+
+      const normalizedQuoteNumber = formState.quoteNumber.trim()
+      if (!normalizedQuoteNumber) {
+        throw new Error('Enter quote number before uploading the 3D model.')
+      }
+
+      const companySegment = sanitizeStoragePathSegment(formState.companyName.trim() || 'company', 'company')
+      const quoteSegment = sanitizeStoragePathSegment(normalizedQuoteNumber, 'opportunity')
+      const extension = file.name.toLowerCase().endsWith('.glb') ? 'glb' : 'skp'
+      const filePath = `crm/opportunities/${companySegment}/${quoteSegment}-rendering-${Date.now()}.${extension}`
+      const fileRef = storageRef(firebaseStorage, filePath)
+      await uploadBytes(fileRef, file, {
+        contentType: file.type || 'application/octet-stream',
+      })
+      const downloadUrl = await getDownloadURL(fileRef)
+
+      setFormState((current) => ({
+        ...current,
+        sketchupDocumentUrl: downloadUrl,
+        sketchupDocumentName: file.name,
+      }))
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to upload the 3D model.')
+    } finally {
+      setIsUploadingQuoteDocument(false)
+    }
+  }, [formState.companyName, formState.quoteNumber])
 
   const uploadLineItemImages = useCallback(async (
     files: Array<File | PreparedQuoteImage>,
@@ -5560,7 +6004,15 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     setIsSendingSelectedOpportunityChat(true)
 
     try {
-      await createCrmQuoteChatMessage(selectedOpportunityId, nextMessage)
+      const requestedMentionUids = extractQuoteChatMentionUids(selectedOpportunityChatDraftMarkup)
+      const mentionUserUids = requestedMentionUids.includes(MENTION_ALL_ID)
+        ? [...new Set(quoteChatUsers.map((user) => user.uid))]
+        : requestedMentionUids
+
+      await createCrmQuoteChatMessage(selectedOpportunityId, {
+        message: nextMessage,
+        mentionUserUids,
+      })
 
       let refreshedQuoteDate: string | null = null
       let refreshErrorMessage = ''
@@ -5604,6 +6056,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       }
 
       setSelectedOpportunityChatDraft('')
+      setSelectedOpportunityChatDraftMarkup('')
       setSelectedOpportunityRefreshOnSend(false)
       await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.crmQuoteChats(selectedOpportunityId) })
 
@@ -5626,7 +6079,9 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     queryClient,
     selectedOpportunityRefreshOnSend,
     selectedOpportunityChatDraft,
+    selectedOpportunityChatDraftMarkup,
     selectedOpportunityId,
+    quoteChatUsers,
   ])
 
   const canManageSelectedOpportunityChatMessage = useCallback((message: CrmQuoteChatMessage) => {
@@ -5672,22 +6127,119 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     setErrorMessage(null)
     setSuccessMessage(null)
     setFormState(emptyFormState)
+    setAddOpportunityStage(0)
+    setAddOpportunitySubmitAttempted(false)
+    setDealerSearchInput('')
     setSelectedAddContactSourceId('')
     setAddDialogInitialSnapshot(serializeOpportunityFormState(emptyFormState))
     setIsAddDialogDraftFromExcelSync(false)
-    setShowAddDetails(true)
     setIsDialogOpen(true)
   }, [])
+
+  const handleOpenNewDealerDialog = useCallback(() => {
+    setNewDealerError(null)
+    setNewDealerForm({
+      name: dealerSearchInput.trim(),
+      email: '',
+      phone: '',
+      city: '',
+      state: '',
+      salesRep: formState.salesRep.trim(),
+      paymentTerms: DEFAULT_WEBSITE_PAYMENT_TERMS,
+    })
+    setIsNewDealerDialogOpen(true)
+  }, [dealerSearchInput, formState.salesRep])
+
+  const handleCreateDealer = useCallback(async () => {
+    const name = newDealerForm.name.trim()
+
+    if (!name) {
+      setNewDealerError('Dealer name is required.')
+      return
+    }
+
+    setNewDealerError(null)
+    setIsSavingNewDealer(true)
+
+    try {
+      const response = await createCrmDealer({
+        name,
+        quoteCompanyName: name,
+        email: newDealerForm.email.trim() || null,
+        phone: newDealerForm.phone.trim() || null,
+        city: newDealerForm.city.trim() || null,
+        state: newDealerForm.state.trim() || null,
+        salesRep: newDealerForm.salesRep.trim() || null,
+        paymentTerms: newDealerForm.paymentTerms.trim() || DEFAULT_WEBSITE_PAYMENT_TERMS,
+      })
+      const dealer = response.dealer
+
+      setDealerSearchInput(resolveDealerSelectionLabel(dealer))
+      setSelectedAddContactSourceId('')
+      setFormState((current) => ({
+        ...current,
+        dealerSourceId: dealer.sourceId,
+        companyName: resolveDealerQuoteCompanyName(dealer),
+        salesRep: resolveMatchingOption(dealer.salesRep, excelSyncSalesRepOptions)
+          || dealer.salesRep
+          || current.salesRep
+          || 'House',
+        paymentTerms: dealer.paymentTerms || DEFAULT_WEBSITE_PAYMENT_TERMS,
+        contactName: '',
+        contactEmail: '',
+        contactPhone: '',
+      }))
+      await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.crmOpportunitiesDealers })
+      setIsNewDealerDialogOpen(false)
+    } catch (error) {
+      setNewDealerError(error instanceof Error ? error.message : 'Failed to add dealer account.')
+    } finally {
+      setIsSavingNewDealer(false)
+    }
+  }, [
+    excelSyncSalesRepOptions,
+    newDealerForm.city,
+    newDealerForm.email,
+    newDealerForm.name,
+    newDealerForm.paymentTerms,
+    newDealerForm.phone,
+    newDealerForm.salesRep,
+    newDealerForm.state,
+    queryClient,
+  ])
 
   const handleOpenNewContactDialog = useCallback(() => {
     setNewContactError(null)
     setNewContactForm({
       name: formState.contactName.trim(),
-      email: '',
-      phone: '',
+      email: formState.contactEmail.trim(),
+      phone: formState.contactPhone.trim(),
     })
     setIsNewContactDialogOpen(true)
-  }, [formState.contactName])
+  }, [formState.contactEmail, formState.contactName, formState.contactPhone])
+
+  const handleSavePaymentTerms = useCallback(async () => {
+    const paymentTerms = paymentTermsDraft.trim()
+
+    if (!paymentTerms) {
+      return
+    }
+
+    setIsSavingPaymentTerms(true)
+
+    try {
+      if (paymentTermsApplyMode === 'dealer' && formState.dealerSourceId.trim()) {
+        await updateCrmDealer(formState.dealerSourceId.trim(), { paymentTerms })
+        await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.crmOpportunitiesDealers })
+      }
+      setFormState((current) => ({ ...current, paymentTerms }))
+      setIsPaymentTermsDialogOpen(false)
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to update payment terms.')
+    } finally {
+      setIsSavingPaymentTerms(false)
+    }
+  }, [formState.dealerSourceId, paymentTermsApplyMode, paymentTermsDraft, queryClient])
 
   const handleCreateDealerContact = useCallback(async () => {
     const dealerSourceId = formState.dealerSourceId.trim()
@@ -5822,13 +6374,17 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     const emptyFormState = createEmptyOpportunityForm()
 
     setFormState(emptyFormState)
+    setAddOpportunityStage(0)
+    setAddOpportunitySubmitAttempted(false)
+    setDealerSearchInput('')
     setSelectedAddContactSourceId('')
+    setIsNewDealerDialogOpen(false)
     setIsNewContactDialogOpen(false)
+    setIsPaymentTermsDialogOpen(false)
     setNewContactError(null)
     setAddDialogInitialSnapshot(serializeOpportunityFormState(emptyFormState))
     setIsAddDialogDraftFromExcelSync(false)
     setIsDialogOpen(false)
-    setShowAddDetails(false)
   }, [isAddDialogDirty, isSavingOpportunity, isUploadingQuoteDocument])
 
   const handleCloseOpportunityDetails = useCallback(() => {
@@ -5935,28 +6491,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         : line),
     }))
   }, [])
-
-  const handleAddFormServiceImages = useCallback(async (
-    section: 'additionalServices' | 'shippingServices',
-    index: number,
-    files: PreparedQuoteImage[],
-  ) => {
-    setErrorMessage(null)
-    setIsUploadingLineImage(true)
-    try {
-      const images = await uploadLineItemImages(files, formState.quoteNumber, formState.companyName)
-      setFormState((current) => ({
-        ...current,
-        [section]: current[section].map((item, itemIndex) => itemIndex === index
-          ? { ...item, images: [...item.images, ...images].slice(0, 2) }
-          : item),
-      }))
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Failed to upload service picture.')
-    } finally {
-      setIsUploadingLineImage(false)
-    }
-  }, [formState.companyName, formState.quoteNumber, uploadLineItemImages])
 
   const handleAddDetailsLineItem = useCallback(() => {
     setOpportunityDetailsFormState((current) => {
@@ -6141,7 +6675,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       setOpportunityDetailsFormState(nextFormState)
       setOpportunityDetailsInitialSnapshot(serializeOpportunityDetailsFormState(nextFormState))
       await invalidateOpportunityData()
-      setSuccessMessage(`Revision ${nextRevisionNumber} created. Add a SketchUp model when this revision is ready for a public 3D view.`)
+      setSuccessMessage(`Revision ${nextRevisionNumber} created. Add a GLB or SketchUp model when this revision is ready for a public 3D view.`)
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Failed to create the new revision.')
     } finally {
@@ -6207,13 +6741,12 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     const lineItems = pricing.normalizedLineItems
     const totalAmount = pricing.totalAmount
 
-    if (!dealerSourceId) {
-      setErrorMessage('Dealer account is required.')
-      return
-    }
+    setAddOpportunitySubmitAttempted(true)
 
-    if (!quoteNumber) {
-      setErrorMessage('Quote number is required.')
+    if (addOpportunityTotalMissing > 0) {
+      setErrorMessage(
+        `${addOpportunityTotalMissing} required ${addOpportunityTotalMissing === 1 ? 'field is' : 'fields are'} missing. Review the stages marked in red.`,
+      )
       return
     }
 
@@ -6243,6 +6776,16 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     try {
       const quoteDocumentUrl = formState.quoteDocumentUrl.trim()
       const quoteDocumentName = formState.quoteDocumentName.trim()
+      const sketchupDocumentUrl = formState.sketchupDocumentUrl.trim()
+      const sketchupDocumentName = formState.sketchupDocumentName.trim()
+
+      if (selectedAddContactSourceId) {
+        await updateCrmContact(selectedAddContactSourceId, {
+          name: formState.contactName.trim(),
+          primaryEmail: formState.contactEmail.trim(),
+          phone: formState.contactPhone.trim() || null,
+        })
+      }
 
       await createCrmQuote({
         dealerSourceId,
@@ -6280,6 +6823,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
           ...(quoteDocumentUrl ? [{ url: quoteDocumentUrl, name: quoteDocumentName || null }] : []),
           ...(formState.sourceWorkbookUrl ? [{ url: formState.sourceWorkbookUrl, name: formState.sourceWorkbookName || null }] : []),
           ...(formState.convertedPdfUrl ? [{ url: formState.convertedPdfUrl, name: formState.convertedPdfName || null }] : []),
+          ...(sketchupDocumentUrl ? [{ url: sketchupDocumentUrl, name: sketchupDocumentName || '3D model.glb' }] : []),
         ],
         revisionCount: 0,
       })
@@ -6290,10 +6834,12 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
 
       setSuccessMessage('Opportunity created.')
       setFormState(emptyFormState)
+      setAddOpportunityStage(0)
+      setAddOpportunitySubmitAttempted(false)
+      setDealerSearchInput('')
       setSelectedAddContactSourceId('')
       setAddDialogInitialSnapshot(serializeOpportunityFormState(emptyFormState))
       setIsAddDialogDraftFromExcelSync(false)
-      setShowAddDetails(false)
       setIsDialogOpen(false)
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Failed to create opportunity.')
@@ -6301,6 +6847,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       setIsSavingOpportunity(false)
     }
   }, [
+    addOpportunityTotalMissing,
     formState.additionalServices,
     formState.companyName,
     formState.contactEmail,
@@ -6321,6 +6868,8 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     formState.quoteDocumentUrl,
     formState.quoteNumber,
     formState.salesRep,
+    formState.sketchupDocumentName,
+    formState.sketchupDocumentUrl,
     formState.shippingServices,
     formState.sourceWorkbookName,
     formState.sourceWorkbookUrl,
@@ -6329,6 +6878,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     invalidateOpportunityData,
     isAddDialogDraftFromExcelSync,
     quotes,
+    selectedAddContactSourceId,
   ])
 
   const handleCloseConvertOrderDialog = useCallback(() => {
@@ -8120,105 +8670,146 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         fullWidth
         PaperProps={{ sx: { width: 'min(1440px, 97vw)', height: 'min(920px, 95vh)', borderRadius: 2.5 } }}
       >
-        <DialogTitle sx={{ borderBottom: 1, borderColor: 'divider', py: 1.5 }}>
+        <DialogTitle sx={{ borderBottom: 1, borderColor: 'divider', pb: 0, pt: 1.5 }}>
           <Typography variant="h6" fontWeight={800}>Add Opportunity</Typography>
-          <Typography variant="body2" color="text.secondary">Create a clean website quote linked to an existing dealer account.</Typography>
-        </DialogTitle>
-        <DialogContent sx={{ bgcolor: '#f5f8fc', px: { xs: 1.5, md: 2.5 }, py: 2 }}>
-          <Stack spacing={1.5}>
-            <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
-              <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.2}>
-                <TextField
-                  label="Quote Number"
-                  required
-                  autoFocus
-                  value={formState.quoteNumber}
-                  onChange={(event) => {
-                    setFormState((current) => ({
-                      ...current,
-                      quoteNumber: event.target.value,
-                    }))
-                  }}
-                  helperText={
-                    isAddDialogDraftFromExcelSync
-                      ? 'This synced quote will be added to Opportunities.'
-                      : 'Enter the quote number to create an opportunity. Details can also be filled from Excel sync.'
-                  }
-                  sx={{ width: { xs: '100%', md: 280 } }}
-                />
-
-                <Autocomplete
-                  sx={{ flex: 1 }}
-                  options={excelSyncDealerOptions}
-                  value={dealersBySourceId.get(formState.dealerSourceId) ?? null}
-                  onChange={(_event, value) => {
-                    setSelectedAddContactSourceId('')
-                    setFormState((current) => ({
-                      ...current,
-                      dealerSourceId: value?.sourceId || '',
-                      companyName: value ? resolveDealerQuoteCompanyName(value) : '',
-                      salesRep: value
-                        ? (resolveMatchingOption(value.salesRep, excelSyncSalesRepOptions) || 'House')
-                        : current.salesRep,
-                      paymentTerms: value?.paymentTerms || DEFAULT_WEBSITE_PAYMENT_TERMS,
-                      contactName: '',
-                      contactEmail: '',
-                      contactPhone: '',
-                    }))
-                  }}
-                  isOptionEqualToValue={(option, value) => option.sourceId === value.sourceId}
-                  getOptionLabel={(option) => resolveDealerSelectionLabel(option)}
-                  renderInput={(params) => (
-                    <TextField
-                      {...params}
-                      required
-                      label="Dealer Account"
-                      helperText="Select the CRM dealer account that owns this opportunity."
-                    />
+          <Typography variant="body2" color="text.secondary">
+            Build the quote in four stages. You may move ahead with missing fields, but the final quote cannot be submitted until all required information is complete.
+          </Typography>
+          <Tabs
+            value={addOpportunityStage}
+            onChange={(_event, value: AddOpportunityStage) => setAddOpportunityStage(value)}
+            variant="scrollable"
+            scrollButtons="auto"
+            sx={{ mt: 1 }}
+          >
+            {ADD_OPPORTUNITY_STAGES.map((stageLabel, index) => {
+              const missingCount = addOpportunityMissingByStage[index].length
+              const showMissing = addOpportunitySubmitAttempted && missingCount > 0
+              return (
+                <Tab
+                  key={stageLabel}
+                  value={index}
+                  sx={{ color: showMissing ? 'error.main' : undefined }}
+                  label={(
+                    <Stack direction="row" spacing={0.6} alignItems="center">
+                      <Typography component="span" variant="body2" fontWeight={800}>{index + 1}. {stageLabel}</Typography>
+                      {showMissing ? <Typography component="span" color="error" fontWeight={900}>★ Missing Information</Typography> : null}
+                    </Stack>
                   )}
                 />
-              </Stack>
-            </Paper>
+              )
+            })}
+          </Tabs>
+        </DialogTitle>
 
-            {showAddDetails ? (
-              <Stack spacing={1.3}>
-                <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
-                  <Stack spacing={1.2}>
-                <TextField
-                  label="Project Name"
-                  value={formState.title}
-                  onChange={(event) => {
-                    setFormState((current) => ({
-                      ...current,
-                      title: event.target.value,
-                    }))
-                  }}
-                  placeholder="Project name from the quote"
-                />
-
-                <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.1}>
+        <DialogContent sx={{ bgcolor: '#f5f8fc', px: { xs: 1.5, md: 2.5 }, py: 2 }}>
+          {addOpportunityStage === 0 ? (
+            <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+              <Stack spacing={1.5}>
+                <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.2}>
                   <TextField
+                    label="Quote Number"
+                    required
+                    autoFocus
+                    value={formState.quoteNumber}
+                    onChange={(event) => setFormState((current) => ({ ...current, quoteNumber: event.target.value }))}
+                    helperText={isAddDialogDraftFromExcelSync ? 'This synced quote will be added to Opportunities.' : 'Required and must be unique.'}
+                    sx={{ flex: 0.7 }}
+                  />
+                  <Autocomplete
+                    sx={{ flex: 1.3 }}
+                    options={excelSyncDealerOptions}
+                    value={dealersBySourceId.get(formState.dealerSourceId) ?? null}
+                    inputValue={dealerSearchInput}
+                    onInputChange={(_event, inputValue, reason) => {
+                      setDealerSearchInput(inputValue)
+                      if (reason === 'input' && formState.dealerSourceId) {
+                        setSelectedAddContactSourceId('')
+                        setFormState((current) => ({
+                          ...current,
+                          dealerSourceId: '',
+                          companyName: '',
+                          contactName: '',
+                          contactEmail: '',
+                          contactPhone: '',
+                        }))
+                      }
+                    }}
+                    onChange={(_event, value) => {
+                      setDealerSearchInput(value ? resolveDealerSelectionLabel(value) : '')
+                      setSelectedAddContactSourceId('')
+                      setFormState((current) => ({
+                        ...current,
+                        dealerSourceId: value?.sourceId || '',
+                        companyName: value ? resolveDealerQuoteCompanyName(value) : '',
+                        salesRep: value ? (resolveMatchingOption(value.salesRep, excelSyncSalesRepOptions) || value.salesRep || current.salesRep || 'House') : current.salesRep,
+                        paymentTerms: value?.paymentTerms || DEFAULT_WEBSITE_PAYMENT_TERMS,
+                        contactName: '',
+                        contactEmail: '',
+                        contactPhone: '',
+                      }))
+                    }}
+                    isOptionEqualToValue={(option, value) => option.sourceId === value.sourceId}
+                    getOptionLabel={(option) => resolveDealerSelectionLabel(option)}
+                    noOptionsText="No matching dealer accounts."
+                    PaperComponent={(paperProps) => (
+                      <Paper {...paperProps}>
+                        {paperProps.children}
+                        <Box sx={{ p: 0.8, borderTop: 1, borderColor: 'divider', bgcolor: '#f8fafc' }}>
+                        <Button
+                          fullWidth
+                          size="small"
+                          variant="outlined"
+                          startIcon={<AddRoundedIcon fontSize="small" />}
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={handleOpenNewDealerDialog}
+                        >
+                          Add new{dealerSearchInput.trim() ? `: ${dealerSearchInput.trim()}` : ' dealer'}
+                        </Button>
+                        </Box>
+                      </Paper>
+                    )}
+                    renderInput={(params) => (
+                      <TextField
+                        {...params}
+                        required
+                        label="Dealer Account"
+                        helperText="Select a saved dealer, or use Add New when there is no match."
+                      />
+                    )}
+                  />
+                </Stack>
+
+                <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.2}>
+                  <TextField
+                    required
+                    label="Project Name"
+                    value={formState.title}
+                    onChange={(event) => setFormState((current) => ({ ...current, title: event.target.value }))}
+                    sx={{ flex: 1.4 }}
+                  />
+                  <TextField
+                    select
+                    required
+                    label="Sales Rep"
+                    value={formState.salesRep}
+                    onChange={(event) => setFormState((current) => ({ ...current, salesRep: event.target.value }))}
+                    sx={{ flex: 1 }}
+                  >
+                    {excelSyncSalesRepOptions.map((salesRep) => <MenuItem key={salesRep} value={salesRep}>{salesRep}</MenuItem>)}
+                  </TextField>
+                  <TextField
+                    required
                     label="Quote Date"
                     type="date"
                     value={formState.opportunityDateInput}
-                    onChange={(event) => {
-                      setFormState((current) => ({
-                        ...current,
-                        opportunityDateInput: event.target.value,
-                      }))
-                    }}
-                    sx={{ flex: 1 }}
-                    InputLabelProps={{
-                      shrink: true,
-                    }}
+                    onChange={(event) => setFormState((current) => ({ ...current, opportunityDateInput: event.target.value }))}
+                    InputLabelProps={{ shrink: true }}
+                    sx={{ flex: 0.8 }}
                   />
-
-                  <TextField select label="Sales Rep" value={formState.salesRep} onChange={(event) => setFormState((current) => ({ ...current, salesRep: event.target.value }))} sx={{ flex: 1 }}>
-                    {excelSyncSalesRepOptions.map((salesRep) => <MenuItem key={salesRep} value={salesRep}>{salesRep}</MenuItem>)}
-                  </TextField>
                 </Stack>
 
-                <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.1}>
+                <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.2}>
                   <Autocomplete
                     options={addOpportunityContactOptions}
                     value={selectedAddOpportunityContact}
@@ -8237,49 +8828,34 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                     onInputChange={(_event, inputValue, reason) => {
                       if (reason !== 'input') return
                       setSelectedAddContactSourceId('')
-                      setFormState((current) => ({
-                        ...current,
-                        contactName: inputValue,
-                        contactEmail: selectedAddContactSourceId ? '' : current.contactEmail,
-                        contactPhone: selectedAddContactSourceId ? '' : current.contactPhone,
-                      }))
+                      setFormState((current) => ({ ...current, contactName: inputValue }))
                     }}
                     isOptionEqualToValue={(option, value) => option.sourceId === value.sourceId}
                     getOptionLabel={(contact) => resolveContactSelectionLabel(contact)}
-                    renderOption={(props, contact) => (
-                      <Box component="li" {...props} key={contact.sourceId}>
-                        <Stack spacing={0.1}>
-                          <Typography variant="body2" fontWeight={700}>{resolveContactSelectionLabel(contact)}</Typography>
-                          {contact.primaryEmail || contact.phone ? (
-                            <Typography variant="caption" color="text.secondary">
-                              {[contact.primaryEmail, contact.phone].filter(Boolean).join(' • ')}
-                            </Typography>
-                          ) : null}
-                        </Stack>
-                      </Box>
-                    )}
-                    noOptionsText={(
-                      <Stack spacing={0.7} alignItems="flex-start">
-                        <Typography variant="body2">No matching contact.</Typography>
+                    noOptionsText="No matching contacts."
+                    PaperComponent={(paperProps) => (
+                      <Paper {...paperProps}>
+                        {paperProps.children}
+                        <Box sx={{ p: 0.8, borderTop: 1, borderColor: 'divider', bgcolor: '#f8fafc' }}>
                         <Button
+                          fullWidth
                           size="small"
+                          variant="outlined"
                           startIcon={<AddRoundedIcon fontSize="small" />}
                           onMouseDown={(event) => event.preventDefault()}
                           onClick={handleOpenNewContactDialog}
                         >
                           Add new{formState.contactName.trim() ? `: ${formState.contactName.trim()}` : ' contact'}
                         </Button>
-                      </Stack>
+                        </Box>
+                      </Paper>
                     )}
                     renderInput={(params) => (
                       <TextField
                         {...params}
+                        required
                         label="Contact Name"
-                        helperText={!formState.dealerSourceId
-                          ? 'Select a dealer first.'
-                          : addOpportunityContactsQuery.error instanceof Error
-                            ? addOpportunityContactsQuery.error.message
-                            : 'Choose a saved contact or type a new name.'}
+                        helperText={!formState.dealerSourceId ? 'Select a dealer first.' : 'Select a saved contact, or use Add New.'}
                         InputProps={{
                           ...params.InputProps,
                           endAdornment: (
@@ -8291,313 +8867,394 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                         }}
                       />
                     )}
-                    sx={{ flex: 1 }}
+                    sx={{ flex: 1.2 }}
                   />
-
                   <TextField
+                    required
+                    type="email"
                     label="Contact Email"
                     value={formState.contactEmail}
-                    onChange={(event) => {
-                      setFormState((current) => ({
-                        ...current,
-                        contactEmail: event.target.value,
-                      }))
-                    }}
+                    onChange={(event) => setFormState((current) => ({ ...current, contactEmail: event.target.value }))}
+                    helperText="Required on every quote."
                     sx={{ flex: 1 }}
                   />
                   <TextField
+                    type="tel"
                     label="Contact Phone"
                     value={formState.contactPhone}
-                    onChange={(event) => {
-                      setFormState((current) => ({
-                        ...current,
-                        contactPhone: event.target.value,
-                      }))
-                    }}
-                    sx={{ flex: 1 }}
+                    onChange={(event) => setFormState((current) => ({ ...current, contactPhone: event.target.value }))}
+                    sx={{ flex: 0.8 }}
                   />
                 </Stack>
 
-                <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.1}>
+                <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.2}>
                   <TextField
+                    required
                     label="Lead Time"
                     value={formState.leadTime}
-                    onChange={(event) => {
-                      setFormState((current) => ({
-                        ...current,
-                        leadTime: event.target.value,
-                      }))
-                    }}
-                    sx={{ flex: 1 }}
-                  />
-
-                  <TextField
-                    label="Payment Terms"
-                    value={formState.paymentTerms}
-                    onChange={(event) => {
-                      setFormState((current) => ({
-                        ...current,
-                        paymentTerms: event.target.value,
-                      }))
-                    }}
-                    sx={{ flex: 1 }}
-                  />
-                </Stack>
-                  </Stack>
-                </Paper>
-
-                <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.1}>
-                  <TextField
-                    label="Subtotal (calculated)"
-                    value={addPricingPreview.subtotal.toFixed(2)}
-                    type="text"
-                    inputProps={{ inputMode: 'decimal' }}
-                    placeholder="0.00"
-                    sx={{ flex: 1 }}
-                    InputProps={{
-                      readOnly: true,
-                      startAdornment: <InputAdornment position="start">$</InputAdornment>,
-                    }}
-                  />
-
-                  <TextField
-                    label="Freight (calculated)"
-                    value={addPricingPreview.freight.toFixed(2)}
-                    type="text"
-                    inputProps={{ inputMode: 'decimal' }}
-                    placeholder="0.00"
-                    sx={{ flex: 1 }}
-                    InputProps={{
-                      readOnly: true,
-                      startAdornment: <InputAdornment position="start">$</InputAdornment>,
-                    }}
-                  />
-
-                  <TextField
-                    label="Discount"
-                    value={formState.discountPercent}
-                    onChange={(event) => {
-                      const value = event.target.value
-                      if (value === '' || (/^\d{0,3}(?:\.\d{0,2})?$/.test(value) && Number(value) <= 100)) {
-                        setFormState((current) => ({ ...current, discountPercent: value }))
-                      }
-                    }}
-                    type="text"
-                    inputProps={{ inputMode: 'decimal' }}
-                    placeholder="0"
+                    onChange={(event) => setFormState((current) => ({ ...current, leadTime: event.target.value }))}
                     sx={{ flex: 0.7 }}
-                    InputProps={{ endAdornment: <InputAdornment position="end">%</InputAdornment> }}
-                    helperText="Enter the discount percentage"
                   />
-                </Stack>
-                {formState.discountPercent ? (
-                  <ToggleButtonGroup
-                    exclusive
-                    size="small"
-                    value={formState.discountScope}
-                    onChange={(_, value: 'products' | 'products_and_freight' | null) => {
-                      if (value) setFormState((current) => ({ ...current, discountScope: value }))
-                    }}
-                    sx={{ alignSelf: 'flex-end' }}
-                  >
-                    <ToggleButton value="products">Products only</ToggleButton>
-                    <ToggleButton value="products_and_freight">Products + freight</ToggleButton>
-                  </ToggleButtonGroup>
-                ) : null}
-
-                <TextField
-                  label="Freight Description"
-                  value={formState.freightDescription}
-                  onChange={(event) => {
-                    setFormState((current) => ({
-                      ...current,
-                      freightDescription: event.target.value,
-                    }))
-                  }}
-                  placeholder="Dock delivery, destination, or freight notes"
-                />
-
-                <Paper
-                  variant="outlined"
-                  sx={{
-                    px: 1,
-                    py: 0.8,
-                    borderRadius: 1,
-                    borderColor: alpha('#0f4c81', 0.2),
-                    backgroundColor: alpha('#0f4c81', 0.04),
-                  }}
-                >
-                  <Stack direction="row" spacing={1} justifyContent="space-between" alignItems="center" flexWrap="wrap" useFlexGap>
-                    <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
-                      Product: {formatCurrency(addPricingPreview.grossSubtotal, 2)}
-                    </Typography>
-                    {addPricingPreview.discountAmount > 0 ? (
-                      <Typography variant="caption" sx={{ fontWeight: 800, color: '#b51f2e' }}>
-                        Discount ({addPricingPreview.discountPercent}%): -{formatCurrency(addPricingPreview.discountAmount, 2)}
-                      </Typography>
-                    ) : null}
-                    <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
-                      Freight: {formatCurrency(addPricingPreview.freight, 2)}
-                    </Typography>
-                    <Typography variant="body2" sx={{ fontWeight: 800, color: '#0f4c81' }}>
-                      Total: {formatCurrency(addPricingPreview.totalAmount, 2)}
-                    </Typography>
-                  </Stack>
-                </Paper>
-
-                <LineItemsEditor
-                  lineItems={formState.lineItems}
-                  pdfSettings={quotePrintSettingsQuery.data?.settings || DEFAULT_QUOTE_PRINT_SETTINGS}
-                  canEdit
-                  onAddLineItem={handleAddFormLineItem}
-                  onUpdateLineItem={handleUpdateFormLineItem}
-                  onRemoveLineItem={handleRemoveFormLineItem}
-                  onAddImages={(index, files) => void handleAddFormLineImages(index, files)}
-                  onRemoveImage={handleRemoveFormLineImage}
-                  onUpdateImageLayout={handleUpdateFormLineImageLayout}
-                  isUploadingImage={isUploadingLineImage}
-                />
-
-                <QuoteServiceItemsEditor
-                  heading="Additional Services"
-                  description="Standard rates are pre-filled. Adjust quantity or unit price only when the project requires it."
-                  items={formState.additionalServices}
-                  canEdit={!isSavingOpportunity}
-                  isUploadingImage={isUploadingLineImage}
-                  onChange={(additionalServices) => setFormState((current) => ({ ...current, additionalServices }))}
-                  onAddImages={(index, files) => void handleAddFormServiceImages('additionalServices', index, files)}
-                />
-
-                <QuoteServiceItemsEditor
-                  heading="Freight, Delivery & Installation"
-                  description="Add delivery or installation lines with Qty, Unit Price, and Ext values."
-                  items={formState.shippingServices}
-                  canEdit={!isSavingOpportunity}
-                  isUploadingImage={isUploadingLineImage}
-                  onChange={(shippingServices) => setFormState((current) => ({ ...current, shippingServices }))}
-                  onAddImages={(index, files) => void handleAddFormServiceImages('shippingServices', index, files)}
-                />
-
-                <Stack spacing={0.8}>
-                  <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
-                    Quote Document (optional)
-                  </Typography>
-
-                  <Stack direction="row" spacing={0.8} alignItems="center" flexWrap="wrap" useFlexGap>
-                    <Button
-                      component="label"
-                      size="small"
-                      variant="outlined"
-                      startIcon={<FileUploadRoundedIcon fontSize="small" />}
-                      disabled={!canUploadQuoteDocument || isUploadingQuoteDocument || isSavingOpportunity}
-                    >
-                      {isUploadingQuoteDocument ? 'Uploading...' : (formState.quoteDocumentUrl ? 'Replace Document' : 'Upload Document')}
-                      <input
-                        hidden
-                        type="file"
-                        accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.png,.jpg,.jpeg"
-                        onChange={handleQuoteDocumentUpload}
-                      />
-                    </Button>
-
-                    {formState.quoteDocumentUrl ? (
+                  <Paper variant="outlined" sx={{ p: 1.2, flex: 1.3, borderRadius: 1.5 }}>
+                    <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
+                      <Box>
+                        <Stack direction="row" spacing={0.5} alignItems="center">
+                          <Typography variant="caption" color="text.secondary" fontWeight={800}>PAYMENT TERMS</Typography>
+                          <Tooltip title="This is the payment terms for this dealer. You can change it.">
+                            <InfoOutlinedIcon color="action" sx={{ fontSize: 17 }} />
+                          </Tooltip>
+                        </Stack>
+                        <Typography variant="body1" fontWeight={700}>{formState.paymentTerms || 'Not set'}</Typography>
+                        <Typography variant="caption" color="text.secondary">These are the payment terms for this dealer.</Typography>
+                      </Box>
                       <Button
                         size="small"
-                        component={Link}
-                        href={formState.quoteDocumentUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
+                        onClick={() => {
+                          setPaymentTermsDraft(formState.paymentTerms)
+                          setPaymentTermsApplyMode('quote')
+                          setIsPaymentTermsDialogOpen(true)
+                        }}
                       >
-                        Open Document
+                        Change
                       </Button>
-                    ) : null}
-                  </Stack>
-
-                  {!canUploadQuoteDocument ? (
-                    <Typography variant="caption" color="text.secondary">
-                      Enter quote number before uploading a document.
-                    </Typography>
-                  ) : null}
-
-                  {formState.quoteDocumentUrl ? (
-                    <Paper
-                      variant="outlined"
-                      sx={{
-                        px: 1,
-                        py: 0.7,
-                        borderRadius: 1,
-                        borderColor: alpha('#0f4c81', 0.25),
-                        backgroundColor: alpha('#0f4c81', 0.04),
-                      }}
-                    >
-                      <Stack direction="row" spacing={0.8} alignItems="center" justifyContent="space-between">
-                        <Typography variant="body2" sx={{ minWidth: 0 }} noWrap>
-                          {formState.quoteDocumentName || 'Uploaded quote document'}
-                        </Typography>
-                        <Button
-                          size="small"
-                          color="error"
-                          onClick={() => {
-                            setFormState((current) => ({
-                              ...current,
-                              quoteDocumentUrl: '',
-                              quoteDocumentName: '',
-                            }))
-                          }}
-                          disabled={isSavingOpportunity || isUploadingQuoteDocument}
-                        >
-                          Remove
-                        </Button>
-                      </Stack>
-                    </Paper>
-                  ) : null}
+                    </Stack>
+                  </Paper>
                 </Stack>
+              </Stack>
+            </Paper>
+          ) : null}
 
+          {addOpportunityStage === 1 ? (
+            <Stack spacing={1.5}>
+              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.1}>
+                <TextField label="Subtotal" value={addPricingPreview.subtotal.toFixed(2)} InputProps={{ readOnly: true, startAdornment: <InputAdornment position="start">$</InputAdornment> }} sx={{ flex: 1 }} />
+                <TextField label="Freight" value={addPricingPreview.freight.toFixed(2)} InputProps={{ readOnly: true, startAdornment: <InputAdornment position="start">$</InputAdornment> }} sx={{ flex: 1 }} />
                 <TextField
-                  label="Notes"
-                  value={formState.notes}
+                  label="Discount"
+                  value={formState.discountPercent}
                   onChange={(event) => {
-                    setFormState((current) => ({
-                      ...current,
-                      notes: event.target.value,
-                    }))
+                    const value = event.target.value
+                    if (value === '' || (/^\d{0,3}(?:\.\d{0,2})?$/.test(value) && Number(value) <= 100)) {
+                      setFormState((current) => ({ ...current, discountPercent: value }))
+                    }
                   }}
-                  multiline
-                  minRows={3}
-                  placeholder="Optional notes"
+                  InputProps={{ endAdornment: <InputAdornment position="end">%</InputAdornment> }}
+                  sx={{ flex: 0.7 }}
                 />
               </Stack>
-            ) : null}
-          </Stack>
+              {formState.discountPercent ? (
+                <ToggleButtonGroup
+                  exclusive
+                  size="small"
+                  value={formState.discountScope}
+                  onChange={(_, value: 'products' | 'products_and_freight' | null) => {
+                    if (value) setFormState((current) => ({ ...current, discountScope: value }))
+                  }}
+                  sx={{ alignSelf: 'flex-end' }}
+                >
+                  <ToggleButton value="products">Products only</ToggleButton>
+                  <ToggleButton value="products_and_freight">Products + freight</ToggleButton>
+                </ToggleButtonGroup>
+              ) : null}
+              <Paper variant="outlined" sx={{ px: 1.2, py: 1, borderRadius: 1.5 }}>
+                <Stack direction="row" spacing={1} justifyContent="space-between" flexWrap="wrap" useFlexGap>
+                  <Typography variant="body2">Product: {formatCurrency(addPricingPreview.grossSubtotal, 2)}</Typography>
+                  <Typography variant="body2">Freight: {formatCurrency(addPricingPreview.freight, 2)}</Typography>
+                  <Typography variant="body2" fontWeight={800} color="primary">Total: {formatCurrency(addPricingPreview.totalAmount, 2)}</Typography>
+                </Stack>
+              </Paper>
+              <LineItemsEditor
+                lineItems={formState.lineItems}
+                pdfSettings={quotePrintSettingsQuery.data?.settings || DEFAULT_QUOTE_PRINT_SETTINGS}
+                canEdit
+                showPdfLayoutAction={false}
+                onAddLineItem={handleAddFormLineItem}
+                onUpdateLineItem={handleUpdateFormLineItem}
+                onRemoveLineItem={handleRemoveFormLineItem}
+                onAddImages={(index, files) => void handleAddFormLineImages(index, files)}
+                onRemoveImage={handleRemoveFormLineImage}
+                onUpdateImageLayout={handleUpdateFormLineImageLayout}
+                isUploadingImage={isUploadingLineImage}
+              />
+            </Stack>
+          ) : null}
+
+          {addOpportunityStage === 2 ? (
+            <Stack spacing={1.5}>
+              <TextField
+                label="Freight Description"
+                value={formState.freightDescription}
+                onChange={(event) => setFormState((current) => ({ ...current, freightDescription: event.target.value }))}
+                placeholder="Dock delivery, destination, or freight notes"
+              />
+              <QuoteServiceCardSelector
+                heading="Additional Services"
+                description="Select a service card to review its details and enter the quantity and unit price."
+                items={formState.additionalServices}
+                canEdit={!isSavingOpportunity}
+                onChange={(additionalServices) => setFormState((current) => ({ ...current, additionalServices }))}
+                addButtonLabel="Add a custom service"
+                itemLabel="service"
+              />
+              <QuoteServiceCardSelector
+                heading="Freight, Delivery & Installation"
+                description="Select one of the three delivery options to review its details, quantity, and unit price."
+                items={formState.shippingServices}
+                canEdit={!isSavingOpportunity}
+                onChange={(shippingServices) => setFormState((current) => ({ ...current, shippingServices }))}
+                addButtonLabel="Add another delivery option"
+                itemLabel="delivery option"
+              />
+              <TextField
+                label="Notes"
+                value={formState.notes}
+                onChange={(event) => setFormState((current) => ({ ...current, notes: event.target.value }))}
+                multiline
+                minRows={3}
+                placeholder="Optional notes"
+              />
+            </Stack>
+          ) : null}
+
+          {addOpportunityStage === 3 ? (
+            <Stack spacing={1.5}>
+              {addOpportunitySubmitAttempted && addOpportunityTotalMissing > 0 ? (
+                <Alert severity="error">
+                  {addOpportunityTotalMissing} required {addOpportunityTotalMissing === 1 ? 'field is' : 'fields are'} missing. Open the red stage tabs to finish them.
+                </Alert>
+              ) : null}
+              <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
+                <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={2}>
+                  <Box>
+                    <Typography variant="h6" fontWeight={800}>{formState.title || 'Untitled quote'}</Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      {formState.quoteNumber || 'No quote number'} • {formState.companyName || 'No dealer selected'}
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      {normalizeLineItemsForPayload(formState.lineItems).length} quote lines • Total {formatCurrency(addPricingPreview.totalAmount, 2)}
+                    </Typography>
+                  </Box>
+                  <Stack direction="row" spacing={1} alignItems="center">
+                    <Button variant="outlined" onClick={() => setIsAddPictureLayoutOpen(true)}>Arrange Pictures</Button>
+                    <Button variant="contained" startIcon={<PreviewRoundedIcon />} onClick={() => setQuotePrintPreview(addOpportunityPreviewQuote)}>Preview Final PDF</Button>
+                  </Stack>
+                </Stack>
+              </Paper>
+
+              <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5}>
+                <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2, flex: 1 }}>
+                  <Typography variant="subtitle2" fontWeight={800}>Quote Document (optional)</Typography>
+                  <Stack direction="row" spacing={1} alignItems="center" mt={1} flexWrap="wrap" useFlexGap>
+                    <Button component="label" size="small" variant="outlined" startIcon={<FileUploadRoundedIcon />} disabled={!canUploadQuoteDocument || isUploadingQuoteDocument}>
+                      {isUploadingQuoteDocument ? 'Uploading...' : (formState.quoteDocumentUrl ? 'Replace Document' : 'Upload Document')}
+                      <input hidden type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.png,.jpg,.jpeg" onChange={handleQuoteDocumentUpload} />
+                    </Button>
+                    {formState.quoteDocumentUrl ? <Button component={Link} href={formState.quoteDocumentUrl} target="_blank">Open</Button> : null}
+                    {formState.quoteDocumentUrl ? (
+                      <Button color="error" onClick={() => setFormState((current) => ({ ...current, quoteDocumentUrl: '', quoteDocumentName: '' }))}>Remove</Button>
+                    ) : null}
+                  </Stack>
+                  {formState.quoteDocumentName ? <Typography variant="caption">{formState.quoteDocumentName}</Typography> : null}
+                </Paper>
+                <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2, flex: 1 }}>
+                  <Typography variant="subtitle2" fontWeight={800}>Customer 3D Viewer — GLB or SketchUp File</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    For smooth curves without segment lines, upload a GLB exported from SketchUp. You can also attach the original SKP file.
+                  </Typography>
+                  <Stack direction="row" spacing={1} alignItems="center" mt={1} flexWrap="wrap" useFlexGap>
+                    <Button component="label" size="small" variant="outlined" startIcon={<FileUploadRoundedIcon />} disabled={!canUploadQuoteDocument || isUploadingQuoteDocument}>
+                      {isUploadingQuoteDocument ? 'Uploading...' : (formState.sketchupDocumentUrl ? 'Replace 3D File' : 'Upload GLB or SKP')}
+                      <input hidden type="file" accept=".glb,.skp,model/gltf-binary,application/octet-stream" onChange={handleSketchupDocumentUpload} />
+                    </Button>
+                    {formState.sketchupDocumentUrl ? <Button component={Link} href={formState.sketchupDocumentUrl} target="_blank">Open</Button> : null}
+                    {formState.sketchupDocumentUrl ? (
+                      <Button color="error" onClick={() => setFormState((current) => ({ ...current, sketchupDocumentUrl: '', sketchupDocumentName: '' }))}>Remove</Button>
+                    ) : null}
+                  </Stack>
+                  {formState.sketchupDocumentName ? <Typography variant="caption">{formState.sketchupDocumentName}</Typography> : null}
+                </Paper>
+              </Stack>
+            </Stack>
+          ) : null}
         </DialogContent>
 
+        <DialogActions sx={{ borderTop: 1, borderColor: 'divider', px: 2.5 }}>
+          <Button onClick={handleCloseDialog} disabled={isSavingOpportunity || isUploadingQuoteDocument}>Cancel</Button>
+          <Box sx={{ flex: 1 }} />
+          {addOpportunityStage > 0 ? (
+            <Button onClick={() => setAddOpportunityStage((addOpportunityStage - 1) as AddOpportunityStage)}>Back</Button>
+          ) : null}
+          <Typography variant="body2" color={addOpportunityMissingByStage[addOpportunityStage].length ? 'warning.main' : 'text.secondary'}>
+            {addOpportunityMissingByStage[addOpportunityStage].length
+              ? `${addOpportunityMissingByStage[addOpportunityStage].length} ${addOpportunityMissingByStage[addOpportunityStage].length === 1 ? 'field' : 'fields'} missing`
+              : 'All required fields complete'}
+          </Typography>
+          {addOpportunityStage < 3 ? (
+            <Button
+              variant="contained"
+              onClick={() => setAddOpportunityStage((addOpportunityStage + 1) as AddOpportunityStage)}
+            >
+              Go to next stage
+            </Button>
+          ) : (
+            <Button
+              variant="contained"
+              disabled={isSavingOpportunity || isUploadingQuoteDocument || !canManage}
+              onClick={() => void handleCreateOpportunity()}
+            >
+              {isSavingOpportunity ? 'Submitting...' : 'Submit'}
+            </Button>
+          )}
+        </DialogActions>
+      </Dialog>
+      <Dialog
+        open={isNewDealerDialogOpen}
+        onClose={() => {
+          if (!isSavingNewDealer) setIsNewDealerDialogOpen(false)
+        }}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Add Dealer Account</DialogTitle>
+        <DialogContent>
+          <Stack spacing={1.5} sx={{ pt: 0.8 }}>
+            <Typography variant="body2" color="text.secondary">
+              Dealer name is required. The remaining account details can be completed now or later.
+            </Typography>
+            {newDealerError ? <Alert severity="error">{newDealerError}</Alert> : null}
+            <TextField
+              required
+              autoFocus
+              label="Dealer Name"
+              value={newDealerForm.name}
+              onChange={(event) => setNewDealerForm((current) => ({ ...current, name: event.target.value }))}
+            />
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.2}>
+              <TextField
+                label="Email (optional)"
+                type="email"
+                value={newDealerForm.email}
+                onChange={(event) => setNewDealerForm((current) => ({ ...current, email: event.target.value }))}
+                sx={{ flex: 1 }}
+              />
+              <TextField
+                label="Phone (optional)"
+                type="tel"
+                value={newDealerForm.phone}
+                onChange={(event) => setNewDealerForm((current) => ({ ...current, phone: event.target.value }))}
+                sx={{ flex: 1 }}
+              />
+            </Stack>
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.2}>
+              <TextField
+                label="City (optional)"
+                value={newDealerForm.city}
+                onChange={(event) => setNewDealerForm((current) => ({ ...current, city: event.target.value }))}
+                sx={{ flex: 1 }}
+              />
+              <TextField
+                label="State (optional)"
+                value={newDealerForm.state}
+                onChange={(event) => setNewDealerForm((current) => ({ ...current, state: event.target.value }))}
+                sx={{ flex: 1 }}
+              />
+            </Stack>
+            <TextField
+              select
+              label="Sales Rep (optional)"
+              value={newDealerForm.salesRep}
+              onChange={(event) => setNewDealerForm((current) => ({ ...current, salesRep: event.target.value }))}
+            >
+              {excelSyncSalesRepOptions.map((salesRep) => <MenuItem key={salesRep} value={salesRep}>{salesRep}</MenuItem>)}
+            </TextField>
+            <TextField
+              label="Payment Terms (optional)"
+              value={newDealerForm.paymentTerms}
+              onChange={(event) => setNewDealerForm((current) => ({ ...current, paymentTerms: event.target.value }))}
+            />
+          </Stack>
+        </DialogContent>
         <DialogActions>
-          <Button
-            onClick={handleCloseDialog}
-            disabled={isSavingOpportunity || isUploadingQuoteDocument}
-          >
-            Cancel
-          </Button>
-
+          <Button disabled={isSavingNewDealer} onClick={() => setIsNewDealerDialogOpen(false)}>Cancel</Button>
           <Button
             variant="contained"
-            startIcon={<AddRoundedIcon fontSize="small" />}
-            disabled={
-              isSavingOpportunity
-              || isUploadingQuoteDocument
-              || !canManage
-              || !formState.dealerSourceId.trim()
-            }
-            onClick={() => {
-              void handleCreateOpportunity()
-            }}
+            disabled={isSavingNewDealer || !newDealerForm.name.trim()}
+            onClick={() => void handleCreateDealer()}
           >
-            {isSavingOpportunity
-              ? 'Creating...'
-              : 'Create Opportunity'}
+            {isSavingNewDealer ? 'Saving...' : 'Save New Dealer'}
           </Button>
         </DialogActions>
       </Dialog>
+
+      <Dialog
+        open={isPaymentTermsDialogOpen}
+        onClose={() => {
+          if (!isSavingPaymentTerms) setIsPaymentTermsDialogOpen(false)
+        }}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Change Payment Terms</DialogTitle>
+        <DialogContent>
+          <Stack spacing={1.5} sx={{ pt: 0.8 }}>
+            <Typography variant="body2" color="text.secondary">
+              Select a common payment term or type a custom one, then choose whether this is a one-time quote change or the dealer&apos;s new default.
+            </Typography>
+            <Autocomplete
+              freeSolo
+              options={[
+                '50% Deposit / 50% CBD',
+                'Due on receipt',
+                'Net 15',
+                'Net 30',
+                'Net 45',
+                'Net 60',
+                'Credit Card',
+              ]}
+              inputValue={paymentTermsDraft}
+              onInputChange={(_event, value) => setPaymentTermsDraft(value)}
+              onChange={(_event, value) => setPaymentTermsDraft(value || '')}
+              renderInput={(params) => <TextField {...params} required autoFocus label="Payment Terms" />}
+            />
+            <ToggleButtonGroup
+              exclusive
+              fullWidth
+              value={paymentTermsApplyMode}
+              onChange={(_event, value: 'quote' | 'dealer' | null) => {
+                if (value) setPaymentTermsApplyMode(value)
+              }}
+            >
+              <ToggleButton value="quote" sx={{ py: 1.2 }}>
+                <Stack>
+                  <Typography variant="body2" fontWeight={800}>This quote only</Typography>
+                  <Typography variant="caption">Use these terms one time</Typography>
+                </Stack>
+              </ToggleButton>
+              <ToggleButton value="dealer" sx={{ py: 1.2 }}>
+                <Stack>
+                  <Typography variant="body2" fontWeight={800}>Change for all future quotes</Typography>
+                  <Typography variant="caption">Update the dealer default</Typography>
+                </Stack>
+              </ToggleButton>
+            </ToggleButtonGroup>
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button disabled={isSavingPaymentTerms} onClick={() => setIsPaymentTermsDialogOpen(false)}>Cancel</Button>
+          <Button
+            variant="contained"
+            disabled={isSavingPaymentTerms || !paymentTermsDraft.trim()}
+            onClick={() => void handleSavePaymentTerms()}
+          >
+            {isSavingPaymentTerms
+              ? 'Saving...'
+              : paymentTermsApplyMode === 'dealer'
+                ? 'Save as Dealer Default'
+                : 'Use for This Quote'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
       <Dialog
         open={isNewContactDialogOpen}
         onClose={() => {
@@ -8645,6 +9302,19 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
           </Button>
         </DialogActions>
       </Dialog>
+      <QuotePicturesPdfLayoutDialog
+        open={isAddPictureLayoutOpen}
+        lineItems={formState.lineItems}
+        quote={addOpportunityPreviewQuote}
+        settings={quotePrintSettingsQuery.data?.settings || DEFAULT_QUOTE_PRINT_SETTINGS}
+        onCancel={() => setIsAddPictureLayoutOpen(false)}
+        onSave={(layouts) => {
+          layouts.forEach(({ lineIndex, imageId, layout }) => {
+            handleUpdateFormLineImageLayout(lineIndex, imageId, layout)
+          })
+          setIsAddPictureLayoutOpen(false)
+        }}
+      />
       </> : null}
 
       <Dialog
@@ -9710,18 +10380,27 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                 ) : null}
 
                 <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.8} alignItems={{ xs: 'stretch', sm: 'flex-end' }}>
-                  <TextField
-                    label="New message"
-                    value={selectedOpportunityChatDraft}
-                    onChange={(event) => {
-                      setSelectedOpportunityChatDraft(event.target.value)
-                    }}
-                    disabled={!canManage || isSendingSelectedOpportunityChat}
-                    multiline
-                    minRows={2}
-                    placeholder="Add a note that stays with this quote (/refresh also works)"
-                    sx={{ flex: 1 }}
-                  />
+                  <Box sx={{ flex: 1 }}>
+                    <MentionsInput
+                      value={selectedOpportunityChatDraftMarkup}
+                      onChange={(_event, nextMarkup, nextPlainText) => {
+                        setSelectedOpportunityChatDraftMarkup(nextMarkup)
+                        setSelectedOpportunityChatDraft(nextPlainText)
+                      }}
+                      disabled={!canManage || isSendingSelectedOpportunityChat}
+                      placeholder="Add a note. Use @ to tag someone or @all to notify everyone. /refresh also works."
+                      style={quoteChatMentionsInputStyle}
+                      allowSuggestionsAboveCursor
+                    >
+                      <Mention
+                        trigger="@"
+                        markup="@[__display__](__id__)"
+                        displayTransform={(_id, display) => `@${display}`}
+                        data={quoteChatMentionOptions}
+                        appendSpaceOnAdd
+                      />
+                    </MentionsInput>
+                  </Box>
 
                   <Stack spacing={0.4} sx={{ minWidth: { xs: 0, sm: 240 } }}>
                     {selectedOpportunityChatDraft.trim().length > 0 ? (

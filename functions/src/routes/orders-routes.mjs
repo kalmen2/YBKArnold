@@ -1095,6 +1095,11 @@ export function registerOrdersRoutes(app, deps) {
       invoiceNumber: String(orderDocument?.invoiceNumber ?? '').trim() || null,
       invoiceCachedUrl: String(orderDocument?.invoice_pdf_cached_url ?? '').trim() || null,
       invoiceFileName: String(orderDocument?.invoice_pdf_file_name ?? '').trim() || null,
+      hasInvoiceDocument: Boolean(
+        String(orderDocument?.invoiceNumber ?? '').trim()
+        || String(orderDocument?.invoice_pdf_cached_url ?? '').trim()
+        || String(orderDocument?.invoice_pdf_storage_path ?? '').trim()
+      ),
       paidInFull,
       amountOwed,
       billBalanceAmount,
@@ -1265,6 +1270,7 @@ export function registerOrdersRoutes(app, deps) {
     const user = toPublicAuthUser(req.authUser)
 
     return {
+      isApproved: Boolean(user?.isApproved),
       isSalesRep: Boolean(user?.isSalesRep),
       isShopWorker: Boolean(user?.isShopWorker),
       canViewOrderValue: Boolean(user?.canViewOrderValue),
@@ -1366,6 +1372,179 @@ export function registerOrdersRoutes(app, deps) {
   }
 
   // ---- Routes -----------------------------------------------------------
+
+  app.get('/api/admin/sales-monthly', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const publicUser = toPublicAuthUser(req.authUser)
+
+      if (!publicUser?.isApproved || !publicUser?.isAdmin) {
+        return res.status(403).json({ error: 'Admin access is required.' })
+      }
+
+      const { ordersUnifiedCollection } = await getCollections()
+      const orderDocuments = await ordersUnifiedCollection
+        .find(
+          {
+            is_cancelled: { $ne: true },
+            is_deleted: { $ne: true },
+            is_canonical_order: { $ne: false },
+          },
+          {
+            projection: {
+              _id: 1,
+              id: 1,
+              orderKey: 1,
+              canonical_order_id: 1,
+              order_number: 1,
+              order_date: 1,
+              converted_at: 1,
+              quote_accepted_at: 1,
+              created_via_website_manual_at: 1,
+              canonical_created_at: 1,
+              createdAt: 1,
+              canonical_product_value: 1,
+              canonical_order_value: 1,
+              canonical_freight_value: 1,
+              orderValue: 1,
+              freightValue: 1,
+              source_quote_snapshot: 1,
+            },
+          },
+        )
+        .toArray()
+
+      const firstFiniteMoney = (...values) => {
+        for (const value of values) {
+          if (value === null || value === undefined || value === '') {
+            continue
+          }
+
+          const parsed = Number(value)
+          if (Number.isFinite(parsed)) {
+            return parsed
+          }
+        }
+
+        return null
+      }
+      const resolveSaleDate = (orderDocument) => {
+        const candidates = [
+          orderDocument?.order_date,
+          orderDocument?.converted_at,
+          orderDocument?.quote_accepted_at,
+          orderDocument?.created_via_website_manual_at,
+          orderDocument?.canonical_created_at,
+          orderDocument?.createdAt,
+        ]
+
+        for (const candidate of candidates) {
+          const timestamp = Date.parse(String(candidate ?? '').trim())
+          if (Number.isFinite(timestamp)) {
+            return new Date(timestamp)
+          }
+        }
+
+        return null
+      }
+      const monthTotalsById = new Map()
+      const countedOrderIds = new Set()
+      const startMonthId = '2026-03'
+
+      orderDocuments.forEach((orderDocument) => {
+        const identity = String(
+          orderDocument?.canonical_order_id
+          ?? orderDocument?.orderKey
+          ?? orderDocument?.order_number
+          ?? orderDocument?.id
+          ?? orderDocument?._id
+          ?? '',
+        ).trim()
+
+        if (identity && countedOrderIds.has(identity)) {
+          return
+        }
+
+        const saleDate = resolveSaleDate(orderDocument)
+        if (!saleDate) {
+          return
+        }
+
+        const monthId = `${saleDate.getUTCFullYear()}-${String(saleDate.getUTCMonth() + 1).padStart(2, '0')}`
+        if (monthId < startMonthId) {
+          return
+        }
+
+        if (identity) {
+          countedOrderIds.add(identity)
+        }
+
+        const freightValue = firstFiniteMoney(
+          orderDocument?.canonical_freight_value,
+          orderDocument?.freightValue,
+          orderDocument?.source_quote_snapshot?.freight,
+        ) ?? 0
+        const canonicalOrderValue = firstFiniteMoney(orderDocument?.canonical_order_value)
+        const fullOrderValue = firstFiniteMoney(
+          canonicalOrderValue,
+          orderDocument?.orderValue,
+          orderDocument?.source_quote_snapshot?.totalAmount,
+        )
+        const productValue = firstFiniteMoney(
+          orderDocument?.canonical_product_value,
+          fullOrderValue === null ? null : fullOrderValue - freightValue,
+        ) ?? 0
+        const existing = monthTotalsById.get(monthId) ?? {
+          salesCount: 0,
+          totalWithoutFreight: 0,
+          totalFreight: 0,
+          totalWithFreight: 0,
+        }
+
+        existing.salesCount += 1
+        existing.totalWithoutFreight += productValue
+        existing.totalFreight += freightValue
+        existing.totalWithFreight += productValue + freightValue
+        monthTotalsById.set(monthId, existing)
+      })
+
+      const now = new Date()
+      const lastMonthId = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`
+      const months = []
+      const cursor = new Date(Date.UTC(2026, 2, 1))
+
+      while (`${cursor.getUTCFullYear()}-${String(cursor.getUTCMonth() + 1).padStart(2, '0')}` <= lastMonthId) {
+        const monthId = `${cursor.getUTCFullYear()}-${String(cursor.getUTCMonth() + 1).padStart(2, '0')}`
+        const totals = monthTotalsById.get(monthId) ?? {
+          salesCount: 0,
+          totalWithoutFreight: 0,
+          totalFreight: 0,
+          totalWithFreight: 0,
+        }
+
+        months.push({
+          id: monthId,
+          label: new Intl.DateTimeFormat('en-US', {
+            month: 'long',
+            year: 'numeric',
+            timeZone: 'UTC',
+          }).format(cursor),
+          salesCount: totals.salesCount,
+          totalWithoutFreight: toMoney(totals.totalWithoutFreight),
+          totalFreight: toMoney(totals.totalFreight),
+          totalWithFreight: toMoney(totals.totalWithFreight),
+        })
+        cursor.setUTCMonth(cursor.getUTCMonth() + 1)
+      }
+
+      return res.json({
+        generatedAt: new Date().toISOString(),
+        startMonth: startMonthId,
+        months,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
 
   // GET /api/orders/overview — pure DB read. Never triggers Monday/QB.
   app.get('/api/orders/overview', requireFirebaseAuth, async (req, res, next) => {
@@ -1584,9 +1763,9 @@ export function registerOrdersRoutes(app, deps) {
     try {
       const access = getOrderAccess(req)
 
-      if (!access.canViewFullFinancials || access.isSalesRep) {
+      if (!access.isApproved) {
         return res.status(403).json({
-          error: 'Only Admin users can open invoice documents.',
+          error: 'Approved access is required to open invoice documents.',
         })
       }
 

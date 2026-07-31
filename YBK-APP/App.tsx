@@ -1,9 +1,11 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker'
 import { GoogleSignin, isErrorWithCode, isSuccessResponse, statusCodes } from '@react-native-google-signin/google-signin'
+import { Picker } from '@react-native-picker/picker'
 import * as AppleAuthentication from 'expo-apple-authentication'
 import * as Application from 'expo-application'
 import * as Crypto from 'expo-crypto'
+import * as DocumentPicker from 'expo-document-picker'
 import { Audio } from 'expo-av'
 import Constants from 'expo-constants'
 import { Ionicons } from '@expo/vector-icons'
@@ -12,6 +14,7 @@ import * as FileSystem from 'expo-file-system/legacy'
 import * as ImagePicker from 'expo-image-picker'
 import * as LocalAuthentication from 'expo-local-authentication'
 import * as Notifications from 'expo-notifications'
+import * as Sharing from 'expo-sharing'
 import * as WebBrowser from 'expo-web-browser'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -51,6 +54,7 @@ import type {
   MobileAuthUser,
   MobileChatMessage,
   MobileChatThread,
+  MobileChatTypingUser,
   MobileChatUser,
   MobileManagerOrderProgress,
   MobileTimesheetEntry,
@@ -69,7 +73,7 @@ import {
   formatSyncTimestamp,
   normalizeTicketStatus,
 } from './appUtils'
-import { API_BASE_URL, request, withBuildQuery } from './appApi'
+import { request, withBuildQuery } from './appApi'
 import { styles } from './appStyles'
 import { ChatSection } from './components/ChatSection'
 import {
@@ -102,10 +106,18 @@ const GOOGLE_IOS_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID ?? ''
 const ORDERS_PAGE_SIZE = 30
 const CHAT_MAX_ATTACHMENT_BYTES = 6 * 1024 * 1024
 const ADMIN_PORTAL_PAGES = [
+  { path: '/admin/sales', labelEn: 'Sales', labelEs: 'Ventas', icon: 'trending-up-outline' as const },
   { path: '/admin/cash', labelEn: 'Cash Accounts', labelEs: 'Cuentas de caja', icon: 'cash-outline' as const },
   { path: '/admin/reports', labelEn: 'Reports', labelEs: 'Reportes', icon: 'bar-chart-outline' as const },
   { path: '/admin/users', labelEn: 'Users', labelEs: 'Usuarios', icon: 'people-outline' as const },
 ] as const
+
+function configureNativeGoogleSignIn() {
+  GoogleSignin.configure({
+    webClientId: GOOGLE_WEB_CLIENT_ID,
+    iosClientId: GOOGLE_IOS_CLIENT_ID || undefined,
+  })
+}
 
 const HEBREW_TRANSLATIONS: Record<string, string> = {
   Orders: 'הזמנות',
@@ -177,6 +189,13 @@ const HEBREW_TRANSLATIONS: Record<string, string> = {
   'Search by order #': 'חפש לפי מספר הזמנה',
   'No orders match your search.': 'אין הזמנות התואמות לחיפוש שלך.',
   Order: 'הזמנה',
+  Today: 'היום',
+  Yesterday: 'אתמול',
+  'Add reaction': 'הוסף תגובה',
+  'React to message': 'הגב להודעה',
+  'Someone is typing…': 'מישהו מקליד…',
+  'is typing…': 'מקליד…',
+  'Several people are typing…': 'כמה אנשים מקלידים…',
 }
 
 type AdminWorkspacePagePath = (typeof ADMIN_PORTAL_PAGES)[number]['path']
@@ -256,11 +275,18 @@ type SettingsMenuId = 'security' | 'language' | 'notifications' | 'updates' | 'a
 type BottomNavScreen = 'orders' | 'pictures' | 'timesheet' | 'manager' | 'alerts' | 'chat' | 'admin'
 
 type ChatAttachmentDraft = {
-  kind: 'image' | 'voice'
+  kind: 'image' | 'voice' | 'file'
   dataUrl: string
   mimeType: string
   fileName: string
   sizeBytes: number
+  durationMillis?: number
+}
+
+type ChatVoicePlaybackState = {
+  messageId: string
+  positionMillis: number
+  durationMillis: number
 }
 
 function normalizeJobName(value: string) {
@@ -782,16 +808,23 @@ export default function App() {
   const [chatThreads, setChatThreads] = useState<MobileChatThread[]>([])
   const [chatUsers, setChatUsers] = useState<MobileChatUser[]>([])
   const [chatMessagesByThreadId, setChatMessagesByThreadId] = useState<Record<string, MobileChatMessage[]>>({})
+  const [chatPagingByThreadId, setChatPagingByThreadId] = useState<Record<string, {
+    hasMore: boolean
+    total: number
+  }>>({})
+  const [chatTypingUsersByThreadId, setChatTypingUsersByThreadId] = useState<Record<string, MobileChatTypingUser[]>>({})
   const [chatSelectedThreadId, setChatSelectedThreadId] = useState<string | null>(null)
   const [chatViewMode, setChatViewMode] = useState<'list' | 'thread'>('list')
   const [chatComposerText, setChatComposerText] = useState('')
   const [chatAttachmentDraft, setChatAttachmentDraft] = useState<ChatAttachmentDraft | null>(null)
+  const [chatReplyDraft, setChatReplyDraft] = useState<MobileChatMessage | null>(null)
   const [isChatLoading, setIsChatLoading] = useState(false)
   const [isChatMessagesLoading, setIsChatMessagesLoading] = useState(false)
   const [isChatSendingMessage, setIsChatSendingMessage] = useState(false)
   const [isChatRecordingVoice, setIsChatRecordingVoice] = useState(false)
   const [isChatProcessingVoice, setIsChatProcessingVoice] = useState(false)
   const [chatPlayingMessageId, setChatPlayingMessageId] = useState<string | null>(null)
+  const [chatVoicePlaybackState, setChatVoicePlaybackState] = useState<ChatVoicePlaybackState | null>(null)
   const [chatMessage, setChatMessage] = useState<string | null>(null)
   const [registeredPushToken, setRegisteredPushToken] = useState<string | null>(null)
   const [isNotificationsEnabled, setIsNotificationsEnabled] = useState(true)
@@ -802,6 +835,7 @@ export default function App() {
   const [adminPortalMessage, setAdminPortalMessage] = useState<string | null>(null)
   const [adminWorkspaceLoadingPath, setAdminWorkspaceLoadingPath] = useState<AdminWorkspacePagePath | null>(null)
   const [adminWorkspaceDataByPath, setAdminWorkspaceDataByPath] = useState<Partial<Record<AdminWorkspacePagePath, AdminWorkspacePanelData>>>({})
+  const [adminSelectedSalesMonthId, setAdminSelectedSalesMonthId] = useState('')
   const [adminUsersForAccess, setAdminUsersForAccess] = useState<AdminWorkspaceUserRecord[]>([])
   const [adminUserSavingUid, setAdminUserSavingUid] = useState<string | null>(null)
   const [adminAccessMenuUserUid, setAdminAccessMenuUserUid] = useState<string | null>(null)
@@ -942,6 +976,12 @@ export default function App() {
     () => (selectedChatThread ? (chatMessagesByThreadId[selectedChatThread.id] ?? []) : []),
     [chatMessagesByThreadId, selectedChatThread],
   )
+  const selectedChatPaging = selectedChatThread
+    ? (chatPagingByThreadId[selectedChatThread.id] ?? { hasMore: false, total: 0 })
+    : { hasMore: false, total: 0 }
+  const selectedChatTypingUsers = selectedChatThread
+    ? (chatTypingUsersByThreadId[selectedChatThread.id] ?? [])
+    : []
 
   const resolveChatThreadTitle = useCallback((thread: MobileChatThread | null) => {
     if (!thread) {
@@ -1223,6 +1263,59 @@ export default function App() {
         }
 
         switch (routePath) {
+          case '/admin/sales': {
+            const payload = await requestWithSession<{
+              generatedAt?: string
+              months?: Array<Record<string, unknown>>
+            }>('/api/admin/sales-monthly')
+            const months = Array.isArray(payload.months) ? payload.months : []
+            const monthRows: AdminWorkspaceRow[] = months.map((month, index) => {
+              const salesCount = toCountValue(month.salesCount)
+              const totalWithoutFreight = Number(month.totalWithoutFreight)
+              const totalWithFreight = Number(month.totalWithFreight)
+
+              return {
+                id: normalizeTextValue(month.id) || `sales-month-${index + 1}`,
+                title: normalizeTextValue(month.label) || t('Sales month', 'Mes de ventas'),
+                subtitle: `${salesCount} ${salesCount === 1 ? t('sale', 'venta') : t('sales', 'ventas')}`,
+                metrics: [
+                  {
+                    label: t('Number of sales', 'Numero de ventas'),
+                    value: String(salesCount),
+                  },
+                  {
+                    label: t('Without freight', 'Sin flete'),
+                    value: formatCurrencyAmount(
+                      Number.isFinite(totalWithoutFreight) ? totalWithoutFreight : 0,
+                      locale,
+                    ),
+                  },
+                  {
+                    label: t('Including freight', 'Incluyendo flete'),
+                    value: formatCurrencyAmount(
+                      Number.isFinite(totalWithFreight) ? totalWithFreight : 0,
+                      locale,
+                    ),
+                  },
+                ],
+              }
+            })
+
+            panelData = {
+              updatedAt: normalizeTextValue(payload.generatedAt) || new Date().toISOString(),
+              stats: [],
+              sections: [
+                {
+                  id: 'sales_months',
+                  title: t('Monthly sales', 'Ventas mensuales'),
+                  emptyText: t('No sales months found.', 'No se encontraron meses de ventas.'),
+                  rows: monthRows,
+                },
+              ],
+            }
+            break
+          }
+
           case '/admin/cash': {
             const overviewPath = forceReload
               ? '/api/quickbooks/overview?refresh=1'
@@ -2708,12 +2801,6 @@ export default function App() {
     lastAutoBiometricAttemptAt,
   ])
 
-  const handleUseGoogleSessionUnlock = useCallback(() => {
-    // User is already authenticated with Google at this stage; allow session unlock without biometric.
-    unlockBiometricSession()
-    setAuthMessage(null)
-  }, [unlockBiometricSession])
-
   const handleChangeLanguage = useCallback(async (nextLanguage: AppLanguage) => {
     setLanguage(nextLanguage)
 
@@ -2918,6 +3005,12 @@ export default function App() {
     }
 
     await signOut(mobileAuth)
+    try {
+      configureNativeGoogleSignIn()
+      await GoogleSignin.signOut()
+    } catch {
+      // Firebase is already signed out. A missing native Google session needs no cleanup.
+    }
     setAuthProfile(null)
     closeSettingsMenu()
     setDetailSelection(null)
@@ -2949,22 +3042,19 @@ export default function App() {
           'El inicio de sesion con Google requiere un build de desarrollo o produccion. No esta disponible en Expo Go.',
         ),
       )
-      return
+      return false
     }
 
     if (!GOOGLE_WEB_CLIENT_ID) {
       setAuthMessage(t('Google sign-in is not configured yet for mobile.', 'El inicio de sesion con Google aun no esta configurado para movil.'))
-      return
+      return false
     }
 
     setAuthMessage(null)
     setIsSigningIn(true)
 
     try {
-      GoogleSignin.configure({
-        webClientId: GOOGLE_WEB_CLIENT_ID,
-        iosClientId: GOOGLE_IOS_CLIENT_ID || undefined,
-      })
+      configureNativeGoogleSignIn()
 
       if (Platform.OS === 'android') {
         await GoogleSignin.hasPlayServices({
@@ -2975,24 +3065,25 @@ export default function App() {
       const response = await GoogleSignin.signIn()
 
       if (!isSuccessResponse(response)) {
-        return
+        return false
       }
 
       const idToken = String(response.data.idToken ?? '').trim()
 
       if (!idToken) {
         setAuthMessage(t('Google sign-in did not return an ID token.', 'Google no devolvio un ID token al iniciar sesion.'))
-        return
+        return false
       }
 
       const credential = GoogleAuthProvider.credential(idToken)
       await signInWithCredential(mobileAuth, credential)
       setAuthMessage(null)
+      return true
     } catch (error) {
       if (isErrorWithCode(error)) {
         if (error.code === statusCodes.SIGN_IN_CANCELLED) {
           setAuthMessage(null)
-          return
+          return false
         }
 
         if (error.code === statusCodes.IN_PROGRESS) {
@@ -3002,7 +3093,7 @@ export default function App() {
               'El inicio de sesion con Google ya esta en progreso.',
             ),
           )
-          return
+          return false
         }
 
         if (error.code === statusCodes.PLAY_SERVICES_NOT_AVAILABLE) {
@@ -3012,15 +3103,37 @@ export default function App() {
               'Google Play Services no esta disponible en este dispositivo.',
             ),
           )
-          return
+          return false
         }
       }
 
       setAuthMessage(getErrorMessage(error, 'Google sign-in failed.', 'Fallo el inicio de sesion con Google.'))
+      return false
     } finally {
       setIsSigningIn(false)
     }
   }, [getErrorMessage, isExpoGo, t])
+
+  const handleUseGoogleSessionUnlock = useCallback(async () => {
+    setAuthMessage(null)
+    lockBiometricSession()
+    setAuthProfile(null)
+
+    await signOut(mobileAuth)
+
+    try {
+      configureNativeGoogleSignIn()
+      await GoogleSignin.signOut()
+    } catch {
+      // Continue to an interactive Google sign-in when no native session exists.
+    }
+
+    const didSignIn = await handleStartGoogleLogin()
+
+    if (didSignIn) {
+      unlockBiometricSession()
+    }
+  }, [handleStartGoogleLogin, lockBiometricSession, unlockBiometricSession])
 
   const handleStartAppleLogin = useCallback(async () => {
     if (Platform.OS !== 'ios') {
@@ -3764,6 +3877,7 @@ export default function App() {
     }
 
     setChatPlayingMessageId(null)
+    setChatVoicePlaybackState(null)
   }, [])
 
   const loadChatState = useCallback(async (refreshRequested = false) => {
@@ -3831,7 +3945,12 @@ export default function App() {
       )
       await loadChatState(false)
       if (payload.thread?.id) {
+        setChatThreads((current) => [
+          payload.thread as MobileChatThread,
+          ...current.filter((thread) => thread.id !== payload.thread?.id),
+        ])
         setChatSelectedThreadId(payload.thread.id)
+        setChatReplyDraft(null)
         setChatViewMode('thread')
       }
     } catch (error) {
@@ -3870,7 +3989,12 @@ export default function App() {
       )
       await loadChatState(false)
       if (payload.thread?.id) {
+        setChatThreads((current) => [
+          payload.thread as MobileChatThread,
+          ...current.filter((thread) => thread.id !== payload.thread?.id),
+        ])
         setChatSelectedThreadId(payload.thread.id)
+        setChatReplyDraft(null)
         setChatViewMode('thread')
       }
     } catch (error) {
@@ -3903,7 +4027,10 @@ export default function App() {
     }
   }, [getErrorMessage, loadChatState, requestWithSession])
 
-  const handleDeleteChatThread = useCallback(async (threadId: string) => {
+  const handleDeleteChatThread = useCallback(async (
+    threadId: string,
+    deleteForEveryone = false,
+  ) => {
     const normalizedThreadId = String(threadId ?? '').trim()
     if (!normalizedThreadId) return
 
@@ -3913,8 +4040,14 @@ export default function App() {
         false,
         {
           method: 'DELETE',
+          body: JSON.stringify({ deleteForEveryone }),
         },
       )
+      setChatMessagesByThreadId((previous) => {
+        const next = { ...previous }
+        delete next[normalizedThreadId]
+        return next
+      })
       setChatSelectedThreadId((current) => current === normalizedThreadId ? null : current)
       setChatViewMode('list')
       await loadChatState(false)
@@ -3925,8 +4058,19 @@ export default function App() {
     }
   }, [getErrorMessage, loadChatState, requestWithSession])
 
-  const loadChatMessages = useCallback(async (threadId: string, refreshRequested = false) => {
+  const loadChatMessages = useCallback(async (
+    threadId: string,
+    refreshRequested = false,
+    options: {
+      mode?: 'replace' | 'newer' | 'older'
+      offset?: number
+      silent?: boolean
+    } = {},
+  ) => {
     const normalizedThreadId = String(threadId ?? '').trim()
+    const mode = options.mode ?? 'replace'
+    const offset = Math.max(0, Math.floor(Number(options.offset ?? 0)))
+    const silent = options.silent === true
 
     if (!normalizedThreadId) {
       return
@@ -3936,20 +4080,52 @@ export default function App() {
       setIsRefreshing(true)
     }
 
-    setIsChatMessagesLoading(true)
+    if (!silent) {
+      setIsChatMessagesLoading(true)
+    }
 
     try {
       const payload = await requestWithSession<{
         messages?: MobileChatMessage[]
+        total?: number
+        hasMore?: boolean
       }>(
-        `/api/chat/threads/${encodeURIComponent(normalizedThreadId)}/messages?limit=160&offset=0`,
+        `/api/chat/threads/${encodeURIComponent(normalizedThreadId)}/messages?limit=50&offset=${offset}`,
         refreshRequested,
       )
       const nextMessages = Array.isArray(payload.messages) ? payload.messages : []
 
-      setChatMessagesByThreadId((previous) => ({
+      setChatMessagesByThreadId((previous) => {
+        if (mode === 'replace') {
+          return {
+            ...previous,
+            [normalizedThreadId]: nextMessages,
+          }
+        }
+
+        const mergedById = new Map(
+          (previous[normalizedThreadId] ?? []).map((message) => [message.id, message]),
+        )
+        nextMessages.forEach((message) => {
+          mergedById.set(message.id, message)
+        })
+        const mergedMessages = [...mergedById.values()].sort((left, right) => {
+          const leftTime = Date.parse(String(left.createdAt ?? '')) || 0
+          const rightTime = Date.parse(String(right.createdAt ?? '')) || 0
+          return leftTime - rightTime || left.id.localeCompare(right.id)
+        })
+
+        return {
+          ...previous,
+          [normalizedThreadId]: mergedMessages,
+        }
+      })
+      setChatPagingByThreadId((previous) => ({
         ...previous,
-        [normalizedThreadId]: nextMessages,
+        [normalizedThreadId]: {
+          hasMore: payload.hasMore === true,
+          total: Math.max(0, Number(payload.total ?? 0) || 0),
+        },
       }))
       setChatMessage(null)
     } catch (error) {
@@ -3961,7 +4137,9 @@ export default function App() {
         ),
       )
     } finally {
-      setIsChatMessagesLoading(false)
+      if (!silent) {
+        setIsChatMessagesLoading(false)
+      }
       setIsRefreshing(false)
     }
   }, [getErrorMessage, requestWithSession])
@@ -3971,6 +4149,7 @@ export default function App() {
     input: {
       text?: string
       attachment?: ChatAttachmentDraft | null
+      replyToMessageId?: string | null
     },
   ) => {
     const normalizedText = String(input.text ?? '').trim()
@@ -3980,7 +4159,7 @@ export default function App() {
       return
     }
 
-    await requestWithSession(
+    return requestWithSession<{ message?: MobileChatMessage }>(
       `/api/chat/threads/${encodeURIComponent(thread.id)}/messages`,
       false,
       {
@@ -3998,8 +4177,14 @@ export default function App() {
                   dataUrl: attachmentDraft.dataUrl,
                   mimeType: attachmentDraft.mimeType,
                   fileName: attachmentDraft.fileName,
+                  ...(attachmentDraft.durationMillis
+                    ? { durationMillis: attachmentDraft.durationMillis }
+                    : {}),
                 },
               }
+            : {}),
+          ...(String(input.replyToMessageId ?? '').trim()
+            ? { replyToMessageId: String(input.replyToMessageId).trim() }
             : {}),
         }),
       },
@@ -4017,22 +4202,91 @@ export default function App() {
       return
     }
 
+    const optimisticMessageId = `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const optimisticCreatedAt = new Date().toISOString()
+    const optimisticMessage: MobileChatMessage = {
+      id: optimisticMessageId,
+      chatId: selectedChatThread.id,
+      text: normalizedText || null,
+      messageType: chatAttachmentDraft
+        ? (normalizedText ? 'mixed' : chatAttachmentDraft.kind)
+        : 'text',
+      attachment: chatAttachmentDraft
+        ? {
+            kind: chatAttachmentDraft.kind,
+            mimeType: chatAttachmentDraft.mimeType,
+            fileName: chatAttachmentDraft.fileName,
+            sizeBytes: chatAttachmentDraft.sizeBytes,
+            durationMillis: chatAttachmentDraft.durationMillis ?? null,
+            dataUrl: chatAttachmentDraft.dataUrl,
+            deletedAt: null,
+            deletedByUid: null,
+            deletedByEmail: null,
+          }
+        : null,
+      replyTo: chatReplyDraft
+        ? {
+            messageId: chatReplyDraft.id,
+            text: chatReplyDraft.text,
+            messageType: chatReplyDraft.messageType,
+            createdByName: chatReplyDraft.createdByName,
+            createdByEmail: chatReplyDraft.createdByEmail,
+          }
+        : null,
+      deliveryStatus: 'sending',
+      reactions: [],
+      createdAt: optimisticCreatedAt,
+      createdByUid: String(firebaseUser?.uid ?? '').trim() || null,
+      createdByEmail: String(firebaseUser?.email ?? '').trim() || null,
+      createdByName: String(firebaseUser?.displayName ?? '').trim() || null,
+      updatedAt: null,
+      updatedByUid: null,
+      updatedByEmail: null,
+      updatedByName: null,
+      deletedAt: null,
+      deletedByUid: null,
+      deletedByEmail: null,
+    }
+
+    setChatMessagesByThreadId((previous) => ({
+      ...previous,
+      [selectedChatThread.id]: [
+        ...(previous[selectedChatThread.id] ?? []),
+        optimisticMessage,
+      ],
+    }))
     setIsChatSendingMessage(true)
     setChatMessage(null)
 
     try {
-      await submitChatMessage(selectedChatThread, {
+      const payload = await submitChatMessage(selectedChatThread, {
         text: normalizedText,
         attachment: chatAttachmentDraft,
+        replyToMessageId: chatReplyDraft?.id ?? null,
       })
 
+      if (payload?.message) {
+        setChatMessagesByThreadId((previous) => ({
+          ...previous,
+          [selectedChatThread.id]: (previous[selectedChatThread.id] ?? [])
+            .map((message) => message.id === optimisticMessageId ? payload.message as MobileChatMessage : message),
+        }))
+      }
       setChatComposerText('')
       setChatAttachmentDraft(null)
+      setChatReplyDraft(null)
       await Promise.all([
-        loadChatMessages(selectedChatThread.id, false),
+        loadChatMessages(selectedChatThread.id, false, { mode: 'newer', silent: true }),
         loadChatState(false),
       ])
     } catch (error) {
+      setChatMessagesByThreadId((previous) => ({
+        ...previous,
+        [selectedChatThread.id]: (previous[selectedChatThread.id] ?? [])
+          .map((message) => message.id === optimisticMessageId
+            ? { ...message, deliveryStatus: 'error' }
+            : message),
+      }))
       setChatMessage(
         getErrorMessage(
           error,
@@ -4046,6 +4300,10 @@ export default function App() {
   }, [
     chatAttachmentDraft,
     chatComposerText,
+    chatReplyDraft,
+    firebaseUser?.displayName,
+    firebaseUser?.email,
+    firebaseUser?.uid,
     getErrorMessage,
     isChatSendingMessage,
     loadChatMessages,
@@ -4084,6 +4342,75 @@ export default function App() {
       )
     }
   }, [getErrorMessage, loadChatMessages, loadChatState, requestWithSession, selectedChatThread])
+
+  const loadChatActivity = useCallback(async (threadId: string) => {
+    const normalizedThreadId = String(threadId ?? '').trim()
+    if (!normalizedThreadId) return
+
+    try {
+      const payload = await requestWithSession<{
+        typingUsers?: MobileChatTypingUser[]
+      }>(`/api/chat/threads/${encodeURIComponent(normalizedThreadId)}/activity`)
+
+      setChatTypingUsersByThreadId((previous) => ({
+        ...previous,
+        [normalizedThreadId]: Array.isArray(payload.typingUsers) ? payload.typingUsers : [],
+      }))
+    } catch {
+      // Typing presence is best-effort and should never interrupt the chat.
+    }
+  }, [requestWithSession])
+
+  const handleLoadOlderChatMessages = useCallback(async () => {
+    if (!selectedChatThread || isChatMessagesLoading || !selectedChatPaging.hasMore) {
+      return
+    }
+
+    await loadChatMessages(selectedChatThread.id, false, {
+      mode: 'older',
+      offset: selectedChatMessages.filter((message) => !message.id.startsWith('local-')).length,
+    })
+  }, [
+    isChatMessagesLoading,
+    loadChatMessages,
+    selectedChatMessages,
+    selectedChatPaging.hasMore,
+    selectedChatThread,
+  ])
+
+  const handleToggleChatReaction = useCallback(async (messageId: string, emoji: string) => {
+    const normalizedMessageId = String(messageId ?? '').trim()
+    const normalizedEmoji = String(emoji ?? '').trim()
+
+    if (!selectedChatThread || !normalizedMessageId || normalizedMessageId.startsWith('local-') || !normalizedEmoji) {
+      return
+    }
+
+    try {
+      const payload = await requestWithSession<{
+        message?: MobileChatMessage
+      }>(
+        `/api/chat/messages/${encodeURIComponent(normalizedMessageId)}/reactions`,
+        false,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({ emoji: normalizedEmoji }),
+        },
+      )
+
+      if (payload.message) {
+        setChatMessagesByThreadId((previous) => ({
+          ...previous,
+          [selectedChatThread.id]: (previous[selectedChatThread.id] ?? [])
+            .map((message) => message.id === normalizedMessageId ? payload.message as MobileChatMessage : message),
+        }))
+      }
+    } catch (error) {
+      setChatMessage(
+        getErrorMessage(error, 'Could not update this reaction.', 'No se pudo actualizar esta reaccion.'),
+      )
+    }
+  }, [getErrorMessage, requestWithSession, selectedChatThread])
 
   const handleAttachChatImage = useCallback(async (source: 'library' | 'camera' = 'library') => {
     try {
@@ -4169,6 +4496,107 @@ export default function App() {
     }
   }, [getErrorMessage, t])
 
+  const handleAttachChatFile = useCallback(async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        copyToCacheDirectory: true,
+        multiple: false,
+        type: '*/*',
+      })
+
+      if (result.canceled || result.assets.length === 0) {
+        return
+      }
+
+      const selectedAsset = result.assets[0]
+      const base64File = await FileSystem.readAsStringAsync(selectedAsset.uri, {
+        encoding: 'base64',
+      })
+      const estimatedBytes = Number(selectedAsset.size)
+        || Math.floor((String(base64File).length * 3) / 4)
+
+      if (!base64File || estimatedBytes <= 0) {
+        throw new Error('Selected file is empty.')
+      }
+
+      if (estimatedBytes > CHAT_MAX_ATTACHMENT_BYTES) {
+        setChatMessage(
+          t(
+            'File is too large. Maximum size is 6 MB.',
+            'El archivo es demasiado grande. El maximo es 6 MB.',
+          ),
+        )
+        return
+      }
+
+      const mimeType = String(selectedAsset.mimeType ?? 'application/octet-stream').trim()
+        || 'application/octet-stream'
+      const fileName = String(selectedAsset.name ?? 'attachment').trim() || 'attachment'
+
+      setChatAttachmentDraft({
+        kind: 'file',
+        dataUrl: `data:${mimeType};base64,${base64File}`,
+        mimeType,
+        fileName,
+        sizeBytes: estimatedBytes,
+      })
+      setChatMessage(null)
+    } catch (error) {
+      setChatMessage(
+        getErrorMessage(
+          error,
+          'Could not attach this file.',
+          'No se pudo adjuntar este archivo.',
+        ),
+      )
+    }
+  }, [getErrorMessage, t])
+
+  const handleOpenChatFile = useCallback(async (
+    dataUrl: string,
+    fileName: string,
+    mimeType: string,
+  ) => {
+    try {
+      const normalizedDataUrl = String(dataUrl ?? '').trim()
+      const dataUrlMatch = normalizedDataUrl.match(/^data:([^;,\s]+);base64,(.+)$/i)
+
+      if (!dataUrlMatch || !FileSystem.cacheDirectory) {
+        throw new Error('File data is unavailable.')
+      }
+
+      const safeFileName = String(fileName ?? 'attachment')
+        .replace(/[\\/]/g, '-')
+        .replace(/[^A-Za-z0-9._\- ]+/g, '')
+        .trim()
+        || 'attachment'
+      const cachedFileUri = `${FileSystem.cacheDirectory}chat-${Date.now()}-${safeFileName}`
+
+      await FileSystem.writeAsStringAsync(cachedFileUri, dataUrlMatch[2], {
+        encoding: 'base64',
+      })
+
+      if (!(await Sharing.isAvailableAsync())) {
+        throw new Error('Opening files is not available on this device.')
+      }
+
+      await Sharing.shareAsync(cachedFileUri, {
+        dialogTitle: safeFileName,
+        mimeType: String(mimeType ?? dataUrlMatch[1] ?? 'application/octet-stream').trim()
+          || 'application/octet-stream',
+      })
+      setChatMessage(null)
+    } catch (error) {
+      setChatMessage(
+        getErrorMessage(
+          error,
+          'Could not open this file.',
+          'No se pudo abrir este archivo.',
+        ),
+      )
+    }
+  }, [getErrorMessage])
+
   const handleStartVoiceNoteRecording = useCallback(async () => {
     if (!selectedChatThread || isChatSendingMessage || isChatRecordingVoice || isChatProcessingVoice) {
       return
@@ -4227,7 +4655,7 @@ export default function App() {
     let sentImmediately = false
 
     try {
-      await activeRecording.stopAndUnloadAsync()
+      const recordingStatus = await activeRecording.stopAndUnloadAsync()
       const audioUri = activeRecording.getURI()
 
       if (!audioUri) {
@@ -4262,6 +4690,7 @@ export default function App() {
         mimeType,
         fileName: `voice-note-${Date.now()}.m4a`,
         sizeBytes: estimatedBytes,
+        durationMillis: Math.max(0, Math.floor(Number(recordingStatus.durationMillis ?? 0))),
       }
 
       if (sendImmediately && selectedChatThread && !isChatSendingMessage) {
@@ -4269,9 +4698,11 @@ export default function App() {
         setIsChatSendingMessage(true)
         await submitChatMessage(selectedChatThread, {
           attachment: voiceAttachmentDraft,
+          replyToMessageId: chatReplyDraft?.id ?? null,
         })
         setChatComposerText('')
         setChatAttachmentDraft(null)
+        setChatReplyDraft(null)
         await Promise.all([
           loadChatMessages(selectedChatThread.id, false),
           loadChatState(false),
@@ -4311,6 +4742,7 @@ export default function App() {
     }
   }, [
     getErrorMessage,
+    chatReplyDraft,
     isChatProcessingVoice,
     isChatSendingMessage,
     loadChatMessages,
@@ -4337,16 +4769,29 @@ export default function App() {
       await unloadActiveVoiceSound()
       const createdSound = await Audio.Sound.createAsync(
         { uri: normalizedDataUrl },
-        { shouldPlay: true },
+        { progressUpdateIntervalMillis: 200, shouldPlay: true },
       )
       const sound = createdSound.sound
 
       activeVoiceSoundRef.current = sound
       setChatPlayingMessageId(normalizedMessageId)
+      if (createdSound.status.isLoaded) {
+        setChatVoicePlaybackState({
+          messageId: normalizedMessageId,
+          positionMillis: createdSound.status.positionMillis,
+          durationMillis: createdSound.status.durationMillis ?? 0,
+        })
+      }
       sound.setOnPlaybackStatusUpdate((status) => {
         if (!status.isLoaded) {
           return
         }
+
+        setChatVoicePlaybackState({
+          messageId: normalizedMessageId,
+          positionMillis: status.positionMillis,
+          durationMillis: status.durationMillis ?? 0,
+        })
 
         if (status.didJustFinish) {
           void unloadActiveVoiceSound()
@@ -4415,7 +4860,8 @@ export default function App() {
     }
 
     void loadChatMessages(chatSelectedThreadId, false)
-  }, [activeScreen, chatSelectedThreadId, hasApprovedSessionAccess, loadChatMessages])
+    void loadChatActivity(chatSelectedThreadId)
+  }, [activeScreen, chatSelectedThreadId, hasApprovedSessionAccess, loadChatActivity, loadChatMessages])
 
   useEffect(() => {
     if (activeScreen !== 'chat' || !hasApprovedSessionAccess) {
@@ -4437,13 +4883,70 @@ export default function App() {
     }
 
     const refreshInterval = setInterval(() => {
-      void loadChatMessages(chatSelectedThreadId, false)
+      void loadChatMessages(chatSelectedThreadId, false, { mode: 'newer', silent: true })
     }, 5000)
 
     return () => {
       clearInterval(refreshInterval)
     }
   }, [activeScreen, chatSelectedThreadId, hasApprovedSessionAccess, loadChatMessages])
+
+  useEffect(() => {
+    if (activeScreen !== 'chat' || !hasApprovedSessionAccess || !chatSelectedThreadId) {
+      return
+    }
+
+    const refreshInterval = setInterval(() => {
+      void loadChatActivity(chatSelectedThreadId)
+    }, 2500)
+
+    return () => {
+      clearInterval(refreshInterval)
+    }
+  }, [activeScreen, chatSelectedThreadId, hasApprovedSessionAccess, loadChatActivity])
+
+  useEffect(() => {
+    if (
+      activeScreen !== 'chat'
+      || chatViewMode !== 'thread'
+      || !hasApprovedSessionAccess
+      || !chatSelectedThreadId
+    ) {
+      return
+    }
+
+    const isTyping = Boolean(chatComposerText.trim())
+    const sendTypingPresence = () => {
+      void requestWithSession(
+        `/api/chat/threads/${encodeURIComponent(chatSelectedThreadId)}/typing`,
+        false,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({ isTyping }),
+        },
+      ).catch(() => {
+        // Typing presence is best-effort.
+      })
+    }
+    const typingDelay = setTimeout(sendTypingPresence, 250)
+    const typingHeartbeat = isTyping
+      ? setInterval(sendTypingPresence, 2500)
+      : null
+
+    return () => {
+      clearTimeout(typingDelay)
+      if (typingHeartbeat) {
+        clearInterval(typingHeartbeat)
+      }
+    }
+  }, [
+    activeScreen,
+    chatComposerText,
+    chatSelectedThreadId,
+    chatViewMode,
+    hasApprovedSessionAccess,
+    requestWithSession,
+  ])
 
   useEffect(() => {
     if (activeScreen === 'chat') {
@@ -5407,11 +5910,6 @@ export default function App() {
     [windowHeight],
   )
 
-  const chatThreadCardHeight = useMemo(
-    () => Math.max(520, windowHeight - 140),
-    [windowHeight],
-  )
-
   const poNumberByOrderId = useMemo(() => {
     const poByOrderId: Record<string, string | null> = {}
 
@@ -5449,6 +5947,44 @@ export default function App() {
     () => adminWorkspaceDataByPath[selectedAdminPortalPage.path] ?? null,
     [adminWorkspaceDataByPath, selectedAdminPortalPage.path],
   )
+
+  const adminSalesMonthRows = useMemo(() => {
+    if (selectedAdminPortalPage.path !== '/admin/sales') {
+      return []
+    }
+
+    return selectedAdminWorkspaceData?.sections.find((section) => section.id === 'sales_months')?.rows ?? []
+  }, [selectedAdminPortalPage.path, selectedAdminWorkspaceData])
+
+  const selectedAdminSalesMonthRow = useMemo(
+    () => adminSalesMonthRows.find((row) => row.id === adminSelectedSalesMonthId)
+      ?? adminSalesMonthRows[adminSalesMonthRows.length - 1]
+      ?? null,
+    [adminSalesMonthRows, adminSelectedSalesMonthId],
+  )
+
+  const adminSalesYearOptions = useMemo(
+    () => [...new Set(adminSalesMonthRows.map((row) => row.id.slice(0, 4)).filter(Boolean))],
+    [adminSalesMonthRows],
+  )
+  const selectedAdminSalesYear = selectedAdminSalesMonthRow?.id.slice(0, 4)
+    || adminSalesYearOptions[adminSalesYearOptions.length - 1]
+    || '2026'
+  const selectedAdminSalesMonth = selectedAdminSalesMonthRow?.id.slice(5, 7) || '03'
+  const adminSalesAvailableMonthIds = useMemo(
+    () => new Set(adminSalesMonthRows.map((row) => row.id)),
+    [adminSalesMonthRows],
+  )
+
+  useEffect(() => {
+    if (selectedAdminPortalPage.path !== '/admin/sales' || adminSalesMonthRows.length === 0) {
+      return
+    }
+
+    if (!adminSalesMonthRows.some((row) => row.id === adminSelectedSalesMonthId)) {
+      setAdminSelectedSalesMonthId(adminSalesMonthRows[adminSalesMonthRows.length - 1].id)
+    }
+  }, [adminSalesMonthRows, adminSelectedSalesMonthId, selectedAdminPortalPage.path])
 
   const selectedAdminAccessMenuUser = useMemo(
     () => adminUsersForAccess.find((user) => user.uid === adminAccessMenuUserUid) ?? null,
@@ -6649,18 +7185,24 @@ export default function App() {
     setManagerMessage(null)
 
     try {
-      if (cachedPreviewUrl) {
-        await WebBrowser.openBrowserAsync(cachedPreviewUrl)
-        return
+      let resolvedPreviewUrl = cachedPreviewUrl
+
+      if (!resolvedPreviewUrl) {
+        const query = new URLSearchParams({
+          orderId,
+          resolveOnly: '1',
+        })
+        const payload = await requestWithSession<{ cachedUrl?: string }>(
+          `/api/dashboard/monday/shop-drawing/download?${query.toString()}`,
+        )
+        resolvedPreviewUrl = String(payload?.cachedUrl ?? '').trim()
       }
 
-      const query = new URLSearchParams({
-        orderId,
-        inline: '1',
-      })
-      await WebBrowser.openBrowserAsync(
-        `${API_BASE_URL}/api/dashboard/monday/shop-drawing/download?${query.toString()}`,
-      )
+      if (!resolvedPreviewUrl) {
+        throw new Error('No shop drawing is available for this order yet.')
+      }
+
+      await WebBrowser.openBrowserAsync(resolvedPreviewUrl)
     } catch (error) {
       setManagerMessage(
         getErrorMessage(
@@ -6670,7 +7212,7 @@ export default function App() {
         ),
       )
     }
-  }, [getErrorMessage, t])
+  }, [getErrorMessage, requestWithSession, t])
 
   const closeOrderDetails = useCallback(() => {
     setSelectedOrderForDetails(null)
@@ -6734,18 +7276,24 @@ export default function App() {
     setOrdersDetailMessage(null)
 
     try {
-      if (cachedPreviewUrl) {
-        await WebBrowser.openBrowserAsync(cachedPreviewUrl)
-        return
+      let resolvedPreviewUrl = cachedPreviewUrl
+
+      if (!resolvedPreviewUrl) {
+        const query = new URLSearchParams({
+          orderId,
+          resolveOnly: '1',
+        })
+        const payload = await requestWithSession<{ cachedUrl?: string }>(
+          `/api/dashboard/monday/shop-drawing/download?${query.toString()}`,
+        )
+        resolvedPreviewUrl = String(payload?.cachedUrl ?? '').trim()
       }
 
-      const query = new URLSearchParams({
-        orderId,
-        inline: '1',
-      })
-      await WebBrowser.openBrowserAsync(
-        `${API_BASE_URL}/api/dashboard/monday/shop-drawing/download?${query.toString()}`,
-      )
+      if (!resolvedPreviewUrl) {
+        throw new Error('No shop drawing is available for this order yet.')
+      }
+
+      await WebBrowser.openBrowserAsync(resolvedPreviewUrl)
     } catch (error) {
       setOrdersDetailMessage(
         getErrorMessage(
@@ -6755,7 +7303,7 @@ export default function App() {
         ),
       )
     }
-  }, [getErrorMessage, t])
+  }, [getErrorMessage, requestWithSession, t])
 
   const handleOpenOrderCutList = useCallback(async (detailsSnapshot: OrderJobDetailsSnapshot | null) => {
     const detailsOrder = detailsSnapshot?.order ?? null
@@ -7355,10 +7903,12 @@ export default function App() {
         />
 
         <AuthButton
-          label={t('Use Google Instead', 'Usar Google en su lugar')}
+          label={isSigningIn ? t('Signing in...', 'Iniciando sesion...') : t('Use Google Instead', 'Usar Google en su lugar')}
           variant="secondary"
           textVariant="secondary"
-          onPress={handleUseGoogleSessionUnlock}
+          onPress={() => {
+            void handleUseGoogleSessionUnlock()
+          }}
           disabled={isSigningIn || !hasGoogleClientId}
         />
 
@@ -7388,7 +7938,7 @@ export default function App() {
           <ScreenContent
             {...(isChatThreadScreen
               ? {
-                style: [styles.picturesScreenScroll, styles.scrollContent, styles.scrollContentPictures],
+                style: [styles.picturesScreenScroll, styles.chatThreadContent],
               }
               : {
                 ref: screenScrollRef,
@@ -7613,7 +8163,10 @@ export default function App() {
                 chatComposerText={chatComposerText}
                 chatMessage={chatMessage}
                 chatPlayingMessageId={chatPlayingMessageId}
-                chatThreadCardHeight={chatThreadCardHeight}
+                chatReplyDraft={chatReplyDraft}
+                chatVoicePlaybackState={chatVoicePlaybackState}
+                chatTypingUsers={selectedChatTypingUsers}
+                hasMoreChatMessages={selectedChatPaging.hasMore}
                 chatViewMode={chatViewMode}
                 currentUserEmail={String(firebaseUser?.email ?? '')}
                 currentUserUid={String(firebaseUser?.uid ?? '')}
@@ -7627,7 +8180,9 @@ export default function App() {
                 isChatSendingMessage={isChatSendingMessage}
                 locale={locale}
                 onBackToList={() => {
+                  setChatReplyDraft(null)
                   setChatViewMode('list')
+                  void loadChatState(false)
                 }}
                 onStartChat={(targetUid) => {
                   void handleStartDirectChat(targetUid)
@@ -7638,15 +8193,29 @@ export default function App() {
                 onSetPinned={(threadId, pinned) => {
                   void handleSetChatPinned(threadId, pinned)
                 }}
-                onDeleteThread={(threadId) => {
-                  void handleDeleteChatThread(threadId)
+                onDeleteThread={(threadId, deleteForEveryone) => {
+                  void handleDeleteChatThread(threadId, deleteForEveryone)
                 }}
                 onComposerTextChange={setChatComposerText}
                 onDeleteMessage={(messageId) => {
                   void handleDeleteChatMessage(messageId)
                 }}
+                onLoadOlderMessages={() => {
+                  void handleLoadOlderChatMessages()
+                }}
+                onReplyMessage={setChatReplyDraft}
+                onToggleReaction={(messageId, emoji) => {
+                  void handleToggleChatReaction(messageId, emoji)
+                }}
+                onCancelReply={() => setChatReplyDraft(null)}
                 onAttachImage={(source) => {
                   void handleAttachChatImage(source)
+                }}
+                onAttachFile={() => {
+                  void handleAttachChatFile()
+                }}
+                onOpenFile={(dataUrl, fileName, mimeType) => {
+                  void handleOpenChatFile(dataUrl, fileName, mimeType)
                 }}
                 onRemoveAttachmentDraft={() => {
                   setChatAttachmentDraft(null)
@@ -7654,17 +8223,14 @@ export default function App() {
                 onSelectThread={(threadId) => {
                   setChatSelectedThreadId(threadId)
                   setChatMessage(null)
+                  setChatReplyDraft(null)
                   setChatViewMode('thread')
                 }}
                 onSendMessage={(text) => {
                   void handleSendChatMessage(text)
                 }}
-                onStartVoiceRecording={() => {
-                  void handleStartVoiceNoteRecording()
-                }}
-                onStopVoiceRecording={(sendImmediately) => {
-                  void handleStopVoiceNoteRecording(sendImmediately)
-                }}
+                onStartVoiceRecording={handleStartVoiceNoteRecording}
+                onStopVoiceRecording={handleStopVoiceNoteRecording}
                 onToggleVoicePlayback={(messageId, dataUrl) => {
                   void handleToggleVoicePlayback(messageId, dataUrl)
                 }}
@@ -7770,6 +8336,115 @@ export default function App() {
                               <Text style={styles.adminWorkspaceStatValue}>{stat.value}</Text>
                             </View>
                           ))}
+                        </View>
+                      ) : null}
+
+                      {selectedAdminPortalPage.path === '/admin/sales' ? (
+                        <View style={styles.adminWorkspaceSectionCard}>
+                          <Text style={styles.adminWorkspaceSectionTitle}>
+                            {t('Select a month', 'Selecciona un mes')}
+                          </Text>
+
+                          {adminSalesMonthRows.length === 0 ? (
+                            <Text style={styles.adminWorkspaceSectionEmpty}>
+                              {t('No sales months found.', 'No se encontraron meses de ventas.')}
+                            </Text>
+                          ) : (
+                            <>
+                              <View style={styles.adminSalesDropdownRow}>
+                                <View style={styles.adminSalesDropdownField}>
+                                  <Text style={styles.adminSalesDropdownLabel}>{t('Year', 'Año')}</Text>
+                                  <View style={styles.adminSalesPickerShell}>
+                                    <Picker
+                                      selectedValue={selectedAdminSalesYear}
+                                      style={styles.adminSalesPicker}
+                                      dropdownIconColor="#315aa8"
+                                      onValueChange={(nextYear) => {
+                                        const normalizedYear = String(nextYear)
+                                        const matchingMonthId = `${normalizedYear}-${selectedAdminSalesMonth}`
+                                        const matchingYearRows = adminSalesMonthRows
+                                          .filter((row) => row.id.startsWith(`${normalizedYear}-`))
+                                        const fallbackRow = matchingYearRows[matchingYearRows.length - 1]
+
+                                        setAdminSelectedSalesMonthId(
+                                          adminSalesAvailableMonthIds.has(matchingMonthId)
+                                            ? matchingMonthId
+                                            : fallbackRow?.id ?? adminSelectedSalesMonthId,
+                                        )
+                                      }}
+                                    >
+                                      {adminSalesYearOptions.map((year) => (
+                                        <Picker.Item key={year} label={year} value={year} />
+                                      ))}
+                                    </Picker>
+                                  </View>
+                                </View>
+
+                                <View style={styles.adminSalesDropdownField}>
+                                  <Text style={styles.adminSalesDropdownLabel}>{t('Month', 'Mes')}</Text>
+                                  <View style={styles.adminSalesPickerShell}>
+                                    <Picker
+                                      selectedValue={selectedAdminSalesMonth}
+                                      style={styles.adminSalesPicker}
+                                      dropdownIconColor="#315aa8"
+                                      onValueChange={(nextMonth) => {
+                                        const nextMonthId = `${selectedAdminSalesYear}-${String(nextMonth)}`
+                                        if (adminSalesAvailableMonthIds.has(nextMonthId)) {
+                                          setAdminSelectedSalesMonthId(nextMonthId)
+                                        }
+                                      }}
+                                    >
+                                      {Array.from({ length: 12 }, (_, monthIndex) => {
+                                        const monthValue = String(monthIndex + 1).padStart(2, '0')
+                                        const monthId = `${selectedAdminSalesYear}-${monthValue}`
+                                        const isSelectable = adminSalesAvailableMonthIds.has(monthId)
+                                        const monthLabel = new Intl.DateTimeFormat(locale, {
+                                          month: 'long',
+                                          timeZone: 'UTC',
+                                        }).format(new Date(Date.UTC(2026, monthIndex, 1)))
+
+                                        return (
+                                          <Picker.Item
+                                            key={monthValue}
+                                            label={monthLabel}
+                                            value={monthValue}
+                                            enabled={isSelectable}
+                                            color={isSelectable ? '#1f3567' : '#b8c0cf'}
+                                          />
+                                        )
+                                      })}
+                                    </Picker>
+                                  </View>
+                                </View>
+                              </View>
+
+                              {selectedAdminSalesMonthRow ? (
+                                <View style={styles.adminSalesMonthSummary}>
+                                  <Text style={styles.adminSalesMonthSummaryTitle}>
+                                    {selectedAdminSalesMonthRow.title}
+                                  </Text>
+                                  <View style={styles.adminSalesSummaryCards}>
+                                    {(selectedAdminSalesMonthRow.metrics ?? []).map((metric, metricIndex) => (
+                                      <View
+                                        key={`${selectedAdminSalesMonthRow.id}-${metric.label}`}
+                                        style={[
+                                          styles.adminSalesSummaryCard,
+                                          metricIndex === 0
+                                            ? styles.adminSalesSummaryCardBlue
+                                            : metricIndex === 1
+                                              ? styles.adminSalesSummaryCardGreen
+                                              : styles.adminSalesSummaryCardPurple,
+                                        ]}
+                                      >
+                                        <Text style={styles.adminSalesSummaryCardLabel}>{metric.label}</Text>
+                                        <Text style={styles.adminSalesSummaryCardValue}>{metric.value}</Text>
+                                      </View>
+                                    ))}
+                                  </View>
+                                </View>
+                              ) : null}
+                            </>
+                          )}
                         </View>
                       ) : null}
 
@@ -7921,7 +8596,7 @@ export default function App() {
                         </View>
                       ) : null}
 
-                      {selectedAdminPortalPage.path !== '/admin/reports' ? visibleAdminSections.map((section) => (
+                      {selectedAdminPortalPage.path !== '/admin/reports' && selectedAdminPortalPage.path !== '/admin/sales' ? visibleAdminSections.map((section) => (
                         <View key={section.id} style={styles.adminWorkspaceSectionCard}>
                           <Text style={styles.adminWorkspaceSectionTitle}>{section.title}</Text>
 

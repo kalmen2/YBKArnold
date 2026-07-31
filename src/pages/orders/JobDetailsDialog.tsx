@@ -59,6 +59,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAuth } from '../../auth/useAuth'
 import { firebaseStorage } from '../../auth/firebase'
 import {
+  buildBillOfLadingBlob,
   buildOrderDocumentBlob,
   buildChangeOrderDocumentBlob,
   buildProformaInvoiceBlob,
@@ -585,6 +586,8 @@ export function JobDetailsDialog({
   const [generatedWorkOrderName, setGeneratedWorkOrderName] = useState<string | null>(null)
   const [generatedProformaInvoiceUrl, setGeneratedProformaInvoiceUrl] = useState<string | null>(null)
   const [generatedProformaInvoiceName, setGeneratedProformaInvoiceName] = useState<string | null>(null)
+  const [generatedBolUrl, setGeneratedBolUrl] = useState<string | null>(null)
+  const [generatedBolName, setGeneratedBolName] = useState<string | null>(null)
   const [documentPreviewUrl, setDocumentPreviewUrl] = useState('')
   const [documentPreviewTitle, setDocumentPreviewTitle] = useState('Document Preview')
   const [documentPreviewMode, setDocumentPreviewMode] = useState<DocumentPreviewMode>('unsupported')
@@ -880,21 +883,20 @@ export function JobDetailsDialog({
     callback: (items: MentionSuggestionOption[]) => void,
   ) => {
     const normalizedQuery = normalizeMentionAlias(query)
+    const everyoneOption = !normalizedQuery || 'all'.startsWith(normalizedQuery)
+      ? [{ id: '__mention_all__', display: 'all' }]
+      : []
 
-    if (!normalizedQuery) {
-      callback([])
-      return
-    }
-
-    callback(
-      mentionSuggestionSource
-        .filter((entry) => entry.normalizedDisplay.startsWith(normalizedQuery))
+    callback([
+      ...everyoneOption,
+      ...mentionSuggestionSource
+        .filter((entry) => !normalizedQuery || entry.normalizedDisplay.startsWith(normalizedQuery))
         .slice(0, 8)
         .map((entry) => ({
           id: entry.id,
           display: entry.display,
         })),
-    )
+    ])
   }
 
   const handleSendChatMessage = async () => {
@@ -920,6 +922,7 @@ export function JobDetailsDialog({
     try {
       const mentionUserUidsFromMarkup = extractMentionUserUidsFromMarkup(chatDraftMarkup)
       const mentionAliases = extractMentionAliases(finalMessage)
+      const mentionsEveryone = mentionUserUidsFromMarkup.includes('__mention_all__') || mentionAliases.includes('all')
       const mentionUserUidsFromAliases = [...new Set(
         mentionAliases.flatMap((alias) => {
           const matchedUsers = mentionAliasToUsers.get(alias) ?? []
@@ -929,7 +932,11 @@ export function JobDetailsDialog({
             : []
         }),
       )]
-      const mentionUserUids = [...new Set([...mentionUserUidsFromMarkup, ...mentionUserUidsFromAliases])]
+      const mentionUserUids = [...new Set([
+        ...mentionUserUidsFromMarkup.filter((uid) => uid !== '__mention_all__'),
+        ...mentionUserUidsFromAliases,
+        ...(mentionsEveryone ? chatUsers.map((user) => user.uid) : []),
+      ])]
 
       await createOrderChatMessage(orderChatId, {
         message: finalMessage,
@@ -1126,7 +1133,7 @@ export function JobDetailsDialog({
   const shipNotes = String(order?.shipNotes ?? '').trim()
   const documentOrder = detailsQuery.data?.order || order
   const hasMondayItemId = Boolean(String(order?.mondayItemId ?? '').trim())
-  const bolUrl = resolveBolUrl(order)
+  const bolUrl = generatedBolUrl || resolveBolUrl(order)
   const bolPreviewUrl = hasMondayItemId
     ? `/api/dashboard/monday/bol/download?orderId=${encodeURIComponent(String(order?.mondayItemId ?? '').trim())}&inline=1`
     : bolUrl
@@ -1187,6 +1194,7 @@ export function JobDetailsDialog({
   const proformaInvoiceName = generatedProformaInvoiceName
     || order?.proformaInvoiceName
     || 'proforma-invoice.pdf'
+  const bolName = generatedBolName || String(order?.bol ?? '').trim() || 'bill-of-lading.pdf'
   const hasBolText = Boolean(String(order?.bol ?? '').trim())
   const signedBolUrl = signedBolDeletedLocally
     ? null
@@ -1231,7 +1239,8 @@ export function JobDetailsDialog({
     || isDeletingCutList
   const canOpenShopDrawingDocument = Boolean(shopDrawingUrl)
   const canOpenCutListDocument = Boolean(cutListUrl)
-  const canOpenInvoiceDocument = Boolean(invoiceNumber)
+  const hasInvoiceDocument = Boolean(order?.hasInvoiceDocument)
+  const canOpenInvoiceDocument = hasInvoiceDocument
   const hasMondayRecord = Boolean(order?.hasMondayRecord)
   const canManageOrderMetadata = appUser?.isAdmin === true || appUser?.isManager === true
   const canEditOrderInformation =
@@ -1257,6 +1266,8 @@ export function JobDetailsDialog({
     setGeneratedWorkOrderName(null)
     setGeneratedProformaInvoiceUrl(null)
     setGeneratedProformaInvoiceName(null)
+    setGeneratedBolUrl(null)
+    setGeneratedBolName(null)
   }, [order?.id])
 
   const handleGenerateOrderConfirmation = async (override?: {
@@ -1306,6 +1317,7 @@ export function JobDetailsDialog({
         ? `Work Order Change V${effectiveChangeVersion} - ${orderNumber}.pdf`
         : `Work Order - ${orderNumber}.pdf`
       const proformaInvoiceName = `Proforma Invoice - ${orderNumber}.pdf`
+      const bolName = `Bill of Lading - ${orderNumber}.pdf`
       const documentData = {
         changeVersion: override?.version ?? order.changeVersion,
         documentDate: String(order.orderDate ?? '').trim(),
@@ -1337,12 +1349,17 @@ export function JobDetailsDialog({
         depositPercent,
         lines: override?.lines
           ?? (Array.isArray(order.orderDocumentLines) ? order.orderDocumentLines : []),
+        salesRep: String(order.salesRep ?? '').trim(),
+        poDate: String(order.orderDate ?? '').trim(),
+        acknowledgmentDate: String(order.convertedAt ?? order.orderDate ?? '').trim(),
+        estimatedReadyDate: String(order.managerReadyDate ?? order.dueDate ?? '').trim(),
       }
       const settings = quotePrintSettingsQuery.data?.settings || DEFAULT_QUOTE_PRINT_SETTINGS
-      const [confirmationBlob, workOrderBlob, proformaInvoiceBlob] = await Promise.all([
+      const [confirmationBlob, workOrderBlob, proformaInvoiceBlob, bolBlob] = await Promise.all([
         buildOrderDocumentBlob(documentData, settings),
         buildWorkOrderDocumentBlob(documentData, settings),
         buildProformaInvoiceBlob(documentData, settings),
+        buildBillOfLadingBlob(documentData),
       ])
       const orderPath = sanitizeStoragePathSegment(orderNumber, 'order')
       const generatedAt = Date.now()
@@ -1358,15 +1375,21 @@ export function JobDetailsDialog({
         firebaseStorage,
         `crm/orders/${orderPath}/proforma-invoice-${generatedAt}.pdf`,
       )
+      const bolRef = storageRef(
+        firebaseStorage,
+        `crm/orders/${orderPath}/bill-of-lading-${generatedAt}.pdf`,
+      )
       await Promise.all([
         uploadBytes(confirmationRef, confirmationBlob, { contentType: 'application/pdf' }),
         uploadBytes(workOrderRef, workOrderBlob, { contentType: 'application/pdf' }),
         uploadBytes(proformaInvoiceRef, proformaInvoiceBlob, { contentType: 'application/pdf' }),
+        uploadBytes(bolRef, bolBlob, { contentType: 'application/pdf' }),
       ])
-      const [documentUrl, workOrderUrl, proformaInvoiceUrl] = await Promise.all([
+      const [documentUrl, workOrderUrl, proformaInvoiceUrl, generatedBolDownloadUrl] = await Promise.all([
         getDownloadURL(confirmationRef),
         getDownloadURL(workOrderRef),
         getDownloadURL(proformaInvoiceRef),
+        getDownloadURL(bolRef),
       ])
 
       await postOrdersOrderConfirmationUpdate({
@@ -1377,6 +1400,8 @@ export function JobDetailsDialog({
         workOrderName,
         proformaInvoiceUrl,
         proformaInvoiceName,
+        bolUrl: generatedBolDownloadUrl,
+        bolName,
       })
 
       setGeneratedOrderConfirmationUrl(documentUrl)
@@ -1385,7 +1410,9 @@ export function JobDetailsDialog({
       setGeneratedWorkOrderName(workOrderName)
       setGeneratedProformaInvoiceUrl(proformaInvoiceUrl)
       setGeneratedProformaInvoiceName(proformaInvoiceName)
-      setInfoDocumentActionSuccess('Order confirmation, work order, and proforma invoice generated.')
+      setGeneratedBolUrl(generatedBolDownloadUrl)
+      setGeneratedBolName(bolName)
+      setInfoDocumentActionSuccess('Order confirmation, work order, proforma invoice, and BOL generated.')
       await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.ordersOverview })
     } catch (error) {
       setInfoDocumentActionError(
@@ -5020,7 +5047,7 @@ export function JobDetailsDialog({
                             {hasPendingChangeOrder ? `Change V${changeOrderVersion} Pending` : 'Make Change Order'}
                           </Button>
                           <Button
-                            variant={orderConfirmationUrl && workOrderUrl && proformaInvoiceUrl ? 'outlined' : 'contained'}
+                            variant={orderConfirmationUrl && workOrderUrl && proformaInvoiceUrl && bolUrl ? 'outlined' : 'contained'}
                             disabled={isGeneratingOrderConfirmation || hasPendingChangeOrder}
                             startIcon={isGeneratingOrderConfirmation
                               ? <CircularProgress size={16} color="inherit" />
@@ -5037,7 +5064,7 @@ export function JobDetailsDialog({
                           >
                             {isGeneratingOrderConfirmation
                               ? 'Generating Documents…'
-                              : orderConfirmationUrl && workOrderUrl && proformaInvoiceUrl
+                              : orderConfirmationUrl && workOrderUrl && proformaInvoiceUrl && bolUrl
                                 ? 'Regenerate Documents'
                                 : 'Generate Documents'}
                           </Button>
@@ -5181,6 +5208,24 @@ export function JobDetailsDialog({
                       })}
 
                       {renderDocumentCard({
+                        title: 'Bill of Lading',
+                        url: bolUrl,
+                        fileName: bolUrl ? bolName : null,
+                        available: Boolean(bolUrl),
+                        statusText: bolUrl ? 'Available' : 'Ready to generate',
+                        emptyLabel: 'Use the Generate Documents button above',
+                        readOnly: true,
+                        onOpen: bolUrl
+                          ? () => handleOpenDocumentPreview({
+                              title: 'Bill of Lading',
+                              url: bolUrl,
+                              fileName: bolName,
+                              mimeType: 'application/pdf',
+                            })
+                          : undefined,
+                      })}
+
+                      {renderDocumentCard({
                         title: 'Shop Drawing',
                         url: shopDrawingUrl,
                         fileName: shopDrawingDisplayName,
@@ -5220,10 +5265,10 @@ export function JobDetailsDialog({
                         title: 'Invoice',
                         url: invoicePreviewUrl,
                         fileName: invoiceNumber ? `Invoice #${invoiceNumber}` : null,
-                        available: canOpenInvoiceDocument,
-                        statusText: canOpenInvoiceDocument ? 'Available' : 'Not available yet',
-                        emptyLabel: canOpenInvoiceDocument
-                          ? 'Invoice available'
+                        available: hasInvoiceDocument,
+                        statusText: hasInvoiceDocument ? 'Available' : 'Not available yet',
+                        emptyLabel: hasInvoiceDocument
+                          ? (canOpenInvoiceDocument ? 'Invoice available' : 'Invoice available — restricted details')
                           : 'No invoice has been issued',
                         readOnly: true,
                         onOpen: order && canOpenInvoiceDocument

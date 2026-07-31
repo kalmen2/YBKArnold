@@ -3,18 +3,25 @@ import { useState } from 'react'
 import { Alert, Modal, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
 import Swipeable from 'react-native-gesture-handler/Swipeable'
 import { styles } from '../appStyles'
-import type { MobileChatMessage, MobileChatThread, MobileChatUser } from '../appTypes'
+import type { MobileChatMessage, MobileChatThread, MobileChatTypingUser, MobileChatUser } from '../appTypes'
 import { InlineLoading } from '../appSections'
 import { ChatThreadScreen } from './ChatThreadScreen'
 
 type TranslateFn = (english: string, spanish: string) => string
 
 type ChatAttachmentDraft = {
-  kind: 'image' | 'voice'
+  kind: 'image' | 'voice' | 'file'
   dataUrl: string
   mimeType: string
   fileName: string
   sizeBytes: number
+  durationMillis?: number
+}
+
+type ChatVoicePlaybackState = {
+  messageId: string
+  positionMillis: number
+  durationMillis: number
 }
 
 type ChatSectionProps = {
@@ -22,7 +29,6 @@ type ChatSectionProps = {
   locale: string
   chatViewMode: 'list' | 'thread'
   chatCardHeight: number
-  chatThreadCardHeight: number
   isChatLoading: boolean
   isChatMessagesLoading: boolean
   sortedChatThreads: MobileChatThread[]
@@ -31,6 +37,10 @@ type ChatSectionProps = {
   chatAttachmentDraft: ChatAttachmentDraft | null
   chatComposerText: string
   chatPlayingMessageId: string | null
+  chatReplyDraft: MobileChatMessage | null
+  chatVoicePlaybackState: ChatVoicePlaybackState | null
+  chatTypingUsers: MobileChatTypingUser[]
+  hasMoreChatMessages: boolean
   isAdminUser: boolean
   canStartDirectChat: boolean
   isChatProcessingVoice: boolean
@@ -47,15 +57,21 @@ type ChatSectionProps = {
   onStartChat: (targetUid: string) => void
   onCreateGroup: (name: string, memberUids: string[]) => void
   onSetPinned: (threadId: string, pinned: boolean) => void
-  onDeleteThread: (threadId: string) => void
+  onDeleteThread: (threadId: string, deleteForEveryone: boolean) => void
   onComposerTextChange: (value: string) => void
   onAttachImage: (source: 'library' | 'camera') => void
+  onAttachFile: () => void
+  onOpenFile: (dataUrl: string, fileName: string, mimeType: string) => void
   onRemoveAttachmentDraft: () => void
   onSendMessage: (text?: string) => void
-  onStartVoiceRecording: () => void
-  onStopVoiceRecording: (sendImmediately?: boolean) => void
+  onStartVoiceRecording: () => Promise<void>
+  onStopVoiceRecording: (sendImmediately?: boolean) => Promise<void>
   onToggleVoicePlayback: (messageId: string, dataUrl: string) => void
   onDeleteMessage: (messageId: string) => void
+  onLoadOlderMessages: () => void
+  onReplyMessage: (message: MobileChatMessage) => void
+  onToggleReaction: (messageId: string, emoji: string) => void
+  onCancelReply: () => void
 }
 
 export function ChatSection({
@@ -63,7 +79,6 @@ export function ChatSection({
   locale,
   chatViewMode,
   chatCardHeight,
-  chatThreadCardHeight,
   isChatLoading,
   isChatMessagesLoading,
   sortedChatThreads,
@@ -72,6 +87,10 @@ export function ChatSection({
   chatAttachmentDraft,
   chatComposerText,
   chatPlayingMessageId,
+  chatReplyDraft,
+  chatVoicePlaybackState,
+  chatTypingUsers,
+  hasMoreChatMessages,
   isAdminUser,
   canStartDirectChat,
   isChatProcessingVoice,
@@ -91,12 +110,18 @@ export function ChatSection({
   onDeleteThread,
   onComposerTextChange,
   onAttachImage,
+  onAttachFile,
+  onOpenFile,
   onRemoveAttachmentDraft,
   onSendMessage,
   onStartVoiceRecording,
   onStopVoiceRecording,
   onToggleVoicePlayback,
   onDeleteMessage,
+  onLoadOlderMessages,
+  onReplyMessage,
+  onToggleReaction,
+  onCancelReply,
 }: ChatSectionProps) {
   const [isNewChatOpen, setIsNewChatOpen] = useState(false)
   const [newChatMode, setNewChatMode] = useState<'direct' | 'group'>('direct')
@@ -165,18 +190,36 @@ export function ChatSection({
                             onPress={() => {
                               Alert.alert(
                                 t('Delete chat?', 'Borrar chat?'),
-                                t(
-                                  'This removes the conversation from your chat list.',
-                                  'Esto elimina la conversacion de tu lista.',
-                                ),
-                                [
-                                  { text: t('Cancel', 'Cancelar'), style: 'cancel' },
-                                  {
-                                    text: t('Delete', 'Borrar'),
-                                    style: 'destructive',
-                                    onPress: () => onDeleteThread(thread.id),
-                                  },
-                                ],
+                                isAdminUser
+                                  ? t(
+                                    'Delete only for you, or clear and remove it for every member? Existing messages will not return if the chat is started again.',
+                                    '¿Borrar solo para ti, o limpiar y eliminar para todos los miembros? Los mensajes anteriores no volveran si se inicia el chat otra vez.',
+                                  )
+                                  : t(
+                                    'This removes the conversation and keeps its existing messages hidden if you start it again.',
+                                    'Esto elimina la conversacion y mantiene ocultos los mensajes anteriores si la inicias otra vez.',
+                                  ),
+                                isAdminUser
+                                  ? [
+                                    { text: t('Cancel', 'Cancelar'), style: 'cancel' },
+                                    {
+                                      text: t('Delete for me', 'Borrar para mi'),
+                                      onPress: () => onDeleteThread(thread.id, false),
+                                    },
+                                    {
+                                      text: t('Delete for everyone', 'Borrar para todos'),
+                                      style: 'destructive',
+                                      onPress: () => onDeleteThread(thread.id, true),
+                                    },
+                                  ]
+                                  : [
+                                    { text: t('Cancel', 'Cancelar'), style: 'cancel' },
+                                    {
+                                      text: t('Delete', 'Borrar'),
+                                      style: 'destructive',
+                                      onPress: () => onDeleteThread(thread.id, false),
+                                    },
+                                  ],
                               )
                             }}
                           >
@@ -199,7 +242,7 @@ export function ChatSection({
                           >
                             {resolveChatThreadTitle(thread)}
                           </Text>
-                          {thread.pinned ? <Ionicons name="pin" size={14} color="#18775b" /> : null}
+                          {thread.pinned ? <Ionicons name="pin" size={14} color="#315aa8" /> : null}
                         </View>
                         <Text
                           style={[styles.chatThreadTabMeta, isSelected ? styles.chatThreadTabMetaActive : null]}
@@ -337,7 +380,7 @@ export function ChatSection({
                           ? (isSelectedForGroup ? 'checkmark-circle' : 'ellipse-outline')
                           : 'chevron-forward'}
                         size={20}
-                        color={isSelectedForGroup ? '#18775b' : '#9aa6a1'}
+                        color={isSelectedForGroup ? '#315aa8' : '#9aa6a1'}
                       />
                     </Pressable>
                     )
@@ -388,15 +431,26 @@ export function ChatSection({
         onBack={onBackToList}
         onComposerTextChange={onComposerTextChange}
         onDeleteMessage={onDeleteMessage}
+        onLoadOlderMessages={onLoadOlderMessages}
+        onReplyMessage={onReplyMessage}
+        onToggleReaction={onToggleReaction}
+        onCancelReply={onCancelReply}
         onAttachImage={onAttachImage}
+        onAttachFile={onAttachFile}
         onRemoveAttachmentDraft={onRemoveAttachmentDraft}
         onSendMessage={onSendMessage}
         onStartVoiceRecording={onStartVoiceRecording}
         onStopVoiceRecording={onStopVoiceRecording}
         onToggleVoicePlayback={onToggleVoicePlayback}
+        onOpenFile={onOpenFile}
         playingMessageId={chatPlayingMessageId}
+        replyDraft={chatReplyDraft}
+        typingUsers={chatTypingUsers}
+        hasMoreMessages={hasMoreChatMessages}
+        isGroupChat={selectedChatThread.type === 'group'}
+        memberProfiles={selectedChatThread.memberProfiles}
+        voicePlaybackState={chatVoicePlaybackState}
         t={t}
-        threadCardHeight={chatThreadCardHeight}
         threadSubtitle={resolveChatThreadSubtitle(selectedChatThread)}
         threadTitle={resolveChatThreadTitle(selectedChatThread)}
       />

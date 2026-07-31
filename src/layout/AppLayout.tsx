@@ -25,7 +25,7 @@ import {
 } from '@mui/material'
 import { alpha } from '@mui/material/styles'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
 import { fetchMyAlerts, markMyAlertRead } from '../features/alerts/api'
@@ -53,6 +53,10 @@ export default function AppLayout() {
   const [processesMenuAnchorEl, setProcessesMenuAnchorEl] = useState<HTMLElement | null>(null)
   const [markingAlertId, setMarkingAlertId] = useState<string | null>(null)
   const [isMarkingAllRead, setIsMarkingAllRead] = useState(false)
+  const [browserNotificationPermission, setBrowserNotificationPermission] = useState<NotificationPermission>(
+    () => (typeof Notification === 'undefined' ? 'denied' : Notification.permission),
+  )
+  const notificationSeenIdsRef = useRef<Set<string> | null>(null)
   const alertsLimit = 30
   const queryClient = useQueryClient()
   const activeProcesses = useAppProcesses()
@@ -70,8 +74,8 @@ export default function AppLayout() {
     queryKey: QUERY_KEYS.alertsMy(alertsLimit),
     queryFn: () => fetchMyAlerts(alertsLimit),
     enabled: Boolean(appUser?.isApproved),
-    staleTime: 60 * 1000,
-    refetchInterval: 60 * 1000,
+    staleTime: 8 * 1000,
+    refetchInterval: 10 * 1000,
   })
 
   const handleSidebarToggle = () => {
@@ -163,6 +167,89 @@ export default function AppLayout() {
     () => alerts.filter((alert) => !alert.isRead),
     [alerts],
   )
+
+  const requestBrowserNotificationPermission = async () => {
+    if (typeof Notification === 'undefined') {
+      setBrowserNotificationPermission('denied')
+      return
+    }
+
+    if (Notification.permission === 'default') {
+      const permission = await Notification.requestPermission()
+      setBrowserNotificationPermission(permission)
+      return
+    }
+
+    setBrowserNotificationPermission(Notification.permission)
+  }
+
+  useEffect(() => {
+    if (!appUser?.isApproved || typeof Notification === 'undefined' || Notification.permission !== 'default') {
+      return
+    }
+
+    const requestOnFirstInteraction = () => {
+      void requestBrowserNotificationPermission()
+    }
+
+    window.addEventListener('pointerdown', requestOnFirstInteraction, { once: true })
+    return () => window.removeEventListener('pointerdown', requestOnFirstInteraction)
+  }, [appUser?.isApproved])
+
+  useEffect(() => {
+    if (!appUser?.uid || !alertsQuery.data) {
+      return
+    }
+
+    const storageKey = `arnold:web-notification-seen:${appUser.uid}`
+    const seenIds = notificationSeenIdsRef.current ?? new Set<string>()
+
+    if (!notificationSeenIdsRef.current) {
+      try {
+        const storedIds = JSON.parse(window.localStorage.getItem(storageKey) || '[]')
+        if (Array.isArray(storedIds)) {
+          storedIds.forEach((id) => {
+            const normalizedId = String(id ?? '').trim()
+            if (normalizedId) seenIds.add(normalizedId)
+          })
+        }
+      } catch {
+        // Ignore malformed browser storage.
+      }
+      notificationSeenIdsRef.current = seenIds
+    }
+
+    const newMentionAlerts = alerts.filter((alert) => {
+      const source = String(alert.metadata?.source ?? '').trim().toLowerCase()
+      return !seenIds.has(alert.id) && source.includes('mention')
+    })
+
+    alerts.forEach((alert) => seenIds.add(alert.id))
+
+    try {
+      window.localStorage.setItem(storageKey, JSON.stringify([...seenIds].slice(-300)))
+    } catch {
+      // Browser storage is optional.
+    }
+
+    if (typeof Notification === 'undefined' || Notification.permission !== 'granted') {
+      return
+    }
+
+    newMentionAlerts.forEach((alert) => {
+      const browserAlert = new Notification(alert.title, {
+        body: alert.message,
+        icon: '/favicon.png',
+        badge: '/favicon.png',
+        tag: `mention-${alert.id}`,
+      })
+      browserAlert.onclick = () => {
+        window.focus()
+        navigate('/notifications')
+        browserAlert.close()
+      }
+    })
+  }, [alerts, alertsQuery.data, appUser?.uid, navigate])
 
   const handleProfileMenuClose = () => {
     setProfileMenuAnchorEl(null)
@@ -316,6 +403,9 @@ export default function AppLayout() {
               onClick={(event) => {
                 setAlertsMenuAnchorEl(event.currentTarget)
                 void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.alertsMy(alertsLimit) })
+                if (browserNotificationPermission === 'default') {
+                  void requestBrowserNotificationPermission()
+                }
               }}
             >
               <Badge
@@ -440,6 +530,19 @@ export default function AppLayout() {
                   Mark all read
                 </Button>
               </Stack>
+              {browserNotificationPermission !== 'granted' ? (
+                <Button
+                  size="small"
+                  variant="outlined"
+                  sx={{ mt: 1 }}
+                  onClick={() => void requestBrowserNotificationPermission()}
+                  disabled={browserNotificationPermission === 'denied'}
+                >
+                  {browserNotificationPermission === 'denied'
+                    ? 'Desktop notifications blocked in browser'
+                    : 'Enable desktop notifications'}
+                </Button>
+              ) : null}
             </Box>
 
             <Divider />

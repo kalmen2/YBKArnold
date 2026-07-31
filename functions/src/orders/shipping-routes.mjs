@@ -81,6 +81,8 @@ export function registerOrderShippingRoutes(app, {
       orderDocument?.deposit_request_url,
       orderDocument?.order_confirmation_url,
       orderDocument?.work_order_url,
+      orderDocument?.proforma_invoice_url,
+      orderDocument?.BOL_source,
     ]
       .map(extractFirebaseStorageTarget)
       .filter(Boolean)
@@ -1005,7 +1007,7 @@ export function registerOrderShippingRoutes(app, {
   )
 
   // POST /api/orders/order-confirmation — save the generated customer
-  // confirmation and internal work-order PDFs for an order.
+  // confirmation, internal work order, proforma invoice, and BOL PDFs.
   app.post(
     '/api/orders/order-confirmation',
     requireFirebaseAuth,
@@ -1019,25 +1021,29 @@ export function registerOrderShippingRoutes(app, {
         const workOrderName = normalizeOptionalShortText(req.body?.workOrderName, 500)
         const proformaInvoiceUrl = normalizeOptionalShortText(req.body?.proformaInvoiceUrl, 2000)
         const proformaInvoiceName = normalizeOptionalShortText(req.body?.proformaInvoiceName, 500)
+        const bolUrl = normalizeOptionalShortText(req.body?.bolUrl, 2000)
+        const bolName = normalizeOptionalShortText(req.body?.bolName, 500)
 
-        if (!orderKey || !documentUrl || !documentName || !workOrderUrl || !workOrderName || !proformaInvoiceUrl || !proformaInvoiceName) {
+        if (!orderKey || !documentUrl || !documentName || !workOrderUrl || !workOrderName || !proformaInvoiceUrl || !proformaInvoiceName || !bolUrl || !bolName) {
           return res.status(400).json({
-            error: 'Order confirmation, work order, and proforma invoice documents are required.',
+            error: 'Order confirmation, work order, proforma invoice, and BOL documents are required.',
           })
         }
 
         let parsedDocumentUrl
         let parsedWorkOrderUrl
         let parsedProformaInvoiceUrl
+        let parsedBolUrl
         try {
           parsedDocumentUrl = new URL(documentUrl)
           parsedWorkOrderUrl = new URL(workOrderUrl)
           parsedProformaInvoiceUrl = new URL(proformaInvoiceUrl)
+          parsedBolUrl = new URL(bolUrl)
         } catch {
           return res.status(400).json({ error: 'Document URLs must be valid URLs.' })
         }
 
-        if (parsedDocumentUrl.protocol !== 'https:' || parsedWorkOrderUrl.protocol !== 'https:' || parsedProformaInvoiceUrl.protocol !== 'https:') {
+        if (parsedDocumentUrl.protocol !== 'https:' || parsedWorkOrderUrl.protocol !== 'https:' || parsedProformaInvoiceUrl.protocol !== 'https:' || parsedBolUrl.protocol !== 'https:') {
           return res.status(400).json({ error: 'Document URLs must use HTTPS.' })
         }
 
@@ -1060,6 +1066,10 @@ export function registerOrderShippingRoutes(app, {
               proforma_invoice_url: proformaInvoiceUrl,
               proforma_invoice_name: proformaInvoiceName,
               proforma_invoice_generated_at: now,
+              bol: bolName,
+              BOL_source: bolUrl,
+              BOL: bolUrl,
+              bol_generated_at: now,
               updatedAt: now,
             },
           },
@@ -1077,6 +1087,8 @@ export function registerOrderShippingRoutes(app, {
           workOrderName,
           proformaInvoiceUrl,
           proformaInvoiceName,
+          bolUrl,
+          bolName,
         })
       } catch (error) {
         next(error)
@@ -1137,6 +1149,8 @@ export function registerOrderShippingRoutes(app, {
               deposit_request_url: 1,
               order_confirmation_url: 1,
               work_order_url: 1,
+              proforma_invoice_url: 1,
+              BOL_source: 1,
             },
           },
         )

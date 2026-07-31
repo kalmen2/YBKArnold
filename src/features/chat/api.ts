@@ -16,7 +16,7 @@ export type AppChatUser = {
   hasAppAccess: boolean
 }
 
-export type AppChatAttachmentKind = 'image' | 'voice'
+export type AppChatAttachmentKind = 'image' | 'voice' | 'file'
 
 export type AppChatAttachment = {
   kind: AppChatAttachmentKind
@@ -33,7 +33,7 @@ export type AppChatMessage = {
   id: string
   chatId: string
   text: string | null
-  messageType: 'text' | 'image' | 'voice' | 'mixed' | 'deleted'
+  messageType: 'text' | 'image' | 'voice' | 'file' | 'mixed' | 'deleted'
   attachment: AppChatAttachment | null
   createdAt: string | null
   createdByUid: string | null
@@ -119,11 +119,14 @@ export function updateChatThreadPreferences(threadId: string, input: { pinned: b
   )
 }
 
-export function deleteChatThread(threadId: string) {
-  return apiRequest<{ ok: boolean; threadId: string }>(
+export function deleteChatThread(threadId: string, deleteForEveryone = false) {
+  return apiRequest<{ ok: boolean; threadId: string; deletedForEveryone: boolean }>(
     `/api/chat/threads/${encodeURIComponent(threadId)}`,
     {
       method: 'DELETE',
+      body: JSON.stringify({
+        deleteForEveryone,
+      }),
     },
   )
 }
@@ -153,6 +156,7 @@ export function sendChatMessage(
   threadId: string,
   input: {
     text?: string
+    mentionUserUids?: string[]
     attachment?: {
       kind: AppChatAttachmentKind
       dataUrl?: string

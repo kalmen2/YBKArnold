@@ -43,9 +43,8 @@ export function InvoicePreview({ onError, bind }: InvoicePreviewProps) {
   const openDialog = useCallback(async (order: OrdersOverviewOrder) => {
     const orderId = String(order?.mondayItemId ?? '').trim()
     const orderNumber = String(order?.orderNumber ?? '').trim()
-    const invoiceNumber = String(order?.invoiceNumber ?? '').trim()
 
-    if ((!orderId && !orderNumber) || !invoiceNumber) {
+    if ((!orderId && !orderNumber) || !order?.hasInvoiceDocument) {
       onError('No invoice is available for this order yet.')
       return
     }

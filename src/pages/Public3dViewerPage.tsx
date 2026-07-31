@@ -3,12 +3,17 @@ import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded'
 import ReplayRoundedIcon from '@mui/icons-material/ReplayRounded'
 import ViewInArRoundedIcon from '@mui/icons-material/ViewInArRounded'
 import { Alert, Box, Button, CircularProgress, Stack, Typography } from '@mui/material'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ElementType } from 'react'
 import { useParams } from 'react-router-dom'
+import '@google/model-viewer'
+
+const SmoothModelViewer = 'model-viewer' as unknown as ElementType
 
 type ViewerModel = {
   label: string
   fileName: string
+  viewerType?: 'trimble' | 'glb'
+  glbUrl?: string | null
   embedUrl: string | null
   status?: 'processing' | 'ready' | 'failed'
 }
@@ -19,6 +24,8 @@ type ViewerData = {
   customerName: string | null
   fileName: string | null
   status?: 'processing' | 'ready' | 'failed'
+  viewerType?: 'trimble' | 'glb'
+  glbUrl?: string | null
   embedUrl: string | null
   models?: ViewerModel[]
 }
@@ -79,12 +86,12 @@ export default function Public3dViewerPage() {
     if (!data) return []
     const sourceModels = data.models?.length
       ? data.models
-      : [{ label: '', fileName: data.fileName || '3D model', embedUrl: data.embedUrl }]
+      : [{ label: '', fileName: data.fileName || '3D model', viewerType: data.viewerType, glbUrl: data.glbUrl, embedUrl: data.embedUrl }]
     return sourceModels.map((model, index) => ({ ...model, label: modelDisplayLabel(model, index) }))
   }, [data])
   const activeModel = models[Math.min(activeIndex, Math.max(0, models.length - 1))]
   useEffect(() => {
-    if (!activeModel?.embedUrl) return undefined
+    if (!activeModel?.embedUrl && !activeModel?.glbUrl) return undefined
     if (revealTimerRef.current !== null) window.clearTimeout(revealTimerRef.current)
     const slowTimer = window.setTimeout(() => setTakingLonger(true), 6_000)
     return () => {
@@ -206,7 +213,7 @@ export default function Public3dViewerPage() {
               Trimble could not prepare this 3D model. Please try again or contact Arnold Contract.
             </Alert>
           </Box>
-        ) : data.status === 'processing' || !activeModel?.embedUrl ? (
+        ) : data.status === 'processing' || (!activeModel?.embedUrl && !activeModel?.glbUrl) ? (
           <Stack
             alignItems="center"
             justifyContent="center"
@@ -246,25 +253,49 @@ export default function Public3dViewerPage() {
               position: 'relative',
             }}
           >
-            <Box
-              key={`${activeModel.embedUrl}-${viewerNonce}`}
-              component="iframe"
-              title={`${data.projectName} – ${activeModel.label}`}
-              src={activeModel.embedUrl}
-              allow="fullscreen"
-              loading="eager"
-              onLoad={prepareViewer}
-              sx={{
-                position: 'absolute',
-                border: 0,
-                display: 'block',
-                top: '-54px',
-                left: { xs: '-55px', md: '-365px' },
-                width: { xs: 'calc(100% + 55px)', md: 'calc(100% + 365px)' },
-                height: 'calc(100% + 54px)',
-                bgcolor: '#f4f2ed',
-              }}
-            />
+            {activeModel.glbUrl ? (
+              <Box
+                key={`${activeModel.glbUrl}-${viewerNonce}`}
+                component={SmoothModelViewer}
+                src={activeModel.glbUrl}
+                alt={`${data.projectName} – ${activeModel.label}`}
+                camera-controls
+                auto-rotate
+                shadow-intensity="0.8"
+                exposure="1"
+                environment-image="neutral"
+                onLoad={() => setViewerLoading(false)}
+                sx={{
+                  position: 'absolute',
+                  inset: 0,
+                  width: '100%',
+                  height: '100%',
+                  display: 'block',
+                  bgcolor: '#f4f2ed',
+                  '--poster-color': '#f4f2ed',
+                }}
+              />
+            ) : (
+              <Box
+                key={`${activeModel.embedUrl}-${viewerNonce}`}
+                component="iframe"
+                title={`${data.projectName} – ${activeModel.label}`}
+                src={activeModel.embedUrl || undefined}
+                allow="fullscreen"
+                loading="eager"
+                onLoad={prepareViewer}
+                sx={{
+                  position: 'absolute',
+                  border: 0,
+                  display: 'block',
+                  top: '-54px',
+                  left: { xs: '-55px', md: '-365px' },
+                  width: { xs: 'calc(100% + 55px)', md: 'calc(100% + 365px)' },
+                  height: 'calc(100% + 54px)',
+                  bgcolor: '#f4f2ed',
+                }}
+              />
+            )}
 
             {models.length > 1 ? (
               <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ position: 'absolute', zIndex: 3, top: 14, left: 14, right: { xs: 14, md: 'auto' } }}>

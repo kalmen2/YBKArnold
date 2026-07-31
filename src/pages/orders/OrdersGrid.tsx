@@ -1512,9 +1512,9 @@ export function OrdersGrid({
       renderCell: ({ row }) => (
         <Chip
           size="small"
-          color={row.invoiceCachedUrl || row.invoiceNumber ? 'success' : 'default'}
-          variant={row.invoiceCachedUrl || row.invoiceNumber ? 'filled' : 'outlined'}
-          label={row.invoiceCachedUrl || row.invoiceNumber ? 'Available' : 'Missing'}
+          color={row.hasInvoiceDocument ? 'success' : 'default'}
+          variant={row.hasInvoiceDocument ? 'filled' : 'outlined'}
+          label={row.hasInvoiceDocument ? 'Available' : 'Missing'}
         />
       ),
     },
@@ -2344,7 +2344,6 @@ export function OrdersGrid({
         return false
       }
       if (adminOnlyFields.has(field) && !canViewFullFinancials) return false
-      if (field === 'invoiceDocument' && !canViewFullFinancials) return false
       if (orderValueFields.has(field) && !canViewOrderValue) return false
       return true
     })

@@ -1,23 +1,26 @@
 import { Ionicons } from '@expo/vector-icons'
-import { Chat, type MessageType, type User } from '@flyerhq/react-native-chat-ui'
-import { type ReactNode, useCallback, useMemo, useState } from 'react'
-import { Alert, Image, Pressable, Text, TextInput, View } from 'react-native'
+import { Chat, defaultTheme, type MessageType, type Theme, type User } from '@flyerhq/react-native-chat-ui'
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Alert, Image, Keyboard, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
+import { useWindowDimensions } from 'react-native'
+import Swipeable from 'react-native-gesture-handler/Swipeable'
 import { styles } from '../appStyles'
-import type { MobileChatMessage } from '../appTypes'
+import type { MobileChatMessage, MobileChatTypingUser, MobileChatUser } from '../appTypes'
 import { formatSyncTimestamp } from '../appUtils'
 
 type TranslateFn = (english: string, spanish: string) => string
+const CHAT_REACTION_EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '🙏'] as const
 
 type ChatAttachmentDraft = {
-  kind: 'image' | 'voice'
+  kind: 'image' | 'voice' | 'file'
   dataUrl: string
   mimeType: string
   fileName: string
   sizeBytes: number
+  durationMillis?: number
 }
 
 type ChatThreadScreenProps = {
-  threadCardHeight: number
   threadTitle: string
   threadSubtitle: string
   locale: string
@@ -31,17 +34,33 @@ type ChatThreadScreenProps = {
   isRecordingVoice: boolean
   isProcessingVoice: boolean
   playingMessageId: string | null
+  voicePlaybackState: {
+    messageId: string
+    positionMillis: number
+    durationMillis: number
+  } | null
   composerText: string
   attachmentDraft: ChatAttachmentDraft | null
+  replyDraft: MobileChatMessage | null
+  typingUsers: MobileChatTypingUser[]
+  hasMoreMessages: boolean
+  isGroupChat: boolean
+  memberProfiles: MobileChatUser[]
   inlineMessage: string | null
   onBack: () => void
   onComposerTextChange: (value: string) => void
   onAttachImage: (source: 'library' | 'camera') => void
+  onAttachFile: () => void
   onSendMessage: (text?: string) => void
-  onStartVoiceRecording: () => void
-  onStopVoiceRecording: (sendImmediately?: boolean) => void
+  onStartVoiceRecording: () => Promise<void>
+  onStopVoiceRecording: (sendImmediately?: boolean) => Promise<void>
   onToggleVoicePlayback: (messageId: string, dataUrl: string) => void
+  onOpenFile: (dataUrl: string, fileName: string, mimeType: string) => void
   onDeleteMessage: (messageId: string) => void
+  onLoadOlderMessages: () => void
+  onReplyMessage: (message: MobileChatMessage) => void
+  onToggleReaction: (messageId: string, emoji: string) => void
+  onCancelReply: () => void
   onRemoveAttachmentDraft: () => void
 }
 
@@ -54,14 +73,29 @@ type ArnoldMessageMetadata = {
   senderLabel: string
   text?: string
   voiceUri?: string
+  fileUri?: string
+  fileName?: string
+  fileMimeType?: string
+  fileSizeBytes?: number
+  voiceDurationMillis?: number
+  replyLabel?: string
+  replyText?: string
+  reactions?: MobileChatMessage['reactions']
 }
 
 function normalizeTextValue(value: unknown) {
   return String(value ?? '').trim()
 }
 
+function formatVoiceDuration(durationMillis: number) {
+  const totalSeconds = Math.max(0, Math.floor(Number(durationMillis ?? 0) / 1000))
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+
+  return `${minutes}:${String(seconds).padStart(2, '0')}`
+}
+
 export function ChatThreadScreen({
-  threadCardHeight,
   threadTitle,
   threadSubtitle,
   locale,
@@ -75,38 +109,134 @@ export function ChatThreadScreen({
   isRecordingVoice,
   isProcessingVoice,
   playingMessageId,
+  voicePlaybackState,
   composerText,
   attachmentDraft,
+  replyDraft,
+  typingUsers,
+  hasMoreMessages,
+  isGroupChat,
+  memberProfiles,
   inlineMessage,
   onBack,
   onComposerTextChange,
   onAttachImage,
+  onAttachFile,
   onSendMessage,
   onStartVoiceRecording,
   onStopVoiceRecording,
   onToggleVoicePlayback,
+  onOpenFile,
   onDeleteMessage,
+  onLoadOlderMessages,
+  onReplyMessage,
+  onToggleReaction,
+  onCancelReply,
   onRemoveAttachmentDraft,
 }: ChatThreadScreenProps) {
   const [isAttachmentMenuOpen, setIsAttachmentMenuOpen] = useState(false)
+  const [isMediaModalOpen, setIsMediaModalOpen] = useState(false)
+  const [chatViewportWidth, setChatViewportWidth] = useState(0)
+  const [isKeyboardVisible, setIsKeyboardVisible] = useState(false)
+  const [reactionMessageId, setReactionMessageId] = useState<string | null>(null)
+  const { width: windowWidth } = useWindowDimensions()
+  const messageContainerWidth = Math.min(
+    chatViewportWidth > 0
+      ? Math.floor(Math.max(0, chatViewportWidth - 18) * (isGroupChat ? 0.70 : 0.77))
+      : Math.floor(windowWidth * (isGroupChat ? 0.57 : 0.62)),
+    440,
+  )
+  const messageBubbleWidth = Math.max(0, messageContainerWidth - 7)
+  const voiceRecordingStartPromiseRef = useRef<Promise<void> | null>(null)
   const normalizedCurrentUid = normalizeTextValue(currentUserUid)
   const normalizedCurrentEmail = normalizeTextValue(currentUserEmail).toLowerCase()
+  const memberProfileByUid = useMemo(
+    () => new Map(memberProfiles.map((profile) => [profile.uid, profile])),
+    [memberProfiles],
+  )
+  const chatTheme = useMemo<Theme>(() => ({
+    ...defaultTheme,
+    borders: {
+      ...defaultTheme.borders,
+      messageBorderRadius: 10,
+    },
+    colors: {
+      ...defaultTheme.colors,
+      background: 'transparent',
+      primary: '#315aa8',
+      secondary: '#ffffff',
+    },
+    fonts: {
+      ...defaultTheme.fonts,
+      dateDividerTextStyle: {
+        ...defaultTheme.fonts.dateDividerTextStyle,
+        color: '#71809c',
+      },
+      receivedMessageBodyTextStyle: {
+        ...defaultTheme.fonts.receivedMessageBodyTextStyle,
+        color: '#26342f',
+        fontSize: 14,
+        lineHeight: 20,
+      },
+      sentMessageBodyTextStyle: {
+        ...defaultTheme.fonts.sentMessageBodyTextStyle,
+        color: '#26342f',
+        fontSize: 14,
+        lineHeight: 20,
+      },
+      sentMessageLinkDescriptionTextStyle: {
+        ...defaultTheme.fonts.sentMessageLinkDescriptionTextStyle,
+        color: '#344b73',
+      },
+      sentMessageLinkTitleTextStyle: {
+        ...defaultTheme.fonts.sentMessageLinkTitleTextStyle,
+        color: '#1f3567',
+      },
+    },
+    insets: {
+      messageInsetsHorizontal: 0,
+      messageInsetsVertical: 0,
+    },
+  }), [])
 
   const chatUser = useMemo<User>(() => ({
     id: normalizedCurrentUid || normalizedCurrentEmail || 'me',
     firstName: t('You', 'Tu'),
   }), [normalizedCurrentEmail, normalizedCurrentUid, t])
+  const sourceMessageById = useMemo(
+    () => new Map(messages.map((message) => [message.id, message])),
+    [messages],
+  )
+  const mediaMessages = useMemo(
+    () => messages.filter((message) => Boolean(
+      !message.deletedAt
+      && message.attachment?.dataUrl
+      && ['image', 'voice', 'file'].includes(message.attachment.kind),
+    )),
+    [messages],
+  )
 
   const chatMessages = useMemo<MessageType.Any[]>(() => {
-    return messages.map((message) => {
+    return [...messages]
+      .sort((left, right) => {
+        const createdAtDifference = Date.parse(String(right.createdAt ?? ''))
+          - Date.parse(String(left.createdAt ?? ''))
+
+        return Number.isFinite(createdAtDifference) && createdAtDifference !== 0
+          ? createdAtDifference
+          : String(right.id).localeCompare(String(left.id))
+      })
+      .map((message) => {
       const createdAtIso = normalizeTextValue(message.createdAt) || null
       const parsedCreatedAt = createdAtIso ? Date.parse(createdAtIso) : Number.NaN
       const createdAt = Number.isFinite(parsedCreatedAt) ? parsedCreatedAt : 0
       const messageUid = normalizeTextValue(message.createdByUid)
       const messageEmail = normalizeTextValue(message.createdByEmail).toLowerCase()
+      const memberProfile = memberProfileByUid.get(messageUid)
       const isMine = (Boolean(messageUid) && messageUid === normalizedCurrentUid)
         || (Boolean(messageEmail) && messageEmail === normalizedCurrentEmail)
-      const canDelete = isAdminUser || isMine
+      const isLocalOnly = message.deliveryStatus === 'sending' || message.deliveryStatus === 'error'
+      const canDelete = !isLocalOnly && (isAdminUser || isMine)
       const isDeleted = Boolean(message.deletedAt || message.messageType === 'deleted')
       const senderLabel = isMine
         ? t('You', 'Tu')
@@ -116,106 +246,102 @@ export function ChatThreadScreen({
       const textValue = normalizeTextValue(message.text)
       const imageUri = message.attachment?.kind === 'image' ? normalizeTextValue(message.attachment.dataUrl) : ''
       const voiceUri = message.attachment?.kind === 'voice' ? normalizeTextValue(message.attachment.dataUrl) : ''
+      const fileUri = message.attachment?.kind === 'file' ? normalizeTextValue(message.attachment.dataUrl) : ''
+      const replyLabel = normalizeTextValue(message.replyTo?.createdByName)
+        || normalizeTextValue(message.replyTo?.createdByEmail)
+        || t('Message', 'Mensaje')
+      const replyText = normalizeTextValue(message.replyTo?.text)
+        || (message.replyTo?.messageType === 'image'
+          ? t('Photo', 'Foto')
+          : message.replyTo?.messageType === 'voice'
+            ? t('Voice message', 'Mensaje de voz')
+            : message.replyTo?.messageType === 'file'
+              ? t('File', 'Archivo')
+              : '')
+      const messageAuthor: User = {
+        id: messageUid || messageEmail || message.id,
+        firstName: senderLabel,
+        ...(memberProfile?.imageUrl ? { imageUrl: memberProfile.imageUrl } : {}),
+      }
       const metadata: ArnoldMessageMetadata = {
         canDelete,
         createdAtIso,
         isDeleted,
         isMine,
         senderLabel,
+        reactions: Array.isArray(message.reactions) ? message.reactions : [],
+        ...(message.replyTo ? { replyLabel, replyText } : {}),
         ...(textValue ? { text: textValue } : {}),
         ...(imageUri ? { imageUri } : {}),
         ...(voiceUri ? { voiceUri } : {}),
+        ...(voiceUri
+          ? { voiceDurationMillis: Math.max(0, Number(message.attachment?.durationMillis ?? 0)) }
+          : {}),
+        ...(fileUri
+          ? {
+              fileUri,
+              fileName: normalizeTextValue(message.attachment?.fileName) || t('File', 'Archivo'),
+              fileMimeType: normalizeTextValue(message.attachment?.mimeType) || 'application/octet-stream',
+              fileSizeBytes: Number(message.attachment?.sizeBytes ?? 0) || 0,
+            }
+          : {}),
       }
 
       if (isDeleted) {
         return {
-          author: {
-            id: messageUid || messageEmail || message.id,
-            firstName: senderLabel,
-          },
+          author: messageAuthor,
           createdAt,
           id: message.id,
           metadata,
+          status: message.deliveryStatus,
           text: t('Message deleted.', 'Mensaje borrado.'),
           type: 'text',
         } as MessageType.Text
       }
 
-      if (voiceUri || (imageUri && textValue)) {
+      if (voiceUri || fileUri || (imageUri && textValue)) {
         return {
-          author: {
-            id: messageUid || messageEmail || message.id,
-            firstName: senderLabel,
-          },
+          author: messageAuthor,
           createdAt,
           id: message.id,
           metadata,
+          status: message.deliveryStatus,
           type: 'custom',
         } as MessageType.Custom
       }
 
       if (imageUri) {
         return {
-          author: {
-            id: messageUid || messageEmail || message.id,
-            firstName: senderLabel,
-          },
+          author: messageAuthor,
           createdAt,
           id: message.id,
           metadata,
           name: normalizeTextValue(message.attachment?.fileName) || 'chat-image',
           size: Number(message.attachment?.sizeBytes ?? 0) || 0,
+          status: message.deliveryStatus,
           type: 'image',
           uri: imageUri,
         } as MessageType.Image
       }
 
       return {
-        author: {
-          id: messageUid || messageEmail || message.id,
-          firstName: senderLabel,
-        },
+        author: messageAuthor,
         createdAt,
         id: message.id,
         metadata,
+        status: message.deliveryStatus,
         text: textValue,
         type: 'text',
       } as MessageType.Text
-    })
+      })
   }, [
     isAdminUser,
     messages,
+    memberProfileByUid,
     normalizedCurrentEmail,
     normalizedCurrentUid,
     t,
   ])
-
-  const handleMessageLongPress = useCallback((message: MessageType.Any) => {
-    const metadata = (message.metadata ?? {}) as ArnoldMessageMetadata
-    const messageId = normalizeTextValue(message.id)
-
-    if (!messageId || !metadata.canDelete || metadata.isDeleted) {
-      return
-    }
-
-    Alert.alert(
-      t('Delete message?', 'Borrar mensaje?'),
-      t('This action cannot be undone.', 'Esta accion no se puede deshacer.'),
-      [
-        {
-          style: 'cancel',
-          text: t('Cancel', 'Cancelar'),
-        },
-        {
-          style: 'destructive',
-          text: t('Delete', 'Borrar'),
-          onPress: () => {
-            onDeleteMessage(messageId)
-          },
-        },
-      ],
-    )
-  }, [onDeleteMessage, t])
 
   const renderBubble = useCallback((payload: {
     child: ReactNode
@@ -226,38 +352,123 @@ export function ChatThreadScreen({
     const isMine = Boolean(metadata.isMine)
     const senderLabel = metadata.senderLabel ?? ''
     const createdAtLabel = formatSyncTimestamp(metadata.createdAtIso ?? null, locale)
+    const messageId = normalizeTextValue(payload.message.id)
+    const sourceMessage = sourceMessageById.get(messageId)
 
     return (
       <View
         style={[
           styles.chatMessageRow,
           isMine ? styles.chatMessageRowMine : styles.chatMessageRowOther,
+          { width: messageContainerWidth },
         ]}
       >
         <View style={styles.chatMessageMetaRow}>
-          <Text style={styles.chatMessageSender} numberOfLines={1}>{senderLabel}</Text>
+          {!isGroupChat ? (
+            <Text style={styles.chatMessageSender} numberOfLines={1}>{senderLabel}</Text>
+          ) : null}
           <Text style={styles.chatMessageTime} numberOfLines={1}>{createdAtLabel}</Text>
         </View>
 
-        <View
-          style={[
-            styles.chatMessageBubble,
-            isMine ? styles.chatMessageBubbleMine : styles.chatMessageBubbleOther,
-          ]}
+        <Swipeable
+          containerStyle={{ width: messageBubbleWidth, overflow: 'visible' }}
+          overshootRight={false}
+          renderRightActions={() => (
+            <View style={styles.chatMessageSwipeActions}>
+              {sourceMessage && !metadata.isDeleted ? (
+                <Pressable
+                  style={[styles.chatMessageSwipeAction, styles.chatMessageReplyAction]}
+                  onPress={() => onReplyMessage(sourceMessage)}
+                >
+                  <Ionicons name="return-up-back" size={15} color="#ffffff" />
+                  <Text style={styles.chatMessageSwipeActionText}>{t('Reply', 'Responder')}</Text>
+                </Pressable>
+              ) : null}
+              {metadata.canDelete && !metadata.isDeleted ? (
+                <Pressable
+                  style={[styles.chatMessageSwipeAction, styles.chatMessageDeleteAction]}
+                  onPress={() => {
+                    Alert.alert(
+                      t('Delete message?', 'Borrar mensaje?'),
+                      t('This action cannot be undone.', 'Esta accion no se puede deshacer.'),
+                      [
+                        { style: 'cancel', text: t('Cancel', 'Cancelar') },
+                        {
+                          style: 'destructive',
+                          text: t('Delete', 'Borrar'),
+                          onPress: () => onDeleteMessage(messageId),
+                        },
+                      ],
+                    )
+                  }}
+                >
+                  <Ionicons name="trash-outline" size={15} color="#ffffff" />
+                  <Text style={styles.chatMessageSwipeActionText}>{t('Delete', 'Borrar')}</Text>
+                </Pressable>
+              ) : null}
+            </View>
+          )}
         >
-          {payload.child}
-        </View>
+          <View
+            style={[
+              styles.chatMessageBubble,
+              isMine ? styles.chatMessageBubbleMine : styles.chatMessageBubbleOther,
+              isMine
+                ? (payload.nextMessageInGroup
+                  ? styles.chatMessageBubbleMineGrouped
+                  : styles.chatMessageBubbleMineNativeCorner)
+                : (payload.nextMessageInGroup
+                  ? styles.chatMessageBubbleOtherGrouped
+                  : styles.chatMessageBubbleOtherNativeCorner),
+              { width: messageBubbleWidth },
+            ]}
+          >
+            {metadata.replyText ? (
+              <View style={styles.chatReplyQuote}>
+                <Text style={styles.chatReplyQuoteSender} numberOfLines={1}>{metadata.replyLabel}</Text>
+                <Text style={styles.chatReplyQuoteText} numberOfLines={2}>{metadata.replyText}</Text>
+              </View>
+            ) : null}
+            {payload.child}
+            {sourceMessage && !metadata.isDeleted && !messageId.startsWith('local-') ? (
+              <View style={styles.chatReactionRow}>
+                {(metadata.reactions ?? []).map((reaction) => (
+                  <Pressable
+                    key={`${messageId}-${reaction.emoji}`}
+                    style={[
+                      styles.chatReactionChip,
+                      reaction.reactedByMe ? styles.chatReactionChipActive : null,
+                    ]}
+                    onPress={() => onToggleReaction(messageId, reaction.emoji)}
+                  >
+                    <Text style={styles.chatReactionEmoji}>{reaction.emoji}</Text>
+                    <Text style={styles.chatReactionCount}>{reaction.count}</Text>
+                  </Pressable>
+                ))}
+                <Pressable
+                  accessibilityLabel={t('Add reaction', 'Agregar reaccion')}
+                  style={styles.chatReactionAddButton}
+                  onPress={() => setReactionMessageId(messageId)}
+                >
+                  <Ionicons name="happy-outline" size={15} color="#58709f" />
+                </Pressable>
+              </View>
+            ) : null}
+          </View>
+        </Swipeable>
       </View>
     )
-  }, [locale])
-
-  const renderTextMessage = useCallback((message: MessageType.Text) => {
-    return (
-      <Text style={[styles.chatMessageText, message.metadata?.isDeleted ? styles.chatDeletedText : null]}>
-        {message.text}
-      </Text>
-    )
-  }, [])
+  }, [
+    isGroupChat,
+    locale,
+    messageBubbleWidth,
+    messageContainerWidth,
+    onDeleteMessage,
+    onReplyMessage,
+    onToggleReaction,
+    sourceMessageById,
+    t,
+  ])
 
   const renderImageMessage = useCallback((message: MessageType.Image) => {
     return (
@@ -274,6 +485,22 @@ export function ChatThreadScreen({
     const customText = normalizeTextValue(metadata.text)
     const imageUri = normalizeTextValue(metadata.imageUri)
     const voiceUri = normalizeTextValue(metadata.voiceUri)
+    const fileUri = normalizeTextValue(metadata.fileUri)
+    const fileName = normalizeTextValue(metadata.fileName) || t('File', 'Archivo')
+    const fileMimeType = normalizeTextValue(metadata.fileMimeType) || 'application/octet-stream'
+    const fileSizeBytes = Number(metadata.fileSizeBytes ?? 0)
+    const isPlayingVoice = playingMessageId === message.id
+    const activeVoiceState = voicePlaybackState?.messageId === message.id
+      ? voicePlaybackState
+      : null
+    const voiceDurationMillis = Math.max(
+      0,
+      Number(activeVoiceState?.durationMillis ?? metadata.voiceDurationMillis ?? 0),
+    )
+    const voicePositionMillis = Math.max(0, Number(activeVoiceState?.positionMillis ?? 0))
+    const voiceProgress = voiceDurationMillis > 0
+      ? Math.min(1, voicePositionMillis / voiceDurationMillis)
+      : 0
 
     return (
       <View style={{ gap: 6 }}>
@@ -293,34 +520,117 @@ export function ChatThreadScreen({
           <Pressable
             style={[
               styles.chatVoicePlayButton,
-              playingMessageId === message.id ? styles.chatVoicePlayButtonActive : null,
+              isPlayingVoice ? styles.chatVoicePlayButtonActive : null,
             ]}
             onPress={() => {
               onToggleVoicePlayback(String(message.id), voiceUri)
             }}
           >
             <Ionicons
-              name={playingMessageId === message.id ? 'pause' : 'play'}
-              size={14}
-              color={playingMessageId === message.id ? '#ffffff' : '#2b4ea1'}
+              name={isPlayingVoice ? 'pause' : 'play'}
+              size={16}
+              color={isPlayingVoice ? '#ffffff' : '#2b4ea1'}
             />
-            <Text
-              style={[
-                styles.chatVoicePlayButtonText,
-                playingMessageId === message.id ? styles.chatVoicePlayButtonTextActive : null,
-              ]}
-            >
-              {playingMessageId === message.id
-                ? t('Stop voice', 'Detener voz')
-                : t('Play voice', 'Reproducir voz')}
+            <View style={styles.chatVoiceTrack}>
+              <View
+                style={[
+                  styles.chatVoiceTrackProgress,
+                  isPlayingVoice ? styles.chatVoiceTrackProgressActive : null,
+                  { width: `${voiceProgress * 100}%` },
+                ]}
+              />
+            </View>
+            <Text style={[
+              styles.chatVoiceDuration,
+              isPlayingVoice ? styles.chatVoicePlayButtonTextActive : null,
+            ]}>
+              {formatVoiceDuration(voiceDurationMillis)}
             </Text>
+          </Pressable>
+        ) : null}
+
+        {fileUri ? (
+          <Pressable
+            style={styles.chatFileAttachmentButton}
+            onPress={() => {
+              onOpenFile(fileUri, fileName, fileMimeType)
+            }}
+          >
+            <View style={styles.chatFileAttachmentIcon}>
+              <Ionicons name="document-text" size={18} color="#ffffff" />
+            </View>
+            <View style={styles.chatFileAttachmentTextWrap}>
+              <Text style={styles.chatFileAttachmentName} numberOfLines={1}>{fileName}</Text>
+              <Text style={styles.chatFileAttachmentMeta}>
+                {fileSizeBytes > 0 ? `${Math.ceil(fileSizeBytes / 1024)} KB` : t('File attachment', 'Archivo adjunto')}
+              </Text>
+            </View>
+            <Ionicons name="open-outline" size={17} color="#315aa8" />
           </Pressable>
         ) : null}
       </View>
     )
-  }, [onToggleVoicePlayback, playingMessageId, t])
+  }, [onOpenFile, onToggleVoicePlayback, playingMessageId, t, voicePlaybackState])
 
   const showSendIcon = Boolean(normalizeTextValue(composerText) || attachmentDraft)
+  const typingLabel = useMemo(() => {
+    if (typingUsers.length === 0) {
+      return ''
+    }
+
+    const labels = typingUsers
+      .map((user) => normalizeTextValue(user.displayName) || normalizeTextValue(user.email))
+      .filter(Boolean)
+
+    if (labels.length === 0) {
+      return t('Someone is typing…', 'Alguien esta escribiendo…')
+    }
+
+    if (labels.length === 1) {
+      return `${labels[0]} ${t('is typing…', 'esta escribiendo…')}`
+    }
+
+    return t('Several people are typing…', 'Varias personas estan escribiendo…')
+  }, [t, typingUsers])
+  const customDateHeaderText = useCallback((dateTime: number) => {
+    const messageDate = new Date(dateTime)
+    const today = new Date()
+    const yesterday = new Date(today)
+    yesterday.setDate(today.getDate() - 1)
+    const isSameLocalDay = (left: Date, right: Date) => (
+      left.getFullYear() === right.getFullYear()
+      && left.getMonth() === right.getMonth()
+      && left.getDate() === right.getDate()
+    )
+
+    if (isSameLocalDay(messageDate, today)) {
+      return t('Today', 'Hoy')
+    }
+
+    if (isSameLocalDay(messageDate, yesterday)) {
+      return t('Yesterday', 'Ayer')
+    }
+
+    return new Intl.DateTimeFormat(locale, {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    }).format(messageDate)
+  }, [locale, t])
+
+  useEffect(() => {
+    const showSubscription = Keyboard.addListener('keyboardDidShow', () => {
+      setIsKeyboardVisible(true)
+    })
+    const hideSubscription = Keyboard.addListener('keyboardDidHide', () => {
+      setIsKeyboardVisible(false)
+    })
+
+    return () => {
+      showSubscription.remove()
+      hideSubscription.remove()
+    }
+  }, [])
 
   const renderLoadingEmptyState = useCallback(() => {
     return (
@@ -332,14 +642,48 @@ export function ChatThreadScreen({
 
   const renderCustomBottom = useCallback(() => {
     return (
-      <View style={{ gap: 8 }}>
+      <View style={[styles.chatComposerBottom, isKeyboardVisible ? styles.chatComposerBottomKeyboard : null]}>
+        {typingLabel ? (
+          <View style={styles.chatTypingIndicator}>
+            <View style={styles.chatTypingDots}>
+              <View style={styles.chatTypingDot} />
+              <View style={styles.chatTypingDot} />
+              <View style={styles.chatTypingDot} />
+            </View>
+            <Text style={styles.chatTypingText}>{typingLabel}</Text>
+          </View>
+        ) : null}
+        {replyDraft ? (
+          <View style={styles.chatReplyDraft}>
+            <View style={styles.chatReplyDraftText}>
+              <Text style={styles.chatReplyQuoteSender} numberOfLines={1}>
+                {t('Replying to', 'Respondiendo a')} {normalizeTextValue(replyDraft.createdByName)
+                  || normalizeTextValue(replyDraft.createdByEmail)
+                  || t('message', 'mensaje')}
+              </Text>
+              <Text style={styles.chatReplyQuoteText} numberOfLines={1}>
+                {normalizeTextValue(replyDraft.text)
+                  || (replyDraft.messageType === 'image'
+                    ? t('Photo', 'Foto')
+                    : replyDraft.messageType === 'voice'
+                      ? t('Voice message', 'Mensaje de voz')
+                      : t('File', 'Archivo'))}
+              </Text>
+            </View>
+            <Pressable onPress={onCancelReply}>
+              <Ionicons name="close-circle" size={21} color="#61749b" />
+            </Pressable>
+          </View>
+        ) : null}
         {attachmentDraft ? (
           <View style={styles.chatAttachmentPreviewCard}>
             <View style={styles.chatAttachmentPreviewHeader}>
-              <Text style={styles.chatAttachmentPreviewLabel}>
-                {attachmentDraft.kind === 'image'
-                  ? t('Photo attached', 'Foto adjunta')
-                  : t('Voice note attached', 'Nota de voz adjunta')}
+                <Text style={styles.chatAttachmentPreviewLabel}>
+                  {attachmentDraft.kind === 'image'
+                    ? t('Photo attached', 'Foto adjunta')
+                    : attachmentDraft.kind === 'voice'
+                      ? t('Voice note attached', 'Nota de voz adjunta')
+                      : attachmentDraft.fileName}
               </Text>
               <Pressable onPress={onRemoveAttachmentDraft}>
                 <Text style={styles.chatAttachmentRemoveText}>{t('Remove', 'Quitar')}</Text>
@@ -383,6 +727,18 @@ export function ChatThreadScreen({
                 </View>
                 <Text style={styles.chatAttachmentMenuText}>{t('Photos', 'Fotos')}</Text>
               </Pressable>
+              <Pressable
+                style={styles.chatAttachmentMenuItem}
+                onPress={() => {
+                  setIsAttachmentMenuOpen(false)
+                  onAttachFile()
+                }}
+              >
+                <View style={[styles.chatAttachmentMenuIcon, styles.chatAttachmentFileIcon]}>
+                  <Ionicons name="document-attach" size={18} color="#ffffff" />
+                </View>
+                <Text style={styles.chatAttachmentMenuText}>{t('Files', 'Archivos')}</Text>
+              </Pressable>
             </View>
           ) : null}
           <View style={styles.chatComposerBar}>
@@ -391,7 +747,7 @@ export function ChatThreadScreen({
             onPress={() => setIsAttachmentMenuOpen((current) => !current)}
             disabled={isSendingMessage || isProcessingVoice}
           >
-            <Ionicons name={isAttachmentMenuOpen ? 'close' : 'add'} size={20} color="#18775b" />
+            <Ionicons name={isAttachmentMenuOpen ? 'close' : 'add'} size={20} color="#315aa8" />
           </Pressable>
 
           <TextInput
@@ -410,22 +766,24 @@ export function ChatThreadScreen({
               (isProcessingVoice || isSendingMessage) ? styles.buttonDisabled : null,
             ]}
             disabled={isProcessingVoice || isSendingMessage}
-            onPress={() => {
-              if (showSendIcon) {
-                onSendMessage(composerText)
-                return
-              }
+            onPress={showSendIcon ? () => {
+              onSendMessage(composerText)
+            } : undefined}
+            onPressIn={!showSendIcon ? () => {
+              voiceRecordingStartPromiseRef.current = onStartVoiceRecording()
+            } : undefined}
+            onPressOut={!showSendIcon ? () => {
+              const recordingStartPromise = voiceRecordingStartPromiseRef.current
+              voiceRecordingStartPromiseRef.current = null
 
-              if (isRecordingVoice) {
-                onStopVoiceRecording(true)
-              } else {
-                onStartVoiceRecording()
+              if (recordingStartPromise) {
+                void recordingStartPromise.then(() => onStopVoiceRecording(true))
               }
-            }}
+            } : undefined}
           >
             <Ionicons
               name={showSendIcon ? 'send' : 'mic'}
-              size={18}
+              size={isRecordingVoice ? 26 : 20}
               color="#ffffff"
             />
           </Pressable>
@@ -435,8 +793,8 @@ export function ChatThreadScreen({
         {!showSendIcon ? (
           <Text style={styles.chatComposerHint}>
             {isRecordingVoice
-              ? t('Recording… tap the red microphone to send.', 'Grabando… toca el microfono rojo para enviar.')
-              : t('Tap the microphone to record a voice note.', 'Toca el microfono para grabar una nota de voz.')}
+              ? t('Recording… release to send.', 'Grabando… suelta para enviar.')
+              : t('Hold the microphone to record. Release to send.', 'Mantén presionado el micrófono para grabar. Suelta para enviar.')}
           </Text>
         ) : null}
 
@@ -447,21 +805,31 @@ export function ChatThreadScreen({
     attachmentDraft,
     composerText,
     inlineMessage,
+    isAttachmentMenuOpen,
+    isKeyboardVisible,
     isProcessingVoice,
     isRecordingVoice,
     isSendingMessage,
     onComposerTextChange,
     onAttachImage,
+    onAttachFile,
+    onCancelReply,
     onRemoveAttachmentDraft,
     onSendMessage,
     onStartVoiceRecording,
     onStopVoiceRecording,
+    replyDraft,
     showSendIcon,
     t,
+    typingLabel,
   ])
 
   return (
-    <View style={[styles.chatCard, styles.chatThreadScreen, { height: threadCardHeight }]}> 
+    <KeyboardAvoidingView
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={Platform.OS === 'android' ? -16 : 0}
+      style={[styles.chatCard, styles.chatThreadScreen]}
+    >
       <View style={styles.chatThreadHeaderRow}>
         <Pressable style={styles.chatThreadBackButton} onPress={onBack}>
           <Ionicons name="arrow-back" size={18} color="#ffffff" />
@@ -471,26 +839,49 @@ export function ChatThreadScreen({
           <Text style={styles.chatThreadHeaderTitle} numberOfLines={1}>{threadTitle}</Text>
           <Text style={styles.chatThreadHeaderMeta} numberOfLines={1}>{threadSubtitle}</Text>
         </View>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={t('Chat media', 'Medios del chat')}
+          style={styles.chatThreadMenuButton}
+          onPress={() => setIsMediaModalOpen(true)}
+        >
+          <Ionicons name="ellipsis-vertical" size={19} color="#ffffff" />
+        </Pressable>
       </View>
 
-      <View style={styles.chatMessagesWrap}>
+      <View
+        style={styles.chatMessagesWrap}
+        onLayout={(event) => {
+          const nextWidth = Math.floor(event.nativeEvent.layout.width)
+          setChatViewportWidth((current) => current === nextWidth ? current : nextWidth)
+        }}
+      >
         <Chat
+          customDateHeaderText={customDateHeaderText}
           customBottomComponent={renderCustomBottom}
+          disableImageGallery={false}
           emptyState={() => <View />}
+          enableAnimation
+          isLastPage={!hasMoreMessages}
           locale={locale.startsWith('es') ? 'es' : 'en'}
           l10nOverride={{
             emptyChatPlaceholder: t('No messages yet. Send the first one.', 'Aun no hay mensajes. Envia el primero.'),
           }}
           messages={chatMessages}
-          onMessageLongPress={handleMessageLongPress}
+          onEndReached={async () => {
+            onLoadOlderMessages()
+          }}
+          onPreviewDataFetched={() => {}}
           onSendPress={(partialMessage) => {
             onSendMessage(partialMessage.text)
           }}
           renderBubble={renderBubble}
           renderCustomMessage={renderCustomMessage}
           renderImageMessage={renderImageMessage}
-          renderTextMessage={renderTextMessage}
-          showUserNames={false}
+          showUserAvatars={isGroupChat}
+          showUserNames={isGroupChat}
+          theme={chatTheme}
+          usePreviewData
           user={chatUser}
         />
         {chatMessages.length === 0 ? (
@@ -508,6 +899,114 @@ export function ChatThreadScreen({
           </View>
         ) : null}
       </View>
-    </View>
+
+      <Modal
+        visible={Boolean(reactionMessageId)}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setReactionMessageId(null)}
+      >
+        <Pressable
+          style={styles.chatReactionModalBackdrop}
+          onPress={() => setReactionMessageId(null)}
+        >
+          <View style={styles.chatReactionModalCard}>
+            <Text style={styles.chatReactionModalTitle}>{t('React to message', 'Reaccionar al mensaje')}</Text>
+            <View style={styles.chatReactionPickerRow}>
+              {CHAT_REACTION_EMOJIS.map((emoji) => (
+                <Pressable
+                  key={emoji}
+                  style={styles.chatReactionPickerButton}
+                  onPress={() => {
+                    if (reactionMessageId) {
+                      onToggleReaction(reactionMessageId, emoji)
+                    }
+                    setReactionMessageId(null)
+                  }}
+                >
+                  <Text style={styles.chatReactionPickerEmoji}>{emoji}</Text>
+                </Pressable>
+              ))}
+            </View>
+          </View>
+        </Pressable>
+      </Modal>
+
+      <Modal
+        visible={isMediaModalOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setIsMediaModalOpen(false)}
+      >
+        <View style={styles.chatMediaModalBackdrop}>
+          <View style={styles.chatMediaModalCard}>
+            <View style={styles.chatMediaModalHeader}>
+              <Text style={styles.chatMediaModalTitle}>{t('Chat media', 'Medios del chat')}</Text>
+              <Pressable onPress={() => setIsMediaModalOpen(false)}>
+                <Ionicons name="close" size={23} color="#263b66" />
+              </Pressable>
+            </View>
+            <ScrollView contentContainerStyle={styles.chatMediaList}>
+              {mediaMessages.map((message) => {
+                const attachment = message.attachment
+
+                if (!attachment?.dataUrl) return null
+
+                if (attachment.kind === 'image') {
+                  return (
+                    <Image
+                      key={message.id}
+                      source={{ uri: attachment.dataUrl }}
+                      style={styles.chatMediaImage}
+                      resizeMode="cover"
+                    />
+                  )
+                }
+
+                return (
+                  <Pressable
+                    key={message.id}
+                    style={styles.chatMediaFileRow}
+                    onPress={() => {
+                      if (attachment.kind === 'voice') {
+                        onToggleVoicePlayback(message.id, attachment.dataUrl ?? '')
+                      } else {
+                        onOpenFile(
+                          attachment.dataUrl ?? '',
+                          attachment.fileName ?? t('File', 'Archivo'),
+                          attachment.mimeType ?? 'application/octet-stream',
+                        )
+                      }
+                    }}
+                  >
+                    <Ionicons
+                      name={attachment.kind === 'voice' ? 'mic' : 'document-text'}
+                      size={20}
+                      color="#315aa8"
+                    />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.chatMediaFileName} numberOfLines={1}>
+                        {attachment.kind === 'voice'
+                          ? t('Voice message', 'Mensaje de voz')
+                          : attachment.fileName ?? t('File', 'Archivo')}
+                      </Text>
+                      <Text style={styles.chatMediaFileMeta}>
+                        {formatSyncTimestamp(message.createdAt, locale)}
+                      </Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={18} color="#7184aa" />
+                  </Pressable>
+                )
+              })}
+              {mediaMessages.length === 0 ? (
+                <Text style={styles.chatMediaEmpty}>
+                  {t('No media or files in this chat yet.', 'Aun no hay medios o archivos en este chat.')}
+                </Text>
+              ) : null}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+    </KeyboardAvoidingView>
   )
 }

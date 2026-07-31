@@ -36,6 +36,10 @@ export type OrderDocumentData = {
   depositRequired: boolean
   depositPercent: number | null
   lines: OrderDocumentLine[]
+  salesRep?: string
+  poDate?: string
+  acknowledgmentDate?: string
+  estimatedReadyDate?: string
 }
 
 const styles = StyleSheet.create({
@@ -93,6 +97,51 @@ const styles = StyleSheet.create({
   invoiceDueLabel: { fontSize: 7, color: '#7d2a35', textTransform: 'uppercase', letterSpacing: 0.7 },
   invoiceDueAmount: { marginTop: 3, fontSize: 18, fontFamily: 'Helvetica-Bold', color: '#b51f2e' },
   invoiceNote: { marginTop: 12, paddingVertical: 9, paddingHorizontal: 12, backgroundColor: '#f7f9fb', borderLeftWidth: 3, borderLeftColor: '#0f4c81', color: '#334a5f', fontSize: 8.7, lineHeight: 1.4 },
+})
+
+const bolStyles = StyleSheet.create({
+  page: { paddingTop: 26, paddingBottom: 24, paddingHorizontal: 32, fontFamily: 'Helvetica', fontSize: 6.5, color: '#111' },
+  border: { borderWidth: 0.8, borderColor: '#111' },
+  title: { height: 17, borderBottomWidth: 0.8, borderColor: '#111', fontFamily: 'Helvetica-Bold', fontSize: 12, textAlign: 'center', paddingTop: 2 },
+  subtitle: { height: 15, borderBottomWidth: 0.8, borderColor: '#111', fontSize: 7.5, textAlign: 'center', paddingTop: 3 },
+  received: { height: 17, borderBottomWidth: 0.8, borderColor: '#111', fontSize: 6.7, paddingHorizontal: 3, paddingTop: 4 },
+  fromRow: { height: 30, flexDirection: 'row', borderBottomWidth: 0.8, borderColor: '#111' },
+  darkLabel: { backgroundColor: '#858585', color: '#fff', fontFamily: 'Helvetica-Bold', textAlign: 'center', paddingTop: 9 },
+  fromValue: { flex: 1, paddingHorizontal: 5, paddingTop: 5, fontFamily: 'Helvetica-Bold', fontSize: 8.2 },
+  legalIntro: { height: 74, paddingHorizontal: 3, paddingVertical: 3, borderBottomWidth: 0.8, borderColor: '#111', fontSize: 5.25, lineHeight: 1.24, textAlign: 'justify' },
+  certification: { marginTop: 3, fontFamily: 'Helvetica-Bold', textAlign: 'center' },
+  partiesRow: { height: 78, flexDirection: 'row', borderBottomWidth: 0.8, borderColor: '#111' },
+  partyBox: { width: '40%', borderRightWidth: 0.8, borderColor: '#111' },
+  partyHeader: { height: 18, backgroundColor: '#858585', color: '#fff', fontFamily: 'Helvetica-Bold', fontSize: 8.5, paddingHorizontal: 10, paddingTop: 4 },
+  partyValue: { paddingHorizontal: 8, paddingTop: 6, fontSize: 7.3, lineHeight: 1.28 },
+  freightBox: { width: '20%' },
+  freightRow: { height: 19.5, flexDirection: 'row', borderBottomWidth: 0.8, borderColor: '#111' },
+  freightCheck: { width: 24, borderRightWidth: 0.8, borderColor: '#111', textAlign: 'center', paddingTop: 5, fontFamily: 'Helvetica-Bold', fontSize: 8 },
+  freightLabel: { flex: 1, paddingLeft: 4, paddingTop: 5, fontFamily: 'Helvetica-Oblique', fontSize: 7 },
+  refsRow: { height: 36, flexDirection: 'row', borderBottomWidth: 0.8, borderColor: '#111' },
+  refCell: { borderRightWidth: 0.8, borderColor: '#111' },
+  refHeader: { height: 18, backgroundColor: '#858585', color: '#fff', fontFamily: 'Helvetica-Bold', textAlign: 'center', paddingTop: 5 },
+  refValue: { flex: 1, textAlign: 'center', paddingHorizontal: 2, paddingTop: 2.5, fontSize: 5.7, lineHeight: 1.08 },
+  detailsRow: { height: 285, flexDirection: 'row', borderBottomWidth: 0.8, borderColor: '#111' },
+  itemsArea: { width: '64%', borderRightWidth: 0.8, borderColor: '#111' },
+  itemHeader: { height: 18, flexDirection: 'row', backgroundColor: '#858585', color: '#fff', fontFamily: 'Helvetica-Bold', fontSize: 7.2 },
+  itemHeaderCell: { paddingTop: 5, textAlign: 'center', borderRightWidth: 0.8, borderColor: '#111' },
+  itemRow: { minHeight: 25, flexDirection: 'row', borderBottomWidth: 0.45, borderColor: '#aaa', fontSize: 6.5 },
+  itemCell: { paddingHorizontal: 3, paddingVertical: 4, borderRightWidth: 0.45, borderColor: '#aaa' },
+  termsArea: { width: '36%' },
+  termsBlock: { paddingHorizontal: 4, paddingVertical: 4, borderBottomWidth: 0.8, borderColor: '#111', fontSize: 5.55, lineHeight: 1.18 },
+  signatureLine: { marginHorizontal: 10, marginTop: 16, borderBottomWidth: 0.45, borderColor: '#777' },
+  signatureCaption: { marginTop: 3, textAlign: 'center', fontSize: 5.5 },
+  bottomNotes: { height: 57, flexDirection: 'row' },
+  valueNote: { width: '64%', padding: 3, borderRightWidth: 0.8, borderColor: '#111', fontSize: 5.45, lineHeight: 1.25 },
+  fobNote: { width: '36%', padding: 3, fontSize: 5.2, fontFamily: 'Helvetica-Bold', textAlign: 'center', lineHeight: 1.22 },
+  cancellation: { marginTop: 5, color: '#e01818', fontSize: 7.2, textAlign: 'center', lineHeight: 1.35 },
+  signatures: { marginTop: 17, flexDirection: 'row', paddingHorizontal: 3 },
+  company: { width: '34%', fontFamily: 'Times-Roman', fontSize: 9.5, lineHeight: 1.45 },
+  signArea: { width: '66%', paddingLeft: 14, paddingTop: 1 },
+  signRow: { height: 27, flexDirection: 'row', alignItems: 'flex-end', borderBottomWidth: 0.8, borderColor: '#111', fontSize: 7.2 },
+  signLabel: { width: 75, paddingBottom: 2 },
+  signDate: { marginLeft: 'auto', width: 48, paddingBottom: 2 },
 })
 
 const money = (value: number) => `$${Number(value || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -398,6 +447,153 @@ export function WorkOrderDocument({ data, settings }: { data: OrderDocumentData;
   )
 }
 
+function bolDate(value: string | null | undefined) {
+  const normalized = String(value || '').trim()
+  if (!normalized) return '-'
+
+  const dateOnly = normalized.match(/^(\d{4})-(\d{2})-(\d{2})/)
+  if (!dateOnly) return normalized
+
+  return `${Number(dateOnly[2])}/${Number(dateOnly[3])}/${dateOnly[1]}`
+}
+
+function bolAddress(data: OrderDocumentData) {
+  return [data.companyName, data.contactName, data.contactPhone, data.contactEmail]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+    .join('\n') || '-'
+}
+
+function resolveFreightSelection(data: OrderDocumentData) {
+  const freight = String(data.freightType || '').toLowerCase()
+  if (/third|3rd/.test(freight)) return '3rd Party'
+  if (/collect/.test(freight)) return 'Frt Collected'
+  if (/government|gov[\s'.-]*t/.test(freight)) return "Gov't Rates"
+  if (/prepaid/.test(freight)) return 'Frt Prepaid'
+  return ''
+}
+
+export function BillOfLadingDocument({ data }: { data: OrderDocumentData }) {
+  const freightSelection = resolveFreightSelection(data)
+  const productLines = data.lines.filter((line) => line.category !== 'freight')
+  const soldTo = bolAddress(data)
+  const freightLabels = ['Frt Collected', 'Frt Prepaid', '3rd Party', "Gov't Rates"]
+
+  return (
+    <Document title={`Bill of Lading ${data.acknowledgmentNumber}`}>
+      <Page size={{ width: 612, height: 792 }} style={bolStyles.page}>
+        <View style={bolStyles.border}>
+          <Text style={bolStyles.title}>STRAIGHT BILL OF LADING - SHORT FORM</Text>
+          <Text style={bolStyles.subtitle}>ORIGINAL - NOT NEGOTIABLE</Text>
+          <Text style={bolStyles.received}>RECEIVED, subject to the classification and tariffs in effect on the date of the issue of this Bill of Lading</Text>
+          <View style={bolStyles.fromRow}>
+            <Text style={[bolStyles.darkLabel, { width: 54 }]}>Date</Text>
+            <Text style={{ width: 122, paddingTop: 9, paddingHorizontal: 5 }}>{bolDate(data.documentDate)}</Text>
+            <Text style={[bolStyles.darkLabel, { width: 88 }]}>From</Text>
+            <Text style={bolStyles.fromValue}>Arnold Kolax Furniture, Inc.     Irvington, NJ 07111</Text>
+          </View>
+          <View style={bolStyles.legalIntro}>
+            <Text>The property described below in apparent good order, except as noted (contents and condition of contents of packages unknown), marked, consigned, and destined as indicated below, which said carrier (the word carrier being understood throughout this contract as meaning any person or corporation in possession of the property under the contract) agrees to carry to its usual place of delivery at said destination, if on its route, otherwise to deliver to another carrier on the route to said destination.</Text>
+            <Text>It is mutually agreed, as to each carrier of all or any said property over all or any portion of said route to destination, and as to each party at any time interested in all or any of said property, that every service to be performed hereunder shall be subject to all the terms and conditions of the United Domestic Straight Bill of Lading set forth (1) in Uniform Freight Classification in effect on the date hereof, if this is a rail or rail-water shipment, or (2) in the applicable motor carrier classification or tariff if this is a motor carrier shipment.</Text>
+            <Text style={bolStyles.certification}>Shipper hereby certifies that he is familiar with all the terms and conditions of said bill of lading, including those on the back thereof, set forth in the classification or tariff which governs the transportation of this shipment, and the said terms and conditions are hereby agreed to by the shipper and accepted for himself and his assigns.</Text>
+          </View>
+          <View style={bolStyles.partiesRow}>
+            <View style={bolStyles.partyBox}>
+              <Text style={bolStyles.partyHeader}>Sold To</Text>
+              <Text style={bolStyles.partyValue}>{soldTo}</Text>
+            </View>
+            <View style={bolStyles.partyBox}>
+              <Text style={bolStyles.partyHeader}>Ship To</Text>
+              <Text style={bolStyles.partyValue}>{data.shipTo || '-'}</Text>
+            </View>
+            <View style={bolStyles.freightBox}>
+              {freightLabels.map((label) => (
+                <View key={label} style={bolStyles.freightRow}>
+                  <Text style={bolStyles.freightCheck}>{freightSelection === label ? 'X' : ''}</Text>
+                  <Text style={bolStyles.freightLabel}>{label}</Text>
+                </View>
+              ))}
+            </View>
+          </View>
+          <View style={bolStyles.refsRow}>
+            {[
+              ['Rep', data.salesRep, 52],
+              ['Cust. PO Date', bolDate(data.poDate || data.documentDate), 66],
+              ['Cust. PO #', data.poNumber, 100],
+              ['Ack Date', bolDate(data.acknowledgmentDate || data.documentDate), 60],
+              ['ACK #', data.acknowledgmentNumber, 55],
+              ['Estimated Ready Date', bolDate(data.estimatedReadyDate), 110],
+              ['Ship Via', data.freightType, 105],
+            ].map(([label, value, width]) => (
+              <View key={String(label)} style={[bolStyles.refCell, { width: Number(width) }]}>
+                <Text style={bolStyles.refHeader}>{label}</Text>
+                <Text style={bolStyles.refValue}>{String(value || '-')}</Text>
+              </View>
+            ))}
+          </View>
+          <View style={bolStyles.detailsRow}>
+            <View style={bolStyles.itemsArea}>
+              <View style={bolStyles.itemHeader}>
+                <Text style={[bolStyles.itemHeaderCell, { width: 40 }]}>Qty</Text>
+                <Text style={[bolStyles.itemHeaderCell, { width: 78 }]}>Item</Text>
+                <Text style={[bolStyles.itemHeaderCell, { flex: 1, borderRightWidth: 0 }]}>Description</Text>
+              </View>
+              {(productLines.length ? productLines : [{ id: '-', qty: null, description: 'Order details are not available.', category: 'product' as const, unitPrice: null, extPrice: 0 }]).map((line) => (
+                <View key={`${line.category}-${line.id}`} style={bolStyles.itemRow}>
+                  <Text style={[bolStyles.itemCell, { width: 40, textAlign: 'center' }]}>{line.qty ?? '-'}</Text>
+                  <Text style={[bolStyles.itemCell, { width: 78 }]}>{line.id || '-'}</Text>
+                  <Text style={[bolStyles.itemCell, { flex: 1, borderRightWidth: 0 }]}>{line.description}</Text>
+                </View>
+              ))}
+            </View>
+            <View style={bolStyles.termsArea}>
+              <View style={[bolStyles.termsBlock, { height: 113 }]}>
+                <Text>Subject to Section 7 of Conditions of applicable bill of lading, if this shipment is to be delivered to the consignee without recourse on the consignor, the consignor shall sign the following statement:</Text>
+                <Text style={{ marginTop: 5 }}>The carrier shall not make delivery of this shipment without payment of freight and other lawful charges.</Text>
+                <View style={[bolStyles.signatureLine, { marginTop: 10 }]} />
+                <Text style={bolStyles.signatureCaption}>(Signature of consignor)</Text>
+              </View>
+              <View style={[bolStyles.termsBlock, { height: 51 }]}>
+                <Text>If charges are to be prepaid, write or stamp here "To be prepaid"</Text>
+                <View style={[bolStyles.signatureLine, { marginTop: 18 }]} />
+              </View>
+              <View style={[bolStyles.termsBlock, { height: 81 }]}>
+                <Text>Received $______________________________</Text>
+                <Text>to apply in prepayment of the charges on the property described hereon.</Text>
+                <Text style={{ marginTop: 16 }}>Per _________________________________</Text>
+                <Text>(Agent or Cashier)</Text>
+              </View>
+              <View style={[bolStyles.termsBlock, { height: 40, borderBottomWidth: 0 }]}>
+                <Text>Charges Advanced:</Text>
+                <Text style={{ marginTop: 9 }}>$ __________________________________</Text>
+              </View>
+            </View>
+          </View>
+          <View style={bolStyles.bottomNotes}>
+            <View style={bolStyles.valueNote}>
+              <Text>*If the shipment moves between two ports by a carrier by water, the law requires that the bill of lading shall state whether it is a carrier's or shipper's weight.</Text>
+              <Text>NOTE - Where the rate is dependent on value, shippers are required to state specifically in writing the agreed or declared value of the property.</Text>
+              <Text>The agreed or declared value of the property is hereby specifically stated by the shipper to be not exceeding __________________________.</Text>
+            </View>
+            <View style={bolStyles.fobNote}>
+              <Text>+Shipper's imprint in lieu of stamp: not a part of Bill of Lading approved by the Interstate Commerce Commission.</Text>
+              <Text>ALL GOODS SOLD F.O.B. IRVINGTON, N.J. PRODUCING POINT. THE TRANSPORTATION COMPANY IS YOUR AGENT AND ALL DAMAGE CLAIMS MUST BE REPORTED TO THEM IMMEDIATELY UPON RECEIPT OF MERCHANDISE. ALL MERCHANDISE SHIPPED BLANKET WRAPPED EXCEPT IN AREAS NOT SERVICED BY OUR LOCAL CARRIER, TO THOSE ITEMS A CRATING CHARGE WILL BE ADDED.</Text>
+            </View>
+          </View>
+        </View>
+        <Text style={bolStyles.cancellation}>PLEASE NOTE: CUSTOM MADE AND CUSTOM FINISHED FURNITURE CANNOT BE CANCELLED OR RETURNED.{`\n`}RETURN WITHOUT AUTHORIZATION NUMBER WILL NOT BE ACCEPTED.</Text>
+        <View style={bolStyles.signatures}>
+          <Text style={bolStyles.company}>ARNOLD KOLAX FURNITURE, INC{`\n`}120 COIT STREET{`\n`}IRVINGTON{`\n`}973-375-8101</Text>
+          <View style={bolStyles.signArea}>
+            <View style={bolStyles.signRow}><Text style={bolStyles.signLabel}>CARRIER{`\n`}SIGNATURE</Text><Text style={bolStyles.signDate}>DATE</Text></View>
+            <View style={bolStyles.signRow}><Text style={bolStyles.signLabel}>CUSTOMER{`\n`}SIGNATURE</Text><Text style={bolStyles.signDate}>DATE</Text></View>
+          </View>
+        </View>
+      </Page>
+    </Document>
+  )
+}
+
 async function resolveArnoldMarkUrl() {
   const markPath = '/arnold-quote-mark.png'
 
@@ -442,6 +638,10 @@ export async function buildWorkOrderDocumentBlob(data: OrderDocumentData, settin
 export async function buildProformaInvoiceBlob(data: OrderDocumentData, settings: CrmQuotePrintSettings) {
   const normalizedSettings = await normalizeDocumentSettings(settings)
   return pdf(<ProformaInvoiceDocument data={data} settings={normalizedSettings} />).toBlob()
+}
+
+export async function buildBillOfLadingBlob(data: OrderDocumentData) {
+  return pdf(<BillOfLadingDocument data={data} />).toBlob()
 }
 
 export async function buildChangeOrderDocumentBlob(

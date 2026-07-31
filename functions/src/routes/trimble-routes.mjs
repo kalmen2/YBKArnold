@@ -235,6 +235,7 @@ function safeModelSummary(model) {
     ? model.models
     : (model.fileName ? [model] : [])
   return {
+    viewerType: text(model.viewerType, 40) || 'trimble',
     fileName: text(model.fileName, 500) || null,
     uploadedAt: text(model.uploadedAt, 100) || null,
     uploadedByEmail: text(model.uploadedByEmail, 320) || null,
@@ -243,7 +244,19 @@ function safeModelSummary(model) {
     models: models.map((entry, index) => ({
       fileName: text(entry?.fileName, 500) || `3D option ${index + 1}`,
       label: modelViewLabel(entry?.fileName, entry?.label, index),
+      viewerType: text(entry?.viewerType || model.viewerType, 40) || 'trimble',
     })),
+  }
+}
+
+function validatedFirebaseModelUrl(value) {
+  const normalized = text(value, 4000)
+  try {
+    const parsed = new URL(normalized)
+    if (parsed.protocol !== 'https:' || parsed.hostname !== 'firebasestorage.googleapis.com') return ''
+    return parsed.toString()
+  } catch {
+    return ''
   }
 }
 
@@ -680,6 +693,83 @@ export function registerTrimbleRoutes(app, deps) {
     }
   })
 
+  app.post('/api/trimble/quotes/:quoteId/web-models', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const quoteId = text(req.params.quoteId, 200)
+      const requestedModels = Array.isArray(req.body?.models) ? req.body.models : []
+      if (!quoteId || !requestedModels.length || requestedModels.length > maxPublishedModels) {
+        return res.status(400).json({ error: `Select between 1 and ${maxPublishedModels} GLB models.` })
+      }
+
+      const { crmQuotesCollection, trimbleOauthConnectionsCollection } = await getCollections()
+      const rootQuote = await crmQuotesCollection.findOne({ id: quoteId }, { projection: { _id: 0 } })
+      if (!rootQuote) return res.status(404).json({ error: 'Quote not found.' })
+      const revisionNumber = requestedRevisionNumber(req)
+      const quote = quoteAtRevision(rootQuote, revisionNumber)
+      if (!quote) return res.status(404).json({ error: 'Quote revision not found.' })
+
+      const models = requestedModels.map((entry, index) => {
+        const fileName = text(entry?.fileName, 500).split('/').at(-1)?.trim()
+        const webModelUrl = validatedFirebaseModelUrl(entry?.downloadUrl)
+        const fileSize = entry?.fileSize == null ? null : Number(entry.fileSize)
+        if (!fileName || !fileName.toLowerCase().endsWith('.glb') || !webModelUrl) {
+          const error = new Error('Every smooth web model must be a GLB file stored in Arnold Firebase Storage.')
+          error.status = 400
+          throw error
+        }
+        if (fileSize !== null && (!Number.isFinite(fileSize) || fileSize <= 0 || fileSize > maxModelBytes)) {
+          const error = new Error('Each GLB file must be between 1 byte and 2 GB.')
+          error.status = 400
+          throw error
+        }
+        return {
+          fileName,
+          fileSize,
+          label: modelViewLabel(fileName, entry?.label, index),
+          viewerType: 'glb',
+          webModelUrl,
+        }
+      })
+
+      const previousModel = quote.trimble3d
+      const uploadedAt = nowIso()
+      const publicSlug = text(previousModel?.publicSlug, 500) || randomBytes(24).toString('base64url')
+      const primary = models[0]
+      const model = {
+        status: 'ready',
+        viewerType: 'glb',
+        models,
+        fileName: primary.fileName,
+        fileSize: primary.fileSize,
+        webModelUrl: primary.webModelUrl,
+        publicSlug,
+        viewerUrl: publicViewerUrl(publicSlug),
+        uploadedAt,
+        uploadedByUid: text(req.authUser?.uid, 200) || null,
+        uploadedByEmail: text(req.authUser?.email, 320) || null,
+      }
+      await setQuoteRevisionModel(
+        crmQuotesCollection,
+        rootQuote,
+        quoteId,
+        revisionNumber,
+        model,
+        uploadedAt,
+      )
+
+      const oldShareIds = existingShareIds(previousModel)
+      if (oldShareIds.length) {
+        await (async () => {
+          const { accessToken } = await accessTokenFor(trimbleOauthConnectionsCollection)
+          await removeTrimbleShares(accessToken, oldShareIds)
+        })().catch(() => {})
+      }
+      return res.json({ model: safeModelSummary(model) })
+    } catch (error) {
+      next(error)
+    }
+  })
+
   app.post('/api/trimble/quotes/:quoteId/uploads/from-document', requireFirebaseAuth, async (req, res, next) => {
     try {
       const quoteId = text(req.params.quoteId, 200)
@@ -930,14 +1020,21 @@ export function registerTrimbleRoutes(app, deps) {
       // already able to display the converted model. Do not gate a valid share
       // link on that field; let the viewer load it and expose a manual reload in
       // the customer page for the short conversion window after a fresh upload.
-      const publicModels = storedModels.map((entry, index) => ({
+      const publicModels = storedModels.map((entry, index) => {
+        const glbUrl = validatedFirebaseModelUrl(entry?.webModelUrl || (model.viewerType === 'glb' ? model.webModelUrl : ''))
+        return {
           label: modelViewLabel(entry?.fileName, entry?.label, index),
           fileName: text(entry?.fileName, 500) || `3D option ${index + 1}`,
           status: 'ready',
-          embedUrl: `${trimbleViewerBaseUrl}/projects/${encodeURIComponent(model.projectId)}/viewer/3d/?embed=true&stoken=${encodeURIComponent(entry.shareToken)}`,
-      }))
-      const embedUrl = publicModels.find((entry) => entry.embedUrl)?.embedUrl || null
-      if (!embedUrl) {
+          viewerType: glbUrl ? 'glb' : 'trimble',
+          glbUrl: glbUrl || null,
+          embedUrl: glbUrl
+            ? null
+            : `${trimbleViewerBaseUrl}/projects/${encodeURIComponent(model.projectId)}/viewer/3d/?embed=true&stoken=${encodeURIComponent(entry.shareToken)}`,
+        }
+      })
+      const primaryPublicModel = publicModels.find((entry) => entry.glbUrl || entry.embedUrl)
+      if (!primaryPublicModel) {
         return res.status(404).json({ error: 'This 3D model link is unavailable.' })
       }
       res.set('Cache-Control', 'private, no-store')
@@ -948,7 +1045,9 @@ export function registerTrimbleRoutes(app, deps) {
         customerName: text(quote.companyName || quote.dealerName, 240) || null,
         fileName: text(model.fileName, 500) || null,
         status: 'ready',
-        embedUrl,
+        viewerType: primaryPublicModel.viewerType,
+        glbUrl: primaryPublicModel.glbUrl,
+        embedUrl: primaryPublicModel.embedUrl,
         models: publicModels,
       })
     } catch (error) {
