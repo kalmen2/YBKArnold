@@ -1039,3 +1039,67 @@ export const QuotePdfPreviewDialog = memo(function QuotePdfPreviewDialog({
     </Dialog>
   )
 })
+
+export const QuotePdfInlinePreview = memo(function QuotePdfInlinePreview({
+  quote,
+  settings,
+  onArrangePictures,
+}: {
+  quote: CrmQuote
+  settings: CrmQuotePrintSettings
+  onArrangePictures: () => void
+}) {
+  const document = useMemo(
+    () => <NativeQuotePdfDocument quote={quote} settings={settings} />,
+    [quote, settings],
+  )
+  const pictures = useMemo(() => (quote.lineItems || []).flatMap((lineItem, lineIndex) => (
+    (lineItem.images || []).map((image) => ({ image, lineIndex }))
+  )), [quote.lineItems])
+
+  return (
+    <Stack spacing={1.25}>
+      {pictures.length ? (
+        <Box>
+          <Typography variant="subtitle2" fontWeight={800}>Pictures</Typography>
+          <Typography variant="caption" color="text.secondary">
+            Click any picture to move or resize it directly on the PDF.
+          </Typography>
+          <Stack direction="row" spacing={1} sx={{ mt: 1, overflowX: 'auto', pb: 0.5 }}>
+            {pictures.map(({ image, lineIndex }) => (
+              <Box
+                component="button"
+                type="button"
+                key={`${lineIndex}-${image.id}`}
+                onClick={onArrangePictures}
+                aria-label={`Arrange picture ${image.name || lineIndex + 1} in PDF`}
+                sx={{
+                  width: 92,
+                  height: 72,
+                  p: 0.5,
+                  flex: '0 0 auto',
+                  border: '2px solid',
+                  borderColor: 'primary.main',
+                  borderRadius: 1.5,
+                  bgcolor: '#fff',
+                  cursor: 'pointer',
+                  overflow: 'hidden',
+                  '&:hover': { boxShadow: 3, transform: 'translateY(-1px)' },
+                }}
+              >
+                <Box component="img" src={image.url} alt={image.name || `Quote item ${lineIndex + 1}`} sx={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }} />
+              </Box>
+            ))}
+          </Stack>
+        </Box>
+      ) : (
+        <Alert severity="info">Add product pictures in Quote Lines to arrange them in the PDF.</Alert>
+      )}
+      <Box sx={{ height: { xs: 520, md: 650 }, overflow: 'hidden', borderRadius: 1.5, border: 1, borderColor: 'divider', bgcolor: '#525659' }}>
+        <PDFViewer width="100%" height="100%" showToolbar>
+          {document}
+        </PDFViewer>
+      </Box>
+    </Stack>
+  )
+})

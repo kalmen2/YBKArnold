@@ -1555,26 +1555,76 @@ app.get('/api/dashboard/monday/bol/download', requireFirebaseAuth, async (req, r
     }
 
     async function loadOrderBolDocument() {
-      const { mondayOrdersCollection } = await getCollections()
-
-      return mondayOrdersCollection.findOne(
-        {
-          mondayItemId: orderId,
-        },
-        {
-          projection: {
-            _id: 0,
-            mondayItemId: 1,
-            bolDownloadUrl: 1,
-            bolFileName: 1,
-            bolSourceAssetId: 1,
-            bolSourceUrl: 1,
-            bolResolvedUrl: 1,
-            bolUrl: 1,
-            bol: 1,
+      const { mondayOrdersCollection, ordersUnifiedCollection } = await getCollections()
+      const [mondayOrder, unifiedOrder] = await Promise.all([
+        mondayOrdersCollection.findOne(
+          {
+            mondayItemId: orderId,
           },
-        },
-      )
+          {
+            projection: {
+              _id: 0,
+              mondayItemId: 1,
+              bolDownloadUrl: 1,
+              bolFileName: 1,
+              bolSourceAssetId: 1,
+              bolSourceUrl: 1,
+              bolResolvedUrl: 1,
+              bolUrl: 1,
+              bol: 1,
+            },
+          },
+        ),
+        ordersUnifiedCollection.findOne(
+          {
+            monday_item_id: orderId,
+            is_cancelled: { $ne: true },
+            is_deleted: { $ne: true },
+          },
+          {
+            projection: {
+              _id: 0,
+              monday_item_id: 1,
+              BOL_cached: 1,
+              BOL_source: 1,
+              BOL: 1,
+              bol: 1,
+            },
+          },
+        ),
+      ])
+
+      if (!mondayOrder && !unifiedOrder) {
+        return null
+      }
+
+      return {
+        ...(mondayOrder ?? {}),
+        mondayItemId:
+          String(mondayOrder?.mondayItemId ?? '').trim()
+          || String(unifiedOrder?.monday_item_id ?? '').trim()
+          || orderId,
+        bolDownloadUrl:
+          String(mondayOrder?.bolDownloadUrl ?? '').trim()
+          || String(unifiedOrder?.BOL_cached ?? '').trim()
+          || null,
+        bolFileName:
+          String(mondayOrder?.bolFileName ?? '').trim()
+          || String(unifiedOrder?.bol ?? '').trim()
+          || null,
+        bolSourceUrl:
+          String(mondayOrder?.bolSourceUrl ?? '').trim()
+          || String(unifiedOrder?.BOL_source ?? '').trim()
+          || null,
+        bolUrl:
+          String(mondayOrder?.bolUrl ?? '').trim()
+          || String(unifiedOrder?.BOL ?? '').trim()
+          || null,
+        bol:
+          String(mondayOrder?.bol ?? '').trim()
+          || String(unifiedOrder?.bol ?? '').trim()
+          || null,
+      }
     }
 
     let orderDocument = await loadOrderBolDocument()

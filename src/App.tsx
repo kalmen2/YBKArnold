@@ -1,6 +1,7 @@
 import { RouterProvider } from 'react-router-dom'
 import AuthGate from './auth/AuthGate'
 import { router } from './router/index'
+import DiagnosticReportProvider from './features/diagnostics/DiagnosticReportProvider'
 
 function App() {
   const isPublic3dViewer = window.location.pathname.startsWith('/3d/')
@@ -11,7 +12,9 @@ function App() {
 
   return (
     <AuthGate>
-      <RouterProvider router={router} />
+      <DiagnosticReportProvider>
+        <RouterProvider router={router} />
+      </DiagnosticReportProvider>
     </AuthGate>
   )
 }

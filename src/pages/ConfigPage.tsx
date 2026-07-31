@@ -5,8 +5,9 @@ import { useLocation, useNavigate } from 'react-router-dom'
 const TemplatesPage = lazy(() => import('./TemplatesPage'))
 const VisitorsPage = lazy(() => import('./VisitorsPage'))
 const QuoteReminderSettingsPage = lazy(() => import('./QuoteReminderSettingsPage'))
+const ReportIssuePage = lazy(() => import('./ReportIssuePage'))
 
-type ConfigTab = 'templates' | 'visitors' | 'quote-reminders'
+type ConfigTab = 'templates' | 'visitors' | 'quote-reminders' | 'report-issue'
 
 const configTabs: Array<{
   value: ConfigTab
@@ -24,6 +25,10 @@ const configTabs: Array<{
     value: 'quote-reminders',
     label: 'Reminders',
   },
+  {
+    value: 'report-issue',
+    label: 'Report Issue',
+  },
 ]
 
 function getConfigTabFromQuery(rawTab: string | null): ConfigTab {
@@ -33,6 +38,10 @@ function getConfigTabFromQuery(rawTab: string | null): ConfigTab {
 
   if (rawTab === 'quote-reminders') {
     return 'quote-reminders'
+  }
+
+  if (rawTab === 'report-issue') {
+    return 'report-issue'
   }
 
   return 'visitors'
@@ -85,6 +94,8 @@ export default function ConfigPage() {
           ? <TemplatesPage />
           : selectedTab === 'quote-reminders'
             ? <QuoteReminderSettingsPage />
+            : selectedTab === 'report-issue'
+              ? <ReportIssuePage />
             : <VisitorsPage />}
       </Suspense>
     </Stack>

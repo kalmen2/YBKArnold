@@ -1134,9 +1134,9 @@ export function JobDetailsDialog({
   const documentOrder = detailsQuery.data?.order || order
   const hasMondayItemId = Boolean(String(order?.mondayItemId ?? '').trim())
   const bolUrl = generatedBolUrl || resolveBolUrl(order)
-  const bolPreviewUrl = hasMondayItemId
+  const bolPreviewUrl = bolUrl || (hasMondayItemId
     ? `/api/dashboard/monday/bol/download?orderId=${encodeURIComponent(String(order?.mondayItemId ?? '').trim())}&inline=1`
-    : bolUrl
+    : '')
   const shopDrawingUrlFromOrder = resolveShopDrawingUrl(order)
   const cutListUrlFromOrder = resolveCutListUrl(documentOrder)
   const shopDrawingUrl = shopDrawingDeletedLocally
@@ -2496,17 +2496,17 @@ export function JobDetailsDialog({
       return
     }
 
-    if (!hasMondayItemId) {
-      if (bolUrl) {
-        handleOpenDocumentPreview({
-          title: 'BOL Preview',
-          url: bolUrl,
-          fileName: 'bill-of-lading.pdf',
-          mimeType: 'application/pdf',
-        })
-        return
-      }
+    if (bolUrl) {
+      handleOpenDocumentPreview({
+        title: 'BOL Preview',
+        url: bolUrl,
+        fileName: 'bill-of-lading.pdf',
+        mimeType: 'application/pdf',
+      })
+      return
+    }
 
+    if (!hasMondayItemId) {
       onOpenBolDocument(order)
       return
     }

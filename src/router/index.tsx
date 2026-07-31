@@ -145,7 +145,7 @@ export const router = createBrowserRouter([
       },
       {
         path: 'admin/issues',
-        element: <Navigate to="/notifications" replace />,
+        element: <Navigate to="/admin/settings?tab=issue-reports" replace />,
       },
       {
         path: 'admin/logs',

@@ -93,9 +93,14 @@ export default function Public3dViewerPage() {
   useEffect(() => {
     if (!activeModel?.embedUrl && !activeModel?.glbUrl) return undefined
     if (revealTimerRef.current !== null) window.clearTimeout(revealTimerRef.current)
-    const slowTimer = window.setTimeout(() => setTakingLonger(true), 6_000)
+    const slowTimer = window.setTimeout(() => setTakingLonger(true), 5_000)
+    const hardRevealTimer = window.setTimeout(() => {
+      setViewerLoading(false)
+      setTakingLonger(true)
+    }, 15_000)
     return () => {
       window.clearTimeout(slowTimer)
+      window.clearTimeout(hardRevealTimer)
       if (revealTimerRef.current !== null) window.clearTimeout(revealTimerRef.current)
     }
   }, [activeModel, viewerNonce])
@@ -105,7 +110,7 @@ export default function Public3dViewerPage() {
     revealTimerRef.current = window.setTimeout(() => {
       setViewerLoading(false)
       revealTimerRef.current = null
-    }, 12_000)
+    }, 6_000)
   }
 
   const selectModel = (index: number) => {
@@ -257,7 +262,7 @@ export default function Public3dViewerPage() {
               <Box
                 key={`${activeModel.glbUrl}-${viewerNonce}`}
                 component={SmoothModelViewer}
-                src={activeModel.glbUrl}
+                src={`${activeModel.glbUrl}${activeModel.glbUrl.includes('?') ? '&' : '?'}reload=${viewerNonce}`}
                 alt={`${data.projectName} – ${activeModel.label}`}
                 camera-controls
                 auto-rotate
@@ -280,7 +285,7 @@ export default function Public3dViewerPage() {
                 key={`${activeModel.embedUrl}-${viewerNonce}`}
                 component="iframe"
                 title={`${data.projectName} – ${activeModel.label}`}
-                src={activeModel.embedUrl || undefined}
+                src={activeModel.embedUrl ? `${activeModel.embedUrl}${activeModel.embedUrl.includes('?') ? '&' : '?'}reload=${viewerNonce}` : undefined}
                 allow="fullscreen"
                 loading="eager"
                 onLoad={prepareViewer}

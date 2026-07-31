@@ -16,6 +16,7 @@ import { registerChatRoutes } from './src/routes/chat-routes.mjs'
 import { registerCrmRoutes } from './src/routes/crm-routes.mjs'
 import { registerEmailIntakeRoutes } from './src/routes/email-intake-routes.mjs'
 import { registerDashboardSupportRoutes } from './src/routes/dashboard-support-routes.mjs'
+import { registerDiagnosticReportsRoutes } from './src/routes/diagnostic-reports-routes.mjs'
 import { registerEmailRoutes } from './src/routes/email-routes.mjs'
 import { registerOrderPhotoRoutes } from './src/routes/order-photos-routes.mjs'
 import { registerOrdersRoutes } from './src/routes/orders-routes.mjs'
@@ -98,6 +99,7 @@ app.use(cors({
   },
   credentials: true,
 }))
+app.use('/api/diagnostic-reports', express.json({ limit: '10mb' }))
 app.use(express.json({
   limit: '12mb',
   verify: (req, _res, buf) => {
@@ -164,6 +166,42 @@ app.use((req, res, next) => {
     res.set('Surrogate-Control', 'no-store')
   }
 
+  next()
+})
+
+app.use((req, res, next) => {
+  const sessionId = String(req.get('X-Diagnostic-Session-Id') ?? '').trim()
+
+  if (!sessionId || sessionId.length > 100 || !req.path.startsWith('/api/')) {
+    next()
+    return
+  }
+
+  const requestId = randomUUID()
+  const startedAt = Date.now()
+  res.set('X-Request-Id', requestId)
+  res.on('finish', () => {
+    void (async () => {
+      try {
+        const { diagnosticRequestEventsCollection } = await getCollections()
+        await diagnosticRequestEventsCollection.insertOne({
+          id: randomUUID(),
+          sessionId,
+          requestId,
+          method: String(req.method ?? '').slice(0, 20),
+          path: String(req.originalUrl ?? req.path ?? '').slice(0, 2000),
+          status: Number(res.statusCode) || 0,
+          durationMs: Math.max(0, Date.now() - startedAt),
+          userUid: String(req.authUser?.uid ?? '').slice(0, 200),
+          createdAt: new Date(),
+        })
+      } catch (diagnosticError) {
+        console.warn('Could not persist diagnostic request event.', {
+          message: diagnosticError instanceof Error ? diagnosticError.message : String(diagnosticError),
+        })
+      }
+    })()
+  })
   next()
 })
 
@@ -2455,6 +2493,7 @@ registerChatRoutes(app, routeDeps)
 registerCrmRoutes(app, routeDeps)
 const ordersRoutesRuntime = registerOrdersRoutes(app, routeDeps) || {}
 registerDashboardSupportRoutes(app, routeDeps)
+registerDiagnosticReportsRoutes(app, routeDeps)
 registerEmailRoutes(app, routeDeps)
 const { runEmailIntakeSyncCycle } = registerEmailIntakeRoutes(app, routeDeps)
 registerOrderPhotoRoutes(app, routeDeps)

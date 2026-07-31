@@ -255,6 +255,8 @@ export function createMongoCollectionsService({
         const dashboardSnapshotsCollection = platformDatabase.collection('dashboard_snapshots')
         const visitorLogsCollection = platformDatabase.collection('visitor_logs')
         const visitorShortcutsCollection = platformDatabase.collection('visitor_shortcuts')
+        const diagnosticReportsCollection = platformDatabase.collection('diagnostic_reports')
+        const diagnosticRequestEventsCollection = platformDatabase.collection('diagnostic_request_events')
         const mondayOrdersCollection = ordersDatabase.collection('monday_orders')
         const ordersUnifiedCollection = ordersDatabase.collection('orders')
         const authUsersCollection = authDatabase.collection('auth_users')
@@ -318,6 +320,11 @@ export function createMongoCollectionsService({
             visitorShortcutsCollection.createIndex({ id: 1 }, { unique: true }),
             visitorShortcutsCollection.createIndex({ shortcutKey: 1 }, { unique: true }),
             visitorShortcutsCollection.createIndex({ updatedAt: -1 }),
+            diagnosticReportsCollection.createIndex({ id: 1 }, { unique: true }),
+            diagnosticReportsCollection.createIndex({ status: 1, createdAt: -1 }),
+            diagnosticReportsCollection.createIndex({ createdAt: -1 }),
+            diagnosticRequestEventsCollection.createIndex({ sessionId: 1, createdAt: 1 }),
+            diagnosticRequestEventsCollection.createIndex({ createdAt: 1 }, { expireAfterSeconds: 30 * 24 * 60 * 60 }),
             mondayOrdersCollection.createIndex({ mondayItemId: 1 }, { unique: true }),
             mondayOrdersCollection.createIndex({ createdAt: -1 }),
             mondayOrdersCollection.createIndex({ orderName: 1 }),
@@ -505,6 +512,8 @@ export function createMongoCollectionsService({
           dashboardSnapshotsCollection,
           visitorLogsCollection,
           visitorShortcutsCollection,
+          diagnosticReportsCollection,
+          diagnosticRequestEventsCollection,
           mondayOrdersCollection,
           ordersUnifiedCollection,
           authUsersCollection,

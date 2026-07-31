@@ -80,6 +80,10 @@ import {
   fetchCrmQuotes,
   fetchCrmSalesReps,
   markCrmQuoteFollowedUp,
+  commitTrimbleQuoteModelUpload,
+  initiateTrimbleQuoteModelUpload,
+  publishGlbQuoteModels,
+  uploadTrimbleSavedQuoteModels,
   removeCrmQuoteChatMessage,
   removeCrmQuote,
   removeCrmQuoteRevision,
@@ -144,6 +148,9 @@ const QuotePdfPreviewDialog = lazy(() => import('../features/crm/NativeQuotePdf'
 })))
 const QuotePdfPictureLayoutDialog = lazy(() => import('../features/crm/NativeQuotePdf').then((module) => ({
   default: module.QuotePdfPictureLayoutDialog,
+})))
+const QuotePdfInlinePreview = lazy(() => import('../features/crm/NativeQuotePdf').then((module) => ({
+  default: module.QuotePdfInlinePreview,
 })))
 const DEFAULT_QUOTE_PRINT_SETTINGS: CrmQuotePrintSettings = {
   id: 'default',
@@ -4043,6 +4050,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   const [excelSyncDialogError, setExcelSyncDialogError] = useState<string | null>(null)
   const [isSavingOpportunity, setIsSavingOpportunity] = useState(false)
   const [isUploadingQuoteDocument, setIsUploadingQuoteDocument] = useState(false)
+  const [pendingSketchupFile, setPendingSketchupFile] = useState<File | null>(null)
   const [isUploadingLineImage, setIsUploadingLineImage] = useState(false)
   const [isUploadingFolderSelection, setIsUploadingFolderSelection] = useState(false)
   const [isSavingOpportunityDetails, setIsSavingOpportunityDetails] = useState(false)
@@ -5458,61 +5466,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     resetExcelSyncDialog,
   ])
 
-  const uploadQuoteDocumentFile = useCallback(async (file: File) => {
-    const maxFileSize = 15 * 1024 * 1024
-    const normalizedQuoteNumber = formState.quoteNumber.trim()
-
-    if (file.size > maxFileSize) {
-      throw new Error('File must be 15 MB or smaller.')
-    }
-
-    if (!normalizedQuoteNumber) {
-      throw new Error('Enter quote number before uploading the quote document.')
-    }
-
-    const companySegment = sanitizeStoragePathSegment(formState.companyName.trim() || 'company', 'company')
-    const quoteSegment = sanitizeStoragePathSegment(normalizedQuoteNumber, 'opportunity')
-    const extension = resolveFileExtension(file)
-    const fileStamp = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
-    const filePath = `crm/opportunities/${companySegment}/${quoteSegment}-quote-${fileStamp}${extension}`
-    const fileRef = storageRef(firebaseStorage, filePath)
-
-    await uploadBytes(
-      fileRef,
-      file,
-      file.type ? { contentType: file.type } : undefined,
-    )
-
-    const downloadUrl = await getDownloadURL(fileRef)
-
-    setFormState((current) => ({
-      ...current,
-      quoteDocumentUrl: downloadUrl,
-      quoteDocumentName: file.name,
-    }))
-  }, [formState.companyName, formState.quoteNumber])
-
-  const handleQuoteDocumentUpload = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    event.target.value = ''
-
-    if (!file) {
-      return
-    }
-
-    setErrorMessage(null)
-    setSuccessMessage(null)
-    setIsUploadingQuoteDocument(true)
-
-    try {
-      await uploadQuoteDocumentFile(file)
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Failed to upload quote document.')
-    } finally {
-      setIsUploadingQuoteDocument(false)
-    }
-  }, [uploadQuoteDocumentFile])
-
   const handleSketchupDocumentUpload = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     event.target.value = ''
@@ -5537,6 +5490,16 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         throw new Error('Enter quote number before uploading the 3D model.')
       }
 
+      if (/\.skp$/i.test(file.name)) {
+        setPendingSketchupFile(file)
+        setFormState((current) => ({
+          ...current,
+          sketchupDocumentUrl: '',
+          sketchupDocumentName: file.name,
+        }))
+        return
+      }
+
       const companySegment = sanitizeStoragePathSegment(formState.companyName.trim() || 'company', 'company')
       const quoteSegment = sanitizeStoragePathSegment(normalizedQuoteNumber, 'opportunity')
       const extension = file.name.toLowerCase().endsWith('.glb') ? 'glb' : 'skp'
@@ -5552,6 +5515,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         sketchupDocumentUrl: downloadUrl,
         sketchupDocumentName: file.name,
       }))
+      setPendingSketchupFile(null)
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Failed to upload the 3D model.')
     } finally {
@@ -5850,7 +5814,9 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     const existingDocuments = resolveQuoteDocuments(targetQuote)
     const nextDocuments = [...existingDocuments]
     const uploadedEntryIds = new Set<string>()
+    const uploadedRenderingModels: Array<{ document: CrmQuoteDocument; fileName: string }> = []
     const failedFileMessages: string[] = []
+    let automatic3dPublishWarning = ''
     let cursor = 0
 
     setErrorMessage(null)
@@ -5874,6 +5840,9 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
             })
             nextDocuments.push(nextDocument)
             uploadedEntryIds.add(entry.id)
+            if (entry.folderKey === 'renderings' && /\.skp$/i.test(entry.file.name)) {
+              uploadedRenderingModels.push({ document: nextDocument, fileName: entry.file.name })
+            }
           } catch (error) {
             const message = error instanceof Error ? error.message : 'Failed to upload file.'
             failedFileMessages.push(`${entry.file.name}: ${message}`)
@@ -5893,6 +5862,25 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
           documents: nextDocuments,
         })
         setFolderScanTargetQuoteSnapshot(updateResponse.quote)
+
+        if (uploadedRenderingModels.length > 0) {
+          try {
+            const revisionNumber = Number.isInteger(Number(targetQuote.activeRevisionNumber))
+              ? Number(targetQuote.activeRevisionNumber)
+              : 0
+            await uploadTrimbleSavedQuoteModels(
+              targetQuote.id,
+              uploadedRenderingModels.slice(0, 5).map(({ document, fileName }) => ({
+                document,
+                fileName,
+                label: fileName.replace(/\.skp$/i, ''),
+              })),
+              revisionNumber,
+            )
+          } catch (publishError) {
+            automatic3dPublishWarning = publishError instanceof Error ? publishError.message : 'Automatic publishing failed.'
+          }
+        }
 
         if (selectedOpportunityId && selectedOpportunityId === targetQuote.id) {
           setOpportunityDetailsFormState((current) => {
@@ -5928,10 +5916,17 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         summaryParts.push(`${failedCount} file${failedCount === 1 ? '' : 's'} failed.`)
       }
 
+      if (uploadedRenderingModels.length > 0 && !automatic3dPublishWarning) {
+        summaryParts.push('Customer 3D view published automatically.')
+      }
+
       setSuccessMessage(summaryParts.join(' '))
 
-      if (failedCount > 0) {
-        setErrorMessage(failedFileMessages.join(' | '))
+      if (failedCount > 0 || automatic3dPublishWarning) {
+        setErrorMessage([
+          ...failedFileMessages,
+          ...(automatic3dPublishWarning ? [`Customer 3D publishing: ${automatic3dPublishWarning}`] : []),
+        ].join(' | '))
       }
     } finally {
       setIsUploadingFolderSelection(false)
@@ -6131,6 +6126,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     setAddOpportunitySubmitAttempted(false)
     setDealerSearchInput('')
     setSelectedAddContactSourceId('')
+    setPendingSketchupFile(null)
     setAddDialogInitialSnapshot(serializeOpportunityFormState(emptyFormState))
     setIsAddDialogDraftFromExcelSync(false)
     setIsDialogOpen(true)
@@ -6378,6 +6374,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     setAddOpportunitySubmitAttempted(false)
     setDealerSearchInput('')
     setSelectedAddContactSourceId('')
+    setPendingSketchupFile(null)
     setIsNewDealerDialogOpen(false)
     setIsNewContactDialogOpen(false)
     setIsPaymentTermsDialogOpen(false)
@@ -6787,7 +6784,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         })
       }
 
-      await createCrmQuote({
+      const createResponse = await createCrmQuote({
         dealerSourceId,
         quoteNumber,
         title,
@@ -6828,16 +6825,38 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         revisionCount: 0,
       })
 
+      let modelPublishWarning = ''
+      try {
+        if (pendingSketchupFile) {
+          const session = await initiateTrimbleQuoteModelUpload(createResponse.quote.id, pendingSketchupFile, 0)
+          const uploadResponse = await fetch(session.uploadUrl, { method: 'PUT', body: pendingSketchupFile })
+          if (!uploadResponse.ok) throw new Error(`SketchUp upload failed (${uploadResponse.status}).`)
+          await commitTrimbleQuoteModelUpload(createResponse.quote.id, session.uploadId, 0)
+        } else if (sketchupDocumentUrl && /\.glb$/i.test(sketchupDocumentName)) {
+          await publishGlbQuoteModels(createResponse.quote.id, [{
+            fileName: sketchupDocumentName || '3D model.glb',
+            downloadUrl: sketchupDocumentUrl,
+          }], 0)
+        }
+      } catch (publishError) {
+        modelPublishWarning = publishError instanceof Error
+          ? publishError.message
+          : 'The customer 3D view could not be published.'
+      }
+
       await invalidateOpportunityData()
 
       const emptyFormState = createEmptyOpportunityForm()
 
-      setSuccessMessage('Opportunity created.')
+      setSuccessMessage(modelPublishWarning
+        ? `Opportunity created. The 3D view needs attention: ${modelPublishWarning}`
+        : (pendingSketchupFile || sketchupDocumentUrl ? 'Opportunity created and customer 3D view published.' : 'Opportunity created.'))
       setFormState(emptyFormState)
       setAddOpportunityStage(0)
       setAddOpportunitySubmitAttempted(false)
       setDealerSearchInput('')
       setSelectedAddContactSourceId('')
+      setPendingSketchupFile(null)
       setAddDialogInitialSnapshot(serializeOpportunityFormState(emptyFormState))
       setIsAddDialogDraftFromExcelSync(false)
       setIsDialogOpen(false)
@@ -6877,6 +6896,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     formState.title,
     invalidateOpportunityData,
     isAddDialogDraftFromExcelSync,
+    pendingSketchupFile,
     quotes,
     selectedAddContactSourceId,
   ])
@@ -9018,6 +9038,34 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
 
           {addOpportunityStage === 3 ? (
             <Stack spacing={1.5}>
+              <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
+                <Typography variant="subtitle2" fontWeight={800}>Customer 3D</Typography>
+                <Typography variant="caption" color="text.secondary" display="block">
+                  Select the SketchUp file once. When you submit, it goes directly to Trimble and the customer viewer is published automatically—no reopening the quote or separate Publish 3D Views step.
+                </Typography>
+                <Stack direction="row" spacing={1} alignItems="center" mt={1} flexWrap="wrap" useFlexGap>
+                  <Button component="label" size="small" variant="outlined" startIcon={<FileUploadRoundedIcon />} disabled={!canUploadQuoteDocument || isUploadingQuoteDocument}>
+                    {isUploadingQuoteDocument ? 'Preparing...' : (formState.sketchupDocumentName ? 'Replace 3D File' : 'Select SKP or GLB')}
+                    <input hidden type="file" accept=".glb,.skp,model/gltf-binary,application/octet-stream" onChange={handleSketchupDocumentUpload} />
+                  </Button>
+                  {formState.sketchupDocumentName ? (
+                    <Button
+                      color="error"
+                      onClick={() => {
+                        setPendingSketchupFile(null)
+                        setFormState((current) => ({ ...current, sketchupDocumentUrl: '', sketchupDocumentName: '' }))
+                      }}
+                    >
+                      Remove
+                    </Button>
+                  ) : null}
+                </Stack>
+                {formState.sketchupDocumentName ? (
+                  <Alert severity="success" sx={{ mt: 1 }}>
+                    {formState.sketchupDocumentName} is ready and will publish automatically with this opportunity.
+                  </Alert>
+                ) : null}
+              </Paper>
               {addOpportunitySubmitAttempted && addOpportunityTotalMissing > 0 ? (
                 <Alert severity="error">
                   {addOpportunityTotalMissing} required {addOpportunityTotalMissing === 1 ? 'field is' : 'fields are'} missing. Open the red stage tabs to finish them.
@@ -9034,46 +9082,15 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                       {normalizeLineItemsForPayload(formState.lineItems).length} quote lines • Total {formatCurrency(addPricingPreview.totalAmount, 2)}
                     </Typography>
                   </Box>
-                  <Stack direction="row" spacing={1} alignItems="center">
-                    <Button variant="outlined" onClick={() => setIsAddPictureLayoutOpen(true)}>Arrange Pictures</Button>
-                    <Button variant="contained" startIcon={<PreviewRoundedIcon />} onClick={() => setQuotePrintPreview(addOpportunityPreviewQuote)}>Preview Final PDF</Button>
-                  </Stack>
                 </Stack>
               </Paper>
-
-              <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5}>
-                <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2, flex: 1 }}>
-                  <Typography variant="subtitle2" fontWeight={800}>Quote Document (optional)</Typography>
-                  <Stack direction="row" spacing={1} alignItems="center" mt={1} flexWrap="wrap" useFlexGap>
-                    <Button component="label" size="small" variant="outlined" startIcon={<FileUploadRoundedIcon />} disabled={!canUploadQuoteDocument || isUploadingQuoteDocument}>
-                      {isUploadingQuoteDocument ? 'Uploading...' : (formState.quoteDocumentUrl ? 'Replace Document' : 'Upload Document')}
-                      <input hidden type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.png,.jpg,.jpeg" onChange={handleQuoteDocumentUpload} />
-                    </Button>
-                    {formState.quoteDocumentUrl ? <Button component={Link} href={formState.quoteDocumentUrl} target="_blank">Open</Button> : null}
-                    {formState.quoteDocumentUrl ? (
-                      <Button color="error" onClick={() => setFormState((current) => ({ ...current, quoteDocumentUrl: '', quoteDocumentName: '' }))}>Remove</Button>
-                    ) : null}
-                  </Stack>
-                  {formState.quoteDocumentName ? <Typography variant="caption">{formState.quoteDocumentName}</Typography> : null}
-                </Paper>
-                <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2, flex: 1 }}>
-                  <Typography variant="subtitle2" fontWeight={800}>Customer 3D Viewer — GLB or SketchUp File</Typography>
-                  <Typography variant="caption" color="text.secondary">
-                    For smooth curves without segment lines, upload a GLB exported from SketchUp. You can also attach the original SKP file.
-                  </Typography>
-                  <Stack direction="row" spacing={1} alignItems="center" mt={1} flexWrap="wrap" useFlexGap>
-                    <Button component="label" size="small" variant="outlined" startIcon={<FileUploadRoundedIcon />} disabled={!canUploadQuoteDocument || isUploadingQuoteDocument}>
-                      {isUploadingQuoteDocument ? 'Uploading...' : (formState.sketchupDocumentUrl ? 'Replace 3D File' : 'Upload GLB or SKP')}
-                      <input hidden type="file" accept=".glb,.skp,model/gltf-binary,application/octet-stream" onChange={handleSketchupDocumentUpload} />
-                    </Button>
-                    {formState.sketchupDocumentUrl ? <Button component={Link} href={formState.sketchupDocumentUrl} target="_blank">Open</Button> : null}
-                    {formState.sketchupDocumentUrl ? (
-                      <Button color="error" onClick={() => setFormState((current) => ({ ...current, sketchupDocumentUrl: '', sketchupDocumentName: '' }))}>Remove</Button>
-                    ) : null}
-                  </Stack>
-                  {formState.sketchupDocumentName ? <Typography variant="caption">{formState.sketchupDocumentName}</Typography> : null}
-                </Paper>
-              </Stack>
+              <Suspense fallback={<Stack alignItems="center" py={8}><CircularProgress /></Stack>}>
+                <QuotePdfInlinePreview
+                  quote={addOpportunityPreviewQuote}
+                  settings={quotePrintSettingsQuery.data?.settings || DEFAULT_QUOTE_PRINT_SETTINGS}
+                  onArrangePictures={() => setIsAddPictureLayoutOpen(true)}
+                />
+              </Suspense>
             </Stack>
           ) : null}
         </DialogContent>

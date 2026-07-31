@@ -6,6 +6,7 @@ import './index.css'
 import App from './App.tsx'
 import { AuthProvider } from './auth/AuthContext.tsx'
 import theme from './theme/theme.ts'
+import { installDiagnosticCollectors } from './features/diagnostics/diagnostics.ts'
 
 const dynamicImportReloadKey = 'ybk-last-dynamic-import-reload-at'
 
@@ -48,6 +49,8 @@ function reloadOnceForDynamicImportFailure() {
 }
 
 if (typeof window !== 'undefined') {
+  installDiagnosticCollectors()
+
   window.addEventListener('vite:preloadError', (event: Event) => {
     event.preventDefault()
     reloadOnceForDynamicImportFailure()
