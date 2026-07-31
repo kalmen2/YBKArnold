@@ -6,9 +6,12 @@ export type AppChatUser = {
   uid: string
   email: string
   displayName: string | null
+  role: 'standard' | 'manager' | 'sales_rep' | 'shop_worker' | 'admin'
   isAdmin: boolean
   isManager: boolean
   isSalesRep: boolean
+  isShopWorker: boolean
+  isOfficeWorker: boolean
   hasWebAccess: boolean
   hasAppAccess: boolean
 }
@@ -59,6 +62,7 @@ export type AppChatThread = {
   createdByUid: string | null
   createdByEmail: string | null
   createdByName: string | null
+  pinned: boolean
 }
 
 export function fetchChatUsers() {
@@ -103,6 +107,25 @@ export function updateChatGroup(
     method: 'PATCH',
     body: JSON.stringify(input),
   })
+}
+
+export function updateChatThreadPreferences(threadId: string, input: { pinned: boolean }) {
+  return apiRequest<{ thread: AppChatThread }>(
+    `/api/chat/threads/${encodeURIComponent(threadId)}/preferences`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    },
+  )
+}
+
+export function deleteChatThread(threadId: string) {
+  return apiRequest<{ ok: boolean; threadId: string }>(
+    `/api/chat/threads/${encodeURIComponent(threadId)}`,
+    {
+      method: 'DELETE',
+    },
+  )
 }
 
 export function fetchChatMessages(

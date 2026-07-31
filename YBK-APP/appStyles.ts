@@ -782,6 +782,31 @@ export const styles = StyleSheet.create({
     gap: 8,
     paddingBottom: 4,
   },
+  chatSwipeActions: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    marginLeft: 6,
+    marginBottom: 2,
+  },
+  chatSwipeAction: {
+    width: 70,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+  },
+  chatSwipePinAction: {
+    backgroundColor: '#64748b',
+  },
+  chatSwipeDeleteAction: {
+    backgroundColor: '#c83d52',
+    borderTopRightRadius: 14,
+    borderBottomRightRadius: 14,
+  },
+  chatSwipeActionText: {
+    color: '#ffffff',
+    fontSize: 10,
+    fontWeight: '800',
+  },
   chatThreadTab: {
     width: '100%',
     borderWidth: 1,
@@ -795,6 +820,12 @@ export const styles = StyleSheet.create({
   chatThreadTabActive: {
     borderColor: '#76af9d',
     backgroundColor: '#eef8f4',
+  },
+  chatThreadTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
   },
   chatThreadTabTitle: {
     color: '#1f325f',
@@ -873,6 +904,36 @@ export const styles = StyleSheet.create({
   chatContactList: {
     marginTop: 6,
   },
+  chatNewModeRow: {
+    flexDirection: 'row',
+    gap: 6,
+    marginTop: 12,
+  },
+  chatNewModeButton: {
+    flex: 1,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#d6e0dc',
+    backgroundColor: '#f5f8f7',
+    paddingVertical: 9,
+    alignItems: 'center',
+  },
+  chatNewModeButtonActive: {
+    borderColor: '#18775b',
+    backgroundColor: '#e6f4ef',
+  },
+  chatNewModeText: {
+    color: '#63736d',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  chatNewModeTextActive: {
+    color: '#17664e',
+  },
+  chatGroupNameInput: {
+    marginTop: 10,
+    marginBottom: 2,
+  },
   chatContactRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -880,6 +941,9 @@ export const styles = StyleSheet.create({
     paddingVertical: 11,
     borderBottomWidth: 1,
     borderBottomColor: '#edf1ef',
+  },
+  chatContactRowSelected: {
+    backgroundColor: '#eef8f4',
   },
   chatContactAvatar: {
     width: 42,
@@ -967,6 +1031,7 @@ export const styles = StyleSheet.create({
   },
   chatMessagesWrap: {
     flex: 1,
+    position: 'relative',
     borderWidth: 1,
     borderColor: '#dce4e0',
     borderRadius: 14,
@@ -985,6 +1050,15 @@ export const styles = StyleSheet.create({
     fontSize: 12,
     textAlign: 'center',
     marginTop: 12,
+  },
+  chatEmptyOverlay: {
+    position: 'absolute',
+    top: 12,
+    right: 12,
+    bottom: 96,
+    left: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   chatMessageRow: {
     gap: 4,
@@ -1128,6 +1202,53 @@ export const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-end',
     gap: 8,
+  },
+  chatComposerWrap: {
+    position: 'relative',
+  },
+  chatAttachmentMenu: {
+    position: 'absolute',
+    left: 0,
+    bottom: 54,
+    zIndex: 20,
+    minWidth: 158,
+    borderWidth: 1,
+    borderColor: '#dde5e1',
+    borderRadius: 14,
+    backgroundColor: '#ffffff',
+    paddingVertical: 6,
+    paddingHorizontal: 6,
+    shadowColor: '#13231e',
+    shadowOpacity: 0.16,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 5 },
+    elevation: 8,
+  },
+  chatAttachmentMenuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+    borderRadius: 10,
+  },
+  chatAttachmentMenuIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  chatAttachmentCameraIcon: {
+    backgroundColor: '#d34a63',
+  },
+  chatAttachmentGalleryIcon: {
+    backgroundColor: '#7665d7',
+  },
+  chatAttachmentMenuText: {
+    color: '#263b34',
+    fontSize: 13,
+    fontWeight: '700',
   },
   chatComposerIconButton: {
     width: 36,

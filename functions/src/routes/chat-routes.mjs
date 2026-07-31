@@ -264,12 +264,22 @@ export function registerChatRoutes(app, deps) {
       uid,
       email,
       displayName: String(normalizeOptionalShortText(user?.displayName, 220) ?? '').trim() || null,
+      role: String(normalizeOptionalShortText(user?.role, 40) ?? '').trim() || 'standard',
       isAdmin: Boolean(user?.isAdmin),
       isManager: Boolean(user?.isManager),
       isSalesRep: Boolean(user?.isSalesRep),
+      isShopWorker: Boolean(user?.isShopWorker),
+      isOfficeWorker: Boolean(user?.isOfficeWorker),
       hasWebAccess: Boolean(user?.hasWebAccess),
       hasAppAccess: Boolean(user?.hasAppAccess),
     }
+  }
+
+  function canStartDirectChat(publicUser) {
+    return Boolean(
+      publicUser?.isApproved
+      && (publicUser?.isAdmin || publicUser?.isManager || publicUser?.isOfficeWorker),
+    )
   }
 
   function normalizeChatMemberSnapshots(value) {
@@ -377,6 +387,7 @@ export function registerChatRoutes(app, deps) {
 
   async function resolveChatThreadWithMembers({
     authUsersCollection,
+    requesterUid = null,
     thread,
   }) {
     if (!thread || typeof thread !== 'object') {
@@ -407,6 +418,7 @@ export function registerChatRoutes(app, deps) {
       createdByUid: String(normalizeOptionalShortText(thread.createdByUid, 220) ?? '').trim() || null,
       createdByEmail: normalizeEmail(thread.createdByEmail) || null,
       createdByName: String(normalizeOptionalShortText(thread.createdByName, 220) ?? '').trim() || null,
+      pinned: normalizeChatUidList(thread.pinnedByUids, 300).includes(String(requesterUid ?? '').trim()),
     }
   }
 
@@ -572,9 +584,9 @@ export function registerChatRoutes(app, deps) {
       const users = userDocuments
         .map((document) => normalizeChatUserRecord(toPublicAuthUser(document)))
         .filter(Boolean)
-        // Only admins may browse the user directory and initiate a chat.
-        // Workers can reply inside threads an admin has already opened.
-        .filter(() => Boolean(publicUser?.isAdmin))
+        // Admins, managers, and office workers may initiate direct chats.
+        // Shop workers and sales reps only see conversations they were added to.
+        .filter(() => canStartDirectChat(publicUser))
         .sort((left, right) => {
           const leftLabel = String(left.displayName || left.email).toLowerCase()
           const rightLabel = String(right.displayName || right.email).toLowerCase()
@@ -620,6 +632,9 @@ export function registerChatRoutes(app, deps) {
       const { authUsersCollection } = collections
       const filter = {
         memberUids: requesterUid,
+        hiddenForUids: {
+          $ne: requesterUid,
+        },
         ...(threadTypeFilter
           ? {
               type: threadTypeFilter,
@@ -645,6 +660,7 @@ export function registerChatRoutes(app, deps) {
               lastMessageAt: 1,
               lastMessagePreview: 1,
               lastMessageType: 1,
+              pinnedByUids: 1,
             },
           },
         )
@@ -655,6 +671,7 @@ export function registerChatRoutes(app, deps) {
       const threads = await Promise.all(
         threadDocuments.map((thread) => resolveChatThreadWithMembers({
           authUsersCollection,
+          requesterUid,
           thread,
         })),
       )
@@ -678,9 +695,9 @@ export function registerChatRoutes(app, deps) {
         })
       }
 
-      if (!publicUser?.isAdmin) {
+      if (!canStartDirectChat(publicUser)) {
         return res.status(403).json({
-          error: 'Only admins can start a new chat. You can reply when an admin starts a conversation with you.',
+          error: 'Only admins, managers, and office workers can start a new direct chat.',
         })
       }
 
@@ -739,9 +756,24 @@ export function registerChatRoutes(app, deps) {
       )
 
       if (existingThread) {
+        await chatThreadsCollection.updateOne(
+          {
+            id: existingThread.id,
+          },
+          {
+            $pull: {
+              hiddenForUids: requesterUid,
+            },
+          },
+        )
         const hydratedThread = await resolveChatThreadWithMembers({
           authUsersCollection,
-          thread: existingThread,
+          requesterUid,
+          thread: {
+            ...existingThread,
+            hiddenForUids: normalizeChatUidList(existingThread.hiddenForUids, 300)
+              .filter((uid) => uid !== requesterUid),
+          },
         })
 
         return res.json({
@@ -787,6 +819,7 @@ export function registerChatRoutes(app, deps) {
       )
       const hydratedThread = await resolveChatThreadWithMembers({
         authUsersCollection,
+        requesterUid,
         thread: insertedThread,
       })
 
@@ -878,6 +911,7 @@ export function registerChatRoutes(app, deps) {
 
       const hydratedThread = await resolveChatThreadWithMembers({
         authUsersCollection,
+        requesterUid,
         thread: threadToInsert,
       })
 
@@ -1013,11 +1047,127 @@ export function registerChatRoutes(app, deps) {
       )
       const hydratedThread = await resolveChatThreadWithMembers({
         authUsersCollection,
+        requesterUid,
         thread: updatedThread,
       })
 
       return res.json({
         thread: hydratedThread,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.patch('/api/chat/threads/:threadId/preferences', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const publicUser = toPublicAuthUser(req.authUser)
+      const requesterUid = String(normalizeOptionalShortText(req.authUser?.uid, 220) ?? '').trim()
+      const threadId = String(normalizeOptionalShortText(req.params.threadId, 220) ?? '').trim()
+
+      if (!publicUser?.isApproved || !requesterUid) {
+        return res.status(403).json({ error: 'Approved access is required.' })
+      }
+
+      if (!threadId || typeof req.body?.pinned !== 'boolean') {
+        return res.status(400).json({ error: 'threadId and pinned are required.' })
+      }
+
+      const { collections, chatThreadsCollection } = await getChatCollections()
+      const { authUsersCollection } = collections
+      const thread = await chatThreadsCollection.findOne(
+        {
+          id: threadId,
+          memberUids: requesterUid,
+        },
+        {
+          projection: {
+            _id: 0,
+          },
+        },
+      )
+
+      if (!thread) {
+        return res.status(404).json({ error: 'Chat thread not found.' })
+      }
+
+      await chatThreadsCollection.updateOne(
+        {
+          id: threadId,
+        },
+        req.body.pinned
+          ? {
+              $addToSet: {
+                pinnedByUids: requesterUid,
+              },
+            }
+          : {
+              $pull: {
+                pinnedByUids: requesterUid,
+              },
+            },
+      )
+
+      const updatedThread = await chatThreadsCollection.findOne(
+        {
+          id: threadId,
+        },
+        {
+          projection: {
+            _id: 0,
+          },
+        },
+      )
+
+      return res.json({
+        thread: await resolveChatThreadWithMembers({
+          authUsersCollection,
+          requesterUid,
+          thread: updatedThread,
+        }),
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.delete('/api/chat/threads/:threadId', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const publicUser = toPublicAuthUser(req.authUser)
+      const requesterUid = String(normalizeOptionalShortText(req.authUser?.uid, 220) ?? '').trim()
+      const threadId = String(normalizeOptionalShortText(req.params.threadId, 220) ?? '').trim()
+
+      if (!publicUser?.isApproved || !requesterUid) {
+        return res.status(403).json({ error: 'Approved access is required.' })
+      }
+
+      if (!threadId) {
+        return res.status(400).json({ error: 'threadId is required.' })
+      }
+
+      const { chatThreadsCollection } = await getChatCollections()
+      const result = await chatThreadsCollection.updateOne(
+        {
+          id: threadId,
+          memberUids: requesterUid,
+        },
+        {
+          $addToSet: {
+            hiddenForUids: requesterUid,
+          },
+          $pull: {
+            pinnedByUids: requesterUid,
+          },
+        },
+      )
+
+      if (result.matchedCount === 0) {
+        return res.status(404).json({ error: 'Chat thread not found.' })
+      }
+
+      return res.json({
+        ok: true,
+        threadId,
       })
     } catch (error) {
       next(error)
@@ -1096,6 +1246,7 @@ export function registerChatRoutes(app, deps) {
         .filter(Boolean)
       const hydratedThread = await resolveChatThreadWithMembers({
         authUsersCollection,
+        requesterUid,
         thread,
       })
 
@@ -1214,6 +1365,11 @@ export function registerChatRoutes(app, deps) {
             lastMessageAt: now,
             lastMessagePreview: buildChatThreadLastMessagePreview(messageDocument),
             lastMessageType: messageDocument.messageType,
+          },
+          $pull: {
+            hiddenForUids: {
+              $in: normalizeChatUidList(thread.memberUids, 250),
+            },
           },
         },
       )

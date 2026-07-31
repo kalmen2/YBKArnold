@@ -137,9 +137,12 @@ export type MobileChatUser = {
   uid: string
   email: string
   displayName: string | null
+  role: 'standard' | 'manager' | 'sales_rep' | 'shop_worker' | 'admin'
   isAdmin: boolean
   isManager: boolean
   isSalesRep: boolean
+  isShopWorker: boolean
+  isOfficeWorker: boolean
   hasWebAccess: boolean
   hasAppAccess: boolean
 }
@@ -169,6 +172,7 @@ export type MobileChatThread = {
   createdByUid: string | null
   createdByEmail: string | null
   createdByName: string | null
+  pinned: boolean
 }
 
 export type MobileChatMessage = {

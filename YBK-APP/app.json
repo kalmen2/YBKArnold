@@ -7,7 +7,7 @@
       "com.googleusercontent.apps.304964900278-hbvsdpihhnbnrgkq7i7ncdibki9p5e7v",
       "com.googleusercontent.apps.304964900278-70krkc9nf553bcb0vo5s1reajgqs2j8q"
     ],
-    "version": "3.24",
+    "version": "3.26",
     "runtimeVersion": {
       "policy": "appVersion"
     },
@@ -46,7 +46,7 @@
         "backgroundColor": "#ffffff"
       },
       "predictiveBackGestureEnabled": false,
-      "versionCode": 68
+      "versionCode": 70
     },
     "web": {
       "favicon": "./assets/favicon.png"

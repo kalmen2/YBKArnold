@@ -140,6 +140,7 @@ function toStatusHistoryEntry(progressDocument) {
 export function buildStatusHistoryLookups(orderProgressDocuments) {
   const byNormalized = new Map()
   const byDigits = new Map()
+  const byOrderNumberKey = new Map()
 
   const push = (map, key, row) => {
     if (!key) return
@@ -155,12 +156,29 @@ export function buildStatusHistoryLookups(orderProgressDocuments) {
     const row = toStatusHistoryEntry(doc)
     push(byNormalized, normalizeLookupToken(doc?.jobName), row)
     push(byDigits, extractOrderNumberToken(doc?.jobName), row)
+    push(
+      byOrderNumberKey,
+      normalizeOrderNumberKey(extractOrderNumberReference(doc?.jobName)),
+      row,
+    )
   })
 
-  return { byNormalized, byDigits }
+  return { byNormalized, byDigits, byOrderNumberKey }
 }
 
 export function resolveStatusHistoryForOrder(orderRow, lookups) {
+  const explicitOrderNumberKey = normalizeOrderNumberKey(
+    extractOrderNumberReference(orderRow?.order_number),
+  )
+
+  // An order suffix identifies a separate production job. Always resolve
+  // manager progress by the complete order number first, so 250203,
+  // 250203R, and 250203R_2 never inherit one another's operational history.
+  if (explicitOrderNumberKey) {
+    const exactRows = lookups.byOrderNumberKey?.get(explicitOrderNumberKey)
+    return sortAndDedupeStatusHistory(exactRows)
+  }
+
   const lookup = buildOrderLookupValues([
     orderRow?.order_number,
     orderRow?.order_name,
@@ -182,12 +200,13 @@ export function resolveStatusHistoryForOrder(orderRow, lookups) {
     }
   }
 
-  if (matches.length === 0) {
-    return []
-  }
+  return sortAndDedupeStatusHistory(matches)
+}
 
+function sortAndDedupeStatusHistory(rows) {
   const deduped = new Map()
-  matches.forEach((row) => {
+
+  ;(Array.isArray(rows) ? rows : []).forEach((row) => {
     const key = `${row.id || 'na'}::${row.date || 'na'}::${row.jobName || 'na'}::${row.updatedAt || 'na'}`
     if (!deduped.has(key)) {
       deduped.set(key, row)

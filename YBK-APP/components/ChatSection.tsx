@@ -1,6 +1,7 @@
 import { Ionicons } from '@expo/vector-icons'
 import { useState } from 'react'
-import { Modal, Pressable, ScrollView, Text, View } from 'react-native'
+import { Alert, Modal, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
+import Swipeable from 'react-native-gesture-handler/Swipeable'
 import { styles } from '../appStyles'
 import type { MobileChatMessage, MobileChatThread, MobileChatUser } from '../appTypes'
 import { InlineLoading } from '../appSections'
@@ -31,6 +32,7 @@ type ChatSectionProps = {
   chatComposerText: string
   chatPlayingMessageId: string | null
   isAdminUser: boolean
+  canStartDirectChat: boolean
   isChatProcessingVoice: boolean
   isChatRecordingVoice: boolean
   isChatSendingMessage: boolean
@@ -43,8 +45,11 @@ type ChatSectionProps = {
   onSelectThread: (threadId: string) => void
   onBackToList: () => void
   onStartChat: (targetUid: string) => void
+  onCreateGroup: (name: string, memberUids: string[]) => void
+  onSetPinned: (threadId: string, pinned: boolean) => void
+  onDeleteThread: (threadId: string) => void
   onComposerTextChange: (value: string) => void
-  onOpenAttachmentMenu: () => void
+  onAttachImage: (source: 'library' | 'camera') => void
   onRemoveAttachmentDraft: () => void
   onSendMessage: (text?: string) => void
   onStartVoiceRecording: () => void
@@ -68,6 +73,7 @@ export function ChatSection({
   chatComposerText,
   chatPlayingMessageId,
   isAdminUser,
+  canStartDirectChat,
   isChatProcessingVoice,
   isChatRecordingVoice,
   isChatSendingMessage,
@@ -80,8 +86,11 @@ export function ChatSection({
   onSelectThread,
   onBackToList,
   onStartChat,
+  onCreateGroup,
+  onSetPinned,
+  onDeleteThread,
   onComposerTextChange,
-  onOpenAttachmentMenu,
+  onAttachImage,
   onRemoveAttachmentDraft,
   onSendMessage,
   onStartVoiceRecording,
@@ -90,6 +99,9 @@ export function ChatSection({
   onDeleteMessage,
 }: ChatSectionProps) {
   const [isNewChatOpen, setIsNewChatOpen] = useState(false)
+  const [newChatMode, setNewChatMode] = useState<'direct' | 'group'>('direct')
+  const [groupName, setGroupName] = useState('')
+  const [selectedGroupMemberUids, setSelectedGroupMemberUids] = useState<string[]>([])
 
   if (chatViewMode === 'list') {
     return (
@@ -101,7 +113,7 @@ export function ChatSection({
               {t('Arnold team conversations', 'Conversaciones del equipo Arnold')}
             </Text>
           </View>
-          {isAdminUser ? (
+          {canStartDirectChat ? (
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={t('Start a new chat', 'Iniciar un chat nuevo')}
@@ -130,26 +142,73 @@ export function ChatSection({
                   const isSelected = thread.id === selectedChatThread?.id
 
                   return (
-                    <Pressable
+                    <Swipeable
                       key={`chat-thread-${thread.id}`}
-                      style={[styles.chatThreadTab, isSelected ? styles.chatThreadTabActive : null]}
-                      onPress={() => {
-                        onSelectThread(thread.id)
-                      }}
+                      overshootRight={false}
+                      renderRightActions={() => (
+                        <View style={styles.chatSwipeActions}>
+                          <Pressable
+                            style={[styles.chatSwipeAction, styles.chatSwipePinAction]}
+                            onPress={() => onSetPinned(thread.id, !thread.pinned)}
+                          >
+                            <Ionicons
+                              name={thread.pinned ? 'pin' : 'pin-outline'}
+                              size={18}
+                              color="#ffffff"
+                            />
+                            <Text style={styles.chatSwipeActionText}>
+                              {thread.pinned ? t('Unpin', 'Desfijar') : t('Pin', 'Fijar')}
+                            </Text>
+                          </Pressable>
+                          <Pressable
+                            style={[styles.chatSwipeAction, styles.chatSwipeDeleteAction]}
+                            onPress={() => {
+                              Alert.alert(
+                                t('Delete chat?', 'Borrar chat?'),
+                                t(
+                                  'This removes the conversation from your chat list.',
+                                  'Esto elimina la conversacion de tu lista.',
+                                ),
+                                [
+                                  { text: t('Cancel', 'Cancelar'), style: 'cancel' },
+                                  {
+                                    text: t('Delete', 'Borrar'),
+                                    style: 'destructive',
+                                    onPress: () => onDeleteThread(thread.id),
+                                  },
+                                ],
+                              )
+                            }}
+                          >
+                            <Ionicons name="trash-outline" size={18} color="#ffffff" />
+                            <Text style={styles.chatSwipeActionText}>{t('Delete', 'Borrar')}</Text>
+                          </Pressable>
+                        </View>
+                      )}
                     >
-                      <Text
-                        style={[styles.chatThreadTabTitle, isSelected ? styles.chatThreadTabTitleActive : null]}
-                        numberOfLines={1}
+                      <Pressable
+                        style={[styles.chatThreadTab, isSelected ? styles.chatThreadTabActive : null]}
+                        onPress={() => {
+                          onSelectThread(thread.id)
+                        }}
                       >
-                        {resolveChatThreadTitle(thread)}
-                      </Text>
-                      <Text
-                        style={[styles.chatThreadTabMeta, isSelected ? styles.chatThreadTabMetaActive : null]}
-                        numberOfLines={1}
-                      >
-                        {thread.lastMessagePreview || resolveChatThreadSubtitle(thread)}
-                      </Text>
-                    </Pressable>
+                        <View style={styles.chatThreadTitleRow}>
+                          <Text
+                            style={[styles.chatThreadTabTitle, isSelected ? styles.chatThreadTabTitleActive : null]}
+                            numberOfLines={1}
+                          >
+                            {resolveChatThreadTitle(thread)}
+                          </Text>
+                          {thread.pinned ? <Ionicons name="pin" size={14} color="#18775b" /> : null}
+                        </View>
+                        <Text
+                          style={[styles.chatThreadTabMeta, isSelected ? styles.chatThreadTabMetaActive : null]}
+                          numberOfLines={1}
+                        >
+                          {thread.lastMessagePreview || resolveChatThreadSubtitle(thread)}
+                        </Text>
+                      </Pressable>
+                    </Swipeable>
                   )
                 })}
 
@@ -157,7 +216,7 @@ export function ChatSection({
                   <View style={styles.chatThreadEmptyCard}>
                     <Ionicons name="chatbubbles-outline" size={30} color="#82918b" />
                     <Text style={styles.chatThreadEmptyText}>
-                      {isAdminUser
+                      {canStartDirectChat
                         ? t('No chats yet. Start one with a worker.', 'Aun no hay chats. Inicia uno con un trabajador.')
                         : t(
                           'No chats yet. An administrator will start the conversation.',
@@ -195,14 +254,69 @@ export function ChatSection({
                   <Ionicons name="close" size={22} color="#33443e" />
                 </Pressable>
               </View>
+              {isAdminUser ? (
+                <View style={styles.chatNewModeRow}>
+                  <Pressable
+                    style={[
+                      styles.chatNewModeButton,
+                      newChatMode === 'direct' ? styles.chatNewModeButtonActive : null,
+                    ]}
+                    onPress={() => setNewChatMode('direct')}
+                  >
+                    <Text style={[
+                      styles.chatNewModeText,
+                      newChatMode === 'direct' ? styles.chatNewModeTextActive : null,
+                    ]}>
+                      {t('Direct', 'Directo')}
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    style={[
+                      styles.chatNewModeButton,
+                      newChatMode === 'group' ? styles.chatNewModeButtonActive : null,
+                    ]}
+                    onPress={() => setNewChatMode('group')}
+                  >
+                    <Text style={[
+                      styles.chatNewModeText,
+                      newChatMode === 'group' ? styles.chatNewModeTextActive : null,
+                    ]}>
+                      {t('Group', 'Grupo')}
+                    </Text>
+                  </Pressable>
+                </View>
+              ) : null}
+              {newChatMode === 'group' && isAdminUser ? (
+                <TextInput
+                  value={groupName}
+                  onChangeText={setGroupName}
+                  style={[styles.authInput, styles.chatGroupNameInput]}
+                  placeholder={t('Group name', 'Nombre del grupo')}
+                  placeholderTextColor="#71827c"
+                />
+              ) : null}
               <ScrollView style={styles.chatContactList} showsVerticalScrollIndicator={false}>
                 {availableChatUsers
                   .filter((user) => user.uid && user.uid !== currentUserUid)
-                  .map((user) => (
-                    <Pressable
+                  .map((user) => {
+                    const isSelectedForGroup = selectedGroupMemberUids.includes(user.uid)
+                    return (
+                      <Pressable
                       key={`chat-contact-${user.uid}`}
-                      style={styles.chatContactRow}
+                      style={[
+                        styles.chatContactRow,
+                        isSelectedForGroup ? styles.chatContactRowSelected : null,
+                      ]}
                       onPress={() => {
+                        if (newChatMode === 'group' && isAdminUser) {
+                          setSelectedGroupMemberUids((current) => (
+                            current.includes(user.uid)
+                              ? current.filter((uid) => uid !== user.uid)
+                              : [...current, user.uid]
+                          ))
+                          return
+                        }
+
                         setIsNewChatOpen(false)
                         onStartChat(user.uid)
                       }}
@@ -218,10 +332,37 @@ export function ChatSection({
                         </Text>
                         <Text style={styles.chatContactEmail} numberOfLines={1}>{user.email}</Text>
                       </View>
-                      <Ionicons name="chevron-forward" size={18} color="#9aa6a1" />
+                      <Ionicons
+                        name={newChatMode === 'group'
+                          ? (isSelectedForGroup ? 'checkmark-circle' : 'ellipse-outline')
+                          : 'chevron-forward'}
+                        size={20}
+                        color={isSelectedForGroup ? '#18775b' : '#9aa6a1'}
+                      />
                     </Pressable>
-                  ))}
+                    )
+                  })}
               </ScrollView>
+              {newChatMode === 'group' && isAdminUser ? (
+                <Pressable
+                  style={[
+                    styles.chatNewButton,
+                    (!groupName.trim() || selectedGroupMemberUids.length === 0)
+                      ? styles.buttonDisabled
+                      : null,
+                  ]}
+                  disabled={!groupName.trim() || selectedGroupMemberUids.length === 0}
+                  onPress={() => {
+                    onCreateGroup(groupName, selectedGroupMemberUids)
+                    setGroupName('')
+                    setSelectedGroupMemberUids([])
+                    setIsNewChatOpen(false)
+                  }}
+                >
+                  <Ionicons name="people" size={18} color="#ffffff" />
+                  <Text style={styles.chatNewButtonText}>{t('Create group', 'Crear grupo')}</Text>
+                </Pressable>
+              ) : null}
             </View>
           </View>
         </Modal>
@@ -247,7 +388,7 @@ export function ChatSection({
         onBack={onBackToList}
         onComposerTextChange={onComposerTextChange}
         onDeleteMessage={onDeleteMessage}
-        onOpenAttachmentMenu={onOpenAttachmentMenu}
+        onAttachImage={onAttachImage}
         onRemoveAttachmentDraft={onRemoveAttachmentDraft}
         onSendMessage={onSendMessage}
         onStartVoiceRecording={onStartVoiceRecording}

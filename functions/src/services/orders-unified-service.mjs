@@ -1793,6 +1793,61 @@ export function createOrdersUnifiedService(deps) {
       return row
     })
 
+    // A single Monday item can be associated with multiple QuickBooks project
+    // rows (for example an order plus its freight project). Documents belong
+    // to the Monday item, so propagate its shop drawing to every such row.
+    const shopDrawingByMondayItemId = new Map()
+
+    mergedRows.forEach((row) => {
+      const mondayItemId = normalizeText(row?.monday_item_id, 120)
+
+      if (!mondayItemId) {
+        return
+      }
+
+      const existing = shopDrawingByMondayItemId.get(mondayItemId) ?? {
+        cached: null,
+        source: null,
+        value: null,
+      }
+
+      existing.cached =
+        existing.cached
+        || normalizeText(row?.Shop_drawing_cached, 800)
+        || null
+      existing.source =
+        existing.source
+        || normalizeText(row?.Shop_drawing_source, 800)
+        || null
+      existing.value =
+        existing.value
+        || normalizeText(row?.Shop_drawing, 800)
+        || null
+      shopDrawingByMondayItemId.set(mondayItemId, existing)
+    })
+
+    mergedRows.forEach((row) => {
+      const mondayItemId = normalizeText(row?.monday_item_id, 120)
+      const sharedDrawing = mondayItemId
+        ? shopDrawingByMondayItemId.get(mondayItemId)
+        : null
+
+      if (!sharedDrawing) {
+        return
+      }
+
+      row.Shop_drawing_cached =
+        normalizeText(row?.Shop_drawing_cached, 800)
+        || sharedDrawing.cached
+        || null
+      row.Shop_drawing_source =
+        normalizeText(row?.Shop_drawing_source, 800)
+        || sharedDrawing.source
+        || sharedDrawing.value
+        || null
+      row.Shop_drawing = row.Shop_drawing_cached || row.Shop_drawing_source || null
+    })
+
     const shippedProgressFloorStats = await enforceShippedOrderProgressFloor({
       mergedRows,
       orderProgressCollection,

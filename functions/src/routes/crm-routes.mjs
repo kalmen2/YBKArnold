@@ -6273,7 +6273,7 @@ export function registerCrmRoutes(app, deps) {
       const searchRegex = buildContainsRegex(req.query?.search, 220)
       const limit = Math.min(500, Math.max(1, toNonNegativeInteger(req.query?.limit, 120)))
       const collections = await getCollections()
-      const { crmQuotesCollection } = collections
+      const { crmAccountsCollection, crmQuotesCollection } = collections
       const filterClauses = []
 
       if (quoteAccessScope.restrictToLinkedSalesRep && !quoteAccessScope.linkedSalesRepName) {

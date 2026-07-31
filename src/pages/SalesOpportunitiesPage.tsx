@@ -4080,12 +4080,24 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       const title = normalizeMatchValue(quote.title)
       const companyName = normalizeMatchValue(quote.companyName)
       const dealerName = normalizeMatchValue(quote.dealerName)
+      const isPriceSearch = /^\$?\s*[\d,]+(?:\.\d+)?\s*$/.test(term)
+      const normalizedPriceSearch = isPriceSearch
+        ? term.replace(/[$,\s]/g, '')
+        : ''
+      const totalAmount = Number(quote.totalAmount)
+      const priceSearchText = Number.isFinite(totalAmount)
+        ? `${totalAmount} ${totalAmount.toFixed(2)}`
+        : ''
 
       return (
         quoteNum.includes(term)
         || title.includes(term)
         || companyName.includes(term)
         || dealerName.includes(term)
+        || Boolean(
+          normalizedPriceSearch
+          && priceSearchText.includes(normalizedPriceSearch),
+        )
       )
     })
   }, [activeQuotes, globalSearch])
@@ -7974,7 +7986,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
           <Stack direction="row" spacing={0.55} alignItems="center">
             <TextField
               size="small"
-              placeholder="Search by quote #, project, or company..."
+              placeholder="Search quote #, project, company, or price..."
               value={globalSearch}
               onChange={(event) => {
                 setGlobalSearch(event.target.value)

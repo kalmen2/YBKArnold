@@ -50,6 +50,10 @@ import {
   isExpiredAt,
   toMoneyOrZero as toMoney,
 } from '../utils/value-utils.mjs'
+import {
+  extractOrderNumberReference,
+  normalizeOrderNumberKey,
+} from '../services/orders-merge-helpers.mjs'
 
 export function registerOrdersRoutes(app, deps) {
   const {
@@ -335,13 +339,23 @@ export function registerOrdersRoutes(app, deps) {
   }
 
   function extractJobDigits(value) {
-    const digits = String(value ?? '').replace(/\D+/g, '').trim()
-    return digits || null
+    const matches = String(value ?? '').match(/\d{4,}/g)
+
+    if (!Array.isArray(matches) || matches.length === 0) {
+      return null
+    }
+
+    // Use the main numeric token for the broad Mongo prefilter. Final
+    // operational matching below still uses the complete suffix-aware key.
+    return matches.reduce((best, match) => (
+      match.length > best.length ? match : best
+    ), '') || null
   }
 
   function buildJobLookupValues(values) {
     const normalizedValues = new Set()
     const digitValues = new Set()
+    const orderNumberKeys = new Set()
 
     ;(Array.isArray(values) ? values : []).forEach((value) => {
       const normalized = normalizeJobLookupValue(value)
@@ -352,14 +366,27 @@ export function registerOrdersRoutes(app, deps) {
       if (digits) {
         digitValues.add(digits)
       }
+      const orderNumberKey = normalizeOrderNumberKey(extractOrderNumberReference(value))
+      if (orderNumberKey) {
+        orderNumberKeys.add(orderNumberKey)
+      }
     })
 
-    return { normalizedValues, digitValues }
+    return { normalizedValues, digitValues, orderNumberKeys }
   }
 
   function doesJobNameMatchLookup(jobName, lookup) {
+    const jobOrderNumberKey = normalizeOrderNumberKey(extractOrderNumberReference(jobName))
+
+    if (lookup.primaryOrderNumberKey) {
+      return jobOrderNumberKey === lookup.primaryOrderNumberKey
+    }
+
     const normalized = normalizeJobLookupValue(jobName)
     if (normalized && lookup.normalizedValues.has(normalized)) {
+      return true
+    }
+    if (jobOrderNumberKey && lookup.orderNumberKeys.has(jobOrderNumberKey)) {
       return true
     }
     const digits = extractJobDigits(jobName)
@@ -407,7 +434,17 @@ export function registerOrdersRoutes(app, deps) {
     targetMap.set(key, existing)
   }
 
-  function resolveBestLaborTotals(candidates, byNormalizedJob, byDigits) {
+  function resolveBestLaborTotals(
+    candidates,
+    byNormalizedJob,
+    byDigits,
+    byOrderNumberKey,
+    primaryOrderNumberKey,
+  ) {
+    if (primaryOrderNumberKey) {
+      return byOrderNumberKey.get(primaryOrderNumberKey) ?? null
+    }
+
     const normalizedValues = candidates?.normalizedValues instanceof Set
       ? [...candidates.normalizedValues]
       : []
@@ -464,6 +501,7 @@ export function registerOrdersRoutes(app, deps) {
     const workersById = new Map(workerDocuments.map((worker) => [String(worker?.id ?? '').trim(), worker]))
     const byNormalizedJob = new Map()
     const byDigits = new Map()
+    const byOrderNumberKey = new Map()
 
     for (const entry of entryDocuments) {
       const jobName = String(entry?.jobName ?? '').trim()
@@ -482,13 +520,18 @@ export function registerOrdersRoutes(app, deps) {
 
       upsertLaborTotals(byNormalizedJob, normalizedJobName, totals)
 
+      const orderNumberKey = normalizeOrderNumberKey(extractOrderNumberReference(jobName))
+      if (orderNumberKey) {
+        upsertLaborTotals(byOrderNumberKey, orderNumberKey, totals)
+      }
+
       const digits = extractJobDigits(jobName)
       if (digits) {
         upsertLaborTotals(byDigits, digits, totals)
       }
     }
 
-    return { byDigits, byNormalizedJob }
+    return { byDigits, byNormalizedJob, byOrderNumberKey }
   }
 
   async function getLaborTotalsLookups(entriesCollection, workersCollection) {
@@ -899,11 +942,16 @@ export function registerOrdersRoutes(app, deps) {
       ...quickBooksProjectIds,
       ...quickBooksProjectNames,
     ])
+    const primaryLaborOrderNumberKey = normalizeOrderNumberKey(
+      extractOrderNumberReference(resolvedOrderNumber),
+    )
     const laborTotals = laborLookups
       ? resolveBestLaborTotals(
         laborCandidates,
         laborLookups.byNormalizedJob,
         laborLookups.byDigits,
+        laborLookups.byOrderNumberKey,
+        primaryLaborOrderNumberKey,
       )
       : null
     const quoteSnapshot = orderDocument?.source_quote_snapshot
@@ -2045,6 +2093,11 @@ export function registerOrdersRoutes(app, deps) {
           String(orderDocument?.jobNumber ?? '').trim(),
           String(orderDocument?.orderName ?? '').trim(),
         ])
+        const primaryOrderNumberReference =
+          extractOrderNumberReference(jobNumber)
+          || extractOrderNumberReference(orderDocument?.jobNumber)
+          || extractOrderNumberReference(orderDocument?.orderName)
+        lookup.primaryOrderNumberKey = normalizeOrderNumberKey(primaryOrderNumberReference)
 
         if (lookup.normalizedValues.size === 0 && lookup.digitValues.size === 0) {
           return res.status(400).json({

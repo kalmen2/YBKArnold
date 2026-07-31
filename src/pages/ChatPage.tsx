@@ -3,6 +3,8 @@ import AttachFileRoundedIcon from '@mui/icons-material/AttachFileRounded'
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
 import GroupsRoundedIcon from '@mui/icons-material/GroupsRounded'
 import PersonRoundedIcon from '@mui/icons-material/PersonRounded'
+import PushPinOutlinedIcon from '@mui/icons-material/PushPinOutlined'
+import PushPinRoundedIcon from '@mui/icons-material/PushPinRounded'
 import SendRoundedIcon from '@mui/icons-material/SendRounded'
 import {
   Alert,
@@ -28,10 +30,12 @@ import {
   createChatGroup,
   createDirectChat,
   deleteChatMessage,
+  deleteChatThread,
   fetchChatMessages,
   fetchChatThreads,
   fetchChatUsers,
   sendChatMessage,
+  updateChatThreadPreferences,
   updateChatGroup,
   type AppChatAttachmentKind,
   type AppChatMessage,
@@ -40,7 +44,6 @@ import {
 import { QUERY_KEYS } from '../lib/queryKeys'
 
 const maxAttachmentSizeBytes = 6 * 1024 * 1024
-const chatOwnerEmail = 'cal@arnoldcontract.us'
 
 type AttachmentDraft = {
   kind: AppChatAttachmentKind
@@ -73,19 +76,7 @@ function normalizeEmail(value: string | null | undefined) {
   return String(value ?? '').trim().toLowerCase()
 }
 
-function isOwnerEmail(value: string | null | undefined) {
-  return normalizeEmail(value) === chatOwnerEmail
-}
-
-function isOwnerDirectThread(thread: AppChatThread, currentUid: string) {
-  if (thread.type !== 'direct') {
-    return false
-  }
-
-  return thread.memberProfiles.some((member) => member.uid !== currentUid && isOwnerEmail(member.email))
-}
-
-function buildThreadTitle(thread: AppChatThread, currentUid: string, isCurrentUserAdmin: boolean) {
+function buildThreadTitle(thread: AppChatThread, currentUid: string) {
   if (thread.type === 'group') {
     return thread.name || 'Group chat'
   }
@@ -94,10 +85,6 @@ function buildThreadTitle(thread: AppChatThread, currentUid: string, isCurrentUs
 
   if (!peer) {
     return 'Direct chat'
-  }
-
-  if (!isCurrentUserAdmin && isOwnerEmail(peer.email)) {
-    return 'KAL'
   }
 
   return peer.displayName || peer.email
@@ -157,15 +144,15 @@ export default function ChatPage() {
   const [messageDraft, setMessageDraft] = useState('')
   const [attachmentDraft, setAttachmentDraft] = useState<AttachmentDraft | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
+  const [newDirectUserUid, setNewDirectUserUid] = useState<string | null>(null)
   const [newGroupName, setNewGroupName] = useState('')
   const [newGroupMemberUids, setNewGroupMemberUids] = useState<string[]>([])
   const [groupDraftName, setGroupDraftName] = useState('')
   const [groupDraftMemberUids, setGroupDraftMemberUids] = useState<string[]>([])
-  const ownerChatEnsureAttemptRef = useRef('')
-
   const currentUid = String(appUser?.uid ?? '').trim()
   const currentEmail = normalizeEmail(appUser?.email)
   const isAdmin = Boolean(appUser?.isAdmin)
+  const canStartDirect = Boolean(appUser?.isAdmin || appUser?.isManager || appUser?.isOfficeWorker)
 
   const usersQuery = useQuery({
     queryKey: QUERY_KEYS.chatUsers,
@@ -191,23 +178,8 @@ export default function ChatPage() {
       return rightSort.localeCompare(leftSort)
     })
 
-    if (isAdmin || !currentUid) {
-      return orderedThreads
-    }
-
-    const ownerThreads = orderedThreads.filter((thread) => isOwnerDirectThread(thread, currentUid))
-
-    if (ownerThreads.length === 0) {
-      return orderedThreads
-    }
-
-    const ownerThreadIdSet = new Set(ownerThreads.map((thread) => thread.id))
-
-    return [
-      ...ownerThreads,
-      ...orderedThreads.filter((thread) => !ownerThreadIdSet.has(thread.id)),
-    ]
-  }, [currentUid, isAdmin, threadsQuery.data?.threads])
+    return orderedThreads.sort((left, right) => Number(right.pinned) - Number(left.pinned))
+  }, [threadsQuery.data?.threads])
 
   const selectedThread = useMemo(
     () => threads.find((thread) => thread.id === selectedThreadId) ?? null,
@@ -222,13 +194,9 @@ export default function ChatPage() {
     }
 
     if (!selectedThreadId || !threads.some((thread) => thread.id === selectedThreadId)) {
-      const fallbackThread = (!isAdmin
-        ? threads.find((thread) => isOwnerDirectThread(thread, currentUid))
-        : null) ?? threads[0]
-
-      setSelectedThreadId(fallbackThread?.id ?? null)
+      setSelectedThreadId(threads[0]?.id ?? null)
     }
-  }, [currentUid, isAdmin, selectedThreadId, threads])
+  }, [selectedThreadId, threads])
 
   useEffect(() => {
     if (!selectedThread || selectedThread.type !== 'group') {
@@ -256,15 +224,6 @@ export default function ChatPage() {
     messageBottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
   }, [messages.length, selectedThreadId])
 
-  const ownerUser = useMemo(
-    () => users.find((user) => isOwnerEmail(user.email)) ?? null,
-    [users],
-  )
-  const ownerDirectThread = useMemo(
-    () => threads.find((thread) => isOwnerDirectThread(thread, currentUid)) ?? null,
-    [currentUid, threads],
-  )
-
   const groupUserOptions = useMemo(
     () => users.filter((user) => user.uid !== currentUid),
     [currentUid, users],
@@ -274,11 +233,39 @@ export default function ChatPage() {
     mutationFn: createDirectChat,
     onSuccess: async (payload) => {
       setActionError(null)
+      setNewDirectUserUid(null)
       setSelectedThreadId(payload.thread.id)
       await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.chatThreads('all') })
     },
     onError: (error) => {
       setActionError(error instanceof Error ? error.message : 'Unable to create a direct chat.')
+    },
+  })
+
+  const updateThreadPreferenceMutation = useMutation({
+    mutationFn: ({ threadId, pinned }: { threadId: string; pinned: boolean }) => (
+      updateChatThreadPreferences(threadId, { pinned })
+    ),
+    onSuccess: async () => {
+      setActionError(null)
+      await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.chatThreads('all') })
+    },
+    onError: (error) => {
+      setActionError(error instanceof Error ? error.message : 'Unable to update this chat.')
+    },
+  })
+
+  const deleteThreadMutation = useMutation({
+    mutationFn: deleteChatThread,
+    onSuccess: async (_payload, threadId) => {
+      if (selectedThreadId === threadId) {
+        setSelectedThreadId(null)
+      }
+      setActionError(null)
+      await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.chatThreads('all') })
+    },
+    onError: (error) => {
+      setActionError(error instanceof Error ? error.message : 'Unable to delete this chat.')
     },
   })
 
@@ -359,40 +346,6 @@ export default function ChatPage() {
       setActionError(error instanceof Error ? error.message : 'Unable to delete this message.')
     },
   })
-
-  useEffect(() => {
-    ownerChatEnsureAttemptRef.current = ''
-  }, [currentEmail, currentUid])
-
-  useEffect(() => {
-    if (!currentUid || isAdmin) {
-      return
-    }
-
-    if (isOwnerEmail(currentEmail)) {
-      return
-    }
-
-    if (!ownerUser?.uid || ownerDirectThread || createDirectMutation.isPending) {
-      return
-    }
-
-    const attemptKey = `${currentUid}:${ownerUser.uid}`
-
-    if (ownerChatEnsureAttemptRef.current === attemptKey) {
-      return
-    }
-
-    ownerChatEnsureAttemptRef.current = attemptKey
-    createDirectMutation.mutate(ownerUser.uid)
-  }, [
-    createDirectMutation,
-    currentEmail,
-    currentUid,
-    isAdmin,
-    ownerDirectThread,
-    ownerUser?.uid,
-  ])
 
   const handleCreateGroup = () => {
     if (!isAdmin || createGroupMutation.isPending) {
@@ -545,7 +498,7 @@ export default function ChatPage() {
   )
 
   const selectedThreadTitle = selectedThread
-    ? buildThreadTitle(selectedThread, currentUid, isAdmin)
+    ? buildThreadTitle(selectedThread, currentUid)
     : 'Select a chat'
 
   const combinedErrorMessage = [
@@ -587,16 +540,46 @@ export default function ChatPage() {
             Chat Threads
           </Typography>
 
-          {!isAdmin ? (
-            <Stack spacing={0.5}>
+          {canStartDirect ? (
+            <Stack spacing={1}>
               <Typography variant="subtitle2" color="text.secondary">
-                KAL chat
+                New direct chat
               </Typography>
-              <Typography variant="body2" color="text.secondary">
-                Direct chat is always with cal@arnoldcontract.us.
-              </Typography>
+              <Autocomplete
+                options={groupUserOptions}
+                value={groupUserOptions.find((user) => user.uid === newDirectUserUid) ?? null}
+                onChange={(_event, value) => {
+                  setNewDirectUserUid(value?.uid ?? null)
+                }}
+                getOptionLabel={(option) => option.displayName || option.email}
+                renderInput={(params) => (
+                  <TextField
+                    {...params}
+                    size="small"
+                    label="Team member"
+                    placeholder="Select a user"
+                  />
+                )}
+              />
+              <Button
+                variant="contained"
+                size="small"
+                startIcon={<PersonRoundedIcon />}
+                disabled={!newDirectUserUid || createDirectMutation.isPending}
+                onClick={() => {
+                  if (newDirectUserUid) {
+                    createDirectMutation.mutate(newDirectUserUid)
+                  }
+                }}
+              >
+                {createDirectMutation.isPending ? 'Starting...' : 'Start Chat'}
+              </Button>
             </Stack>
-          ) : null}
+          ) : (
+            <Typography variant="body2" color="text.secondary">
+              Your conversations will appear here when a team member adds you.
+            </Typography>
+          )}
 
           {isAdmin ? (
             <Stack spacing={1.25}>
@@ -664,7 +647,7 @@ export default function ChatPage() {
               </Box>
             ) : threads.map((thread) => {
               const isSelected = selectedThreadId === thread.id
-              const title = buildThreadTitle(thread, currentUid, isAdmin)
+              const title = buildThreadTitle(thread, currentUid)
               const subtitle = thread.lastMessagePreview || buildThreadSubtitle(thread, currentUid)
 
               return (
@@ -696,6 +679,36 @@ export default function ChatPage() {
                       noWrap: true,
                     }}
                   />
+                  <Stack direction="row" spacing={0.25} sx={{ ml: 'auto' }}>
+                    <IconButton
+                      size="small"
+                      aria-label={thread.pinned ? 'Unpin chat' : 'Pin chat'}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        updateThreadPreferenceMutation.mutate({
+                          threadId: thread.id,
+                          pinned: !thread.pinned,
+                        })
+                      }}
+                    >
+                      {thread.pinned
+                        ? <PushPinRoundedIcon fontSize="inherit" color="primary" />
+                        : <PushPinOutlinedIcon fontSize="inherit" />}
+                    </IconButton>
+                    <IconButton
+                      size="small"
+                      color="error"
+                      aria-label="Delete chat"
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        if (window.confirm('Remove this chat from your list?')) {
+                          deleteThreadMutation.mutate(thread.id)
+                        }
+                      }}
+                    >
+                      <DeleteOutlineRoundedIcon fontSize="inherit" />
+                    </IconButton>
+                  </Stack>
                 </ListItemButton>
               )
             })}

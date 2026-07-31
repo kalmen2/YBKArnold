@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons'
 import { Chat, type MessageType, type User } from '@flyerhq/react-native-chat-ui'
-import { type ReactNode, useCallback, useMemo } from 'react'
+import { type ReactNode, useCallback, useMemo, useState } from 'react'
 import { Alert, Image, Pressable, Text, TextInput, View } from 'react-native'
 import { styles } from '../appStyles'
 import type { MobileChatMessage } from '../appTypes'
@@ -36,7 +36,7 @@ type ChatThreadScreenProps = {
   inlineMessage: string | null
   onBack: () => void
   onComposerTextChange: (value: string) => void
-  onOpenAttachmentMenu: () => void
+  onAttachImage: (source: 'library' | 'camera') => void
   onSendMessage: (text?: string) => void
   onStartVoiceRecording: () => void
   onStopVoiceRecording: (sendImmediately?: boolean) => void
@@ -80,7 +80,7 @@ export function ChatThreadScreen({
   inlineMessage,
   onBack,
   onComposerTextChange,
-  onOpenAttachmentMenu,
+  onAttachImage,
   onSendMessage,
   onStartVoiceRecording,
   onStopVoiceRecording,
@@ -88,6 +88,7 @@ export function ChatThreadScreen({
   onDeleteMessage,
   onRemoveAttachmentDraft,
 }: ChatThreadScreenProps) {
+  const [isAttachmentMenuOpen, setIsAttachmentMenuOpen] = useState(false)
   const normalizedCurrentUid = normalizeTextValue(currentUserUid)
   const normalizedCurrentEmail = normalizeTextValue(currentUserEmail).toLowerCase()
 
@@ -355,13 +356,42 @@ export function ChatThreadScreen({
           </View>
         ) : null}
 
-        <View style={styles.chatComposerBar}>
+        <View style={styles.chatComposerWrap}>
+          {isAttachmentMenuOpen ? (
+            <View style={styles.chatAttachmentMenu}>
+              <Pressable
+                style={styles.chatAttachmentMenuItem}
+                onPress={() => {
+                  setIsAttachmentMenuOpen(false)
+                  onAttachImage('camera')
+                }}
+              >
+                <View style={[styles.chatAttachmentMenuIcon, styles.chatAttachmentCameraIcon]}>
+                  <Ionicons name="camera" size={18} color="#ffffff" />
+                </View>
+                <Text style={styles.chatAttachmentMenuText}>{t('Camera', 'Camara')}</Text>
+              </Pressable>
+              <Pressable
+                style={styles.chatAttachmentMenuItem}
+                onPress={() => {
+                  setIsAttachmentMenuOpen(false)
+                  onAttachImage('library')
+                }}
+              >
+                <View style={[styles.chatAttachmentMenuIcon, styles.chatAttachmentGalleryIcon]}>
+                  <Ionicons name="image" size={18} color="#ffffff" />
+                </View>
+                <Text style={styles.chatAttachmentMenuText}>{t('Photos', 'Fotos')}</Text>
+              </Pressable>
+            </View>
+          ) : null}
+          <View style={styles.chatComposerBar}>
           <Pressable
             style={styles.chatComposerIconButton}
-            onPress={onOpenAttachmentMenu}
+            onPress={() => setIsAttachmentMenuOpen((current) => !current)}
             disabled={isSendingMessage || isProcessingVoice}
           >
-            <Ionicons name="add" size={20} color="#18775b" />
+            <Ionicons name={isAttachmentMenuOpen ? 'close' : 'add'} size={20} color="#18775b" />
           </Pressable>
 
           <TextInput
@@ -383,16 +413,13 @@ export function ChatThreadScreen({
             onPress={() => {
               if (showSendIcon) {
                 onSendMessage(composerText)
+                return
               }
-            }}
-            onPressIn={() => {
-              if (!showSendIcon) {
-                onStartVoiceRecording()
-              }
-            }}
-            onPressOut={() => {
-              if (!showSendIcon && isRecordingVoice) {
+
+              if (isRecordingVoice) {
                 onStopVoiceRecording(true)
+              } else {
+                onStartVoiceRecording()
               }
             }}
           >
@@ -402,13 +429,14 @@ export function ChatThreadScreen({
               color="#ffffff"
             />
           </Pressable>
+          </View>
         </View>
 
         {!showSendIcon ? (
           <Text style={styles.chatComposerHint}>
             {isRecordingVoice
-              ? t('Recording... release to send.', 'Grabando... suelta para enviar.')
-              : t('Hold mic to record and release to send.', 'Manten el microfono para grabar y suelta para enviar.')}
+              ? t('Recording… tap the red microphone to send.', 'Grabando… toca el microfono rojo para enviar.')
+              : t('Tap the microphone to record a voice note.', 'Toca el microfono para grabar una nota de voz.')}
           </Text>
         ) : null}
 
@@ -423,7 +451,7 @@ export function ChatThreadScreen({
     isRecordingVoice,
     isSendingMessage,
     onComposerTextChange,
-    onOpenAttachmentMenu,
+    onAttachImage,
     onRemoveAttachmentDraft,
     onSendMessage,
     onStartVoiceRecording,
@@ -448,7 +476,7 @@ export function ChatThreadScreen({
       <View style={styles.chatMessagesWrap}>
         <Chat
           customBottomComponent={renderCustomBottom}
-          emptyState={isLoading ? renderLoadingEmptyState : undefined}
+          emptyState={() => <View />}
           locale={locale.startsWith('es') ? 'es' : 'en'}
           l10nOverride={{
             emptyChatPlaceholder: t('No messages yet. Send the first one.', 'Aun no hay mensajes. Envia el primero.'),
@@ -465,6 +493,20 @@ export function ChatThreadScreen({
           showUserNames={false}
           user={chatUser}
         />
+        {chatMessages.length === 0 ? (
+          <View pointerEvents="none" style={styles.chatEmptyOverlay}>
+            {isLoading
+              ? renderLoadingEmptyState()
+              : (
+                  <>
+                    <Ionicons name="chatbubble-ellipses-outline" size={34} color="#91a19b" />
+                    <Text style={styles.chatEmptyMessagesText}>
+                      {t('No messages yet. Send the first one.', 'Aun no hay mensajes. Envia el primero.')}
+                    </Text>
+                  </>
+                )}
+          </View>
+        ) : null}
       </View>
     </View>
   )

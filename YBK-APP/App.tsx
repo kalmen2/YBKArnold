@@ -8,7 +8,7 @@ import { Audio } from 'expo-av'
 import Constants from 'expo-constants'
 import { Ionicons } from '@expo/vector-icons'
 import { StatusBar } from 'expo-status-bar'
-import * as FileSystem from 'expo-file-system'
+import * as FileSystem from 'expo-file-system/legacy'
 import * as ImagePicker from 'expo-image-picker'
 import * as LocalAuthentication from 'expo-local-authentication'
 import * as Notifications from 'expo-notifications'
@@ -16,7 +16,6 @@ import * as WebBrowser from 'expo-web-browser'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
-  ActionSheetIOS,
   Alert,
   AppState,
   Image,
@@ -102,7 +101,6 @@ const GOOGLE_WEB_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID ?? ''
 const GOOGLE_IOS_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID ?? ''
 const ORDERS_PAGE_SIZE = 30
 const CHAT_MAX_ATTACHMENT_BYTES = 6 * 1024 * 1024
-const CHAT_OWNER_EMAIL = 'cal@arnoldcontract.us'
 const ADMIN_PORTAL_PAGES = [
   { path: '/admin/cash', labelEn: 'Cash Accounts', labelEs: 'Cuentas de caja', icon: 'cash-outline' as const },
   { path: '/admin/reports', labelEn: 'Reports', labelEs: 'Reportes', icon: 'bar-chart-outline' as const },
@@ -606,24 +604,6 @@ function normalizeTextValue(value: unknown) {
   return String(value ?? '').trim()
 }
 
-function isChatOwnerEmail(value: unknown) {
-  return normalizeTextValue(value).toLowerCase() === CHAT_OWNER_EMAIL
-}
-
-function isOwnerDirectThread(thread: MobileChatThread | null | undefined, requesterUid: string) {
-  if (!thread || thread.type !== 'direct') {
-    return false
-  }
-
-  return thread.memberProfiles.some((member) => {
-    if (normalizeTextValue(member.uid) === requesterUid) {
-      return false
-    }
-
-    return isChatOwnerEmail(member.email)
-  })
-}
-
 function toCountValue(value: unknown) {
   const parsed = Number(value)
 
@@ -879,6 +859,11 @@ export default function App() {
   const isAdminUser = Boolean(authProfile?.isAdmin)
   const isStandardUser = authProfile?.role === 'standard'
   const isShopWorker = Boolean(authProfile?.isShopWorker) || authProfile?.role === 'shop_worker'
+  const canStartDirectChat = Boolean(
+    authProfile?.isAdmin
+    || authProfile?.isManager
+    || authProfile?.role === 'standard',
+  )
   const hasManagerSheetAccess = !isAdminUser && Boolean(authProfile?.isManager)
   const hasAdminOrderDetailsAccess = Boolean(authProfile?.isAdmin)
   const profileDisplayName = useMemo(
@@ -936,30 +921,17 @@ export default function App() {
 
   const sortedChatThreads = useMemo(() => {
     const orderedThreads = [...chatThreads].sort((left, right) => {
+      if (Boolean(left.pinned) !== Boolean(right.pinned)) {
+        return left.pinned ? -1 : 1
+      }
+
       const leftSort = String(left.lastMessageAt ?? left.updatedAt ?? left.createdAt ?? '')
       const rightSort = String(right.lastMessageAt ?? right.updatedAt ?? right.createdAt ?? '')
 
       return rightSort.localeCompare(leftSort)
     })
-    const requesterUid = normalizeTextValue(firebaseUser?.uid)
-
-    if (!requesterUid || isAdminUser) {
-      return orderedThreads
-    }
-
-    const ownerThreads = orderedThreads.filter((thread) => isOwnerDirectThread(thread, requesterUid))
-
-    if (ownerThreads.length === 0) {
-      return orderedThreads
-    }
-
-    const ownerThreadIdSet = new Set(ownerThreads.map((thread) => thread.id))
-
-    return [
-      ...ownerThreads,
-      ...orderedThreads.filter((thread) => !ownerThreadIdSet.has(thread.id)),
-    ]
-  }, [chatThreads, firebaseUser?.uid, isAdminUser])
+    return orderedThreads
+  }, [chatThreads])
 
   const selectedChatThread = useMemo(
     () => sortedChatThreads.find((thread) => thread.id === chatSelectedThreadId) ?? null,
@@ -985,10 +957,6 @@ export default function App() {
 
     if (!peer) {
       return t('Direct chat', 'Chat directo')
-    }
-
-    if (isChatOwnerEmail(peer.email)) {
-      return t('KAL', 'KAL')
     }
 
     return peer.displayName || peer.email || t('Direct chat', 'Chat directo')
@@ -3847,7 +3815,7 @@ export default function App() {
 
   const handleStartDirectChat = useCallback(async (targetUid: string) => {
     const normalizedTargetUid = String(targetUid ?? '').trim()
-    if (!isAdminUser || !normalizedTargetUid) return
+    if (!canStartDirectChat || !normalizedTargetUid) return
 
     setIsChatLoading(true)
     setChatMessage(null)
@@ -3873,7 +3841,89 @@ export default function App() {
     } finally {
       setIsChatLoading(false)
     }
+  }, [canStartDirectChat, getErrorMessage, loadChatState, requestWithSession])
+
+  const handleCreateGroupChat = useCallback(async (name: string, memberUids: string[]) => {
+    const normalizedName = String(name ?? '').trim()
+    const normalizedMembers = Array.from(
+      new Set(memberUids.map((uid) => String(uid ?? '').trim()).filter(Boolean)),
+    )
+
+    if (!isAdminUser || !normalizedName || normalizedMembers.length === 0) {
+      return
+    }
+
+    setIsChatLoading(true)
+    setChatMessage(null)
+
+    try {
+      const payload = await requestWithSession<{ thread?: MobileChatThread }>(
+        '/api/chat/groups',
+        false,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            name: normalizedName,
+            memberUids: normalizedMembers,
+          }),
+        },
+      )
+      await loadChatState(false)
+      if (payload.thread?.id) {
+        setChatSelectedThreadId(payload.thread.id)
+        setChatViewMode('thread')
+      }
+    } catch (error) {
+      setChatMessage(
+        getErrorMessage(error, 'Could not create this group.', 'No se pudo crear este grupo.'),
+      )
+    } finally {
+      setIsChatLoading(false)
+    }
   }, [getErrorMessage, isAdminUser, loadChatState, requestWithSession])
+
+  const handleSetChatPinned = useCallback(async (threadId: string, pinned: boolean) => {
+    const normalizedThreadId = String(threadId ?? '').trim()
+    if (!normalizedThreadId) return
+
+    try {
+      await requestWithSession(
+        `/api/chat/threads/${encodeURIComponent(normalizedThreadId)}/preferences`,
+        false,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({ pinned }),
+        },
+      )
+      await loadChatState(false)
+    } catch (error) {
+      setChatMessage(
+        getErrorMessage(error, 'Could not update this chat.', 'No se pudo actualizar este chat.'),
+      )
+    }
+  }, [getErrorMessage, loadChatState, requestWithSession])
+
+  const handleDeleteChatThread = useCallback(async (threadId: string) => {
+    const normalizedThreadId = String(threadId ?? '').trim()
+    if (!normalizedThreadId) return
+
+    try {
+      await requestWithSession(
+        `/api/chat/threads/${encodeURIComponent(normalizedThreadId)}`,
+        false,
+        {
+          method: 'DELETE',
+        },
+      )
+      setChatSelectedThreadId((current) => current === normalizedThreadId ? null : current)
+      setChatViewMode('list')
+      await loadChatState(false)
+    } catch (error) {
+      setChatMessage(
+        getErrorMessage(error, 'Could not delete this chat.', 'No se pudo borrar este chat.'),
+      )
+    }
+  }, [getErrorMessage, loadChatState, requestWithSession])
 
   const loadChatMessages = useCallback(async (threadId: string, refreshRequested = false) => {
     const normalizedThreadId = String(threadId ?? '').trim()
@@ -4118,59 +4168,6 @@ export default function App() {
       )
     }
   }, [getErrorMessage, t])
-
-  const handleOpenChatAttachmentMenu = useCallback(() => {
-    const uploadLabel = t('Upload from device', 'Subir desde dispositivo')
-    const takePhotoLabel = t('Take photo', 'Tomar foto')
-
-    if (Platform.OS === 'ios') {
-      ActionSheetIOS.showActionSheetWithOptions(
-        {
-          options: [
-            t('Cancel', 'Cancelar'),
-            uploadLabel,
-            takePhotoLabel,
-          ],
-          cancelButtonIndex: 0,
-        },
-        (selectedIndex) => {
-          if (selectedIndex === 1) {
-            void handleAttachChatImage('library')
-            return
-          }
-
-          if (selectedIndex === 2) {
-            void handleAttachChatImage('camera')
-          }
-        },
-      )
-
-      return
-    }
-
-    Alert.alert(
-      t('Add photo', 'Agregar foto'),
-      t('Choose photo source.', 'Elige origen de foto.'),
-      [
-        {
-          text: t('Cancel', 'Cancelar'),
-          style: 'cancel',
-        },
-        {
-          text: uploadLabel,
-          onPress: () => {
-            void handleAttachChatImage('library')
-          },
-        },
-        {
-          text: takePhotoLabel,
-          onPress: () => {
-            void handleAttachChatImage('camera')
-          },
-        },
-      ],
-    )
-  }, [handleAttachChatImage, t])
 
   const handleStartVoiceNoteRecording = useCallback(async () => {
     if (!selectedChatThread || isChatSendingMessage || isChatRecordingVoice || isChatProcessingVoice) {
@@ -7621,6 +7618,7 @@ export default function App() {
                 currentUserEmail={String(firebaseUser?.email ?? '')}
                 currentUserUid={String(firebaseUser?.uid ?? '')}
                 isAdminUser={isAdminUser}
+                canStartDirectChat={canStartDirectChat}
                 availableChatUsers={chatUsers}
                 isChatLoading={isChatLoading}
                 isChatMessagesLoading={isChatMessagesLoading}
@@ -7634,11 +7632,22 @@ export default function App() {
                 onStartChat={(targetUid) => {
                   void handleStartDirectChat(targetUid)
                 }}
+                onCreateGroup={(name, memberUids) => {
+                  void handleCreateGroupChat(name, memberUids)
+                }}
+                onSetPinned={(threadId, pinned) => {
+                  void handleSetChatPinned(threadId, pinned)
+                }}
+                onDeleteThread={(threadId) => {
+                  void handleDeleteChatThread(threadId)
+                }}
                 onComposerTextChange={setChatComposerText}
                 onDeleteMessage={(messageId) => {
                   void handleDeleteChatMessage(messageId)
                 }}
-                onOpenAttachmentMenu={handleOpenChatAttachmentMenu}
+                onAttachImage={(source) => {
+                  void handleAttachChatImage(source)
+                }}
                 onRemoveAttachmentDraft={() => {
                   setChatAttachmentDraft(null)
                 }}
