@@ -284,7 +284,14 @@ export function upsertMissingWorkerReview(input: UpsertMissingWorkerReviewInput)
 }
 
 export function upsertOrderProgress(input: UpsertOrderProgressInput) {
-  return apiRequest<{ progress: TimesheetOrderProgress }>('/api/timesheet/order-progress', {
+  return apiRequest<{
+    progress: TimesheetOrderProgress
+    warnings: Array<{
+      code: 'bench_monday_sync_skipped'
+      orderNumber: string
+      message: string
+    }>
+  }>('/api/timesheet/order-progress', {
     method: 'PUT',
     body: JSON.stringify(input),
   })

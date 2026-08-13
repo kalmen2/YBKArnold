@@ -24,11 +24,13 @@ import {
   DialogContent,
   DialogTitle,
   Divider,
+  FormControlLabel,
   IconButton,
   InputAdornment,
   Pagination,
   Paper,
   Stack,
+  Switch,
   Table,
   TableBody,
   TableCell,
@@ -56,6 +58,7 @@ import {
   refreshPurchasingFromQuickBooks,
   runPurchasingAiSearch,
   uploadPurchasingItemPhoto,
+  updatePurchasingItemSettings,
   type PurchasingAiOption,
   type PurchasingAiPriceStatus,
   type PurchasingAiSearchResponse,
@@ -341,12 +344,31 @@ export default function PurchasingPage() {
   const [poCreateResult, setPoCreateResult] = useState<PurchasingPoCreateResponse | null>(null)
   const [isCreatingPo, setIsCreatingPo] = useState(false)
   const [isRefreshingPoVendors, setIsRefreshingPoVendors] = useState(false)
+  const [isSavingItemSettings, setIsSavingItemSettings] = useState(false)
   const [poVendorLoadError, setPoVendorLoadError] = useState<string | null>(null)
   const photoUploadInputRef = useRef<HTMLInputElement | null>(null)
   const lastPoLineAddRef = useRef<{ signature: string; at: number } | null>(null)
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const { appUser } = useAuth()
+  const canManageItemSettings = appUser?.isAdmin === true || appUser?.isManager === true
+
+  async function handleRequiresDimensionsChange(requiresDimensions: boolean) {
+    if (!selectedItemKey || !canManageItemSettings) return
+    setIsSavingItemSettings(true)
+    setRefreshError(null)
+    try {
+      await updatePurchasingItemSettings(selectedItemKey, { requiresDimensions })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: QUERY_KEYS.purchasingItemDetail(selectedItemKey) }),
+        queryClient.invalidateQueries({ queryKey: QUERY_KEYS.purchasingItems(debouncedSearch, page, PAGE_SIZE) }),
+      ])
+    } catch (error) {
+      setRefreshError(error instanceof Error ? error.message : 'Could not update the item setting.')
+    } finally {
+      setIsSavingItemSettings(false)
+    }
+  }
 
   // Reset to page 1 whenever the search changes
   useEffect(() => {
@@ -1389,6 +1411,28 @@ export default function PurchasingPage() {
                         <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
                           {detailQuery.data.item.descriptions[0]}
                         </Typography>
+                      )}
+                      {canManageItemSettings ? (
+                        <FormControlLabel
+                          sx={{ mt: 0.8 }}
+                          control={(
+                            <Switch
+                              checked={detailQuery.data.item.requiresDimensions === true}
+                              disabled={isSavingItemSettings}
+                              onChange={(event) => void handleRequiresDimensionsChange(event.target.checked)}
+                            />
+                          )}
+                          label={detailQuery.data.item.requiresDimensions
+                            ? 'Designers must enter the exact piece size'
+                            : 'Quantity only—no piece size required'}
+                        />
+                      ) : (
+                        <Chip
+                          size="small"
+                          sx={{ mt: 0.8 }}
+                          variant="outlined"
+                          label={detailQuery.data.item.requiresDimensions ? 'Piece size required' : 'Quantity only'}
+                        />
                       )}
                     </Box>
 

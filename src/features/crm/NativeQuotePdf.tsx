@@ -14,8 +14,10 @@ import CloseRoundedIcon from '@mui/icons-material/CloseRounded'
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded'
 import OpenWithRoundedIcon from '@mui/icons-material/OpenWithRounded'
 import { Alert, Box, Button, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, Stack, Typography } from '@mui/material'
+import { useQuery } from '@tanstack/react-query'
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
-import type { CrmQuote, CrmQuoteLineImage, CrmQuoteLineItem, CrmQuotePrintSettings } from './api'
+import { fetchCrmDocumentTerms, type CrmDocumentTerm, type CrmQuote, type CrmQuoteLineImage, type CrmQuoteLineItem, type CrmQuotePrintSettings } from './api'
+import { QUERY_KEYS } from '../../lib/queryKeys'
 const defaultArnoldLogoUrl = '/arnold-quote-logo.png'
 const defaultArnoldMarkUrl = '/arnold-quote-mark.png'
 
@@ -436,17 +438,25 @@ function createStyles(accentColor: string) {
 export function NativeQuotePdfDocument({
   quote,
   settings,
+  quoteTerms,
   pictureLayoutMode = false,
 }: {
   quote: CrmQuote
   settings: CrmQuotePrintSettings
+  quoteTerms?: CrmDocumentTerm[]
   pictureLayoutMode?: boolean
 }) {
+  const configuredCustomerInformation = quoteTerms
+    ?.filter((term) => term.documentType === 'quote' && (term.appliesToDealer ?? term.isDefault))
+    .map((term) => `${term.title}: ${term.body}`)
+    .join('\n')
   const resolvedSettings = {
     ...DEFAULT_QUOTE_PRINT_SETTINGS,
     ...settings,
     logoUrl: !settings.logoUrl || settings.logoUrl === defaultArnoldLogoUrl ? defaultArnoldMarkUrl : settings.logoUrl,
-    customerInformation: settings.customerInformation || DEFAULT_CUSTOMER_INFORMATION,
+    customerInformation: quoteTerms === undefined
+      ? settings.customerInformation || DEFAULT_CUSTOMER_INFORMATION
+      : configuredCustomerInformation || '',
   }
   const styles = createStyles(resolvedSettings.accentColor)
   const rows = splitLineItems(Array.isArray(quote.lineItems) ? quote.lineItems : [])
@@ -657,10 +667,10 @@ export function NativeQuotePdfDocument({
         {resolvedSettings.customerInformation ? (
           <View style={styles.customerInfo} wrap={false}>
             <Text style={styles.customerInfoTitle}>Customer Information</Text>
-            <View style={styles.validityNotice}>
+            {quoteTerms === undefined ? <View style={styles.validityNotice}>
               <Text style={styles.validityText}>{QUOTE_VALIDITY_NOTICE}</Text>
               {STAIN_TO_MATCH_NOTICE.map((line) => <Text key={line} style={styles.stainNoticeLine}>• {line}</Text>)}
-            </View>
+            </View> : null}
             <View style={styles.customerInfoColumns}>
               {customerInfoColumns.map((column, columnIndex) => (
                 <View key={`customer-info-${columnIndex}`} style={styles.customerInfoColumn}>
@@ -957,15 +967,24 @@ export const QuotePdfPreviewDialog = memo(function QuotePdfPreviewDialog({
 }) {
   const [isOpeningPrint, setIsOpeningPrint] = useState(false)
   const printBlobUrlRef = useRef<string | null>(null)
+  const termsQuery = useQuery({
+    queryKey: QUERY_KEYS.crmDocumentTerms(quote?.dealerSourceId || ''),
+    queryFn: () => fetchCrmDocumentTerms(quote?.dealerSourceId),
+    enabled: Boolean(open && quote),
+  })
+  const quoteTerms = useMemo(
+    () => termsQuery.data?.terms.filter((term) => term.documentType === 'quote'),
+    [termsQuery.data?.terms],
+  )
 
   const document = useMemo(
-    () => (quote ? <NativeQuotePdfDocument quote={quote} settings={settings} /> : null),
-    [quote, settings],
+    () => (quote ? <NativeQuotePdfDocument quote={quote} settings={settings} quoteTerms={quoteTerms} /> : null),
+    [quote, quoteTerms, settings],
   )
 
   const fileName = useMemo(
     () => (quote ? `Estimate-${plain(quote.quoteNumber, quote.id).replace(/[^a-z0-9._-]+/gi, '-')}.pdf` : 'Estimate.pdf'),
-    [quote?.id, quote?.quoteNumber],
+    [quote],
   )
 
   const revokePrintBlobUrl = useCallback(() => {
@@ -1049,9 +1068,17 @@ export const QuotePdfInlinePreview = memo(function QuotePdfInlinePreview({
   settings: CrmQuotePrintSettings
   onArrangePictures: () => void
 }) {
+  const termsQuery = useQuery({
+    queryKey: QUERY_KEYS.crmDocumentTerms(quote.dealerSourceId || ''),
+    queryFn: () => fetchCrmDocumentTerms(quote.dealerSourceId),
+  })
+  const quoteTerms = useMemo(
+    () => termsQuery.data?.terms.filter((term) => term.documentType === 'quote'),
+    [termsQuery.data?.terms],
+  )
   const document = useMemo(
-    () => <NativeQuotePdfDocument quote={quote} settings={settings} />,
-    [quote, settings],
+    () => <NativeQuotePdfDocument quote={quote} settings={settings} quoteTerms={quoteTerms} />,
+    [quote, quoteTerms, settings],
   )
   const pictures = useMemo(() => (quote.lineItems || []).flatMap((lineItem, lineIndex) => (
     (lineItem.images || []).map((image) => ({ image, lineIndex }))

@@ -7,10 +7,12 @@ import VideocamOutlinedIcon from '@mui/icons-material/VideocamOutlined'
 import {
   Alert,
   Box,
+  Button,
   Card,
   Chip,
   CircularProgress,
   Dialog,
+  DialogActions,
   DialogContent,
   DialogTitle,
   Divider,
@@ -28,6 +30,7 @@ import {
   TableHead,
   TableRow,
   Tabs,
+  TextField,
   Tooltip,
   Typography,
 } from '@mui/material'
@@ -45,6 +48,9 @@ type DiagnosticReport = {
   createdBy: { uid?: string | null; email?: string | null; name?: string | null }
   createdAt: string
   updatedAt: string
+  resolutionExplanation: string
+  resolvedAt: string | null
+  resolvedBy: { uid?: string | null; email?: string | null } | null
   recording: { fileName?: string; contentType?: string; size?: number } | null
   consoleCount: number
   networkCount: number
@@ -56,7 +62,7 @@ type DiagnosticReport = {
 const STATUS_META: Record<ReportStatus, { label: string; color: 'error' | 'warning' | 'success' }> = {
   open: { label: 'Open', color: 'error' },
   investigating: { label: 'Investigating', color: 'warning' },
-  resolved: { label: 'Resolved', color: 'success' },
+  resolved: { label: 'Solved', color: 'success' },
 }
 
 function formatDateTime(value: string) {
@@ -90,6 +96,8 @@ export default function AdminDiagnosticReportsPage() {
   const [recordingUrl, setRecordingUrl] = useState('')
   const [recordingLoading, setRecordingLoading] = useState(false)
   const [statusSaving, setStatusSaving] = useState(false)
+  const [resolutionDialogOpen, setResolutionDialogOpen] = useState(false)
+  const [resolutionDraft, setResolutionDraft] = useState('')
   const [deleteBusy, setDeleteBusy] = useState(false)
 
   const loadReports = useCallback(async () => {
@@ -133,22 +141,34 @@ export default function AdminDiagnosticReportsPage() {
     }
   }, [recordingUrl])
 
-  const updateStatus = async (status: ReportStatus) => {
+  const updateStatus = async (status: ReportStatus, resolutionExplanation = '') => {
     if (!selected || status === selected.status) return
     setStatusSaving(true)
     setDetailError('')
     try {
       const data = await apiRequest<{ report: DiagnosticReport }>(`/api/admin/diagnostic-reports/${encodeURIComponent(selected.id)}`, {
         method: 'PATCH',
-        body: JSON.stringify({ status }),
+        body: JSON.stringify({ status, resolutionExplanation }),
       }, { processTracking: false })
       setSelected((previous) => previous ? { ...previous, ...data.report, diagnostics: previous.diagnostics } : previous)
       setReports((previous) => previous.map((row) => row.id === selected.id ? { ...row, ...data.report } : row))
+      setResolutionDialogOpen(false)
+      if (status === 'resolved') setNotice(`${selected.reference} was marked solved and the reporter was notified.`)
     } catch (saveError) {
       setDetailError(saveError instanceof Error ? saveError.message : 'Could not update the report.')
     } finally {
       setStatusSaving(false)
     }
+  }
+
+  const selectStatus = (status: ReportStatus) => {
+    if (!selected || status === selected.status) return
+    if (status === 'resolved') {
+      setResolutionDraft(selected.resolutionExplanation || '')
+      setResolutionDialogOpen(true)
+      return
+    }
+    void updateStatus(status)
   }
 
   const downloadDiagnostics = () => {
@@ -207,16 +227,28 @@ export default function AdminDiagnosticReportsPage() {
       </Card>
 
       <Dialog open={Boolean(selected)} onClose={() => setSelected(null)} fullWidth maxWidth="lg">
-        <DialogTitle><Stack direction="row" justifyContent="space-between" alignItems="flex-start" gap={2}><Stack direction="row" spacing={1.25} alignItems="center" minWidth={0}><Box sx={{ display: 'flex', p: 1, borderRadius: 2, bgcolor: 'primary.50', color: 'primary.main' }}><BugReportOutlinedIcon /></Box><Box minWidth={0}><Typography variant="overline" color="primary" fontWeight={800}>{selected?.reference}</Typography><Typography variant="h6" fontWeight={750} noWrap>{selected?.summary}</Typography></Box></Stack><Stack direction="row" spacing={1} alignItems="center"><FormControl size="small" sx={{ minWidth: 145 }}><Select value={selected?.status || 'open'} onChange={(event) => void updateStatus(event.target.value as ReportStatus)} disabled={statusSaving}><MenuItem value="open">Open</MenuItem><MenuItem value="investigating">Investigating</MenuItem><MenuItem value="resolved">Resolved</MenuItem></Select></FormControl><Tooltip title="Download full JSON"><IconButton onClick={downloadDiagnostics}><DownloadIcon /></IconButton></Tooltip><Tooltip title="Delete report"><span><IconButton color="error" onClick={() => void deleteReport()} disabled={deleteBusy || detailLoading}>{deleteBusy ? <CircularProgress size={20} /> : <DeleteOutlineIcon />}</IconButton></span></Tooltip><IconButton onClick={() => setSelected(null)}><CloseIcon /></IconButton></Stack></Stack></DialogTitle>
+        <DialogTitle><Stack direction="row" justifyContent="space-between" alignItems="flex-start" gap={2}><Stack direction="row" spacing={1.25} alignItems="center" minWidth={0}><Box sx={{ display: 'flex', p: 1, borderRadius: 2, bgcolor: 'primary.50', color: 'primary.main' }}><BugReportOutlinedIcon /></Box><Box minWidth={0}><Typography variant="overline" color="primary" fontWeight={800}>{selected?.reference}</Typography><Typography variant="h6" fontWeight={750} noWrap>{selected?.summary}</Typography></Box></Stack><Stack direction="row" spacing={1} alignItems="center"><FormControl size="small" sx={{ minWidth: 145 }}><Select value={selected?.status || 'open'} onChange={(event) => selectStatus(event.target.value as ReportStatus)} disabled={statusSaving}><MenuItem value="open">Open</MenuItem><MenuItem value="investigating">Investigating</MenuItem><MenuItem value="resolved">Solved</MenuItem></Select></FormControl><Tooltip title="Download full JSON"><IconButton onClick={downloadDiagnostics}><DownloadIcon /></IconButton></Tooltip><Tooltip title="Delete report"><span><IconButton color="error" onClick={() => void deleteReport()} disabled={deleteBusy || detailLoading}>{deleteBusy ? <CircularProgress size={20} /> : <DeleteOutlineIcon />}</IconButton></span></Tooltip><IconButton onClick={() => setSelected(null)}><CloseIcon /></IconButton></Stack></Stack></DialogTitle>
         <Divider />
         <DialogContent sx={{ p: 0, height: '74vh', display: 'flex', flexDirection: 'column' }}>
           {detailLoading ? <Box sx={{ p: 6, textAlign: 'center' }}><CircularProgress /></Box> : null}
           {detailError ? <Alert severity="error" sx={{ m: 2 }}>{detailError}</Alert> : null}
-          {!detailLoading ? <><Box sx={{ px: 3, pt: 2 }}><Stack direction="row" spacing={2} useFlexGap flexWrap="wrap"><Typography variant="body2"><strong>Reported by:</strong> {selected?.createdBy.name || selected?.createdBy.email || 'Unknown'}</Typography><Typography variant="body2"><strong>When:</strong> {formatDateTime(selected?.createdAt || '')}</Typography><Typography variant="body2"><strong>Duration:</strong> {formatDuration(selected?.durationMs || 0)}</Typography><Typography variant="body2"><strong>Area:</strong> {String(selected?.context.area || 'Arnold workspace')}</Typography></Stack>{selected?.details ? <Alert severity="info" sx={{ mt: 1.5 }}>{selected.details}</Alert> : null}</Box><Tabs value={tab} onChange={(_, value) => setTab(value)} sx={{ px: 2, borderBottom: '1px solid', borderColor: 'divider', mt: 1 }} variant="scrollable"><Tab label="Overview" /><Tab label={`Network (${network.length})`} /><Tab label={`Console (${consoleEvents.length})`} /><Tab label={`Actions (${interactions.length})`} /><Tab label={`Server (${serverEvents.length})`} /><Tab label="Environment" /></Tabs><Box sx={{ flex: 1, overflow: 'auto', p: 3, bgcolor: 'grey.50' }}>
+          {!detailLoading ? <><Box sx={{ px: 3, pt: 2 }}><Stack direction="row" spacing={2} useFlexGap flexWrap="wrap"><Typography variant="body2"><strong>Reported by:</strong> {selected?.createdBy.name || selected?.createdBy.email || 'Unknown'}</Typography><Typography variant="body2"><strong>When:</strong> {formatDateTime(selected?.createdAt || '')}</Typography><Typography variant="body2"><strong>Duration:</strong> {formatDuration(selected?.durationMs || 0)}</Typography><Typography variant="body2"><strong>Area:</strong> {String(selected?.context.area || 'Arnold workspace')}</Typography></Stack>{selected?.details ? <Alert severity="info" sx={{ mt: 1.5 }}>{selected.details}</Alert> : null}{selected?.status === 'resolved' ? <Alert severity="success" sx={{ mt: 1.5 }}><strong>Resolution:</strong> {selected.resolutionExplanation || 'Marked solved without an explanation.'}</Alert> : null}</Box><Tabs value={tab} onChange={(_, value) => setTab(value)} sx={{ px: 2, borderBottom: '1px solid', borderColor: 'divider', mt: 1 }} variant="scrollable"><Tab label="Overview" /><Tab label={`Network (${network.length})`} /><Tab label={`Console (${consoleEvents.length})`} /><Tab label={`Actions (${interactions.length})`} /><Tab label={`Server (${serverEvents.length})`} /><Tab label="Environment" /></Tabs><Box sx={{ flex: 1, overflow: 'auto', p: 3, bgcolor: 'grey.50' }}>
             {tab === 0 ? <Stack spacing={2}>{selected?.recording ? <Card variant="outlined" sx={{ p: 2 }}><Stack direction="row" justifyContent="space-between" mb={1}><Typography fontWeight={750}>Screen recording</Typography><Chip size="small" label={`${(Number(selected.recording.size || 0) / 1024 / 1024).toFixed(1)} MB`} /></Stack>{recordingLoading ? <Box sx={{ py: 6, textAlign: 'center' }}><CircularProgress /></Box> : recordingUrl ? <Box component="video" src={recordingUrl} controls preload="metadata" sx={{ width: '100%', maxHeight: 480, borderRadius: 1.5, bgcolor: '#020617' }} /> : <Alert severity="warning">The recording could not be loaded.</Alert>}</Card> : <Alert severity="info">This report contains logs only.</Alert>}<Card variant="outlined" sx={{ p: 2 }}><Typography fontWeight={750} mb={1}>Report context</Typography><JsonBlock value={selected?.context} /></Card></Stack> : null}
             {tab === 1 ? <JsonBlock value={network} /> : null}{tab === 2 ? <JsonBlock value={consoleEvents} /> : null}{tab === 3 ? <JsonBlock value={interactions} /> : null}{tab === 4 ? <JsonBlock value={serverEvents} /> : null}{tab === 5 ? <JsonBlock value={diagnostics.page || diagnostics} /> : null}
           </Box></> : null}
         </DialogContent>
+      </Dialog>
+
+      <Dialog open={resolutionDialogOpen} onClose={() => !statusSaving && setResolutionDialogOpen(false)} fullWidth maxWidth="sm">
+        <DialogTitle>Mark {selected?.reference || 'issue'} as solved</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>The reporter will receive a notification. You can include an explanation of what was fixed.</Typography>
+          <TextField autoFocus fullWidth multiline minRows={4} label="Explanation (optional)" value={resolutionDraft} onChange={(event) => setResolutionDraft(event.target.value)} inputProps={{ maxLength: 4000 }} />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setResolutionDialogOpen(false)} disabled={statusSaving}>Cancel</Button>
+          <Button variant="contained" color="success" onClick={() => void updateStatus('resolved', resolutionDraft)} disabled={statusSaving}>{statusSaving ? 'Saving…' : 'Mark solved'}</Button>
+        </DialogActions>
       </Dialog>
     </Stack>
   )

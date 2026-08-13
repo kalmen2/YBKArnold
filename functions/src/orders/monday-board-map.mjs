@@ -197,6 +197,15 @@ export const WEBSITE_OWNED_ORDER_FIELDS = Object.freeze([
   'archived_at',
   'archived_by_uid',
   'archived_by_email',
+  'design_parts',
+  'production_handoff_status',
+  'production_handoff_requested_at',
+  'production_handoff_requested_by_uid',
+  'production_handoff_requested_by_email',
+  'production_handoff_confirmations',
+  'production_handoff_approved_at',
+  'production_handoff_approved_by_uid',
+  'production_handoff_approved_by_email',
 ])
 
 export function resolveBoardMapById(boardId) {

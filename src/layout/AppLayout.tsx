@@ -161,7 +161,7 @@ export default function AppLayout() {
       .replace(/\b\w/g, (character) => character.toUpperCase())
   }, [location.pathname])
 
-  const alerts = alertsQuery.data?.alerts ?? []
+  const alerts = useMemo(() => alertsQuery.data?.alerts ?? [], [alertsQuery.data?.alerts])
   const unreadCount = alertsQuery.data?.unreadCount ?? 0
   const unreadAlerts = useMemo(
     () => alerts.filter((alert) => !alert.isRead),
@@ -219,9 +219,9 @@ export default function AppLayout() {
       notificationSeenIdsRef.current = seenIds
     }
 
-    const newMentionAlerts = alerts.filter((alert) => {
+    const newBrowserAlerts = alerts.filter((alert) => {
       const source = String(alert.metadata?.source ?? '').trim().toLowerCase()
-      return !seenIds.has(alert.id) && source.includes('mention')
+      return !seenIds.has(alert.id) && (source.includes('mention') || source === 'diagnostic_report_resolved')
     })
 
     alerts.forEach((alert) => seenIds.add(alert.id))
@@ -236,12 +236,12 @@ export default function AppLayout() {
       return
     }
 
-    newMentionAlerts.forEach((alert) => {
+    newBrowserAlerts.forEach((alert) => {
       const browserAlert = new Notification(alert.title, {
         body: alert.message,
         icon: '/favicon.png',
         badge: '/favicon.png',
-        tag: `mention-${alert.id}`,
+        tag: `arnold-alert-${alert.id}`,
       })
       browserAlert.onclick = () => {
         window.focus()

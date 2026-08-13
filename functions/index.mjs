@@ -543,6 +543,13 @@ query GetBoardItems($boardId: ID!, $limit: Int!, $cursor: String) {
             title
           }
         }
+        subitems {
+          id
+          name
+          created_at
+          updated_at
+          column_values { id type text value column { title } }
+        }
       }
     }
   }
@@ -587,6 +594,13 @@ query GetBoardItems($boardId: ID!, $limit: Int!, $cursor: String) {
             title
           }
         }
+        subitems {
+          id
+          name
+          created_at
+          updated_at
+          column_values { id type text value column { title } }
+        }
       }
     }
   }
@@ -596,6 +610,7 @@ query GetBoardItems($boardId: ID!, $limit: Int!, $cursor: String) {
 
 const {
   createMondayItem,
+  createMondaySubitem,
   deleteMondayItem,
   fetchMondayAssetDownloadInfo,
   fetchMondayBoardColumns,
@@ -1702,6 +1717,7 @@ const routeDeps = {
   buildOrderPhotoDownloadFileName,
   clearSupportSnapshotCache,
   createMondayItem,
+  createMondaySubitem,
   createZendeskTicketReply,
   createZendeskSupportTicket,
   decodeBase64Image,

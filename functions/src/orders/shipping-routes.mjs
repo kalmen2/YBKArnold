@@ -1440,6 +1440,17 @@ export function registerOrderShippingRoutes(app, {
     requireManagerOrAdminRole,
     async (req, res, next) => {
       try {
+        const requestedShipDate = normalizeIsoDateInput(req.body?.shipDate)
+        const requestedCarrier = normalizeOptionalShortText(req.body?.carrier, 120)
+
+        if (!requestedShipDate) {
+          return res.status(400).json({ error: 'Ship date is required.' })
+        }
+
+        if (!requestedCarrier) {
+          return res.status(400).json({ error: 'Carrier is required.' })
+        }
+
         const orderIdentityFilter = buildOrderIdentityFilter({
           orderKey: req.body?.orderKey,
           mondayItemId: req.body?.mondayItemId,
@@ -1541,6 +1552,12 @@ export function registerOrderShippingRoutes(app, {
           targetBoardId,
           itemId: mondayItemId,
         })
+        await updateMondayItemJsonColumn({
+          boardId: targetBoardId,
+          itemId: mondayItemId,
+          columnId: MONDAY_BOARDS.shipped.columns.shipDate,
+          jsonValue: { date: requestedShipDate },
+        })
         const movedSnapshot = await fetchMondayBoardItemsByIds({
           boardId: targetBoardId,
           boardName: moveResult?.targetBoardName,
@@ -1553,7 +1570,7 @@ export function registerOrderShippingRoutes(app, {
         const now = new Date().toISOString()
         const mondayUpdatedAt = String(movedOrder?.updatedAt ?? '').trim() || now
         const mondayStatus = String(movedOrder?.statusLabel ?? '').trim() || 'Shipped'
-        const shippedAt = String(movedOrder?.shippedAt ?? '').trim() || now
+        const shippedAt = requestedShipDate
         const progressStatusDetails = normalizeProgressStatusDetails(movedOrder?.progressStatusDetails)
         const publicUser = toPublicAuthUser(req.authUser)
         const updateFilter = buildOrderIdentityFilter({
@@ -1594,6 +1611,7 @@ export function registerOrderShippingRoutes(app, {
                   ? Number(movedOrder.leadTimeDays)
                   : null,
                 shippedAt,
+                shippingCarrier: requestedCarrier,
                 movedToShippedAt: now,
                 isDone: true,
                 isLate: Boolean(movedOrder?.isLate),
@@ -1624,7 +1642,8 @@ export function registerOrderShippingRoutes(app, {
                 is_shipped: true,
                 customer_signed_bol_required: true,
                 shipped_at: shippedAt,
-                shipped_at_inferred: String(movedOrder?.shippedAt ?? '').trim() ? false : true,
+                shipped_at_inferred: false,
+                shipping_carrier: requestedCarrier,
                 Due_date: String(movedOrder?.dueDate ?? '').trim() || null,
                 Lead_time_days: Number.isFinite(Number(movedOrder?.leadTimeDays))
                   ? Number(movedOrder.leadTimeDays)

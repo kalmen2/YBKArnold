@@ -64,9 +64,11 @@ import {
   buildChangeOrderDocumentBlob,
   buildProformaInvoiceBlob,
   buildWorkOrderDocumentBlob,
+  groupOrderDocumentTerms,
 } from '../../features/crm/OrderConversionDocuments'
 import { DEFAULT_QUOTE_PRINT_SETTINGS } from '../../features/crm/NativeQuotePdf'
-import { fetchCrmQuotePrintSettings } from '../../features/crm/api'
+import { fetchCrmDocumentTerms, fetchCrmQuotePrintSettings } from '../../features/crm/api'
+import { OrderDesignPartsTab } from '../../features/orders/OrderDesignPartsTab'
 import {
   createOrderChatMessage,
   fetchOrderChats,
@@ -88,6 +90,8 @@ import {
   postOrdersShippingDocumentUpload,
   removeOrderChatMessage,
   postOrdersOrderNumberUpdate,
+  requestOrderProduction,
+  approveOrderProduction,
   type OrdersShippingDocumentType,
   type OrdersCutListDocument,
   type OrdersChatUser,
@@ -117,6 +121,7 @@ type JobDetailsDialogProps = {
   open: boolean
   mode: JobDetailsMode | null
   order: OrdersOverviewOrder | null
+  allowShipOrder: boolean
   initialTab?: JobDetailsTab
   onOpenBolDocument: (order: OrdersOverviewOrder) => void
   onOpenShopDrawingDocument: (order: OrdersOverviewOrder) => void
@@ -125,13 +130,19 @@ type JobDetailsDialogProps = {
   onClose: () => void
 }
 
-export type JobDetailsTab = 'hours' | 'shipping' | 'info' | 'pictures' | 'warranty' | 'chat'
+export type JobDetailsTab = 'hours' | 'shipping' | 'info' | 'pictures' | 'parts' | 'warranty' | 'chat'
 
 function normalizeDateInputValue(value: string | null | undefined) {
   const normalized = String(value ?? '').trim()
   const matched = normalized.match(/^(\d{4}-\d{2}-\d{2})/)
 
   return matched ? matched[1] : ''
+}
+
+function currentLocalDateInputValue() {
+  const now = new Date()
+  const localTime = new Date(now.getTime() - now.getTimezoneOffset() * 60_000)
+  return localTime.toISOString().slice(0, 10)
 }
 
 type OrderWarrantyState = {
@@ -516,6 +527,7 @@ export function JobDetailsDialog({
   open,
   mode,
   order,
+  allowShipOrder,
   initialTab = 'info',
   onOpenBolDocument,
   onOpenShopDrawingDocument,
@@ -550,6 +562,9 @@ export function JobDetailsDialog({
   const [shippingUploadInFlightType, setShippingUploadInFlightType] = useState<OrdersShippingDocumentType | ''>('')
   const [shippingDeleteInFlightType, setShippingDeleteInFlightType] = useState<OrdersShippingDocumentType | ''>('')
   const [isShippingOrder, setIsShippingOrder] = useState(false)
+  const [isShipDialogOpen, setIsShipDialogOpen] = useState(false)
+  const [shipDateDraft, setShipDateDraft] = useState('')
+  const [shipCarrierDraft, setShipCarrierDraft] = useState('')
   const [shippingActionError, setShippingActionError] = useState<string | null>(null)
   const [shippingActionSuccess, setShippingActionSuccess] = useState<string | null>(null)
   const [uploadedSignedBolUrl, setUploadedSignedBolUrl] = useState<string | null>(null)
@@ -580,6 +595,7 @@ export function JobDetailsDialog({
   const [infoDocumentActionError, setInfoDocumentActionError] = useState<string | null>(null)
   const [infoDocumentActionSuccess, setInfoDocumentActionSuccess] = useState<string | null>(null)
   const [isGeneratingOrderConfirmation, setIsGeneratingOrderConfirmation] = useState(false)
+  const [documentGenerationStage, setDocumentGenerationStage] = useState<string | null>(null)
   const [generatedOrderConfirmationUrl, setGeneratedOrderConfirmationUrl] = useState<string | null>(null)
   const [generatedOrderConfirmationName, setGeneratedOrderConfirmationName] = useState<string | null>(null)
   const [generatedWorkOrderUrl, setGeneratedWorkOrderUrl] = useState<string | null>(null)
@@ -601,6 +617,11 @@ export function JobDetailsDialog({
   const cutListPreviewObjectUrlRef = useRef<string | null>(null)
   const cutListPreviewRequestIdRef = useRef(0)
   const [isManagerEditMode, setIsManagerEditMode] = useState(false)
+  const [productionConfirmOpen, setProductionConfirmOpen] = useState(false)
+  const [allSubitemsConfirmed, setAllSubitemsConfirmed] = useState(false)
+  const [signedDrawingConfirmed, setSignedDrawingConfirmed] = useState(false)
+  const [productionActionPending, setProductionActionPending] = useState(false)
+  const [productionActionError, setProductionActionError] = useState<string | null>(null)
   const [isSavingManagerEdit, setIsSavingManagerEdit] = useState(false)
   const [managerEditError, setManagerEditError] = useState<string | null>(null)
   const [managerEditSuccess, setManagerEditSuccess] = useState<string | null>(null)
@@ -698,6 +719,9 @@ export function JobDetailsDialog({
     setShippingUploadInFlightType('')
     setShippingDeleteInFlightType('')
     setIsShippingOrder(false)
+    setIsShipDialogOpen(false)
+    setShipDateDraft('')
+    setShipCarrierDraft('')
     setShippingActionError(null)
     setShippingActionSuccess(null)
     setUploadedSignedBolUrl(null)
@@ -1241,7 +1265,7 @@ export function JobDetailsDialog({
   const canOpenCutListDocument = Boolean(cutListUrl)
   const hasInvoiceDocument = Boolean(order?.hasInvoiceDocument)
   const canOpenInvoiceDocument = hasInvoiceDocument
-  const hasMondayRecord = Boolean(order?.hasMondayRecord)
+  const hasLinkedMondayItem = Boolean(String(order?.mondayItemId ?? '').trim())
   const canManageOrderMetadata = appUser?.isAdmin === true || appUser?.isManager === true
   const canEditOrderInformation =
     canManageOrderMetadata
@@ -1249,8 +1273,7 @@ export function JobDetailsDialog({
   const canManageOrderDocuments = canEditOrderInformation
   const canEditOrderNumber =
     canEditOrderInformation
-    && hasMondayRecord
-    && Boolean(String(order?.mondayItemId ?? '').trim())
+    && hasLinkedMondayItem
     && order?.hasQuickBooksRecord !== true
   const isWarrantyActionInFlight =
     isSavingWarrantyIssue || isSavingWarrantyLeadTime || isMarkingWarrantyDone
@@ -1258,6 +1281,24 @@ export function JobDetailsDialog({
   const canCreateWarrantyIssue = canManageWarrantyIssue && !warrantyState.issueActive
   const canUpdateWarrantyLeadTime = canManageWarrantyIssue && warrantyState.issueActive
   const shouldShowWarrantyTab = warrantyState.issueActive || showWarrantyWorkspace
+  const isWaitingForProduction = order?.productionHandoffStatus === 'waiting_for_production'
+
+  const runProductionAction = async (managerApproval: boolean) => {
+    if (!order?.id || productionActionPending) return
+    setProductionActionPending(true)
+    setProductionActionError(null)
+    try {
+      if (managerApproval) await approveOrderProduction(order.id)
+      else await requestOrderProduction(order.id)
+      await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.ordersOverview })
+      setProductionConfirmOpen(false)
+      onClose()
+    } catch (caught) {
+      setProductionActionError(caught instanceof Error ? caught.message : 'Could not move this order.')
+    } finally {
+      setProductionActionPending(false)
+    }
+  }
 
   useEffect(() => {
     setGeneratedOrderConfirmationUrl(null)
@@ -1289,6 +1330,7 @@ export function JobDetailsDialog({
     }
 
     setIsGeneratingOrderConfirmation(true)
+    setDocumentGenerationStage('Loading document terms…')
     setInfoDocumentActionError(null)
     setInfoDocumentActionSuccess(null)
 
@@ -1335,7 +1377,9 @@ export function JobDetailsDialog({
           || order.dueDate
           || '',
         ).trim(),
-        freightType: String(order.freightDescription ?? '').trim(),
+        freightType: String(order.shippingCarrier ?? order.freightDescription ?? '').trim(),
+        carrier: String(order.shippingCarrier ?? '').trim(),
+        shipmentDate: String(order.shippedAt ?? '').trim(),
         shipTo: String(order.shipTo ?? '').trim(),
         productGross: Number(order.productGrossValue || productNet + Number(order.discountAmount || 0)),
         discountPercent: Number(order.discountPercent || 0),
@@ -1355,12 +1399,16 @@ export function JobDetailsDialog({
         estimatedReadyDate: String(order.managerReadyDate ?? order.dueDate ?? '').trim(),
       }
       const settings = quotePrintSettingsQuery.data?.settings || DEFAULT_QUOTE_PRINT_SETTINGS
-      const [confirmationBlob, workOrderBlob, proformaInvoiceBlob, bolBlob] = await Promise.all([
-        buildOrderDocumentBlob(documentData, settings),
-        buildWorkOrderDocumentBlob(documentData, settings),
-        buildProformaInvoiceBlob(documentData, settings),
-        buildBillOfLadingBlob(documentData),
-      ])
+      const termsResponse = await fetchCrmDocumentTerms(order.dealerSourceId)
+      const documentTerms = groupOrderDocumentTerms(termsResponse.terms)
+      setDocumentGenerationStage('Creating order confirmation…')
+      const confirmationBlob = await buildOrderDocumentBlob(documentData, settings, documentTerms)
+      setDocumentGenerationStage('Creating work order…')
+      const workOrderBlob = await buildWorkOrderDocumentBlob(documentData, settings, documentTerms)
+      setDocumentGenerationStage('Creating proforma invoice…')
+      const proformaInvoiceBlob = await buildProformaInvoiceBlob(documentData, settings, documentTerms)
+      setDocumentGenerationStage('Creating bill of lading…')
+      const bolBlob = await buildBillOfLadingBlob(documentData, settings, documentTerms)
       const orderPath = sanitizeStoragePathSegment(orderNumber, 'order')
       const generatedAt = Date.now()
       const confirmationRef = storageRef(
@@ -1379,6 +1427,7 @@ export function JobDetailsDialog({
         firebaseStorage,
         `crm/orders/${orderPath}/bill-of-lading-${generatedAt}.pdf`,
       )
+      setDocumentGenerationStage('Uploading documents…')
       await Promise.all([
         uploadBytes(confirmationRef, confirmationBlob, { contentType: 'application/pdf' }),
         uploadBytes(workOrderRef, workOrderBlob, { contentType: 'application/pdf' }),
@@ -1392,6 +1441,7 @@ export function JobDetailsDialog({
         getDownloadURL(bolRef),
       ])
 
+      setDocumentGenerationStage('Saving documents…')
       await postOrdersOrderConfirmationUpdate({
         orderKey,
         documentUrl,
@@ -1420,6 +1470,7 @@ export function JobDetailsDialog({
       )
     } finally {
       setIsGeneratingOrderConfirmation(false)
+      setDocumentGenerationStage(null)
     }
   }
 
@@ -1480,7 +1531,9 @@ export function JobDetailsDialog({
         lines: normalizedLines,
       }
       const settings = quotePrintSettingsQuery.data?.settings || DEFAULT_QUOTE_PRINT_SETTINGS
-      const blob = await buildChangeOrderDocumentBlob(documentData, settings, version)
+      const termsResponse = await fetchCrmDocumentTerms(order.dealerSourceId)
+      const documentTerms = groupOrderDocumentTerms(termsResponse.terms)
+      const blob = await buildChangeOrderDocumentBlob(documentData, settings, version, documentTerms)
       const orderPath = sanitizeStoragePathSegment(orderNumber, 'order')
       const documentName = `Change Order V${version} - ${orderNumber}.pdf`
       const documentRef = storageRef(
@@ -1898,7 +1951,7 @@ export function JobDetailsDialog({
       return
     }
 
-    if (!hasMondayRecord || !String(order?.mondayItemId ?? '').trim()) {
+    if (!hasLinkedMondayItem) {
       setManagerEditError('Only Monday-linked orders can be edited.')
       return
     }
@@ -3011,8 +3064,8 @@ export function JobDetailsDialog({
       })
   }
 
-  const handleShipOrder = async () => {
-    if (!order || isShippingOrder || isUploadingShippingDocument || isDeletingShippingDocument) {
+  const handleOpenShipDialog = () => {
+    if (!allowShipOrder || !order || isShippingOrder || isUploadingShippingDocument || isDeletingShippingDocument) {
       return
     }
 
@@ -3029,21 +3082,40 @@ export function JobDetailsDialog({
       return
     }
 
-    const shouldContinue = window.confirm(
-      'Ship this order now? It will move from Order Track to Shipped in Monday.',
-    )
+    setShipDateDraft(normalizeDateInputValue(order.shippedAt) || currentLocalDateInputValue())
+    setShipCarrierDraft(String(order.shippingCarrier ?? '').trim())
+    setIsShipDialogOpen(true)
+  }
 
-    if (!shouldContinue) {
+  const handleShipOrder = async () => {
+    if (!allowShipOrder || !order || isShippingOrder || isUploadingShippingDocument || isDeletingShippingDocument) {
+      return
+    }
+
+    const shipDate = normalizeDateInputValue(shipDateDraft)
+    const carrier = shipCarrierDraft.trim()
+
+    if (!shipDate) {
+      setShippingActionError('Ship date is required.')
+      return
+    }
+
+    if (!carrier) {
+      setShippingActionError('Carrier is required.')
       return
     }
 
     setIsShippingOrder(true)
+    setShippingActionError(null)
+    setShippingActionSuccess(null)
 
     try {
       const response = await postOrdersShip({
         orderKey: order.id,
         mondayItemId: order.mondayItemId,
         orderNumber: order.orderNumber,
+        shipDate,
+        carrier,
       })
 
       setShippingActionSuccess(
@@ -3051,6 +3123,7 @@ export function JobDetailsDialog({
           ? 'Order moved to Shipped with Monday best-match mapping fallback.'
           : 'Order moved to Shipped with Monday column mapping.',
       )
+      setIsShipDialogOpen(false)
 
       await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.ordersOverview })
       await queryClient.invalidateQueries({
@@ -3076,9 +3149,10 @@ export function JobDetailsDialog({
       open={open}
       onClose={onClose}
       fullWidth
-      maxWidth="lg"
+      maxWidth="xl"
       PaperProps={{
         sx: {
+          width: { xs: 'calc(100vw - 16px)', md: 'min(1500px, 96vw)' },
           height: { xs: '96vh', md: '92vh' },
           maxHeight: { xs: '96vh', md: '92vh' },
           borderRadius: { xs: 2, md: 2.5 },
@@ -3312,6 +3386,65 @@ export function JobDetailsDialog({
           )
         ) : (
           <Stack spacing={2} sx={{ pt: 0 }}>
+            {order?.inDesign ? (
+              <Paper variant="outlined" sx={{ p: 1.5, bgcolor: isWaitingForProduction ? 'warning.50' : 'primary.50' }}>
+                <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.25} alignItems={{ sm: 'center' }} justifyContent="space-between">
+                  <Box>
+                    <Typography fontWeight={850}>
+                      {isWaitingForProduction ? 'Waiting for Production' : 'Design / eSign handoff'}
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      {isWaitingForProduction
+                        ? `Requested${order.productionHandoffRequestedByEmail ? ` by ${order.productionHandoffRequestedByEmail}` : ''}. A manager must give final approval.`
+                        : 'Before handoff, confirm all subitems are entered and the customer-signed shop drawing is uploaded.'}
+                    </Typography>
+                    {productionActionError ? <Alert severity="error" sx={{ mt: 1 }}>{productionActionError}</Alert> : null}
+                  </Box>
+                  {isWaitingForProduction ? (
+                    canManageOrderMetadata ? (
+                      <Button
+                        variant="contained"
+                        color="success"
+                        disabled={productionActionPending}
+                        onClick={() => {
+                          if (window.confirm('Move this order into production and move it to the Monday Order Track board?')) {
+                            void runProductionAction(true)
+                          }
+                        }}
+                      >
+                        {productionActionPending ? 'Moving…' : 'Move to Production'}
+                      </Button>
+                    ) : <Chip label="Manager approval required" color="warning" />
+                  ) : canEditOrderInformation ? (
+                    <Button variant="contained" onClick={() => setProductionConfirmOpen(true)}>
+                      Move to Production
+                    </Button>
+                  ) : null}
+                </Stack>
+              </Paper>
+            ) : null}
+            <Dialog open={productionConfirmOpen} onClose={() => { if (!productionActionPending) setProductionConfirmOpen(false) }} maxWidth="sm" fullWidth>
+              <DialogTitle>Send order to Waiting for Production</DialogTitle>
+              <DialogContent dividers>
+                <Stack spacing={1}>
+                  <Typography variant="body2">Confirm both requirements for order {order?.orderNumber || order?.jobNumber || '—'}.</Typography>
+                  <FormControlLabel control={<Checkbox checked={allSubitemsConfirmed} onChange={(event) => setAllSubitemsConfirmed(event.target.checked)} />} label="I added all subitems needed for this order." />
+                  <FormControlLabel control={<Checkbox checked={signedDrawingConfirmed} onChange={(event) => setSignedDrawingConfirmed(event.target.checked)} />} label="I uploaded the shop drawing signed by the customer." />
+                  {!shopDrawingUrl ? <Alert severity="warning">No shop drawing is currently attached to this order.</Alert> : null}
+                  {productionActionError ? <Alert severity="error">{productionActionError}</Alert> : null}
+                </Stack>
+              </DialogContent>
+              <DialogActions>
+                <Button disabled={productionActionPending} onClick={() => setProductionConfirmOpen(false)}>Cancel</Button>
+                <Button
+                  variant="contained"
+                  disabled={productionActionPending || !allSubitemsConfirmed || !signedDrawingConfirmed || !shopDrawingUrl}
+                  onClick={() => void runProductionAction(false)}
+                >
+                  {productionActionPending ? 'Sending…' : 'Confirm and Send'}
+                </Button>
+              </DialogActions>
+            </Dialog>
             <Tabs
               value={detailsTab}
               onChange={(_event, value: JobDetailsTab) => {
@@ -3345,6 +3478,7 @@ export function JobDetailsDialog({
               <Tab value="info" label="Order overview" />
               <Tab value="hours" label="Hours" />
               <Tab value="pictures" label="Pictures" />
+              <Tab value="parts" label="Subitems" />
               {shouldShowWarrantyTab ? (
                 <Tab
                   value="warranty"
@@ -3473,6 +3607,14 @@ export function JobDetailsDialog({
                   </Box>
                 )}
               </Stack>
+            ) : null}
+
+            {detailsTab === 'parts' ? (
+              <OrderDesignPartsTab
+                orderKey={String(order?.id ?? '').trim()}
+                orderNumber={String(order?.orderNumber ?? order?.jobNumber ?? '').trim()}
+                inDesign={order?.inDesign === true}
+              />
             ) : null}
 
             {detailsTab === 'hours' ? (
@@ -4149,19 +4291,21 @@ export function JobDetailsDialog({
                       </Typography>
                     ) : null}
 
-                    <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.75}>
-                      <Button
-                        size="medium"
-                        variant="contained"
-                        color={canShipFromWebsiteFlow ? 'success' : 'error'}
-                        disabled={Boolean(order?.isShipped) || isShippingOrder || isUploadingShippingDocument || isDeletingShippingDocument}
-                        onClick={() => {
-                          void handleShipOrder()
-                        }}
-                      >
-                        {order?.isShipped ? 'Shipped' : isShippingOrder ? 'Shipping...' : 'Ship'}
-                      </Button>
-                    </Stack>
+                    {allowShipOrder ? (
+                      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.75}>
+                        <Button
+                          size="medium"
+                          variant="contained"
+                          color={canShipFromWebsiteFlow ? 'success' : 'error'}
+                          disabled={Boolean(order?.isShipped) || isShippingOrder || isUploadingShippingDocument || isDeletingShippingDocument}
+                          onClick={() => {
+                            handleOpenShipDialog()
+                          }}
+                        >
+                          {order?.isShipped ? 'Shipped' : isShippingOrder ? 'Shipping...' : 'Ship'}
+                        </Button>
+                      </Stack>
+                    ) : null}
                   </Stack>
                 </Paper>
               </Stack>
@@ -4736,7 +4880,7 @@ export function JobDetailsDialog({
                             <IconButton
                               size="small"
                               onClick={handleStartManagerEdit}
-                              disabled={!canEditOrderInformation || !hasMondayRecord || isSavingManagerEdit}
+                              disabled={!canEditOrderInformation || !hasLinkedMondayItem || isSavingManagerEdit}
                               sx={{ border: '1px solid', borderColor: 'divider' }}
                               aria-label="Edit order information"
                             >
@@ -4979,7 +5123,7 @@ export function JobDetailsDialog({
                       </Typography>
                     ) : null}
 
-                    {canEditOrderInformation && !hasMondayRecord ? (
+                    {canEditOrderInformation && !hasLinkedMondayItem ? (
                       <Typography variant="caption" color="text.secondary">
                         Only Monday-linked orders can be edited.
                       </Typography>
@@ -5063,7 +5207,7 @@ export function JobDetailsDialog({
                             }}
                           >
                             {isGeneratingOrderConfirmation
-                              ? 'Generating Documents…'
+                              ? documentGenerationStage || 'Generating Documents…'
                               : orderConfirmationUrl && workOrderUrl && proformaInvoiceUrl && bolUrl
                                 ? 'Regenerate Documents'
                                 : 'Generate Documents'}
@@ -5411,18 +5555,20 @@ export function JobDetailsDialog({
                           <Chip size="small" color="success" label="Shipped" />
                         ) : null}
                       </Stack>
-                      <Button
-                        size="small"
-                        variant="contained"
-                        color={canShipFromWebsiteFlow ? 'success' : 'error'}
-                        disabled={Boolean(order?.isShipped) || isShippingOrder || isUploadingShippingDocument || isDeletingShippingDocument}
-                        onClick={() => {
-                          void handleShipOrder()
-                        }}
-                        sx={{ minWidth: 104 }}
-                      >
-                        {order?.isShipped ? 'Shipped' : isShippingOrder ? 'Shipping...' : 'Ship Order'}
-                      </Button>
+                      {allowShipOrder ? (
+                        <Button
+                          size="small"
+                          variant="contained"
+                          color={canShipFromWebsiteFlow ? 'success' : 'error'}
+                          disabled={Boolean(order?.isShipped) || isShippingOrder || isUploadingShippingDocument || isDeletingShippingDocument}
+                          onClick={() => {
+                            handleOpenShipDialog()
+                          }}
+                          sx={{ minWidth: 104 }}
+                        >
+                          {order?.isShipped ? 'Shipped' : isShippingOrder ? 'Shipping...' : 'Ship Order'}
+                        </Button>
+                      ) : null}
                     </Stack>
 
                     <Typography variant="caption" color="text.secondary">
@@ -5434,6 +5580,59 @@ export function JobDetailsDialog({
             ) : null}
           </Stack>
         )}
+
+        <Dialog
+          open={allowShipOrder && isShipDialogOpen}
+          onClose={() => {
+            if (!isShippingOrder) setIsShipDialogOpen(false)
+          }}
+          maxWidth="sm"
+          fullWidth
+        >
+          <DialogTitle>Ship order {order?.orderNumber || ''}</DialogTitle>
+          <DialogContent dividers>
+            <Stack spacing={2} sx={{ pt: 0.5 }}>
+              <Alert severity="info">
+                Confirm the shipment date and enter the carrier. Shipping moves this order to the Shipped board in Monday.
+              </Alert>
+              {shippingActionError ? <Alert severity="error">{shippingActionError}</Alert> : null}
+              <TextField
+                label="Ship date"
+                type="date"
+                value={shipDateDraft}
+                onChange={(event) => setShipDateDraft(event.target.value)}
+                required
+                fullWidth
+                slotProps={{ inputLabel: { shrink: true } }}
+              />
+              <TextField
+                label="Carrier / Ship via"
+                value={shipCarrierDraft}
+                onChange={(event) => setShipCarrierDraft(event.target.value)}
+                required
+                fullWidth
+                autoFocus
+                placeholder="Enter carrier name"
+                inputProps={{ maxLength: 120 }}
+              />
+            </Stack>
+          </DialogContent>
+          <DialogActions>
+            <Button disabled={isShippingOrder} onClick={() => setIsShipDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="contained"
+              color="success"
+              disabled={isShippingOrder || !normalizeDateInputValue(shipDateDraft) || !shipCarrierDraft.trim()}
+              onClick={() => {
+                void handleShipOrder()
+              }}
+            >
+              {isShippingOrder ? 'Shipping...' : 'Confirm Ship'}
+            </Button>
+          </DialogActions>
+        </Dialog>
 
         <Dialog
           open={isChangeOrderEditorOpen}

@@ -932,39 +932,32 @@ app.put('/api/timesheet/order-progress', requireFirebaseAuth, requireManagerOrAd
     const resolvedReadyPercent = shouldForceToComplete ? 100 : roundedReadyPercent
     const now = new Date().toISOString()
     let unifiedOrder = null
+    const warnings = []
 
     if (hasBenchInput) {
-      unifiedOrder = requestedMondayItemId
-        ? await ordersUnifiedCollection.findOne({ monday_item_id: requestedMondayItemId })
-        : await ordersUnifiedCollection.findOne({
+      if (requestedMondayItemId) {
+        unifiedOrder = await ordersUnifiedCollection.findOne({ monday_item_id: requestedMondayItemId })
+      }
+      if (!unifiedOrder) {
+        unifiedOrder = await ordersUnifiedCollection.findOne({
           $or: [
             { order_number: jobName },
             { order_number: extractOrderDigits(jobName) },
           ],
         })
+      }
 
       const mondayItemId = String(unifiedOrder?.monday_item_id ?? requestedMondayItemId ?? '').trim()
       const mondayBoardId = String(unifiedOrder?.monday_board_id ?? '').trim()
       const mondayBoard = resolveBoardMapById(mondayBoardId)
       const benchColumnId = String(mondayBoard?.columns?.bench ?? '').trim()
+      const orderNumber = String(unifiedOrder?.order_number ?? '').trim()
+        || extractOrderDigits(jobName)
+        || jobName
 
-      if (mondayItemId && mondayBoardId && benchColumnId) {
-        if (typeof updateMondayItemTextColumn !== 'function') {
-          return res.status(503).json({ error: 'Monday Bench updates are unavailable.' })
-        }
-
-        await updateMondayItemTextColumn({
-          boardId: mondayBoardId,
-          itemId: mondayItemId,
-          columnId: benchColumnId,
-          textValue: bench || '',
-        })
-      } else if (bench) {
-        return res.status(409).json({
-          error: 'This order is not linked to a mapped Monday board, so Bench could not be saved.',
-        })
-      }
-
+      // Arnold is the source of truth for the manager sheet. Persist the Bench
+      // assignment before attempting the optional Monday mirror so an absent or
+      // stale Monday link never blocks the rest of the manager-sheet save.
       if (unifiedOrder) {
         await ordersUnifiedCollection.updateOne(
           { _id: unifiedOrder._id },
@@ -975,6 +968,43 @@ app.put('/api/timesheet/order-progress', requireFirebaseAuth, requireManagerOrAd
             },
           },
         )
+      }
+
+      if (mondayItemId && mondayBoardId && benchColumnId) {
+        if (typeof updateMondayItemTextColumn !== 'function') {
+          warnings.push({
+            code: 'bench_monday_sync_skipped',
+            orderNumber,
+            message: `Order ${orderNumber}: Bench was saved in Arnold, but Monday Bench updates are currently unavailable.`,
+          })
+        } else {
+          try {
+            await updateMondayItemTextColumn({
+              boardId: mondayBoardId,
+              itemId: mondayItemId,
+              columnId: benchColumnId,
+              textValue: bench || '',
+            })
+          } catch (mondayError) {
+            console.error('Unable to mirror manager-sheet Bench assignment to Monday.', {
+              orderNumber,
+              mondayBoardId,
+              mondayItemId,
+              error: mondayError,
+            })
+            warnings.push({
+              code: 'bench_monday_sync_skipped',
+              orderNumber,
+              message: `Order ${orderNumber}: Bench was saved in Arnold, but it could not be updated on Monday.`,
+            })
+          }
+        }
+      } else if (bench) {
+        warnings.push({
+          code: 'bench_monday_sync_skipped',
+          orderNumber,
+          message: `Order ${orderNumber}: Bench was saved in Arnold, but this order is not linked to a mapped Monday board.`,
+        })
       }
     }
 
@@ -1016,7 +1046,7 @@ app.put('/api/timesheet/order-progress', requireFirebaseAuth, requireManagerOrAd
       },
     )
 
-    return res.json({ progress })
+    return res.json({ progress, warnings })
   } catch (error) {
     next(error)
   }

@@ -294,6 +294,37 @@ export function createMondaySnapshotService({
     ? buildMondayItemsPageQuery
     : () => mondayItemsPageQuery
 
+  const mondayStatusColors = Object.freeze({
+    'working on it': '#fdab3d', 'is here': '#00c875', done: '#00c875',
+    stuck: '#df2f4a', ordered: '#007eb5', com: '#9d50dd',
+    'to be determined': '#cd9282', 'make in house': '#ff6d3b',
+    partial: '#cab641', 'partial receipt': '#4eccc6', 'by other': '#333333',
+    'in cart': '#ffadad', canceled: '#ff007f',
+  })
+
+  function normalizeMondaySubitems(item) {
+    return (Array.isArray(item?.subitems) ? item.subitems : []).map((subitem) => {
+      const values = Array.isArray(subitem?.column_values) ? subitem.column_values : []
+      const byTitle = (patterns) => values.find((value) => {
+        const title = String(value?.column?.title ?? '').trim().toLowerCase()
+        return patterns.some((pattern) => pattern.test(title))
+      })
+      const status = String(byTitle([/^status$/])?.text ?? '').trim() || null
+      return {
+        id: String(subitem?.id ?? '').trim(),
+        name: String(subitem?.name ?? '').trim() || 'Subitem',
+        status,
+        statusColor: status ? mondayStatusColors[status.toLowerCase()] || null : null,
+        vendor: String(byTitle([/^vendor$/])?.text ?? '').trim() || null,
+        dateOrdered: String(byTitle([/^date ordered/])?.text ?? '').trim() || null,
+        dateReceived: String(byTitle([/^date received/, /^received date/])?.text ?? '').trim() || null,
+        dueDate: String(byTitle([/^due date/])?.text ?? '').trim() || null,
+        createdAt: String(subitem?.created_at ?? '').trim() || null,
+        updatedAt: String(subitem?.updated_at ?? '').trim() || null,
+      }
+    }).filter((subitem) => subitem.id)
+  }
+
   function collectColumnIdsFromMap(columnMap) {
     if (!columnMap || typeof columnMap !== 'object') {
       return []
@@ -455,7 +486,10 @@ export function createMondaySnapshotService({
       const uniqueRawItems = dedupeMondayItems(rawItems)
       const columnMap = detectMondayColumns(uniqueRawItems, boardId)
       const orders = uniqueRawItems
-        .map((item) => normalizeMondayOrder(item, columnMap, { boardUrl }))
+        .map((item) => ({
+          ...normalizeMondayOrder(item, columnMap, { boardUrl }),
+          subitems: normalizeMondaySubitems(item),
+        }))
         .sort(compareOrdersByUrgency)
 
       const lateOrders = orders.filter((order) => order.isLate)
@@ -1158,6 +1192,7 @@ query GetMoveBoardMetadata($sourceBoardId: ID!, $targetBoardId: ID!) {
       title
     }
   }
+
   targetBoards: boards(ids: [$targetBoardId]) {
     id
     name
@@ -1279,6 +1314,23 @@ mutation MoveMondayItemToBoardFallback($itemId: ID!, $boardId: ID!, $groupId: ID
       mappedColumnCount: columnsMapping.filter((entry) => String(entry?.target ?? '').trim()).length,
       totalSourceColumnCount: columnsMapping.length,
     }
+  }
+
+  async function createMondaySubitem({ parentItemId, itemName }) {
+    ensureMondayConfiguration()
+    const normalizedParentItemId = String(parentItemId ?? '').trim()
+    const normalizedItemName = String(itemName ?? '').trim().slice(0, 500)
+    if (!normalizedParentItemId) throw { status: 400, message: 'Missing parent Monday item id.' }
+    if (!normalizedItemName) throw { status: 400, message: 'Missing subitem name.' }
+    const data = await callMondayGraphql(
+      `mutation CreateMondaySubitem($parentItemId: ID!, $itemName: String!) {
+        create_subitem(parent_item_id: $parentItemId, item_name: $itemName) { id name }
+      }`,
+      { parentItemId: normalizedParentItemId, itemName: normalizedItemName },
+    )
+    const subitem = data?.create_subitem
+    if (!subitem?.id) throw { status: 502, message: 'Monday did not return the new subitem.' }
+    return { id: String(subitem.id), name: String(subitem.name ?? normalizedItemName) }
   }
 
   async function fetchMondayBoardsCatalog({ forceRefresh = false } = {}) {
@@ -1734,6 +1786,13 @@ query GetItemsByIds($itemIds: [ID!]!) {
         title
       }
     }
+    subitems {
+      id
+      name
+      created_at
+      updated_at
+      column_values { id type text value column { title } }
+    }
   }
 }
 `
@@ -1759,7 +1818,10 @@ query GetItemsByIds($itemIds: [ID!]!) {
     const uniqueRawItems = dedupeMondayItems(rawItems)
     const columnMap = detectMondayColumns(uniqueRawItems, normalizedBoardId)
     const orders = uniqueRawItems
-      .map((item) => normalizeMondayOrder(item, columnMap, { boardUrl }))
+      .map((item) => ({
+        ...normalizeMondayOrder(item, columnMap, { boardUrl }),
+        subitems: normalizeMondaySubitems(item),
+      }))
       .sort(compareOrdersByUrgency)
 
     return {
@@ -1772,6 +1834,7 @@ query GetItemsByIds($itemIds: [ID!]!) {
 
   return {
     createMondayItem,
+    createMondaySubitem,
     deleteMondayItem,
     fetchMondayAssetDownloadInfo,
     fetchMondayBoardColumns,

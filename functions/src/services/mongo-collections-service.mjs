@@ -322,6 +322,7 @@ export function createMongoCollectionsService({
             visitorShortcutsCollection.createIndex({ updatedAt: -1 }),
             diagnosticReportsCollection.createIndex({ id: 1 }, { unique: true }),
             diagnosticReportsCollection.createIndex({ status: 1, createdAt: -1 }),
+            diagnosticReportsCollection.createIndex({ 'createdBy.uid': 1, createdAt: -1 }),
             diagnosticReportsCollection.createIndex({ createdAt: -1 }),
             diagnosticRequestEventsCollection.createIndex({ sessionId: 1, createdAt: 1 }),
             diagnosticRequestEventsCollection.createIndex({ createdAt: 1 }, { expireAfterSeconds: 30 * 24 * 60 * 60 }),

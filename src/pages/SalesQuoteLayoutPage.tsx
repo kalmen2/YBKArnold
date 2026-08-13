@@ -197,7 +197,7 @@ export default function SalesQuoteLayoutPage() {
                 </Stack>
                 <Typography variant="h6" fontWeight={800}>Estimate / Quote</Typography>
                 <TextField label="Footer text" value={draft.footerText || ''} onChange={(event) => setField('footerText', event.target.value || null)} multiline minRows={3} />
-                <TextField label="Customer information" value={draft.customerInformation} onChange={(event) => setField('customerInformation', event.target.value)} multiline minRows={8} helperText="Standard terms printed at the bottom of every website quote" />
+                <Alert severity="info">Quote and order terms are managed in Config → Terms &amp; Conditions.</Alert>
                 <TextField label="Accent color" type="color" value={draft.accentColor} onChange={(event) => setField('accentColor', event.target.value)} sx={{ width: 180 }} />
                 <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
                   <FormControlLabel control={<Checkbox checked={draft.showLeadTime} onChange={(event) => setField('showLeadTime', event.target.checked)} />} label="Show lead time" />
@@ -207,9 +207,7 @@ export default function SalesQuoteLayoutPage() {
                 <Divider />
                 <Typography variant="h6" fontWeight={800}>Order Confirmation</Typography>
                 <TextField label="Default project managers" value={draft.projectManagers} onChange={(event) => setField('projectManagers', event.target.value)} helperText="Separate names with commas" />
-                <TextField label="Lead-time terms" value={draft.orderConfirmationTerms} onChange={(event) => setField('orderConfirmationTerms', event.target.value)} multiline minRows={3} helperText="Printed inside the processing terms and conditions at the bottom of the Order Confirmation." />
                 <TextField label="Deposit instructions" value={draft.depositRequestBody} onChange={(event) => setField('depositRequestBody', event.target.value)} multiline minRows={4} helperText="The percentage entered during conversion replaces the percentage in this message. There is no separate Deposit Request document." />
-                <TextField label="Deposit and processing terms" value={draft.depositRequestTerms} onChange={(event) => setField('depositRequestTerms', event.target.value)} multiline minRows={5} />
               </Stack>
             </Stack>
 

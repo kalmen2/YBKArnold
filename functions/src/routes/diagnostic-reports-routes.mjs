@@ -59,6 +59,9 @@ function serializeReport(document, includeDiagnostics = false) {
     createdBy: document?.createdBy && typeof document.createdBy === 'object' ? document.createdBy : {},
     createdAt: normalizeText(document?.createdAt, 80) || null,
     updatedAt: normalizeText(document?.updatedAt, 80) || null,
+    resolutionExplanation: normalizeText(document?.resolutionExplanation, 4000),
+    resolvedAt: normalizeText(document?.resolvedAt, 80) || null,
+    resolvedBy: document?.resolvedBy && typeof document.resolvedBy === 'object' ? document.resolvedBy : null,
     recording,
     consoleCount: Number(document?.consoleCount) || (Array.isArray(diagnostics.console) ? diagnostics.console.length : 0),
     networkCount: Number(document?.networkCount) || (Array.isArray(diagnostics.network) ? diagnostics.network.length : 0),
@@ -196,6 +199,26 @@ export function registerDiagnosticReportsRoutes(app, deps) {
     }
   })
 
+  app.get('/api/diagnostic-reports/my', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const publicUser = toPublicAuthUser(req.authUser)
+      if (!publicUser?.isApproved) return res.status(403).json({ error: 'Approved access is required.' })
+
+      const uid = normalizeText(publicUser.uid, 200)
+      if (!uid) return res.status(400).json({ error: 'Your user account could not be identified.' })
+      const limit = Math.max(1, Math.min(Number(req.query?.limit) || 100, 200))
+      const { diagnosticReportsCollection } = await getCollections()
+      const documents = await diagnosticReportsCollection
+        .find({ 'createdBy.uid': uid }, { projection: { diagnostics: 0, 'recording.storagePath': 0 } })
+        .sort({ createdAt: -1 })
+        .limit(limit)
+        .toArray()
+      return res.json({ reports: documents.map((document) => serializeReport(document)) })
+    } catch (error) {
+      next(error)
+    }
+  })
+
   app.get('/api/admin/diagnostic-reports/:reportId', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
     try {
       const { diagnosticReportsCollection } = await getCollections()
@@ -231,14 +254,46 @@ export function registerDiagnosticReportsRoutes(app, deps) {
     try {
       const status = normalizeText(req.body?.status, 30).toLowerCase()
       if (!REPORT_STATUSES.has(status)) return res.status(400).json({ error: 'Status must be open, investigating, or resolved.' })
-      const { diagnosticReportsCollection } = await getCollections()
+      const resolutionExplanation = normalizeText(req.body?.resolutionExplanation, 4000)
+      const { diagnosticReportsCollection, mobileAlertsCollection } = await getCollections()
+      const reportId = normalizeText(req.params.reportId, 120)
+      const existing = await diagnosticReportsCollection.findOne({ id: reportId })
+      if (!existing) return res.status(404).json({ error: 'Issue report not found.' })
       const now = new Date().toISOString()
+      const updatedBy = { uid: normalizeText(req.authUser?.uid, 200), email: normalizeText(req.authUser?.email, 320) }
+      const statusFields = status === 'resolved'
+        ? {
+            resolutionExplanation,
+            resolvedAt: existing.status === 'resolved' && existing.resolvedAt ? existing.resolvedAt : now,
+            resolvedBy: existing.status === 'resolved' && existing.resolvedBy ? existing.resolvedBy : updatedBy,
+          }
+        : { resolutionExplanation: '', resolvedAt: null, resolvedBy: null }
       const updateResult = await diagnosticReportsCollection.findOneAndUpdate(
-        { id: normalizeText(req.params.reportId, 120) },
-        { $set: { status, updatedAt: now, updatedBy: { uid: normalizeText(req.authUser?.uid, 200), email: normalizeText(req.authUser?.email, 320) } } },
+        { id: reportId },
+        { $set: { status, updatedAt: now, updatedBy, ...statusFields } },
         { returnDocument: 'after', projection: { diagnostics: 0 } },
       )
-      if (!updateResult) return res.status(404).json({ error: 'Issue report not found.' })
+
+      const recipientUid = normalizeText(existing?.createdBy?.uid, 200)
+      if (status === 'resolved' && existing.status !== 'resolved' && recipientUid) {
+        const reference = normalizeText(existing.reference, 100) || 'Your issue report'
+        await mobileAlertsCollection.insertOne({
+          id: randomUUID(),
+          title: `Issue solved: ${reference}`,
+          message: resolutionExplanation
+            ? `Your issue report was marked solved. ${resolutionExplanation}`
+            : 'Your issue report was marked solved.',
+          isUpdate: true,
+          targetMode: 'selected',
+          targetUserUids: [recipientUid],
+          createdByUid: updatedBy.uid || null,
+          createdByEmail: updatedBy.email || null,
+          delivery: { targetUserCount: 1, pushTokenCount: 0, pushAcceptedCount: 0, pushErrorCount: 0, errorSamples: [] },
+          metadata: { source: 'diagnostic_report_resolved', diagnosticReportId: reportId, reference },
+          createdAt: now,
+          updatedAt: now,
+        })
+      }
       return res.json({ ok: true, report: serializeReport(updateResult) })
     } catch (error) {
       next(error)

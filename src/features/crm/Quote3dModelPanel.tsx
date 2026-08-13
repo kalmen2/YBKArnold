@@ -17,6 +17,7 @@ import {
   Divider,
   Paper,
   Stack,
+  TextField,
   Typography,
 } from '@mui/material'
 import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage'
@@ -28,6 +29,7 @@ import {
   fetchTrimbleConnectionStatus,
   initiateTrimbleQuoteModelUpload,
   publishGlbQuoteModels,
+  publishSketchUpShareLink,
   removeTrimbleQuoteModel,
   startTrimbleConnection,
   uploadTrimbleSavedQuoteModels,
@@ -86,6 +88,7 @@ export default function Quote3dModelPanel({ quote, revisionNumber, canManage, on
   const [error, setError] = useState('')
   const [pickerOpen, setPickerOpen] = useState(false)
   const [selectedUrls, setSelectedUrls] = useState<string[]>([])
+  const [sketchUpShareUrl, setSketchUpShareUrl] = useState('')
 
   useEffect(() => {
     let active = true
@@ -181,8 +184,26 @@ export default function Quote3dModelPanel({ quote, revisionNumber, canManage, on
 
   const openPicker = () => {
     setSelectedUrls([])
+    setSketchUpShareUrl('')
     setError('')
     setPickerOpen(true)
+  }
+
+  const publishSharedSketchUpView = async () => {
+    const shareUrl = sketchUpShareUrl.trim()
+    if (!shareUrl) return
+
+    setBusy(true)
+    setError('')
+    try {
+      await publishSketchUpShareLink(quote.id, shareUrl, revisionNumber)
+      setPickerOpen(false)
+      await onChanged()
+    } catch (requestError) {
+      setError(errorMessage(requestError))
+    } finally {
+      setBusy(false)
+    }
   }
 
   const toggleRendering = (url: string) => {
@@ -260,8 +281,8 @@ export default function Quote3dModelPanel({ quote, revisionNumber, canManage, on
               </Stack>
               <Typography variant="body2" color="text.secondary">
                 {model
-                  ? 'Customers receive a permanent Arnold link with view-only rotation and zoom.'
-                  : 'Publish a smooth .glb web model, or use a .skp model through Trimble.'}
+                  ? 'Customers receive a permanent Arnold link for interactive 3D viewing.'
+                  : 'Use a SketchUp Share Link for the exact SketchUp colors and lines, or publish an SKP/GLB file.'}
               </Typography>
               {publishedModels.length ? (
                 <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ mt: 1 }}>
@@ -315,6 +336,28 @@ export default function Quote3dModelPanel({ quote, revisionNumber, canManage, on
         </DialogTitle>
         <DialogContent>
           <Stack spacing={2}>
+            <Alert severity="info">
+              Recommended for exact SketchUp colors and lines: paste a SketchUp shared-model link. Arnold opens it in presentation mode without the editing sidebars.
+            </Alert>
+            <TextField
+              label="SketchUp Share Link"
+              placeholder="https://app.sketchup.com/share/..."
+              value={sketchUpShareUrl}
+              onChange={(event) => setSketchUpShareUrl(event.target.value)}
+              disabled={busy}
+              fullWidth
+            />
+            <Button
+              disabled={busy || !sketchUpShareUrl.trim()}
+              variant="contained"
+              size="large"
+              startIcon={<ViewInArRoundedIcon />}
+              onClick={() => void publishSharedSketchUpView()}
+              sx={{ justifyContent: 'flex-start', textTransform: 'none', py: 1.4 }}
+            >
+              Use exact SketchUp view
+            </Button>
+            <Divider><Typography variant="caption" color="text.secondary">OR UPLOAD A MODEL FILE</Typography></Divider>
             <Button
               disabled={busy}
               variant="outlined"

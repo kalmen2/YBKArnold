@@ -1427,6 +1427,110 @@ function normalizeQuotePrintSettings(input, metadata = {}) {
   }
 }
 
+const documentTermTypes = Object.freeze([
+  'quote',
+  'order_confirmation',
+  'proforma_invoice',
+  'work_order',
+  'bill_of_lading',
+  'change_order',
+])
+const documentTermTypeSet = new Set(documentTermTypes)
+
+function buildDefaultDocumentTerms(settingsInput) {
+  const settings = normalizeQuotePrintSettings(settingsInput || defaultQuotePrintSettings)
+  const now = null
+  const term = (id, documentType, title, body, sortOrder) => ({
+    id,
+    kind: 'document_term',
+    documentType,
+    title,
+    body,
+    sortOrder,
+    isDefault: true,
+    includedDealerSourceIds: [],
+    excludedDealerSourceIds: [],
+    isBuiltIn: true,
+    isArchived: false,
+    createdAt: now,
+    createdByEmail: null,
+    updatedAt: now,
+    updatedByEmail: null,
+  })
+
+  return [
+    term('quote-validity', 'quote', 'Quote Validity', 'Quoted prices are subject to change without notice. All pricing is valid for 30 days from the initial quote. (R0) Date', 10),
+    term('quote-stain-to-match', 'quote', 'Stain to Match', 'Stain to Match — Net $375.00. S.T.M. is available only on Arnold standard veneers: Cherry, Walnut, Mahogany, Oak, and Maple.\nDoes not include reconstituted veneer, multi-step finishes, racking, glazing, matching laminate wood, or proprietary veneer.\nAn additional up-charge may apply upon receipt and review of the sample by our Procurement Manager.', 20),
+    term('quote-customer-information', 'quote', 'Customer Information', settings.customerInformation, 30),
+    term('order-confirmation-lead-time', 'order_confirmation', 'Lead Time', settings.orderConfirmationTerms, 10),
+    term('order-confirmation-processing', 'order_confirmation', 'Deposit and Processing', settings.depositRequestTerms, 20),
+    term('bol-received', 'bill_of_lading', 'Received', 'Subject to the classifications and tariffs in effect on the date of issue of this bill of lading, the property described below is received in apparent good order, except as noted (contents and condition of contents of packages unknown), marked, consigned, and destined as indicated. The carrier, meaning any person or corporation in possession of the property under this contract, agrees to carry it to its usual place of delivery at the destination, if on its route, or otherwise to deliver it to another carrier on the route to the destination.', 10),
+    term('bol-transportation', 'bill_of_lading', 'Terms of Transportation', 'As to each carrier of all or any of the property over all or any portion of the route, and as to each party interested in the property, every service performed under this bill is subject to all terms and conditions of the applicable domestic bill of lading, freight classification, carrier tariff, rules, and governing law in effect on the date of shipment.', 20),
+    term('bol-shipper-certification', 'bill_of_lading', 'Shipper Certification', 'The shipper certifies that it is familiar with the applicable bill-of-lading terms and conditions, including those incorporated by the governing classification or tariff, and agrees to them for itself and its assigns.', 30),
+    term('bol-non-recourse', 'bill_of_lading', 'Non-Recourse', 'Subject to Section 7 of the applicable bill of lading, if this shipment is to be delivered without recourse on the consignor, the consignor shall sign here: ________________________________. The carrier shall not make delivery without payment of freight and other lawful charges.', 40),
+    term('bol-prepaid-charges', 'bill_of_lading', 'Prepaid Charges', 'To be prepaid: ____________________. Received $____________________ to apply in prepayment of charges. Per ____________________. Charges advanced: $____________________.', 50),
+    term('bol-water-shipments', 'bill_of_lading', 'Water Shipments', "If the shipment moves between two ports by water, state whether the weight is the carrier's or shipper's weight: ____________________.", 60),
+    term('bol-declared-value', 'bill_of_lading', 'Declared Value', 'Where the rate depends on value, the agreed or declared value is stated by the shipper as not exceeding $____________________ per ____________________.', 70),
+    term('bol-fob-damage', 'bill_of_lading', 'F.O.B. and Damage', "All goods are sold F.O.B. Irvington, New Jersey, producing point. The transportation company is the customer's agent, and damage claims must be reported to it immediately upon receipt. Merchandise is shipped blanket wrapped except where unavailable; a crating charge may then be added.", 80),
+    term('bol-custom-orders', 'bill_of_lading', 'Custom Orders', 'Custom-made and custom-finished furniture cannot be canceled or returned. Returns without an authorization number will not be accepted.', 90),
+    term('change-order-approval', 'change_order', 'Change Order Approval', 'This document replaces the prior order details only after it is signed by the customer and accepted by Arnold Contract. Production paperwork will remain on hold until the customer-signed change order is uploaded.', 10),
+  ]
+}
+
+function normalizeDealerSourceIdList(value) {
+  return [...new Set(
+    toOptionalArray(value)
+      .map((entry) => toTrimmedText(entry, 160))
+      .filter(Boolean),
+  )].slice(0, 5000)
+}
+
+function normalizeDocumentTerm(input, fallback = {}) {
+  const source = { ...toOptionalObject(fallback), ...toOptionalObject(input) }
+  const documentType = toLowerText(source.documentType, 80)
+
+  if (!documentTermTypeSet.has(documentType)) {
+    return null
+  }
+
+  const title = toTrimmedText(source.title, 240)
+  const body = toTrimmedText(source.body, 12000)
+
+  if (!title || !body) {
+    return null
+  }
+
+  return {
+    id: toTrimmedText(source.id, 180),
+    kind: 'document_term',
+    documentType,
+    title,
+    body,
+    sortOrder: Math.max(0, Math.min(100000, toNonNegativeInteger(source.sortOrder, 0))),
+    isDefault: toNullableBoolean(source.isDefault) ?? false,
+    includedDealerSourceIds: normalizeDealerSourceIdList(source.includedDealerSourceIds),
+    excludedDealerSourceIds: normalizeDealerSourceIdList(source.excludedDealerSourceIds),
+    isBuiltIn: Boolean(source.isBuiltIn),
+    isArchived: Boolean(source.isArchived),
+    createdAt: toIsoDateOrNull(source.createdAt),
+    createdByEmail: toTrimmedText(source.createdByEmail, 200) || null,
+    updatedAt: toIsoDateOrNull(source.updatedAt),
+    updatedByEmail: toTrimmedText(source.updatedByEmail, 200) || null,
+  }
+}
+
+function documentTermAppliesToDealer(term, dealerSourceId) {
+  const dealerId = toTrimmedText(dealerSourceId, 160)
+
+  if (!dealerId) {
+    return Boolean(term.isDefault)
+  }
+
+  return term.isDefault
+    ? !term.excludedDealerSourceIds.includes(dealerId)
+    : term.includedDealerSourceIds.includes(dealerId)
+}
+
 function toSalesRepResponse(rawSalesRep, options = {}) {
   const includeContractFields = options.includeContractFields !== false
   const salesRep = toOptionalObject(rawSalesRep)
@@ -2133,6 +2237,19 @@ export function registerCrmRoutes(app, deps) {
       isSalesRep,
       territoryStates,
     }
+  }
+
+  function requireApprovedCrmAccess(req, _res, next) {
+    const publicUser = toPublicAuthUser(req.authUser)
+
+    if (!publicUser?.isApproved) {
+      return next({
+        status: 403,
+        message: 'Approved access is required.',
+      })
+    }
+
+    next()
   }
 
   function requireOfficeManagerOrAdminRole(req, _res, next) {
@@ -5073,7 +5190,7 @@ export function registerCrmRoutes(app, deps) {
     }
   })
 
-  app.patch('/api/crm/contacts/:contactSourceId', requireFirebaseAuth, requireSalesManagerOrAdminRole, async (req, res, next) => {
+  app.patch('/api/crm/contacts/:contactSourceId', requireFirebaseAuth, requireApprovedCrmAccess, async (req, res, next) => {
     try {
       const { isSalesRep, territoryStates } = resolveCrmAccessScope(req)
       const contactSourceId = toTrimmedText(req.params.contactSourceId, 160)
@@ -6079,6 +6196,153 @@ export function registerCrmRoutes(app, deps) {
       return res.json({
         settings: normalizeQuotePrintSettings(storedSettings || defaultQuotePrintSettings),
       })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  async function loadDocumentTerms(collection) {
+    const [storedSettings, storedTerms] = await Promise.all([
+      collection.findOne({ id: 'default' }, { projection: { _id: 0 } }),
+      collection.find({ kind: 'document_term' }, { projection: { _id: 0 } }).toArray(),
+    ])
+    const defaults = buildDefaultDocumentTerms(storedSettings || defaultQuotePrintSettings)
+    const defaultsById = new Map(defaults.map((term) => [term.id, term]))
+    const storedById = new Map(storedTerms.map((term) => [toTrimmedText(term?.id, 180), term]))
+    const merged = defaults.map((defaultTerm) => (
+      normalizeDocumentTerm(storedById.get(defaultTerm.id), defaultTerm)
+    ))
+
+    storedTerms.forEach((storedTerm) => {
+      const id = toTrimmedText(storedTerm?.id, 180)
+      if (!id || defaultsById.has(id)) return
+      merged.push(normalizeDocumentTerm(storedTerm))
+    })
+
+    return merged
+      .filter((term) => term && !term.isArchived)
+      .sort((left, right) => (
+        documentTermTypes.indexOf(left.documentType) - documentTermTypes.indexOf(right.documentType)
+        || left.sortOrder - right.sortOrder
+        || left.title.localeCompare(right.title)
+      ))
+  }
+
+  app.get('/api/crm/document-terms', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const dealerSourceId = toTrimmedText(req.query?.dealerSourceId, 160)
+      const { crmQuotePrintSettingsCollection } = await getCollections()
+      const terms = await loadDocumentTerms(crmQuotePrintSettingsCollection)
+
+      return res.json({
+        documentTypes: documentTermTypes,
+        terms: terms.map((term) => ({
+          ...term,
+          appliesToDealer: dealerSourceId
+            ? documentTermAppliesToDealer(term, dealerSourceId)
+            : undefined,
+        })),
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.post('/api/crm/document-terms', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const body = toOptionalObject(req.body)
+      const updatedAt = nowIso()
+      const updatedByEmail = toLowerText(req.authUser?.email, 200) || null
+      const term = normalizeDocumentTerm({
+        ...body,
+        id: `document-term-${randomUUID()}`,
+        isBuiltIn: false,
+        isArchived: false,
+        createdAt: updatedAt,
+        createdByEmail: updatedByEmail,
+        updatedAt,
+        updatedByEmail,
+      })
+
+      if (!term) {
+        return res.status(400).json({ error: 'A valid document, title, and term text are required.' })
+      }
+
+      const { crmQuotePrintSettingsCollection } = await getCollections()
+      await crmQuotePrintSettingsCollection.insertOne(term)
+      return res.status(201).json({ term })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.patch('/api/crm/document-terms/:termId', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const termId = toTrimmedText(req.params.termId, 180)
+      const body = toOptionalObject(req.body)
+      const { crmQuotePrintSettingsCollection } = await getCollections()
+      const allTerms = await loadDocumentTerms(crmQuotePrintSettingsCollection)
+      const existing = allTerms.find((term) => term.id === termId)
+
+      if (!existing) {
+        return res.status(404).json({ error: 'Document term not found.' })
+      }
+
+      const updatedAt = nowIso()
+      const updatedByEmail = toLowerText(req.authUser?.email, 200) || null
+      const term = normalizeDocumentTerm({
+        ...existing,
+        ...body,
+        id: existing.id,
+        isBuiltIn: existing.isBuiltIn,
+        isArchived: false,
+        createdAt: existing.createdAt,
+        createdByEmail: existing.createdByEmail,
+        updatedAt,
+        updatedByEmail,
+      })
+
+      if (!term) {
+        return res.status(400).json({ error: 'A valid document, title, and term text are required.' })
+      }
+
+      await crmQuotePrintSettingsCollection.updateOne(
+        { id: term.id },
+        { $set: term },
+        { upsert: true },
+      )
+      return res.json({ term })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.delete('/api/crm/document-terms/:termId', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const termId = toTrimmedText(req.params.termId, 180)
+      const { crmQuotePrintSettingsCollection } = await getCollections()
+      const allTerms = await loadDocumentTerms(crmQuotePrintSettingsCollection)
+      const existing = allTerms.find((term) => term.id === termId)
+
+      if (!existing) {
+        return res.status(404).json({ error: 'Document term not found.' })
+      }
+
+      const updatedAt = nowIso()
+      await crmQuotePrintSettingsCollection.updateOne(
+        { id: existing.id },
+        {
+          $set: {
+            ...existing,
+            kind: 'document_term',
+            isArchived: true,
+            updatedAt,
+            updatedByEmail: toLowerText(req.authUser?.email, 200) || null,
+          },
+        },
+        { upsert: true },
+      )
+      return res.json({ ok: true, termId })
     } catch (error) {
       next(error)
     }

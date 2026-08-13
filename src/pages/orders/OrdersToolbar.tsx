@@ -29,6 +29,7 @@ type OrdersToolbarProps = {
   tabCounts: {
     orders: number
     design: number
+    waitingProduction: number
     shipped: number
     archive: number
   }
@@ -97,6 +98,7 @@ export function OrdersToolbar({
         >
           <Tab value="orders" label={`Orders (${tabCounts.orders})`} />
           <Tab value="design" label={`Design (${tabCounts.design})`} />
+          <Tab value="waiting_production" label={`Waiting for Production (${tabCounts.waitingProduction})`} />
           <Tab value="shipped" label={`Shipped (${tabCounts.shipped})`} />
           <Tab value="archive" label={`Archive (${tabCounts.archive})`} />
         </Tabs>

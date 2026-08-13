@@ -2,7 +2,15 @@
   "functions": [
     {
       "source": "functions",
-      "codebase": "default"
+      "codebase": "default",
+      "ignore": [
+        ".git",
+        ".DS_Store",
+        "firebase-debug.log",
+        "firebase-debug.*.log",
+        "node_modules",
+        "data-qb"
+      ]
     }
   ],
   "storage": {

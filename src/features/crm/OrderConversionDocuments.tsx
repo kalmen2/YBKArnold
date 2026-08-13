@@ -1,6 +1,17 @@
 /* eslint-disable react-refresh/only-export-components */
 import { Document, Image, Page, Rect, StyleSheet, Svg, Text, View, pdf } from '@react-pdf/renderer'
-import type { CrmQuotePrintSettings } from './api'
+import type { CrmDocumentTerm, CrmDocumentType, CrmQuotePrintSettings } from './api'
+
+export type OrderDocumentTerms = Partial<Record<CrmDocumentType, CrmDocumentTerm[]>>
+
+export function groupOrderDocumentTerms(terms: CrmDocumentTerm[]) {
+  return terms
+    .filter((term) => term.appliesToDealer ?? term.isDefault)
+    .reduce<OrderDocumentTerms>((grouped, term) => {
+      grouped[term.documentType] = [...(grouped[term.documentType] || []), term]
+      return grouped
+    }, {})
+}
 
 export type OrderDocumentLine = {
   id: string
@@ -40,6 +51,8 @@ export type OrderDocumentData = {
   poDate?: string
   acknowledgmentDate?: string
   estimatedReadyDate?: string
+  shipmentDate?: string
+  carrier?: string
 }
 
 const styles = StyleSheet.create({
@@ -100,51 +113,63 @@ const styles = StyleSheet.create({
 })
 
 const bolStyles = StyleSheet.create({
-  page: { paddingTop: 26, paddingBottom: 24, paddingHorizontal: 32, fontFamily: 'Helvetica', fontSize: 6.5, color: '#111' },
-  border: { borderWidth: 0.8, borderColor: '#111' },
-  title: { height: 17, borderBottomWidth: 0.8, borderColor: '#111', fontFamily: 'Helvetica-Bold', fontSize: 12, textAlign: 'center', paddingTop: 2 },
-  subtitle: { height: 15, borderBottomWidth: 0.8, borderColor: '#111', fontSize: 7.5, textAlign: 'center', paddingTop: 3 },
-  received: { height: 17, borderBottomWidth: 0.8, borderColor: '#111', fontSize: 6.7, paddingHorizontal: 3, paddingTop: 4 },
-  fromRow: { height: 30, flexDirection: 'row', borderBottomWidth: 0.8, borderColor: '#111' },
-  darkLabel: { backgroundColor: '#858585', color: '#fff', fontFamily: 'Helvetica-Bold', textAlign: 'center', paddingTop: 9 },
-  fromValue: { flex: 1, paddingHorizontal: 5, paddingTop: 5, fontFamily: 'Helvetica-Bold', fontSize: 8.2 },
-  legalIntro: { height: 74, paddingHorizontal: 3, paddingVertical: 3, borderBottomWidth: 0.8, borderColor: '#111', fontSize: 5.25, lineHeight: 1.24, textAlign: 'justify' },
-  certification: { marginTop: 3, fontFamily: 'Helvetica-Bold', textAlign: 'center' },
-  partiesRow: { height: 78, flexDirection: 'row', borderBottomWidth: 0.8, borderColor: '#111' },
-  partyBox: { width: '40%', borderRightWidth: 0.8, borderColor: '#111' },
-  partyHeader: { height: 18, backgroundColor: '#858585', color: '#fff', fontFamily: 'Helvetica-Bold', fontSize: 8.5, paddingHorizontal: 10, paddingTop: 4 },
-  partyValue: { paddingHorizontal: 8, paddingTop: 6, fontSize: 7.3, lineHeight: 1.28 },
-  freightBox: { width: '20%' },
-  freightRow: { height: 19.5, flexDirection: 'row', borderBottomWidth: 0.8, borderColor: '#111' },
-  freightCheck: { width: 24, borderRightWidth: 0.8, borderColor: '#111', textAlign: 'center', paddingTop: 5, fontFamily: 'Helvetica-Bold', fontSize: 8 },
-  freightLabel: { flex: 1, paddingLeft: 4, paddingTop: 5, fontFamily: 'Helvetica-Oblique', fontSize: 7 },
-  refsRow: { height: 36, flexDirection: 'row', borderBottomWidth: 0.8, borderColor: '#111' },
-  refCell: { borderRightWidth: 0.8, borderColor: '#111' },
-  refHeader: { height: 18, backgroundColor: '#858585', color: '#fff', fontFamily: 'Helvetica-Bold', textAlign: 'center', paddingTop: 5 },
-  refValue: { flex: 1, textAlign: 'center', paddingHorizontal: 2, paddingTop: 2.5, fontSize: 5.7, lineHeight: 1.08 },
-  detailsRow: { height: 285, flexDirection: 'row', borderBottomWidth: 0.8, borderColor: '#111' },
-  itemsArea: { width: '64%', borderRightWidth: 0.8, borderColor: '#111' },
-  itemHeader: { height: 18, flexDirection: 'row', backgroundColor: '#858585', color: '#fff', fontFamily: 'Helvetica-Bold', fontSize: 7.2 },
-  itemHeaderCell: { paddingTop: 5, textAlign: 'center', borderRightWidth: 0.8, borderColor: '#111' },
-  itemRow: { minHeight: 25, flexDirection: 'row', borderBottomWidth: 0.45, borderColor: '#aaa', fontSize: 6.5 },
-  itemCell: { paddingHorizontal: 3, paddingVertical: 4, borderRightWidth: 0.45, borderColor: '#aaa' },
-  termsArea: { width: '36%' },
-  termsBlock: { paddingHorizontal: 4, paddingVertical: 4, borderBottomWidth: 0.8, borderColor: '#111', fontSize: 5.55, lineHeight: 1.18 },
-  signatureLine: { marginHorizontal: 10, marginTop: 16, borderBottomWidth: 0.45, borderColor: '#777' },
-  signatureCaption: { marginTop: 3, textAlign: 'center', fontSize: 5.5 },
-  bottomNotes: { height: 57, flexDirection: 'row' },
-  valueNote: { width: '64%', padding: 3, borderRightWidth: 0.8, borderColor: '#111', fontSize: 5.45, lineHeight: 1.25 },
-  fobNote: { width: '36%', padding: 3, fontSize: 5.2, fontFamily: 'Helvetica-Bold', textAlign: 'center', lineHeight: 1.22 },
-  cancellation: { marginTop: 5, color: '#e01818', fontSize: 7.2, textAlign: 'center', lineHeight: 1.35 },
-  signatures: { marginTop: 17, flexDirection: 'row', paddingHorizontal: 3 },
-  company: { width: '34%', fontFamily: 'Times-Roman', fontSize: 9.5, lineHeight: 1.45 },
-  signArea: { width: '66%', paddingLeft: 14, paddingTop: 1 },
-  signRow: { height: 27, flexDirection: 'row', alignItems: 'flex-end', borderBottomWidth: 0.8, borderColor: '#111', fontSize: 7.2 },
-  signLabel: { width: 75, paddingBottom: 2 },
-  signDate: { marginLeft: 'auto', width: 48, paddingBottom: 2 },
+  page: { paddingTop: 92, paddingBottom: 26, paddingHorizontal: 38, fontFamily: 'Helvetica', fontSize: 6.5, color: '#15283b' },
+  original: { marginTop: 1, marginBottom: 6, color: '#b51f2e', fontFamily: 'Helvetica-Bold', fontSize: 7.3, letterSpacing: 0.7, textAlign: 'center' },
+  identityRow: { minHeight: 37, flexDirection: 'row', borderWidth: 1, borderColor: '#cbd6df', backgroundColor: '#f7f9fb' },
+  identityCell: { paddingHorizontal: 7, paddingVertical: 5, borderRightWidth: 1, borderRightColor: '#cbd6df' },
+  identityLabel: { color: '#66788a', fontSize: 5.7, textTransform: 'uppercase', letterSpacing: 0.45 },
+  identityValue: { marginTop: 3, fontFamily: 'Helvetica-Bold', fontSize: 7.4, lineHeight: 1.15 },
+  partiesRow: { minHeight: 72, flexDirection: 'row', marginTop: 6, borderWidth: 1, borderColor: '#cbd6df' },
+  partyBox: { width: '50%' },
+  partyBoxRight: { width: '50%', borderLeftWidth: 1, borderLeftColor: '#cbd6df' },
+  partyHeader: { height: 18, backgroundColor: '#0f4c81', color: '#fff', fontFamily: 'Helvetica-Bold', fontSize: 7.4, paddingHorizontal: 8, paddingTop: 5, textTransform: 'uppercase', letterSpacing: 0.35 },
+  partyValue: { paddingHorizontal: 8, paddingVertical: 6, fontSize: 7, lineHeight: 1.3 },
+  refsRow: { minHeight: 38, flexDirection: 'row', marginTop: 6, borderWidth: 1, borderColor: '#cbd6df' },
+  refCell: { paddingHorizontal: 5, paddingVertical: 5, borderRightWidth: 1, borderRightColor: '#cbd6df' },
+  refHeader: { color: '#66788a', fontSize: 5.4, textTransform: 'uppercase', letterSpacing: 0.25 },
+  refValue: { marginTop: 4, fontFamily: 'Helvetica-Bold', fontSize: 6.6, lineHeight: 1.12 },
+  freightRow: { minHeight: 34, flexDirection: 'row', alignItems: 'stretch', marginTop: 5, borderWidth: 1, borderColor: '#cbd6df', backgroundColor: '#f7f9fb' },
+  freightCell: { paddingHorizontal: 6, paddingVertical: 5, borderRightWidth: 1, borderRightColor: '#cbd6df' },
+  freightValue: { marginTop: 3, fontFamily: 'Helvetica-Bold', color: '#0f4c81', fontSize: 6.8 },
+  sectionTitle: { marginTop: 8, paddingVertical: 5, paddingHorizontal: 7, backgroundColor: '#0f4c81', color: '#fff', fontFamily: 'Helvetica-Bold', fontSize: 7.2, textTransform: 'uppercase', letterSpacing: 0.4 },
+  itemsTable: { minHeight: 245, borderLeftWidth: 1, borderRightWidth: 1, borderBottomWidth: 1, borderColor: '#cbd6df' },
+  itemHeader: { height: 19, flexDirection: 'row', backgroundColor: '#e8eef3', color: '#334a5f', fontFamily: 'Helvetica-Bold', fontSize: 5.8 },
+  itemHeaderCell: { paddingTop: 5.5, textAlign: 'center', borderRightWidth: 1, borderRightColor: '#cbd6df', textTransform: 'uppercase' },
+  itemRow: { minHeight: 25, flexDirection: 'row', borderTopWidth: 0.6, borderTopColor: '#dbe3ea', fontSize: 6.25 },
+  itemCell: { paddingHorizontal: 4, paddingVertical: 4, borderRightWidth: 0.6, borderRightColor: '#dbe3ea', lineHeight: 1.22 },
+  itemSummary: { minHeight: 27, flexDirection: 'row', borderTopWidth: 1, borderTopColor: '#cbd6df', backgroundColor: '#f7f9fb' },
+  itemSummaryCell: { paddingHorizontal: 5, paddingVertical: 5, borderRightWidth: 1, borderRightColor: '#cbd6df' },
+  customNotice: { marginTop: 6, paddingHorizontal: 9, paddingVertical: 7, backgroundColor: '#f9ecee', borderLeftWidth: 4, borderLeftColor: '#b51f2e' },
+  customNoticeTitle: { color: '#a9192d', fontFamily: 'Helvetica-Bold', fontSize: 7.2, textTransform: 'uppercase', letterSpacing: 0.3 },
+  customNoticeText: { marginTop: 3, color: '#5b2730', fontSize: 6.2, lineHeight: 1.28 },
+  signatures: { marginTop: 7, flexDirection: 'row', borderWidth: 1, borderColor: '#cbd6df' },
+  signatureBox: { width: '33.333%', minHeight: 74, paddingHorizontal: 7, paddingVertical: 6, borderRightWidth: 1, borderRightColor: '#cbd6df' },
+  signatureTitle: { fontFamily: 'Helvetica-Bold', color: '#0f4c81', fontSize: 6.7, textTransform: 'uppercase' },
+  signatureHelp: { marginTop: 2, minHeight: 15, color: '#66788a', fontSize: 5.2, lineHeight: 1.15 },
+  signatureLine: { marginTop: 13, borderBottomWidth: 0.65, borderBottomColor: '#607284' },
+  signatureCaption: { marginTop: 2, fontSize: 5.1, color: '#607284' },
+  signatureMeta: { marginTop: 7, flexDirection: 'row', fontSize: 5.2, color: '#607284' },
+  terms: { marginTop: 7, paddingHorizontal: 8, paddingVertical: 6, borderWidth: 1, borderColor: '#cbd6df', backgroundColor: '#f7f9fb' },
+  termsTitle: { marginBottom: 4, fontFamily: 'Helvetica-Bold', color: '#0f4c81', fontSize: 6.8, textTransform: 'uppercase', letterSpacing: 0.35 },
+  termsColumns: { flexDirection: 'row' },
+  termsColumn: { width: '50%', paddingRight: 6 },
+  termsColumnRight: { width: '50%', paddingLeft: 6, borderLeftWidth: 1, borderLeftColor: '#d5dee6' },
+  term: { marginBottom: 3, fontSize: 4.85, lineHeight: 1.22, textAlign: 'justify' },
+  termLabel: { fontFamily: 'Helvetica-Bold' },
+  nonRecourse: { marginTop: 3, paddingTop: 3, borderTopWidth: 0.6, borderTopColor: '#d5dee6', fontSize: 4.85, lineHeight: 1.22 },
+  bottomBlock: { marginTop: 'auto', backgroundColor: '#fff' },
+  footer: { position: 'absolute', left: 38, right: 38, bottom: 20, textAlign: 'center', color: '#607284', fontSize: 5.2 },
 })
 
 const money = (value: number) => `$${Number(value || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+
+function termsForDocument(terms: OrderDocumentTerms | undefined, documentType: CrmDocumentType) {
+  return Array.isArray(terms?.[documentType]) ? terms[documentType] || [] : []
+}
+
+function termText(term: CrmDocumentTerm) {
+  return `${term.title.toUpperCase()}. ${term.body}`
+}
 
 function Header({ settings, title = 'Order Confirmation' }: { settings: CrmQuotePrintSettings; title?: string }) {
   return <View style={styles.headerBlock} fixed>
@@ -272,11 +297,12 @@ function Lines({ data }: { data: OrderDocumentData }) {
   </>
 }
 
-export function ProformaInvoiceDocument({ data, settings }: { data: OrderDocumentData; settings: CrmQuotePrintSettings }) {
+export function ProformaInvoiceDocument({ data, settings, terms }: { data: OrderDocumentData; settings: CrmQuotePrintSettings; terms?: OrderDocumentTerms }) {
   const depositPercent = data.depositRequired ? Number(data.depositPercent || 50) : 0
   const balanceDueNow = data.depositRequired
     ? Number(data.productNet || 0) * (depositPercent / 100)
     : Number(data.grandTotal || 0)
+  const documentTerms = termsForDocument(terms, 'proforma_invoice')
 
   return (
     <Document title={`Proforma Invoice ${data.acknowledgmentNumber}`}>
@@ -302,13 +328,19 @@ export function ProformaInvoiceDocument({ data, settings }: { data: OrderDocumen
               : 'No deposit is required. The full order balance is due now.'}
           </Text>
         </View>
+        {documentTerms.length ? (
+          <View style={styles.nextSteps} wrap={false}>
+            <Text style={styles.nextStepsTitle}>Terms and Conditions</Text>
+            <Text style={styles.nextStepsText}>{documentTerms.map(termText).join('\n\n')}</Text>
+          </View>
+        ) : null}
         <Text style={styles.footer} fixed>Arnold Contract | 120 Coit Street, Irvington, NJ 07111 | 866-425-6529</Text>
       </Page>
     </Document>
   )
 }
 
-export function OrderDocument({ data, settings }: { data: OrderDocumentData; settings: CrmQuotePrintSettings }) {
+export function OrderDocument({ data, settings, terms }: { data: OrderDocumentData; settings: CrmQuotePrintSettings; terms?: OrderDocumentTerms }) {
   const title = 'Order Confirmation'
   const depositPercent = data.depositRequired ? Number(data.depositPercent || 0) : null
   const depositLabel = data.depositRequired
@@ -317,6 +349,10 @@ export function OrderDocument({ data, settings }: { data: OrderDocumentData; set
   const depositInstructions = data.depositRequired
     ? settings.depositRequestBody.replace(/\b\d+(?:\.\d+)?%/g, `${Number(depositPercent?.toFixed(2))}%`)
     : 'No deposit is required for this order.'
+  const configuredTerms = termsForDocument(terms, 'order_confirmation')
+  const conditionsText = terms
+    ? configuredTerms.map(termText).join('\n\n')
+    : `${settings.orderConfirmationTerms}\n\n${settings.depositRequestTerms}`
   return <Document title={`${title} ${data.acknowledgmentNumber}`}>
     <Page size="LETTER" style={styles.page} wrap>
       <Header settings={settings} />
@@ -333,7 +369,7 @@ export function OrderDocument({ data, settings }: { data: OrderDocumentData; set
       <View wrap={false}>
         <View style={styles.nextSteps}>
           <Text style={styles.nextStepsTitle}>{data.depositRequired ? 'Deposit and Processing Terms and Conditions' : 'Processing Terms and Conditions'}</Text>
-          <Text style={styles.nextStepsText}>{depositInstructions}{`\n\n`}{settings.orderConfirmationTerms}{`\n\n`}{settings.depositRequestTerms}</Text>
+          <Text style={styles.nextStepsText}>{depositInstructions}{`\n\n`}{conditionsText}</Text>
         </View>
         <Text style={styles.managers}>Project Managers: {settings.projectManagers}</Text>
       </View>
@@ -345,12 +381,18 @@ export function OrderDocument({ data, settings }: { data: OrderDocumentData; set
 export function ChangeOrderDocument({
   data,
   settings,
+  terms,
   version,
 }: {
   data: OrderDocumentData
   settings: CrmQuotePrintSettings
+  terms?: OrderDocumentTerms
   version: number
 }) {
+  const configuredTerms = termsForDocument(terms, 'change_order')
+  const approvalText = terms
+    ? configuredTerms.map(termText).join('\n\n')
+    : 'This document replaces the prior order details only after it is signed by the customer and accepted by Arnold Contract. Production paperwork will remain on hold until the customer-signed change order is uploaded.'
   return (
     <Document title={`Change Order V${version} ${data.acknowledgmentNumber}`}>
       <Page size="LETTER" style={styles.page} wrap>
@@ -367,12 +409,10 @@ export function ChangeOrderDocument({
         </View>
         <Metadata data={data} />
         <Lines data={{ ...data, depositRequired: false, depositPercent: null }} />
-        <View style={styles.nextSteps} wrap={false}>
+        {approvalText ? <View style={styles.nextSteps} wrap={false}>
           <Text style={styles.nextStepsTitle}>Change Order Approval</Text>
-          <Text style={styles.nextStepsText}>
-            This document replaces the prior order details only after it is signed by the customer and accepted by Arnold Contract. Production paperwork will remain on hold until the customer-signed change order is uploaded.
-          </Text>
-        </View>
+          <Text style={styles.nextStepsText}>{approvalText}</Text>
+        </View> : null}
         <Text style={styles.footer} fixed>Arnold Contract | 120 Coit Street, Irvington, NJ 07111 | 866-425-6529</Text>
       </Page>
     </Document>
@@ -431,16 +471,23 @@ function WorkOrderDetails({ data }: { data: OrderDocumentData }) {
   )
 }
 
-export function WorkOrderDocument({ data, settings }: { data: OrderDocumentData; settings: CrmQuotePrintSettings }) {
+export function WorkOrderDocument({ data, settings, terms }: { data: OrderDocumentData; settings: CrmQuotePrintSettings; terms?: OrderDocumentTerms }) {
   const title = Number(data.changeVersion || 0) > 0
     ? `Work Order — Change Version ${Number(data.changeVersion)}`
     : 'Work Order'
+  const documentTerms = termsForDocument(terms, 'work_order')
 
   return (
     <Document title={`Work Order ${data.acknowledgmentNumber}`}>
       <Page size="LETTER" style={styles.page} wrap>
         <Header settings={settings} title={title} />
         <WorkOrderDetails data={data} />
+        {documentTerms.length ? (
+          <View style={styles.nextSteps} wrap={false}>
+            <Text style={styles.nextStepsTitle}>Terms and Conditions</Text>
+            <Text style={styles.nextStepsText}>{documentTerms.map(termText).join('\n\n')}</Text>
+          </View>
+        ) : null}
         <Text style={styles.footer} fixed>Arnold Contract | 120 Coit Street, Irvington, NJ 07111 | 866-425-6529</Text>
       </Page>
     </Document>
@@ -464,132 +511,176 @@ function bolAddress(data: OrderDocumentData) {
     .join('\n') || '-'
 }
 
-function resolveFreightSelection(data: OrderDocumentData) {
-  const freight = String(data.freightType || '').toLowerCase()
-  if (/third|3rd/.test(freight)) return '3rd Party'
-  if (/collect/.test(freight)) return 'Frt Collected'
-  if (/government|gov[\s'.-]*t/.test(freight)) return "Gov't Rates"
-  if (/prepaid/.test(freight)) return 'Frt Prepaid'
-  return ''
-}
-
-export function BillOfLadingDocument({ data }: { data: OrderDocumentData }) {
-  const freightSelection = resolveFreightSelection(data)
+export function BillOfLadingDocument({ data, settings, terms }: { data: OrderDocumentData; settings: CrmQuotePrintSettings; terms?: OrderDocumentTerms }) {
   const productLines = data.lines.filter((line) => line.category !== 'freight')
   const soldTo = bolAddress(data)
-  const freightLabels = ['Frt Collected', 'Frt Prepaid', '3rd Party', "Gov't Rates"]
+  const fallbackLines: OrderDocumentLine[] = [{
+    id: '-',
+    qty: null,
+    description: 'Order details are not available.',
+    category: 'product',
+    unitPrice: null,
+    extPrice: 0,
+  }]
+  const shipmentLines = productLines.length ? productLines : fallbackLines
+  const pageLineGroups: OrderDocumentLine[][] = []
+  const configuredTerms = termsForDocument(terms, 'bill_of_lading')
+
+  if (shipmentLines.length <= 4) {
+    pageLineGroups.push(shipmentLines)
+  } else {
+    pageLineGroups.push(shipmentLines.slice(0, 6))
+    let remainingLines = shipmentLines.slice(6)
+
+    while (remainingLines.length > 6) {
+      const intermediateCount = Math.min(10, remainingLines.length)
+      pageLineGroups.push(remainingLines.slice(0, intermediateCount))
+      remainingLines = remainingLines.slice(intermediateCount)
+    }
+
+    // Do not pull item lines forward onto the signature/terms page merely to
+    // avoid a terms-only page. Item pages should fill in their natural order.
+    // An empty final group intentionally creates a dedicated closing page.
+    pageLineGroups.push(remainingLines.length ? remainingLines : [])
+  }
+
+  // Signatures and configurable BOL terms need their own closing page. Keeping
+  // this content in a non-wrapping block below shipment rows can leave
+  // react-pdf repeatedly trying to fit an impossible layout.
+  if (configuredTerms.length > 0 && pageLineGroups.at(-1)?.length) {
+    pageLineGroups.push([])
+  }
 
   return (
     <Document title={`Bill of Lading ${data.acknowledgmentNumber}`}>
-      <Page size={{ width: 612, height: 792 }} style={bolStyles.page}>
-        <View style={bolStyles.border}>
-          <Text style={bolStyles.title}>STRAIGHT BILL OF LADING - SHORT FORM</Text>
-          <Text style={bolStyles.subtitle}>ORIGINAL - NOT NEGOTIABLE</Text>
-          <Text style={bolStyles.received}>RECEIVED, subject to the classification and tariffs in effect on the date of the issue of this Bill of Lading</Text>
-          <View style={bolStyles.fromRow}>
-            <Text style={[bolStyles.darkLabel, { width: 54 }]}>Date</Text>
-            <Text style={{ width: 122, paddingTop: 9, paddingHorizontal: 5 }}>{bolDate(data.documentDate)}</Text>
-            <Text style={[bolStyles.darkLabel, { width: 88 }]}>From</Text>
-            <Text style={bolStyles.fromValue}>Arnold Kolax Furniture, Inc.     Irvington, NJ 07111</Text>
+      {pageLineGroups.map((pageLines, pageIndex) => {
+        const isFirstPage = pageIndex === 0
+        const isLastPage = pageIndex === pageLineGroups.length - 1
+        const lineNumberOffset = pageLineGroups
+          .slice(0, pageIndex)
+          .reduce((sum, lines) => sum + lines.length, 0)
+
+        return <Page key={`bol-page-${pageIndex + 1}`} size="LETTER" style={bolStyles.page} wrap>
+        <Header settings={settings} title="Bill of Lading" />
+        <Text style={bolStyles.original}>
+          {isFirstPage
+            ? 'ORIGINAL - NOT NEGOTIABLE'
+            : 'BOL - CONTINUED'}
+        </Text>
+
+        {isFirstPage ? <>
+        <View style={bolStyles.identityRow} wrap={false}>
+          <View style={[bolStyles.identityCell, { width: '30%' }]}>
+            <Text style={bolStyles.identityLabel}>Date</Text>
+            <Text style={bolStyles.identityValue}>{bolDate(data.shipmentDate || data.documentDate)}</Text>
           </View>
-          <View style={bolStyles.legalIntro}>
-            <Text>The property described below in apparent good order, except as noted (contents and condition of contents of packages unknown), marked, consigned, and destined as indicated below, which said carrier (the word carrier being understood throughout this contract as meaning any person or corporation in possession of the property under the contract) agrees to carry to its usual place of delivery at said destination, if on its route, otherwise to deliver to another carrier on the route to said destination.</Text>
-            <Text>It is mutually agreed, as to each carrier of all or any said property over all or any portion of said route to destination, and as to each party at any time interested in all or any of said property, that every service to be performed hereunder shall be subject to all the terms and conditions of the United Domestic Straight Bill of Lading set forth (1) in Uniform Freight Classification in effect on the date hereof, if this is a rail or rail-water shipment, or (2) in the applicable motor carrier classification or tariff if this is a motor carrier shipment.</Text>
-            <Text style={bolStyles.certification}>Shipper hereby certifies that he is familiar with all the terms and conditions of said bill of lading, including those on the back thereof, set forth in the classification or tariff which governs the transportation of this shipment, and the said terms and conditions are hereby agreed to by the shipper and accepted for himself and his assigns.</Text>
+          <View style={[bolStyles.identityCell, { width: '70%', borderRightWidth: 0 }]}>
+            <Text style={bolStyles.identityLabel}>From</Text>
+            <Text style={bolStyles.identityValue}>Arnold Contract{`\n`}120 Coit Street, Irvington, NJ 07111{`\n`}866-425-6529  |  ArnoldContract.us</Text>
           </View>
-          <View style={bolStyles.partiesRow}>
-            <View style={bolStyles.partyBox}>
-              <Text style={bolStyles.partyHeader}>Sold To</Text>
-              <Text style={bolStyles.partyValue}>{soldTo}</Text>
-            </View>
-            <View style={bolStyles.partyBox}>
-              <Text style={bolStyles.partyHeader}>Ship To</Text>
-              <Text style={bolStyles.partyValue}>{data.shipTo || '-'}</Text>
-            </View>
-            <View style={bolStyles.freightBox}>
-              {freightLabels.map((label) => (
-                <View key={label} style={bolStyles.freightRow}>
-                  <Text style={bolStyles.freightCheck}>{freightSelection === label ? 'X' : ''}</Text>
-                  <Text style={bolStyles.freightLabel}>{label}</Text>
-                </View>
-              ))}
-            </View>
+        </View>
+
+        <View style={bolStyles.partiesRow} wrap={false}>
+          <View style={bolStyles.partyBox}>
+            <Text style={bolStyles.partyHeader}>Sold To</Text>
+            <Text style={bolStyles.partyValue}>{soldTo}</Text>
           </View>
-          <View style={bolStyles.refsRow}>
-            {[
-              ['Rep', data.salesRep, 52],
-              ['Cust. PO Date', bolDate(data.poDate || data.documentDate), 66],
-              ['Cust. PO #', data.poNumber, 100],
-              ['Ack Date', bolDate(data.acknowledgmentDate || data.documentDate), 60],
-              ['ACK #', data.acknowledgmentNumber, 55],
-              ['Estimated Ready Date', bolDate(data.estimatedReadyDate), 110],
-              ['Ship Via', data.freightType, 105],
-            ].map(([label, value, width]) => (
-              <View key={String(label)} style={[bolStyles.refCell, { width: Number(width) }]}>
-                <Text style={bolStyles.refHeader}>{label}</Text>
-                <Text style={bolStyles.refValue}>{String(value || '-')}</Text>
+          <View style={bolStyles.partyBoxRight}>
+            <Text style={bolStyles.partyHeader}>Shipped To</Text>
+            <Text style={bolStyles.partyValue}>{data.shipTo || '-'}</Text>
+          </View>
+        </View>
+
+        <View style={bolStyles.refsRow} wrap={false}>
+          {[
+            ['Customer PO Date', bolDate(data.poDate || data.documentDate), '18%'],
+            ['Customer PO Number', data.poNumber, '20%'],
+            ['Acknowledgment Number', data.acknowledgmentNumber, '20%'],
+            ['Acknowledgment Date', bolDate(data.acknowledgmentDate || data.documentDate), '18%'],
+            ['Ship Via / Carrier', data.carrier || data.freightType, '24%'],
+          ].map(([label, value, width], index, entries) => (
+            <View key={String(label)} style={[bolStyles.refCell, { width: String(width), borderRightWidth: index === entries.length - 1 ? 0 : 1 }]}>
+              <Text style={bolStyles.refHeader}>{label}</Text>
+              <Text style={bolStyles.refValue}>{String(value || '-')}</Text>
+            </View>
+          ))}
+        </View>
+        </> : null}
+
+        {pageLines.length ? <>
+          <Text style={bolStyles.sectionTitle}>{isFirstPage ? 'Shipment Items' : 'Shipment Items - Continued'}</Text>
+          <View
+            style={[
+              bolStyles.itemsTable,
+              pageLineGroups.length === 1
+                ? { minHeight: 145 }
+                : !isLastPage
+                  ? { flexGrow: 1 }
+                  : {},
+            ]}
+          >
+            <View style={bolStyles.itemHeader} fixed>
+              <Text style={[bolStyles.itemHeaderCell, { width: '8%' }]}>Line</Text>
+              <Text style={[bolStyles.itemHeaderCell, { width: '12%' }]}>Quantity</Text>
+              <Text style={[bolStyles.itemHeaderCell, { width: '80%', borderRightWidth: 0 }]}>Item Description</Text>
+            </View>
+            {pageLines.map((line, lineIndex) => (
+              <View
+                key={`${line.category}-${line.id}`}
+                style={[
+                  bolStyles.itemRow,
+                  (lineNumberOffset + lineIndex) % 2 === 1 ? { backgroundColor: '#f3f6f8' } : {},
+                ]}
+                wrap={false}
+              >
+                <Text style={[bolStyles.itemCell, { width: '8%', textAlign: 'center' }]}>{lineNumberOffset + lineIndex + 1}</Text>
+                <Text style={[bolStyles.itemCell, { width: '12%', textAlign: 'center' }]}>{line.qty ?? '-'}</Text>
+                <Text style={[bolStyles.itemCell, { width: '80%', borderRightWidth: 0 }]}>{line.description}</Text>
               </View>
             ))}
           </View>
-          <View style={bolStyles.detailsRow}>
-            <View style={bolStyles.itemsArea}>
-              <View style={bolStyles.itemHeader}>
-                <Text style={[bolStyles.itemHeaderCell, { width: 40 }]}>Qty</Text>
-                <Text style={[bolStyles.itemHeaderCell, { width: 78 }]}>Item</Text>
-                <Text style={[bolStyles.itemHeaderCell, { flex: 1, borderRightWidth: 0 }]}>Description</Text>
+        </> : null}
+
+        {isLastPage ? <View style={bolStyles.bottomBlock}>
+        <View style={bolStyles.signatures} wrap={false}>
+          {[
+            ['Carrier Signature', ''],
+            ['Customer Signature', ''],
+          ].map(([title, help], index) => (
+            <View key={title} style={[bolStyles.signatureBox, { width: '50%', borderRightWidth: index === 1 ? 0 : 1 }]}>
+              <Text style={bolStyles.signatureTitle}>{title}</Text>
+              <Text style={bolStyles.signatureHelp}>{help}</Text>
+              <View style={bolStyles.signatureLine} />
+              <Text style={bolStyles.signatureCaption}>Printed name and signature</Text>
+              <View style={bolStyles.signatureMeta}>
+                <Text style={{ width: '58%' }}>Date: ____________</Text>
+                <Text style={{ width: '42%' }}>Time: ________</Text>
               </View>
-              {(productLines.length ? productLines : [{ id: '-', qty: null, description: 'Order details are not available.', category: 'product' as const, unitPrice: null, extPrice: 0 }]).map((line) => (
-                <View key={`${line.category}-${line.id}`} style={bolStyles.itemRow}>
-                  <Text style={[bolStyles.itemCell, { width: 40, textAlign: 'center' }]}>{line.qty ?? '-'}</Text>
-                  <Text style={[bolStyles.itemCell, { width: 78 }]}>{line.id || '-'}</Text>
-                  <Text style={[bolStyles.itemCell, { flex: 1, borderRightWidth: 0 }]}>{line.description}</Text>
-                </View>
+            </View>
+          ))}
+        </View>
+
+        {configuredTerms.length ? <View style={bolStyles.terms}>
+          <Text style={bolStyles.termsTitle}>Bill of Lading Terms and Notices</Text>
+          <View style={bolStyles.termsColumns}>
+            <View style={bolStyles.termsColumn}>
+              {(configuredTerms.length ? configuredTerms.slice(0, Math.ceil(configuredTerms.length / 2)) : []).map((term) => (
+                <Text key={term.id} style={bolStyles.term}><Text style={bolStyles.termLabel}>{term.title.toUpperCase()}. </Text>{term.body}</Text>
               ))}
             </View>
-            <View style={bolStyles.termsArea}>
-              <View style={[bolStyles.termsBlock, { height: 113 }]}>
-                <Text>Subject to Section 7 of Conditions of applicable bill of lading, if this shipment is to be delivered to the consignee without recourse on the consignor, the consignor shall sign the following statement:</Text>
-                <Text style={{ marginTop: 5 }}>The carrier shall not make delivery of this shipment without payment of freight and other lawful charges.</Text>
-                <View style={[bolStyles.signatureLine, { marginTop: 10 }]} />
-                <Text style={bolStyles.signatureCaption}>(Signature of consignor)</Text>
-              </View>
-              <View style={[bolStyles.termsBlock, { height: 51 }]}>
-                <Text>If charges are to be prepaid, write or stamp here "To be prepaid"</Text>
-                <View style={[bolStyles.signatureLine, { marginTop: 18 }]} />
-              </View>
-              <View style={[bolStyles.termsBlock, { height: 81 }]}>
-                <Text>Received $______________________________</Text>
-                <Text>to apply in prepayment of the charges on the property described hereon.</Text>
-                <Text style={{ marginTop: 16 }}>Per _________________________________</Text>
-                <Text>(Agent or Cashier)</Text>
-              </View>
-              <View style={[bolStyles.termsBlock, { height: 40, borderBottomWidth: 0 }]}>
-                <Text>Charges Advanced:</Text>
-                <Text style={{ marginTop: 9 }}>$ __________________________________</Text>
-              </View>
+            <View style={bolStyles.termsColumnRight}>
+              {(configuredTerms.length ? configuredTerms.slice(Math.ceil(configuredTerms.length / 2)) : []).map((term) => (
+                <Text key={term.id} style={bolStyles.term}><Text style={bolStyles.termLabel}>{term.title.toUpperCase()}. </Text>{term.body}</Text>
+              ))}
             </View>
           </View>
-          <View style={bolStyles.bottomNotes}>
-            <View style={bolStyles.valueNote}>
-              <Text>*If the shipment moves between two ports by a carrier by water, the law requires that the bill of lading shall state whether it is a carrier's or shipper's weight.</Text>
-              <Text>NOTE - Where the rate is dependent on value, shippers are required to state specifically in writing the agreed or declared value of the property.</Text>
-              <Text>The agreed or declared value of the property is hereby specifically stated by the shipper to be not exceeding __________________________.</Text>
-            </View>
-            <View style={bolStyles.fobNote}>
-              <Text>+Shipper's imprint in lieu of stamp: not a part of Bill of Lading approved by the Interstate Commerce Commission.</Text>
-              <Text>ALL GOODS SOLD F.O.B. IRVINGTON, N.J. PRODUCING POINT. THE TRANSPORTATION COMPANY IS YOUR AGENT AND ALL DAMAGE CLAIMS MUST BE REPORTED TO THEM IMMEDIATELY UPON RECEIPT OF MERCHANDISE. ALL MERCHANDISE SHIPPED BLANKET WRAPPED EXCEPT IN AREAS NOT SERVICED BY OUR LOCAL CARRIER, TO THOSE ITEMS A CRATING CHARGE WILL BE ADDED.</Text>
-            </View>
-          </View>
-        </View>
-        <Text style={bolStyles.cancellation}>PLEASE NOTE: CUSTOM MADE AND CUSTOM FINISHED FURNITURE CANNOT BE CANCELLED OR RETURNED.{`\n`}RETURN WITHOUT AUTHORIZATION NUMBER WILL NOT BE ACCEPTED.</Text>
-        <View style={bolStyles.signatures}>
-          <Text style={bolStyles.company}>ARNOLD KOLAX FURNITURE, INC{`\n`}120 COIT STREET{`\n`}IRVINGTON{`\n`}973-375-8101</Text>
-          <View style={bolStyles.signArea}>
-            <View style={bolStyles.signRow}><Text style={bolStyles.signLabel}>CARRIER{`\n`}SIGNATURE</Text><Text style={bolStyles.signDate}>DATE</Text></View>
-            <View style={bolStyles.signRow}><Text style={bolStyles.signLabel}>CUSTOMER{`\n`}SIGNATURE</Text><Text style={bolStyles.signDate}>DATE</Text></View>
-          </View>
-        </View>
+        </View> : null}
+
+        </View> : null}
+
+        <Text style={bolStyles.footer}>Arnold Contract  |  120 Coit Street, Irvington, NJ 07111  |  866-425-6529  |  ArnoldContract.us  |  Page {pageIndex + 1} of {pageLineGroups.length}</Text>
       </Page>
+      })}
     </Document>
   )
 }
@@ -625,32 +716,34 @@ async function normalizeDocumentSettings(settings: CrmQuotePrintSettings) {
   }
 }
 
-export async function buildOrderDocumentBlob(data: OrderDocumentData, settings: CrmQuotePrintSettings) {
+export async function buildOrderDocumentBlob(data: OrderDocumentData, settings: CrmQuotePrintSettings, terms?: OrderDocumentTerms) {
   const normalizedSettings = await normalizeDocumentSettings(settings)
-  return pdf(<OrderDocument data={data} settings={normalizedSettings} />).toBlob()
+  return pdf(<OrderDocument data={data} settings={normalizedSettings} terms={terms} />).toBlob()
 }
 
-export async function buildWorkOrderDocumentBlob(data: OrderDocumentData, settings: CrmQuotePrintSettings) {
+export async function buildWorkOrderDocumentBlob(data: OrderDocumentData, settings: CrmQuotePrintSettings, terms?: OrderDocumentTerms) {
   const normalizedSettings = await normalizeDocumentSettings(settings)
-  return pdf(<WorkOrderDocument data={data} settings={normalizedSettings} />).toBlob()
+  return pdf(<WorkOrderDocument data={data} settings={normalizedSettings} terms={terms} />).toBlob()
 }
 
-export async function buildProformaInvoiceBlob(data: OrderDocumentData, settings: CrmQuotePrintSettings) {
+export async function buildProformaInvoiceBlob(data: OrderDocumentData, settings: CrmQuotePrintSettings, terms?: OrderDocumentTerms) {
   const normalizedSettings = await normalizeDocumentSettings(settings)
-  return pdf(<ProformaInvoiceDocument data={data} settings={normalizedSettings} />).toBlob()
+  return pdf(<ProformaInvoiceDocument data={data} settings={normalizedSettings} terms={terms} />).toBlob()
 }
 
-export async function buildBillOfLadingBlob(data: OrderDocumentData) {
-  return pdf(<BillOfLadingDocument data={data} />).toBlob()
+export async function buildBillOfLadingBlob(data: OrderDocumentData, settings: CrmQuotePrintSettings, terms?: OrderDocumentTerms) {
+  const normalizedSettings = await normalizeDocumentSettings(settings)
+  return pdf(<BillOfLadingDocument data={data} settings={normalizedSettings} terms={terms} />).toBlob()
 }
 
 export async function buildChangeOrderDocumentBlob(
   data: OrderDocumentData,
   settings: CrmQuotePrintSettings,
   version: number,
+  terms?: OrderDocumentTerms,
 ) {
   const normalizedSettings = await normalizeDocumentSettings(settings)
   return pdf(
-    <ChangeOrderDocument data={data} settings={normalizedSettings} version={version} />,
+    <ChangeOrderDocument data={data} settings={normalizedSettings} version={version} terms={terms} />,
   ).toBlob()
 }

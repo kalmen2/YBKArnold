@@ -229,6 +229,20 @@ function publicViewerUrl(slug) {
   return `https://ybkarnold.com/3d/${encodeURIComponent(slug)}`
 }
 
+function permanentQuoteViewerSlug(rootQuote, previousModel) {
+  const revisionSlugs = (Array.isArray(rootQuote?.revisions) ? rootQuote.revisions : [])
+    .slice()
+    .sort((left, right) => Number(right?.revisionNumber ?? -1) - Number(left?.revisionNumber ?? -1))
+    .map((revision) => text(revision?.trimble3d?.publicSlug, 500))
+    .filter(Boolean)
+
+  return text(rootQuote?.public3dSlug, 500)
+    || text(previousModel?.publicSlug, 500)
+    || text(rootQuote?.trimble3d?.publicSlug, 500)
+    || revisionSlugs[0]
+    || randomBytes(24).toString('base64url')
+}
+
 function safeModelSummary(model) {
   if (!model || typeof model !== 'object') return null
   const models = Array.isArray(model.models) && model.models.length
@@ -254,6 +268,43 @@ function validatedFirebaseModelUrl(value) {
   try {
     const parsed = new URL(normalized)
     if (parsed.protocol !== 'https:' || parsed.hostname !== 'firebasestorage.googleapis.com') return ''
+    return parsed.toString()
+  } catch {
+    return ''
+  }
+}
+
+function validatedSketchUpShareUrl(value) {
+  const normalized = text(value, 4000)
+  try {
+    const parsed = new URL(normalized)
+    const pathParts = parsed.pathname.split('/').filter(Boolean)
+    const isSharePath = pathParts[0] === 'share'
+      && pathParts[1] === 'tc'
+      && pathParts.length >= 4
+    if (parsed.protocol !== 'https:' || parsed.hostname !== 'app.sketchup.com' || !isSharePath) return ''
+    if (!text(parsed.searchParams.get('stoken'), 4000)) return ''
+
+    // A public "View Model" share is routed by SketchUp to its interactive
+    // viewer. Forcing presentation mode makes SketchUp redirect a second time
+    // and can repeat its graphics-engine startup flow, so keep the share URL in
+    // the mode selected by SketchUp itself.
+    parsed.searchParams.delete('mode')
+    parsed.searchParams.delete('failureURL')
+
+    // SketchUp remembers its automatic WebGPU fallback in a SameSite=Strict
+    // sketchup.com cookie. That cookie is not reliable in our cross-site iframe,
+    // which makes the same graphics error and reload repeat on every visit.
+    // Start public embeds in the stable classic renderer instead.
+    const disabledFeatures = new Set(
+      (parsed.searchParams.get('disabledFeatures') || '')
+        .split(',')
+        .map((feature) => feature.trim())
+        .filter(Boolean),
+    )
+    disabledFeatures.add('viewerNewGraphicsEngine')
+    disabledFeatures.add('embeddedViewerNewGraphicsEngine')
+    parsed.searchParams.set('disabledFeatures', [...disabledFeatures].join(','))
     return parsed.toString()
   } catch {
     return ''
@@ -290,10 +341,11 @@ function quoteAtRevision(quote, revisionNumber) {
 }
 
 async function setQuoteRevisionModel(crmQuotesCollection, quote, quoteId, revisionNumber, model, updatedAt) {
+  const public3dSlug = text(model?.publicSlug, 500)
   if (revisionNumber === null || !Array.isArray(quote?.revisions)) {
     await crmQuotesCollection.updateOne(
       { id: quoteId },
-      { $set: { trimble3d: model, updatedAt } },
+      { $set: { trimble3d: model, ...(public3dSlug ? { public3dSlug } : {}), updatedAt } },
     )
     return
   }
@@ -303,6 +355,7 @@ async function setQuoteRevisionModel(crmQuotesCollection, quote, quoteId, revisi
     'revisions.$[revision].updatedAt': updatedAt,
     updatedAt,
   }
+  if (public3dSlug) setUpdates.public3dSlug = public3dSlug
   if (Number(quote.activeRevisionNumber) === revisionNumber) {
     setUpdates.trimble3d = model
   }
@@ -386,7 +439,7 @@ async function publishFilesForQuote({ accessToken, authUser, crmQuotesCollection
 
   const primary = createdShares[0]
   const uploadedAt = nowIso()
-  const publicSlug = text(previousModel?.publicSlug, 500) || randomBytes(24).toString('base64url')
+  const publicSlug = permanentQuoteViewerSlug(rootQuote || quote, previousModel)
   const model = {
     status: 'ready',
     projectId: files[0].projectId,
@@ -629,19 +682,24 @@ export function registerTrimbleRoutes(app, deps) {
       const revisionNumber = requestedRevisionNumber(req)
       const quote = quoteAtRevision(rootQuote, revisionNumber)
       if (!quote) return res.status(404).json({ error: 'Quote revision not found.' })
+      const existingSketchUpName = text(quote?.trimble3d?.fileName, 500)
+      const trimbleFileName = existingSketchUpName.toLowerCase().endsWith('.skp')
+        ? existingSketchUpName
+        : fileName
 
       const { accessToken } = await accessTokenFor(trimbleOauthConnectionsCollection)
       const project = await resolveProject(accessToken, trimbleConfig().projectName)
       const folder = await resolveQuoteFolder(accessToken, project, quote)
       const upload = await trimbleRequest('/files/fs/initiate', accessToken, {
         method: 'POST',
-        body: JSON.stringify({ parentId: folder.id, parentType: 'FOLDER', name: fileName }),
+        body: JSON.stringify({ parentId: folder.id, parentType: 'FOLDER', name: trimbleFileName }),
       })
       if (!upload?.uploadId || !upload?.uploadURL) throw new Error('Trimble did not create an upload session.')
 
       const pendingUpload = {
         uploadId: upload.uploadId,
-        fileName,
+        fileName: trimbleFileName,
+        sourceFileName: fileName,
         fileSize,
         projectId: project.id,
         folderId: folder.id,
@@ -733,7 +791,7 @@ export function registerTrimbleRoutes(app, deps) {
 
       const previousModel = quote.trimble3d
       const uploadedAt = nowIso()
-      const publicSlug = text(previousModel?.publicSlug, 500) || randomBytes(24).toString('base64url')
+      const publicSlug = permanentQuoteViewerSlug(rootQuote, previousModel)
       const primary = models[0]
       const model = {
         status: 'ready',
@@ -742,6 +800,63 @@ export function registerTrimbleRoutes(app, deps) {
         fileName: primary.fileName,
         fileSize: primary.fileSize,
         webModelUrl: primary.webModelUrl,
+        publicSlug,
+        viewerUrl: publicViewerUrl(publicSlug),
+        uploadedAt,
+        uploadedByUid: text(req.authUser?.uid, 200) || null,
+        uploadedByEmail: text(req.authUser?.email, 320) || null,
+      }
+      await setQuoteRevisionModel(
+        crmQuotesCollection,
+        rootQuote,
+        quoteId,
+        revisionNumber,
+        model,
+        uploadedAt,
+      )
+
+      const oldShareIds = existingShareIds(previousModel)
+      if (oldShareIds.length) {
+        await (async () => {
+          const { accessToken } = await accessTokenFor(trimbleOauthConnectionsCollection)
+          await removeTrimbleShares(accessToken, oldShareIds)
+        })().catch(() => {})
+      }
+      return res.json({ model: safeModelSummary(model) })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.post('/api/trimble/quotes/:quoteId/sketchup-share', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const quoteId = text(req.params.quoteId, 200)
+      const sketchupShareUrl = validatedSketchUpShareUrl(req.body?.shareUrl)
+      if (!quoteId || !sketchupShareUrl) {
+        return res.status(400).json({ error: 'Paste a valid app.sketchup.com shared-model link.' })
+      }
+
+      const { crmQuotesCollection, trimbleOauthConnectionsCollection } = await getCollections()
+      const rootQuote = await crmQuotesCollection.findOne({ id: quoteId }, { projection: { _id: 0 } })
+      if (!rootQuote) return res.status(404).json({ error: 'Quote not found.' })
+      const revisionNumber = requestedRevisionNumber(req)
+      const quote = quoteAtRevision(rootQuote, revisionNumber)
+      if (!quote) return res.status(404).json({ error: 'Quote revision not found.' })
+
+      const previousModel = quote.trimble3d
+      const uploadedAt = nowIso()
+      const publicSlug = permanentQuoteViewerSlug(rootQuote, previousModel)
+      const model = {
+        status: 'ready',
+        viewerType: 'sketchup',
+        models: [{
+          fileName: 'SketchUp shared model',
+          label: '3D View',
+          viewerType: 'sketchup',
+          sketchupShareUrl,
+        }],
+        fileName: 'SketchUp shared model',
+        sketchupShareUrl,
         publicSlug,
         viewerUrl: publicViewerUrl(publicSlug),
         uploadedAt,
@@ -896,6 +1011,16 @@ export function registerTrimbleRoutes(app, deps) {
         const { accessToken } = await accessTokenFor(trimbleOauthConnectionsCollection)
         await removeTrimbleShares(accessToken, shareIds)
       }
+      const retainedPublicSlug = text(
+        rootQuote.public3dSlug || quote.trimble3d?.publicSlug,
+        500,
+      )
+      if (retainedPublicSlug) {
+        await crmQuotesCollection.updateOne(
+          { id: quoteId },
+          { $set: { public3dSlug: retainedPublicSlug } },
+        )
+      }
       await unsetQuoteRevisionModel(
         crmQuotesCollection,
         rootQuote,
@@ -920,6 +1045,7 @@ export function registerTrimbleRoutes(app, deps) {
       const rootQuote = await crmQuotesCollection.findOne(
         {
           $or: [
+            { public3dSlug: slug },
             { 'trimble3d.publicSlug': slug, 'trimble3d.status': 'ready' },
             { revisions: { $elemMatch: { 'trimble3d.publicSlug': slug, 'trimble3d.status': 'ready' } } },
           ],
@@ -927,12 +1053,14 @@ export function registerTrimbleRoutes(app, deps) {
         { projection: { _id: 0, id: 1, quoteNumber: 1, title: 1, companyName: 1, dealerName: 1, salesRep: 1, opportunityDate: 1, sentAt: 1, createdAt: 1, lastFollowedUpAt: 1, trimble3d: 1, revisions: 1 } },
       )
       if (!rootQuote) return res.status(404).json({ error: 'This 3D model link is unavailable.' })
-      const matchingRevision = (Array.isArray(rootQuote.revisions) ? rootQuote.revisions : []).find(
-        (revision) => revision?.trimble3d?.publicSlug === slug && revision?.trimble3d?.status === 'ready',
-      )
-      const quote = matchingRevision
-        ? { ...rootQuote, ...matchingRevision, id: rootQuote.id, revisions: rootQuote.revisions }
-        : rootQuote
+      const activeModelMatches = rootQuote.trimble3d?.publicSlug === slug
+        && rootQuote.trimble3d?.status === 'ready'
+      const matchingRevision = (Array.isArray(rootQuote.revisions) ? rootQuote.revisions : [])
+        .filter((revision) => revision?.trimble3d?.publicSlug === slug && revision?.trimble3d?.status === 'ready')
+        .sort((left, right) => Number(right?.revisionNumber ?? -1) - Number(left?.revisionNumber ?? -1))[0]
+      const quote = activeModelMatches || !matchingRevision
+        ? rootQuote
+        : { ...rootQuote, ...matchingRevision, id: rootQuote.id, revisions: rootQuote.revisions }
       const isReadinessPoll = text(req.query?.poll, 20) === '1'
       if (!isReadinessPoll) {
         const openedAt = nowIso()
@@ -1014,6 +1142,21 @@ export function registerTrimbleRoutes(app, deps) {
       }
 
       const model = quote.trimble3d
+      if (!model || model.status !== 'ready') {
+        res.set('Cache-Control', 'private, no-store')
+        res.set('X-Robots-Tag', 'noindex, nofollow, noarchive')
+        return res.json({
+          quoteNumber: text(quote.quoteNumber, 120) || null,
+          projectName: text(quote.title, 240) || 'Custom furniture project',
+          customerName: text(quote.companyName || quote.dealerName, 240) || null,
+          fileName: null,
+          status: 'processing',
+          viewerType: null,
+          glbUrl: null,
+          embedUrl: null,
+          models: [],
+        })
+      }
       const hasStoredModels = Array.isArray(model.models) && model.models.length
       const storedModels = hasStoredModels ? model.models : [model]
       // Trimble's Core file status can remain PROCESSING after its 3D viewer is
@@ -1022,15 +1165,18 @@ export function registerTrimbleRoutes(app, deps) {
       // the customer page for the short conversion window after a fresh upload.
       const publicModels = storedModels.map((entry, index) => {
         const glbUrl = validatedFirebaseModelUrl(entry?.webModelUrl || (model.viewerType === 'glb' ? model.webModelUrl : ''))
+        const sketchupShareUrl = validatedSketchUpShareUrl(
+          entry?.sketchupShareUrl || (model.viewerType === 'sketchup' ? model.sketchupShareUrl : ''),
+        )
         return {
           label: modelViewLabel(entry?.fileName, entry?.label, index),
           fileName: text(entry?.fileName, 500) || `3D option ${index + 1}`,
           status: 'ready',
-          viewerType: glbUrl ? 'glb' : 'trimble',
+          viewerType: sketchupShareUrl ? 'sketchup' : (glbUrl ? 'glb' : 'trimble'),
           glbUrl: glbUrl || null,
-          embedUrl: glbUrl
+          embedUrl: sketchupShareUrl || (glbUrl
             ? null
-            : `${trimbleViewerBaseUrl}/projects/${encodeURIComponent(model.projectId)}/viewer/3d/?embed=true&stoken=${encodeURIComponent(entry.shareToken)}`,
+            : `${trimbleViewerBaseUrl}/projects/${encodeURIComponent(model.projectId)}/viewer/3d/?embed=true&stoken=${encodeURIComponent(entry.shareToken)}`),
         }
       })
       const primaryPublicModel = publicModels.find((entry) => entry.glbUrl || entry.embedUrl)

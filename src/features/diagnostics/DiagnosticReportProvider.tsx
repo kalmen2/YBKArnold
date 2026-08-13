@@ -284,6 +284,7 @@ export default function DiagnosticReportProvider({ children }: { children: React
         }),
       }, { timeoutMs: 120_000, processTracking: false })
       setSubmittedReference(response.reference)
+      window.dispatchEvent(new CustomEvent('arnold:diagnostic-report-created'))
       pendingDiagnosticsRef.current = null
       setPhase('success')
     } catch (submitError) {

@@ -1,8 +1,10 @@
 import ArrowBackRoundedIcon from '@mui/icons-material/ArrowBackRounded'
 import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded'
+import CloseRoundedIcon from '@mui/icons-material/CloseRounded'
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined'
 import ReplayRoundedIcon from '@mui/icons-material/ReplayRounded'
 import ViewInArRoundedIcon from '@mui/icons-material/ViewInArRounded'
-import { Alert, Box, Button, CircularProgress, Stack, Typography } from '@mui/material'
+import { Alert, Box, Button, CircularProgress, IconButton, Stack, Typography } from '@mui/material'
 import { useEffect, useMemo, useRef, useState, type ElementType } from 'react'
 import { useParams } from 'react-router-dom'
 import '@google/model-viewer'
@@ -12,7 +14,7 @@ const SmoothModelViewer = 'model-viewer' as unknown as ElementType
 type ViewerModel = {
   label: string
   fileName: string
-  viewerType?: 'trimble' | 'glb'
+  viewerType?: 'trimble' | 'glb' | 'sketchup'
   glbUrl?: string | null
   embedUrl: string | null
   status?: 'processing' | 'ready' | 'failed'
@@ -24,7 +26,7 @@ type ViewerData = {
   customerName: string | null
   fileName: string | null
   status?: 'processing' | 'ready' | 'failed'
-  viewerType?: 'trimble' | 'glb'
+  viewerType?: 'trimble' | 'glb' | 'sketchup'
   glbUrl?: string | null
   embedUrl: string | null
   models?: ViewerModel[]
@@ -47,6 +49,7 @@ export default function Public3dViewerPage() {
   const [viewerNonce, setViewerNonce] = useState(0)
   const [viewerLoading, setViewerLoading] = useState(true)
   const [takingLonger, setTakingLonger] = useState(false)
+  const [showViewerHelp, setShowViewerHelp] = useState(false)
   const revealTimerRef = useRef<number | null>(null)
 
   useEffect(() => {
@@ -93,13 +96,16 @@ export default function Public3dViewerPage() {
   useEffect(() => {
     if (!activeModel?.embedUrl && !activeModel?.glbUrl) return undefined
     if (revealTimerRef.current !== null) window.clearTimeout(revealTimerRef.current)
-    const slowTimer = window.setTimeout(() => setTakingLonger(true), 5_000)
+    const isSketchUpViewer = activeModel.viewerType === 'sketchup'
+    const slowTimer = isSketchUpViewer
+      ? null
+      : window.setTimeout(() => setTakingLonger(true), 5_000)
     const hardRevealTimer = window.setTimeout(() => {
       setViewerLoading(false)
-      setTakingLonger(true)
-    }, 15_000)
+      if (!isSketchUpViewer) setTakingLonger(true)
+    }, isSketchUpViewer ? 1_000 : 15_000)
     return () => {
-      window.clearTimeout(slowTimer)
+      if (slowTimer !== null) window.clearTimeout(slowTimer)
       window.clearTimeout(hardRevealTimer)
       if (revealTimerRef.current !== null) window.clearTimeout(revealTimerRef.current)
     }
@@ -147,6 +153,7 @@ export default function Public3dViewerPage() {
       <Box
         component="header"
         sx={{
+          position: 'relative',
           px: { xs: 1.5, md: 3 },
           minHeight: { xs: 62, md: 74 },
           display: 'flex',
@@ -166,12 +173,41 @@ export default function Public3dViewerPage() {
           </Typography>
           <Typography variant="caption" sx={{ color: '#71808b', display: { xs: 'none', sm: 'block' } }}>Interactive project presentation</Typography>
         </Box>
+        {data && activeModel?.viewerType === 'sketchup' ? (
+          <Button
+            aria-label="3D viewing controls and reference warning"
+            onClick={() => setShowViewerHelp(true)}
+            size="small"
+            startIcon={<InfoOutlinedIcon fontSize="small" />}
+            sx={{
+              position: 'absolute',
+              left: '50%',
+              top: '50%',
+              transform: 'translate(-50%, -50%)',
+              color: '#263746',
+              border: '1px solid rgba(38,55,70,.18)',
+              bgcolor: '#fff',
+              boxShadow: '0 3px 10px rgba(38,55,70,.1)',
+              minWidth: 0,
+              px: { xs: 1, sm: 1.5 },
+              textTransform: 'none',
+              fontSize: { xs: '0.7rem', sm: '0.78rem' },
+              fontWeight: 800,
+              whiteSpace: 'nowrap',
+              '&:hover': { bgcolor: '#f4f2ed' },
+            }}
+          >
+            <Box component="span" sx={{ display: { xs: 'none', sm: 'inline' } }}>Viewing </Box>controls
+          </Button>
+        ) : null}
         {data ? (
-          <Stack alignItems="flex-end" sx={{ minWidth: 0, maxWidth: { xs: 230, sm: 480 } }}>
-            <Typography variant="subtitle2" noWrap sx={{ maxWidth: { xs: 210, sm: 480 }, color: '#263746', fontWeight: 900 }}>{data.projectName}</Typography>
-            <Typography variant="caption" noWrap sx={{ maxWidth: { xs: 210, sm: 480 }, color: '#71808b' }}>
-              {data.quoteNumber ? `Quote ${data.quoteNumber}` : (data.customerName || 'Arnold custom project')}
-            </Typography>
+          <Stack direction="row" alignItems="center" spacing={0.75} sx={{ minWidth: 0 }}>
+            <Stack alignItems="flex-end" sx={{ minWidth: 0, maxWidth: { xs: 190, sm: 480 } }}>
+              <Typography variant="subtitle2" noWrap sx={{ maxWidth: { xs: 170, sm: 480 }, color: '#263746', fontWeight: 900 }}>{data.projectName}</Typography>
+              <Typography variant="caption" noWrap sx={{ maxWidth: { xs: 170, sm: 480 }, color: '#71808b' }}>
+                {data.quoteNumber ? `Quote ${data.quoteNumber}` : (data.customerName || 'Arnold custom project')}
+              </Typography>
+            </Stack>
           </Stack>
         ) : null}
       </Box>
@@ -195,7 +231,7 @@ export default function Public3dViewerPage() {
             letterSpacing: '.01em',
           }}
         >
-          Quote concept only — final dimensions, construction details, finishes, and specifications are subject to approved shop drawings.
+          REFERENCE ONLY — Do not use this model for measurements or fabrication. Final dimensions and specifications are subject to approved shop drawings.
         </Typography>
       </Box>
 
@@ -288,19 +324,94 @@ export default function Public3dViewerPage() {
                 src={activeModel.embedUrl ? `${activeModel.embedUrl}${activeModel.embedUrl.includes('?') ? '&' : '?'}reload=${viewerNonce}` : undefined}
                 allow="fullscreen"
                 loading="eager"
-                onLoad={prepareViewer}
+                onLoad={() => {
+                  if (activeModel.viewerType === 'sketchup') setViewerLoading(false)
+                  else prepareViewer()
+                }}
                 sx={{
                   position: 'absolute',
                   border: 0,
                   display: 'block',
-                  top: '-54px',
-                  left: { xs: '-55px', md: '-365px' },
-                  width: { xs: 'calc(100% + 55px)', md: 'calc(100% + 365px)' },
-                  height: 'calc(100% + 54px)',
+                  top: activeModel.viewerType === 'sketchup' ? '-56px' : '-54px',
+                  left: activeModel.viewerType === 'sketchup'
+                    ? { xs: '-56px', sm: '-150px', md: '-190px' }
+                    : { xs: '-55px', md: '-365px' },
+                  width: activeModel.viewerType === 'sketchup'
+                    ? { xs: 'calc(100% + 112px)', sm: 'calc(100% + 300px)', md: 'calc(100% + 380px)' }
+                    : { xs: 'calc(100% + 55px)', md: 'calc(100% + 365px)' },
+                  height: activeModel.viewerType === 'sketchup' ? 'calc(100% + 112px)' : 'calc(100% + 54px)',
                   bgcolor: '#f4f2ed',
                 }}
               />
             )}
+
+            {activeModel.viewerType === 'sketchup' ? (
+              <Box
+                aria-hidden="true"
+                sx={{
+                  position: 'absolute',
+                  zIndex: 2,
+                  top: 0,
+                  right: 0,
+                  width: { xs: '82%', sm: 320 },
+                  height: 82,
+                  pointerEvents: 'none',
+                  background: 'linear-gradient(90deg, rgba(255,255,255,0), rgba(255,255,255,.98) 24%, #fff 38%)',
+                }}
+              />
+            ) : null}
+
+            {activeModel.viewerType === 'sketchup' && showViewerHelp ? (
+              <>
+                <Box onClick={() => setShowViewerHelp(false)} sx={{ position: 'absolute', zIndex: 5, inset: 0, bgcolor: 'rgba(38,55,70,.2)', backdropFilter: 'blur(2px)' }} />
+                <Box
+                  role="dialog"
+                  aria-label="How to navigate the 3D model"
+                  sx={{
+                    position: 'absolute',
+                    zIndex: 6,
+                    top: '50%',
+                    left: '50%',
+                    transform: 'translate(-50%, -50%)',
+                    width: 'min(calc(100% - 32px), 520px)',
+                    p: { xs: 2, sm: 2.5 },
+                    borderRadius: 3,
+                    bgcolor: '#fbfaf7',
+                    border: '1px solid rgba(38,55,70,.14)',
+                    boxShadow: '0 24px 70px rgba(38,55,70,.28)',
+                  }}
+                >
+                  <Stack direction="row" alignItems="flex-start" spacing={1}>
+                    <Box sx={{ flex: 1 }}>
+                      <Typography variant="h6" sx={{ color: '#263746', fontWeight: 900 }}>3D viewing controls</Typography>
+                      <Typography sx={{ color: '#71808b', fontSize: '0.86rem', mt: 0.25 }}>Click once inside the model before using a keyboard shortcut.</Typography>
+                    </Box>
+                    <IconButton aria-label="Close navigation help" onClick={() => setShowViewerHelp(false)} size="small">
+                      <CloseRoundedIcon />
+                    </IconButton>
+                  </Stack>
+                  <Alert severity="warning" sx={{ mt: 2, '& .MuiAlert-message': { fontSize: '0.82rem', fontWeight: 750 } }}>
+                    Reference only. Do not use this model for measurements or fabrication.
+                  </Alert>
+                  <Stack spacing={1} sx={{ mt: 1.25 }}>
+                    {[
+                      ['O', 'Orbit', 'Press O, then click and drag to rotate the view.'],
+                      ['H', 'Pan', 'Press H, then click and drag to move the view.'],
+                    ].map(([shortcut, title, description]) => (
+                      <Stack key={shortcut} direction="row" spacing={1.25} alignItems="center" sx={{ p: 1.25, borderRadius: 2, bgcolor: '#f1eee8' }}>
+                        <Box sx={{ width: 30, height: 30, borderRadius: '50%', display: 'grid', placeItems: 'center', bgcolor: '#fff', color: '#b5262d', fontWeight: 900, fontSize: '0.78rem' }}>
+                          {shortcut}
+                        </Box>
+                        <Box>
+                          <Typography sx={{ color: '#263746', fontWeight: 850, fontSize: '0.84rem' }}>{title}</Typography>
+                          <Typography sx={{ color: '#526471', fontSize: '0.78rem' }}>{description}</Typography>
+                        </Box>
+                      </Stack>
+                    ))}
+                  </Stack>
+                </Box>
+              </>
+            ) : null}
 
             {models.length > 1 ? (
               <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ position: 'absolute', zIndex: 3, top: 14, left: 14, right: { xs: 14, md: 'auto' } }}>
@@ -348,7 +459,7 @@ export default function Public3dViewerPage() {
                 '&:hover': { bgcolor: '#263746' },
               }}
             >
-              Reload 3D
+              {activeModel.viewerType === 'sketchup' ? 'Reset view' : 'Reload 3D'}
             </Button>
 
             {viewerLoading ? (

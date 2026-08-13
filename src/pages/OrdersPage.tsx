@@ -292,13 +292,13 @@ export default function OrdersPage() {
     }
   }, [overview])
 
-  const handleOpenJobDialog = useCallback((order: OrdersOverviewOrder, mode: JobDetailsMode) => {
+  const handleOpenJobDialog = useCallback((order: OrdersOverviewOrder, mode: JobDetailsMode, initialTab: 'info' | 'parts' = 'info') => {
     if (!order.hasMondayRecord && !order.inDesign && !order.canonicalOrderId) {
       setErrorMessage('This QuickBooks project is not linked to a Monday order yet.')
       return
     }
     setJobDialogMode(mode)
-    setJobDialogInitialTab('info')
+    setJobDialogInitialTab(initialTab)
     setSelectedOrder(order)
   }, [])
 
@@ -891,6 +891,7 @@ export default function OrdersPage() {
         open={Boolean(jobDialogMode && selectedOrder)}
         mode={jobDialogMode}
         order={selectedOrder}
+        allowShipOrder={overview.activeTab === 'orders'}
         initialTab={jobDialogInitialTab}
         onOpenBolDocument={handleOpenBolDocument}
         onOpenShopDrawingDocument={handleOpenShopDrawingDocument}

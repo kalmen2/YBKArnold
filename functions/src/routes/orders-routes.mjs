@@ -54,12 +54,14 @@ import {
   extractOrderNumberReference,
   normalizeOrderNumberKey,
 } from '../services/orders-merge-helpers.mjs'
+import { MONDAY_BOARDS } from '../orders/monday-board-map.mjs'
 
 export function registerOrdersRoutes(app, deps) {
   const {
     authApprovalApproved,
     authRoleAdmin,
     createMondayItem,
+    createMondaySubitem,
     deleteMondayItem,
     decodeBase64Image,
     fetchMondayBoardColumns,
@@ -931,6 +933,9 @@ export function registerOrdersRoutes(app, deps) {
     const rowStatus = resolveRowStatusLabel({
       hasMondayRecord,
       inDesign,
+      productionHandoffStatus: String(orderDocument?.production_handoff_status ?? '').trim() || null,
+      productionHandoffRequestedAt: String(orderDocument?.production_handoff_requested_at ?? '').trim() || null,
+      productionHandoffRequestedByEmail: String(orderDocument?.production_handoff_requested_by_email ?? '').trim() || null,
       isShipped,
       mondayStatus,
       progressStatusDetails,
@@ -1051,6 +1056,7 @@ export function registerOrdersRoutes(app, deps) {
       contactPhone: String(quoteSnapshot?.contactPhone ?? '').trim() || null,
       leadTime: String(orderDocument?.lead_time_text ?? quoteSnapshot?.leadTime ?? '').trim() || null,
       freightDescription: String(quoteSnapshot?.freightDescription ?? '').trim() || null,
+      shippingCarrier: String(orderDocument?.shipping_carrier ?? '').trim() || null,
       productValue: resolveOptionalMoney(
         orderDocument?.canonical_product_value,
         Number.isFinite(Number(orderDocument?.canonical_order_value))
@@ -1088,6 +1094,7 @@ export function registerOrdersRoutes(app, deps) {
           ? Number(orderDocument.billAmount)
           : null,
       invoiceAmount: Number.isFinite(Number(orderDocument?.invoiceAmount)) ? Number(orderDocument.invoiceAmount) : null,
+      paymentAmount: Number.isFinite(Number(orderDocument?.paymentAmount)) ? Number(orderDocument.paymentAmount) : null,
       websiteCalculatedOrderTotal,
       invoiceTotalMatchesOrder: websiteCalculatedOrderTotal !== null && hasQuickBooksInvoice
         ? !invoiceTotalMismatch
@@ -1108,6 +1115,12 @@ export function registerOrdersRoutes(app, deps) {
       orderDate: String(orderDocument?.order_date ?? '').trim() || null,
       mondayStatus,
       rowStatus,
+      productionHandoffStatus:
+        String(orderDocument?.production_handoff_status ?? '').trim() || null,
+      productionHandoffRequestedAt:
+        String(orderDocument?.production_handoff_requested_at ?? '').trim() || null,
+      productionHandoffRequestedByEmail:
+        String(orderDocument?.production_handoff_requested_by_email ?? '').trim() || null,
       managerReadyPercent: Number.isFinite(Number(orderDocument?.manager_ready_percent))
         ? Number(orderDocument.manager_ready_percent)
         : null,
@@ -1154,6 +1167,8 @@ export function registerOrdersRoutes(app, deps) {
       hasMondayRecord,
       hasQuickBooksRecord,
       inDesign,
+      subitems: (Array.isArray(orderDocument?.design_parts) ? orderDocument.design_parts : [])
+        .map(mapDesignPart),
       quickBooksProjectId: primaryQuickBooksProjectId || null,
       quickBooksProjectName: primaryQuickBooksProjectName || null,
       quickBooksProjectIds,
@@ -1260,6 +1275,7 @@ export function registerOrdersRoutes(app, deps) {
         poAmount: sumField(family, 'poAmount'),
         billedAmount: sumField(family, 'billedAmount'),
         invoiceAmount: sumField(family, 'invoiceAmount'),
+        paymentAmount: sumField(family, 'paymentAmount'),
         amountOwed: sumField(family, 'amountOwed'),
         billBalanceAmount: sumField(family, 'billBalanceAmount'),
       }
@@ -1303,9 +1319,11 @@ export function registerOrdersRoutes(app, deps) {
       redacted.pendingChangeFreightNet = null
       redacted.salesRep = null
       redacted.depositReceivedDate = null
+      redacted.paymentAmount = null
       redacted.poAmount = null
       if (redacted.familyRollup) {
         redacted.familyRollup.poAmount = null
+        redacted.familyRollup.paymentAmount = null
       }
     }
 
@@ -1546,6 +1564,411 @@ export function registerOrdersRoutes(app, deps) {
     }
   })
 
+  function mapDesignPart(part) {
+    return {
+      id: String(part?.id ?? '').trim(),
+      sourceType: ['requested', 'monday'].includes(part?.sourceType) ? part.sourceType : 'catalog',
+      itemKey: String(part?.itemKey ?? '').trim() || null,
+      itemName: String(part?.itemName ?? '').trim() || 'Item',
+      description: String(part?.description ?? '').trim() || null,
+      link: String(part?.link ?? '').trim() || null,
+      quantity: Number.isFinite(Number(part?.quantity)) ? Number(part.quantity) : 1,
+      requiresDimensions: Boolean(part?.requiresDimensions),
+      dimensions: String(part?.dimensions ?? '').trim() || null,
+      requiresVeneerDirection: Boolean(part?.requiresVeneerDirection),
+      veneerDirection: ['length', 'width', 'none'].includes(String(part?.veneerDirection ?? '').trim())
+        ? String(part.veneerDirection).trim()
+        : null,
+      mondaySubitemId: String(part?.mondaySubitemId ?? '').trim() || null,
+      status: String(part?.status ?? '').trim() || null,
+      statusColor: String(part?.statusColor ?? '').trim() || null,
+      vendor: String(part?.vendor ?? '').trim() || null,
+      dateOrdered: String(part?.dateOrdered ?? '').trim() || null,
+      dateReceived: String(part?.dateReceived ?? '').trim() || null,
+      dueDate: String(part?.dueDate ?? '').trim() || null,
+      createdAt: String(part?.createdAt ?? '').trim() || null,
+      createdByUid: String(part?.createdByUid ?? '').trim() || null,
+      createdByEmail: String(part?.createdByEmail ?? '').trim() || null,
+      createdByName: String(part?.createdByName ?? '').trim() || null,
+      updatedAt: String(part?.updatedAt ?? '').trim() || null,
+      updatedByEmail: String(part?.updatedByEmail ?? '').trim() || null,
+    }
+  }
+
+  function normalizeDesignPartLink(value) {
+    const link = String(value ?? '').trim().slice(0, 1500)
+    if (!link) return null
+    return /^https?:\/\//i.test(link) ? link : null
+  }
+
+  const orderTrackSubitemStatuses = new Set([
+    'Working on it', 'Is here', 'Stuck', 'Ordered', 'COM', 'To Be Determined',
+    'Make In House', 'Partial', 'Partial Receipt', 'By Other', 'In Cart', 'Canceled',
+  ])
+  const designSubitemStatuses = new Set(['Working on it', 'Done', 'Stuck', 'Is Here'])
+  const subitemStatusColors = {
+    'working on it': '#fdab3d', 'is here': '#00c875', done: '#00c875',
+    stuck: '#df2f4a', ordered: '#007eb5', com: '#9d50dd',
+    'to be determined': '#cd9282', 'make in house': '#ff6d3b',
+    partial: '#cab641', 'partial receipt': '#4eccc6', 'by other': '#333333',
+    'in cart': '#ffadad', canceled: '#ff007f',
+  }
+  const designSubitemStatusColors = {
+    ...subitemStatusColors,
+    'is here': '#007eb5',
+  }
+  function resolveSubitemSchema(parentBoardId) {
+    return String(parentBoardId ?? '').trim() === MONDAY_BOARDS.orderTrack.id
+      ? { boardId: '1072666629', status: 'status', vendor: 'text9', dateOrdered: 'date0', dateReceived: 'date', dueDate: 'date7', statuses: orderTrackSubitemStatuses, statusColors: subitemStatusColors }
+      : { boardId: '1199212913', status: 'status', vendor: 'text', dateOrdered: null, dateReceived: 'date0', dueDate: null, statuses: designSubitemStatuses, statusColors: designSubitemStatusColors }
+  }
+  function normalizeSubitemDate(value) {
+    const normalized = String(value ?? '').trim()
+    return /^\d{4}-\d{2}-\d{2}$/.test(normalized) ? normalized : null
+  }
+
+  function requireApprovedOrderWorker(req, res) {
+    if (getOrderAccess(req).isApproved) return true
+    res.status(403).json({ error: 'Approved worker access is required.' })
+    return false
+  }
+
+  app.get('/api/orders/:orderKey/design-parts', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      if (!requireApprovedOrderWorker(req, res)) return
+      const orderKey = String(req.params.orderKey ?? '').trim().slice(0, 240)
+      const { ordersUnifiedCollection } = await getCollections()
+      const order = await ordersUnifiedCollection.findOne(
+        { orderKey },
+        { projection: { _id: 0, orderKey: 1, order_number: 1, design_parts: 1 } },
+      )
+      if (!order) return res.status(404).json({ error: 'Order not found.' })
+      return res.json({
+        orderKey,
+        orderNumber: String(order.order_number ?? '').trim() || null,
+        parts: (Array.isArray(order.design_parts) ? order.design_parts : []).map(mapDesignPart),
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.post('/api/orders/:orderKey/design-parts', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      if (!requireApprovedOrderWorker(req, res)) return
+      const orderKey = String(req.params.orderKey ?? '').trim().slice(0, 240)
+      const sourceType = req.body?.sourceType === 'requested' ? 'requested' : 'catalog'
+      const itemKey = String(req.body?.itemKey ?? '').trim().toLowerCase().slice(0, 260)
+      const requestedItemName = String(req.body?.itemName ?? '').trim().slice(0, 260)
+      const quantity = Number(req.body?.quantity)
+      const { ordersUnifiedCollection, purchasingItemsCollection } = await getCollections()
+      const orderExists = await ordersUnifiedCollection.findOne(
+        { orderKey },
+        { projection: { _id: 1, monday_item_id: 1 } },
+      )
+      if (!orderExists) return res.status(404).json({ error: 'Order not found.' })
+
+      let catalogItem = null
+      if (sourceType === 'catalog') {
+        if (!itemKey) return res.status(400).json({ error: 'Select a purchasing item.' })
+        catalogItem = await purchasingItemsCollection.findOne(
+          { itemKey },
+          {
+            projection: {
+              _id: 0,
+              itemKey: 1,
+              itemRaw: 1,
+              descriptions: 1,
+              requiresDimensions: 1,
+              requiresVeneerDirection: 1,
+              defaultVeneerDirection: 1,
+            },
+          },
+        )
+        if (!catalogItem) return res.status(404).json({ error: 'Purchasing item not found.' })
+      } else if (!requestedItemName) {
+        return res.status(400).json({ error: 'Enter the requested item name.' })
+      }
+
+      if (!Number.isFinite(quantity) || quantity <= 0 || quantity > 100000) {
+        return res.status(400).json({ error: 'Quantity must be greater than zero.' })
+      }
+
+      const requiresDimensions = sourceType === 'catalog'
+        ? Boolean(catalogItem?.requiresDimensions)
+        : req.body?.requiresDimensions === true
+      const dimensions = String(req.body?.dimensions ?? '').trim().slice(0, 300)
+      if (requiresDimensions && !dimensions) {
+        return res.status(400).json({ error: 'Enter the required piece size.' })
+      }
+      const requiresVeneerDirection = requiresDimensions && (
+        sourceType === 'catalog'
+          ? Boolean(catalogItem?.requiresVeneerDirection)
+          : req.body?.requiresVeneerDirection === true
+      )
+      const requestedVeneerDirection = String(
+        req.body?.veneerDirection ?? catalogItem?.defaultVeneerDirection ?? '',
+      ).trim().toLowerCase()
+      const veneerDirection = requiresVeneerDirection
+        && ['length', 'width', 'none'].includes(requestedVeneerDirection)
+        ? requestedVeneerDirection
+        : null
+      if (requiresVeneerDirection && !veneerDirection) {
+        return res.status(400).json({ error: 'Select the veneer direction.' })
+      }
+
+      const rawLink = String(req.body?.link ?? '').trim()
+      const link = normalizeDesignPartLink(rawLink)
+      if (rawLink && !link) return res.status(400).json({ error: 'Link must begin with http:// or https://.' })
+
+      const now = new Date().toISOString()
+      const publicUser = toPublicAuthUser(req.authUser)
+      const part = {
+        id: randomUUID(),
+        sourceType,
+        itemKey: sourceType === 'catalog' ? itemKey : null,
+        itemName: sourceType === 'catalog'
+          ? String(catalogItem?.itemRaw ?? itemKey).trim()
+          : requestedItemName,
+        description: String(req.body?.description ?? '').trim().slice(0, 2000) || null,
+        link,
+        quantity: Number(quantity.toFixed(3)),
+        requiresDimensions,
+        dimensions: requiresDimensions ? dimensions : null,
+        requiresVeneerDirection,
+        veneerDirection,
+        status: null,
+        statusColor: null,
+        vendor: String(req.body?.vendor ?? '').trim().slice(0, 260) || null,
+        dateOrdered: normalizeSubitemDate(req.body?.dateOrdered),
+        dateReceived: normalizeSubitemDate(req.body?.dateReceived),
+        dueDate: normalizeSubitemDate(req.body?.dueDate),
+        createdAt: now,
+        createdByUid: String(publicUser?.uid ?? req.authUser?.uid ?? '').trim() || null,
+        createdByEmail: String(publicUser?.email ?? req.authUser?.email ?? '').trim() || null,
+        createdByName: String(publicUser?.displayName ?? '').trim() || null,
+        updatedAt: now,
+        updatedByEmail: String(publicUser?.email ?? req.authUser?.email ?? '').trim() || null,
+      }
+      const mondayParentItemId = String(orderExists?.monday_item_id ?? '').trim()
+      if (mondayParentItemId && typeof createMondaySubitem === 'function') {
+        const nameParts = [part.itemName, part.dimensions, part.quantity !== 1 ? `Qty ${part.quantity}` : null]
+          .filter(Boolean)
+        const mondaySubitem = await createMondaySubitem({
+          parentItemId: mondayParentItemId,
+          itemName: nameParts.join(' · '),
+        })
+        part.mondaySubitemId = mondaySubitem.id
+      }
+      await ordersUnifiedCollection.updateOne(
+        { orderKey },
+        { $push: { design_parts: part }, $set: { updatedAt: now } },
+      )
+      return res.status(201).json({ part: mapDesignPart(part) })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.patch('/api/orders/:orderKey/design-parts/:partId', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      if (!requireApprovedOrderWorker(req, res)) return
+      const orderKey = String(req.params.orderKey ?? '').trim().slice(0, 240)
+      const partId = String(req.params.partId ?? '').trim().slice(0, 160)
+      const { ordersUnifiedCollection } = await getCollections()
+      const order = await ordersUnifiedCollection.findOne(
+        { orderKey, 'design_parts.id': partId },
+        { projection: { _id: 0, monday_board_id: 1, design_parts: 1 } },
+      )
+      const existing = (Array.isArray(order?.design_parts) ? order.design_parts : []).find((part) => part?.id === partId)
+      if (!existing) return res.status(404).json({ error: 'Part not found.' })
+
+      const quantity = req.body?.quantity === undefined ? Number(existing.quantity) : Number(req.body.quantity)
+      if (!Number.isFinite(quantity) || quantity <= 0 || quantity > 100000) {
+        return res.status(400).json({ error: 'Quantity must be greater than zero.' })
+      }
+      const requiresDimensions = req.body?.requiresDimensions !== undefined
+        ? req.body.requiresDimensions === true
+        : Boolean(existing.requiresDimensions)
+      const dimensions = String(req.body?.dimensions ?? existing.dimensions ?? '').trim().slice(0, 300)
+      if (requiresDimensions && !dimensions) {
+        return res.status(400).json({ error: 'Enter the required piece size.' })
+      }
+      const requiresVeneerDirection = requiresDimensions
+        && req.body?.requiresVeneerDirection !== undefined
+        ? req.body.requiresVeneerDirection === true
+        : requiresDimensions && Boolean(existing.requiresVeneerDirection)
+      const requestedVeneerDirection = String(
+        req.body?.veneerDirection ?? existing.veneerDirection ?? '',
+      ).trim().toLowerCase()
+      const veneerDirection = requiresVeneerDirection
+        && ['length', 'width', 'none'].includes(requestedVeneerDirection)
+        ? requestedVeneerDirection
+        : null
+      if (requiresVeneerDirection && !veneerDirection) {
+        return res.status(400).json({ error: 'Select the veneer direction.' })
+      }
+      const rawLink = String(req.body?.link ?? existing.link ?? '').trim()
+      const link = normalizeDesignPartLink(rawLink)
+      if (rawLink && !link) return res.status(400).json({ error: 'Link must begin with http:// or https://.' })
+      const now = new Date().toISOString()
+      const schema = resolveSubitemSchema(order?.monday_board_id)
+      const requestedStatus = String(req.body?.status ?? existing.status ?? '').trim()
+      if (requestedStatus && !schema.statuses.has(requestedStatus)) {
+        return res.status(400).json({ error: `Status “${requestedStatus}” is not available on this Monday board.` })
+      }
+      const nextPart = {
+        ...existing,
+        quantity: Number(quantity.toFixed(3)),
+        requiresDimensions,
+        dimensions: requiresDimensions ? dimensions : null,
+        requiresVeneerDirection,
+        veneerDirection,
+        description: String(req.body?.description ?? existing.description ?? '').trim().slice(0, 2000) || null,
+        link,
+        status: requestedStatus || null,
+        statusColor: requestedStatus ? schema.statusColors[requestedStatus.toLowerCase()] || null : null,
+        vendor: String(req.body?.vendor ?? existing.vendor ?? '').trim().slice(0, 260) || null,
+        dateOrdered: normalizeSubitemDate(req.body?.dateOrdered ?? existing.dateOrdered),
+        dateReceived: normalizeSubitemDate(req.body?.dateReceived ?? existing.dateReceived),
+        dueDate: normalizeSubitemDate(req.body?.dueDate ?? existing.dueDate),
+        updatedAt: now,
+        updatedByEmail: String(req.authUser?.email ?? '').trim() || null,
+      }
+      const mondaySubitemId = String(existing?.mondaySubitemId ?? '').trim()
+      if (mondaySubitemId) {
+        const updates = []
+        if (req.body?.status !== undefined) updates.push(updateMondayItemStatusColumn({ boardId: schema.boardId, itemId: mondaySubitemId, columnId: schema.status, statusLabel: nextPart.status }))
+        if (req.body?.vendor !== undefined) updates.push(updateMondayItemTextColumn({ boardId: schema.boardId, itemId: mondaySubitemId, columnId: schema.vendor, textValue: nextPart.vendor || '' }))
+        for (const [field, columnId] of [['dateOrdered', schema.dateOrdered], ['dateReceived', schema.dateReceived], ['dueDate', schema.dueDate]]) {
+          if (columnId && req.body?.[field] !== undefined) {
+            updates.push(updateMondayItemJsonColumn({ boardId: schema.boardId, itemId: mondaySubitemId, columnId, jsonValue: nextPart[field] ? { date: nextPart[field] } : {} }))
+          }
+        }
+        await Promise.all(updates)
+      }
+      await ordersUnifiedCollection.updateOne(
+        { orderKey },
+        { $set: { 'design_parts.$[part]': nextPart, updatedAt: now } },
+        { arrayFilters: [{ 'part.id': partId }] },
+      )
+      return res.json({ part: mapDesignPart(nextPart) })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.delete('/api/orders/:orderKey/design-parts/:partId', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      if (!requireApprovedOrderWorker(req, res)) return
+      const orderKey = String(req.params.orderKey ?? '').trim().slice(0, 240)
+      const partId = String(req.params.partId ?? '').trim().slice(0, 160)
+      const { ordersUnifiedCollection } = await getCollections()
+      const order = await ordersUnifiedCollection.findOne(
+        { orderKey, 'design_parts.id': partId },
+        { projection: { _id: 0, design_parts: 1 } },
+      )
+      const existingPart = (Array.isArray(order?.design_parts) ? order.design_parts : [])
+        .find((part) => String(part?.id ?? '') === partId)
+      if (!existingPart) return res.status(404).json({ error: 'Subitem not found.' })
+      const mondaySubitemId = String(existingPart?.mondaySubitemId ?? '').trim()
+      if (mondaySubitemId) await deleteMondayItem({ itemId: mondaySubitemId })
+      const result = await ordersUnifiedCollection.updateOne(
+        { orderKey, 'design_parts.id': partId },
+        { $pull: { design_parts: { id: partId } }, $set: { updatedAt: new Date().toISOString() } },
+      )
+      if (!result.modifiedCount) return res.status(404).json({ error: 'Subitem not found.' })
+      return res.json({ ok: true, partId })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.post('/api/orders/:orderKey/request-production', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      if (!requireApprovedOrderWorker(req, res)) return
+      const orderKey = String(req.params.orderKey ?? '').trim().slice(0, 240)
+      if (req.body?.allSubitemsAdded !== true || req.body?.signedShopDrawingUploaded !== true) {
+        return res.status(400).json({
+          error: 'Confirm that all subitems are added and the customer-signed shop drawing is uploaded.',
+        })
+      }
+      const { ordersUnifiedCollection } = await getCollections()
+      const order = await ordersUnifiedCollection.findOne({ orderKey })
+      if (!order) return res.status(404).json({ error: 'Order not found.' })
+      if (!order.in_design) return res.status(409).json({ error: 'This order is not in Design/eSign.' })
+      const shopDrawingUrl = String(
+        order.Shop_drawing_cached ?? order.Shop_drawing_source ?? order.Shop_drawing ?? '',
+      ).trim()
+      if (!shopDrawingUrl) {
+        return res.status(409).json({ error: 'Upload the customer-signed shop drawing before requesting production.' })
+      }
+      const now = new Date().toISOString()
+      const publicUser = toPublicAuthUser(req.authUser)
+      await ordersUnifiedCollection.updateOne(
+        { orderKey },
+        { $set: {
+          production_handoff_status: 'waiting_for_production',
+          production_handoff_requested_at: now,
+          production_handoff_requested_by_uid: String(publicUser?.uid ?? req.authUser?.uid ?? '').trim() || null,
+          production_handoff_requested_by_email: String(publicUser?.email ?? req.authUser?.email ?? '').trim() || null,
+          production_handoff_confirmations: {
+            allSubitemsAdded: true,
+            signedShopDrawingUploaded: true,
+          },
+          updatedAt: now,
+        } },
+      )
+      return res.json({ ok: true, status: 'waiting_for_production' })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.post(
+    '/api/orders/:orderKey/move-to-production',
+    requireFirebaseAuth,
+    requireManagerOrAdminRole,
+    async (req, res, next) => {
+      try {
+        const orderKey = String(req.params.orderKey ?? '').trim().slice(0, 240)
+        const { ordersUnifiedCollection } = await getCollections()
+        const order = await ordersUnifiedCollection.findOne({ orderKey })
+        if (!order) return res.status(404).json({ error: 'Order not found.' })
+        if (order.production_handoff_status !== 'waiting_for_production') {
+          return res.status(409).json({ error: 'This order is not waiting for production approval.' })
+        }
+        const mondayItemId = String(order.monday_item_id ?? '').trim()
+        if (!mondayItemId) return res.status(409).json({ error: 'This order is not linked to a Monday item.' })
+
+        const moveResult = await moveMondayItemToBoard({
+          sourceBoardId: MONDAY_BOARDS.design.id,
+          targetBoardId: MONDAY_BOARDS.orderTrack.id,
+          itemId: mondayItemId,
+        })
+        const now = new Date().toISOString()
+        const publicUser = toPublicAuthUser(req.authUser)
+        await ordersUnifiedCollection.updateOne(
+          { orderKey },
+          { $set: {
+            in_design: false,
+            is_production_started: true,
+            monday_board_id: MONDAY_BOARDS.orderTrack.id,
+            monday_board_name: MONDAY_BOARDS.orderTrack.name,
+            production_handoff_status: 'in_production',
+            production_handoff_approved_at: now,
+            production_handoff_approved_by_uid: String(publicUser?.uid ?? req.authUser?.uid ?? '').trim() || null,
+            production_handoff_approved_by_email: String(publicUser?.email ?? req.authUser?.email ?? '').trim() || null,
+            updatedAt: now,
+          } },
+        )
+        return res.json({ ok: true, status: 'in_production', move: moveResult })
+      } catch (error) {
+        next(error)
+      }
+    },
+  )
+
   // GET /api/orders/overview — pure DB read. Never triggers Monday/QB.
   app.get('/api/orders/overview', requireFirebaseAuth, async (req, res, next) => {
     try {
@@ -1621,6 +2044,7 @@ export function registerOrdersRoutes(app, deps) {
               bench: 1,
               monday_notes: 1,
               monday_description: 1,
+              design_parts: 1,
               orderValue: 1,
               freightValue: 1,
               canonical_product_gross_value: 1,
@@ -1657,6 +2081,7 @@ export function registerOrdersRoutes(app, deps) {
               billedAmount: 1,
               invoiceNumber: 1,
               invoiceAmount: 1,
+              paymentAmount: 1,
               website_calculated_order_total: 1,
               invoice_pdf_cached_url: 1,
               invoice_pdf_file_name: 1,
@@ -1683,6 +2108,9 @@ export function registerOrdersRoutes(app, deps) {
               has_monday_record: 1,
               has_quickbooks_record: 1,
               in_design: 1,
+              production_handoff_status: 1,
+              production_handoff_requested_at: 1,
+              production_handoff_requested_by_email: 1,
               hazard_reason: 1,
               source: 1,
               parent_order_number: 1,
@@ -2453,6 +2881,7 @@ export function registerOrdersRoutes(app, deps) {
                     billedAmount: 1,
                     invoiceNumber: 1,
                     invoiceAmount: 1,
+                    paymentAmount: 1,
                     website_calculated_order_total: 1,
                     paidInFull: 1,
                     poAmount: 1,

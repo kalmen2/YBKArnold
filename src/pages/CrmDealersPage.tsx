@@ -63,6 +63,7 @@ import { useAuth } from '../auth/useAuth'
 import { StatusAlerts } from '../components/StatusAlerts'
 import { DealerOrdersTab } from '../features/crm/DealerOrdersTab'
 import { DealerQuotesTab } from '../features/crm/DealerQuotesTab'
+import { DealerTermsTab } from '../features/crm/DealerTermsTab'
 import { useDataLoader } from '../hooks/useDataLoader'
 import { useDebounceValue } from '../hooks/useDebounceValue'
 import {
@@ -689,7 +690,7 @@ export default function CrmDealersPage() {
 
   const [dealerQuotes, setDealerQuotes] = useState<CrmQuote[]>([])
   const [dealerOrders, setDealerOrders] = useState<CrmOrder[]>([])
-  const [detailsTab, setDetailsTab] = useState<'info' | 'contacts' | 'chat' | 'quotes' | 'orders'>('info')
+  const [detailsTab, setDetailsTab] = useState<'info' | 'contacts' | 'chat' | 'quotes' | 'orders' | 'terms'>('info')
   const [dealerChatDraft, setDealerChatDraft] = useState('')
   const [dealerChatDraftMarkup, setDealerChatDraftMarkup] = useState('')
   const [isSendingDealerChat, setIsSendingDealerChat] = useState(false)
@@ -2332,7 +2333,7 @@ export default function CrmDealersPage() {
               >
                 <Tabs
                   value={detailsTab}
-                  onChange={(_event, nextValue: 'info' | 'contacts' | 'chat' | 'quotes' | 'orders') => {
+                  onChange={(_event, nextValue: 'info' | 'contacts' | 'chat' | 'quotes' | 'orders' | 'terms') => {
                     setDetailsTab(nextValue)
                   }}
                   variant="scrollable"
@@ -2357,6 +2358,7 @@ export default function CrmDealersPage() {
                   <Tab value="chat" label={`Chat (${dealerChatTotal})`} />
                   <Tab value="quotes" label={`Quotes (${dealerQuotes.length})`} />
                   <Tab value="orders" label={`Orders (${dealerOrders.length})`} />
+                  <Tab value="terms" label="Terms & Conditions" />
                 </Tabs>
               </Box>
 
@@ -3241,6 +3243,8 @@ export default function CrmDealersPage() {
                   error={quotesDataError}
                   quotes={quoteRows}
                 />
+              ) : detailsTab === 'terms' ? (
+                <DealerTermsTab dealerSourceId={selectedDealerId} />
               ) : (
                 <DealerOrdersTab
                   isLoading={isLoadingSalesData}

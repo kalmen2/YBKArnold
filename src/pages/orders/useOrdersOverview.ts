@@ -11,7 +11,7 @@ import { useDebounceValue } from '../../hooks/useDebounceValue'
 import { QUERY_KEYS } from '../../lib/queryKeys'
 
 export type UseOrdersOverview = ReturnType<typeof useOrdersOverview>
-export type OrdersListTab = 'orders' | 'design' | 'shipped' | 'archive'
+export type OrdersListTab = 'orders' | 'design' | 'waiting_production' | 'shipped' | 'archive'
 
 function normalizeSearchValue(value: unknown) {
   return String(value ?? '').trim().toLowerCase()
@@ -144,7 +144,11 @@ export function useOrdersOverview() {
       }
 
       if (activeTab === 'design') {
-        return !order.isShipped && order.inDesign
+        return !order.isShipped && order.inDesign && order.productionHandoffStatus !== 'waiting_for_production'
+      }
+
+      if (activeTab === 'waiting_production') {
+        return !order.isShipped && order.inDesign && order.productionHandoffStatus === 'waiting_for_production'
       }
 
       return !order.isShipped && !order.inDesign
@@ -160,6 +164,7 @@ export function useOrdersOverview() {
   const tabCounts = useMemo(() => {
     let orders = 0
     let design = 0
+    let waitingProduction = 0
     let shipped = 0
     let archive = 0
 
@@ -175,7 +180,8 @@ export function useOrdersOverview() {
       }
 
       if (order.inDesign) {
-        design += 1
+        if (order.productionHandoffStatus === 'waiting_for_production') waitingProduction += 1
+        else design += 1
         return
       }
 
@@ -185,6 +191,7 @@ export function useOrdersOverview() {
     return {
       orders,
       design,
+      waitingProduction,
       shipped,
       archive,
     }

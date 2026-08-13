@@ -20,11 +20,14 @@ export const QUERY_KEYS = {
   // CRM
   crmPageBootstrap: ['crm', 'page-bootstrap'] as const,
   crmDealers: ['crm', 'dealers'] as const,
+  crmTermsDealers: ['crm', 'terms-dealers'] as const,
   crmOpportunitiesDealers: ['crm', 'opportunities', 'dealers'] as const,
   crmOpportunitiesQuotes: ['crm', 'opportunities', 'quotes'] as const,
   crmOpportunitiesOrders: ['crm', 'opportunities', 'orders'] as const,
   crmOpportunitiesConvertOrderBoards: ['crm', 'opportunities', 'convert-order-boards'] as const,
   crmQuotePrintSettings: ['crm', 'quote-print-settings'] as const,
+  crmDocumentTermsRoot: ['crm', 'document-terms'] as const,
+  crmDocumentTerms: (dealerSourceId = '') => ['crm', 'document-terms', dealerSourceId] as const,
   crmQuoteChats: (quoteId: string) => ['crm', 'quote-chats', quoteId] as const,
   crmQuotes: (opts: {
     limit: number
@@ -68,6 +71,7 @@ export const QUERY_KEYS = {
   ordersOverview: ['orders', 'overview'] as const,
   ordersJobDetails: (mondayItemId: string, jobNumber: string, orderName: string) =>
     ['orders', 'job-details', mondayItemId, jobNumber, orderName] as const,
+  orderDesignParts: (orderKey: string) => ['orders', 'design-parts', orderKey] as const,
 
   // Admin
   authBootstrap: ['auth', 'bootstrap'] as const,

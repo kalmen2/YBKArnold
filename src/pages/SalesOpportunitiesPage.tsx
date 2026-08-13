@@ -76,6 +76,7 @@ import {
   fetchCrmExcelQuoteLookup,
   fetchCrmQuoteChats,
   fetchCrmQuoteDetails,
+  fetchCrmDocumentTerms,
   fetchCrmQuotePrintSettings,
   fetchCrmQuotes,
   fetchCrmSalesReps,
@@ -111,6 +112,7 @@ import {
   buildOrderDocumentBlob,
   buildProformaInvoiceBlob,
   buildWorkOrderDocumentBlob,
+  groupOrderDocumentTerms,
   type OrderDocumentLine,
 } from '../features/crm/OrderConversionDocuments'
 import { resolveFileExtension, sanitizeStoragePathSegment } from '../lib/fileUtils'
@@ -7043,10 +7045,12 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
           lines: [...selectedProductLines, ...selectedFreightLines],
         }
         const settings = quotePrintSettingsQuery.data?.settings || DEFAULT_QUOTE_PRINT_SETTINGS
+        const termsResponse = await fetchCrmDocumentTerms(convertOrderTargetQuote.dealerSourceId)
+        const documentTerms = groupOrderDocumentTerms(termsResponse.terms)
         const [confirmationBlob, workOrderBlob, proformaInvoiceBlob] = await Promise.all([
-          buildOrderDocumentBlob(documentData, settings),
-          buildWorkOrderDocumentBlob(documentData, settings),
-          buildProformaInvoiceBlob(documentData, settings),
+          buildOrderDocumentBlob(documentData, settings, documentTerms),
+          buildWorkOrderDocumentBlob(documentData, settings, documentTerms),
+          buildProformaInvoiceBlob(documentData, settings, documentTerms),
         ])
         const orderPath = sanitizeStoragePathSegment(acknowledgmentNumber, 'order')
         const generatedAt = Date.now()

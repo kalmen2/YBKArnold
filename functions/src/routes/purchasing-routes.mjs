@@ -626,6 +626,10 @@ export function registerPurchasingRoutes(app, deps) {
     vendorRaws: 1,
     firstPurchaseDate: 1,
     lastPurchaseDate: 1,
+    requiresDimensions: 1,
+    defaultDimensions: 1,
+    requiresVeneerDirection: 1,
+    defaultVeneerDirection: 1,
   }
   const poVendorContextTtlMs = 2 * 60_000
   const poContextCacheByScope = {
@@ -2676,6 +2680,57 @@ export function registerPurchasingRoutes(app, deps) {
         aiAssist,
         items,
       })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.patch('/api/purchasing/items/settings', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const itemKey = String(req.query?.key ?? req.body?.itemKey ?? '').trim().toLowerCase()
+
+      if (!itemKey) {
+        return res.status(400).json({ error: 'itemKey is required.' })
+      }
+
+      const { purchasingItemsCollection } = await getCollections()
+      const existing = await purchasingItemsCollection.findOne(
+        { itemKey },
+        { projection: { _id: 0, itemKey: 1 } },
+      )
+
+      if (!existing) {
+        return res.status(404).json({ error: 'Item not found.' })
+      }
+
+      const requiresDimensions = req.body?.requiresDimensions === true
+      const defaultDimensions = requiresDimensions
+        ? normalizeText(req.body?.defaultDimensions, 300) || null
+        : null
+      const requiresVeneerDirection = requiresDimensions && req.body?.requiresVeneerDirection === true
+      const requestedVeneerDirection = normalizeText(req.body?.defaultVeneerDirection, 40).toLowerCase()
+      const defaultVeneerDirection = requiresVeneerDirection
+        && ['length', 'width', 'none'].includes(requestedVeneerDirection)
+        ? requestedVeneerDirection
+        : null
+      const updatedAt = new Date().toISOString()
+      const updatedByEmail = normalizeText(req.authUser?.email, 200) || null
+      const item = await purchasingItemsCollection.findOneAndUpdate(
+        { itemKey },
+        {
+          $set: {
+            requiresDimensions,
+            defaultDimensions,
+            requiresVeneerDirection,
+            defaultVeneerDirection,
+            settingsUpdatedAt: updatedAt,
+            settingsUpdatedByEmail: updatedByEmail,
+          },
+        },
+        { returnDocument: 'after', projection: { _id: 0 } },
+      )
+
+      return res.json({ item })
     } catch (error) {
       next(error)
     }

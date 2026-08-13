@@ -54,6 +54,31 @@ function selectedMondayColumn(item, columnId) {
     .find((columnValue) => normalizeText(columnValue?.id, 120) === normalizedColumnId) ?? null
 }
 
+function mapMondaySubitems(subitems) {
+  return (Array.isArray(subitems) ? subitems : []).map((subitem) => ({
+    id: `monday-${normalizeText(subitem?.id, 120)}`,
+    mondaySubitemId: normalizeText(subitem?.id, 120),
+    sourceType: 'monday',
+    itemKey: null,
+    itemName: normalizeText(subitem?.name, 500) || 'Subitem',
+    description: null,
+    link: null,
+    quantity: 1,
+    requiresDimensions: false,
+    dimensions: null,
+    requiresVeneerDirection: false,
+    veneerDirection: null,
+    status: normalizeText(subitem?.status, 120),
+    statusColor: normalizeText(subitem?.statusColor, 40),
+    vendor: normalizeText(subitem?.vendor, 260),
+    dateOrdered: toIsoOrNull(subitem?.dateOrdered),
+    dateReceived: toIsoOrNull(subitem?.dateReceived),
+    dueDate: toIsoOrNull(subitem?.dueDate),
+    createdAt: toIsoOrNull(subitem?.createdAt),
+    updatedAt: toIsoOrNull(subitem?.updatedAt),
+  })).filter((part) => part.mondaySubitemId)
+}
+
 function selectedMondayColumnText(item, columnId) {
   const column = selectedMondayColumn(item, columnId)
   const directText = normalizeText(column?.text, 1000)
@@ -413,7 +438,7 @@ export function createOrdersUnifiedService(deps) {
             updatedOrderCount += 1
           }
         })
-      } catch (error) {
+      } catch (error) {4
         warnings.push(
           `New Orders ${board.year} enrichment failed: ${normalizeText(error?.message, 400) || 'unknown error'}`,
         )
@@ -540,6 +565,7 @@ export function createOrdersUnifiedService(deps) {
         monday_board_id: normalizeText(order?.boardId, 120) || null,
         monday_board_name: normalizeText(order?.boardName, 260) || null,
         monday_updated_at: toIsoOrNull(order?.updatedAt),
+        design_parts: mapMondaySubitems(order?.subitems),
       }
       incoming.Shop_drawing = incoming.Shop_drawing_cached || incoming.Shop_drawing_source || null
       incoming.Cut_list = incoming.Cut_list_cached || incoming.Cut_list_source || null
@@ -596,6 +622,7 @@ export function createOrdersUnifiedService(deps) {
           monday_board_id: incoming.monday_board_id,
           monday_board_name: incoming.monday_board_name,
           monday_updated_at: incoming.monday_updated_at,
+          design_parts: incoming.design_parts,
         })
       }
 
@@ -906,6 +933,7 @@ export function createOrdersUnifiedService(deps) {
         row.Monday_url = normalizeText(detail?.itemUrl, 500) || row.Monday_url
         row.order_date = toIsoOrNull(detail?.orderDate) || row.order_date
         row.monday_updated_at = toIsoOrNull(detail?.updatedAt) || row.monday_updated_at
+        row.design_parts = mapMondaySubitems(detail?.subitems)
 
         const progressStatusDetails = normalizeProgressStatusDetails(detail?.progressStatusDetails)
         const isProductionStarted =
@@ -1400,6 +1428,7 @@ export function createOrdersUnifiedService(deps) {
       leadTimeDays: order?.leadTimeDays,
       progressPercent: order?.progressPercent,
       progressStatusDetails: order?.progressStatusDetails,
+      subitems: order?.subitems,
       shippedAt: order?.shippedAt,
       movedToShippedAt: order?.movedToShippedAt,
       shopDrawingCachedUrl: order?.shopDrawingCachedUrl,
@@ -1708,7 +1737,20 @@ export function createOrdersUnifiedService(deps) {
 
     // -- Final mapping --------------------------------------------------------
 
+    const storedPartsByOrderKey = new Map(
+      (Array.isArray(existingNonShippedRows) ? existingNonShippedRows : [])
+        .map((stored) => [normalizeText(stored?.orderKey, 200), Array.isArray(stored?.design_parts) ? stored.design_parts : []])
+        .filter(([orderKey]) => Boolean(orderKey)),
+    )
+
     const mergedRows = [...mergedByKey.values()].map((row) => {
+      const storedParts = storedPartsByOrderKey.get(normalizeText(row?.orderKey, 200)) || []
+      const localParts = storedParts.filter((part) => String(part?.sourceType ?? '').trim() !== 'monday')
+      const localMondayIds = new Set(localParts.map((part) => normalizeText(part?.mondaySubitemId, 120)).filter(Boolean))
+      const mondayParts = (Array.isArray(row?.design_parts) ? row.design_parts : [])
+        .filter((part) => String(part?.sourceType ?? '').trim() === 'monday')
+        .filter((part) => !localMondayIds.has(normalizeText(part?.mondaySubitemId, 120)))
+      row.design_parts = [...localParts, ...mondayParts]
       const statusHistory = resolveStatusHistoryForOrder(row, statusHistoryLookups)
       const latest = statusHistory[0] ?? null
       const hasMonday = Boolean(row.has_monday_record)

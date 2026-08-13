@@ -593,7 +593,7 @@ export type CrmQuoteOrigin = 'website' | 'excel'
 
 export type CrmQuote3dModel = {
   status: 'ready' | string
-  viewerType?: 'trimble' | 'glb' | string | null
+  viewerType?: 'trimble' | 'glb' | 'sketchup' | string | null
   fileName: string | null
   uploadedAt: string | null
   uploadedByEmail: string | null
@@ -601,7 +601,7 @@ export type CrmQuote3dModel = {
   models?: Array<{
     fileName: string
     label: string
-    viewerType?: 'trimble' | 'glb' | string | null
+    viewerType?: 'trimble' | 'glb' | 'sketchup' | string | null
   }> | null
 }
 
@@ -632,6 +632,47 @@ export type CrmQuotePrintSettings = {
 }
 
 export type CrmQuotePrintSettingsInput = Omit<CrmQuotePrintSettings, 'id' | 'updatedAt' | 'updatedByEmail'>
+
+export type CrmDocumentType =
+  | 'quote'
+  | 'order_confirmation'
+  | 'proforma_invoice'
+  | 'work_order'
+  | 'bill_of_lading'
+  | 'change_order'
+
+export type CrmDocumentTerm = {
+  id: string
+  kind: 'document_term'
+  documentType: CrmDocumentType
+  title: string
+  body: string
+  sortOrder: number
+  isDefault: boolean
+  includedDealerSourceIds: string[]
+  excludedDealerSourceIds: string[]
+  isBuiltIn: boolean
+  appliesToDealer?: boolean
+  createdAt: string | null
+  createdByEmail: string | null
+  updatedAt: string | null
+  updatedByEmail: string | null
+}
+
+export type CrmDocumentTermsResponse = {
+  documentTypes: CrmDocumentType[]
+  terms: CrmDocumentTerm[]
+}
+
+export type CrmDocumentTermInput = {
+  documentType: CrmDocumentType
+  title: string
+  body: string
+  sortOrder?: number
+  isDefault?: boolean
+  includedDealerSourceIds?: string[]
+  excludedDealerSourceIds?: string[]
+}
 
 export type CrmQuote = {
   id: string
@@ -1318,6 +1359,32 @@ export function updateCrmQuotePrintSettings(input: CrmQuotePrintSettingsInput) {
   })
 }
 
+export function fetchCrmDocumentTerms(dealerSourceId?: string | null) {
+  return apiRequest<CrmDocumentTermsResponse>(withQuery('/api/crm/document-terms', {
+    dealerSourceId: dealerSourceId || undefined,
+  }))
+}
+
+export function createCrmDocumentTerm(input: CrmDocumentTermInput) {
+  return apiRequest<{ term: CrmDocumentTerm }>('/api/crm/document-terms', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export function updateCrmDocumentTerm(termId: string, input: Partial<CrmDocumentTermInput>) {
+  return apiRequest<{ term: CrmDocumentTerm }>(`/api/crm/document-terms/${encodeURIComponent(termId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(input),
+  })
+}
+
+export function removeCrmDocumentTerm(termId: string) {
+  return apiRequest<{ ok: boolean; termId: string }>(`/api/crm/document-terms/${encodeURIComponent(termId)}`, {
+    method: 'DELETE',
+  })
+}
+
 export function convertCrmQuoteWorkbook(input: {
   workbookUrl: string
   workbookName: string
@@ -1404,6 +1471,20 @@ export function publishGlbQuoteModels(
     {
       method: 'POST',
       body: JSON.stringify({ models, revisionNumber }),
+    },
+  )
+}
+
+export function publishSketchUpShareLink(
+  quoteId: string,
+  shareUrl: string,
+  revisionNumber?: number,
+) {
+  return apiRequest<{ model: CrmQuote3dModel }>(
+    `/api/trimble/quotes/${encodeURIComponent(quoteId)}/sketchup-share`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ shareUrl, revisionNumber }),
     },
   )
 }

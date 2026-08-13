@@ -11,6 +11,10 @@ export type PurchasingItemSummary = {
   transactionCount: number
   firstPurchaseDate: string | null
   lastPurchaseDate: string | null
+  requiresDimensions?: boolean
+  defaultDimensions?: string | null
+  requiresVeneerDirection?: boolean
+  defaultVeneerDirection?: 'length' | 'width' | 'none' | null
 }
 
 export type PurchasingItemsResponse = {
@@ -252,6 +256,21 @@ export function fetchPurchasingItemDetail(itemKey: string) {
   // which breaks Express :itemKey route matching and yields a 404).
   return apiRequest<PurchasingItemDetailResponse>(
     `/api/purchasing/items/detail?key=${encodeURIComponent(itemKey)}`,
+  )
+}
+
+export function updatePurchasingItemSettings(itemKey: string, input: {
+  requiresDimensions: boolean
+  defaultDimensions?: string | null
+  requiresVeneerDirection?: boolean
+  defaultVeneerDirection?: 'length' | 'width' | 'none' | null
+}) {
+  return apiRequest<{ item: PurchasingItemSummary }>(
+    `/api/purchasing/items/settings?key=${encodeURIComponent(itemKey)}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify({ itemKey, ...input }),
+    },
   )
 }
 

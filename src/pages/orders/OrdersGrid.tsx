@@ -16,6 +16,8 @@ import CloseRoundedIcon from '@mui/icons-material/CloseRounded'
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined'
 import ArchiveRoundedIcon from '@mui/icons-material/ArchiveRounded'
 import UnarchiveRoundedIcon from '@mui/icons-material/UnarchiveRounded'
+import AddRoundedIcon from '@mui/icons-material/AddRounded'
+import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded'
 import {
   Alert,
   Box,
@@ -24,6 +26,7 @@ import {
   Chip,
   CircularProgress,
   FormControl,
+  FormControlLabel,
   IconButton,
   MenuItem,
   Menu,
@@ -31,6 +34,12 @@ import {
   Popover,
   Select,
   Stack,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
   TextField,
   Tooltip,
   Typography,
@@ -39,11 +48,15 @@ import {
   DataGrid,
   type GridColDef,
   type GridColumnGroupingModel,
+  type GridFilterItem,
+  type GridFilterModel,
+  type GridPaginationModel,
   type GridRowSelectionModel,
   getGridDateOperators,
+  useGridApiRef,
 } from '@mui/x-data-grid'
 import { useQueryClient } from '@tanstack/react-query'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   fetchOrdersJobDetails,
   fetchOrdersMondayProgressDetails,
@@ -51,7 +64,9 @@ import {
   postOrdersOrderDetailsUpdate,
   type OrdersOverviewOrder,
   type OrdersOverviewResponse,
+  type OrderDesignPart,
   postOrdersMondayProgressStatusUpdate,
+  updateOrderDesignPart,
 } from '../../features/orders/api'
 import { formatCurrency, formatDate } from '../../lib/formatters'
 import { QUERY_KEYS } from '../../lib/queryKeys'
@@ -69,12 +84,177 @@ import {
 } from '../../features/orders/stage-registry'
 import { formatProgress, resolveOrderProjectIds } from './utils'
 
-export type OrdersQuickBooksDrilldownMetric = 'purchaseOrders' | 'bills' | 'invoices'
+export type OrdersQuickBooksDrilldownMetric = 'purchaseOrders' | 'bills' | 'invoices' | 'payments'
 export type OrdersViewMode = 'standard' | 'admin'
 
 const mondayProgressBreakdownConfig = ORDER_PROGRESS_STAGES
 
 type WebsiteProgressStatusKey = OrderProgressStatusKey
+
+function hasLinkedMondayItem(order: Pick<OrdersOverviewOrder, 'mondayItemId'>) {
+  return Boolean(String(order.mondayItemId ?? '').trim())
+}
+
+function SubitemsInlinePanel({
+  order,
+  onOpenOrder,
+}: {
+  order: OrdersOverviewOrder
+  onOpenOrder: (order: OrdersOverviewOrder, mode: JobDetailsMode, initialTab?: 'info' | 'parts') => void
+}) {
+  const queryClient = useQueryClient()
+  const [subitems, setSubitems] = useState<OrderDesignPart[]>(Array.isArray(order.subitems) ? order.subitems : [])
+  const [savingCell, setSavingCell] = useState('')
+  const [saveError, setSaveError] = useState('')
+  // Shop-worker responses intentionally hide the Monday board id, so use the
+  // order's workflow stage as the reliable fallback when selecting the live
+  // subitem-board labels.
+  const isDesignSubitems = order.inDesign
+    || String(order.mondayBoardId ?? '').trim() === '1064270065'
+  const statusOptions = isDesignSubitems
+    ? ['Working on it', 'Done', 'Stuck', 'Is Here']
+    : ['Working on it', 'Is here', 'Stuck', 'Ordered', 'COM', 'To Be Determined', 'Make In House', 'Partial', 'Partial Receipt', 'By Other', 'In Cart', 'Canceled']
+
+  useEffect(() => {
+    setSubitems(Array.isArray(order.subitems) ? order.subitems : [])
+  }, [order.subitems])
+
+  const saveSubitemField = async (
+    subitem: OrderDesignPart,
+    field: 'status' | 'vendor' | 'dateOrdered' | 'dateReceived' | 'dueDate',
+    value: string,
+  ) => {
+    const cellKey = `${subitem.id}:${field}`
+    const previous = subitems
+    setSaveError('')
+    setSavingCell(cellKey)
+    setSubitems((current) => current.map((part) => part.id === subitem.id ? { ...part, [field]: value || null } : part))
+    try {
+      const response = await updateOrderDesignPart(String(order.id), subitem.id, { [field]: value || null })
+      setSubitems((current) => current.map((part) => part.id === subitem.id ? response.part : part))
+      queryClient.setQueryData<OrdersOverviewResponse>(QUERY_KEYS.ordersOverview, (current) => current
+        ? {
+            ...current,
+            orders: current.orders.map((row) => row.id === order.id
+              ? { ...row, subitems: row.subitems.map((part) => part.id === subitem.id ? response.part : part) }
+              : row),
+          }
+        : current)
+      await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.orderDesignParts(String(order.id)) })
+    } catch (error) {
+      setSubitems(previous)
+      setSaveError(error instanceof Error ? error.message : 'Could not save the subitem change.')
+    } finally {
+      setSavingCell('')
+    }
+  }
+
+  return (
+    <Box sx={{ p: 1, bgcolor: '#f8fbff' }}>
+      <Typography variant="caption" fontWeight={800} color="primary.main" sx={{ display: 'block', mb: 0.75 }}>
+        Subitems for order {order.orderNumber}
+      </Typography>
+      {saveError ? <Alert severity="error" sx={{ mb: 1, py: 0 }}>{saveError}</Alert> : null}
+      <TableContainer component={Paper} variant="outlined" sx={{ maxHeight: 390, boxShadow: '0 4px 14px rgba(15, 23, 42, 0.08)' }}>
+        <Table size="small" stickyHeader sx={{ minWidth: 850 }} aria-label={`Subitems for order ${order.orderNumber}`}>
+          <TableHead>
+            <TableRow>
+              <TableCell sx={{ width: '38%', fontWeight: 800 }}>Subitem</TableCell>
+              <TableCell sx={{ width: 150, fontWeight: 800 }}>Status</TableCell>
+              <TableCell sx={{ width: 160, fontWeight: 800 }}>Vendor</TableCell>
+              <TableCell sx={{ width: 135, fontWeight: 800 }}>PO Date</TableCell>
+              <TableCell sx={{ width: 125, fontWeight: 800 }}>Date Received</TableCell>
+              <TableCell sx={{ width: 125, fontWeight: 800 }}>Due Date</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {subitems.length ? subitems.map((subitem: OrderDesignPart) => (
+              <TableRow key={subitem.id} hover>
+                <TableCell>
+                  <Typography variant="body2" fontWeight={700}>{subitem.itemName}</Typography>
+                  {(subitem.quantity > 1 || subitem.dimensions || subitem.veneerDirection) ? (
+                    <Typography variant="caption" color="text.secondary">
+                      Qty {subitem.quantity}
+                      {subitem.dimensions ? ` · ${subitem.dimensions}` : ''}
+                      {subitem.veneerDirection && subitem.veneerDirection !== 'none'
+                        ? ` · Veneer along ${subitem.veneerDirection}`
+                        : ''}
+                    </Typography>
+                  ) : null}
+                </TableCell>
+                <TableCell>
+                  <Select
+                    size="small"
+                    displayEmpty
+                    value={subitem.status || ''}
+                    disabled={savingCell === `${subitem.id}:status`}
+                    onChange={(event) => void saveSubitemField(subitem, 'status', String(event.target.value))}
+                    renderValue={(value) => value
+                      ? <Chip size="small" label={String(value)} sx={{ bgcolor: subitem.statusColor || 'rgba(15, 23, 42, 0.08)', fontWeight: 700, pointerEvents: 'none' }} />
+                      : <Typography variant="caption" color="text.secondary">Set status</Typography>}
+                    sx={{ minWidth: 132, '& .MuiSelect-select': { py: 0.35, pl: 0.75 } }}
+                  >
+                    <MenuItem value=""><em>No status</em></MenuItem>
+                    {statusOptions.map((status) => <MenuItem key={status} value={status}>{status}</MenuItem>)}
+                  </Select>
+                </TableCell>
+                <TableCell>
+                  <TextField
+                    size="small"
+                    value={subitem.vendor || ''}
+                    placeholder="Add vendor"
+                    disabled={savingCell === `${subitem.id}:vendor`}
+                    onChange={(event) => {
+                      const vendor = event.target.value
+                      setSubitems((current) => current.map((part) => (
+                        part.id === subitem.id ? { ...part, vendor } : part
+                      )))
+                    }}
+                    onBlur={(event) => void saveSubitemField(subitem, 'vendor', event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') event.currentTarget.querySelector('input')?.blur()
+                    }}
+                    inputProps={{ 'aria-label': `Vendor for ${subitem.itemName}`, maxLength: 260 }}
+                    sx={{ width: 155, '& input': { py: 0.8, px: 1, fontSize: '0.75rem' } }}
+                  />
+                </TableCell>
+                {(['dateOrdered', 'dateReceived', 'dueDate'] as const).map((field) => (
+                  <TableCell key={field}>
+                    <TextField
+                      type="date"
+                      size="small"
+                      value={subitem[field] || ''}
+                      disabled={savingCell === `${subitem.id}:${field}`}
+                      onChange={(event) => void saveSubitemField(subitem, field, event.target.value)}
+                      inputProps={{ 'aria-label': `${field} for ${subitem.itemName}` }}
+                      sx={{ width: 132, '& input': { py: 0.8, px: 1, fontSize: '0.75rem' } }}
+                    />
+                  </TableCell>
+                ))}
+              </TableRow>
+            )) : (
+              <TableRow>
+                <TableCell colSpan={6} align="center" sx={{ py: 2.5, color: 'text.secondary' }}>
+                  No subitems have been added to this order.
+                </TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
+      </TableContainer>
+      <Stack direction="row" justifyContent="flex-end" sx={{ mt: 1 }}>
+        <Button size="small" onClick={() => onOpenOrder(order, 'details', 'parts')}>
+          Open order to add or edit subitems
+        </Button>
+      </Stack>
+    </Box>
+  )
+}
+
+type OrdersGridRow = OrdersOverviewOrder & {
+  __subitemPanel?: boolean
+  __parentOrder?: OrdersOverviewOrder
+}
 
 type TrackedProgressStageState = {
   key: (typeof mondayProgressBreakdownConfig)[number]['key']
@@ -629,12 +809,17 @@ function resolveDisplayOrderName(order: OrdersOverviewOrder) {
   return filteredSegments.join(' / ')
 }
 
-function comparePaidStatus(
-  left: boolean | null | undefined,
-  right: boolean | null | undefined,
-) {
-  const leftKnown = typeof left === 'boolean'
-  const rightKnown = typeof right === 'boolean'
+function formatPaidStatus(value: unknown) {
+  if (value === true) return 'Yes'
+  if (value === false) return 'No'
+  return ''
+}
+
+function comparePaidStatus(left: unknown, right: unknown) {
+  const leftLabel = String(left ?? '').trim()
+  const rightLabel = String(right ?? '').trim()
+  const leftKnown = Boolean(leftLabel)
+  const rightKnown = Boolean(rightLabel)
 
   if (!leftKnown && !rightKnown) {
     return 0
@@ -648,11 +833,85 @@ function comparePaidStatus(
     return -1
   }
 
-  if (left === right) {
+  if (leftLabel === rightLabel) {
     return 0
   }
 
-  return left ? 1 : -1
+  return leftLabel.localeCompare(rightLabel, undefined, { sensitivity: 'base' })
+}
+
+function filterItemIsActive(item: GridFilterItem | undefined) {
+  if (!item?.field || !item.operator) return false
+  if (item.operator === 'isEmpty' || item.operator === 'isNotEmpty') return true
+  if (item.operator === 'isAnyOf') return Array.isArray(item.value) && item.value.length > 0
+  return item.value !== undefined && item.value !== null && String(item.value).trim() !== ''
+}
+
+function rowValueMatchesFilter(value: unknown, item: GridFilterItem) {
+  const operator = String(item.operator || 'contains')
+  const valueIsEmpty = value === undefined || value === null || String(value).trim() === ''
+
+  if (operator === 'isEmpty') return valueIsEmpty
+  if (operator === 'isNotEmpty') return !valueIsEmpty
+
+  const normalizedValue = String(value ?? '').trim().toLowerCase()
+  const normalizedFilter = String(item.value ?? '').trim().toLowerCase()
+
+  if (operator === 'contains') return normalizedValue.includes(normalizedFilter)
+  if (operator === 'doesNotContain') return !normalizedValue.includes(normalizedFilter)
+  if (operator === 'startsWith') return normalizedValue.startsWith(normalizedFilter)
+  if (operator === 'endsWith') return normalizedValue.endsWith(normalizedFilter)
+  if (operator === 'equals' || operator === '=' || operator === 'is') return normalizedValue === normalizedFilter
+  if (operator === 'doesNotEqual' || operator === '!=' || operator === 'not') return normalizedValue !== normalizedFilter
+  if (operator === 'isAnyOf') {
+    return Array.isArray(item.value)
+      && item.value.some((entry) => normalizedValue === String(entry ?? '').trim().toLowerCase())
+  }
+
+  const valueNumber = Number(value)
+  const filterNumber = Number(item.value)
+  if (Number.isFinite(valueNumber) && Number.isFinite(filterNumber)) {
+    if (operator === '>') return valueNumber > filterNumber
+    if (operator === '>=') return valueNumber >= filterNumber
+    if (operator === '<') return valueNumber < filterNumber
+    if (operator === '<=') return valueNumber <= filterNumber
+  }
+
+  const valueDate = Date.parse(String(value ?? ''))
+  const filterDate = Date.parse(String(item.value ?? ''))
+  if (Number.isFinite(valueDate) && Number.isFinite(filterDate)) {
+    if (operator === 'after') return valueDate > filterDate
+    if (operator === 'onOrAfter') return valueDate >= filterDate
+    if (operator === 'before') return valueDate < filterDate
+    if (operator === 'onOrBefore') return valueDate <= filterDate
+  }
+
+  return normalizedValue.includes(normalizedFilter)
+}
+
+function resolveDepositReceivedStatus(order: OrdersOverviewOrder) {
+  const hasRecordedPaymentAmount = order.paymentAmount !== null && order.paymentAmount !== undefined
+  const rawPaymentAmount = hasRecordedPaymentAmount ? Number(order.paymentAmount) : Number.NaN
+  const paymentAmount = Number.isFinite(rawPaymentAmount) ? Math.max(0, rawPaymentAmount) : null
+  const hasPayment = paymentAmount !== null && paymentAmount > 0.004
+
+  if (hasPayment) {
+    return {
+      label: 'Yes',
+      paymentAmount,
+      source: 'quickbooks' as const,
+    }
+  }
+
+  if (order.hasQuickBooksRecord) {
+    return { label: 'No', paymentAmount: paymentAmount ?? 0, source: 'quickbooks' as const }
+  }
+
+  if (order.depositReceivedDate) {
+    return { label: 'Yes', paymentAmount: null, source: 'monday' as const }
+  }
+
+  return { label: 'No', paymentAmount: paymentAmount ?? 0, source: 'none' as const }
 }
 
 type OrdersGridProps = {
@@ -668,7 +927,7 @@ type OrdersGridProps = {
   isLoading: boolean
   shopDrawingHandle: React.MutableRefObject<ShopDrawingPreviewHandle | null>
   onOpenBolDocument: (order: OrdersOverviewOrder) => void
-  onOpenJobDialog: (order: OrdersOverviewOrder, mode: JobDetailsMode) => void
+  onOpenJobDialog: (order: OrdersOverviewOrder, mode: JobDetailsMode, initialTab?: 'info' | 'parts') => void
   onOpenQuickBooksDialog: (
     order: OrdersOverviewOrder,
     metric: OrdersQuickBooksDrilldownMetric,
@@ -706,6 +965,10 @@ export function OrdersGrid({
   onMissingMondayLink,
 }: OrdersGridProps) {
   const queryClient = useQueryClient()
+  const gridApiRef = useGridApiRef()
+  const filterIdSequenceRef = useRef(0)
+  const editorFilterIdRef = useRef<string | number | null>(null)
+  const pendingAdditionalFilterIdRef = useRef<string | number | null>(null)
   const statusColumnHeader = activeTab === 'shipped'
     ? 'Ship Date'
     : activeTab === 'archive'
@@ -715,6 +978,12 @@ export function OrdersGrid({
     type: 'include',
     ids: new Set(),
   })
+  const [filterModel, setFilterModel] = useState<GridFilterModel>({ items: [] })
+  const [columnFilterItems, setColumnFilterItems] = useState<GridFilterItem[]>([])
+  const [paginationModel, setPaginationModel] = useState<GridPaginationModel>({
+    pageSize: 50,
+    page: 0,
+  })
   const [statusPopoverAnchorEl, setStatusPopoverAnchorEl] = useState<HTMLElement | null>(null)
   const [statusPopoverOrder, setStatusPopoverOrder] = useState<OrdersOverviewOrder | null>(null)
   const [statusPopoverError, setStatusPopoverError] = useState<string | null>(null)
@@ -723,6 +992,8 @@ export function OrdersGrid({
   const [actionsAnchorEl, setActionsAnchorEl] = useState<HTMLElement | null>(null)
   const [actionsOrder, setActionsOrder] = useState<OrdersOverviewOrder | null>(null)
   const [columnsMenuAnchorEl, setColumnsMenuAnchorEl] = useState<HTMLElement | null>(null)
+  const [showSubitemsInline, setShowSubitemsInline] = useState(false)
+  const [expandedSubitemOrderIds, setExpandedSubitemOrderIds] = useState<Set<string>>(() => new Set())
   const [columnOrder, setColumnOrder] = useState<string[]>([])
   const [hiddenColumnFields, setHiddenColumnFields] = useState<Set<string>>(() => new Set())
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>({})
@@ -1032,7 +1303,7 @@ export function OrdersGrid({
       headerName: 'Order #',
       minWidth: 190,
       renderCell: ({ row }) => {
-        const canOpenDetails = row.hasMondayRecord || activeTab === 'design'
+        const canOpenDetails = hasLinkedMondayItem(row) || activeTab === 'design' || activeTab === 'waiting_production'
 
         return (
           <Stack direction="row" spacing={0.5} alignItems="center" sx={{ width: 'fit-content' }}>
@@ -1163,7 +1434,7 @@ export function OrdersGrid({
           )
         }
 
-        if (!row.hasMondayRecord) {
+        if (!hasLinkedMondayItem(row)) {
           return (
             <Typography
               variant="body2"
@@ -1276,7 +1547,7 @@ export function OrdersGrid({
           )
         }
 
-        if (!row.hasMondayRecord) {
+        if (!hasLinkedMondayItem(row)) {
           return (
             <Typography
               variant="body2"
@@ -1383,7 +1654,7 @@ export function OrdersGrid({
             <Typography variant="body2" title={row.bench ?? ''} noWrap sx={{ flex: 1 }}>
               {row.bench || '—'}
             </Typography>
-            {canEditOrderInfo && row.hasMondayRecord ? (
+            {canEditOrderInfo && hasLinkedMondayItem(row) ? (
               <Tooltip title="Edit Bench">
                 <IconButton
                   size="small"
@@ -1441,12 +1712,30 @@ export function OrdersGrid({
       renderCell: ({ row }) => row.salesRep || '—',
     },
     {
-      field: 'depositReceivedDate',
-      headerName: 'Deposit Receipt',
-      minWidth: 145,
-      renderCell: ({ row }) => row.depositReceivedDate
-        ? formatDate(row.depositReceivedDate)
-        : '—',
+      field: 'depositReceived',
+      headerName: 'Deposit Received',
+      minWidth: 155,
+      width: 170,
+      valueGetter: (_value, row) => resolveDepositReceivedStatus(row).label,
+      renderCell: ({ row }) => {
+        const status = resolveDepositReceivedStatus(row)
+        const tooltip = status.label === 'Yes'
+          ? status.paymentAmount !== null
+            ? `Details: ${formatCurrency(status.paymentAmount, 2)} paid`
+            : 'Details: Marked received in Monday; QuickBooks payment amount is unavailable.'
+          : ''
+
+        return (
+          <Tooltip title={tooltip}>
+            <Chip
+              size="small"
+              label={status.label}
+              color={status.label === 'No' ? 'warning' : 'success'}
+              variant="outlined"
+            />
+          </Tooltip>
+        )
+      },
     },
     {
       field: 'depositTerms',
@@ -1791,18 +2080,20 @@ export function OrdersGrid({
           : null
 
         if (!row.isShipped) {
+          const canOpenMondayStatus = hasLinkedMondayItem(row)
+
           return (
             <Box
-              role={row.hasMondayRecord ? 'button' : undefined}
-              tabIndex={row.hasMondayRecord ? 0 : -1}
+              role={canOpenMondayStatus ? 'button' : undefined}
+              tabIndex={canOpenMondayStatus ? 0 : -1}
               onClick={(event) => {
-                if (!row.hasMondayRecord) {
+                if (!canOpenMondayStatus) {
                   return
                 }
                 handleOpenStatusPopover(event as unknown as React.MouseEvent<HTMLElement>, row)
               }}
               onKeyDown={(event) => {
-                if (!row.hasMondayRecord) {
+                if (!canOpenMondayStatus) {
                   return
                 }
 
@@ -1820,7 +2111,7 @@ export function OrdersGrid({
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                cursor: row.hasMondayRecord ? 'pointer' : 'default',
+                cursor: canOpenMondayStatus ? 'pointer' : 'default',
                 ...(showStageChrome
                   ? {
                     borderRadius: 1,
@@ -1861,6 +2152,8 @@ export function OrdersGrid({
           )
         }
 
+        const canOpenMondayStatus = hasLinkedMondayItem(row)
+
         return (
           <Tooltip title={tooltipTitle ?? ''} disableHoverListener={!tooltipTitle}>
             <Chip
@@ -1869,12 +2162,12 @@ export function OrdersGrid({
               color={isWarningShippedDate ? 'warning' : 'success'}
               variant="filled"
               onClick={(event) => {
-                if (!row.hasMondayRecord) {
+                if (!canOpenMondayStatus) {
                   return
                 }
                 handleOpenStatusPopover(event, row)
               }}
-              clickable={row.hasMondayRecord}
+              clickable={canOpenMondayStatus}
             />
           </Tooltip>
         )
@@ -2128,10 +2421,8 @@ export function OrdersGrid({
       minWidth: 86,
       width: 92,
       sortable: true,
-      sortComparator: (left, right) => comparePaidStatus(
-        left as boolean | null | undefined,
-        right as boolean | null | undefined,
-      ),
+      valueGetter: (_value, row) => formatPaidStatus(row.paidInFull),
+      sortComparator: comparePaidStatus,
       renderCell: ({ row }) => {
         if (typeof row.paidInFull !== 'boolean') {
           return '—'
@@ -2202,6 +2493,7 @@ export function OrdersGrid({
         { field: 'orderDate', label: 'PO Date' },
         { field: 'poNumber', label: 'PO Number' },
         { field: 'description', label: 'Description' },
+        { field: 'depositReceived', label: 'Deposit Received' },
         { field: 'shopDrawingUrl', label: 'Shop Drawings' },
         { field: 'mondayLink', label: 'Actions' },
       ] as const
@@ -2307,7 +2599,7 @@ export function OrdersGrid({
       'notes',
       'bench',
       'salesRep',
-      'depositReceivedDate',
+      'depositReceived',
       'orderValue',
       'freightValue',
       'cutListDocument',
@@ -2336,7 +2628,7 @@ export function OrdersGrid({
       'orderValue',
       'freightValue',
       'salesRep',
-      'depositReceivedDate',
+      'depositReceived',
     ])
     const eligibleAdminColumns = adminColumns.filter((column) => {
       const field = String(column.field)
@@ -2398,7 +2690,8 @@ export function OrdersGrid({
       const raw = window.localStorage.getItem(columnStorageKey)
       if (raw) {
         hasSavedPreferences = true
-        const parsed = JSON.parse(raw) as { order?: unknown; hidden?: unknown; widths?: unknown }
+        const parsed = JSON.parse(raw) as { order?: unknown; hidden?: unknown; widths?: unknown; showSubitemsInline?: unknown }
+        setShowSubitemsInline(parsed.showSubitemsInline === true)
         savedOrder = Array.isArray(parsed.order)
           ? parsed.order.map((field) => String(field)).filter((field) => availableFields.includes(field))
           : []
@@ -2431,6 +2724,7 @@ export function OrdersGrid({
         : availableFields.filter((field) => !defaultVisibleColumnFields.includes(field)),
     ))
     setColumnWidths(savedWidths)
+    if (!hasSavedPreferences) setShowSubitemsInline(false)
     setLoadedColumnStorageKey(columnStorageKey)
   }, [availableColumns, columnStorageKey, defaultVisibleColumnFields])
 
@@ -2442,9 +2736,19 @@ export function OrdersGrid({
         order: columnOrder,
         hidden: [...hiddenColumnFields],
         widths: columnWidths,
+        showSubitemsInline,
       }),
     )
-  }, [columnOrder, columnStorageKey, columnWidths, hiddenColumnFields, loadedColumnStorageKey])
+  }, [columnOrder, columnStorageKey, columnWidths, hiddenColumnFields, loadedColumnStorageKey, showSubitemsInline])
+
+  useEffect(() => {
+    setFilterModel({ items: [] })
+    setColumnFilterItems([])
+    setExpandedSubitemOrderIds(new Set())
+    editorFilterIdRef.current = null
+    pendingAdditionalFilterIdRef.current = null
+    setPaginationModel((current) => ({ ...current, page: 0 }))
+  }, [activeTab, viewMode])
 
   const availableColumnByField = useMemo(
     () => new Map(availableColumns.map((column) => [String(column.field), column])),
@@ -2472,6 +2776,73 @@ export function OrdersGrid({
     },
     [availableColumnByField, columnOrder, columnWidths, hiddenColumnFields],
   )
+  const displayColumns = useMemo<GridColDef<OrdersGridRow>[]>(() => {
+    const firstField = String(columns[0]?.field ?? '')
+
+    return columns.map((column) => {
+      const originalRenderCell = column.renderCell
+      return {
+        ...column,
+        renderCell: (params) => {
+          if (params.row.__subitemPanel) {
+            if (String(column.field) !== firstField || !params.row.__parentOrder) return null
+            const viewportWidth = gridApiRef.current?.getRootDimensions()?.viewportInnerSize.width ?? 1000
+            const nestedIndent = Math.min(140, Math.max(56, Math.round(viewportWidth * 0.09)))
+            return (
+              <Box
+                sx={{
+                  position: 'absolute',
+                  top: 4,
+                  bottom: 4,
+                  left: nestedIndent,
+                  width: Math.max(520, viewportWidth - nestedIndent - 20),
+                  bgcolor: '#f8fbff',
+                  borderLeft: '4px solid',
+                  borderColor: 'primary.light',
+                  borderRadius: '8px 0 0 8px',
+                  zIndex: 2,
+                }}
+              >
+                <SubitemsInlinePanel order={params.row.__parentOrder} onOpenOrder={onOpenJobDialog} />
+              </Box>
+            )
+          }
+          const originalContent = originalRenderCell ? originalRenderCell(params) : params.formattedValue
+          if (!showSubitemsInline || String(column.field) !== 'orderNumber') return originalContent
+
+          const subitemRowKey = String(params.row.id)
+          const subitemCount = Array.isArray(params.row.subitems) ? params.row.subitems.length : 0
+          const subitemsExpanded = expandedSubitemOrderIds.has(subitemRowKey)
+          return (
+            <Stack direction="row" spacing={0.5} alignItems="center" sx={{ minWidth: 0 }}>
+              <Tooltip title={subitemsExpanded ? 'Hide subitems' : `Show ${subitemCount} subitem${subitemCount === 1 ? '' : 's'}`}>
+                <IconButton
+                  size="small"
+                  aria-label={`${subitemsExpanded ? 'Hide' : 'Show'} subitems for order ${params.row.orderNumber}`}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    setExpandedSubitemOrderIds((current) => {
+                      const next = new Set(current)
+                      if (next.has(subitemRowKey)) next.delete(subitemRowKey)
+                      else next.add(subitemRowKey)
+                      return next
+                    })
+                  }}
+                  sx={{ p: 0.15, flex: '0 0 auto' }}
+                >
+                  <ExpandMoreRoundedIcon
+                    fontSize="small"
+                    sx={{ transform: subitemsExpanded ? 'rotate(180deg)' : 'none', transition: 'transform 150ms ease' }}
+                  />
+                </IconButton>
+              </Tooltip>
+              {originalContent}
+            </Stack>
+          )
+        },
+      }
+    })
+  }, [columns, expandedSubitemOrderIds, gridApiRef, onOpenJobDialog, showSubitemsInline])
   const columnGroupingModel = viewMode === 'admin' && columnOrder.length === 0
     ? adminColumnGroupingModel
     : undefined
@@ -2583,6 +2954,138 @@ export function OrdersGrid({
     })
   }, [orders])
 
+  const filteredRows = useMemo(() => {
+    if (columnFilterItems.length === 0) return prioritizedRows
+
+    return prioritizedRows.filter((row) => columnFilterItems.every((item) => {
+      const column = availableColumnByField.get(item.field)
+      const rawValue = row[item.field as keyof OrdersOverviewOrder]
+      let filterValue: unknown = rawValue
+
+      if (typeof column?.valueGetter === 'function') {
+        try {
+          const valueGetter = column.valueGetter as unknown as (
+            value: unknown,
+            currentRow: OrdersOverviewOrder,
+            currentColumn: GridColDef<OrdersOverviewOrder>,
+            apiRef: null,
+          ) => unknown
+          filterValue = valueGetter(rawValue, row, column, null)
+        } catch {
+          filterValue = rawValue
+        }
+      }
+
+      return rowValueMatchesFilter(filterValue, item)
+    }))
+  }, [availableColumnByField, columnFilterItems, prioritizedRows])
+
+  const displayedRows = useMemo<OrdersGridRow[]>(() => {
+    if (!showSubitemsInline || expandedSubitemOrderIds.size === 0) return filteredRows
+
+    return filteredRows.flatMap((row) => {
+      if (!expandedSubitemOrderIds.has(String(row.id))) return [row]
+      return [
+        row,
+        {
+          ...row,
+          id: `${row.id}::subitems`,
+          __subitemPanel: true,
+          __parentOrder: row,
+        },
+      ]
+    })
+  }, [expandedSubitemOrderIds, filteredRows, showSubitemsInline])
+
+  const orderValueColumnVisible = canViewOrderValue
+    && columns.some((column) => String(column.field) === 'orderValue')
+  const filteredOrderValueTotal = useMemo(
+    () => filteredRows.reduce((total, row) => {
+      const orderValue = Number(row.orderValue)
+      return Number.isFinite(orderValue) ? total + orderValue : total
+    }, 0),
+    [filteredRows],
+  )
+
+  const handleFilterModelChange = (nextModel: GridFilterModel) => {
+    const previousEditorItem = filterModel.items[0]
+    const nextEditorItem = nextModel.items[0]
+
+    setFilterModel(nextModel)
+    setColumnFilterItems((current) => {
+      if (!nextEditorItem) {
+        const editorFilterId = editorFilterIdRef.current
+        editorFilterIdRef.current = null
+        pendingAdditionalFilterIdRef.current = null
+        return editorFilterId !== null
+          ? current.filter((item) => item.id !== editorFilterId)
+          : current
+      }
+
+      if (filterItemIsActive(nextEditorItem)) {
+        const isSameEditorField = previousEditorItem?.field === nextEditorItem.field
+        const filterId = pendingAdditionalFilterIdRef.current
+          ?? (isSameEditorField ? editorFilterIdRef.current : null)
+          ?? `filter-${++filterIdSequenceRef.current}`
+        editorFilterIdRef.current = filterId
+        pendingAdditionalFilterIdRef.current = null
+        return [
+          ...current.filter((item) => item.id !== filterId),
+          { ...nextEditorItem, id: filterId },
+        ]
+      }
+
+      if (
+        previousEditorItem?.field === nextEditorItem.field
+        && pendingAdditionalFilterIdRef.current === null
+        && editorFilterIdRef.current !== null
+      ) {
+        const editorFilterId = editorFilterIdRef.current
+        editorFilterIdRef.current = null
+        return current.filter((item) => item.id !== editorFilterId)
+      }
+
+      return current
+    })
+    setPaginationModel((current) => (
+      current.page === 0 ? current : { ...current, page: 0 }
+    ))
+  }
+
+  const removeColumnFilter = (filterId: string | number) => {
+    setColumnFilterItems((current) => current.filter((item) => item.id !== filterId))
+    setFilterModel((current) => (
+      editorFilterIdRef.current === filterId ? { ...current, items: [] } : current
+    ))
+    if (editorFilterIdRef.current === filterId) editorFilterIdRef.current = null
+    if (pendingAdditionalFilterIdRef.current === filterId) pendingAdditionalFilterIdRef.current = null
+    setPaginationModel((current) => (
+      current.page === 0 ? current : { ...current, page: 0 }
+    ))
+  }
+
+  const addFilterForColumn = (field: string) => {
+    const column = availableColumnByField.get(field)
+    const filterId = `filter-${++filterIdSequenceRef.current}`
+    const operator = column?.filterOperators?.[0]?.value || 'contains'
+    const draftFilter: GridFilterItem = { id: filterId, field, operator }
+
+    editorFilterIdRef.current = filterId
+    pendingAdditionalFilterIdRef.current = filterId
+    setFilterModel({ items: [draftFilter] })
+    window.setTimeout(() => gridApiRef.current?.showFilterPanel(field), 0)
+  }
+
+  const clearColumnFilters = () => {
+    setColumnFilterItems([])
+    setFilterModel({ items: [] })
+    editorFilterIdRef.current = null
+    pendingAdditionalFilterIdRef.current = null
+    setPaginationModel((current) => (
+      current.page === 0 ? current : { ...current, page: 0 }
+    ))
+  }
+
   const selectedCount = useMemo(() => {
     if (rowSelectionModel.ids.size === 0) {
       return 0
@@ -2642,6 +3145,8 @@ export function OrdersGrid({
         .filter((field) => !defaultVisibleColumnFields.includes(field)),
     ))
     setColumnWidths({})
+    setShowSubitemsInline(false)
+    setExpandedSubitemOrderIds(new Set())
   }
 
   return (
@@ -2683,7 +3188,8 @@ export function OrdersGrid({
       <Stack
         direction="row"
         alignItems="center"
-        justifyContent="flex-end"
+        justifyContent="space-between"
+        spacing={1}
         sx={{
           minHeight: 42,
           px: 1,
@@ -2691,31 +3197,75 @@ export function OrdersGrid({
           backgroundColor: '#fff',
         }}
       >
-        <Tooltip title="Choose and reorder columns">
-          <IconButton
-            size="small"
-            aria-label="Choose and reorder columns"
-            onClick={(event) => setColumnsMenuAnchorEl(event.currentTarget)}
-          >
-            <MoreVertRoundedIcon />
-          </IconButton>
-        </Tooltip>
+        <Stack direction="row" spacing={0.75} alignItems="center" sx={{ minWidth: 0, overflowX: 'auto' }}>
+          {columnFilterItems.map((item) => {
+            const column = availableColumnByField.get(item.field)
+            const filterValue = item.operator === 'isEmpty' || item.operator === 'isNotEmpty'
+              ? item.operator
+              : String(item.value ?? '')
+            return (
+              <Stack key={String(item.id ?? item.field)} direction="row" spacing={0.15} alignItems="center">
+                <Chip
+                  size="small"
+                  variant="outlined"
+                  color="primary"
+                  label={`${column?.headerName || item.field} ${item.operator}: ${filterValue}`}
+                  onDelete={() => removeColumnFilter(item.id ?? item.field)}
+                />
+                <Tooltip title={`Add another ${column?.headerName || item.field} filter`}>
+                  <IconButton
+                    size="small"
+                    aria-label={`Add another ${column?.headerName || item.field} filter`}
+                    onClick={() => addFilterForColumn(item.field)}
+                    sx={{ p: 0.2 }}
+                  >
+                    <AddRoundedIcon sx={{ fontSize: 17 }} />
+                  </IconButton>
+                </Tooltip>
+              </Stack>
+            )
+          })}
+        </Stack>
+        <Stack direction="row" spacing={0.5} alignItems="center" sx={{ flexShrink: 0 }}>
+          {columnFilterItems.length > 0 ? (
+            <Button size="small" variant="text" onClick={clearColumnFilters}>
+              Clear filters
+            </Button>
+          ) : null}
+          <Tooltip title="Choose and reorder columns">
+            <IconButton
+              size="small"
+              aria-label="Choose and reorder columns"
+              onClick={(event) => setColumnsMenuAnchorEl(event.currentTarget)}
+            >
+              <MoreVertRoundedIcon />
+            </IconButton>
+          </Tooltip>
+        </Stack>
       </Stack>
 
       <Box sx={{ flex: 1, minHeight: 0 }}>
         <DataGrid
-          rows={prioritizedRows}
-          columns={columns}
+          apiRef={gridApiRef}
+          rows={displayedRows}
+          columns={displayColumns}
           columnGroupingModel={columnGroupingModel}
           columnGroupHeaderHeight={viewMode === 'admin' ? 30 : undefined}
           loading={isLoading}
           checkboxSelection
+          isRowSelectable={({ row }) => !row.__subitemPanel}
           disableRowSelectionOnClick
           disableRowSelectionExcludeModel
           rowSelectionModel={rowSelectionModel}
           onRowSelectionModelChange={(nextModel) => {
             setRowSelectionModel(nextModel)
           }}
+          filterMode="server"
+          filterModel={filterModel}
+          onFilterModelChange={handleFilterModelChange}
+          paginationMode="client"
+          paginationModel={paginationModel}
+          onPaginationModelChange={setPaginationModel}
           onColumnWidthChange={(params) => {
             const field = String(params.colDef.field)
             const width = Math.round(Number(params.width))
@@ -2728,14 +3278,15 @@ export function OrdersGrid({
           }}
           density={isStandardView ? 'standard' : 'compact'}
           rowHeight={isStandardView ? 52 : 38}
+          getRowHeight={({ model }) => {
+            if (!model.__subitemPanel) return null
+            const count = model.__parentOrder?.subitems?.length ?? 0
+            return Math.min(495, Math.max(170, 125 + Math.min(count, 7) * 48))
+          }}
           columnHeaderHeight={isStandardView ? 52 : 54}
           pageSizeOptions={[25, 50, 100]}
-          initialState={{
-            pagination: {
-              paginationModel: { pageSize: 50, page: 0 },
-            },
-          }}
           getRowClassName={({ row }) => {
+            if (row.__subitemPanel) return 'orders-row--subitems-panel'
             if (row.hazardReason) {
               return 'orders-row--hazard'
             }
@@ -2789,9 +3340,31 @@ export function OrdersGrid({
             },
             '& .orders-row--hazard': { backgroundColor: 'rgba(237, 108, 2, 0.08)' },
             '& .orders-row--quickbooks-only': { backgroundColor: 'rgba(2, 136, 209, 0.06)' },
+            '& .orders-row--subitems-panel': {
+              bgcolor: '#f8fbff',
+              '& .MuiDataGrid-cell': { overflow: 'visible', p: 0, borderBottom: 0 },
+              '& .MuiDataGrid-cellCheckbox': { visibility: 'hidden' },
+            },
           }}
         />
       </Box>
+
+      {orderValueColumnVisible ? (
+        <Stack
+          direction="row"
+          justifyContent="flex-end"
+          alignItems="center"
+          spacing={1}
+          sx={{ px: 2, py: 0.9, borderTop: '1px solid rgba(15, 23, 42, 0.1)', backgroundColor: '#fff' }}
+        >
+          <Typography variant="body2" color="text.secondary">
+            {filteredRows.length} {filteredRows.length === 1 ? 'order' : 'orders'}
+          </Typography>
+          <Typography variant="body2" fontWeight={800}>
+            Order Value total: {formatCurrency(filteredOrderValueTotal, 2)}
+          </Typography>
+        </Stack>
+      ) : null}
 
       <Popover
         open={Boolean(columnsMenuAnchorEl)}
@@ -2832,6 +3405,28 @@ export function OrdersGrid({
             </IconButton>
           </Tooltip>
         </Stack>
+
+        <Box sx={{ px: 1.5, py: 0.75, borderBottom: '1px solid rgba(15, 23, 42, 0.1)' }}>
+          <FormControlLabel
+            control={(
+              <Checkbox
+                size="small"
+                checked={showSubitemsInline}
+                onChange={(event) => {
+                  setShowSubitemsInline(event.target.checked)
+                  if (!event.target.checked) setExpandedSubitemOrderIds(new Set())
+                }}
+              />
+            )}
+            label={(
+              <Box>
+                <Typography variant="body2" fontWeight={700}>Show subitems as row dropdowns</Typography>
+                <Typography variant="caption" color="text.secondary">View-only; open the order to add or edit.</Typography>
+              </Box>
+            )}
+            sx={{ m: 0, alignItems: 'flex-start' }}
+          />
+        </Box>
 
         <Box sx={{ overflowY: 'auto', maxHeight: 'min(590px, calc(100vh - 190px))', py: 0.5 }}>
           {columnOrder.map((field) => {

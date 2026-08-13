@@ -733,6 +733,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
   const [bulkDate, setBulkDate] = useState(todayIsoDate())
   const [managerSelectedMonth, setManagerSelectedMonth] = useState('')
   const [managerSelectedDate, setManagerSelectedDate] = useState('')
+  const [managerBenchSyncWarnings, setManagerBenchSyncWarnings] = useState<string[]>([])
   const [bulkRows, setBulkRows] = useState<BulkWorkerRow[]>([])
 
   const [monthReportMonth, setMonthReportMonth] = useState(monthKeyFromIsoDate(todayIsoDate()))
@@ -4623,7 +4624,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
     setIsSavingManagerProgress(true)
 
     try {
-      await Promise.all(
+      const saveResults = await Promise.all(
         editableRows.map((row) =>
           upsertOrderProgress({
             date: managerSelectedDate,
@@ -4639,6 +4640,12 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
 
       await queryClient.refetchQueries({ queryKey: QUERY_KEYS.timesheetBootstrap })
       setSuccess(`Manager progress saved for ${managerSelectedDate}.`)
+      const benchWarnings = saveResults
+        .flatMap((result) => result.warnings ?? [])
+        .map((warning) => warning.message)
+      if (benchWarnings.length > 0) {
+        setManagerBenchSyncWarnings([...new Set(benchWarnings)])
+      }
     } catch (requestError) {
       const message =
         requestError instanceof Error
@@ -8206,6 +8213,30 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
             <Button onClick={handleCloseDateReportReadyPopup}>Close</Button>
           </DialogActions>
         </Dialog>
+
+      <Dialog
+        open={managerBenchSyncWarnings.length > 0}
+        onClose={() => setManagerBenchSyncWarnings([])}
+        fullWidth
+        maxWidth="sm"
+      >
+        <DialogTitle>Bench saved with Monday information</DialogTitle>
+        <DialogContent>
+          <Alert severity="info" sx={{ mt: 0.5 }}>
+            The manager sheet and Bench assignments were saved in Arnold. The following {managerBenchSyncWarnings.length === 1 ? 'order was' : 'orders were'} not updated on Monday:
+          </Alert>
+          <Stack component="ul" spacing={1} sx={{ pl: 2.5, mb: 0 }}>
+            {managerBenchSyncWarnings.map((message) => (
+              <Typography component="li" key={message} variant="body2">
+                {message}
+              </Typography>
+            ))}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setManagerBenchSyncWarnings([])}>OK</Button>
+        </DialogActions>
+      </Dialog>
 
       <Snackbar
         open={toastState.open}

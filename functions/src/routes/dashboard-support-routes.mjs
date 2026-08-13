@@ -783,7 +783,9 @@ export function registerDashboardSupportRoutes(app, deps) {
           projection: {
             _id: 0,
             mondayItemId: 1,
+            shopDrawingStoragePath: 1,
             shopDrawingDownloadUrl: 1,
+            shopDrawingContentType: 1,
             shopDrawingFileName: 1,
           },
         },
@@ -1324,7 +1326,9 @@ app.get('/api/dashboard/monday/shop-drawing/download', requireFirebaseAuth, asyn
           projection: {
             _id: 0,
             mondayItemId: 1,
+            shopDrawingStoragePath: 1,
             shopDrawingDownloadUrl: 1,
+            shopDrawingContentType: 1,
             shopDrawingFileName: 1,
             shopDrawingSourceAssetId: 1,
             shopDrawingSourceUrl: 1,
@@ -1379,26 +1383,55 @@ app.get('/api/dashboard/monday/shop-drawing/download', requireFirebaseAuth, asyn
       return res.json({ cachedUrl: cachedDrawingUrl })
     }
 
-    if (renderInline) {
-      return res.redirect(302, cachedDrawingUrl)
-    }
-
-    let upstreamResponse = await fetch(cachedDrawingUrl)
-
-    if (!upstreamResponse.ok) {
-      return res.status(502).json({
-        error: 'Could not download this shop drawing from cache right now.',
-      })
-    }
-
     const downloadFileName = ensurePdfFileName(
       orderDocument.shopDrawingFileName,
       `order-${orderId}-shop-drawing.pdf`,
     )
-    const contentType =
-      String(upstreamResponse.headers.get('content-type') ?? '').trim() ||
-      'application/pdf'
-    const contentLength = String(upstreamResponse.headers.get('content-length') ?? '').trim()
+    const storagePath = String(orderDocument.shopDrawingStoragePath ?? '').trim()
+    const bucket = typeof getOrderPhotosBucket === 'function' ? getOrderPhotosBucket() : null
+    let buffer = null
+    let contentType = String(orderDocument.shopDrawingContentType ?? '').trim()
+    let contentLength = ''
+
+    // Download from the authenticated storage object whenever its path is known.
+    // Firebase download-token URLs can be revoked even though the object itself
+    // still exists, which previously left otherwise valid drawings inaccessible.
+    if (storagePath && bucket) {
+      try {
+        const storedFile = bucket.file(storagePath)
+        const [downloadResult, metadataResult] = await Promise.all([
+          storedFile.download(),
+          storedFile.getMetadata(),
+        ])
+        const storedBuffer = Array.isArray(downloadResult) ? downloadResult[0] : downloadResult
+        if (!Buffer.isBuffer(storedBuffer) || storedBuffer.length === 0) {
+          throw new Error('Stored shop drawing is empty.')
+        }
+        buffer = storedBuffer
+        const metadata = Array.isArray(metadataResult) ? metadataResult[0] : metadataResult
+        contentType = String(metadata?.contentType ?? contentType).trim()
+        contentLength = String(metadata?.size ?? storedBuffer.length).trim()
+      } catch {
+        // Keep the legacy URL as a compatibility fallback for records whose
+        // saved storage path no longer points to an existing object.
+      }
+    }
+
+    if (!buffer) {
+      const upstreamResponse = await fetch(cachedDrawingUrl)
+
+      if (!upstreamResponse.ok) {
+        return res.status(502).json({
+          error: 'Could not download this shop drawing from cache right now.',
+        })
+      }
+
+      buffer = Buffer.from(await upstreamResponse.arrayBuffer())
+      contentType = String(upstreamResponse.headers.get('content-type') ?? contentType).trim()
+      contentLength = String(upstreamResponse.headers.get('content-length') ?? buffer.length).trim()
+    }
+
+    contentType ||= 'application/pdf'
 
     res.setHeader('Content-Type', contentType)
     const contentDispositionType = renderInline ? 'inline' : 'attachment'
@@ -1410,8 +1443,6 @@ app.get('/api/dashboard/monday/shop-drawing/download', requireFirebaseAuth, asyn
     if (contentLength) {
       res.setHeader('Content-Length', contentLength)
     }
-
-    const buffer = Buffer.from(await upstreamResponse.arrayBuffer())
 
     return res.status(200).send(buffer)
   } catch (error) {

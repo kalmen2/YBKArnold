@@ -455,6 +455,7 @@ export type OrdersOverviewOrder = {
   contactPhone: string | null
   leadTime: string | null
   freightDescription: string | null
+  shippingCarrier: string | null
   productValue: number | null
   productGrossValue?: number | null
   discountPercent?: number | null
@@ -477,6 +478,7 @@ export type OrdersOverviewOrder = {
   poAmount: number | null
   billedAmount: number | null
   invoiceAmount: number | null
+  paymentAmount: number | null
   websiteCalculatedOrderTotal: number | null
   invoiceTotalMatchesOrder: boolean | null
   invoiceNumber: string | null
@@ -531,6 +533,10 @@ export type OrdersOverviewOrder = {
   hasMondayRecord: boolean
   hasQuickBooksRecord: boolean
   inDesign: boolean
+  subitems: OrderDesignPart[]
+  productionHandoffStatus: 'waiting_for_production' | 'in_production' | null
+  productionHandoffRequestedAt: string | null
+  productionHandoffRequestedByEmail: string | null
   quickBooksProjectId: string | null
   quickBooksProjectName: string | null
   quickBooksProjectIds: string[]
@@ -571,6 +577,7 @@ export type OrdersFamilyRollup = {
   poAmount: number | null
   billedAmount: number | null
   invoiceAmount: number | null
+  paymentAmount: number | null
   amountOwed: number | null
   billBalanceAmount: number | null
 }
@@ -1600,15 +1607,27 @@ type PostOrdersShipInput = {
   orderKey?: string | null
   mondayItemId?: string | null
   orderNumber?: string | null
+  shipDate: string
+  carrier: string
 }
 
 export function postOrdersShip(input: PostOrdersShipInput) {
   const orderKey = String(input?.orderKey ?? '').trim()
   const mondayItemId = String(input?.mondayItemId ?? '').trim()
   const orderNumber = String(input?.orderNumber ?? '').trim()
+  const shipDate = String(input?.shipDate ?? '').trim()
+  const carrier = String(input?.carrier ?? '').trim()
 
   if (!orderKey && !mondayItemId && !orderNumber) {
     throw new Error('orderKey, mondayItemId, or orderNumber is required.')
+  }
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(shipDate)) {
+    throw new Error('Ship date is required.')
+  }
+
+  if (!carrier) {
+    throw new Error('Carrier is required.')
   }
 
   return apiRequest<OrdersShipResponse>(
@@ -1619,6 +1638,8 @@ export function postOrdersShip(input: PostOrdersShipInput) {
         orderKey: orderKey || undefined,
         mondayItemId: mondayItemId || undefined,
         orderNumber: orderNumber || undefined,
+        shipDate,
+        carrier,
       }),
     },
     { timeoutMs: 90_000 },
@@ -1707,5 +1728,95 @@ export function removeOrderChatMessage(orderId: string, messageId: string) {
     {
       method: 'DELETE',
     },
+  )
+}
+
+export type OrderDesignPart = {
+  id: string
+  sourceType: 'catalog' | 'requested' | 'monday'
+  itemKey: string | null
+  itemName: string
+  description: string | null
+  link: string | null
+  quantity: number
+  requiresDimensions: boolean
+  dimensions: string | null
+  requiresVeneerDirection: boolean
+  veneerDirection: 'length' | 'width' | 'none' | null
+  mondaySubitemId: string | null
+  status: string | null
+  statusColor: string | null
+  vendor: string | null
+  dateOrdered: string | null
+  dateReceived: string | null
+  dueDate: string | null
+  createdAt: string | null
+  createdByUid: string | null
+  createdByEmail: string | null
+  createdByName: string | null
+  updatedAt: string | null
+  updatedByEmail: string | null
+}
+
+export type OrderDesignPartsResponse = {
+  orderKey: string
+  orderNumber: string | null
+  parts: OrderDesignPart[]
+}
+
+export type OrderDesignPartInput = {
+  sourceType: 'catalog' | 'requested'
+  itemKey?: string | null
+  itemName?: string | null
+  description?: string | null
+  link?: string | null
+  quantity: number
+  requiresDimensions?: boolean
+  dimensions?: string | null
+  requiresVeneerDirection?: boolean
+  veneerDirection?: 'length' | 'width' | 'none' | null
+  status?: string | null
+  vendor?: string | null
+  dateOrdered?: string | null
+  dateReceived?: string | null
+  dueDate?: string | null
+}
+
+export function fetchOrderDesignParts(orderKey: string) {
+  return apiRequest<OrderDesignPartsResponse>(`/api/orders/${encodeURIComponent(orderKey)}/design-parts`)
+}
+
+export function createOrderDesignPart(orderKey: string, input: OrderDesignPartInput) {
+  return apiRequest<{ part: OrderDesignPart }>(`/api/orders/${encodeURIComponent(orderKey)}/design-parts`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export function updateOrderDesignPart(orderKey: string, partId: string, input: Partial<OrderDesignPartInput>) {
+  return apiRequest<{ part: OrderDesignPart }>(
+    `/api/orders/${encodeURIComponent(orderKey)}/design-parts/${encodeURIComponent(partId)}`,
+    { method: 'PATCH', body: JSON.stringify(input) },
+  )
+}
+
+export function removeOrderDesignPart(orderKey: string, partId: string) {
+  return apiRequest<{ ok: boolean; partId: string }>(
+    `/api/orders/${encodeURIComponent(orderKey)}/design-parts/${encodeURIComponent(partId)}`,
+    { method: 'DELETE' },
+  )
+}
+
+export function requestOrderProduction(orderKey: string) {
+  return apiRequest<{ ok: boolean; status: 'waiting_for_production' }>(
+    `/api/orders/${encodeURIComponent(orderKey)}/request-production`,
+    { method: 'POST', body: JSON.stringify({ allSubitemsAdded: true, signedShopDrawingUploaded: true }) },
+  )
+}
+
+export function approveOrderProduction(orderKey: string) {
+  return apiRequest<{ ok: boolean; status: 'in_production' }>(
+    `/api/orders/${encodeURIComponent(orderKey)}/move-to-production`,
+    { method: 'POST', body: JSON.stringify({}) },
   )
 }
