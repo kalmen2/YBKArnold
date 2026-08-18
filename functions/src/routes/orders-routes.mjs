@@ -965,6 +965,8 @@ export function registerOrdersRoutes(app, deps) {
       : {}
     const toDocumentLine = (item, category, fallbackDescription, index) => ({
       id: String(item?.id ?? item?.itemNumber ?? `${category}-${index + 1}`).trim(),
+      parentLineId: String(item?.parentLineId ?? '').trim() || null,
+      detailLabel: String(item?.detailLabel ?? '').trim() || null,
       description: String(item?.description ?? item?.title ?? fallbackDescription).trim() || fallbackDescription,
       qty: Number.isFinite(Number(item?.qty)) ? Number(item.qty) : null,
       unitPrice: Number.isFinite(Number(item?.unitPrice)) ? Number(item.unitPrice) : null,

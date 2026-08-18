@@ -434,6 +434,7 @@ export type OrdersOverviewOrder = {
   pendingChangeVersion: number | null
   pendingOrderChangeLines: Array<{
     id: string
+    detailLabel?: string | null
     description: string
     qty: number | null
     unitPrice: number | null
@@ -465,6 +466,8 @@ export type OrdersOverviewOrder = {
   discountFreightAmount?: number | null
   orderDocumentLines: Array<{
     id: string
+    parentLineId?: string | null
+    detailLabel?: string | null
     description: string
     qty: number | null
     unitPrice: number | null
@@ -1238,6 +1241,40 @@ export function postOrdersChangeOrderCreate(input: {
       lines: input.lines,
       changeOrderUrl,
       changeOrderName,
+    }),
+  })
+}
+
+export function postOrdersDocumentLinesUpdate(input: {
+  orderKey?: string | null
+  mondayItemId?: string | null
+  orderNumber?: string | null
+  lines: OrdersOverviewOrder['orderDocumentLines']
+}) {
+  const orderKey = String(input?.orderKey ?? '').trim()
+  const mondayItemId = String(input?.mondayItemId ?? '').trim()
+  const orderNumber = String(input?.orderNumber ?? '').trim()
+
+  if (!orderKey && !mondayItemId && !orderNumber) {
+    throw new Error('Order identity is required.')
+  }
+  if (!Array.isArray(input?.lines) || input.lines.length === 0) {
+    throw new Error('At least one order line is required.')
+  }
+
+  return apiRequest<{
+    ok: true
+    productNet: number
+    freightNet: number
+    grandTotal: number
+    lines: OrdersOverviewOrder['orderDocumentLines']
+  }>('/api/orders/document-lines', {
+    method: 'POST',
+    body: JSON.stringify({
+      orderKey: orderKey || undefined,
+      mondayItemId: mondayItemId || undefined,
+      orderNumber: orderNumber || undefined,
+      lines: input.lines,
     }),
   })
 }

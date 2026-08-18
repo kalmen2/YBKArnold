@@ -84,6 +84,7 @@ import {
   postOrdersCutListUpload,
   postOrdersOrderDetailsUpdate,
   postOrdersOrderConfirmationUpdate,
+  postOrdersDocumentLinesUpdate,
   postOrdersChangeOrderCreate,
   postOrdersShip,
   postOrdersShippingDocumentDelete,
@@ -99,6 +100,7 @@ import {
   ordersJobDetailsQueryKey,
   ordersChatMessagesQueryKey,
   type OrdersJobDetailsResponse,
+  type OrdersOverviewResponse,
   type OrdersOverviewOrder,
   type OrderPhoto,
 } from '../../features/orders/api'
@@ -456,6 +458,49 @@ function readFileAsDataUrl(file: File): Promise<string> {
 }
 
 type DocumentPreviewMode = 'image' | 'pdf' | 'unsupported'
+type OrderLineEditorTab = 'product' | 'additional' | 'freight'
+type OrderLinePreset = {
+  title: string
+  description: string
+  unitPrice: number
+  category: 'additional' | 'freight'
+}
+
+const orderLineAdditionalPresets: OrderLinePreset[] = [
+  { title: 'Custom Design Fee', description: 'Includes up to two rendering revisions with a lead time of two weeks. Additional revisions beyond the included revisions are billed separately.', unitPrice: 175, category: 'additional' },
+  { title: 'Stain to Match', description: 'Available on Arnold standard veneers. Exclusions and sample-review conditions appear in Customer Information.', unitPrice: 375, category: 'additional' },
+  { title: 'Paint Sample', description: 'Includes one standard paint strike-off. Additional approval samples may incur an extra fee.', unitPrice: 375, category: 'additional' },
+  { title: 'FIV - Field Verification & Measurement', description: 'Includes one-time field verification and measurement during regular business hours. The site must be clear and accessible.', unitPrice: 850, category: 'additional' },
+  { title: 'Shop Drawings', description: 'Includes up to two revisions with an estimated two-week lead time. Additional revisions are billed separately.', unitPrice: 250, category: 'additional' },
+]
+
+const orderLineFreightPresets: OrderLinePreset[] = [
+  { title: 'Blanket-Wrapped Dock Delivery', description: 'Dedicated truck delivery to a local warehouse dock. Customer team unloads the truck; no driver assistance is included.', unitPrice: 0, category: 'freight' },
+  { title: 'Crated & Shipped via Common Carrier', description: 'Delivered crated to a warehouse dock by common carrier. Customer team unloads the truck.', unitPrice: 0, category: 'freight' },
+  { title: 'Delivery & Installation', description: 'Delivery and installation service. Site conditions, access, working hours, and carry-up requirements must be confirmed before scheduling.', unitPrice: 0, category: 'freight' },
+]
+
+function normalizeOrderLinePresetTitle(value: string | null | undefined) {
+  return String(value ?? '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-')
+}
+
+function splitOrderLineDescription(value: string | null | undefined) {
+  const normalized = String(value ?? '').replace(/\r\n?/g, '\n')
+  const newlineIndex = normalized.indexOf('\n')
+
+  if (newlineIndex < 0) {
+    return { heading: normalized, details: '' }
+  }
+
+  return {
+    heading: normalized.slice(0, newlineIndex),
+    details: normalized.slice(newlineIndex + 1),
+  }
+}
+
+function joinOrderLineDescription(heading: string, details: string) {
+  return details ? `${heading}\n${details}` : heading
+}
 
 function toInlinePreviewUrl(url: string | null | undefined) {
   const normalized = String(url ?? '').trim()
@@ -580,6 +625,11 @@ export function JobDetailsDialog({
   const [isCreatingChangeOrder, setIsCreatingChangeOrder] = useState(false)
   const [changeOrderDraftLines, setChangeOrderDraftLines] = useState<OrdersOverviewOrder['orderDocumentLines']>([])
   const [changeOrderActionError, setChangeOrderActionError] = useState<string | null>(null)
+  const [isOrderLinesEditorOpen, setIsOrderLinesEditorOpen] = useState(false)
+  const [isSavingOrderLines, setIsSavingOrderLines] = useState(false)
+  const [orderLineDraftLines, setOrderLineDraftLines] = useState<OrdersOverviewOrder['orderDocumentLines']>([])
+  const [orderLineEditorTab, setOrderLineEditorTab] = useState<OrderLineEditorTab>('product')
+  const [orderLineActionError, setOrderLineActionError] = useState<string | null>(null)
   const [isUploadingShopDrawing, setIsUploadingShopDrawing] = useState(false)
   const [isDeletingShopDrawing, setIsDeletingShopDrawing] = useState(false)
   const [isUploadingCutList, setIsUploadingCutList] = useState(false)
@@ -737,6 +787,11 @@ export function JobDetailsDialog({
     setIsCreatingChangeOrder(false)
     setChangeOrderDraftLines([])
     setChangeOrderActionError(null)
+    setIsOrderLinesEditorOpen(false)
+    setIsSavingOrderLines(false)
+    setOrderLineDraftLines([])
+    setOrderLineEditorTab('product')
+    setOrderLineActionError(null)
     setIsUploadingShopDrawing(false)
     setIsDeletingShopDrawing(false)
     setIsUploadingCutList(false)
@@ -1152,6 +1207,11 @@ export function JobDetailsDialog({
     .map(([stageLabel, totalHours]) => ({ stageLabel, totalHours }))
     .sort((a, b) => b.totalHours - a.totalHours)
   const maxStageHours = stageRows.reduce((maxValue, stageRow) => Math.max(maxValue, stageRow.totalHours), 0)
+  const jobDetailsQueryKey = ordersJobDetailsQueryKey({
+    mondayItemId: order?.mondayItemId ?? '',
+    jobNumber: order?.jobNumber ?? '',
+    orderName: order?.orderName ?? '',
+  })
 
   const shipTo = String(order?.shipTo ?? '').trim()
   const shipNotes = String(order?.shipNotes ?? '').trim()
@@ -1318,7 +1378,7 @@ export function JobDetailsDialog({
     version?: number
   }) => {
     if (!order || !canEditOrderInformation || isGeneratingOrderConfirmation) {
-      return
+      return false
     }
 
     const orderKey = String(order.id ?? '').trim()
@@ -1326,7 +1386,7 @@ export function JobDetailsDialog({
 
     if (!orderKey || !orderNumber) {
       setInfoDocumentActionError('This order does not have enough identity information to create a confirmation.')
-      return
+      return false
     }
 
     setIsGeneratingOrderConfirmation(true)
@@ -1464,13 +1524,187 @@ export function JobDetailsDialog({
       setGeneratedBolName(bolName)
       setInfoDocumentActionSuccess('Order confirmation, work order, proforma invoice, and BOL generated.')
       await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.ordersOverview })
+      return true
     } catch (error) {
       setInfoDocumentActionError(
         error instanceof Error ? error.message : 'Could not generate the order documents.',
       )
+      return false
     } finally {
       setIsGeneratingOrderConfirmation(false)
       setDocumentGenerationStage(null)
+    }
+  }
+
+  const normalizeEditableOrderLines = (
+    lines: OrdersOverviewOrder['orderDocumentLines'],
+  ) => lines
+    .map((line) => {
+      const qty = Math.max(0, Number(line.qty || 0))
+      const unitPrice = Math.max(0, Number(line.unitPrice || 0))
+      return {
+        ...line,
+        id: String(line.id || crypto.randomUUID()).trim(),
+        parentLineId: String(line.parentLineId ?? '').trim() || null,
+        detailLabel: String(line.detailLabel ?? '').trim() || null,
+        description: String(line.description ?? '').trim(),
+        qty: line.parentLineId ? 0 : qty,
+        unitPrice: line.parentLineId ? 0 : unitPrice,
+        extPrice: line.parentLineId ? 0 : Number((qty * unitPrice).toFixed(2)),
+        category: line.category === 'freight'
+          ? 'freight' as const
+          : line.category === 'additional'
+            ? 'additional' as const
+            : 'product' as const,
+      }
+    })
+    .filter((line) => line.detailLabel || line.description)
+
+  const updateCachedOrderDocumentLines = (
+    lines: OrdersOverviewOrder['orderDocumentLines'],
+    totals?: { productNet: number; freightNet: number },
+  ) => {
+    const normalizedLines = normalizeEditableOrderLines(lines)
+    const productNet = totals?.productNet
+    const freightNet = totals?.freightNet
+    const grandTotal = productNet !== undefined && freightNet !== undefined
+      ? productNet + freightNet
+      : undefined
+
+    queryClient.setQueryData<OrdersJobDetailsResponse>(jobDetailsQueryKey, (current) => {
+      if (!current?.order) return current
+      return {
+        ...current,
+        order: {
+          ...current.order,
+          orderDocumentLines: normalizedLines,
+          productValue: productNet ?? current.order.productValue,
+          freightValue: freightNet ?? current.order.freightValue,
+          orderValue: grandTotal ?? current.order.orderValue,
+        },
+      }
+    })
+    queryClient.setQueryData<OrdersOverviewResponse>(QUERY_KEYS.ordersOverview, (current) => {
+      if (!current) return current
+      return {
+        ...current,
+        orders: current.orders.map((entry) => {
+          const sameOrder = (
+            (order?.id && entry.id === order.id)
+            || (order?.mondayItemId && entry.mondayItemId === order.mondayItemId)
+            || (order?.orderNumber && entry.orderNumber === order.orderNumber)
+          )
+          return sameOrder
+            ? {
+              ...entry,
+              orderDocumentLines: normalizedLines,
+              productValue: productNet ?? entry.productValue,
+              freightValue: freightNet ?? entry.freightValue,
+              orderValue: grandTotal ?? entry.orderValue,
+            }
+            : entry
+        }),
+      }
+    })
+  }
+
+  const handleOpenOrderLinesEditor = () => {
+    const sourceOrder = documentOrder || order
+    setOrderLineDraftLines(
+      (sourceOrder?.orderDocumentLines?.length
+        ? sourceOrder.orderDocumentLines
+        : [{
+            id: crypto.randomUUID(),
+            detailLabel: null,
+            description: String(sourceOrder?.description || sourceOrder?.orderName || '').trim(),
+            qty: 1,
+            unitPrice: Number(sourceOrder?.productValue || sourceOrder?.orderValue || 0),
+            extPrice: Number(sourceOrder?.productValue || sourceOrder?.orderValue || 0),
+            category: 'product' as const,
+          }]
+      ).map((line) => ({ ...line })),
+    )
+    setOrderLineEditorTab('product')
+    setOrderLineActionError(null)
+    setIsOrderLinesEditorOpen(true)
+  }
+
+  const handleToggleOrderLinePreset = (preset: OrderLinePreset) => {
+    setOrderLineDraftLines((current) => {
+      const presetKey = normalizeOrderLinePresetTitle(preset.title)
+      const existingIndex = current.findIndex((line) => (
+        line.category === preset.category
+        && normalizeOrderLinePresetTitle(splitOrderLineDescription(line.description).heading) === presetKey
+      ))
+
+      if (existingIndex >= 0) {
+        return current.filter((_line, index) => index !== existingIndex)
+      }
+
+      return [
+        ...current,
+        {
+          id: crypto.randomUUID(),
+          detailLabel: null,
+          description: preset.title,
+          qty: 1,
+          unitPrice: preset.unitPrice,
+          extPrice: preset.unitPrice,
+          category: preset.category,
+        },
+      ]
+    })
+  }
+
+  const handleSaveOrderLinesAndRegenerate = async () => {
+    if (!order || !canEditOrderInformation || isSavingOrderLines || isGeneratingOrderConfirmation) return
+
+    const normalizedLines = normalizeEditableOrderLines(orderLineDraftLines)
+
+    if (normalizedLines.length === 0) {
+      setOrderLineActionError('Add at least one line with a description.')
+      return
+    }
+
+    setIsSavingOrderLines(true)
+    setOrderLineActionError(null)
+
+    try {
+      const productNet = Number(normalizedLines
+        .filter((line) => line.category !== 'freight')
+        .reduce((sum, line) => sum + Number(line.extPrice || 0), 0)
+        .toFixed(2))
+      const freightNet = Number(normalizedLines
+        .filter((line) => line.category === 'freight')
+        .reduce((sum, line) => sum + Number(line.extPrice || 0), 0)
+        .toFixed(2))
+
+      await postOrdersDocumentLinesUpdate({
+        orderKey: order.id,
+        mondayItemId: order.mondayItemId,
+        orderNumber: order.orderNumber,
+        lines: normalizedLines,
+      })
+      updateCachedOrderDocumentLines(normalizedLines, { productNet, freightNet })
+      const generated = await handleGenerateOrderConfirmation({
+        lines: normalizedLines,
+        productNet,
+        freightNet,
+      })
+      if (!generated) {
+        setOrderLineActionError('Order lines were saved, but the documents could not be regenerated.')
+        return
+      }
+      setIsOrderLinesEditorOpen(false)
+      setInfoDocumentActionSuccess('Order lines saved and documents regenerated.')
+      await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.ordersOverview })
+      await queryClient.invalidateQueries({ queryKey: jobDetailsQueryKey })
+    } catch (error) {
+      setOrderLineActionError(
+        error instanceof Error ? error.message : 'Could not save order lines.',
+      )
+    } finally {
+      setIsSavingOrderLines(false)
     }
   }
 
@@ -1551,12 +1785,29 @@ export function JobDetailsDialog({
         changeOrderUrl,
         changeOrderName: documentName,
       })
+      queryClient.setQueryData<OrdersJobDetailsResponse>(jobDetailsQueryKey, (current) => {
+        if (!current?.order) return current
+        return {
+          ...current,
+          order: {
+            ...current.order,
+            pendingChangeVersion: version,
+            pendingOrderChangeLines: normalizedLines,
+            pendingChangeProductNet: productNet,
+            pendingChangeFreightNet: freightNet,
+            changeOrderStatus: 'awaiting_customer_signature',
+            changeOrderUrl,
+            changeOrderName: documentName,
+          },
+        }
+      })
 
       setIsChangeOrderEditorOpen(false)
       setInfoDocumentActionSuccess(
         `Change Version ${version} created. Upload the customer-signed change order to apply it.`,
       )
       await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.ordersOverview })
+      await queryClient.invalidateQueries({ queryKey: jobDetailsQueryKey })
     } catch (error) {
       setChangeOrderActionError(
         error instanceof Error ? error.message : 'Could not create the Change Order.',
@@ -5175,12 +5426,22 @@ export function JobDetailsDialog({
                           <Button
                             variant="outlined"
                             startIcon={<EditRoundedIcon />}
+                            disabled={isGeneratingOrderConfirmation || hasPendingChangeOrder}
+                            onClick={handleOpenOrderLinesEditor}
+                            sx={{ textTransform: 'none', fontWeight: 800 }}
+                          >
+                            Edit Lines
+                          </Button>
+                          <Button
+                            variant="outlined"
+                            startIcon={<EditRoundedIcon />}
                             disabled={isCreatingChangeOrder || hasPendingChangeOrder}
                             onClick={() => {
+                              const sourceOrder = documentOrder || order
                               setChangeOrderDraftLines(
-                                (order?.pendingOrderChangeLines?.length
-                                  ? order.pendingOrderChangeLines
-                                  : order?.orderDocumentLines ?? []
+                                (sourceOrder?.pendingOrderChangeLines?.length
+                                  ? sourceOrder.pendingOrderChangeLines
+                                  : sourceOrder?.orderDocumentLines ?? []
                                 ).map((line) => ({ ...line })),
                               )
                               setChangeOrderActionError(null)
@@ -5630,6 +5891,338 @@ export function JobDetailsDialog({
               }}
             >
               {isShippingOrder ? 'Shipping...' : 'Confirm Ship'}
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        <Dialog
+          open={isOrderLinesEditorOpen}
+          onClose={() => {
+            if (!isSavingOrderLines && !isGeneratingOrderConfirmation) setIsOrderLinesEditorOpen(false)
+          }}
+          maxWidth="lg"
+          fullWidth
+          PaperProps={{
+            sx: {
+              width: 'min(1180px, 96vw)',
+              minHeight: { xs: '82vh', md: 720 },
+            },
+          }}
+        >
+          <DialogTitle>
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between">
+              <Typography variant="h6" sx={{ fontWeight: 850 }}>Edit Order Lines</Typography>
+              <Tabs
+                value={orderLineEditorTab}
+                onChange={(_event, value: OrderLineEditorTab) => setOrderLineEditorTab(value)}
+                variant="scrollable"
+                allowScrollButtonsMobile
+                sx={{ minHeight: 38, '& .MuiTab-root': { minHeight: 38, textTransform: 'none', fontWeight: 800 } }}
+              >
+                <Tab value="product" label={`Products (${orderLineDraftLines.filter((line) => line.category === 'product').length})`} />
+                <Tab value="additional" label={`Additional (${orderLineDraftLines.filter((line) => line.category === 'additional').length})`} />
+                <Tab value="freight" label={`Freight (${orderLineDraftLines.filter((line) => line.category === 'freight').length})`} />
+              </Tabs>
+            </Stack>
+          </DialogTitle>
+          <DialogContent dividers>
+            <Stack spacing={1.5} sx={{ minHeight: { xs: 480, md: 540 } }}>
+              <Alert severity="info">
+                These lines are used for the Order Confirmation, Work Order, Proforma Invoice, and Bill of Lading.
+              </Alert>
+              {orderLineActionError ? <Alert severity="error">{orderLineActionError}</Alert> : null}
+              {infoDocumentActionError ? <Alert severity="error">{infoDocumentActionError}</Alert> : null}
+              {orderLineEditorTab !== 'product' ? (
+                <Box
+                  sx={{
+                    display: 'grid',
+                    gridTemplateColumns: { xs: '1fr', md: 'repeat(2, minmax(0, 1fr))' },
+                    gap: 1,
+                  }}
+                >
+                  {(orderLineEditorTab === 'additional' ? orderLineAdditionalPresets : orderLineFreightPresets)
+                    .map((preset) => {
+                      const isSelected = orderLineDraftLines.some((line) => (
+                        line.category === preset.category
+                        && normalizeOrderLinePresetTitle(splitOrderLineDescription(line.description).heading) === normalizeOrderLinePresetTitle(preset.title)
+                      ))
+
+                      return (
+                        <Paper
+                          key={preset.title}
+                          component="label"
+                          variant="outlined"
+                          sx={{
+                            display: 'flex',
+                            alignItems: 'flex-start',
+                            gap: 0.75,
+                            p: 1.25,
+                            cursor: 'pointer',
+                            borderColor: isSelected ? 'primary.main' : 'divider',
+                            bgcolor: isSelected ? alpha('#0f4c81', 0.055) : '#fff',
+                          }}
+                        >
+                          <Checkbox
+                            checked={isSelected}
+                            onChange={() => handleToggleOrderLinePreset(preset)}
+                            sx={{ mt: -0.35, ml: -0.35 }}
+                          />
+                          <Stack spacing={0.35} sx={{ minWidth: 0 }}>
+                            <Typography variant="subtitle2" sx={{ fontWeight: 850 }}>{preset.title}</Typography>
+                            <Typography variant="caption" color="text.secondary">{preset.description}</Typography>
+                            <Typography variant="body2" sx={{ fontWeight: 750 }}>
+                              {preset.unitPrice > 0 ? `${formatCurrency(preset.unitPrice)} each` : 'Enter price after selecting'}
+                            </Typography>
+                          </Stack>
+                        </Paper>
+                      )
+                    })}
+                </Box>
+              ) : null}
+              <TableContainer component={Paper} variant="outlined">
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Description / Detail</TableCell>
+                      <TableCell sx={{ width: 100 }}>Qty</TableCell>
+                      <TableCell sx={{ width: 130 }}>Unit price</TableCell>
+                      <TableCell align="right" sx={{ width: 125 }}>Extended</TableCell>
+                      <TableCell sx={{ width: 90 }} />
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {orderLineDraftLines
+                      .map((line, index) => ({ line, index }))
+                      .filter(({ line }) => line.category === orderLineEditorTab && !line.parentLineId)
+                      .map(({ line, index }, visibleIndex) => {
+                      const extended = Number(line.qty || 0) * Number(line.unitPrice || 0)
+                      const sublines = orderLineDraftLines
+                        .map((entry, entryIndex) => ({ entry, entryIndex }))
+                        .filter(({ entry }) => entry.parentLineId === line.id)
+                      return (
+                        <TableRow key={line.id || index}>
+                          <TableCell>
+                            <Stack spacing={0.55}>
+                              <Typography variant="caption" color="primary" sx={{ fontWeight: 850 }}>
+                                Item {visibleIndex + 1}
+                              </Typography>
+                              <TextField
+                                fullWidth
+                                size="small"
+                                value={splitOrderLineDescription(line.description).heading}
+                                onChange={(event) => setOrderLineDraftLines((current) =>
+                                  current.map((entry, entryIndex) => {
+                                    if (entryIndex !== index) return entry
+                                    const { details } = splitOrderLineDescription(entry.description)
+                                    return { ...entry, description: joinOrderLineDescription(event.target.value, details) }
+                                  })
+                                )}
+                                inputProps={{ style: { fontWeight: 800, color: '#172033' } }}
+                                sx={{ '& .MuiOutlinedInput-root': { bgcolor: '#eef2f7' } }}
+                              />
+                              <Stack direction={{ xs: 'column', md: 'row' }} spacing={0.75} alignItems="stretch">
+                                <TextField
+                                  fullWidth
+                                  size="small"
+                                  multiline
+                                  minRows={2}
+                                  maxRows={10}
+                                  placeholder="Detail"
+                                  value={line.detailLabel ?? ''}
+                                  onChange={(event) => setOrderLineDraftLines((current) =>
+                                    current.map((entry, entryIndex) => entryIndex === index
+                                      ? { ...entry, detailLabel: event.target.value }
+                                      : entry)
+                                  )}
+                                  sx={{ width: { xs: '100%', md: 170 }, flexShrink: 0 }}
+                                />
+                                <TextField
+                                  fullWidth
+                                  size="small"
+                                  multiline
+                                  minRows={2}
+                                  maxRows={10}
+                                  placeholder="Description"
+                                  value={splitOrderLineDescription(line.description).details}
+                                  onChange={(event) => setOrderLineDraftLines((current) =>
+                                    current.map((entry, entryIndex) => {
+                                      if (entryIndex !== index) return entry
+                                      const { heading } = splitOrderLineDescription(entry.description)
+                                      return { ...entry, description: joinOrderLineDescription(heading, event.target.value) }
+                                    })
+                                  )}
+                                />
+                              </Stack>
+                              <Stack spacing={0.4} sx={{ width: '100%' }}>
+                                {sublines.map(({ entry, entryIndex }) => (
+                                  <Stack key={entry.id} direction="row" spacing={0.25} alignItems="flex-start">
+                                    <TextField
+                                      size="small"
+                                      multiline
+                                      minRows={2}
+                                      maxRows={10}
+                                      placeholder="Detail"
+                                      value={entry.detailLabel ?? ''}
+                                      inputProps={{ style: { fontWeight: 400 } }}
+                                      onChange={(event) => setOrderLineDraftLines((current) =>
+                                        current.map((candidate, candidateIndex) => candidateIndex === entryIndex
+                                          ? { ...candidate, detailLabel: event.target.value }
+                                          : candidate)
+                                      )}
+                                      sx={{ width: { xs: '100%', md: 170 }, flexShrink: 0 }}
+                                    />
+                                    <TextField
+                                      size="small"
+                                      multiline
+                                      minRows={2}
+                                      maxRows={10}
+                                      fullWidth
+                                      placeholder="Description"
+                                      value={entry.description}
+                                      inputProps={{ style: { fontWeight: 400 } }}
+                                      onChange={(event) => setOrderLineDraftLines((current) =>
+                                        current.map((candidate, candidateIndex) => candidateIndex === entryIndex
+                                          ? { ...candidate, description: event.target.value }
+                                          : candidate)
+                                      )}
+                                    />
+                                    <IconButton
+                                      size="small"
+                                      color="error"
+                                      aria-label="Remove additional description"
+                                      onClick={() => setOrderLineDraftLines((current) =>
+                                        current.filter((_, candidateIndex) => candidateIndex !== entryIndex)
+                                      )}
+                                      sx={{ mt: 0.25 }}
+                                    >
+                                      <DeleteOutlineRoundedIcon fontSize="small" />
+                                    </IconButton>
+                                  </Stack>
+                                ))}
+                                <Button
+                                  size="small"
+                                  variant="text"
+                                  startIcon={<AddRoundedIcon />}
+                                  onClick={() => setOrderLineDraftLines((current) => {
+                                    let insertIndex = index + 1
+                                    while (current[insertIndex]?.parentLineId === line.id) insertIndex += 1
+                                    const nextLines = [...current]
+                                    nextLines.splice(insertIndex, 0, {
+                                      id: crypto.randomUUID(),
+                                      parentLineId: line.id,
+                                      detailLabel: null,
+                                      description: '',
+                                      qty: 0,
+                                      unitPrice: 0,
+                                      extPrice: 0,
+                                      category: line.category,
+                                    })
+                                    return nextLines
+                                  })}
+                                  sx={{ alignSelf: 'flex-start', px: 0.25, fontWeight: 400 }}
+                                >
+                                  Add Subline
+                                </Button>
+                              </Stack>
+                            </Stack>
+                          </TableCell>
+                          <TableCell>
+                            <TextField
+                              size="small"
+                              type="number"
+                              value={line.qty ?? 0}
+                              inputProps={{ min: 0, step: 1 }}
+                              onChange={(event) => setOrderLineDraftLines((current) =>
+                                current.map((entry, entryIndex) => entryIndex === index
+                                  ? { ...entry, qty: Math.max(0, Number(event.target.value) || 0) }
+                                  : entry)
+                              )}
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <TextField
+                              size="small"
+                              type="number"
+                              value={line.unitPrice ?? 0}
+                              inputProps={{ min: 0, step: 0.01 }}
+                              onChange={(event) => setOrderLineDraftLines((current) =>
+                                current.map((entry, entryIndex) => entryIndex === index
+                                  ? { ...entry, unitPrice: Math.max(0, Number(event.target.value) || 0) }
+                                  : entry)
+                              )}
+                            />
+                          </TableCell>
+                          <TableCell align="right">{formatCurrency(extended)}</TableCell>
+                          <TableCell>
+                            <IconButton
+                              size="small"
+                              color="error"
+                              aria-label="Remove line"
+                              onClick={() => setOrderLineDraftLines((current) =>
+                                current.filter((entry, entryIndex) => entryIndex !== index && entry.parentLineId !== line.id)
+                              )}
+                            >
+                              <DeleteOutlineRoundedIcon fontSize="small" />
+                            </IconButton>
+                          </TableCell>
+                        </TableRow>
+                      )
+                    })}
+                    {orderLineDraftLines.filter((line) => line.category === orderLineEditorTab).length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={5}>
+                          <Typography variant="body2" color="text.secondary" sx={{ py: 2, textAlign: 'center' }}>
+                            No lines in this section yet.
+                          </Typography>
+                        </TableCell>
+                      </TableRow>
+                    ) : null}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+              <Stack direction="row" justifyContent="space-between" alignItems="center">
+                <Button
+                  startIcon={<AddRoundedIcon />}
+                  onClick={() => setOrderLineDraftLines((current) => [
+                    ...current,
+                    {
+                      id: crypto.randomUUID(),
+                      detailLabel: null,
+                      description: '',
+                      qty: 1,
+                      unitPrice: 0,
+                      extPrice: 0,
+                      category: orderLineEditorTab,
+                    },
+                  ])}
+                >
+                  {orderLineEditorTab === 'product' ? 'Add Line' : `Add Custom ${orderLineEditorTab === 'additional' ? 'Additional' : 'Freight'} Line`}
+                </Button>
+                <Typography fontWeight={800}>
+                  Total: {formatCurrency(orderLineDraftLines.reduce(
+                    (sum, line) => sum + Number(line.qty || 0) * Number(line.unitPrice || 0),
+                    0,
+                  ))}
+                </Typography>
+              </Stack>
+            </Stack>
+          </DialogContent>
+          <DialogActions>
+            <Button
+              onClick={() => setIsOrderLinesEditorOpen(false)}
+              disabled={isSavingOrderLines || isGeneratingOrderConfirmation}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="contained"
+              onClick={() => void handleSaveOrderLinesAndRegenerate()}
+              disabled={isSavingOrderLines || isGeneratingOrderConfirmation}
+              startIcon={(isSavingOrderLines || isGeneratingOrderConfirmation) ? <CircularProgress size={16} /> : <PictureAsPdfRoundedIcon />}
+            >
+              {isSavingOrderLines || isGeneratingOrderConfirmation
+                ? documentGenerationStage || 'Saving…'
+                : 'Save & Regenerate Documents'}
             </Button>
           </DialogActions>
         </Dialog>

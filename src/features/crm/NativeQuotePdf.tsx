@@ -187,22 +187,38 @@ const resolvePdfImageUri = (rawUrl: string | null | undefined) => {
 
 const plain = (value: unknown, fallback = '-') => String(value ?? '').trim() || fallback
 
+function formatQuoteDate(value: string | null | undefined) {
+  const normalized = String(value || '').trim()
+  const dateOnlyMatch = normalized.match(/^(\d{4})-(\d{2})-(\d{2})/)
+
+  if (dateOnlyMatch) {
+    return `${dateOnlyMatch[2]}/${dateOnlyMatch[3]}/${dateOnlyMatch[1]}`
+  }
+
+  const parsed = new Date(normalized)
+  if (Number.isNaN(parsed.getTime())) return normalized || '-'
+
+  return parsed.toLocaleDateString('en-US', {
+    month: '2-digit',
+    day: '2-digit',
+    year: 'numeric',
+  })
+}
+
 function splitLineItems(lineItems: CrmQuoteLineItem[]) {
-  return lineItems.flatMap((lineItem, lineItemIndex) => {
+  const mainLineIds = new Set(lineItems.filter((lineItem) => !lineItem.parentLineId).map((lineItem) => lineItem.id).filter(Boolean))
+  const mainLineItems = lineItems.filter((lineItem) => !lineItem.parentLineId || !mainLineIds.has(lineItem.parentLineId))
+
+  return mainLineItems.flatMap((lineItem, lineItemIndex) => {
+    const sublineDescriptions = lineItems
+      .filter((candidate) => candidate.parentLineId === lineItem.id)
+      .map((candidate) => ({
+        detail: plain(candidate.detailLabel, ''),
+        description: plain(candidate.description, ''),
+      }))
+      .filter((candidate) => candidate.detail || candidate.description)
     const description = plain(lineItem.description, '').replace(/\r\n?/g, '\n')
-    const visualLines = description.split('\n').flatMap((sourceLine) => {
-      if (!sourceLine) return ['']
-      const wrappedLines: string[] = []
-      let remaining = sourceLine
-      while (remaining.length > 64) {
-        let splitAt = remaining.lastIndexOf(' ', 64)
-        if (splitAt < 38) splitAt = 64
-        wrappedLines.push(remaining.slice(0, splitAt).trim())
-        remaining = remaining.slice(splitAt).trimStart()
-      }
-      wrappedLines.push(remaining)
-      return wrappedLines
-    })
+    const visualLines = description.split('\n')
     const chunks: string[] = []
     for (let index = 0; index < visualLines.length; index += 12) {
       chunks.push(visualLines.slice(index, index + 12).join('\n'))
@@ -214,6 +230,8 @@ function splitLineItems(lineItems: CrmQuoteLineItem[]) {
       id: `${lineItem.id || lineItem.itemNumber}-${index}`,
       displayItemNumber: lineItemIndex + 1,
       description: index === 0 ? chunk : `(continued)\n${chunk}`,
+      detailLabel: index === 0 ? lineItem.detailLabel : null,
+      sublineDescriptions: index === 0 ? sublineDescriptions : [],
       images: index === 0 ? lineItem.images : [],
       qty: index === 0 ? lineItem.qty : null,
       unitPrice: index === 0 ? lineItem.unitPrice : null,
@@ -221,6 +239,22 @@ function splitLineItems(lineItems: CrmQuoteLineItem[]) {
       continuation: index > 0,
     }))
   })
+}
+
+const estimateHelveticaTextWidth = (value: string) => Array.from(value).reduce((width, character) => {
+  if (character === ' ') return width + 2.5
+  if (/[ilI.,'`!|:;]/.test(character)) return width + 2.2
+  if (/[MW@%&]/.test(character)) return width + 7.5
+  if (/[A-Z0-9]/.test(character)) return width + 5.7
+  return width + 4.6
+}, 0)
+
+const detailColumnWidth = (values: string[]) => {
+  const longestLineWidth = values
+    .flatMap((value) => value.replace(/\r\n?/g, '\n').split('\n'))
+    .reduce((longest, value) => Math.max(longest, estimateHelveticaTextWidth(value)), 0)
+
+  return Math.min(Math.max(longestLineWidth + 2, 32), 210)
 }
 
 const hasImages = (items: Array<{ images?: CrmQuoteLineItem['images'] }>) => items.some((item) => (item.images || []).length > 0)
@@ -378,7 +412,16 @@ function createStyles(accentColor: string) {
     itemColumn: { width: 30, paddingRight: 5 },
     descriptionColumn: { flexGrow: 1, flexShrink: 1, flexBasis: 0, paddingRight: 7 },
     descriptionBody: { flexDirection: 'row', alignItems: 'flex-start', position: 'relative' },
-    descriptionText: { flexGrow: 1, flexShrink: 1, flexBasis: 0, lineHeight: 1.35 },
+    descriptionContent: { flexGrow: 1, flexShrink: 1, flexBasis: 0 },
+    descriptionText: { lineHeight: 1.15 },
+    descriptionHeading: { fontWeight: 700, color: '#172033', lineHeight: 1.15 },
+    descriptionLine: { flexDirection: 'row', alignItems: 'flex-start' },
+    descriptionLineDetail: { flexShrink: 0, color: '#26384a' },
+    descriptionLineBody: { flexGrow: 1, flexShrink: 1, flexBasis: 0 },
+    descriptionFieldText: { lineHeight: 0.62 },
+    descriptionLineBodyPaired: { marginLeft: 12 },
+    descriptionLineAfterHeading: { marginTop: 2 },
+    descriptionSubline: { marginTop: 2.5 },
     descriptionMediaRail: { marginLeft: 7, flexShrink: 0 },
     descriptionMediaBox: { borderWidth: 1, borderColor: '#d8e0ea', borderRadius: 2, overflow: 'hidden', backgroundColor: '#ffffff' },
     descriptionMediaBoxSpaced: { marginTop: 4 },
@@ -489,7 +532,7 @@ export function NativeQuotePdfDocument({
           </View>
           <View style={styles.quoteInfoBox}>
             <View style={[styles.quoteInfoRow, styles.quoteInfoRowFirst]}><Text style={styles.quoteInfoLabel}>Quote Number</Text><Text style={styles.quoteInfoValue}>{plain(quote.quoteNumber)}</Text></View>
-            <View style={styles.quoteInfoRow}><Text style={styles.quoteInfoLabel}>Date</Text><Text style={styles.quoteInfoValue}>{plain(quote.opportunityDate)?.slice(0, 10)}</Text></View>
+            <View style={styles.quoteInfoRow}><Text style={styles.quoteInfoLabel}>Date</Text><Text style={styles.quoteInfoValue}>{formatQuoteDate(quote.opportunityDate)}</Text></View>
             <View style={styles.quoteInfoRow}><Text style={styles.quoteInfoLabel}>Project</Text><Text style={styles.quoteInfoValue}>{plain(quote.title)}</Text></View>
           </View>
           <View style={styles.headerContactBar}>
@@ -551,7 +594,60 @@ export function NativeQuotePdfDocument({
             <Text style={[styles.itemColumn, styles.centeredCell]}>{lineItem.continuation ? '' : lineItem.displayItemNumber}</Text>
             <View style={styles.descriptionColumn}>
               <View style={[styles.descriptionBody, positionedContentHeight > 0 ? { minHeight: positionedContentHeight } : {}]}>
-                <Text style={styles.descriptionText}>{plain(lineItem.description, '')}</Text>
+                {(() => {
+                  const description = plain(lineItem.description, '')
+                  const [heading = '', ...detailLines] = description.split('\n')
+                  const hasMainDescriptionLine = Boolean(lineItem.detailLabel || detailLines.length > 0)
+                  const sharedDetailWidth = detailColumnWidth([
+                    lineItem.detailLabel && detailLines.length > 0 ? lineItem.detailLabel : '',
+                    ...lineItem.sublineDescriptions
+                      .filter((subline) => subline.detail && subline.description)
+                      .map((subline) => subline.detail),
+                  ])
+                  const renderFieldLines = (value: string) => value
+                    .replace(/\r\n?/g, '\n')
+                    .split('\n')
+                    .map((fieldLine, fieldLineIndex) => (
+                      <Text key={`${fieldLineIndex}-${fieldLine}`} style={styles.descriptionFieldText}>
+                        {fieldLine || ' '}
+                      </Text>
+                    ))
+
+                  return lineItem.continuation ? (
+                    <Text style={styles.descriptionText}>{description}</Text>
+                  ) : (
+                    <View style={styles.descriptionContent}>
+                      {heading ? <Text style={styles.descriptionHeading}>{heading}</Text> : null}
+                      {(lineItem.detailLabel || detailLines.length > 0) ? (
+                        <View style={[styles.descriptionLine, heading ? styles.descriptionLineAfterHeading : {}]}>
+                          {lineItem.detailLabel && detailLines.length > 0 ? (
+                            <>
+                              <View style={[styles.descriptionLineDetail, { width: sharedDetailWidth }]}>{renderFieldLines(lineItem.detailLabel)}</View>
+                              <View style={[styles.descriptionLineBody, styles.descriptionLineBodyPaired]}>{renderFieldLines(detailLines.join('\n'))}</View>
+                            </>
+                          ) : (
+                            <View style={styles.descriptionLineBody}>{renderFieldLines(plain(lineItem.detailLabel || detailLines.join('\n'), ''))}</View>
+                          )}
+                        </View>
+                      ) : null}
+                      {lineItem.sublineDescriptions.map((subline, sublineIndex) => (
+                        <View
+                          key={`${subline.detail}-${sublineIndex}`}
+                          style={[styles.descriptionLine, heading || hasMainDescriptionLine || sublineIndex > 0 ? styles.descriptionSubline : {}]}
+                        >
+                          {subline.detail && subline.description ? (
+                            <>
+                              <View style={[styles.descriptionLineDetail, { width: sharedDetailWidth }]}>{renderFieldLines(subline.detail)}</View>
+                              <View style={[styles.descriptionLineBody, styles.descriptionLineBodyPaired]}>{renderFieldLines(subline.description)}</View>
+                            </>
+                          ) : (
+                            <View style={styles.descriptionLineBody}>{renderFieldLines(subline.detail || subline.description)}</View>
+                          )}
+                        </View>
+                      ))}
+                    </View>
+                  )
+                })()}
                 {pictureLayoutMode ? lineImages.map((image) => (
                   <Text key={`layout-marker-${image.id}`} style={{ position: 'absolute', left: 0, top: 0, fontSize: 1, color: '#ffffff' }}>
                     {`__ARNOLD_PICTURE_${image.id}__`}

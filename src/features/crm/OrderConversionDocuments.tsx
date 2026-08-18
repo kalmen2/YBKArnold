@@ -15,11 +15,41 @@ export function groupOrderDocumentTerms(terms: CrmDocumentTerm[]) {
 
 export type OrderDocumentLine = {
   id: string
+  parentLineId?: string | null
+  detailLabel?: string | null
   description: string
   qty: number | null
   unitPrice: number | null
   extPrice: number
   category: 'product' | 'additional' | 'freight'
+}
+
+function orderLineDocumentText(line: OrderDocumentLine) {
+  return [line.detailLabel, line.description]
+    .map((value) => String(value ?? '').trim())
+    .filter(Boolean)
+    .join('\n')
+}
+
+function mergeOrderDocumentSublines(lines: OrderDocumentLine[]) {
+  const mainLineIds = new Set(lines.filter((line) => !line.parentLineId).map((line) => line.id))
+
+  return lines
+    .filter((line) => !line.parentLineId || !mainLineIds.has(line.parentLineId))
+    .map((line) => {
+      const sublineDescriptions = lines
+        .filter((candidate) => candidate.parentLineId === line.id)
+        .map((candidate) => orderLineDocumentText(candidate))
+        .filter(Boolean)
+
+      return {
+        ...line,
+        detailLabel: [line.detailLabel, ...sublineDescriptions]
+          .map((value) => String(value ?? '').trim())
+          .filter(Boolean)
+          .join('\n') || null,
+      }
+    })
 }
 
 export type OrderDocumentData = {
@@ -85,6 +115,7 @@ const styles = StyleSheet.create({
   sectionTitle: { marginTop: 12, marginBottom: 6, fontSize: 10.5, fontFamily: 'Helvetica-Bold', color: '#0f4c81' },
   tableHead: { flexDirection: 'row', backgroundColor: '#0f4c81', color: '#fff', padding: 6 },
   tableRow: { flexDirection: 'row', borderBottomWidth: 1, borderColor: '#dbe3ea', padding: 6 },
+  sublineRow: { paddingLeft: 14, backgroundColor: '#fbfdff' },
   desc: { width: '55%', paddingRight: 7 }, qty: { width: '10%', textAlign: 'right', paddingRight: 5 }, unit: { width: '17.5%', textAlign: 'right', paddingRight: 8 }, money: { width: '17.5%', textAlign: 'right' },
   totals: { marginTop: 8, marginLeft: '54%', backgroundColor: '#f7f9fb', borderTopWidth: 2, borderTopColor: '#0f4c81' },
   totalRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4.5, paddingHorizontal: 9, borderBottomWidth: 1, borderBottomColor: '#dbe3ea', fontSize: 9.2 },
@@ -269,6 +300,7 @@ function Metadata({ data }: { data: OrderDocumentData }) {
 }
 
 function Lines({ data }: { data: OrderDocumentData }) {
+  const lines = mergeOrderDocumentSublines(data.lines)
   const depositPercent = data.depositRequired ? Number(data.depositPercent || 50) : 0
   const depositAmount = data.depositRequired
     ? Number(data.productNet || 0) * (depositPercent / 100)
@@ -277,8 +309,8 @@ function Lines({ data }: { data: OrderDocumentData }) {
   return <>
     <Text style={styles.sectionTitle}>Order Details</Text>
     <View style={styles.tableHead}><Text style={styles.desc}>Description</Text><Text style={styles.qty}>Qty</Text><Text style={styles.unit}>Unit</Text><Text style={styles.money}>Extended</Text></View>
-    {data.lines.length > 0
-      ? data.lines.map((line) => <View key={`${line.category}-${line.id}`} style={styles.tableRow} wrap={false}><Text style={styles.desc}>{line.description}</Text><Text style={styles.qty}>{line.qty ?? '-'}</Text><Text style={styles.unit}>{line.unitPrice == null ? '-' : money(line.unitPrice)}</Text><Text style={styles.money}>{money(line.extPrice)}</Text></View>)
+    {lines.length > 0
+      ? lines.map((line) => <View key={`${line.category}-${line.id}`} style={styles.tableRow} wrap={false}><Text style={styles.desc}>{orderLineDocumentText(line)}</Text><Text style={styles.qty}>{line.qty ?? '-'}</Text><Text style={styles.unit}>{line.unitPrice == null ? '-' : money(line.unitPrice)}</Text><Text style={styles.money}>{money(line.extPrice)}</Text></View>)
       : <View style={styles.tableRow}><Text style={styles.desc}>Order details are not available for this order.</Text><Text style={styles.qty}>-</Text><Text style={styles.unit}>-</Text><Text style={styles.money}>-</Text></View>}
     <View style={styles.totals} wrap={false}>
       {Number(data.discountAmount || 0) > 0 ? <>
@@ -420,7 +452,7 @@ export function ChangeOrderDocument({
 }
 
 function WorkOrderDetails({ data }: { data: OrderDocumentData }) {
-  const productionLines = data.lines.filter((line) => line.category !== 'freight')
+  const productionLines = mergeOrderDocumentSublines(data.lines.filter((line) => line.category !== 'freight'))
 
   return (
     <>
@@ -457,7 +489,7 @@ function WorkOrderDetails({ data }: { data: OrderDocumentData }) {
       {productionLines.length > 0
         ? productionLines.map((line) => (
           <View key={`${line.category}-${line.id}`} style={styles.tableRow} wrap={false}>
-            <Text style={styles.workOrderDesc}>{line.description}</Text>
+            <Text style={styles.workOrderDesc}>{orderLineDocumentText(line)}</Text>
             <Text style={styles.workOrderQty}>{line.qty ?? '-'}</Text>
           </View>
         ))
@@ -512,7 +544,7 @@ function bolAddress(data: OrderDocumentData) {
 }
 
 export function BillOfLadingDocument({ data, settings, terms }: { data: OrderDocumentData; settings: CrmQuotePrintSettings; terms?: OrderDocumentTerms }) {
-  const productLines = data.lines.filter((line) => line.category !== 'freight')
+  const productLines = mergeOrderDocumentSublines(data.lines.filter((line) => line.category !== 'freight'))
   const soldTo = bolAddress(data)
   const fallbackLines: OrderDocumentLine[] = [{
     id: '-',
@@ -635,7 +667,7 @@ export function BillOfLadingDocument({ data, settings, terms }: { data: OrderDoc
               >
                 <Text style={[bolStyles.itemCell, { width: '8%', textAlign: 'center' }]}>{lineNumberOffset + lineIndex + 1}</Text>
                 <Text style={[bolStyles.itemCell, { width: '12%', textAlign: 'center' }]}>{line.qty ?? '-'}</Text>
-                <Text style={[bolStyles.itemCell, { width: '80%', borderRightWidth: 0 }]}>{line.description}</Text>
+                <Text style={[bolStyles.itemCell, { width: '80%', borderRightWidth: 0 }]}>{orderLineDocumentText(line)}</Text>
               </View>
             ))}
           </View>

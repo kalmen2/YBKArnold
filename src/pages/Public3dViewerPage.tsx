@@ -175,7 +175,7 @@ export default function Public3dViewerPage() {
         </Box>
         {data && activeModel?.viewerType === 'sketchup' ? (
           <Button
-            aria-label="3D viewing controls and reference warning"
+            aria-label="3D viewing controls"
             onClick={() => setShowViewerHelp(true)}
             size="small"
             startIcon={<InfoOutlinedIcon fontSize="small" />}
@@ -345,72 +345,40 @@ export default function Public3dViewerPage() {
               />
             )}
 
-            {activeModel.viewerType === 'sketchup' ? (
+            {activeModel.viewerType === 'sketchup' && showViewerHelp ? (
               <Box
-                aria-hidden="true"
+                role="dialog"
+                aria-label="How to navigate the 3D model"
                 sx={{
                   position: 'absolute',
-                  zIndex: 2,
-                  top: 0,
-                  right: 0,
-                  width: { xs: '82%', sm: 320 },
-                  height: 82,
-                  pointerEvents: 'none',
-                  background: 'linear-gradient(90deg, rgba(255,255,255,0), rgba(255,255,255,.98) 24%, #fff 38%)',
+                  zIndex: 5,
+                  top: 16,
+                  left: 16,
+                  width: 'min(calc(100% - 32px), 350px)',
+                  p: 1.5,
+                  borderRadius: 2,
+                  bgcolor: '#fbfaf7',
+                  border: '1px solid rgba(38,55,70,.14)',
+                  boxShadow: '0 12px 30px rgba(38,55,70,.18)',
                 }}
-              />
-            ) : null}
-
-            {activeModel.viewerType === 'sketchup' && showViewerHelp ? (
-              <>
-                <Box onClick={() => setShowViewerHelp(false)} sx={{ position: 'absolute', zIndex: 5, inset: 0, bgcolor: 'rgba(38,55,70,.2)', backdropFilter: 'blur(2px)' }} />
-                <Box
-                  role="dialog"
-                  aria-label="How to navigate the 3D model"
-                  sx={{
-                    position: 'absolute',
-                    zIndex: 6,
-                    top: '50%',
-                    left: '50%',
-                    transform: 'translate(-50%, -50%)',
-                    width: 'min(calc(100% - 32px), 520px)',
-                    p: { xs: 2, sm: 2.5 },
-                    borderRadius: 3,
-                    bgcolor: '#fbfaf7',
-                    border: '1px solid rgba(38,55,70,.14)',
-                    boxShadow: '0 24px 70px rgba(38,55,70,.28)',
-                  }}
-                >
-                  <Stack direction="row" alignItems="flex-start" spacing={1}>
-                    <Box sx={{ flex: 1 }}>
-                      <Typography variant="h6" sx={{ color: '#263746', fontWeight: 900 }}>3D viewing controls</Typography>
-                      <Typography sx={{ color: '#71808b', fontSize: '0.86rem', mt: 0.25 }}>Click once inside the model before using a keyboard shortcut.</Typography>
-                    </Box>
-                    <IconButton aria-label="Close navigation help" onClick={() => setShowViewerHelp(false)} size="small">
-                      <CloseRoundedIcon />
-                    </IconButton>
-                  </Stack>
-                  <Alert severity="warning" sx={{ mt: 2, '& .MuiAlert-message': { fontSize: '0.82rem', fontWeight: 750 } }}>
-                    Reference only. Do not use this model for measurements or fabrication.
-                  </Alert>
-                  <Stack spacing={1} sx={{ mt: 1.25 }}>
-                    {[
-                      ['O', 'Orbit', 'Press O, then click and drag to rotate the view.'],
-                      ['H', 'Pan', 'Press H, then click and drag to move the view.'],
-                    ].map(([shortcut, title, description]) => (
-                      <Stack key={shortcut} direction="row" spacing={1.25} alignItems="center" sx={{ p: 1.25, borderRadius: 2, bgcolor: '#f1eee8' }}>
-                        <Box sx={{ width: 30, height: 30, borderRadius: '50%', display: 'grid', placeItems: 'center', bgcolor: '#fff', color: '#b5262d', fontWeight: 900, fontSize: '0.78rem' }}>
-                          {shortcut}
-                        </Box>
-                        <Box>
-                          <Typography sx={{ color: '#263746', fontWeight: 850, fontSize: '0.84rem' }}>{title}</Typography>
-                          <Typography sx={{ color: '#526471', fontSize: '0.78rem' }}>{description}</Typography>
-                        </Box>
-                      </Stack>
-                    ))}
-                  </Stack>
-                </Box>
-              </>
+              >
+                <Stack direction="row" alignItems="center" spacing={1}>
+                  <Typography sx={{ flex: 1, color: '#263746', fontWeight: 900 }}>3D viewing controls</Typography>
+                  <IconButton aria-label="Close navigation help" onClick={() => setShowViewerHelp(false)} size="small">
+                    <CloseRoundedIcon />
+                  </IconButton>
+                </Stack>
+                <Stack spacing={0.75} sx={{ mt: 1 }}>
+                  {[
+                    ['Orbit', 'Hold the scroll wheel and drag.'],
+                    ['Pan', 'Hold the scroll wheel and left mouse button, then drag.'],
+                  ].map(([title, description]) => (
+                    <Typography key={title} sx={{ color: '#526471', fontSize: '0.8rem' }}>
+                      <Box component="span" sx={{ color: '#263746', fontWeight: 850 }}>{title}:</Box> {description}
+                    </Typography>
+                  ))}
+                </Stack>
+              </Box>
             ) : null}
 
             {models.length > 1 ? (

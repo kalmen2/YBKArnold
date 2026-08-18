@@ -196,6 +196,7 @@ export function registerOrderDocumentRoutes(app, {
     if (!Array.isArray(value)) return []
 
     return value.slice(0, 250).map((line, index) => {
+      const parentLineId = normalizeOptionalShortText(line?.parentLineId, 160) || null
       const category = line?.category === 'freight'
         ? 'freight'
         : line?.category === 'additional'
@@ -212,14 +213,122 @@ export function registerOrderDocumentRoutes(app, {
 
       return {
         id: normalizeOptionalShortText(line?.id, 160) || randomUUID(),
-        description: normalizeOptionalShortText(line?.description, 1000) || `Item ${index + 1}`,
-        qty: normalizedQty,
-        unitPrice: normalizedUnitPrice,
-        extPrice: Number(extPrice.toFixed(2)),
+        parentLineId,
+        detailLabel: normalizeOptionalShortText(line?.detailLabel, 240) || null,
+        description: parentLineId
+          ? normalizeOptionalShortText(line?.description, 1000) || ''
+          : normalizeOptionalShortText(line?.description, 1000) || `Item ${index + 1}`,
+        qty: parentLineId ? 0 : normalizedQty,
+        unitPrice: parentLineId ? 0 : normalizedUnitPrice,
+        extPrice: parentLineId ? 0 : Number(extPrice.toFixed(2)),
         category,
       }
     })
   }
+
+  function buildSnapshotFromOrderLines(currentSnapshot, lines) {
+    const productLines = lines.filter((line) => line.category === 'product')
+    const additionalLines = lines.filter((line) => line.category === 'additional')
+    const freightLines = lines.filter((line) => line.category === 'freight')
+    const productNet = Number(
+      [...productLines, ...additionalLines]
+        .reduce((sum, line) => sum + Number(line.extPrice || 0), 0)
+        .toFixed(2),
+    )
+    const freightNet = Number(
+      freightLines
+        .reduce((sum, line) => sum + Number(line.extPrice || 0), 0)
+        .toFixed(2),
+    )
+
+    return {
+      snapshot: {
+        ...(currentSnapshot && typeof currentSnapshot === 'object' ? currentSnapshot : {}),
+        lineItems: productLines,
+        additionalServices: additionalLines,
+        shippingServices: freightLines,
+        productTotal: productNet,
+        freight: freightNet,
+        totalAmount: productNet + freightNet,
+      },
+      productNet,
+      freightNet,
+    }
+  }
+
+  // POST /api/orders/document-lines — replace the active order line details
+  // used by generated order confirmations, work orders, invoices, and BOLs.
+  app.post(
+    '/api/orders/document-lines',
+    requireFirebaseAuth,
+    requireOfficeManagerOrAdminRole,
+    async (req, res, next) => {
+      try {
+        const orderIdentityFilter = buildOrderIdentityFilter({
+          orderKey: req.body?.orderKey,
+          mondayItemId: req.body?.mondayItemId,
+          orderNumber: req.body?.orderNumber,
+        })
+        const lines = normalizeOrderChangeLines(req.body?.lines)
+
+        if (!orderIdentityFilter) {
+          return res.status(400).json({ error: 'Order identity is required.' })
+        }
+        if (lines.length === 0) {
+          return res.status(400).json({ error: 'At least one order line is required.' })
+        }
+
+        const { ordersUnifiedCollection } = await getCollections()
+        const orderDocument = await ordersUnifiedCollection.findOne(
+          orderIdentityFilter,
+          {
+            projection: {
+              _id: 0,
+              source_quote_snapshot: 1,
+            },
+          },
+        )
+
+        if (!orderDocument) {
+          return res.status(404).json({ error: 'Order was not found.' })
+        }
+
+        const { snapshot, productNet, freightNet } = buildSnapshotFromOrderLines(
+          orderDocument.source_quote_snapshot,
+          lines,
+        )
+        const now = new Date().toISOString()
+
+        await ordersUnifiedCollection.updateOne(
+          orderIdentityFilter,
+          {
+            $set: {
+              source_quote_snapshot: snapshot,
+              canonical_product_value: productNet,
+              canonical_order_value: productNet + freightNet,
+              canonical_freight_value: freightNet,
+              orderValue: productNet + freightNet,
+              freightValue: freightNet,
+              website_calculated_order_total: productNet + freightNet,
+              website_calculated_order_total_at: now,
+              updatedAt: now,
+              lastSyncedAt: now,
+            },
+          },
+        )
+
+        return res.json({
+          ok: true,
+          productNet,
+          freightNet,
+          grandTotal: productNet + freightNet,
+          lines,
+        })
+      } catch (error) {
+        next(error)
+      }
+    },
+  )
 
   // POST /api/orders/change-orders — stage revised order lines and their
   // generated Change Order PDF without changing the active order.

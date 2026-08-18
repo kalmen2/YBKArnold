@@ -1226,6 +1226,8 @@ function normalizeQuoteLineItems(input) {
 
   for (const rawLineItem of input) {
     const lineItem = toOptionalObject(rawLineItem)
+    const parentLineId = toTrimmedText(lineItem.parentLineId, 160) || null
+    const detailLabel = toTrimmedText(lineItem.detailLabel, 240)
     const description = toTrimmedText(lineItem.description, 1000)
     const itemNumber = toNonNegativeInteger(lineItem.itemNumber, 0)
     const qty = toNumberOrNull(lineItem.qty)
@@ -1234,7 +1236,7 @@ function normalizeQuoteLineItems(input) {
     const images = []
     const seenImageUrls = new Set()
 
-    for (const rawImage of Array.isArray(lineItem.images) ? lineItem.images : []) {
+    for (const rawImage of !parentLineId && Array.isArray(lineItem.images) ? lineItem.images : []) {
       const image = toOptionalObject(rawImage)
       const url = toTrimmedText(image.url, 2000)
       const dedupeKey = toLowerText(url, 2000)
@@ -1279,17 +1281,19 @@ function normalizeQuoteLineItems(input) {
       }
     }
 
-    if (!description && qty === null && unitPrice === null && extPrice === null && images.length === 0) {
+    if (!detailLabel && !description && qty === null && unitPrice === null && extPrice === null && images.length === 0) {
       continue
     }
 
     normalizedLineItems.push({
       id: toTrimmedText(lineItem.id, 160) || createRandomUuid(),
+      parentLineId,
       itemNumber,
+      detailLabel: detailLabel || null,
       description: description || null,
-      qty,
-      unitPrice,
-      extPrice,
+      qty: parentLineId ? null : qty,
+      unitPrice: parentLineId ? null : unitPrice,
+      extPrice: parentLineId ? null : extPrice,
       images,
     })
 
@@ -6769,13 +6773,38 @@ export function registerCrmRoutes(app, deps) {
       }
 
       const { crmQuotesCollection } = await getCollections()
-      const quote = await crmQuotesCollection.findOne({ id: quoteId }, { projection: { _id: 0 } })
+      const quote = await crmQuotesCollection.findOne(
+        {
+          $or: [
+            { id: quoteId },
+            { quoteNumber: new RegExp(`^${escapeRegex(quoteId)}$`, 'i') },
+            { 'revisions.id': quoteId },
+            { 'revisions.quoteNumber': new RegExp(`^${escapeRegex(quoteId)}$`, 'i') },
+          ],
+        },
+        { projection: { _id: 0 } },
+      )
       if (!quote) return res.status(404).json({ error: 'Quote not found.' })
       if (!canAccessQuoteBySalesRep(quote, quoteAccessScope)) {
         return res.status(403).json({ error: 'You can only access opportunities assigned to your linked sales rep.' })
       }
 
-      return res.json({ quote: normalizeQuoteOpportunityStageForResponse(quote) })
+      const normalizedQuote = normalizeQuoteOpportunityStageForResponse(quote)
+      const matchedRevision = (normalizedQuote.revisions || []).find((revision) => (
+        toTrimmedText(revision?.id, 160) === quoteId
+        || toTrimmedText(revision?.quoteNumber, 120).toLowerCase() === quoteId.toLowerCase()
+      ))
+      const responseQuote = matchedRevision
+        ? {
+          ...normalizedQuote,
+          activeRevisionNumber: toNonNegativeInteger(
+            matchedRevision.revisionNumber,
+            normalizedQuote.activeRevisionNumber,
+          ),
+        }
+        : normalizedQuote
+
+      return res.json({ quote: responseQuote })
     } catch (error) {
       next(error)
     }
@@ -8634,7 +8663,7 @@ export function registerCrmRoutes(app, deps) {
     }
   })
 
-  app.delete('/api/crm/quotes/:quoteId', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+  app.delete('/api/crm/quotes/:quoteId', requireFirebaseAuth, requireOfficeManagerOrAdminRole, async (req, res, next) => {
     try {
       const quoteId = toTrimmedText(req.params.quoteId, 160)
 

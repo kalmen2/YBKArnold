@@ -53,7 +53,7 @@ import {
 import { alpha } from '@mui/material/styles'
 import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type MouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type ClipboardEvent as ReactClipboardEvent, type MouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import Cropper, { type Area } from 'react-easy-crop'
 import { Mention, MentionsInput } from 'react-mentions'
@@ -187,7 +187,9 @@ async function parseExcelQuoteForSync(file: File, preferredQuoteNumber?: string)
 
 type OpportunityLineItemFormState = {
   id: string
+  parentLineId: string | null
   itemNumber: string
+  detailLabel: string
   description: string
   qty: string
   unitPrice: string
@@ -202,6 +204,14 @@ type PreparedQuoteImage = {
   file: File
   shape: QuoteImageShape
   displaySize: QuoteImageDisplaySize
+}
+
+type QuoteImageCropTarget = {
+  index: number
+  file: File
+  imageId?: string
+  shape?: QuoteImageShape
+  displaySize?: QuoteImageDisplaySize
 }
 
 type QuoteImagePdfLayout = NonNullable<CrmQuoteLineImage['pdfLayout']>
@@ -452,9 +462,10 @@ type LineItemsEditorProps = {
   pdfSettings?: CrmQuotePrintSettings
   canEdit: boolean
   onAddLineItem: () => void
-  onUpdateLineItem: (index: number, field: 'description' | 'qty' | 'unitPrice' | 'extPrice', value: string) => void
+  onAddSubline: (index: number) => void
+  onUpdateLineItem: (index: number, field: 'detailLabel' | 'description' | 'qty' | 'unitPrice' | 'extPrice', value: string) => void
   onRemoveLineItem: (index: number) => void
-  onAddImages: (index: number, images: PreparedQuoteImage[]) => void
+  onAddImages: (index: number, images: PreparedQuoteImage[], replaceImageId?: string) => Promise<void>
   onRemoveImage: (lineIndex: number, imageId: string) => void
   onUpdateImageLayout: (lineIndex: number, imageId: string, layout: QuoteImagePdfLayout) => void
   isUploadingImage: boolean
@@ -646,10 +657,12 @@ function getTodayEasternDateInputValue() {
   return `${year}-${month}-${day}`
 }
 
-function createEmptyLineItemFormState(): OpportunityLineItemFormState {
+function createEmptyLineItemFormState(parentLineId: string | null = null): OpportunityLineItemFormState {
   return {
     id: crypto.randomUUID(),
+    parentLineId,
     itemNumber: '',
+    detailLabel: '',
     description: '',
     qty: '',
     unitPrice: '',
@@ -668,7 +681,7 @@ function calculateExtendedPrice(qty: string, unitPrice: string) {
 
 function updateLineItemPricing(
   lineItem: OpportunityLineItemFormState,
-  field: 'description' | 'qty' | 'unitPrice' | 'extPrice',
+  field: 'detailLabel' | 'description' | 'qty' | 'unitPrice' | 'extPrice',
   value: string,
 ) {
   const nextLineItem = { ...lineItem, [field]: value }
@@ -854,7 +867,8 @@ function normalizeServiceItemsForPayload(items: OpportunityServiceItemFormState[
 }
 
 function isBlankLineItem(lineItem: OpportunityLineItemFormState) {
-  return !lineItem.description.trim()
+  return !lineItem.detailLabel.trim()
+    && !lineItem.description.trim()
     && !lineItem.qty.trim()
     && !lineItem.unitPrice.trim()
     && !lineItem.extPrice.trim()
@@ -890,6 +904,14 @@ const quoteImageSizeOptions: Array<{ value: QuoteImageDisplaySize; label: string
   { value: 'medium', label: 'Medium', description: 'Standard (~100%)' },
   { value: 'large', label: 'Large', description: 'Large (~145%)' },
 ]
+
+const quoteImageZoomFromSlider = (value: number) => value <= 0
+  ? 1 + value / 200
+  : 1 + value / 100
+
+const quoteImageSliderFromZoom = (value: number) => value <= 1
+  ? (value - 1) * 200
+  : (value - 1) * 100
 
 function resolveEditorLineImagePreviewSize(displaySize: QuoteImageDisplaySize | null | undefined) {
   if (displaySize === 'small') {
@@ -929,16 +951,29 @@ async function cropQuoteImage(file: File, pixels: Area, shape: QuoteImageShape) 
   }
 }
 
+async function loadQuoteImageForEditing(image: CrmQuoteLineImage) {
+  const response = await fetch(`/api/crm/quote-image-proxy?url=${encodeURIComponent(image.url)}`)
+  if (!response.ok) throw new Error('Could not open this picture for editing.')
+  const blob = await response.blob()
+  const extension = blob.type === 'image/png' ? 'png' : blob.type === 'image/webp' ? 'webp' : 'jpg'
+  const baseName = String(image.name || 'quote-picture').replace(/\.[^.]+$/, '')
+  return new File([blob], `${baseName}.${extension}`, { type: blob.type || 'image/jpeg' })
+}
+
 function QuoteImageCropDialog({
   file,
   open,
+  initialShape,
+  initialDisplaySize,
   onCancel,
   onComplete,
 }: {
   file: File | null
   open: boolean
+  initialShape?: QuoteImageShape
+  initialDisplaySize?: QuoteImageDisplaySize
   onCancel: () => void
-  onComplete: (image: PreparedQuoteImage) => void
+  onComplete: (image: PreparedQuoteImage) => Promise<void>
 }) {
   const [sourceUrl, setSourceUrl] = useState('')
   const [crop, setCrop] = useState({ x: 0, y: 0 })
@@ -959,17 +994,19 @@ function QuoteImageCropDialog({
     setSourceUrl(nextUrl)
     setCrop({ x: 0, y: 0 })
     setZoom(1)
+    setShape(initialShape || 'landscape')
+    setDisplaySize(initialDisplaySize || 'medium')
     setCroppedAreaPixels(null)
     setCropError('')
     return () => URL.revokeObjectURL(nextUrl)
-  }, [file, open])
+  }, [file, initialDisplaySize, initialShape, open])
 
   const handleUsePicture = async () => {
     if (!file || !croppedAreaPixels) return
     setIsPreparing(true)
     setCropError('')
     try {
-      onComplete({ file: await cropQuoteImage(file, croppedAreaPixels, shape), shape, displaySize })
+      await onComplete({ file: await cropQuoteImage(file, croppedAreaPixels, shape), shape, displaySize })
     } catch (error) {
       setCropError(error instanceof Error ? error.message : 'Could not prepare this picture.')
     } finally {
@@ -983,8 +1020,14 @@ function QuoteImageCropDialog({
       <DialogContent dividers>
         <Stack spacing={2}>
           {cropError ? <Alert severity="error">{cropError}</Alert> : null}
-          <Box sx={{ position: 'relative', height: { xs: 320, md: 470 }, bgcolor: '#111827', borderRadius: 2, overflow: 'hidden' }}>
-            {sourceUrl ? <Cropper image={sourceUrl} crop={crop} zoom={zoom} aspect={aspect} onCropChange={setCrop} onZoomChange={setZoom} onCropComplete={(_area, pixels) => setCroppedAreaPixels(pixels)} objectFit="contain" /> : null}
+          <Box
+            onWheel={(event) => {
+              event.preventDefault()
+              setZoom((current) => Math.min(2, Math.max(0.5, Number((current + (event.deltaY < 0 ? 0.05 : -0.05)).toFixed(2)))))
+            }}
+            sx={{ position: 'relative', height: { xs: 320, md: 470 }, bgcolor: '#111827', borderRadius: 2, overflow: 'hidden' }}
+          >
+            {sourceUrl ? <Cropper image={sourceUrl} crop={crop} zoom={zoom} minZoom={0.5} maxZoom={2} aspect={aspect} onCropChange={setCrop} onZoomChange={setZoom} onCropAreaChange={(_area, pixels) => setCroppedAreaPixels(pixels)} objectFit="contain" restrictPosition roundCropAreaPixels zoomWithScroll={false} /> : null}
           </Box>
           <Box>
             <Typography variant="caption" fontWeight={800}>Shape</Typography>
@@ -997,8 +1040,18 @@ function QuoteImageCropDialog({
             </ToggleButtonGroup>
           </Box>
           <Box>
-            <Typography variant="caption" fontWeight={800}>Zoom</Typography>
-            <Slider value={zoom} min={1} max={3} step={0.05} onChange={(_event, value) => setZoom(value as number)} aria-label="Picture zoom" />
+            <Typography variant="caption" fontWeight={800}>Zoom: {Math.round(zoom * 100)}%</Typography>
+            <Slider
+              value={quoteImageSliderFromZoom(zoom)}
+              min={-100}
+              max={100}
+              step={5}
+              marks={[{ value: -100, label: '50%' }, { value: 0, label: '100%' }, { value: 100, label: '200%' }]}
+              valueLabelDisplay="auto"
+              valueLabelFormat={(value) => `${Math.round(quoteImageZoomFromSlider(value) * 100)}%`}
+              onChange={(_event, value) => setZoom(quoteImageZoomFromSlider(value as number))}
+              aria-label="Picture zoom percentage"
+            />
           </Box>
           <Box>
             <Typography variant="caption" fontWeight={800}>Quote size</Typography>
@@ -1010,7 +1063,7 @@ function QuoteImageCropDialog({
       </DialogContent>
       <DialogActions>
         <Button onClick={onCancel} disabled={isPreparing}>Cancel</Button>
-        <Button variant="contained" onClick={() => void handleUsePicture()} disabled={!croppedAreaPixels || isPreparing}>{isPreparing ? 'Preparing…' : 'Use Picture'}</Button>
+        <Button variant="contained" onClick={() => void handleUsePicture()} disabled={!croppedAreaPixels || isPreparing}>{isPreparing ? 'Saving picture…' : 'Use Picture'}</Button>
       </DialogActions>
     </Dialog>
   )
@@ -1174,11 +1227,20 @@ function QuotePicturesPdfLayoutDialog({
               <Box sx={{ bgcolor: '#0f4c81', color: '#fff', display: 'grid', gridTemplateColumns: '46px 1fr 55px 86px 86px', px: 0.8, py: 0.75, fontSize: 11, fontWeight: 800 }}>
                 <span>Item</span><span>Description and picture</span><span>Qty</span><span>Unit Price</span><span>Ext</span>
               </Box>
-              {lineItems.map((lineItem, lineIndex) => (
-                <Box key={lineItem.id || lineIndex} sx={{ display: 'grid', gridTemplateColumns: '46px minmax(0, 1fr) 55px 86px 86px', bgcolor: lineIndex % 2 ? '#fbfdff' : '#fff', borderBottom: '1px solid #d8e0ea' }}>
-                  <Box sx={{ p: 1, borderRight: '1px solid #d8e0ea', fontSize: 12, fontWeight: 800 }}>{lineIndex + 1}</Box>
+              {lineItems.map((lineItem, lineIndex) => ({ lineItem, lineIndex }))
+                .filter(({ lineItem }) => !lineItem.parentLineId)
+                .map(({ lineItem, lineIndex }, displayIndex) => (
+                <Box key={lineItem.id || lineIndex} sx={{ display: 'grid', gridTemplateColumns: '46px minmax(0, 1fr) 55px 86px 86px', bgcolor: displayIndex % 2 ? '#fbfdff' : '#fff', borderBottom: '1px solid #d8e0ea' }}>
+                  <Box sx={{ p: 1, borderRight: '1px solid #d8e0ea', fontSize: 12, fontWeight: 800 }}>{displayIndex + 1}</Box>
                   <Box ref={(node: HTMLDivElement | null) => { if (node) canvasRefs.current.set(lineIndex, node); else canvasRefs.current.delete(lineIndex) }} sx={{ position: 'relative', minHeight: 180, borderRight: '1px solid #d8e0ea', overflow: 'hidden', touchAction: 'none' }}>
-                    <Typography sx={{ position: 'absolute', left: 10, top: 10, right: 10, whiteSpace: 'pre-wrap', color: '#334155', fontSize: 11, lineHeight: 1.4, pointerEvents: 'none' }}>{lineItem.description || 'Product description'}</Typography>
+                    <Typography sx={{ position: 'absolute', left: 10, top: 10, right: 10, whiteSpace: 'pre-wrap', color: '#334155', fontSize: 11, lineHeight: 1, pointerEvents: 'none' }}>
+                      {[lineItem.description, lineItem.detailLabel, ...lineItems
+                        .filter((entry) => entry.parentLineId === lineItem.id)
+                        .flatMap((entry) => [entry.detailLabel, entry.description])]
+                        .map((value) => String(value || '').trim())
+                        .filter(Boolean)
+                        .join('\n') || 'Product description'}
+                    </Typography>
                     {lineItem.images.map((image) => {
                       const layout = layouts[image.id]
                       if (!layout) return null
@@ -1231,21 +1293,32 @@ function toOptionalNumber(value: string) {
 
 function normalizeLineItemsForPayload(lineItems: OpportunityLineItemFormState[]): CrmQuoteLineItem[] {
   const normalized: CrmQuoteLineItem[] = []
+  const mainLineIds = new Set<string>()
+  let mainItemNumber = 0
 
   for (const lineItem of lineItems) {
     if (isBlankLineItem(lineItem)) {
       continue
     }
 
+    const parentLineId = lineItem.parentLineId && mainLineIds.has(lineItem.parentLineId)
+      ? lineItem.parentLineId
+      : null
+    if (!parentLineId) {
+      mainItemNumber += 1
+      mainLineIds.add(lineItem.id)
+    }
+
     normalized.push({
       id: lineItem.id,
-      // Item number is always row order (1, 2, 3, ...).
-      itemNumber: normalized.length + 1,
+      parentLineId,
+      itemNumber: mainItemNumber,
+      detailLabel: lineItem.detailLabel.trim() || null,
       description: lineItem.description.trim() || null,
-      qty: toOptionalNumber(lineItem.qty),
-      unitPrice: toOptionalNumber(lineItem.unitPrice),
-      extPrice: toOptionalNumber(lineItem.extPrice),
-      images: lineItem.images,
+      qty: parentLineId ? null : toOptionalNumber(lineItem.qty),
+      unitPrice: parentLineId ? null : toOptionalNumber(lineItem.unitPrice),
+      extPrice: parentLineId ? null : toOptionalNumber(lineItem.extPrice),
+      images: parentLineId ? [] : lineItem.images,
     })
   }
 
@@ -1255,7 +1328,9 @@ function normalizeLineItemsForPayload(lineItems: OpportunityLineItemFormState[])
 function mapLineItemToFormState(lineItem: CrmQuoteLineItem): OpportunityLineItemFormState {
   return {
     id: lineItem.id || crypto.randomUUID(),
+    parentLineId: String(lineItem.parentLineId ?? '').trim() || null,
     itemNumber: String(lineItem.itemNumber ?? '').trim(),
+    detailLabel: String(lineItem.detailLabel ?? '').trim(),
     description: String(lineItem.description ?? '').trim(),
     qty: lineItem.qty === null || lineItem.qty === undefined ? '' : String(lineItem.qty),
     unitPrice: lineItem.unitPrice === null || lineItem.unitPrice === undefined ? '' : String(lineItem.unitPrice),
@@ -1270,6 +1345,24 @@ function mapQuoteLineItemsToFormState(lineItems: CrmQuoteLineItem[] | null | und
   }
 
   return lineItems.map(mapLineItemToFormState)
+}
+
+function splitQuoteLineDescription(value: string) {
+  const normalized = String(value || '').replace(/\r\n?/g, '\n')
+  const newlineIndex = normalized.indexOf('\n')
+
+  if (newlineIndex < 0) {
+    return { heading: normalized, details: '' }
+  }
+
+  return {
+    heading: normalized.slice(0, newlineIndex),
+    details: normalized.slice(newlineIndex + 1),
+  }
+}
+
+function joinQuoteLineDescription(heading: string, details: string) {
+  return details ? `${heading}\n${details}` : heading
 }
 
 function calculateLineItemsTotal(lineItems: CrmQuoteLineItem[]) {
@@ -2542,6 +2635,7 @@ function LineItemsEditor({
   pdfSettings,
   canEdit,
   onAddLineItem,
+  onAddSubline,
   onUpdateLineItem,
   onRemoveLineItem,
   onAddImages,
@@ -2551,9 +2645,46 @@ function LineItemsEditor({
   showPdfLayoutAction = true,
 }: LineItemsEditorProps) {
   const lineItemsTotal = calculateLineItemsTotal(normalizeLineItemsForPayload(lineItems))
-  const [cropTarget, setCropTarget] = useState<{ index: number; file: File } | null>(null)
+  const [cropTarget, setCropTarget] = useState<QuoteImageCropTarget | null>(null)
   const [isPictureLayoutOpen, setIsPictureLayoutOpen] = useState(false)
+  const [imageEditError, setImageEditError] = useState('')
   const pictureCount = lineItems.reduce((total, lineItem) => total + lineItem.images.length, 0)
+
+  const handlePasteLineImage = (index: number, event: ReactClipboardEvent<HTMLElement>) => {
+    if (!canEdit || isUploadingImage || lineItems[index].images.length >= 2) return
+    const clipboardImage = Array.from(event.clipboardData.items)
+      .find((item) => item.kind === 'file' && item.type.startsWith('image/'))
+      ?.getAsFile()
+
+    if (!clipboardImage) return
+    event.preventDefault()
+
+    const extension = clipboardImage.type === 'image/jpeg'
+      ? 'jpg'
+      : clipboardImage.type === 'image/webp' ? 'webp' : 'png'
+    const file = new File(
+      [clipboardImage],
+      `pasted-quote-picture-${crypto.randomUUID()}.${extension}`,
+      { type: clipboardImage.type || 'image/png' },
+    )
+    setCropTarget({ index, file })
+  }
+
+  const handleEditLineImage = async (index: number, image: CrmQuoteLineImage) => {
+    if (!canEdit || isUploadingImage) return
+    setImageEditError('')
+    try {
+      const shape = quoteImageShapeOptions.some((option) => option.value === image.shape)
+        ? image.shape as QuoteImageShape
+        : 'landscape'
+      const displaySize = quoteImageSizeOptions.some((option) => option.value === image.displaySize)
+        ? image.displaySize as QuoteImageDisplaySize
+        : 'medium'
+      setCropTarget({ index, file: await loadQuoteImageForEditing(image), imageId: image.id, shape, displaySize })
+    } catch (error) {
+      setImageEditError(error instanceof Error ? error.message : 'Could not open this picture for editing.')
+    }
+  }
 
   return (
     <Stack spacing={0.9}>
@@ -2589,11 +2720,12 @@ function LineItemsEditor({
           overflowX: 'auto',
         }}
       >
-        <Table size="small" sx={{ minWidth: 980 }}>
+        {imageEditError ? <Alert severity="error" sx={{ m: 1 }}>{imageEditError}</Alert> : null}
+        <Table size="small" sx={{ minWidth: 1120 }}>
           <TableHead>
             <TableRow>
-              <TableCell sx={{ width: 62, fontWeight: 700 }}>Item</TableCell>
-              <TableCell sx={{ minWidth: 420, fontWeight: 700 }}>Description</TableCell>
+              <TableCell sx={{ width: 92, fontWeight: 700 }}>Item</TableCell>
+              <TableCell colSpan={2} sx={{ minWidth: 565, fontWeight: 700 }}>Description / Detail</TableCell>
               <TableCell sx={{ width: 90, fontWeight: 700 }}>Qty</TableCell>
               <TableCell sx={{ width: 125, fontWeight: 700 }}>Unit Price</TableCell>
               <TableCell sx={{ width: 135, fontWeight: 700 }}>Ext</TableCell>
@@ -2601,29 +2733,118 @@ function LineItemsEditor({
             </TableRow>
           </TableHead>
           <TableBody>
-            {lineItems.map((lineItem, index) => (
-              <TableRow key={`line-item-${index}`} hover>
+            {lineItems.map((lineItem, index) => ({ lineItem, index }))
+              .filter(({ lineItem }) => !lineItem.parentLineId)
+              .map(({ lineItem, index }, mainIndex) => {
+              const sublines = lineItems
+                .map((entry, entryIndex) => ({ entry, entryIndex }))
+                .filter(({ entry }) => entry.parentLineId === lineItem.id)
+
+              return (
+              <TableRow key={lineItem.id} hover>
                 <TableCell sx={{ verticalAlign: 'top' }}>
                   <Typography variant="body2" sx={{ pt: 0.7, fontWeight: 800, textAlign: 'center' }}>
-                    {index + 1}
+                    {mainIndex + 1}
                   </Typography>
                 </TableCell>
-                <TableCell>
+                <TableCell colSpan={2}>
                   <Stack direction={{ xs: 'column', lg: 'row' }} spacing={0.9} alignItems="flex-start">
-                    <TextField
-                      variant="standard"
-                      size="small"
-                      value={lineItem.description}
-                      onChange={(event) => {
-                        onUpdateLineItem(index, 'description', event.target.value)
-                      }}
-                      disabled={!canEdit}
-                      multiline
-                      minRows={4}
-                      maxRows={12}
-                      fullWidth
-                      sx={{ flexGrow: 1 }}
-                    />
+                    <Stack
+                      spacing={0.55}
+                      sx={{ flexGrow: 1, width: '100%' }}
+                      onPaste={(event) => handlePasteLineImage(index, event)}
+                    >
+                      <TextField
+                        size="small"
+                        value={splitQuoteLineDescription(lineItem.description).heading}
+                        onChange={(event) => {
+                          const { details } = splitQuoteLineDescription(lineItem.description)
+                          onUpdateLineItem(index, 'description', joinQuoteLineDescription(event.target.value, details))
+                        }}
+                        disabled={!canEdit}
+                        fullWidth
+                        inputProps={{ style: { fontWeight: 800, color: '#172033' } }}
+                        sx={{ '& .MuiOutlinedInput-root': { bgcolor: '#eef2f7' } }}
+                      />
+                      <Stack direction={{ xs: 'column', md: 'row' }} spacing={0.75} alignItems="stretch">
+                        <TextField
+                          size="small"
+                          value={lineItem.detailLabel}
+                          onChange={(event) => onUpdateLineItem(index, 'detailLabel', event.target.value)}
+                          disabled={!canEdit}
+                          multiline
+                          minRows={2}
+                          maxRows={10}
+                          fullWidth
+                          placeholder="Detail"
+                          sx={{ width: { xs: '100%', md: 170 }, flexShrink: 0 }}
+                        />
+                        <TextField
+                          size="small"
+                          value={splitQuoteLineDescription(lineItem.description).details}
+                          onChange={(event) => {
+                            const { heading } = splitQuoteLineDescription(lineItem.description)
+                            onUpdateLineItem(index, 'description', joinQuoteLineDescription(heading, event.target.value))
+                          }}
+                          disabled={!canEdit}
+                          multiline
+                          minRows={2}
+                          maxRows={10}
+                          fullWidth
+                          placeholder="Description"
+                        />
+                      </Stack>
+                      <Stack spacing={0.4} sx={{ width: '100%' }}>
+                        {sublines.map(({ entry, entryIndex }) => (
+                          <Stack key={entry.id} direction="row" spacing={0.25} alignItems="flex-start">
+                            <TextField
+                              size="small"
+                              value={entry.detailLabel}
+                              onChange={(event) => onUpdateLineItem(entryIndex, 'detailLabel', event.target.value)}
+                              disabled={!canEdit}
+                              multiline
+                              minRows={2}
+                              maxRows={10}
+                              placeholder="Detail"
+                              inputProps={{ style: { fontWeight: 400 } }}
+                              sx={{ width: { xs: '100%', md: 170 }, flexShrink: 0 }}
+                            />
+                            <TextField
+                              size="small"
+                              value={entry.description}
+                              onChange={(event) => onUpdateLineItem(entryIndex, 'description', event.target.value)}
+                              disabled={!canEdit}
+                              multiline
+                              minRows={2}
+                              maxRows={10}
+                              fullWidth
+                              placeholder="Description"
+                              inputProps={{ style: { fontWeight: 400 } }}
+                            />
+                            <IconButton
+                              size="small"
+                              color="error"
+                              disabled={!canEdit}
+                              aria-label="Remove additional description"
+                              onClick={() => onRemoveLineItem(entryIndex)}
+                              sx={{ mt: 0.25 }}
+                            >
+                              <DeleteOutlineRoundedIcon sx={{ fontSize: 15 }} />
+                            </IconButton>
+                          </Stack>
+                        ))}
+                        <Button
+                          size="small"
+                          variant="text"
+                          startIcon={<AddRoundedIcon />}
+                          onClick={() => onAddSubline(index)}
+                          disabled={!canEdit}
+                          sx={{ alignSelf: 'flex-start', px: 0.25, fontWeight: 400 }}
+                        >
+                          Add Subline
+                        </Button>
+                      </Stack>
+                    </Stack>
                     <Stack spacing={0.6} sx={{ width: { xs: '100%', lg: 240 }, flexShrink: 0 }}>
                       {lineItem.images.length > 0 ? (
                         <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.6 }}>
@@ -2633,6 +2854,13 @@ function LineItemsEditor({
                             return (
                               <Box
                                 key={image.id}
+                                role={canEdit ? 'button' : undefined}
+                                tabIndex={canEdit ? 0 : undefined}
+                                title={canEdit ? 'Edit picture' : undefined}
+                                onClick={() => void handleEditLineImage(index, image)}
+                                onKeyDown={(event) => {
+                                  if (event.key === 'Enter' || event.key === ' ') void handleEditLineImage(index, image)
+                                }}
                                 sx={{
                                   position: 'relative',
                                   width: previewSize.width,
@@ -2642,6 +2870,7 @@ function LineItemsEditor({
                                   borderRadius: 1,
                                   overflow: 'hidden',
                                   bgcolor: '#fff',
+                                  cursor: canEdit ? 'pointer' : 'default',
                                 }}
                               >
                                 <Box component="img" src={image.url} alt={image.name || 'Line item'} sx={{ width: '100%', height: '100%', objectFit: 'contain' }} />
@@ -2650,7 +2879,10 @@ function LineItemsEditor({
                                     <IconButton
                                       size="small"
                                       color="error"
-                                      onClick={() => onRemoveImage(index, image.id)}
+                                      onClick={(event) => {
+                                        event.stopPropagation()
+                                        onRemoveImage(index, image.id)
+                                      }}
                                       sx={{ position: 'absolute', top: 1, right: 1, bgcolor: 'rgba(255,255,255,.92)', p: 0.2 }}
                                     >
                                       <DeleteOutlineRoundedIcon sx={{ fontSize: 15 }} />
@@ -2743,16 +2975,20 @@ function LineItemsEditor({
                   </IconButton>
                 </TableCell>
               </TableRow>
-            ))}
+              )
+            })}
           </TableBody>
         </Table>
       </Box>
       <QuoteImageCropDialog
         open={Boolean(cropTarget)}
         file={cropTarget?.file || null}
+        initialShape={cropTarget?.shape}
+        initialDisplaySize={cropTarget?.displaySize}
         onCancel={() => setCropTarget(null)}
-        onComplete={(image) => {
-          if (cropTarget) onAddImages(cropTarget.index, [image])
+        onComplete={async (image) => {
+          if (!cropTarget) return
+          await onAddImages(cropTarget.index, [image], cropTarget.imageId)
           setCropTarget(null)
         }}
       />
@@ -2778,7 +3014,7 @@ type QuoteServiceItemsEditorProps = {
   canEdit: boolean
   isUploadingImage: boolean
   onChange: (items: OpportunityServiceItemFormState[]) => void
-  onAddImages: (index: number, images: PreparedQuoteImage[]) => void
+  onAddImages: (index: number, images: PreparedQuoteImage[]) => Promise<void>
 }
 
 function QuoteServiceItemsEditor({ heading, description, items, canEdit, isUploadingImage, onChange, onAddImages }: QuoteServiceItemsEditorProps) {
@@ -2906,8 +3142,9 @@ function QuoteServiceItemsEditor({ heading, description, items, canEdit, isUploa
         open={Boolean(cropTarget)}
         file={cropTarget?.file || null}
         onCancel={() => setCropTarget(null)}
-        onComplete={(image) => {
-          if (cropTarget) onAddImages(cropTarget.index, [image])
+        onComplete={async (image) => {
+          if (!cropTarget) return
+          await onAddImages(cropTarget.index, [image])
           setCropTarget(null)
         }}
       />
@@ -5531,10 +5768,11 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     companyName: string,
   ): Promise<CrmQuoteLineImage[]> => {
     const normalizedQuoteNumber = quoteNumber.trim()
-    if (!normalizedQuoteNumber) throw new Error('Enter a quote number before adding pictures.')
-
     const companySegment = sanitizeStoragePathSegment(companyName.trim() || 'company', 'company')
-    const quoteSegment = sanitizeStoragePathSegment(normalizedQuoteNumber, 'opportunity')
+    const quoteSegment = sanitizeStoragePathSegment(
+      normalizedQuoteNumber || `draft-${crypto.randomUUID()}`,
+      'opportunity',
+    )
     const uploadedImages: CrmQuoteLineImage[] = []
 
     for (const imageInput of files) {
@@ -6315,15 +6553,16 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
 
   const handleOpenOpportunityDetails = useCallback(async (summary: CrmQuote, initialTab: OpportunityDetailsTab = 'details') => {
     setErrorMessage(null)
+    // Open from the card data immediately. Older accepted quotes can take longer
+    // to hydrate, but the details surface should never appear unresponsive.
+    openLoadedOpportunityDetails(summary, initialTab)
     setBusyQuoteId(summary.id)
-    setLoadingOpportunityId(summary.id)
     try {
       openLoadedOpportunityDetails(await loadOpportunityDetails(summary), initialTab)
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Failed to load opportunity details.')
     } finally {
       setBusyQuoteId(null)
-      setLoadingOpportunityId(null)
     }
   }, [loadOpportunityDetails, openLoadedOpportunityDetails])
 
@@ -6340,17 +6579,29 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
 
     if (deepLinkedQuote) {
       void handleOpenOpportunityDetails(deepLinkedQuote)
-      clearDeepLinkedQuoteId()
       return
     }
 
     if (!isLoading && !isRefreshing) {
-      clearDeepLinkedQuoteId()
+      setErrorMessage(null)
+      setBusyQuoteId(deepLinkedQuoteId)
+      setLoadingOpportunityId(deepLinkedQuoteId)
+      void fetchCrmQuoteDetails(deepLinkedQuoteId)
+        .then((response) => {
+          openLoadedOpportunityDetails(response.quote)
+        })
+        .catch((error) => {
+          setErrorMessage(error instanceof Error ? error.message : 'Failed to load quote details.')
+        })
+        .finally(() => {
+          setBusyQuoteId(null)
+          setLoadingOpportunityId(null)
+        })
     }
   }, [
-    clearDeepLinkedQuoteId,
     deepLinkedQuoteId,
     handleOpenOpportunityDetails,
+    openLoadedOpportunityDetails,
     isLoading,
     isRefreshing,
     quotes,
@@ -6415,7 +6666,9 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     setSelectedOpportunityRefreshOnSend(false)
     setFolderScanQueue([])
     setIsUploadingFolderSelection(false)
+    clearDeepLinkedQuoteId()
   }, [
+    clearDeepLinkedQuoteId,
     isSendingSelectedOpportunityChat,
     isOpportunityDetailsDirty,
     isSavingOpportunityDetails,
@@ -6430,9 +6683,24 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     }))
   }, [])
 
+  const handleAddFormSubline = useCallback((index: number) => {
+    setFormState((current) => {
+      const parentLine = current.lineItems[index]
+      if (!parentLine || parentLine.parentLineId) return current
+      let insertIndex = index + 1
+      while (current.lineItems[insertIndex]?.parentLineId === parentLine.id) insertIndex += 1
+      const nextLineItems = [...current.lineItems]
+      nextLineItems.splice(insertIndex, 0, createEmptyLineItemFormState(parentLine.id))
+      return { ...current, lineItems: nextLineItems }
+    })
+  }, [])
+
   const handleRemoveFormLineItem = useCallback((index: number) => {
     setFormState((current) => {
-      const nextLineItems = current.lineItems.filter((_entry, entryIndex) => entryIndex !== index)
+      const removedLine = current.lineItems[index]
+      const nextLineItems = current.lineItems.filter((entry, entryIndex) => (
+        entryIndex !== index && entry.parentLineId !== removedLine?.id
+      ))
 
       return {
         ...current,
@@ -6442,7 +6710,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   }, [])
 
   const handleUpdateFormLineItem = useCallback(
-    (index: number, field: 'description' | 'qty' | 'unitPrice' | 'extPrice', value: string) => {
+    (index: number, field: 'detailLabel' | 'description' | 'qty' | 'unitPrice' | 'extPrice', value: string) => {
       setFormState((current) => ({
         ...current,
         lineItems: current.lineItems.map((entry, entryIndex) => (
@@ -6455,7 +6723,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     [],
   )
 
-  const handleAddFormLineImages = useCallback(async (index: number, files: PreparedQuoteImage[]) => {
+  const handleAddFormLineImages = useCallback(async (index: number, files: PreparedQuoteImage[], replaceImageId?: string) => {
     setErrorMessage(null)
     setIsUploadingLineImage(true)
     try {
@@ -6463,11 +6731,18 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       setFormState((current) => ({
         ...current,
         lineItems: current.lineItems.map((line, lineIndex) => lineIndex === index
-          ? { ...line, images: [...line.images, ...images].slice(0, 2) }
+          ? {
+            ...line,
+            images: replaceImageId
+              ? line.images.map((image) => image.id === replaceImageId ? images[0] || image : image)
+              : [...line.images, ...images].slice(0, 2),
+          }
           : line),
       }))
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Failed to upload line picture.')
+      const uploadError = error instanceof Error ? error : new Error('Failed to upload line picture.')
+      setErrorMessage(uploadError.message)
+      throw uploadError
     } finally {
       setIsUploadingLineImage(false)
     }
@@ -6504,13 +6779,29 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     })
   }, [])
 
+  const handleAddDetailsSubline = useCallback((index: number) => {
+    setOpportunityDetailsFormState((current) => {
+      if (!current) return current
+      const parentLine = current.lineItems[index]
+      if (!parentLine || parentLine.parentLineId) return current
+      let insertIndex = index + 1
+      while (current.lineItems[insertIndex]?.parentLineId === parentLine.id) insertIndex += 1
+      const nextLineItems = [...current.lineItems]
+      nextLineItems.splice(insertIndex, 0, createEmptyLineItemFormState(parentLine.id))
+      return { ...current, lineItems: nextLineItems }
+    })
+  }, [])
+
   const handleRemoveDetailsLineItem = useCallback((index: number) => {
     setOpportunityDetailsFormState((current) => {
       if (!current) {
         return current
       }
 
-      const nextLineItems = current.lineItems.filter((_entry, entryIndex) => entryIndex !== index)
+      const removedLine = current.lineItems[index]
+      const nextLineItems = current.lineItems.filter((entry, entryIndex) => (
+        entryIndex !== index && entry.parentLineId !== removedLine?.id
+      ))
 
       return {
         ...current,
@@ -6520,7 +6811,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   }, [])
 
   const handleUpdateDetailsLineItem = useCallback(
-    (index: number, field: 'description' | 'qty' | 'unitPrice' | 'extPrice', value: string) => {
+    (index: number, field: 'detailLabel' | 'description' | 'qty' | 'unitPrice' | 'extPrice', value: string) => {
       setOpportunityDetailsFormState((current) => {
         if (!current) {
           return current
@@ -6539,7 +6830,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     [],
   )
 
-  const handleAddDetailsLineImages = useCallback(async (index: number, files: PreparedQuoteImage[]) => {
+  const handleAddDetailsLineImages = useCallback(async (index: number, files: PreparedQuoteImage[], replaceImageId?: string) => {
     if (!opportunityDetailsFormState) return
     setErrorMessage(null)
     setIsUploadingLineImage(true)
@@ -6552,11 +6843,18 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       setOpportunityDetailsFormState((current) => current ? ({
         ...current,
         lineItems: current.lineItems.map((line, lineIndex) => lineIndex === index
-          ? { ...line, images: [...line.images, ...images].slice(0, 2) }
+          ? {
+            ...line,
+            images: replaceImageId
+              ? line.images.map((image) => image.id === replaceImageId ? images[0] || image : image)
+              : [...line.images, ...images].slice(0, 2),
+          }
           : line),
       }) : current)
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Failed to upload line picture.')
+      const uploadError = error instanceof Error ? error : new Error('Failed to upload line picture.')
+      setErrorMessage(uploadError.message)
+      throw uploadError
     } finally {
       setIsUploadingLineImage(false)
     }
@@ -6597,7 +6895,9 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
           : item),
       }) : current)
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Failed to upload service picture.')
+      const uploadError = error instanceof Error ? error : new Error('Failed to upload service picture.')
+      setErrorMessage(uploadError.message)
+      throw uploadError
     } finally {
       setIsUploadingLineImage(false)
     }
@@ -7014,7 +7314,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         detail: `Acknowledgement ${acknowledgmentNumber}`,
       }, async () => {
         const selectedProductLines: OrderDocumentLine[] = [
-        ...(convertOrderTargetQuote.lineItems || []).filter((item) => convertOrderFormState.selectedLineItemIds.includes(String(item.id || item.itemNumber || ''))).map((item) => ({ id: String(item.id || item.itemNumber || ''), description: item.description || 'Product', qty: item.qty, unitPrice: item.unitPrice, extPrice: Number(item.extPrice || 0), category: 'product' as const })),
+        ...(convertOrderTargetQuote.lineItems || []).filter((item) => convertOrderFormState.selectedLineItemIds.includes(String(item.id || item.itemNumber || ''))).map((item) => ({ id: String(item.id || item.itemNumber || ''), parentLineId: item.parentLineId || null, detailLabel: item.detailLabel || null, description: item.description || 'Product', qty: item.qty, unitPrice: item.unitPrice, extPrice: Number(item.extPrice || 0), category: 'product' as const })),
         ...(convertOrderTargetQuote.additionalServices || []).filter((item) => convertOrderFormState.selectedAdditionalServiceIds.includes(item.id)).map((item) => ({ id: item.id, description: item.title || item.description || 'Additional service', qty: item.qty ?? null, unitPrice: item.unitPrice ?? null, extPrice: Number(resolveServiceItemExtPrice(item) || 0), category: 'additional' as const })),
         ]
         const selectedFreightLines: OrderDocumentLine[] = (convertOrderTargetQuote.shippingServices || []).filter((item) => convertOrderFormState.selectedShippingServiceIds.includes(item.id)).map((item) => ({ id: item.id, description: item.title || item.description || 'Freight service', qty: item.qty ?? null, unitPrice: item.unitPrice ?? null, extPrice: Number(resolveServiceItemExtPrice(item) || 0), category: 'freight' as const }))
@@ -8993,9 +9293,10 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                 canEdit
                 showPdfLayoutAction={false}
                 onAddLineItem={handleAddFormLineItem}
+                onAddSubline={handleAddFormSubline}
                 onUpdateLineItem={handleUpdateFormLineItem}
                 onRemoveLineItem={handleRemoveFormLineItem}
-                onAddImages={(index, files) => void handleAddFormLineImages(index, files)}
+                onAddImages={handleAddFormLineImages}
                 onRemoveImage={handleRemoveFormLineImage}
                 onUpdateImageLayout={handleUpdateFormLineImageLayout}
                 isUploadingImage={isUploadingLineImage}
@@ -10107,9 +10408,10 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                 pdfSettings={quotePrintSettingsQuery.data?.settings || DEFAULT_QUOTE_PRINT_SETTINGS}
                 canEdit={canManage}
                 onAddLineItem={handleAddDetailsLineItem}
+                onAddSubline={handleAddDetailsSubline}
                 onUpdateLineItem={handleUpdateDetailsLineItem}
                 onRemoveLineItem={handleRemoveDetailsLineItem}
-                onAddImages={(index, files) => void handleAddDetailsLineImages(index, files)}
+                onAddImages={handleAddDetailsLineImages}
                 onRemoveImage={handleRemoveDetailsLineImage}
                 onUpdateImageLayout={handleUpdateDetailsLineImageLayout}
                 isUploadingImage={isUploadingLineImage}
@@ -10122,7 +10424,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                 canEdit={canManage}
                 isUploadingImage={isUploadingLineImage}
                 onChange={(additionalServices) => setOpportunityDetailsFormState((current) => current ? ({ ...current, additionalServices }) : current)}
-                onAddImages={(index, files) => void handleAddDetailsServiceImages('additionalServices', index, files)}
+                onAddImages={(index, files) => handleAddDetailsServiceImages('additionalServices', index, files)}
               />
 
               <QuoteServiceItemsEditor
@@ -10132,7 +10434,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                 canEdit={canManage}
                 isUploadingImage={isUploadingLineImage}
                 onChange={(shippingServices) => setOpportunityDetailsFormState((current) => current ? ({ ...current, shippingServices }) : current)}
-                onAddImages={(index, files) => void handleAddDetailsServiceImages('shippingServices', index, files)}
+                onAddImages={(index, files) => handleAddDetailsServiceImages('shippingServices', index, files)}
               />
 
                 </>

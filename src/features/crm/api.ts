@@ -570,7 +570,9 @@ export type CrmQuoteLineImage = {
 
 export type CrmQuoteLineItem = {
   id?: string
+  parentLineId?: string | null
   itemNumber: number
+  detailLabel?: string | null
   description: string | null
   qty: number | null
   unitPrice: number | null
