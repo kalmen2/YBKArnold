@@ -113,6 +113,7 @@ export default function OrdersPage() {
   const { allOrders, setActiveTab, visibleOrders } = overview
   const [searchParams] = useSearchParams()
   const requestedOrderId = String(searchParams.get('orderId') ?? '').trim()
+  const requestedInitialTab = String(searchParams.get('tab') ?? '').trim()
   const canUseAdminView = appUser?.isAdmin === true
   const canEditMondayStages = appUser?.isAdmin === true || appUser?.isManager === true
 
@@ -274,9 +275,9 @@ export default function OrdersPage() {
             : 'orders',
     )
     setJobDialogMode('details')
-    setJobDialogInitialTab('info')
+    setJobDialogInitialTab(requestedInitialTab === 'shipping' ? 'shipping' : 'info')
     setSelectedOrder(targetOrder)
-  }, [allOrders, requestedOrderId, setActiveTab])
+  }, [allOrders, requestedInitialTab, requestedOrderId, setActiveTab])
 
   const handleRefresh = useCallback(async () => {
     setErrorMessage(null)
@@ -292,7 +293,7 @@ export default function OrdersPage() {
     }
   }, [overview])
 
-  const handleOpenJobDialog = useCallback((order: OrdersOverviewOrder, mode: JobDetailsMode, initialTab: 'info' | 'parts' = 'info') => {
+  const handleOpenJobDialog = useCallback((order: OrdersOverviewOrder, mode: JobDetailsMode, initialTab: JobDetailsTab = 'info') => {
     if (!order.hasMondayRecord && !order.inDesign && !order.canonicalOrderId) {
       setErrorMessage('This QuickBooks project is not linked to a Monday order yet.')
       return

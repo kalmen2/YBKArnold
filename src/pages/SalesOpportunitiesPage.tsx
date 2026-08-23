@@ -4397,7 +4397,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   const convertOrderBoardsQuery = useQuery({
     queryKey: QUERY_KEYS.crmOpportunitiesConvertOrderBoards,
     queryFn: () => fetchCrmConvertOrderBoards(),
-    staleTime: 5 * 60 * 1000,
+    staleTime: 0,
     enabled: isConvertOrderDialogOpen,
   })
 
@@ -4486,6 +4486,22 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
 
     return DEFAULT_DESIGN_AKF_BOARD_ID
   }, [convertOrderBoardsQuery.data?.secondaryBoardId])
+
+  useEffect(() => {
+    const suggestedAcknowledgmentNumber = String(
+      convertOrderBoardsQuery.data?.suggestedAcknowledgmentNumber ?? '',
+    ).trim()
+
+    if (!isConvertOrderDialogOpen || !suggestedAcknowledgmentNumber) {
+      return
+    }
+
+    setConvertOrderFormState((current) => (
+      current.acknowledgmentNumber.trim()
+        ? current
+        : { ...current, acknowledgmentNumber: suggestedAcknowledgmentNumber }
+    ))
+  }, [convertOrderBoardsQuery.data?.suggestedAcknowledgmentNumber, isConvertOrderDialogOpen])
 
   const excelSyncSalesRepOptions = useMemo(() => {
     const dynamicSalesReps = Array.isArray(salesRepsQuery.data?.salesReps)
@@ -7870,7 +7886,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
               onChange={(event) => {
                 updateConvertOrderField('acknowledgmentNumber', event.target.value)
               }}
-              helperText="Required. This value becomes the order number on Monday."
+              helperText="Defaults to the next YYMMNN acknowledgement number. You can change it before converting."
               disabled={isSubmittingConvertOrder}
             />
 

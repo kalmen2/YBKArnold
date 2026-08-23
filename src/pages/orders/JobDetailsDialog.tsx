@@ -684,6 +684,11 @@ export function JobDetailsDialog({
   const [orderDateDraft, setOrderDateDraft] = useState('')
   const [leadTimeDateDraft, setLeadTimeDateDraft] = useState('')
   const [podDateDraft, setPodDateDraft] = useState('')
+  const [shipToDraft, setShipToDraft] = useState('')
+  const [leadTimeTextDraft, setLeadTimeTextDraft] = useState('')
+  const [freightDescriptionDraft, setFreightDescriptionDraft] = useState('')
+  const [shippingCarrierDraft, setShippingCarrierDraft] = useState('')
+  const [shipNotesDraft, setShipNotesDraft] = useState('')
   const [warrantyState, setWarrantyState] = useState<OrderWarrantyState>(() => buildOrderWarrantyState(order))
   const [warrantyIssueDescriptionDraft, setWarrantyIssueDescriptionDraft] = useState('')
   const [warrantyLeadTimeDateDraft, setWarrantyLeadTimeDateDraft] = useState('')
@@ -746,7 +751,7 @@ export function JobDetailsDialog({
       return
     }
 
-    setDetailsTab(initialTab === 'shipping' ? 'info' : initialTab)
+    setDetailsTab(initialTab)
   }, [initialTab, mode, open, order?.id])
 
   useEffect(() => {
@@ -836,6 +841,11 @@ export function JobDetailsDialog({
     setOrderDateDraft(normalizeDateInputValue(order?.orderDate ?? ''))
     setLeadTimeDateDraft(normalizeDateInputValue(order?.dueDate ?? ''))
     setPodDateDraft(normalizeDateInputValue(order?.shippedAt ?? ''))
+    setShipToDraft(String(order?.shipTo ?? '').trim())
+    setLeadTimeTextDraft(String(order?.leadTime ?? '').trim())
+    setFreightDescriptionDraft(String(order?.freightDescription ?? '').trim())
+    setShippingCarrierDraft(String(order?.shippingCarrier ?? '').trim())
+    setShipNotesDraft(String(order?.shipNotes ?? '').trim())
     const nextWarrantyState = buildOrderWarrantyState(order)
     setWarrantyState(nextWarrantyState)
     setShowWarrantyWorkspace(initialTab === 'warranty' || nextWarrantyState.issueActive)
@@ -1213,8 +1223,6 @@ export function JobDetailsDialog({
     orderName: order?.orderName ?? '',
   })
 
-  const shipTo = String(order?.shipTo ?? '').trim()
-  const shipNotes = String(order?.shipNotes ?? '').trim()
   const documentOrder = detailsQuery.data?.order || order
   const hasMondayItemId = Boolean(String(order?.mondayItemId ?? '').trim())
   const bolUrl = generatedBolUrl || resolveBolUrl(order)
@@ -1381,8 +1389,9 @@ export function JobDetailsDialog({
       return false
     }
 
-    const orderKey = String(order.id ?? '').trim()
-    const orderNumber = String(order.orderNumber ?? '').trim()
+    const sourceOrder = detailsQuery.data?.order ?? order
+    const orderKey = String(sourceOrder.id ?? '').trim()
+    const orderNumber = String(sourceOrder.orderNumber ?? '').trim()
 
     if (!orderKey || !orderNumber) {
       setInfoDocumentActionError('This order does not have enough identity information to create a confirmation.')
@@ -1397,69 +1406,70 @@ export function JobDetailsDialog({
     try {
       const freightNet = override
         ? Math.max(0, Number(override.freightNet || 0))
-        : Number.isFinite(Number(order.freightValue))
-        ? Math.max(0, Number(order.freightValue))
+        : Number.isFinite(Number(sourceOrder.freightValue))
+        ? Math.max(0, Number(sourceOrder.freightValue))
         : 0
       const productNet = override
         ? Math.max(0, Number(override.productNet || 0))
-        : Number.isFinite(Number(order.productValue))
-        ? Math.max(0, Number(order.productValue))
-        : Number.isFinite(Number(order.orderValue))
-          ? Math.max(0, Number(order.orderValue) - freightNet)
+        : Number.isFinite(Number(sourceOrder.productValue))
+        ? Math.max(0, Number(sourceOrder.productValue))
+        : Number.isFinite(Number(sourceOrder.orderValue))
+          ? Math.max(0, Number(sourceOrder.orderValue) - freightNet)
           : 0
-      const depositRequired = order.depositRequired !== false
+      const depositRequired = sourceOrder.depositRequired !== false
       const depositPercent = depositRequired
-        && Number.isFinite(Number(order.depositPercent))
-        && Number(order.depositPercent) > 0
-        ? Number(order.depositPercent)
+        && Number.isFinite(Number(sourceOrder.depositPercent))
+        && Number(sourceOrder.depositPercent) > 0
+        ? Number(sourceOrder.depositPercent)
         : 50
       const documentName = `Order Confirmation - ${orderNumber}.pdf`
-      const effectiveChangeVersion = Number(override?.version ?? order.changeVersion ?? 0)
+      const effectiveChangeVersion = Number(override?.version ?? sourceOrder.changeVersion ?? 0)
       const workOrderName = effectiveChangeVersion > 0
         ? `Work Order Change V${effectiveChangeVersion} - ${orderNumber}.pdf`
         : `Work Order - ${orderNumber}.pdf`
       const proformaInvoiceName = `Proforma Invoice - ${orderNumber}.pdf`
       const bolName = `Bill of Lading - ${orderNumber}.pdf`
       const documentData = {
-        changeVersion: override?.version ?? order.changeVersion,
-        documentDate: String(order.orderDate ?? '').trim(),
-        companyName: String(order.dealerName ?? '').trim(),
-        contactName: String(order.contactName ?? '').trim(),
-        contactEmail: String(order.contactEmail ?? '').trim(),
-        contactPhone: String(order.contactPhone ?? '').trim(),
-        description: String(order.description ?? order.orderName ?? '').trim(),
-        poNumber: String(order.poNumber ?? '').trim(),
-        projectName: String(order.orderName ?? '').trim(),
+        changeVersion: override?.version ?? sourceOrder.changeVersion,
+        documentDate: String(sourceOrder.orderDate ?? '').trim(),
+        companyName: String(sourceOrder.dealerName || order.dealerName || '').trim(),
+        contactName: String(sourceOrder.contactName || order.contactName || '').trim(),
+        contactEmail: String(sourceOrder.contactEmail || order.contactEmail || '').trim(),
+        contactPhone: String(sourceOrder.contactPhone || order.contactPhone || '').trim(),
+        description: String(sourceOrder.description ?? sourceOrder.orderName ?? '').trim(),
+        poNumber: String(sourceOrder.poNumber ?? '').trim(),
+        projectName: String(sourceOrder.orderName ?? '').trim(),
         acknowledgmentNumber: orderNumber,
         leadTime: String(
-          order.leadTime
-          || (order.leadTimeDays ? `${order.leadTimeDays} days` : '')
-          || order.dueDate
+          leadTimeTextDraft
+          || sourceOrder.leadTime
+          || (sourceOrder.leadTimeDays ? `${sourceOrder.leadTimeDays} days` : '')
+          || sourceOrder.dueDate
           || '',
         ).trim(),
-        freightType: String(order.shippingCarrier ?? order.freightDescription ?? '').trim(),
-        carrier: String(order.shippingCarrier ?? '').trim(),
-        shipmentDate: String(order.shippedAt ?? '').trim(),
-        shipTo: String(order.shipTo ?? '').trim(),
-        productGross: Number(order.productGrossValue || productNet + Number(order.discountAmount || 0)),
-        discountPercent: Number(order.discountPercent || 0),
-        discountAmount: Number(order.discountAmount || 0),
+        freightType: String(freightDescriptionDraft).trim(),
+        carrier: String(shippingCarrierDraft).trim(),
+        shipmentDate: String(sourceOrder.shippedAt ?? '').trim(),
+        shipTo: String(shipToDraft).trim(),
+        productGross: Number(sourceOrder.productGrossValue || productNet + Number(sourceOrder.discountAmount || 0)),
+        discountPercent: Number(sourceOrder.discountPercent || 0),
+        discountAmount: Number(sourceOrder.discountAmount || 0),
         productNet,
-        freightGross: Number(order.freightGrossValue || freightNet + Number(order.discountFreightAmount || 0)),
-        freightDiscountAmount: Number(order.discountFreightAmount || 0),
+        freightGross: Number(sourceOrder.freightGrossValue || freightNet + Number(sourceOrder.discountFreightAmount || 0)),
+        freightDiscountAmount: Number(sourceOrder.discountFreightAmount || 0),
         freightNet,
         grandTotal: productNet + freightNet,
         depositRequired,
         depositPercent,
         lines: override?.lines
-          ?? (Array.isArray(order.orderDocumentLines) ? order.orderDocumentLines : []),
-        salesRep: String(order.salesRep ?? '').trim(),
-        poDate: String(order.orderDate ?? '').trim(),
-        acknowledgmentDate: String(order.convertedAt ?? order.orderDate ?? '').trim(),
-        estimatedReadyDate: String(order.managerReadyDate ?? order.dueDate ?? '').trim(),
+          ?? (Array.isArray(sourceOrder.orderDocumentLines) ? sourceOrder.orderDocumentLines : []),
+        salesRep: String(sourceOrder.salesRep ?? '').trim(),
+        poDate: String(sourceOrder.orderDate ?? '').trim(),
+        acknowledgmentDate: String(sourceOrder.convertedAt ?? sourceOrder.orderDate ?? '').trim(),
+        estimatedReadyDate: String(sourceOrder.managerReadyDate ?? sourceOrder.dueDate ?? '').trim(),
       }
       const settings = quotePrintSettingsQuery.data?.settings || DEFAULT_QUOTE_PRINT_SETTINGS
-      const termsResponse = await fetchCrmDocumentTerms(order.dealerSourceId)
+      const termsResponse = await fetchCrmDocumentTerms(sourceOrder.dealerSourceId)
       const documentTerms = groupOrderDocumentTerms(termsResponse.terms)
       setDocumentGenerationStage('Creating order confirmation…')
       const confirmationBlob = await buildOrderDocumentBlob(documentData, settings, documentTerms)
@@ -1604,6 +1614,54 @@ export function JobDetailsDialog({
             }
             : entry
         }),
+      }
+    })
+  }
+
+  const updateCachedManagerOrderDetails = (nextDetails: {
+    orderName: string | null
+    poNumber: string | null
+    notes: string | null
+    description: string | null
+    bench: string | null
+    dueDate: string | null
+    leadTimeDays: number | null
+    podDate: string | null
+    shipTo: string | null
+    leadTimeText: string | null
+    freightDescription: string | null
+    shippingCarrier: string | null
+    shipNotes: string | null
+    mondayUpdatedAt: string | null
+  }) => {
+    const applyDetails = (entry: OrdersOverviewOrder) => ({
+      ...entry,
+      orderName: nextDetails.orderName,
+      poNumber: nextDetails.poNumber,
+      notes: nextDetails.notes,
+      description: nextDetails.description,
+      bench: nextDetails.bench,
+      dueDate: nextDetails.dueDate,
+      leadTimeDays: nextDetails.leadTimeDays,
+      shippedAt: nextDetails.podDate,
+      shipTo: nextDetails.shipTo,
+      leadTime: nextDetails.leadTimeText,
+      freightDescription: nextDetails.freightDescription,
+      shippingCarrier: nextDetails.shippingCarrier,
+      shipNotes: nextDetails.shipNotes,
+      mondayUpdatedAt: nextDetails.mondayUpdatedAt,
+    })
+
+    queryClient.setQueryData<OrdersJobDetailsResponse>(jobDetailsQueryKey, (current) => (
+      current?.order ? { ...current, order: applyDetails(current.order) } : current
+    ))
+    queryClient.setQueryData<OrdersOverviewResponse>(QUERY_KEYS.ordersOverview, (current) => {
+      if (!current) return current
+      return {
+        ...current,
+        orders: current.orders.map((entry) => (
+          entry.mondayItemId === order?.mondayItemId ? applyDetails(entry) : entry
+        )),
       }
     })
   }
@@ -2272,12 +2330,39 @@ export function JobDetailsDialog({
       const response = await postOrdersOrderDetailsUpdate({
         mondayItemId,
         orderName: nextOrderName,
-        poNumber: String(poNumberDraft ?? '').trim(),
-        notes: String(notesDraft ?? '').trim(),
-        description: String(descriptionDraft ?? '').trim(),
-        bench: String(benchDraft ?? '').trim(),
-        dueDate: String(leadTimeDateDraft ?? '').trim(),
-        podDate: String(podDateDraft ?? '').trim(),
+        ...(String(poNumberDraft ?? '').trim() !== String(order.poNumber ?? '').trim()
+          ? { poNumber: String(poNumberDraft ?? '').trim() }
+          : {}),
+        ...(String(notesDraft ?? '').trim() !== String(order.notes ?? '').trim()
+          ? { notes: String(notesDraft ?? '').trim() }
+          : {}),
+        ...(String(descriptionDraft ?? '').trim() !== String(order.description ?? '').trim()
+          ? { description: String(descriptionDraft ?? '').trim() }
+          : {}),
+        ...(String(benchDraft ?? '').trim() !== String(order.bench ?? '').trim()
+          ? { bench: String(benchDraft ?? '').trim() }
+          : {}),
+        ...(String(leadTimeDateDraft ?? '').trim() !== normalizeDateInputValue(order.dueDate ?? '')
+          ? { dueDate: String(leadTimeDateDraft ?? '').trim() }
+          : {}),
+        ...(String(podDateDraft ?? '').trim() !== normalizeDateInputValue(order.shippedAt ?? '')
+          ? { podDate: String(podDateDraft ?? '').trim() }
+          : {}),
+        ...(String(shipToDraft ?? '').trim() !== String(order.shipTo ?? '').trim()
+          ? { shipTo: String(shipToDraft ?? '').trim() }
+          : {}),
+        ...(String(leadTimeTextDraft ?? '').trim() !== String(order.leadTime ?? '').trim()
+          ? { leadTimeText: String(leadTimeTextDraft ?? '').trim() }
+          : {}),
+        ...(String(freightDescriptionDraft ?? '').trim() !== String(order.freightDescription ?? '').trim()
+          ? { freightDescription: String(freightDescriptionDraft ?? '').trim() }
+          : {}),
+        ...(String(shippingCarrierDraft ?? '').trim() !== String(order.shippingCarrier ?? '').trim()
+          ? { shippingCarrier: String(shippingCarrierDraft ?? '').trim() }
+          : {}),
+        ...(String(shipNotesDraft ?? '').trim() !== String(order.shipNotes ?? '').trim()
+          ? { shipNotes: String(shipNotesDraft ?? '').trim() }
+          : {}),
       })
 
       setOrderNameDraft(String(response.order.orderName ?? '').trim())
@@ -2287,12 +2372,18 @@ export function JobDetailsDialog({
       setBenchDraft(String(response.order.bench ?? '').trim())
       setLeadTimeDateDraft(normalizeDateInputValue(response.order.dueDate ?? ''))
       setPodDateDraft(normalizeDateInputValue(response.order.podDate ?? ''))
+      setShipToDraft(String(response.order.shipTo ?? '').trim())
+      setLeadTimeTextDraft(String(response.order.leadTimeText ?? '').trim())
+      setFreightDescriptionDraft(String(response.order.freightDescription ?? '').trim())
+      setShippingCarrierDraft(String(response.order.shippingCarrier ?? '').trim())
+      setShipNotesDraft(String(response.order.shipNotes ?? '').trim())
       setManagerEditSuccess('All information updated successfully.')
       setManagerEditWarning(response.warning ?? orderNumberWarning ?? null)
       setIsManagerEditMode(false)
+      updateCachedManagerOrderDetails(response.order)
 
-      await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.ordersOverview })
-      await queryClient.invalidateQueries({
+      void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.ordersOverview })
+      void queryClient.invalidateQueries({
         queryKey: ordersJobDetailsQueryKey({
           mondayItemId: order?.mondayItemId ?? '',
           jobNumber: order?.jobNumber ?? '',
@@ -3727,6 +3818,7 @@ export function JobDetailsDialog({
               }}
             >
               <Tab value="info" label="Order overview" />
+              <Tab value="shipping" label="Shipping" />
               <Tab value="hours" label="Hours" />
               <Tab value="pictures" label="Pictures" />
               <Tab value="parts" label="Subitems" />
@@ -5334,8 +5426,8 @@ export function JobDetailsDialog({
                             <Typography variant="caption" color="warning.dark" sx={{ fontWeight: 850, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
                               Shipping note
                             </Typography>
-                            <Typography variant="body2" sx={{ mt: 0.2, fontWeight: 650, whiteSpace: 'pre-wrap' }}>
-                              {shipNotes || 'No special shipping instructions.'}
+                          <Typography variant="body2" sx={{ mt: 0.2, fontWeight: 650, whiteSpace: 'pre-wrap' }}>
+                              {shipNotesDraft || 'No special shipping instructions.'}
                             </Typography>
                           </Box>
                           {isManagerEditMode
@@ -5347,7 +5439,50 @@ export function JobDetailsDialog({
                                 accent: 'info',
                               })
                             : renderOrderFact('Lead time', leadTimeDateDraft ? formatDate(leadTimeDateDraft) : '', { accent: 'info' })}
-                          {renderOrderFact('Ship to', shipTo, { fullWidth: true, multiline: true, accent: 'info' })}
+                          {isManagerEditMode
+                            ? renderEditableOrderFact({
+                                label: 'Lead time details',
+                                value: leadTimeTextDraft,
+                                onChange: setLeadTimeTextDraft,
+                                multiline: true,
+                                accent: 'info',
+                              })
+                            : renderOrderFact('Lead time details', leadTimeTextDraft, { fullWidth: true, multiline: true, accent: 'info' })}
+                          {isManagerEditMode
+                            ? renderEditableOrderFact({
+                                label: 'Ship to',
+                                value: shipToDraft,
+                                onChange: setShipToDraft,
+                                multiline: true,
+                                accent: 'info',
+                              })
+                            : renderOrderFact('Ship to', shipToDraft, { fullWidth: true, multiline: true, accent: 'info' })}
+                          {isManagerEditMode
+                            ? renderEditableOrderFact({
+                                label: 'Freight / delivery details',
+                                value: freightDescriptionDraft,
+                                onChange: setFreightDescriptionDraft,
+                                multiline: true,
+                                accent: 'info',
+                              })
+                            : renderOrderFact('Freight / delivery details', freightDescriptionDraft, { fullWidth: true, multiline: true, accent: 'info' })}
+                          {isManagerEditMode
+                            ? renderEditableOrderFact({
+                                label: 'Carrier',
+                                value: shippingCarrierDraft,
+                                onChange: setShippingCarrierDraft,
+                                accent: 'info',
+                              })
+                            : renderOrderFact('Carrier', shippingCarrierDraft, { accent: 'info' })}
+                          {isManagerEditMode
+                            ? renderEditableOrderFact({
+                                label: 'Shipping note',
+                                value: shipNotesDraft,
+                                onChange: setShipNotesDraft,
+                                multiline: true,
+                                accent: 'info',
+                              })
+                            : null}
                           {isManagerEditMode
                             ? renderEditableOrderFact({
                                 label: 'POD date',

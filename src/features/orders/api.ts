@@ -89,6 +89,8 @@ export type OrdersOrderNumberContactAdminResponse = {
 
 export type OrdersOrderDetailsUpdateResponse = {
   ok: boolean
+  // The local database save completes before Monday is synchronized.
+  queued?: boolean
   order: {
     mondayItemId: string
     orderName: string | null
@@ -100,6 +102,11 @@ export type OrdersOrderDetailsUpdateResponse = {
     dueDate: string | null
     leadTimeDays: number | null
     podDate: string | null
+    shipTo: string | null
+    leadTimeText: string | null
+    freightDescription: string | null
+    shippingCarrier: string | null
+    shipNotes: string | null
     mondayUpdatedAt: string | null
   }
   warning?: string | null
@@ -929,6 +936,11 @@ type UpdateOrdersOrderDetailsInput = {
   dueDate?: string | null
   leadTimeDays?: number | string | null
   podDate?: string | null
+  shipTo?: string | null
+  leadTimeText?: string | null
+  freightDescription?: string | null
+  shippingCarrier?: string | null
+  shipNotes?: string | null
 }
 
 export function postOrdersOrderDetailsUpdate(input: UpdateOrdersOrderDetailsInput) {
@@ -973,6 +985,26 @@ export function postOrdersOrderDetailsUpdate(input: UpdateOrdersOrderDetailsInpu
 
   if (Object.prototype.hasOwnProperty.call(input, 'podDate')) {
     payload.podDate = input.podDate ?? ''
+  }
+
+  if (Object.prototype.hasOwnProperty.call(input, 'shipTo')) {
+    payload.shipTo = input.shipTo ?? ''
+  }
+
+  if (Object.prototype.hasOwnProperty.call(input, 'leadTimeText')) {
+    payload.leadTimeText = input.leadTimeText ?? ''
+  }
+
+  if (Object.prototype.hasOwnProperty.call(input, 'freightDescription')) {
+    payload.freightDescription = input.freightDescription ?? ''
+  }
+
+  if (Object.prototype.hasOwnProperty.call(input, 'shippingCarrier')) {
+    payload.shippingCarrier = input.shippingCarrier ?? ''
+  }
+
+  if (Object.prototype.hasOwnProperty.call(input, 'shipNotes')) {
+    payload.shipNotes = input.shipNotes ?? ''
   }
 
   return apiRequest<OrdersOrderDetailsUpdateResponse>(

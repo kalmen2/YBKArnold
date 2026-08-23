@@ -37,19 +37,39 @@ function mergeOrderDocumentSublines(lines: OrderDocumentLine[]) {
   return lines
     .filter((line) => !line.parentLineId || !mainLineIds.has(line.parentLineId))
     .map((line) => {
-      const sublineDescriptions = lines
+      const sublines = lines
         .filter((candidate) => candidate.parentLineId === line.id)
-        .map((candidate) => orderLineDocumentText(candidate))
-        .filter(Boolean)
+        .map((candidate) => ({
+          detailLabel: String(candidate.detailLabel ?? '').trim(),
+          description: String(candidate.description ?? '').trim(),
+        }))
+        .filter((candidate) => candidate.detailLabel || candidate.description)
 
       return {
         ...line,
-        detailLabel: [line.detailLabel, ...sublineDescriptions]
-          .map((value) => String(value ?? '').trim())
-          .filter(Boolean)
-          .join('\n') || null,
+        sublines,
       }
     })
+}
+
+const estimateOrderDocumentTextWidth = (value: string) => Array.from(value).reduce((width, character) => {
+  if (character === ' ') return width + 2.5
+  if (/[ilI.,'`!|:;]/.test(character)) return width + 2.2
+  if (/[MW@%&]/.test(character)) return width + 7.5
+  if (/[A-Z0-9]/.test(character)) return width + 5.7
+  return width + 4.6
+}, 0)
+
+function orderDocumentDetailColumnWidth(labels: string[]) {
+  const longestLabel = labels
+    .flatMap((label) => label.replace(/\r\n?/g, '\n').split('\n'))
+    .reduce((longest, label) => Math.max(longest, estimateOrderDocumentTextWidth(label)), 0)
+
+  return Math.min(Math.max(longestLabel + 4, 40), 116)
+}
+
+function lineRequiresControlSample(line: Pick<OrderDocumentLine, 'description'>) {
+  return /\b(?:stain\s+to\s+match|paint\s+sample)\b/i.test(String(line.description ?? ''))
 }
 
 export type OrderDocumentData = {
@@ -116,7 +136,13 @@ const styles = StyleSheet.create({
   tableHead: { flexDirection: 'row', backgroundColor: '#0f4c81', color: '#fff', padding: 6 },
   tableRow: { flexDirection: 'row', borderBottomWidth: 1, borderColor: '#dbe3ea', padding: 6 },
   sublineRow: { paddingLeft: 14, backgroundColor: '#fbfdff' },
-  desc: { width: '55%', paddingRight: 7 }, qty: { width: '10%', textAlign: 'right', paddingRight: 5 }, unit: { width: '17.5%', textAlign: 'right', paddingRight: 8 }, money: { width: '17.5%', textAlign: 'right' },
+  item: { width: '7%', textAlign: 'center', paddingRight: 4 }, desc: { width: '48%', paddingRight: 7 }, qty: { width: '10%', textAlign: 'right', paddingRight: 5 }, unit: { width: '17.5%', textAlign: 'right', paddingRight: 8 }, money: { width: '17.5%', textAlign: 'right' },
+  lineDescriptionHeading: { fontFamily: 'Helvetica-Bold', fontSize: 9.6, color: '#172033' },
+  lineDescriptionDetailRow: { flexDirection: 'row' },
+  lineDescriptionFirstDetailRow: { marginTop: 4 },
+  lineDescriptionDetailLabel: { flexShrink: 0, paddingRight: 9, color: '#26384a' },
+  lineDescriptionDetailBody: { color: '#15283b' },
+  lineDescriptionSampleNotice: { color: '#b51f2e', marginTop: 1 },
   totals: { marginTop: 8, marginLeft: '54%', backgroundColor: '#f7f9fb', borderTopWidth: 2, borderTopColor: '#0f4c81' },
   totalRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4.5, paddingHorizontal: 9, borderBottomWidth: 1, borderBottomColor: '#dbe3ea', fontSize: 9.2 },
   grandTotalRow: { fontFamily: 'Helvetica-Bold', color: '#0f4c81', fontSize: 10 },
@@ -308,25 +334,68 @@ function Lines({ data }: { data: OrderDocumentData }) {
 
   return <>
     <Text style={styles.sectionTitle}>Order Details</Text>
-    <View style={styles.tableHead}><Text style={styles.desc}>Description</Text><Text style={styles.qty}>Qty</Text><Text style={styles.unit}>Unit</Text><Text style={styles.money}>Extended</Text></View>
+    <View style={styles.tableHead}><Text style={styles.item}>Item</Text><Text style={styles.desc}>Description</Text><Text style={styles.qty}>Qty</Text><Text style={styles.unit}>Unit</Text><Text style={styles.money}>Extended</Text></View>
     {lines.length > 0
-      ? lines.map((line) => <View key={`${line.category}-${line.id}`} style={styles.tableRow} wrap={false}><Text style={styles.desc}>{orderLineDocumentText(line)}</Text><Text style={styles.qty}>{line.qty ?? '-'}</Text><Text style={styles.unit}>{line.unitPrice == null ? '-' : money(line.unitPrice)}</Text><Text style={styles.money}>{money(line.extPrice)}</Text></View>)
-      : <View style={styles.tableRow}><Text style={styles.desc}>Order details are not available for this order.</Text><Text style={styles.qty}>-</Text><Text style={styles.unit}>-</Text><Text style={styles.money}>-</Text></View>}
+      ? lines.map((line, index) => <View key={`${line.category}-${line.id}`} style={styles.tableRow} wrap={false}>
+        <Text style={styles.item}>{index + 1}</Text>
+        <View style={styles.desc}>
+          <OrderLineDescription line={line} />
+        </View>
+        <Text style={styles.qty}>{line.qty ?? '-'}</Text>
+        <Text style={styles.unit}>{line.unitPrice == null ? '-' : money(line.unitPrice)}</Text>
+        <Text style={styles.money}>{money(line.extPrice)}</Text>
+      </View>)
+      : <View style={styles.tableRow}><Text style={styles.item}>-</Text><Text style={styles.desc}>Order details are not available for this order.</Text><Text style={styles.qty}>-</Text><Text style={styles.unit}>-</Text><Text style={styles.money}>-</Text></View>}
     <View style={styles.totals} wrap={false}>
       {Number(data.discountAmount || 0) > 0 ? <>
         <View style={styles.totalRow}><Text>Product Subtotal</Text><Text>{money(data.productGross ?? data.productNet + Number(data.discountAmount || 0))}</Text></View>
         <View style={styles.totalRow}><Text>Discount ({Number(data.discountPercent || 0).toFixed(2).replace(/\.?0+$/, '')}%)</Text><Text>-{money(Number(data.discountAmount || 0))}</Text></View>
       </> : null}
       <View style={styles.totalRow}><Text>Order Total</Text><Text>{money(data.productNet)}</Text></View>
+      {data.depositRequired ? <View style={[styles.totalRow, styles.depositTotalRow]}><Text>{Number(depositPercent.toFixed(2))}% Deposit Required</Text><Text>{money(depositAmount)}</Text></View> : null}
       {Number(data.freightDiscountAmount || 0) > 0 ? <>
         <View style={styles.totalRow}><Text>Freight Subtotal</Text><Text>{money(data.freightGross ?? data.freightNet + Number(data.freightDiscountAmount || 0))}</Text></View>
         <View style={styles.totalRow}><Text>Freight Discount</Text><Text>-{money(Number(data.freightDiscountAmount || 0))}</Text></View>
       </> : null}
       <View style={styles.totalRow}><Text>Freight Total</Text><Text>{money(data.freightNet)}</Text></View>
       <View style={[styles.totalRow, styles.grandTotalRow]}><Text>Grand Total</Text><Text>{money(data.grandTotal)}</Text></View>
-      {data.depositRequired ? <View style={[styles.totalRow, styles.depositTotalRow]}><Text>{Number(depositPercent.toFixed(2))}% Deposit Required</Text><Text>{money(depositAmount)}</Text></View> : null}
     </View>
   </>
+}
+
+function OrderLineDescription({ line }: { line: ReturnType<typeof mergeOrderDocumentSublines>[number] }) {
+  const description = String(line.description ?? '').replace(/\r\n?/g, '\n')
+  const [heading = '', ...detailLines] = description.split('\n')
+  const details = detailLines.join('\n')
+  const detailLabel = String(line.detailLabel ?? '').trim()
+  const detailRows = [
+    { label: detailLabel, body: details },
+    ...line.sublines.map((subline) => ({
+      label: subline.detailLabel,
+      body: subline.description,
+    })),
+  ].filter((row) => row.label || row.body)
+  const detailColumnWidth = orderDocumentDetailColumnWidth(
+    detailRows.filter((row) => row.label && row.body).map((row) => row.label),
+  )
+
+  return <View>
+    {heading ? <Text style={styles.lineDescriptionHeading}>{heading}</Text> : null}
+    {detailRows.map((row, index) => (
+      <View key={`${row.label}-${row.body}-${index}`} style={[
+        styles.lineDescriptionDetailRow,
+        ...(index === 0 && heading ? [styles.lineDescriptionFirstDetailRow] : []),
+      ]}>
+        {row.label && row.body ? <>
+          <Text style={[styles.lineDescriptionDetailLabel, { width: detailColumnWidth }]}>{row.label}</Text>
+          <Text style={[styles.lineDescriptionDetailBody, { width: 248 - detailColumnWidth }]}>{row.body}</Text>
+        </> : <Text style={styles.lineDescriptionDetailBody}>{row.label || row.body}</Text>}
+      </View>
+    ))}
+    {lineRequiresControlSample(line) ? <Text style={styles.lineDescriptionSampleNotice}>
+      Control sample required: Please send the control sample to Arnold Contract and clearly mark the package with your acknowledgement number.
+    </Text> : null}
+  </View>
 }
 
 export function ProformaInvoiceDocument({ data, settings, terms }: { data: OrderDocumentData; settings: CrmQuotePrintSettings; terms?: OrderDocumentTerms }) {

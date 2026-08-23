@@ -28,6 +28,7 @@ export type DashboardOrder = {
   effectiveDueDate: string | null
   daysUntilDue: number | null
   isDone: boolean
+  customerSignedBolMissing?: boolean
   isProductionStarted?: boolean
   isLate: boolean
   daysLate: number

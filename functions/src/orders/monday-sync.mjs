@@ -2,6 +2,7 @@
 // collection sync, Monday column writers, and the retry queue that guarantees
 // no website edit is ever lost when Monday is unreachable.
 
+import { randomUUID } from 'node:crypto'
 import { normalizeOptionalShortText } from '../utils/value-utils.mjs'
 import {
   ORDERS_PROGRESS_QUEUE_RETRY_DELAYS_SECONDS,
@@ -20,18 +21,24 @@ export function createMondaySyncHelpers(deps) {
     fetchMondayStatusColumnOptions,
     getCollections,
     updateMondayItemJsonColumn,
+    updateMondayItemName,
     updateMondayItemStatusColumn,
     updateMondayItemTextColumn,
   } = deps
 
   let ordersProgressStatusQueueIndexesPromise
   let ordersProgressStatusQueueInFlight = null
+  let ordersDetailsQueueIndexesPromise
+  let ordersDetailsQueueInFlight = null
   const ordersProgressStatusQueueCollectionName = 'orders_progress_status_queue'
   const ordersProgressStatusQueueMaxAttempts = ORDERS_PROGRESS_QUEUE_RETRY_DELAYS_SECONDS.length
   const ordersProgressStatusQueueDefaultBatchSize = 80
   // Jobs stuck in "processing" (instance died or was frozen mid-run) become
   // claimable again after this window so no queued Monday update is ever lost.
   const ordersProgressStatusQueueProcessingStaleMs = 10 * 60 * 1000
+  const ordersDetailsQueueCollectionName = 'orders_monday_details_queue'
+  const ordersDetailsQueueMaxAttempts = ORDERS_PROGRESS_QUEUE_RETRY_DELAYS_SECONDS.length
+  const ordersDetailsQueueProcessingStaleMs = 10 * 60 * 1000
 
   async function updateMondayDateColumnValue({
     boardId,
@@ -181,6 +188,87 @@ export function createMondaySyncHelpers(deps) {
     }
 
     return queueCollection
+  }
+
+  async function getOrdersDetailsQueueCollection(collectionsFromCaller = null) {
+    const collections = collectionsFromCaller ?? await getCollections()
+    const ordersDatabase = collections?.databasesByDomain?.orders
+
+    if (!ordersDatabase) {
+      throw new Error('Orders database is unavailable.')
+    }
+
+    const queueCollection = ordersDatabase.collection(ordersDetailsQueueCollectionName)
+
+    if (!ordersDetailsQueueIndexesPromise) {
+      ordersDetailsQueueIndexesPromise = Promise.all([
+        queueCollection.createIndex({ requestKey: 1 }, { unique: true }),
+        queueCollection.createIndex({ statusState: 1, nextAttemptAt: 1, queuedAt: 1 }),
+        queueCollection.createIndex({ statusState: 1, processingStartedAt: 1 }),
+      ])
+    }
+
+    try {
+      await ordersDetailsQueueIndexesPromise
+    } catch (error) {
+      ordersDetailsQueueIndexesPromise = undefined
+      throw error
+    }
+
+    return queueCollection
+  }
+
+  async function enqueueMondayOrderDetailsUpdate({
+    queueCollection,
+    mondayItemId,
+    changes,
+    queuedByUid = null,
+    queuedByEmail = null,
+  }) {
+    const normalizedMondayItemId = String(mondayItemId ?? '').trim()
+
+    if (!normalizedMondayItemId || !changes || Object.keys(changes).length === 0) {
+      return null
+    }
+
+    const now = new Date().toISOString()
+    const existing = await queueCollection.findOne(
+      { requestKey: normalizedMondayItemId },
+      { projection: { changes: 1 } },
+    )
+    const mergedChanges = {
+      ...(existing?.changes && typeof existing.changes === 'object' ? existing.changes : {}),
+      ...changes,
+    }
+
+    await queueCollection.updateOne(
+      { requestKey: normalizedMondayItemId },
+      {
+        $set: {
+          requestKey: normalizedMondayItemId,
+          mondayItemId: normalizedMondayItemId,
+          changes: mergedChanges,
+          statusState: 'queued',
+          processingStartedAt: null,
+          attempts: 0,
+          queuedAt: now,
+          nextAttemptAt: now,
+          queuedByUid,
+          queuedByEmail,
+          lastError: null,
+          syncedAt: null,
+          failedAt: null,
+          updatedAt: now,
+        },
+        $setOnInsert: {
+          id: randomUUID(),
+          createdAt: now,
+        },
+      },
+      { upsert: true },
+    )
+
+    return mergedChanges
   }
 
   async function resolveMondayOrderContext({
@@ -744,13 +832,171 @@ export function createMondaySyncHelpers(deps) {
     }
   }
 
+  async function processQueuedMondayOrderDetailsUpdates(options = {}) {
+    const maxJobs = Math.min(120, Math.max(1, Number(options?.maxJobs) || 60))
+    const processorSource = String(options?.source ?? '').trim() || 'internal'
+
+    if (ordersDetailsQueueInFlight) {
+      return ordersDetailsQueueInFlight
+    }
+
+    const processorPromise = (async () => {
+      const collections = await getCollections()
+      const { mondayOrdersCollection, ordersUnifiedCollection } = collections
+      const queueCollection = await getOrdersDetailsQueueCollection(collections)
+      let processedCount = 0
+      let syncedCount = 0
+      let requeuedCount = 0
+      let failedCount = 0
+
+      while (processedCount < maxJobs) {
+        const now = new Date().toISOString()
+        const staleBefore = new Date(Date.now() - ordersDetailsQueueProcessingStaleMs).toISOString()
+        const claimedJob = await queueCollection.findOneAndUpdate(
+          {
+            $or: [
+              { statusState: 'queued', nextAttemptAt: { $lte: now } },
+              { statusState: 'processing', processingStartedAt: { $lte: staleBefore } },
+            ],
+          },
+          {
+            $set: {
+              statusState: 'processing',
+              processingSource: processorSource,
+              processingStartedAt: now,
+              updatedAt: now,
+            },
+          },
+          { sort: { nextAttemptAt: 1, queuedAt: 1 }, returnDocument: 'after', projection: { _id: 0 } },
+        )
+
+        if (!claimedJob) break
+        processedCount += 1
+
+        const mondayItemId = String(claimedJob?.mondayItemId ?? '').trim()
+        const changes = claimedJob?.changes && typeof claimedJob.changes === 'object'
+          ? claimedJob.changes
+          : {}
+        const previousAttempts = Number(claimedJob?.attempts) || 0
+        const fail = async (error, retryable = true) => {
+          const attempts = previousAttempts + 1
+          const updatedAt = new Date().toISOString()
+          const lastError = normalizeOptionalShortText(error?.message ?? error, 280)
+            || 'Could not sync queued order changes to Monday.'
+          const canRetry = retryable && attempts < ordersDetailsQueueMaxAttempts
+          await queueCollection.updateOne(
+            {
+              id: claimedJob.id,
+              statusState: 'processing',
+              processingStartedAt: claimedJob.processingStartedAt,
+            },
+            {
+              $set: canRetry
+                ? {
+                  statusState: 'queued', attempts, nextAttemptAt: computeQueuedProgressStatusRetryAt(attempts),
+                  lastError, updatedAt,
+                }
+                : {
+                  statusState: 'failed', attempts, failedAt: updatedAt, lastError, updatedAt,
+                },
+            },
+          )
+          if (canRetry) requeuedCount += 1
+          else failedCount += 1
+        }
+
+        if (!mondayItemId || Object.keys(changes).length === 0) {
+          await fail('Queued order edit is missing required fields.', false)
+          continue
+        }
+
+        try {
+          const context = await resolveMondayOrderContext({
+            mondayItemId,
+            mondayOrdersCollection,
+            ordersUnifiedCollection,
+          })
+          if (!context?.boardId) throw new Error('Could not resolve Monday board for this order.')
+
+          const snapshot = await fetchMondayBoardItemsByIds({
+            boardId: context.boardId,
+            boardName: context.boardName,
+            boardUrl: context.boardUrl,
+            itemIds: [mondayItemId],
+          })
+          if (!Array.isArray(snapshot?.orders) || !snapshot.orders[0]) {
+            throw new Error('Monday item was not found on the configured board.')
+          }
+
+          const columns = snapshot?.columnDetection ?? {}
+          const writeText = async (changeName, columnName) => {
+            if (!Object.prototype.hasOwnProperty.call(changes, changeName)) return
+            const columnId = String(columns?.[columnName] ?? '').trim()
+            if (!columnId) throw new Error(`${changeName} column could not be resolved for this board.`)
+            await updateMondayItemTextColumn({
+              boardId: context.boardId, itemId: mondayItemId, columnId, textValue: String(changes[changeName] ?? ''),
+            })
+          }
+          const writeDate = async (changeName, columnName) => {
+            if (!Object.prototype.hasOwnProperty.call(changes, changeName)) return
+            const columnId = String(columns?.[columnName] ?? '').trim()
+            if (!columnId) throw new Error(`${changeName} column could not be resolved for this board.`)
+            await updateMondayDateColumnValue({
+              boardId: context.boardId, itemId: mondayItemId, columnId, dateValue: changes[changeName],
+            })
+          }
+
+          if (Object.prototype.hasOwnProperty.call(changes, 'orderName')) {
+            await updateMondayItemName({
+              boardId: context.boardId,
+              itemId: mondayItemId,
+              itemName: String(changes.orderName ?? ''),
+            })
+          }
+          await writeText('poNumber', 'poNumberColumnId')
+          await writeText('notes', 'notesColumnId')
+          await writeText('description', 'descriptionColumnId')
+          await writeText('bench', 'benchColumnId')
+          await writeDate('dueDate', columns?.dueDateColumnId ? 'dueDateColumnId' : 'leadTimeColumnId')
+          await writeText('leadTimeDays', 'leadTimeColumnId')
+          await writeDate('podDate', 'shipDateColumnId')
+
+          const syncedAt = new Date().toISOString()
+          await queueCollection.updateOne(
+            {
+              id: claimedJob.id,
+              statusState: 'processing',
+              processingStartedAt: claimedJob.processingStartedAt,
+            },
+            { $set: { statusState: 'synced', syncedAt, lastError: null, updatedAt: syncedAt } },
+          )
+          syncedCount += 1
+        } catch (error) {
+          await fail(error)
+        }
+      }
+
+      return { processedCount, syncedCount, requeuedCount, failedCount }
+    })()
+
+    ordersDetailsQueueInFlight = processorPromise
+    try {
+      return await processorPromise
+    } finally {
+      if (ordersDetailsQueueInFlight === processorPromise) ordersDetailsQueueInFlight = null
+    }
+  }
+
 
   return {
     buildMondayProgressDetailsResponse,
     clearMondayColumnValue,
     extractProgressStatusColumnIds,
     getOrdersProgressStatusQueueCollection,
+    getOrdersDetailsQueueCollection,
+    enqueueMondayOrderDetailsUpdate,
     processQueuedMondayProgressStatusUpdates,
+    processQueuedMondayOrderDetailsUpdates,
     pullLiveMondayProgressDetails,
     resolveMondayOrderContext,
     syncMondayProgressDetailsToCollections,

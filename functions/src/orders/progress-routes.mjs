@@ -21,10 +21,12 @@ export function registerOrderProgressRoutes(app, {
   authRoleAdmin,
   buildMondayProgressDetailsResponse,
   clearMondayColumnValue,
+  enqueueMondayOrderDetailsUpdate,
   extractProgressStatusColumnIds,
   fetchMondayBoardItemsByIds,
   fetchMondayStatusColumnOptions,
   getCollections,
+  getOrdersDetailsQueueCollection,
   getOrdersProgressStatusQueueCollection,
   mobileAlertTargetModeSelected,
   normalizeEmail,
@@ -239,6 +241,83 @@ export function registerOrderProgressRoutes(app, {
           ordersUnifiedCollection,
         } = await getCollections()
 
+        if (false) {
+        // The application database is the immediate source of truth. Monday is
+        // synchronized by the durable queue after this request has returned.
+        const [storedOrder, storedMondayOrder] = await Promise.all([
+          ordersUnifiedCollection.findOne(
+            { monday_item_id: mondayItemId },
+            { projection: { _id: 0 } },
+          ),
+          mondayOrdersCollection.findOne(
+            { mondayItemId },
+            { projection: { _id: 0 } },
+          ),
+        ])
+
+        if (!storedOrder && !storedMondayOrder) {
+          return res.status(404).json({ error: 'Order was not found in the application database.' })
+        }
+
+        const changes = {}
+        const unifiedUpdate = { updatedAt: new Date().toISOString(), monday_sync_status: 'queued' }
+        const mondayUpdate = { updatedAt: unifiedUpdate.updatedAt, mondaySyncStatus: 'queued' }
+        const assignChange = (hasField, key, value, unifiedKey, mondayKey) => {
+          if (!hasField) return
+          changes[key] = value
+          unifiedUpdate[unifiedKey] = value || null
+          mondayUpdate[mondayKey] = value || null
+        }
+
+        assignChange(hasOrderNameField, 'orderName', requestedOrderName, 'order_name', 'orderName')
+        assignChange(hasPoNumberField, 'poNumber', requestedPoNumber, 'po_number', 'poNumber')
+        assignChange(hasNotesField, 'notes', requestedNotes, 'monday_notes', 'notes')
+        assignChange(hasDescriptionField, 'description', requestedDescription, 'monday_description', 'description')
+        assignChange(hasBenchField, 'bench', requestedBench, 'bench', 'bench')
+        assignChange(hasDueDateField, 'dueDate', requestedDueDate, 'Due_date', 'dueDate')
+        assignChange(hasLeadTimeDaysField, 'leadTimeDays', requestedLeadTimeDaysText, 'Lead_time_days', 'leadTimeDays')
+        assignChange(hasPodDateField, 'podDate', requestedPodDate, 'shipped_at', 'shippedAt')
+
+        await Promise.all([
+          ordersUnifiedCollection.updateOne({ monday_item_id: mondayItemId }, { $set: unifiedUpdate }),
+          mondayOrdersCollection.updateOne({ mondayItemId }, { $set: mondayUpdate }),
+        ])
+
+        const queueCollection = await getOrdersDetailsQueueCollection()
+        await enqueueMondayOrderDetailsUpdate({
+          queueCollection,
+          mondayItemId,
+          changes,
+          queuedByUid: String(req.authUser?.uid ?? '').trim() || null,
+          queuedByEmail: String(publicUser?.email ?? '').trim() || null,
+        })
+
+        const order = {
+          mondayItemId,
+          orderName: hasOrderNameField ? requestedOrderName : String(storedOrder?.order_name ?? storedMondayOrder?.orderName ?? '').trim() || null,
+          poNumber: hasPoNumberField ? requestedPoNumber || null : String(storedOrder?.po_number ?? storedMondayOrder?.poNumber ?? '').trim() || null,
+          notes: hasNotesField ? requestedNotes || null : String(storedOrder?.monday_notes ?? storedMondayOrder?.notes ?? '').trim() || null,
+          description: hasDescriptionField ? requestedDescription || null : String(storedOrder?.monday_description ?? storedMondayOrder?.description ?? '').trim() || null,
+          bench: hasBenchField ? requestedBench || null : String(storedOrder?.bench ?? storedMondayOrder?.bench ?? '').trim() || null,
+          orderDate: String(storedOrder?.order_date ?? storedMondayOrder?.orderDate ?? '').trim() || null,
+          dueDate: hasDueDateField ? requestedDueDate || null : String(storedOrder?.Due_date ?? storedMondayOrder?.dueDate ?? '').trim() || null,
+          leadTimeDays: hasLeadTimeDaysField
+            ? (requestedLeadTimeDaysText ? Number(requestedLeadTimeDaysText) : null)
+            : (Number.isFinite(Number(storedOrder?.Lead_time_days ?? storedMondayOrder?.leadTimeDays))
+              ? Number(storedOrder?.Lead_time_days ?? storedMondayOrder?.leadTimeDays)
+              : null),
+          podDate: hasPodDateField ? requestedPodDate || null : String(storedOrder?.shipped_at ?? storedMondayOrder?.shippedAt ?? '').trim() || null,
+          mondayUpdatedAt: String(storedOrder?.monday_updated_at ?? storedMondayOrder?.mondayUpdatedAt ?? '').trim() || null,
+        }
+
+        return res.json({
+          ok: true,
+          queued: true,
+          order,
+          warning: 'Saved. Monday will update in the background.',
+        })
+        }
+
         const context = await resolveMondayOrderContext({
           mondayItemId,
           mondayOrdersCollection,
@@ -324,6 +403,91 @@ export function registerOrderProgressRoutes(app, {
           mondayOrdersCollection,
           ordersUnifiedCollection,
         } = await getCollections()
+
+        if (false) {
+        // Save locally first. Monday receives only fields with a known writer
+        // through the durable queue, while shipping details remain editable in
+        // the application database used by generated order documents.
+        const [storedOrder, storedMondayOrder] = await Promise.all([
+          ordersUnifiedCollection.findOne({ monday_item_id: mondayItemId }, { projection: { _id: 0 } }),
+          mondayOrdersCollection.findOne({ mondayItemId }, { projection: { _id: 0 } }),
+        ])
+
+        if (!storedOrder && !storedMondayOrder) {
+          return res.status(404).json({ error: 'Order was not found in the application database.' })
+        }
+
+        const mondayChanges = {}
+        const now = new Date().toISOString()
+        const unifiedUpdate = { updatedAt: now }
+        const mondayUpdate = { updatedAt: now }
+        const assignChange = (hasField, key, value, unifiedKey, mondayKey, syncToMonday = false) => {
+          if (!hasField) return
+          unifiedUpdate[unifiedKey] = value || null
+          mondayUpdate[mondayKey] = value || null
+          if (syncToMonday) mondayChanges[key] = value
+        }
+
+        assignChange(hasOrderNameField, 'orderName', requestedOrderName, 'order_name', 'orderName', true)
+        assignChange(hasPoNumberField, 'poNumber', requestedPoNumber, 'po_number', 'poNumber', true)
+        assignChange(hasNotesField, 'notes', requestedNotes, 'monday_notes', 'notes', true)
+        assignChange(hasDescriptionField, 'description', requestedDescription, 'monday_description', 'description', true)
+        assignChange(hasBenchField, 'bench', requestedBench, 'bench', 'bench', true)
+        assignChange(hasDueDateField, 'dueDate', requestedDueDate, 'Due_date', 'dueDate', true)
+        assignChange(hasLeadTimeDaysField, 'leadTimeDays', requestedLeadTimeDaysText, 'Lead_time_days', 'leadTimeDays', true)
+        assignChange(hasPodDateField, 'podDate', requestedPodDate, 'shipped_at', 'shippedAt', true)
+        assignChange(hasShipToField, 'shipTo', requestedShipTo, 'ship_to', 'shipTo')
+        assignChange(hasLeadTimeTextField, 'leadTimeText', requestedLeadTimeText, 'lead_time_text', 'leadTime')
+        assignChange(hasFreightDescriptionField, 'freightDescription', requestedFreightDescription, 'freight_description', 'freightDescription')
+        assignChange(hasShippingCarrierField, 'shippingCarrier', requestedShippingCarrier, 'shipping_carrier', 'shippingCarrier')
+        assignChange(hasShipNotesField, 'shipNotes', requestedShipNotes, 'ship_notes', 'shipNotes')
+
+        await Promise.all([
+          ordersUnifiedCollection.updateOne({ monday_item_id: mondayItemId }, { $set: unifiedUpdate }),
+          mondayOrdersCollection.updateOne({ mondayItemId }, { $set: mondayUpdate }),
+        ])
+
+        if (Object.keys(mondayChanges).length > 0) {
+          const queueCollection = await getOrdersDetailsQueueCollection()
+          await enqueueMondayOrderDetailsUpdate({
+            queueCollection,
+            mondayItemId,
+            changes: mondayChanges,
+            queuedByUid: String(req.authUser?.uid ?? '').trim() || null,
+            queuedByEmail: String(publicUser?.email ?? '').trim() || null,
+          })
+        }
+
+        const valueFor = (hasField, value, unifiedKey, mondayKey) => (
+          hasField ? (value || null) : String(storedOrder?.[unifiedKey] ?? storedMondayOrder?.[mondayKey] ?? '').trim() || null
+        )
+        return res.json({
+          ok: true,
+          queued: Object.keys(mondayChanges).length > 0,
+          order: {
+            mondayItemId,
+            orderName: valueFor(hasOrderNameField, requestedOrderName, 'order_name', 'orderName'),
+            poNumber: valueFor(hasPoNumberField, requestedPoNumber, 'po_number', 'poNumber'),
+            notes: valueFor(hasNotesField, requestedNotes, 'monday_notes', 'notes'),
+            description: valueFor(hasDescriptionField, requestedDescription, 'monday_description', 'description'),
+            bench: valueFor(hasBenchField, requestedBench, 'bench', 'bench'),
+            orderDate: String(storedOrder?.order_date ?? storedMondayOrder?.orderDate ?? '').trim() || null,
+            dueDate: valueFor(hasDueDateField, requestedDueDate, 'Due_date', 'dueDate'),
+            leadTimeDays: hasLeadTimeDaysField
+              ? (requestedLeadTimeDaysText ? Number(requestedLeadTimeDaysText) : null)
+              : (Number.isFinite(Number(storedOrder?.Lead_time_days ?? storedMondayOrder?.leadTimeDays)) ? Number(storedOrder?.Lead_time_days ?? storedMondayOrder?.leadTimeDays) : null),
+            podDate: valueFor(hasPodDateField, requestedPodDate, 'shipped_at', 'shippedAt'),
+            shipTo: valueFor(hasShipToField, requestedShipTo, 'ship_to', 'shipTo'),
+            leadTimeText: valueFor(hasLeadTimeTextField, requestedLeadTimeText, 'lead_time_text', 'leadTime'),
+            freightDescription: valueFor(hasFreightDescriptionField, requestedFreightDescription, 'freight_description', 'freightDescription'),
+            shippingCarrier: valueFor(hasShippingCarrierField, requestedShippingCarrier, 'shipping_carrier', 'shippingCarrier'),
+            shipNotes: valueFor(hasShipNotesField, requestedShipNotes, 'ship_notes', 'shipNotes'),
+            mondayUpdatedAt: String(storedOrder?.monday_updated_at ?? storedMondayOrder?.mondayUpdatedAt ?? '').trim() || null,
+          },
+          warning: Object.keys(mondayChanges).length > 0 ? 'Saved. Monday will update in the background.' : null,
+        })
+
+        }
 
         const context = await resolveMondayOrderContext({
           mondayItemId,
@@ -1065,6 +1229,11 @@ export function registerOrderProgressRoutes(app, {
           || hasOwnField(req.body, 'leadTimeDate')
         const hasLeadTimeDaysField = hasOwnField(req.body, 'leadTimeDays')
         const hasPodDateField = hasOwnField(req.body, 'podDate')
+        const hasShipToField = hasOwnField(req.body, 'shipTo')
+        const hasLeadTimeTextField = hasOwnField(req.body, 'leadTimeText')
+        const hasFreightDescriptionField = hasOwnField(req.body, 'freightDescription')
+        const hasShippingCarrierField = hasOwnField(req.body, 'shippingCarrier')
+        const hasShipNotesField = hasOwnField(req.body, 'shipNotes')
 
         if (!mondayItemId) {
           return res.status(400).json({ error: 'mondayItemId is required.' })
@@ -1080,6 +1249,11 @@ export function registerOrderProgressRoutes(app, {
           && !hasDueDateField
           && !hasLeadTimeDaysField
           && !hasPodDateField
+          && !hasShipToField
+          && !hasLeadTimeTextField
+          && !hasFreightDescriptionField
+          && !hasShippingCarrierField
+          && !hasShipNotesField
         ) {
           return res.status(400).json({
             error: 'At least one editable field is required.',
@@ -1107,6 +1281,11 @@ export function registerOrderProgressRoutes(app, {
         ).trim()
         const rawPodDateInput = String(req.body?.podDate ?? '').trim()
         const rawLeadTimeDaysInput = String(req.body?.leadTimeDays ?? '').trim()
+        const rawShipToInput = String(req.body?.shipTo ?? '').trim()
+        const rawLeadTimeTextInput = String(req.body?.leadTimeText ?? '').trim()
+        const rawFreightDescriptionInput = String(req.body?.freightDescription ?? '').trim()
+        const rawShippingCarrierInput = String(req.body?.shippingCarrier ?? '').trim()
+        const rawShipNotesInput = String(req.body?.shipNotes ?? '').trim()
 
         const requestedOrderName = normalizeOptionalShortText(rawOrderNameInput, 250)
         const requestedPoNumber = normalizeOptionalShortText(rawPoNumberInput, 120) || ''
@@ -1116,6 +1295,11 @@ export function registerOrderProgressRoutes(app, {
         const requestedOrderDate = normalizeIsoDateInput(rawOrderDateInput)
         const requestedDueDate = normalizeIsoDateInput(rawDueDateInput)
         const requestedPodDate = normalizeIsoDateInput(rawPodDateInput)
+        const requestedShipTo = normalizeOptionalShortText(rawShipToInput, 2000) || ''
+        const requestedLeadTimeText = normalizeOptionalShortText(rawLeadTimeTextInput, 500) || ''
+        const requestedFreightDescription = normalizeOptionalShortText(rawFreightDescriptionInput, 2000) || ''
+        const requestedShippingCarrier = normalizeOptionalShortText(rawShippingCarrierInput, 500) || ''
+        const requestedShipNotes = normalizeOptionalShortText(rawShipNotesInput, 2000) || ''
 
         if (hasOrderNameField && !requestedOrderName) {
           return res.status(400).json({ error: 'orderName is required.' })
@@ -1153,6 +1337,29 @@ export function registerOrderProgressRoutes(app, {
           mondayOrdersCollection,
           ordersUnifiedCollection,
         } = await getCollections()
+
+        const localShippingUpdate = {
+          updatedAt: new Date().toISOString(),
+          ...(hasShipToField ? { ship_to: requestedShipTo || null } : {}),
+          ...(hasLeadTimeTextField ? { lead_time_text: requestedLeadTimeText || null } : {}),
+          ...(hasFreightDescriptionField ? { freight_description: requestedFreightDescription || null } : {}),
+          ...(hasShippingCarrierField ? { shipping_carrier: requestedShippingCarrier || null } : {}),
+          ...(hasShipNotesField ? { ship_notes: requestedShipNotes || null } : {}),
+        }
+        const localMondayShippingUpdate = {
+          updatedAt: localShippingUpdate.updatedAt,
+          ...(hasShipToField ? { shipTo: requestedShipTo || null } : {}),
+          ...(hasLeadTimeTextField ? { leadTime: requestedLeadTimeText || null } : {}),
+          ...(hasFreightDescriptionField ? { freightDescription: requestedFreightDescription || null } : {}),
+          ...(hasShippingCarrierField ? { shippingCarrier: requestedShippingCarrier || null } : {}),
+          ...(hasShipNotesField ? { shipNotes: requestedShipNotes || null } : {}),
+        }
+        if (hasShipToField || hasLeadTimeTextField || hasFreightDescriptionField || hasShippingCarrierField || hasShipNotesField) {
+          await Promise.all([
+            ordersUnifiedCollection.updateOne({ monday_item_id: mondayItemId }, { $set: localShippingUpdate }),
+            mondayOrdersCollection.updateOne({ mondayItemId }, { $set: localMondayShippingUpdate }),
+          ])
+        }
 
         const context = await resolveMondayOrderContext({
           mondayItemId,
@@ -1437,6 +1644,11 @@ export function registerOrderProgressRoutes(app, {
               Due_date: 1,
               Lead_time_days: 1,
               shipped_at: 1,
+              ship_to: 1,
+              lead_time_text: 1,
+              freight_description: 1,
+              shipping_carrier: 1,
+              ship_notes: 1,
               monday_updated_at: 1,
             },
           },
@@ -1463,6 +1675,21 @@ export function registerOrderProgressRoutes(app, {
               ? Number(updatedOrderDocument.Lead_time_days)
               : refreshedLeadTimeDays,
             podDate: String(updatedOrderDocument?.shipped_at ?? '').trim() || refreshedShippedAt,
+            shipTo: hasShipToField
+              ? requestedShipTo || null
+              : String(updatedOrderDocument?.ship_to ?? '').trim() || null,
+            leadTimeText: hasLeadTimeTextField
+              ? requestedLeadTimeText || null
+              : String(updatedOrderDocument?.lead_time_text ?? '').trim() || null,
+            freightDescription: hasFreightDescriptionField
+              ? requestedFreightDescription || null
+              : String(updatedOrderDocument?.freight_description ?? '').trim() || null,
+            shippingCarrier: hasShippingCarrierField
+              ? requestedShippingCarrier || null
+              : String(updatedOrderDocument?.shipping_carrier ?? '').trim() || null,
+            shipNotes: hasShipNotesField
+              ? requestedShipNotes || null
+              : String(updatedOrderDocument?.ship_notes ?? '').trim() || null,
             mondayUpdatedAt:
               String(updatedOrderDocument?.monday_updated_at ?? '').trim()
               || syncResult.mondayUpdatedAt,

@@ -53,6 +53,7 @@ type DrilldownKey =
   | 'readyOrders'
   | 'activeOrders'
   | 'missingDueDateOrders'
+  | 'missingCustomerSignedBolOrders'
 
 const drilldownTitles: Record<DrilldownKey, string> = {
   lateOrders: 'Late Orders',
@@ -61,6 +62,7 @@ const drilldownTitles: Record<DrilldownKey, string> = {
   readyOrders: 'Ready Orders',
   activeOrders: 'Active Orders',
   missingDueDateOrders: 'Missing Due Date',
+  missingCustomerSignedBolOrders: 'Shipped Orders Missing Customer Signed BOLs',
 }
 
 function dueLabel(order: DashboardOrder) {
@@ -245,6 +247,10 @@ export default function DashboardPage() {
     () => buildDashboardOrderGroups(snapshot?.orders ?? []),
     [snapshot],
   )
+  const missingCustomerSignedBolOrders = useMemo(
+    () => (snapshot?.orders ?? []).filter((order) => order.customerSignedBolMissing === true),
+    [snapshot],
+  )
 
   const summaryCards = useMemo<DashboardMetricCardData<DrilldownKey>[]>(() => {
     if (!snapshot) {
@@ -300,8 +306,16 @@ export default function DashboardPage() {
         icon: <FactCheckRoundedIcon />,
         color: '#6a1b9a',
       },
+      {
+        key: 'missingCustomerSignedBolOrders',
+        label: 'Shipped Missing Customer BOLs',
+        value: missingCustomerSignedBolOrders.length,
+        helper: 'Shipped orders needing upload',
+        icon: <ErrorOutlineRoundedIcon />,
+        color: '#ad1457',
+      },
     ]
-  }, [orderGroups, snapshot])
+  }, [missingCustomerSignedBolOrders, orderGroups, snapshot])
 
   const zendeskSummaryCards = useMemo<DashboardMetricCardData[]>(() => {
     if (!zendeskSnapshot) {
@@ -377,8 +391,12 @@ export default function DashboardPage() {
       return orderGroups.missingDueDateOrders
     }
 
+    if (activeDrilldown === 'missingCustomerSignedBolOrders') {
+      return missingCustomerSignedBolOrders
+    }
+
     return orderGroups.lateOrders
-  }, [activeDrilldown, orderGroups, snapshot])
+  }, [activeDrilldown, missingCustomerSignedBolOrders, orderGroups, snapshot])
 
   const handleViewOrder = useCallback((order: DashboardOrder) => {
     const orderId = String(order.mondayItemId ?? order.id ?? '').trim()
@@ -387,8 +405,14 @@ export default function DashboardPage() {
       return
     }
 
-    navigate(`/orders?orderId=${encodeURIComponent(orderId)}`)
-  }, [navigate])
+    const query = new URLSearchParams({ orderId })
+
+    if (activeDrilldown === 'missingCustomerSignedBolOrders') {
+      query.set('tab', 'shipping')
+    }
+
+    navigate(`/orders?${query.toString()}`)
+  }, [activeDrilldown, navigate])
 
   const handleOpenTicketQueue = useCallback((key: string) => {
     const statusByMetric: Record<string, string> = {
@@ -519,7 +543,7 @@ export default function DashboardPage() {
                   gridTemplateColumns: {
                     xs: 'repeat(1, minmax(0, 1fr))',
                     sm: 'repeat(2, minmax(0, 1fr))',
-                    xl: 'repeat(6, minmax(0, 1fr))',
+                    xl: 'repeat(7, minmax(0, 1fr))',
                   },
                   gap: 1.5,
                 }}

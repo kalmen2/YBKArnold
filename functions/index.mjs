@@ -2695,6 +2695,37 @@ export const processOrdersProgressStatusQueue = functions
     return summary
   })
 
+export const processOrdersMondayDetailsQueue = functions
+  .region('us-central1')
+  .runWith({
+    timeoutSeconds: 540,
+    memory: '512MB',
+  })
+  .pubsub.schedule(ordersProgressStatusQueueCron)
+  .timeZone(ordersProgressStatusQueueTimeZone)
+  .onRun(async () => {
+    const processQueue = ordersRoutesRuntime?.processQueuedMondayOrderDetailsUpdates
+
+    if (typeof processQueue !== 'function') {
+      return {
+        skipped: true,
+        reason: 'Orders Monday-details queue processor is unavailable.',
+        completedAt: new Date().toISOString(),
+      }
+    }
+
+    const summary = await processQueue({
+      maxJobs: 80,
+      source: 'scheduled',
+    })
+
+    if (Number(summary?.processedCount ?? 0) > 0 || Number(summary?.failedCount ?? 0) > 0) {
+      console.info('processOrdersMondayDetailsQueue completed.', summary)
+    }
+
+    return summary
+  })
+
 export const apiV1 = functions
   .region('us-central1')
   .runWith({

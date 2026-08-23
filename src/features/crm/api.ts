@@ -948,6 +948,7 @@ export type CrmConvertOrderBoardOption = {
 export type CrmConvertOrderBoardsResponse = {
   primaryBoardId: string
   secondaryBoardId: string
+  suggestedAcknowledgmentNumber: string
   boards: CrmConvertOrderBoardOption[]
 }
 

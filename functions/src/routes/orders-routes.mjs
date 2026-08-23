@@ -96,9 +96,12 @@ export function registerOrdersRoutes(app, deps) {
   const {
     buildMondayProgressDetailsResponse,
     clearMondayColumnValue,
+    enqueueMondayOrderDetailsUpdate,
+    getOrdersDetailsQueueCollection,
     extractProgressStatusColumnIds,
     getOrdersProgressStatusQueueCollection,
     processQueuedMondayProgressStatusUpdates,
+    processQueuedMondayOrderDetailsUpdates,
     pullLiveMondayProgressDetails,
     resolveMondayOrderContext,
     syncMondayProgressDetailsToCollections,
@@ -109,6 +112,7 @@ export function registerOrdersRoutes(app, deps) {
     fetchMondayStatusColumnOptions,
     getCollections,
     updateMondayItemJsonColumn,
+    updateMondayItemName,
     updateMondayItemStatusColumn,
     updateMondayItemTextColumn,
   })
@@ -1057,7 +1061,11 @@ export function registerOrdersRoutes(app, deps) {
       contactEmail: String(quoteSnapshot?.contactEmail ?? '').trim() || null,
       contactPhone: String(quoteSnapshot?.contactPhone ?? '').trim() || null,
       leadTime: String(orderDocument?.lead_time_text ?? quoteSnapshot?.leadTime ?? '').trim() || null,
-      freightDescription: String(quoteSnapshot?.freightDescription ?? '').trim() || null,
+      freightDescription: String(
+        orderDocument?.freight_description
+        ?? quoteSnapshot?.freightDescription
+        ?? '',
+      ).trim() || null,
       shippingCarrier: String(orderDocument?.shipping_carrier ?? '').trim() || null,
       productValue: resolveOptionalMoney(
         orderDocument?.canonical_product_value,
@@ -2020,6 +2028,8 @@ export function registerOrdersRoutes(app, deps) {
               order_name: 1,
               ship_to: 1,
               ship_notes: 1,
+              freight_description: 1,
+              shipping_carrier: 1,
               bol: 1,
               BOL: 1,
               BOL_cached: 1,
@@ -2569,10 +2579,13 @@ export function registerOrdersRoutes(app, deps) {
     fetchMondayBoardItemsByIds,
     fetchMondayStatusColumnOptions,
     getCollections,
+    enqueueMondayOrderDetailsUpdate,
+    getOrdersDetailsQueueCollection,
     getOrdersProgressStatusQueueCollection,
     mobileAlertTargetModeSelected,
     normalizeEmail,
     processQueuedMondayProgressStatusUpdates,
+    processQueuedMondayOrderDetailsUpdates,
     pullLiveMondayProgressDetails,
     refreshOrdersUnifiedCollection,
     requireFirebaseAuth,
@@ -3048,6 +3061,7 @@ export function registerOrdersRoutes(app, deps) {
   )
 
   return {
+    processQueuedMondayOrderDetailsUpdates,
     processQueuedMondayProgressStatusUpdates,
   }
 }

@@ -2229,6 +2229,33 @@ export function registerCrmRoutes(app, deps) {
     toPublicAuthUser,
   } = deps
 
+  async function getSuggestedAcknowledgmentNumber() {
+    const easternParts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      year: 'numeric',
+      month: '2-digit',
+    }).formatToParts(new Date())
+    const partValue = (type) => easternParts.find((part) => part.type === type)?.value || ''
+    const year = partValue('year').slice(-2)
+    const month = partValue('month')
+    const prefix = `${year}${month}`
+    const { ordersUnifiedCollection } = await getCollections()
+    const existingOrders = await ordersUnifiedCollection.find(
+      { order_number: new RegExp(`^${prefix}\\d{2}$`, 'i') },
+      { projection: { _id: 0, order_number: 1 } },
+    ).toArray()
+    const highestSequence = existingOrders.reduce((highest, order) => {
+      const match = String(order?.order_number ?? '').trim().match(new RegExp(`^${prefix}(\\d{2})$`, 'i'))
+      return match ? Math.max(highest, Number(match[1])) : highest
+    }, 0)
+
+    if (highestSequence >= 99) {
+      throw new Error(`All acknowledgement numbers for ${prefix} have been used.`)
+    }
+
+    return `${prefix}${String(highestSequence + 1).padStart(2, '0')}`
+  }
+
   function resolveCrmAccessScope(req) {
     const publicUser = toPublicAuthUser(req.authUser)
     const isSalesRep = Boolean(publicUser?.isApproved && publicUser?.isSalesRep)
@@ -7878,9 +7905,12 @@ export function registerCrmRoutes(app, deps) {
 
   app.get('/api/crm/quotes/convert-order-options', requireFirebaseAuth, async (_req, res, next) => {
     try {
-      const catalogBoards = typeof fetchMondayBoardsCatalog === 'function'
+      const [catalogBoards, suggestedAcknowledgmentNumber] = await Promise.all([
+        typeof fetchMondayBoardsCatalog === 'function'
         ? await fetchMondayBoardsCatalog()
-        : []
+        : [],
+        getSuggestedAcknowledgmentNumber(),
+      ])
       const boardsById = new Map()
 
       ;(Array.isArray(catalogBoards) ? catalogBoards : []).forEach((board) => {
@@ -7925,6 +7955,7 @@ export function registerCrmRoutes(app, deps) {
       return res.json({
         primaryBoardId: mondayNewOrders2026BoardId,
         secondaryBoardId: mondayDesignAkfBoardId,
+        suggestedAcknowledgmentNumber,
         boards,
       })
     } catch (error) {

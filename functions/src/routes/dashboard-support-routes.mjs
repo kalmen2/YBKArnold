@@ -567,6 +567,16 @@ export function registerDashboardSupportRoutes(app, deps) {
       || normalizedStatusLabel.includes('delivered')
       || normalizedStatusLabel.includes('complete')
       || normalizedStatusLabel === 'done'
+    const customerSignedBol = String(orderDocument?.customer_signed_bol ?? '').trim()
+    const customerSignedBolUrl =
+      String(orderDocument?.Customer_Signed_BOL_source ?? '').trim()
+      || String(orderDocument?.Customer_Signed_BOL ?? '').trim()
+    const customerSignedBolMissing = Boolean(
+      isDone
+      && orderDocument?.customer_signed_bol_required !== false
+      && !customerSignedBol
+      && !customerSignedBolUrl,
+    )
 
     const progressPercentValue = toFiniteNumber(orderDocument?.progress_percent)
     const progressPercent = Number.isFinite(progressPercentValue)
@@ -637,6 +647,7 @@ export function registerDashboardSupportRoutes(app, deps) {
       effectiveDueDate,
       daysUntilDue,
       isDone,
+      customerSignedBolMissing,
       isProductionStarted,
       isLate,
       daysLate,
@@ -673,6 +684,10 @@ export function registerDashboardSupportRoutes(app, deps) {
             monday_item_id: 1,
             qb_project_id: 1,
             is_shipped: 1,
+            customer_signed_bol_required: 1,
+            customer_signed_bol: 1,
+            Customer_Signed_BOL: 1,
+            Customer_Signed_BOL_source: 1,
             Monday_status: 1,
             Due_date: 1,
             Lead_time_days: 1,

@@ -70,7 +70,7 @@ import {
 } from '../../features/orders/api'
 import { formatCurrency, formatDate } from '../../lib/formatters'
 import { QUERY_KEYS } from '../../lib/queryKeys'
-import type { JobDetailsMode } from './JobDetailsDialog'
+import type { JobDetailsMode, JobDetailsTab } from './JobDetailsDialog'
 import { type ShopDrawingPreviewHandle } from './ShopDrawingPreview'
 import type { OrdersListTab } from './useOrdersOverview'
 import { resolveBolUrl } from './bolUrl'
@@ -100,7 +100,7 @@ function SubitemsInlinePanel({
   onOpenOrder,
 }: {
   order: OrdersOverviewOrder
-  onOpenOrder: (order: OrdersOverviewOrder, mode: JobDetailsMode, initialTab?: 'info' | 'parts') => void
+  onOpenOrder: (order: OrdersOverviewOrder, mode: JobDetailsMode, initialTab?: JobDetailsTab) => void
 }) {
   const queryClient = useQueryClient()
   const [subitems, setSubitems] = useState<OrderDesignPart[]>(Array.isArray(order.subitems) ? order.subitems : [])
@@ -927,7 +927,7 @@ type OrdersGridProps = {
   isLoading: boolean
   shopDrawingHandle: React.MutableRefObject<ShopDrawingPreviewHandle | null>
   onOpenBolDocument: (order: OrdersOverviewOrder) => void
-  onOpenJobDialog: (order: OrdersOverviewOrder, mode: JobDetailsMode, initialTab?: 'info' | 'parts') => void
+  onOpenJobDialog: (order: OrdersOverviewOrder, mode: JobDetailsMode, initialTab?: JobDetailsTab) => void
   onOpenQuickBooksDialog: (
     order: OrdersOverviewOrder,
     metric: OrdersQuickBooksDrilldownMetric,
@@ -2778,6 +2778,9 @@ export function OrdersGrid({
   )
   const displayColumns = useMemo<GridColDef<OrdersGridRow>[]>(() => {
     const firstField = String(columns[0]?.field ?? '')
+    const subitemPanelField = columns.some((column) => String(column.field) === 'orderNumber')
+      ? 'orderNumber'
+      : firstField
 
     return columns.map((column) => {
       const originalRenderCell = column.renderCell
@@ -2785,17 +2788,17 @@ export function OrdersGrid({
         ...column,
         renderCell: (params) => {
           if (params.row.__subitemPanel) {
-            if (String(column.field) !== firstField || !params.row.__parentOrder) return null
+            if (String(column.field) !== subitemPanelField || !params.row.__parentOrder) return null
             const viewportWidth = gridApiRef.current?.getRootDimensions()?.viewportInnerSize.width ?? 1000
-            const nestedIndent = Math.min(140, Math.max(56, Math.round(viewportWidth * 0.09)))
+            const columnLeft = gridApiRef.current?.getColumnPosition(subitemPanelField) ?? 0
             return (
               <Box
                 sx={{
                   position: 'absolute',
                   top: 4,
                   bottom: 4,
-                  left: nestedIndent,
-                  width: Math.max(520, viewportWidth - nestedIndent - 20),
+                  left: columnLeft,
+                  width: Math.max(520, viewportWidth - columnLeft - 20),
                   bgcolor: '#f8fbff',
                   borderLeft: '4px solid',
                   borderColor: 'primary.light',
