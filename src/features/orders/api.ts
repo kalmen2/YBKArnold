@@ -171,6 +171,7 @@ export type OrdersCreateBoardColumnsResponse = {
 
 export type OrdersDeleteResponse = {
   ok: boolean
+  queuedForDeletion?: boolean
   deleted: {
     orderKey: string | null
     orderNumber: string | null
@@ -1176,6 +1177,29 @@ export function postOrdersDeleteRequest(input: DeleteOrdersRequestInput) {
   )
 }
 
+export type DeletedOrderQueueRecord = {
+  orderKey: string
+  order_number: string | null
+  order_name: string | null
+  monday_item_id: string | null
+  deleteRequestedAt: string | null
+  deleteRequestedByEmail: string | null
+  updatedAt: string | null
+  has_quickbooks_record: boolean
+}
+
+export function fetchDeletedOrders(limit = 200) {
+  return apiRequest<{ orders: DeletedOrderQueueRecord[] }>(
+    `/api/orders/deletion-queue?limit=${Math.max(1, Math.min(500, limit))}`,
+  )
+}
+
+export function restoreDeletedOrder(orderKey: string) {
+  return apiRequest<{ ok: true }>(`/api/orders/deletion-queue/${encodeURIComponent(orderKey)}/restore`, {
+    method: 'POST',
+  })
+}
+
 export function postOrdersOrderConfirmationUpdate(input: {
   orderKey: string
   documentUrl: string
@@ -1879,7 +1903,7 @@ export function removeOrderDesignPart(orderKey: string, partId: string) {
 export function requestOrderProduction(orderKey: string) {
   return apiRequest<{ ok: boolean; status: 'waiting_for_production' }>(
     `/api/orders/${encodeURIComponent(orderKey)}/request-production`,
-    { method: 'POST', body: JSON.stringify({ allSubitemsAdded: true, signedShopDrawingUploaded: true }) },
+    { method: 'POST' },
   )
 }
 

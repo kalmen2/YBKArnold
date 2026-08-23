@@ -1361,6 +1361,95 @@ export function registerOrderProgressRoutes(app, {
           ])
         }
 
+        // The application database is the immediate source of truth. Queue the
+        // Monday-compatible fields so editing never waits on an external API.
+        const savedAt = localShippingUpdate.updatedAt
+        const localOrderUpdate = {
+          updatedAt: savedAt,
+          monday_sync_status: 'queued',
+          ...(hasOrderNameField ? { order_name: requestedOrderName } : {}),
+          ...(hasPoNumberField ? { po_number: requestedPoNumber || null } : {}),
+          ...(hasNotesField ? { monday_notes: requestedNotes || null } : {}),
+          ...(hasDescriptionField ? { monday_description: requestedDescription || null } : {}),
+          ...(hasBenchField ? { bench: requestedBench || null } : {}),
+          ...(hasDueDateField ? { Due_date: requestedDueDate || null } : {}),
+          ...(hasLeadTimeDaysField ? { Lead_time_days: requestedLeadTimeDaysText || null } : {}),
+          ...(hasPodDateField ? { shipped_at: requestedPodDate || null } : {}),
+        }
+        const localMondayUpdate = {
+          updatedAt: savedAt,
+          mondaySyncStatus: 'queued',
+          ...(hasOrderNameField ? { orderName: requestedOrderName } : {}),
+          ...(hasPoNumberField ? { poNumber: requestedPoNumber || null } : {}),
+          ...(hasNotesField ? { notes: requestedNotes || null } : {}),
+          ...(hasDescriptionField ? { description: requestedDescription || null } : {}),
+          ...(hasBenchField ? { bench: requestedBench || null } : {}),
+          ...(hasDueDateField ? { dueDate: requestedDueDate || null } : {}),
+          ...(hasLeadTimeDaysField ? { leadTimeDays: requestedLeadTimeDaysText || null } : {}),
+          ...(hasPodDateField ? { shippedAt: requestedPodDate || null } : {}),
+        }
+        const [storedOrder, storedMondayOrder] = await Promise.all([
+          ordersUnifiedCollection.findOneAndUpdate(
+            { monday_item_id: mondayItemId },
+            { $set: localOrderUpdate },
+            { returnDocument: 'after', projection: { _id: 0 } },
+          ),
+          mondayOrdersCollection.findOneAndUpdate(
+            { mondayItemId },
+            { $set: localMondayUpdate },
+            { returnDocument: 'after', projection: { _id: 0 } },
+          ),
+        ])
+
+        if (!storedOrder && !storedMondayOrder) {
+          return res.status(404).json({ error: 'Order was not found in the application database.' })
+        }
+
+        const changes = {
+          ...(hasOrderNameField ? { orderName: requestedOrderName } : {}),
+          ...(hasPoNumberField ? { poNumber: requestedPoNumber } : {}),
+          ...(hasNotesField ? { notes: requestedNotes } : {}),
+          ...(hasDescriptionField ? { description: requestedDescription } : {}),
+          ...(hasBenchField ? { bench: requestedBench } : {}),
+          ...(hasDueDateField ? { dueDate: requestedDueDate } : {}),
+          ...(hasLeadTimeDaysField ? { leadTimeDays: requestedLeadTimeDaysText } : {}),
+          ...(hasPodDateField ? { podDate: requestedPodDate } : {}),
+        }
+        if (Object.keys(changes).length > 0) {
+          const queueCollection = await getOrdersDetailsQueueCollection()
+          await enqueueMondayOrderDetailsUpdate({
+            queueCollection,
+            mondayItemId,
+            changes,
+            queuedByUid: String(req.authUser?.uid ?? '').trim() || null,
+            queuedByEmail: String(publicUser?.email ?? '').trim() || null,
+          })
+        }
+
+        return res.json({
+          ok: true,
+          queued: Object.keys(changes).length > 0,
+          order: {
+            mondayItemId,
+            orderName: String(storedOrder?.order_name ?? storedMondayOrder?.orderName ?? '').trim() || null,
+            poNumber: String(storedOrder?.po_number ?? storedMondayOrder?.poNumber ?? '').trim() || null,
+            notes: String(storedOrder?.monday_notes ?? storedMondayOrder?.notes ?? '').trim() || null,
+            description: String(storedOrder?.monday_description ?? storedMondayOrder?.description ?? '').trim() || null,
+            bench: String(storedOrder?.bench ?? storedMondayOrder?.bench ?? '').trim() || null,
+            dueDate: String(storedOrder?.Due_date ?? storedMondayOrder?.dueDate ?? '').trim() || null,
+            leadTimeDays: Number.isFinite(Number(storedOrder?.Lead_time_days ?? storedMondayOrder?.leadTimeDays))
+              ? Number(storedOrder?.Lead_time_days ?? storedMondayOrder?.leadTimeDays)
+              : null,
+            podDate: String(storedOrder?.shipped_at ?? storedMondayOrder?.shippedAt ?? '').trim() || null,
+            shipTo: String(storedOrder?.ship_to ?? storedMondayOrder?.shipTo ?? '').trim() || null,
+            leadTimeText: String(storedOrder?.lead_time_text ?? storedMondayOrder?.leadTime ?? '').trim() || null,
+            freightDescription: String(storedOrder?.freight_description ?? storedMondayOrder?.freightDescription ?? '').trim() || null,
+            shippingCarrier: String(storedOrder?.shipping_carrier ?? storedMondayOrder?.shippingCarrier ?? '').trim() || null,
+            shipNotes: String(storedOrder?.ship_notes ?? storedMondayOrder?.shipNotes ?? '').trim() || null,
+          },
+          warning: Object.keys(changes).length > 0 ? 'Saved. Monday will update in the background.' : null,
+        })
+
         const context = await resolveMondayOrderContext({
           mondayItemId,
           mondayOrdersCollection,

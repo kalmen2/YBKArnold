@@ -1,5 +1,4 @@
 import AdminPanelSettingsRoundedIcon from '@mui/icons-material/AdminPanelSettingsRounded'
-import ApiRoundedIcon from '@mui/icons-material/ApiRounded'
 import ChatRoundedIcon from '@mui/icons-material/ChatRounded'
 import DashboardRoundedIcon from '@mui/icons-material/DashboardRounded'
 import ForumRoundedIcon from '@mui/icons-material/ForumRounded'
@@ -122,13 +121,6 @@ export const navItems: NavItem[] = [
     label: 'SMS Bridge',
     path: '/admin/settings?tab=sms-bridge',
     icon: SmsRoundedIcon,
-    adminOnly: true,
-    testingSection: true,
-  },
-  {
-    label: 'API',
-    path: '/admin/api',
-    icon: ApiRoundedIcon,
     adminOnly: true,
     testingSection: true,
   },

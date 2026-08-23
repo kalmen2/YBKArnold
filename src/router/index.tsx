@@ -3,7 +3,6 @@ import {
   RequireAdminRoute,
 } from './RouteGuards'
 import {
-  AdminApiPage,
   AdminAiCouncilPage,
   AdminEmailWorkspacePage,
   AdminSettingsPage,
@@ -126,14 +125,6 @@ export const router = createBrowserRouter([
       {
         path: 'admin/alerts',
         element: <Navigate to="/notifications" replace />,
-      },
-      {
-        path: 'admin/api',
-        element: withRouteSuspense(
-          <RequireAdminRoute>
-            <AdminApiPage />
-          </RequireAdminRoute>,
-        ),
       },
       {
         path: 'admin/operating-costs',

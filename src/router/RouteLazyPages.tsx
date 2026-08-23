@@ -29,7 +29,6 @@ export const SalesNotificationsPage = lazyRoute(() => import('../pages/SalesNoti
 export const TemplatesPage = lazyRoute(() => import('../pages/TemplatesPage'))
 export const VisitorsPage = lazyRoute(() => import('../pages/VisitorsPage'))
 export const AdminUsersPage = lazyRoute(() => import('../pages/AdminUsersPage'))
-export const AdminApiPage = lazyRoute(() => import('../pages/AdminApiPage'))
 export const AdminSalesReviewPage = lazyRoute(() => import('../pages/AdminSalesReviewPage'))
 export const AdminLogsPage = lazyRoute(() => import('../pages/AdminLogsPage'))
 export const CrmDealersPage = lazyRoute(() => import('../pages/CrmDealersPage'))

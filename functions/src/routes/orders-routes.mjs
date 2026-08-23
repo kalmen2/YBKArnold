@@ -1898,15 +1898,13 @@ export function registerOrdersRoutes(app, deps) {
     try {
       if (!requireApprovedOrderWorker(req, res)) return
       const orderKey = String(req.params.orderKey ?? '').trim().slice(0, 240)
-      if (req.body?.allSubitemsAdded !== true || req.body?.signedShopDrawingUploaded !== true) {
-        return res.status(400).json({
-          error: 'Confirm that all subitems are added and the customer-signed shop drawing is uploaded.',
-        })
-      }
       const { ordersUnifiedCollection } = await getCollections()
       const order = await ordersUnifiedCollection.findOne({ orderKey })
       if (!order) return res.status(404).json({ error: 'Order not found.' })
       if (!order.in_design) return res.status(409).json({ error: 'This order is not in Design/eSign.' })
+      if (!Array.isArray(order.design_parts) || order.design_parts.length === 0) {
+        return res.status(409).json({ error: 'Add the required design subitems before requesting production.' })
+      }
       const shopDrawingUrl = String(
         order.Shop_drawing_cached ?? order.Shop_drawing_source ?? order.Shop_drawing ?? '',
       ).trim()
@@ -1923,7 +1921,7 @@ export function registerOrdersRoutes(app, deps) {
           production_handoff_requested_by_uid: String(publicUser?.uid ?? req.authUser?.uid ?? '').trim() || null,
           production_handoff_requested_by_email: String(publicUser?.email ?? req.authUser?.email ?? '').trim() || null,
           production_handoff_confirmations: {
-            allSubitemsAdded: true,
+            allSubitemsAdded: Array.isArray(order.design_parts) && order.design_parts.length > 0,
             signedShopDrawingUploaded: true,
           },
           updatedAt: now,

@@ -92,9 +92,6 @@ export const QUERY_KEYS = {
     ['auth', 'sign-in-logs', limit, signInsLimit] as const,
   authSystemRunLogs: (limit: number) =>
     ['auth', 'system-run-logs', limit] as const,
-  adminApiDocs: ['admin', 'api-docs'] as const,
-  adminApiKeys: (limit: number) =>
-    ['admin', 'api-keys', limit] as const,
   adminEmailGoogleStatus: ['admin', 'email', 'google', 'status'] as const,
   adminEmailMicrosoftStatus: ['admin', 'email', 'microsoft', 'status'] as const,
   adminEmailReviewSummary: ['admin', 'email', 'review', 'summary'] as const,

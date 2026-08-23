@@ -16,6 +16,7 @@ export function registerOrderWarrantyRoutes(app, {
   getCollections,
   refreshOrdersUnifiedCollection,
   requireFirebaseAuth,
+  requireOfficeManagerOrAdminRole,
   updateMondayItemJsonColumn,
   updateMondayItemName,
   updateMondayItemTextColumn,
@@ -23,7 +24,7 @@ export function registerOrderWarrantyRoutes(app, {
   // POST /api/orders/warranty/issue — create a separate production order on
   // Order Track. It keeps its own Monday lifecycle, but parent_order_number
   // links all QuickBooks financials back to the original project.
-  app.post('/api/orders/warranty/issue', requireFirebaseAuth, async (req, res, next) => {
+  app.post('/api/orders/warranty/issue', requireFirebaseAuth, requireOfficeManagerOrAdminRole, async (req, res, next) => {
     try {
       const mondayItemId = String(req.body?.mondayItemId ?? '').trim()
       const description = normalizeOptionalShortText(req.body?.description, 2000)
@@ -295,7 +296,7 @@ export function registerOrderWarrantyRoutes(app, {
 
   // POST /api/orders/warranty/lead-time — set or clear lead-time date for
   // an active warranty issue.
-  app.post('/api/orders/warranty/lead-time', requireFirebaseAuth, async (req, res, next) => {
+  app.post('/api/orders/warranty/lead-time', requireFirebaseAuth, requireOfficeManagerOrAdminRole, async (req, res, next) => {
     try {
       const mondayItemId = String(req.body?.mondayItemId ?? '').trim()
       const rawLeadTimeDate = String(req.body?.leadTimeDate ?? '').trim()
@@ -389,7 +390,7 @@ export function registerOrderWarrantyRoutes(app, {
 
   // POST /api/orders/warranty/done — close active warranty issue and retain
   // completion history on the order.
-  app.post('/api/orders/warranty/done', requireFirebaseAuth, async (req, res, next) => {
+  app.post('/api/orders/warranty/done', requireFirebaseAuth, requireOfficeManagerOrAdminRole, async (req, res, next) => {
     try {
       const mondayItemId = String(req.body?.mondayItemId ?? '').trim()
       const rawDoneDate = String(req.body?.doneDate ?? '').trim()
@@ -501,7 +502,7 @@ export function registerOrderWarrantyRoutes(app, {
   })
 
   // Website-only archive. This deliberately never changes Monday.
-  app.post('/api/orders/archive', requireFirebaseAuth, async (req, res, next) => {
+  app.post('/api/orders/archive', requireFirebaseAuth, requireOfficeManagerOrAdminRole, async (req, res, next) => {
     try {
       const archived = req.body?.archived !== false
       const identityFilter = buildOrderIdentityFilter({

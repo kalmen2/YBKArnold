@@ -352,6 +352,9 @@ export default function PurchasingPage() {
   const navigate = useNavigate()
   const { appUser } = useAuth()
   const canManageItemSettings = appUser?.isAdmin === true || appUser?.isManager === true
+  const canCreatePurchaseOrders = Boolean(
+    appUser?.isAdmin || appUser?.isManager || appUser?.isOfficeWorker,
+  )
 
   async function handleRequiresDimensionsChange(requiresDimensions: boolean) {
     if (!selectedItemKey || !canManageItemSettings) return
@@ -688,6 +691,10 @@ export default function PurchasingPage() {
   }
 
   function openCreatePoDialog() {
+    if (!canCreatePurchaseOrders) {
+      setRefreshError('Office, manager, or admin access is required to create purchase orders.')
+      return
+    }
     setPoCreateError(null)
     setPoCreateResult(null)
     setPoVendorLoadError(null)
@@ -1327,6 +1334,7 @@ export default function PurchasingPage() {
               variant="contained"
               startIcon={<AddShoppingCartRoundedIcon fontSize="small" />}
               onClick={openCreatePoDialog}
+              disabled={!canCreatePurchaseOrders}
             >
               Create PO
             </Button>

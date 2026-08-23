@@ -1,6 +1,7 @@
 import AdminPanelSettingsRoundedIcon from '@mui/icons-material/AdminPanelSettingsRounded'
 import AlternateEmailRoundedIcon from '@mui/icons-material/AlternateEmailRounded'
 import FactCheckRoundedIcon from '@mui/icons-material/FactCheckRounded'
+import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
 import PeopleAltRoundedIcon from '@mui/icons-material/PeopleAltRounded'
 import ManageHistoryRoundedIcon from '@mui/icons-material/ManageHistoryRounded'
 import SmsRoundedIcon from '@mui/icons-material/SmsRounded'
@@ -17,6 +18,7 @@ const AdminVisitorsPage = lazy(() => import('./AdminVisitorsPage'))
 const AdminEmailSettingsPage = lazy(() => import('./AdminEmailSettingsPage'))
 const AdminSmsBridgePage = lazy(() => import('./AdminSmsBridgePage'))
 const AdminSalesReviewPage = lazy(() => import('./AdminSalesReviewPage'))
+const AdminDeletedItemsPage = lazy(() => import('./AdminDeletedItemsPage'))
 const AiConfigPage = lazy(() => import('./AiConfigPage'))
 const AdminDiagnosticReportsPage = lazy(() => import('./AdminDiagnosticReportsPage'))
 
@@ -28,6 +30,7 @@ type AdminSettingsTab =
   | 'ai-config'
   | 'sms-bridge'
   | 'sales-review'
+  | 'deleted-items'
   | 'issue-reports'
 
 const productionTabs: Array<{
@@ -54,6 +57,11 @@ const productionTabs: Array<{
     value: 'sales-review',
     label: 'Sales Review',
     icon: FactCheckRoundedIcon,
+  },
+  {
+    value: 'deleted-items',
+    label: 'Deleted Items',
+    icon: DeleteOutlineRoundedIcon,
   },
   {
     value: 'issue-reports',
@@ -89,6 +97,7 @@ function getTabFromQuery(rawTab: string | null): AdminSettingsTab {
     || rawTab === 'ai-config'
     || rawTab === 'sms-bridge'
     || rawTab === 'sales-review'
+    || rawTab === 'deleted-items'
     || rawTab === 'issue-reports'
   ) {
     return rawTab
@@ -124,6 +133,10 @@ function renderAdminSettingsTab(selectedTab: AdminSettingsTab) {
 
   if (selectedTab === 'issue-reports') {
     return <AdminDiagnosticReportsPage />
+  }
+
+  if (selectedTab === 'deleted-items') {
+    return <AdminDeletedItemsPage />
   }
 
   return <AdminSalesReviewPage />

@@ -6279,7 +6279,7 @@ export function registerCrmRoutes(app, deps) {
     }
   })
 
-  app.post('/api/crm/document-terms', requireFirebaseAuth, async (req, res, next) => {
+  app.post('/api/crm/document-terms', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
     try {
       const body = toOptionalObject(req.body)
       const updatedAt = nowIso()
@@ -6307,7 +6307,7 @@ export function registerCrmRoutes(app, deps) {
     }
   })
 
-  app.patch('/api/crm/document-terms/:termId', requireFirebaseAuth, async (req, res, next) => {
+  app.patch('/api/crm/document-terms/:termId', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
     try {
       const termId = toTrimmedText(req.params.termId, 180)
       const body = toOptionalObject(req.body)
@@ -6348,7 +6348,7 @@ export function registerCrmRoutes(app, deps) {
     }
   })
 
-  app.delete('/api/crm/document-terms/:termId', requireFirebaseAuth, async (req, res, next) => {
+  app.delete('/api/crm/document-terms/:termId', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
     try {
       const termId = toTrimmedText(req.params.termId, 180)
       const { crmQuotePrintSettingsCollection } = await getCollections()

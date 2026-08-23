@@ -9,7 +9,6 @@ import { getApps, initializeApp } from 'firebase-admin/app'
 import { getAuth } from 'firebase-admin/auth'
 import { registerAiRoutes } from './src/routes/ai-routes.mjs'
 import { registerAiCouncilRoutes } from './src/routes/ai-council-routes.mjs'
-import { registerAdminApiRoutes } from './src/routes/admin-api-routes.mjs'
 import { registerAlertsRoutes } from './src/routes/alerts-routes.mjs'
 import { registerAuthRoutes } from './src/routes/auth-routes.mjs'
 import { registerChatRoutes } from './src/routes/chat-routes.mjs'
@@ -28,7 +27,6 @@ import { registerTimesheetRoutes } from './src/routes/timesheet-routes.mjs'
 import { registerTrimbleRoutes } from './src/routes/trimble-routes.mjs'
 import { registerVisitorsRoutes } from './src/routes/visitors-routes.mjs'
 import { createAuthUtils } from './src/services/auth-utils.mjs'
-import { createApiKeyService } from './src/services/api-key-service.mjs'
 import { createAuthActivityService } from './src/services/auth-activity-service.mjs'
 import { createAuthRequestService } from './src/services/auth-request-service.mjs'
 import { createDashboardCacheService } from './src/services/dashboard-cache-service.mjs'
@@ -272,7 +270,6 @@ const anthropicApiKey = String(process.env.ANTHROPIC_API_KEY ?? '').trim()
 const slackSigningSecret = String(process.env.SLACK_SIGNING_SECRET ?? '').trim()
 const slackBotToken = String(process.env.SLACK_BOT_TOKEN ?? '').trim()
 const slackAllowedChannelIds = String(process.env.SLACK_ALLOWED_CHANNEL_IDS ?? '').trim()
-const apiKeyPepper = String(process.env.API_KEY_PEPPER ?? '').trim()
 const zendeskTicketFieldCacheTtlMs = 30 * 60 * 1000
 const zendeskTicketFieldErrorCacheTtlMs = 5 * 60 * 1000
 // Orders/dashboard refresh pulls Monday + QuickBooks twice a day: 6 AM before
@@ -377,15 +374,6 @@ const {
   normalizeWorkerNumber,
   ownerEmail,
   reviewerLoginEmails,
-})
-
-const {
-  buildApiKeyPreview,
-  generateApiKeyValue,
-  hashApiKeyValue,
-  normalizeApiKeyValue,
-} = createApiKeyService({
-  apiKeyPepper,
 })
 
 const {
@@ -678,6 +666,7 @@ const { refreshOrdersUnifiedCollection } = createOrdersUnifiedService({
 const {
   requireAdminRole,
   requireManagerOrAdminRole,
+  requireOfficeManagerOrAdminRole,
   requireSalesManagerOrAdminRole,
   requireApprovedLinkedWorker,
   requireFirebaseAuth,
@@ -695,13 +684,10 @@ const {
   formatAuthLoginHoursWindow,
   getAuth,
   getCollections,
-  hashApiKeyValue,
   isAllowedByAuthLoginHours,
   isApprovedAdminUser,
   isReviewerLoginEmail,
-  normalizeApiKeyValue,
   normalizeEmail,
-  ownerEmail,
   slackAllowedChannelIds,
   slackBotToken,
   slackSigningSecret,
@@ -1695,13 +1681,11 @@ const routeDeps = {
   callOpenAi,
   callOpenAiWebSearch,
   classifyEmailIntakeSuggestion,
-  buildApiKeyPreview,
   chatForRules,
   findExactItemPurchaseOptions,
   resolvePurchasingItemSearchMatches,
   generateSupportReply,
   generateSlackReply,
-  generateApiKeyValue,
   allocateWorkerNumbers,
   authAccessTimeZoneNewJersey,
   authApprovalApproved,
@@ -1773,7 +1757,6 @@ const routeDeps = {
   normalizeStageName,
   normalizeWorkerNumber,
   ownerEmail,
-  hashApiKeyValue,
   parseOptionalAuthAccessTimeZone,
   parseOptionalAuthHour,
   refreshOrdersUnifiedCollection,
@@ -1783,6 +1766,7 @@ const routeDeps = {
   listRegisteredApiRoutes,
   requireAdminRole,
   requireManagerOrAdminRole,
+  requireOfficeManagerOrAdminRole,
   requireSalesManagerOrAdminRole,
   requireApprovedLinkedWorker,
   requireFirebaseAuth,
@@ -2502,7 +2486,6 @@ async function refreshDashboardSnapshotsAndTrackShippingMoves() {
 
 registerAiRoutes(app, routeDeps)
 registerAiCouncilRoutes(app, routeDeps)
-registerAdminApiRoutes(app, routeDeps)
 registerAuthRoutes(app, routeDeps)
 registerAlertsRoutes(app, routeDeps)
 registerChatRoutes(app, routeDeps)

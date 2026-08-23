@@ -612,6 +612,7 @@ export function registerPurchasingRoutes(app, deps) {
     resolvePurchasingItemSearchMatches,
     requireFirebaseAuth,
     requireManagerOrAdminRole,
+    requireOfficeManagerOrAdminRole,
   } = deps
 
   const purchasingItemSummaryProjection = {
@@ -2128,7 +2129,7 @@ export function registerPurchasingRoutes(app, deps) {
     return merged
   }
 
-  app.get('/api/purchasing/po/context', requireFirebaseAuth, async (req, res, next) => {
+  app.get('/api/purchasing/po/context', requireFirebaseAuth, requireOfficeManagerOrAdminRole, async (req, res, next) => {
     try {
       const forceRefresh = req.query?.refresh === '1' || req.query?.refresh === 'true'
       const includeProjects = req.query?.includeProjects === '1' || req.query?.includeProjects === 'true'
@@ -2167,7 +2168,7 @@ export function registerPurchasingRoutes(app, deps) {
     }
   })
 
-  app.post('/api/purchasing/po/create', requireFirebaseAuth, async (req, res, next) => {
+  app.post('/api/purchasing/po/create', requireFirebaseAuth, requireOfficeManagerOrAdminRole, async (req, res, next) => {
     try {
       const requestedLines = Array.isArray(req.body?.lines) ? req.body.lines : []
 

@@ -260,7 +260,6 @@ export function createMongoCollectionsService({
         const mondayOrdersCollection = ordersDatabase.collection('monday_orders')
         const ordersUnifiedCollection = ordersDatabase.collection('orders')
         const authUsersCollection = authDatabase.collection('auth_users')
-        const apiKeysCollection = authDatabase.collection('api_keys')
         const mobilePushTokensCollection = authDatabase.collection('mobile_push_tokens')
         const mobileAlertsCollection = authDatabase.collection('mobile_alerts')
         const mobileAlertReadsCollection = authDatabase.collection('mobile_alert_reads')
@@ -346,10 +345,6 @@ export function createMongoCollectionsService({
             authUsersCollection.createIndex({ linkedWorkerId: 1 }, { unique: true, sparse: true }),
             authUsersCollection.createIndex({ linkedZendeskUserId: 1 }, { unique: true, sparse: true }),
             authUsersCollection.createIndex({ approvalStatus: 1, role: 1 }),
-            apiKeysCollection.createIndex({ id: 1 }, { unique: true }),
-            apiKeysCollection.createIndex({ keyHash: 1 }, { unique: true }),
-            apiKeysCollection.createIndex({ revokedAt: 1, createdAt: -1 }),
-            apiKeysCollection.createIndex({ createdAt: -1 }),
             mobilePushTokensCollection.createIndex({ token: 1 }, { unique: true }),
             mobilePushTokensCollection.createIndex({ uid: 1, active: 1, updatedAt: -1 }),
             mobilePushTokensCollection.createIndex({ emailLower: 1, active: 1 }),
@@ -518,7 +513,6 @@ export function createMongoCollectionsService({
           mondayOrdersCollection,
           ordersUnifiedCollection,
           authUsersCollection,
-          apiKeysCollection,
           mobilePushTokensCollection,
           mobileAlertsCollection,
           mobileAlertReadsCollection,

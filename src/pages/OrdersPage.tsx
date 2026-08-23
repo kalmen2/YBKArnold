@@ -504,7 +504,11 @@ export default function OrdersPage() {
       const response = await postOrdersDelete(requestPayload)
 
       await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.ordersOverview })
-      setSuccessMessage(`Deleted order ${orderLabel}.`)
+      setSuccessMessage(
+        response?.queuedForDeletion
+          ? `Delete request sent to admin for order ${orderLabel}.`
+          : `Deleted order ${orderLabel}.`,
+      )
 
       const warningText = String(response?.warning ?? '').trim()
 

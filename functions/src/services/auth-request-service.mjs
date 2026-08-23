@@ -11,18 +11,11 @@ export function createAuthRequestService({
   formatAuthLoginHoursWindow,
   getAuth,
   getCollections,
-  hashApiKeyValue,
   isAllowedByAuthLoginHours,
   isApprovedAdminUser,
   isReviewerLoginEmail,
-  normalizeApiKeyValue,
-  normalizeEmail,
-  ownerEmail,
   resolveAuthClientPlatformFromRequest,
   toPublicAuthUser,
-  extractRequestIpAddress,
-  extractRequestLocalIpAddress,
-  extractRequestUserAgent,
 }) {
   // ---------------------------------------------------------------------------
   // Per-uid auth user cache
@@ -60,124 +53,7 @@ export function createAuthRequestService({
     return authorizationHeader.slice(7).trim()
   }
 
-  function extractApiKeyFromRequest(req) {
-    const apiKeyHeader = normalizeApiKeyValue(req.headers?.['x-api-key'])
-
-    if (apiKeyHeader) {
-      return apiKeyHeader
-    }
-
-    const bearerToken = extractBearerTokenFromRequest(req)
-
-    if (bearerToken && bearerToken.startsWith('ak_')) {
-      return normalizeApiKeyValue(bearerToken)
-    }
-
-    return ''
-  }
-
-  async function resolveCurrentApiKeyUserFromRequest(req) {
-    const apiKeyValue = extractApiKeyFromRequest(req)
-
-    if (!apiKeyValue) {
-      return null
-    }
-
-    const keyHash = hashApiKeyValue(apiKeyValue)
-
-    if (!keyHash) {
-      throw {
-        status: 401,
-        message: 'Invalid API key.',
-      }
-    }
-
-    const requestClientPlatform = resolveAuthClientPlatformFromRequest(req)
-    const requestIpAddress = extractRequestIpAddress(req)
-    const requestLocalIpAddress = extractRequestLocalIpAddress(req)
-    const requestUserAgent = extractRequestUserAgent(req)
-    const { apiKeysCollection } = await getCollections()
-    const apiKeyDocument = await apiKeysCollection.findOne(
-      {
-        keyHash,
-      },
-      {
-        projection: {
-          _id: 0,
-        },
-      },
-    )
-
-    if (!apiKeyDocument || String(apiKeyDocument?.revokedAt ?? '').trim()) {
-      throw {
-        status: 401,
-        message: 'Invalid API key.',
-      }
-    }
-
-    const keyId = String(apiKeyDocument?.id ?? '').trim()
-
-    if (!keyId) {
-      throw {
-        status: 401,
-        message: 'Invalid API key.',
-      }
-    }
-
-    const now = new Date().toISOString()
-    const apiKeyName = String(apiKeyDocument?.name ?? '').trim() || null
-    const apiKeyEmail = String(apiKeyDocument?.createdByEmail ?? '').trim()
-      || ownerEmail
-      || `api-key-${keyId}@local.api`
-    const userDocument = {
-      uid: `api-key:${keyId}`,
-      email: apiKeyEmail,
-      emailLower: normalizeEmail(apiKeyEmail),
-      displayName: apiKeyName ? `API Key (${apiKeyName})` : 'API Key',
-      role: authRoleAdmin,
-      approvalStatus: authApprovalApproved,
-      clientAccessMode: authClientAccessModeWebAndApp,
-      clientPlatforms: [requestClientPlatform],
-      lastActivityAt: now,
-      lastLoginAt: String(apiKeyDocument?.createdAt ?? '').trim() || now,
-      lastLoginClientPlatform: requestClientPlatform,
-      createdAt: String(apiKeyDocument?.createdAt ?? '').trim() || now,
-      updatedAt: now,
-      isApiKeyAuth: true,
-      apiKeyId: keyId,
-      apiKeyName,
-    }
-
-    await apiKeysCollection.updateOne(
-      {
-        id: keyId,
-      },
-      {
-        $set: {
-          lastUsedAt: now,
-          lastUsedClientPlatform: requestClientPlatform,
-          lastUsedIpAddress: requestIpAddress,
-          lastUsedLocalIpAddress: requestLocalIpAddress,
-          lastUsedUserAgent: requestUserAgent,
-          updatedAt: now,
-        },
-      },
-    )
-
-    return {
-      decodedToken: null,
-      userDocument,
-      apiKeyDocument,
-    }
-  }
-
   async function resolveCurrentAuthUserFromRequest(req) {
-    const apiKeyAuthResult = await resolveCurrentApiKeyUserFromRequest(req)
-
-    if (apiKeyAuthResult) {
-      return apiKeyAuthResult
-    }
-
     const idToken = extractBearerTokenFromRequest(req)
 
     if (!idToken) {
@@ -376,7 +252,7 @@ export function createAuthRequestService({
 
   async function requireFirebaseAuth(req, _res, next) {
     try {
-      const { decodedToken, userDocument, apiKeyDocument } = await resolveCurrentAuthUserFromRequest(req)
+      const { decodedToken, userDocument } = await resolveCurrentAuthUserFromRequest(req)
       const publicUser = toPublicAuthUser(userDocument)
       const requestClientPlatform = resolveAuthClientPlatformFromRequest(req)
 
@@ -384,6 +260,13 @@ export function createAuthRequestService({
         throw {
           status: 500,
           message: 'Unable to load authenticated user.',
+        }
+      }
+
+      if (!publicUser.isApproved) {
+        throw {
+          status: 403,
+          message: 'Approved access is required.',
         }
       }
 
@@ -410,7 +293,6 @@ export function createAuthRequestService({
 
       req.firebaseToken = decodedToken
       req.authUser = userDocument
-      req.authApiKey = apiKeyDocument ?? null
       req.authClientPlatform = requestClientPlatform
       next()
     } catch (error) {
@@ -440,6 +322,23 @@ export function createAuthRequestService({
       return next({
         status: 403,
         message: 'Manager or admin access is required.',
+      })
+    }
+
+    next()
+  }
+
+  function requireOfficeManagerOrAdminRole(req, _res, next) {
+    const publicUser = toPublicAuthUser(req.authUser)
+    const hasAccess = Boolean(
+      publicUser?.isApproved
+      && (publicUser?.isOwner || publicUser?.isAdmin || publicUser?.isManager || publicUser?.isOfficeWorker),
+    )
+
+    if (!hasAccess) {
+      return next({
+        status: 403,
+        message: 'Office, manager, or admin access is required.',
       })
     }
 
@@ -490,6 +389,7 @@ export function createAuthRequestService({
   return {
     requireAdminRole,
     requireManagerOrAdminRole,
+    requireOfficeManagerOrAdminRole,
     requireSalesManagerOrAdminRole,
     requireApprovedLinkedWorker,
     requireFirebaseAuth,

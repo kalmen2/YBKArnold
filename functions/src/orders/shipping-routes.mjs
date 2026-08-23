@@ -1121,11 +1121,13 @@ export function registerOrderShippingRoutes(app, {
           orderProgressCollection,
           ordersUnifiedCollection,
         } = await getCollections()
+        const publicUser = toPublicAuthUser(req.authUser)
+        const isAdmin = Boolean(publicUser?.isApproved && publicUser?.isAdmin)
         const orderDocument = await ordersUnifiedCollection.findOne(
           {
             $and: [
               orderIdentityFilter,
-              { is_deleted: { $ne: true } },
+              ...(isAdmin ? [] : [{ is_deleted: { $ne: true } }]),
             ],
           },
           {
@@ -1205,6 +1207,44 @@ export function registerOrderShippingRoutes(app, {
         )]
         const hasQuickBooksRecord = Boolean(orderDocument?.has_quickbooks_record)
           || quickBooksProjectIds.length > 0
+
+        if (!isAdmin) {
+          if (!orderDocument) {
+            return res.status(409).json({
+              error: 'This order cannot be queued for deletion until it is synced to the application database.',
+            })
+          }
+
+          const requestedAt = new Date().toISOString()
+          await ordersUnifiedCollection.updateOne(
+            { orderKey: String(orderDocument.orderKey ?? '').trim() },
+            {
+              $set: {
+                is_deleted: true,
+                deletedAt: requestedAt,
+                deletedByUid: String(publicUser?.uid ?? '').trim() || null,
+                deletedByEmail: String(publicUser?.email ?? '').trim() || null,
+                deleteRequestedAt: requestedAt,
+                deleteRequestedByUid: String(publicUser?.uid ?? '').trim() || null,
+                deleteRequestedByEmail: String(publicUser?.email ?? '').trim() || null,
+                updatedAt: requestedAt,
+              },
+            },
+          )
+
+          return res.json({
+            ok: true,
+            queuedForDeletion: true,
+            deleted: {
+              orderKey: String(orderDocument.orderKey ?? '').trim() || null,
+              orderNumber,
+              orderName,
+              mondayItemId,
+              mondayDeleteMode: null,
+              generatedDocumentCleanup: { attemptedCount: 0, deletedCount: 0, failedCount: 0 },
+            },
+          })
+        }
 
         if (hasQuickBooksRecord) {
           return res.status(409).json({
@@ -1313,6 +1353,59 @@ export function registerOrderShippingRoutes(app, {
       }
     },
   )
+
+  app.get('/api/orders/deletion-queue', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const publicUser = toPublicAuthUser(req.authUser)
+      if (!publicUser?.isAdmin) return res.status(403).json({ error: 'Admin access is required.' })
+      const limit = Math.min(500, Math.max(1, Number(req.query?.limit) || 200))
+      const { ordersUnifiedCollection } = await getCollections()
+      const orders = await ordersUnifiedCollection.find(
+        { is_deleted: true },
+        {
+          projection: {
+            _id: 0,
+            orderKey: 1,
+            order_number: 1,
+            order_name: 1,
+            monday_item_id: 1,
+            deleteRequestedAt: 1,
+            deleteRequestedByEmail: 1,
+            updatedAt: 1,
+            has_quickbooks_record: 1,
+          },
+        },
+      ).sort({ deleteRequestedAt: -1, updatedAt: -1 }).limit(limit).toArray()
+      return res.json({ orders })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.post('/api/orders/deletion-queue/:orderKey/restore', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const publicUser = toPublicAuthUser(req.authUser)
+      if (!publicUser?.isAdmin) return res.status(403).json({ error: 'Admin access is required.' })
+      const orderKey = String(req.params.orderKey ?? '').trim()
+      if (!orderKey) return res.status(400).json({ error: 'orderKey is required.' })
+      const { ordersUnifiedCollection } = await getCollections()
+      const order = await ordersUnifiedCollection.findOneAndUpdate(
+        { orderKey, is_deleted: true },
+        {
+          $set: { is_deleted: false, updatedAt: new Date().toISOString() },
+          $unset: {
+            deletedAt: '', deletedByUid: '', deletedByEmail: '',
+            deleteRequestedAt: '', deleteRequestedByUid: '', deleteRequestedByEmail: '',
+          },
+        },
+        { returnDocument: 'after', projection: { _id: 0 } },
+      )
+      if (!order) return res.status(404).json({ error: 'Deleted order not found.' })
+      return res.json({ ok: true, order })
+    } catch (error) {
+      next(error)
+    }
+  })
 
   // POST /api/orders/delete-request — create an admin/owner mobile alert for
   // deletion requests blocked by QuickBooks linkage rules.
