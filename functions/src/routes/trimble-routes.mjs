@@ -1,6 +1,8 @@
 import { randomBytes } from 'node:crypto'
+import { getStorage } from 'firebase-admin/storage'
+import { prepareGlbForCustomerPresentation } from '../services/glb-presentation-service.mjs'
 import { createTokenCryptoService } from '../services/token-crypto-service.mjs'
-import { normalizeText, nowIso } from '../utils/value-utils.mjs'
+import { buildFirebaseStorageDownloadUrl, normalizeText, nowIso } from '../utils/value-utils.mjs'
 
 const trimbleIdentityBaseUrl = 'https://id.trimble.com'
 const trimbleApiBaseUrl = 'https://app.connect.trimble.com/tc/api/2.0'
@@ -8,6 +10,7 @@ const trimbleViewerBaseUrl = 'https://web.connect.trimble.com'
 const connectionId = 'arnold-contract-primary'
 const defaultProjectName = 'Arnold Contract – Customer 3D Models'
 const maxModelBytes = 2 * 1024 * 1024 * 1024
+const maxWebProcessingBytes = 75 * 1024 * 1024
 const maxPublishedModels = 5
 const oauthStateLifetimeMs = 10 * 60 * 1000
 const { decryptSecret, encryptSecret } = createTokenCryptoService({
@@ -259,7 +262,31 @@ function safeModelSummary(model) {
       fileName: text(entry?.fileName, 500) || `3D option ${index + 1}`,
       label: modelViewLabel(entry?.fileName, entry?.label, index),
       viewerType: text(entry?.viewerType || model.viewerType, 40) || 'trimble',
+      webModelUrl: validatedFirebaseModelUrl(entry?.webModelUrl || (model.viewerType === 'glb' ? model.webModelUrl : '')) || null,
+      viewerSettings: normalizedViewerSettings(entry?.viewerSettings || model.viewerSettings),
     })),
+    viewerSettings: normalizedViewerSettings(model.viewerSettings),
+  }
+}
+
+function clampNumber(value, fallback, minimum, maximum) {
+  const number = Number(value)
+  return Number.isFinite(number) ? Math.min(maximum, Math.max(minimum, number)) : fallback
+}
+
+function normalizedViewerSettings(value) {
+  const source = value && typeof value === 'object' ? value : {}
+  const toneMapping = text(source.toneMapping, 20).toLowerCase()
+  const environmentImage = text(source.environmentImage, 20).toLowerCase()
+  const backgroundColor = text(source.backgroundColor, 20)
+  return {
+    exposure: clampNumber(source.exposure, 1.08, 0.5, 1.5),
+    shadowIntensity: clampNumber(source.shadowIntensity, 0.8, 0, 2),
+    toneMapping: ['neutral', 'aces', 'agx', 'cineon'].includes(toneMapping) ? toneMapping : 'neutral',
+    environmentImage: ['even', 'neutral', 'legacy'].includes(environmentImage) ? environmentImage : 'even',
+    backgroundColor: /^#[0-9a-f]{6}$/i.test(backgroundColor) ? backgroundColor : '#f4f2ed',
+    autoRotate: source.autoRotate !== false,
+    fieldOfView: clampNumber(source.fieldOfView, 30, 15, 55),
   }
 }
 
@@ -271,6 +298,86 @@ function validatedFirebaseModelUrl(value) {
     return parsed.toString()
   } catch {
     return ''
+  }
+}
+
+function firebaseStorageTarget(value) {
+  const normalized = validatedFirebaseModelUrl(value)
+  if (!normalized) return null
+  try {
+    const parsed = new URL(normalized)
+    const pathParts = parsed.pathname.split('/').filter(Boolean)
+    const bucketIndex = pathParts.indexOf('b')
+    const objectIndex = pathParts.indexOf('o')
+    const bucketName = bucketIndex >= 0 ? decodeURIComponent(pathParts[bucketIndex + 1] || '') : ''
+    const objectPath = objectIndex >= 0 ? decodeURIComponent(pathParts.slice(objectIndex + 1).join('/')) : ''
+    if (!bucketName || !objectPath) return null
+    return { bucketName, objectPath }
+  } catch {
+    return null
+  }
+}
+
+async function createCustomerReadyGlb(sourceUrl, quoteId, fileName) {
+  const source = firebaseStorageTarget(sourceUrl)
+  if (!source) throw new Error('The uploaded GLB must be stored in Arnold Firebase Storage.')
+  const sourceFile = getStorage().bucket(source.bucketName).file(source.objectPath)
+  const [metadata] = await sourceFile.getMetadata()
+  const sourceBytes = Number(metadata?.size || 0)
+  if (!Number.isFinite(sourceBytes) || sourceBytes <= 0) throw new Error('The uploaded GLB is empty.')
+  if (sourceBytes > maxWebProcessingBytes) {
+    return {
+      webModelUrl: sourceUrl,
+      quality: {
+        status: 'source_only',
+        reason: 'The model is too large for automatic material processing.',
+        sourceBytes,
+        processedAt: nowIso(),
+      },
+    }
+  }
+
+  // Files written by the old v1 processor already lost their spec-gloss
+  // extension but kept its broken metallic values, so force the matte
+  // recovery when reprocessing one of them.
+  const generatedBy = text(metadata?.metadata?.generatedBy, 100)
+  const reprocessedFromPrepared = generatedBy === 'arnold-3d-presentation-v1'
+    || source.objectPath.includes('/customer-ready/')
+  if (reprocessedFromPrepared) {
+    console.warn('Preparing a customer model from an already-processed file; the original upload is not linked to this quote.', {
+      quoteId,
+      fileName,
+      objectPath: source.objectPath,
+    })
+  }
+
+  const [sourceBinary] = await sourceFile.download()
+  const { outputBinary, quality: pipelineQuality } = await prepareGlbForCustomerPresentation(sourceBinary, {
+    forceMatteRecovery: reprocessedFromPrepared,
+    logContext: { quoteId, fileName },
+  })
+  const safeQuoteId = text(quoteId, 160).replace(/[^a-z0-9_-]+/gi, '-') || 'quote'
+  const safeBaseName = text(fileName, 500).replace(/\.glb$/i, '').replace(/[^a-z0-9._-]+/gi, '-') || 'model'
+  const outputPath = `crm/opportunities/3d-models/${safeQuoteId}/customer-ready/${Date.now()}-${safeBaseName}.glb`
+  const downloadToken = randomBytes(24).toString('hex')
+  const outputFile = getStorage().bucket(source.bucketName).file(outputPath)
+  await outputFile.save(Buffer.from(outputBinary), {
+    resumable: false,
+    contentType: 'model/gltf-binary',
+    metadata: {
+      metadata: { firebaseStorageDownloadTokens: downloadToken, generatedBy: 'arnold-3d-presentation-v2' },
+    },
+  })
+  return {
+    webModelUrl: buildFirebaseStorageDownloadUrl(source.bucketName, outputPath, downloadToken),
+    quality: {
+      status: 'prepared',
+      ...pipelineQuality,
+      ...(reprocessedFromPrepared ? { reprocessedFromPrepared: true } : {}),
+      sourceBytes,
+      outputBytes: outputBinary.byteLength,
+      processedAt: nowIso(),
+    },
   }
 }
 
@@ -766,7 +873,7 @@ export function registerTrimbleRoutes(app, deps) {
       const quote = quoteAtRevision(rootQuote, revisionNumber)
       if (!quote) return res.status(404).json({ error: 'Quote revision not found.' })
 
-      const models = requestedModels.map((entry, index) => {
+      const requestedGlbModels = requestedModels.map((entry, index) => {
         const fileName = text(entry?.fileName, 500).split('/').at(-1)?.trim()
         const webModelUrl = validatedFirebaseModelUrl(entry?.downloadUrl)
         const fileSize = entry?.fileSize == null ? null : Number(entry.fileSize)
@@ -785,9 +892,29 @@ export function registerTrimbleRoutes(app, deps) {
           fileSize,
           label: modelViewLabel(fileName, entry?.label, index),
           viewerType: 'glb',
-          webModelUrl,
+          sourceWebModelUrl: webModelUrl,
         }
       })
+      // Sequential on purpose: preparing several large GLBs at once can exhaust
+      // the function's memory (draco encode + texture recompression per model).
+      const models = []
+      for (const entry of requestedGlbModels) {
+        try {
+          const prepared = await createCustomerReadyGlb(entry.sourceWebModelUrl, quoteId, entry.fileName)
+          models.push({ ...entry, webModelUrl: prepared.webModelUrl, quality: prepared.quality })
+        } catch (processingError) {
+          console.warn('Could not create customer-ready GLB; publishing the untouched source model.', {
+            quoteId,
+            fileName: entry.fileName,
+            message: processingError instanceof Error ? processingError.message : String(processingError),
+          })
+          models.push({
+            ...entry,
+            webModelUrl: entry.sourceWebModelUrl,
+            quality: { status: 'source_only', reason: 'Automatic preparation could not be completed.', processedAt: nowIso() },
+          })
+        }
+      }
 
       const previousModel = quote.trimble3d
       const uploadedAt = nowIso()
@@ -822,6 +949,80 @@ export function registerTrimbleRoutes(app, deps) {
           await removeTrimbleShares(accessToken, oldShareIds)
         })().catch(() => {})
       }
+      return res.json({ model: safeModelSummary(model) })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.put('/api/trimble/quotes/:quoteId/viewer-settings', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const quoteId = text(req.params.quoteId, 200)
+      if (!quoteId) return res.status(400).json({ error: 'Quote ID is required.' })
+
+      const { crmQuotesCollection } = await getCollections()
+      const rootQuote = await crmQuotesCollection.findOne({ id: quoteId }, { projection: { _id: 0 } })
+      if (!rootQuote) return res.status(404).json({ error: 'Quote not found.' })
+      const revisionNumber = requestedRevisionNumber(req)
+      const quote = quoteAtRevision(rootQuote, revisionNumber)
+      if (!quote?.trimble3d) return res.status(404).json({ error: 'No published 3D model was found for this quote.' })
+      const storedModels = Array.isArray(quote.trimble3d.models) && quote.trimble3d.models.length
+        ? quote.trimble3d.models
+        : [quote.trimble3d]
+      if (!storedModels.some((entry) => entry?.viewerType === 'glb' || quote.trimble3d.viewerType === 'glb')) {
+        return res.status(400).json({ error: 'Viewer appearance can only be adjusted for GLB models.' })
+      }
+
+      const updatedAt = nowIso()
+      const model = { ...quote.trimble3d, viewerSettings: normalizedViewerSettings(req.body?.settings) }
+      await setQuoteRevisionModel(crmQuotesCollection, rootQuote, quoteId, revisionNumber, model, updatedAt)
+      return res.json({ model: safeModelSummary(model) })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.post('/api/trimble/quotes/:quoteId/prepare-customer-model', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const quoteId = text(req.params.quoteId, 200)
+      if (!quoteId) return res.status(400).json({ error: 'Quote ID is required.' })
+      const { crmQuotesCollection } = await getCollections()
+      const rootQuote = await crmQuotesCollection.findOne({ id: quoteId }, { projection: { _id: 0 } })
+      if (!rootQuote) return res.status(404).json({ error: 'Quote not found.' })
+      const revisionNumber = requestedRevisionNumber(req)
+      const quote = quoteAtRevision(rootQuote, revisionNumber)
+      if (!quote?.trimble3d || quote.trimble3d.viewerType !== 'glb') {
+        return res.status(400).json({ error: 'Publish a GLB model before preparing the customer presentation.' })
+      }
+      const storedModels = Array.isArray(quote.trimble3d.models) && quote.trimble3d.models.length
+        ? quote.trimble3d.models
+        : [quote.trimble3d]
+      // Sequential on purpose: preparing several large GLBs at once can exhaust
+      // the function's memory (draco encode + texture recompression per model).
+      const models = []
+      for (const [index, entry] of storedModels.entries()) {
+        const sourceWebModelUrl = validatedFirebaseModelUrl(entry?.sourceWebModelUrl || entry?.webModelUrl || quote.trimble3d.webModelUrl)
+        if (!sourceWebModelUrl) {
+          const error = new Error(`GLB model ${index + 1} is unavailable for preparation.`)
+          error.status = 400
+          throw error
+        }
+        const prepared = await createCustomerReadyGlb(sourceWebModelUrl, quoteId, text(entry?.fileName, 500) || `model-${index + 1}.glb`)
+        models.push({ ...entry, sourceWebModelUrl, webModelUrl: prepared.webModelUrl, quality: prepared.quality, viewerType: 'glb' })
+      }
+      const primary = models[0]
+      const updatedAt = nowIso()
+      const model = {
+        ...quote.trimble3d,
+        viewerType: 'glb',
+        models,
+        fileName: primary.fileName,
+        fileSize: primary.fileSize ?? quote.trimble3d.fileSize ?? null,
+        webModelUrl: primary.webModelUrl,
+        quality: primary.quality,
+        updatedAt,
+      }
+      await setQuoteRevisionModel(crmQuotesCollection, rootQuote, quoteId, revisionNumber, model, updatedAt)
       return res.json({ model: safeModelSummary(model) })
     } catch (error) {
       next(error)
@@ -1174,6 +1375,7 @@ export function registerTrimbleRoutes(app, deps) {
           status: 'ready',
           viewerType: sketchupShareUrl ? 'sketchup' : (glbUrl ? 'glb' : 'trimble'),
           glbUrl: glbUrl || null,
+          viewerSettings: normalizedViewerSettings(entry?.viewerSettings || model.viewerSettings),
           embedUrl: sketchupShareUrl || (glbUrl
             ? null
             : `${trimbleViewerBaseUrl}/projects/${encodeURIComponent(model.projectId)}/viewer/3d/?embed=true&stoken=${encodeURIComponent(entry.shareToken)}`),

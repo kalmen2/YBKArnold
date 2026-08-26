@@ -11,9 +11,13 @@ import {
   View,
 } from '@react-pdf/renderer'
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded'
+import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded'
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded'
 import OpenWithRoundedIcon from '@mui/icons-material/OpenWithRounded'
-import { Alert, Box, Button, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, Stack, Typography } from '@mui/material'
+import PrintRoundedIcon from '@mui/icons-material/PrintRounded'
+import ZoomInRoundedIcon from '@mui/icons-material/ZoomInRounded'
+import ZoomOutRoundedIcon from '@mui/icons-material/ZoomOutRounded'
+import { Alert, Box, Button, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, Stack, Tooltip, Typography } from '@mui/material'
 import { useQuery } from '@tanstack/react-query'
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { fetchCrmDocumentTerms, type CrmDocumentTerm, type CrmQuote, type CrmQuoteLineImage, type CrmQuoteLineItem, type CrmQuotePrintSettings } from './api'
@@ -228,6 +232,7 @@ function splitLineItems(lineItems: CrmQuoteLineItem[]) {
     return chunks.map((chunk, index) => ({
       ...lineItem,
       id: `${lineItem.id || lineItem.itemNumber}-${index}`,
+      sourceLineId: lineItem.id,
       displayItemNumber: lineItemIndex + 1,
       description: index === 0 ? chunk : `(continued)\n${chunk}`,
       detailLabel: index === 0 ? lineItem.detailLabel : null,
@@ -306,7 +311,14 @@ const resolveProductImageMetrics = (
   }
 }
 
+// The usable Description-cell width on the letter-size product table. Keep the
+// picture layout inside this cell; Qty, Unit Price, and Ext are never available
+// to the placement tool.
 const PDF_PRODUCT_LAYOUT_WIDTH = 327
+const PDF_PRODUCT_LAYOUT_GAP = 7
+const PDF_PRODUCT_LAYOUT_MIN_TEXT_WIDTH = 112
+const PDF_PRODUCT_LAYOUT_MIN_IMAGE_WIDTH = 48
+const PDF_PRODUCT_LAYOUT_HEIGHT = 150
 
 const resolveProductImageAspect = (image: CrmQuoteLineImage) => {
   const width = Number(image.width || 0)
@@ -318,21 +330,38 @@ const resolveProductImageAspect = (image: CrmQuoteLineImage) => {
   return 4 / 3
 }
 
-const resolveProductImagePlacements = (images: CrmQuoteLineImage[]) => images.slice(0, 2).map((image, index) => {
-  const metrics = resolveProductImageMetrics(image, images.length)
-  const requestedWidth = Number(image.pdfLayout?.width)
-  const width = Math.min(300, Math.max(48, Number.isFinite(requestedWidth) ? requestedWidth : metrics.width))
-  const height = width / resolveProductImageAspect(image)
-  const requestedX = Number(image.pdfLayout?.x)
-  const requestedY = Number(image.pdfLayout?.y)
-  const defaultY = index === 0 ? 8 : metrics.height + 12
+function splitTextForPictureFlow(text: string, availableWidth: number, pictureHeight: number) {
+  const normalized = text.replace(/\s+/g, ' ').trim()
+  if (!normalized) return { beside: '', below: '' }
 
+  const charactersPerLine = Math.max(16, Math.floor(availableWidth / 4.7))
+  const linesBesidePicture = Math.min(4, Math.max(2, Math.floor(pictureHeight / 12)))
+  const characterLimit = charactersPerLine * linesBesidePicture
+  if (normalized.length <= characterLimit) return { beside: normalized, below: '' }
+
+  const words = normalized.split(' ')
+  let beside = ''
+  let nextWordIndex = 0
+  while (nextWordIndex < words.length) {
+    const candidate = beside ? `${beside} ${words[nextWordIndex]}` : words[nextWordIndex]
+    if (candidate.length > characterLimit && beside) break
+    beside = candidate
+    nextWordIndex += 1
+  }
+  return { beside, below: words.slice(nextWordIndex).join(' ') }
+}
+
+const resolveProductImagePlacements = (images: CrmQuoteLineImage[]) => images.slice(0, 2).map((image) => {
+  const metrics = resolveProductImageMetrics(image, images.length)
+  const layout = normalizePictureLayout(image, image.pdfLayout || defaultPictureLayout(image))
+  const width = layout.width || metrics.width
+  const height = width / resolveProductImageAspect(image)
   return {
     image,
     width,
     height,
-    x: Math.min(PDF_PRODUCT_LAYOUT_WIDTH - width, Math.max(0, Number.isFinite(requestedX) ? requestedX : PDF_PRODUCT_LAYOUT_WIDTH - width - 6)),
-    y: Math.max(0, Number.isFinite(requestedY) ? requestedY : defaultY),
+    x: layout.x,
+    y: 0,
   }
 })
 
@@ -410,10 +439,11 @@ function createStyles(accentColor: string) {
       alignItems: 'stretch',
     },
     itemColumn: { width: 30, paddingRight: 5 },
-    descriptionColumn: { flexGrow: 1, flexShrink: 1, flexBasis: 0, paddingRight: 7 },
+    descriptionColumn: { flexGrow: 1, flexShrink: 1, flexBasis: 0, paddingRight: 7, overflow: 'hidden' },
     descriptionBody: { flexDirection: 'row', alignItems: 'flex-start', position: 'relative' },
     descriptionContent: { flexGrow: 1, flexShrink: 1, flexBasis: 0 },
     descriptionText: { lineHeight: 1.15 },
+    descriptionFlowText: { flexGrow: 1, flexShrink: 1, flexBasis: 0, lineHeight: 1.15 },
     descriptionHeading: { fontWeight: 700, color: '#172033', lineHeight: 1.15 },
     descriptionLine: { flexDirection: 'row', alignItems: 'flex-start' },
     descriptionLineDetail: { flexShrink: 0, color: '#26384a' },
@@ -431,6 +461,7 @@ function createStyles(accentColor: string) {
     unitColumn: { width: 70, textAlign: 'right', paddingRight: 6 },
     extColumn: { width: 76, textAlign: 'right' },
     centeredCell: { alignSelf: 'center' },
+    topAlignedCell: { alignSelf: 'flex-start', paddingTop: 1 },
     totals: { marginTop: 14, marginLeft: 'auto', width: 250, backgroundColor: '#f8fafc', borderWidth: 1, borderColor: '#d8e0ea', borderRadius: 3, paddingHorizontal: 10, paddingVertical: 6 },
     totalRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4, borderBottomWidth: 1, borderColor: '#e2e8f0' },
     grandTotal: { flexDirection: 'row', justifyContent: 'space-between', borderTopWidth: 2, borderTopColor: accentColor, paddingTop: 7, paddingBottom: 3, marginTop: 3, fontSize: 14, fontWeight: 700, color: accentColor },
@@ -503,6 +534,7 @@ export function NativeQuotePdfDocument({
   }
   const styles = createStyles(resolvedSettings.accentColor)
   const rows = splitLineItems(Array.isArray(quote.lineItems) ? quote.lineItems : [])
+  const sourceLineIndexById = new Map((quote.lineItems || []).map((lineItem, lineIndex) => [lineItem.id, lineIndex]))
   const additionalServices = hydrateAdditionalServices(quote.additionalServices)
   const shippingServices = Array.isArray(quote.shippingServices) ? quote.shippingServices : DEFAULT_SHIPPING_SERVICES
   const additionalServicesHaveImages = hasImages(additionalServices)
@@ -584,16 +616,81 @@ export function NativeQuotePdfDocument({
         {rows.map((lineItem, index) => {
           const lineImages = (lineItem.images || []).slice(0, 2)
           const usesCustomImageLayout = lineImages.some((image) => image.pdfLayout)
-          const imagePlacements = usesCustomImageLayout ? resolveProductImagePlacements(lineImages) : []
-          const positionedContentHeight = imagePlacements.length > 0
-            ? Math.max(...imagePlacements.map((placement) => placement.y + placement.height)) + 6
-            : 0
+          const usesInlinePictureLayout = lineImages.length > 0 && (pictureLayoutMode || usesCustomImageLayout)
+          const imagePlacements = usesInlinePictureLayout ? resolveProductImagePlacements(lineImages) : []
+          const primaryPlacement = imagePlacements[0]
+          const pictureRailWidth = imagePlacements.length > 0 ? Math.max(...imagePlacements.map((placement) => placement.width)) : 0
+          const pictureX = primaryPlacement ? Math.min(primaryPlacement.x, PDF_PRODUCT_LAYOUT_WIDTH - pictureRailWidth) : 0
+          const sourceLineIndex = sourceLineIndexById.get(lineItem.sourceLineId) ?? index
+          const pictureOnLeft = primaryPlacement
+            ? pictureX < (PDF_PRODUCT_LAYOUT_WIDTH - pictureRailWidth) / 2
+            : false
+          const inlineDescriptionText = (() => {
+            const description = plain(lineItem.description, '')
+            const [heading = '', ...detailLines] = description.split('\n')
+            const sections = [heading]
+            const mainDetail = [lineItem.detailLabel, detailLines.join(' ')].filter(Boolean).join('  ')
+            if (mainDetail) sections.push(mainDetail)
+            lineItem.sublineDescriptions.forEach((subline) => {
+              const detail = [subline.detail, subline.description].filter(Boolean).join('  ')
+              if (detail) sections.push(detail)
+            })
+            return sections.filter(Boolean).join(' ')
+          })()
+          const pictureFlow = primaryPlacement
+            ? splitTextForPictureFlow(
+              inlineDescriptionText,
+              Math.max(PDF_PRODUCT_LAYOUT_MIN_TEXT_WIDTH, pictureOnLeft
+                ? PDF_PRODUCT_LAYOUT_WIDTH - pictureX - pictureRailWidth - PDF_PRODUCT_LAYOUT_GAP
+                : pictureX - PDF_PRODUCT_LAYOUT_GAP),
+              primaryPlacement.height,
+            )
+            : { beside: '', below: '' }
+          const pictureRail = primaryPlacement ? (
+            <View
+              style={[
+                styles.descriptionMediaRail,
+                { width: pictureRailWidth },
+                pictureOnLeft
+                  ? { marginLeft: pictureX, marginRight: PDF_PRODUCT_LAYOUT_GAP }
+                  : { marginLeft: PDF_PRODUCT_LAYOUT_GAP, marginRight: Math.max(0, PDF_PRODUCT_LAYOUT_WIDTH - pictureX - pictureRailWidth) },
+              ]}
+            >
+              {imagePlacements.map((placement, imageIndex) => (
+                <View
+                  key={placement.image.id}
+                  style={[
+                    styles.descriptionMediaBox,
+                    imageIndex > 0 ? styles.descriptionMediaBoxSpaced : {},
+                    { width: placement.width, height: placement.height, alignSelf: 'center' },
+                  ]}
+                >
+                  {pictureLayoutMode ? (
+                    <Text style={{ fontSize: 1, lineHeight: 1, color: '#ffffff' }}>{`__AP${sourceLineIndex}_${imageIndex}__`}</Text>
+                  ) : (
+                    <Image src={resolvePdfImageUri(placement.image.url)} cache={false} style={[styles.descriptionMediaImage, { height: '100%' }]} />
+                  )}
+                </View>
+              ))}
+            </View>
+          ) : null
 
           return (
-          <View key={lineItem.id || `${lineItem.itemNumber}-${index}`} style={[styles.row, positionedContentHeight > 0 ? { minHeight: Math.max(34, positionedContentHeight + 12) } : {}, index % 2 === 1 ? { backgroundColor: '#fbfdff' } : {}]} wrap={false}>
-            <Text style={[styles.itemColumn, styles.centeredCell]}>{lineItem.continuation ? '' : lineItem.displayItemNumber}</Text>
+          <View key={lineItem.id || `${lineItem.itemNumber}-${index}`} style={[styles.row, index % 2 === 1 ? { backgroundColor: '#fbfdff' } : {}]} wrap={false}>
+            <Text style={[styles.itemColumn, styles.topAlignedCell]}>{lineItem.continuation ? '' : lineItem.displayItemNumber}</Text>
             <View style={styles.descriptionColumn}>
-              <View style={[styles.descriptionBody, positionedContentHeight > 0 ? { minHeight: positionedContentHeight } : {}]}>
+              {usesInlinePictureLayout ? (
+                <>
+                  <View style={styles.descriptionBody}>
+                    {pictureOnLeft ? pictureRail : null}
+                    <Text style={styles.descriptionFlowText}>{pictureFlow.beside}</Text>
+                    {!pictureOnLeft ? pictureRail : null}
+                  </View>
+                  {pictureFlow.below ? <Text style={[styles.descriptionText, { marginTop: 3 }]}>{pictureFlow.below}</Text> : null}
+                  {pictureLayoutMode ? <Text style={{ fontSize: 1, lineHeight: 1, color: '#ffffff' }}>{`__APE${sourceLineIndex}_0__`}</Text> : null}
+                </>
+              ) : (
+                <View style={styles.descriptionBody}>
                 {(() => {
                   const description = plain(lineItem.description, '')
                   const [heading = '', ...detailLines] = description.split('\n')
@@ -648,22 +745,7 @@ export function NativeQuotePdfDocument({
                     </View>
                   )
                 })()}
-                {pictureLayoutMode ? lineImages.map((image) => (
-                  <Text key={`layout-marker-${image.id}`} style={{ position: 'absolute', left: 0, top: 0, fontSize: 1, color: '#ffffff' }}>
-                    {`__ARNOLD_PICTURE_${image.id}__`}
-                  </Text>
-                )) : null}
-                {!pictureLayoutMode && usesCustomImageLayout ? imagePlacements.map((placement) => (
-                  <View
-                    key={placement.image.id}
-                    style={[
-                      styles.descriptionPositionedImage,
-                      { left: placement.x, top: placement.y, width: placement.width, height: placement.height },
-                    ]}
-                  >
-                    <Image src={resolvePdfImageUri(placement.image.url)} cache={false} style={styles.descriptionMediaImage} />
-                  </View>
-                )) : !pictureLayoutMode && lineImages.length > 0 ? (
+                {!pictureLayoutMode && lineImages.length > 0 ? (
                   <View style={styles.descriptionMediaRail}>
                     {lineImages.map((image, imageIndex) => {
                       const metrics = resolveProductImageMetrics(image, lineImages.length)
@@ -688,11 +770,12 @@ export function NativeQuotePdfDocument({
                     })}
                   </View>
                 ) : null}
-              </View>
+                </View>
+              )}
             </View>
-            <Text style={[styles.qtyColumn, styles.centeredCell]}>{plain(lineItem.qty, '')}</Text>
-            <Text style={[styles.unitColumn, styles.centeredCell]}>{optionalMoney(lineItem.unitPrice)}</Text>
-            <Text style={[styles.extColumn, styles.centeredCell]}>{optionalMoney(lineItem.extPrice)}</Text>
+            <Text style={[styles.qtyColumn, styles.topAlignedCell]}>{plain(lineItem.qty, '')}</Text>
+            <Text style={[styles.unitColumn, styles.topAlignedCell]}>{optionalMoney(lineItem.unitPrice)}</Text>
+            <Text style={[styles.extColumn, styles.topAlignedCell]}>{optionalMoney(lineItem.extPrice)}</Text>
           </View>
           )
         })}
@@ -788,21 +871,25 @@ export function NativeQuotePdfDocument({
 
 type QuotePicturePdfLayout = NonNullable<CrmQuoteLineImage['pdfLayout']>
 
-const PDF_PRODUCT_LAYOUT_HEIGHT = 180
 const PDF_LAYOUT_RENDER_SCALE = 1.35
 
 function defaultPictureLayout(image: CrmQuoteLineImage): QuotePicturePdfLayout {
   const width = image.displaySize === 'small' ? 78 : image.displaySize === 'large' ? 170 : 118
-  return { x: PDF_PRODUCT_LAYOUT_WIDTH - width - 6, y: 8, width }
+  return { x: PDF_PRODUCT_LAYOUT_WIDTH - width - 6, y: 0, width }
 }
 
 function normalizePictureLayout(image: CrmQuoteLineImage, layout: QuotePicturePdfLayout): QuotePicturePdfLayout {
   const aspect = resolveProductImageAspect(image)
-  const width = Math.min(300, Math.max(48, Number(layout.width) || 118))
-  const height = width / aspect
+  const maximumWidth = Math.max(
+    PDF_PRODUCT_LAYOUT_MIN_IMAGE_WIDTH,
+    Math.min(300, PDF_PRODUCT_LAYOUT_HEIGHT * aspect, PDF_PRODUCT_LAYOUT_WIDTH - PDF_PRODUCT_LAYOUT_GAP - PDF_PRODUCT_LAYOUT_MIN_TEXT_WIDTH),
+  )
+  const width = Math.min(maximumWidth, Math.max(PDF_PRODUCT_LAYOUT_MIN_IMAGE_WIDTH, Number(layout.width) || 118))
+  const maximumX = PDF_PRODUCT_LAYOUT_WIDTH - width
+  const requestedX = Number(layout.x)
   return {
-    x: Math.min(PDF_PRODUCT_LAYOUT_WIDTH - width, Math.max(0, Number(layout.x) || 0)),
-    y: Math.min(Math.max(0, PDF_PRODUCT_LAYOUT_HEIGHT - height), Math.max(0, Number(layout.y) || 0)),
+    x: Math.min(maximumX, Math.max(0, Number.isFinite(requestedX) ? requestedX : maximumX - 6)),
+    y: 0,
     width,
   }
 }
@@ -812,7 +899,7 @@ type RenderedLayoutPage = {
   imageUrl: string
   width: number
   height: number
-  anchors: Record<string, { x: number; y: number }>
+  anchors: Record<string, { x: number; y: number; layoutX: number; height?: number }>
 }
 
 export const QuotePdfPictureLayoutDialog = memo(function QuotePdfPictureLayoutDialog({
@@ -821,21 +908,29 @@ export const QuotePdfPictureLayoutDialog = memo(function QuotePdfPictureLayoutDi
   settings,
   onCancel,
   onSave,
+  embedded = false,
+  hideEmbeddedActions = false,
 }: {
   open: boolean
   quote: CrmQuote | null
   settings: CrmQuotePrintSettings
   onCancel: () => void
   onSave: (layouts: Array<{ lineIndex: number; imageId: string; layout: QuotePicturePdfLayout }>) => void
+  embedded?: boolean
+  hideEmbeddedActions?: boolean
 }) {
   const pictures = useMemo(() => (quote?.lineItems || []).flatMap((lineItem, lineIndex) => (
-    (lineItem.images || []).map((image) => ({ lineIndex, image }))
+    (lineItem.images || []).map((image, imageIndex) => ({ lineIndex, imageIndex, image }))
   )), [quote])
   const [layouts, setLayouts] = useState<Record<string, QuotePicturePdfLayout>>({})
   const layoutsRef = useRef<Record<string, QuotePicturePdfLayout>>({})
   const [pages, setPages] = useState<RenderedLayoutPage[]>([])
   const [isRendering, setIsRendering] = useState(false)
   const [renderError, setRenderError] = useState('')
+  const [zoom, setZoom] = useState(1)
+  const [layoutRenderVersion, setLayoutRenderVersion] = useState(0)
+  const latestPdfBlobRef = useRef<Blob | null>(null)
+  const layoutRenderTimerRef = useRef<number | null>(null)
   const interactionRef = useRef<{
     mode: 'move' | 'resize'
     image: CrmQuoteLineImage
@@ -860,35 +955,38 @@ export const QuotePdfPictureLayoutDialog = memo(function QuotePdfPictureLayoutDi
       updateLayouts(next)
       setPages([])
       setRenderError('')
+      latestPdfBlobRef.current = null
     }, 0)
     return () => window.clearTimeout(resetTimer)
   }, [open, pictures, updateLayouts])
 
   useEffect(() => {
-    if (!open || !quote || pictures.length === 0) return
+    if (!open || !quote) return
     let cancelled = false
 
     const renderActualPdf = async () => {
       setIsRendering(true)
       setRenderError('')
       try {
+        const renderedLayouts = Object.fromEntries(pictures.map(({ image }) => [
+          image.id,
+          normalizePictureLayout(image, layoutsRef.current[image.id] || image.pdfLayout || defaultPictureLayout(image)),
+        ]))
         const previewQuote: CrmQuote = {
           ...quote,
           lineItems: (quote.lineItems || []).map((lineItem) => ({
             ...lineItem,
             images: (lineItem.images || []).map((image) => ({
               ...image,
-              pdfLayout: layoutsRef.current[image.id] || image.pdfLayout || defaultPictureLayout(image),
+              pdfLayout: renderedLayouts[image.id] || image.pdfLayout || defaultPictureLayout(image),
             })),
           })),
         }
-        const blob = await pdf(<NativeQuotePdfDocument quote={previewQuote} settings={settings} pictureLayoutMode />).toBlob()
+        const blob = await pdf(<NativeQuotePdfDocument quote={previewQuote} settings={settings} pictureLayoutMode={pictures.length > 0} />).toBlob()
         const pdfjs = await import('pdfjs-dist')
         pdfjs.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString()
         const pdfDocument = await pdfjs.getDocument({ data: await blob.arrayBuffer() }).promise
         const renderedPages: RenderedLayoutPage[] = []
-        const anchoredPictureIds = new Set<string>()
-
         for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber += 1) {
           const page = await pdfDocument.getPage(pageNumber)
           const viewport = page.getViewport({ scale: PDF_LAYOUT_RENDER_SCALE })
@@ -899,51 +997,33 @@ export const QuotePdfPictureLayoutDialog = memo(function QuotePdfPictureLayoutDi
           if (!context) throw new Error('Could not render the estimate page.')
           await page.render({ canvas, canvasContext: context, viewport }).promise
           const textContent = await page.getTextContent()
-          const anchors: Record<string, { x: number; y: number }> = {}
-          const positionedTextItems: Array<{ text: string; normalized: string; x: number; y: number; height: number }> = []
+          const anchors: Record<string, { x: number; y: number; layoutX: number; height?: number }> = {}
           textContent.items.forEach((item) => {
             if (!('str' in item)) return
             const [x, y] = viewport.convertToViewportPoint(item.transform[4], item.transform[5])
-            const normalized = item.str.replace(/\s+/g, ' ').trim().toLowerCase()
-            positionedTextItems.push({
-              text: item.str,
-              normalized,
-              x,
-              y,
-              height: Math.max(PDF_LAYOUT_RENDER_SCALE, Number(item.height || 8) * PDF_LAYOUT_RENDER_SCALE),
-            })
 
-            const markerPrefix = '__ARNOLD_PICTURE_'
-            const markerStart = item.str.indexOf(markerPrefix)
-            if (markerStart < 0) return
-            const idStart = markerStart + markerPrefix.length
-            const markerEnd = item.str.indexOf('__', idStart)
-            if (markerEnd <= idStart) return
-            const imageId = item.str.slice(idStart, markerEnd)
-            anchors[imageId] = { x, y: y - PDF_LAYOUT_RENDER_SCALE }
-            anchoredPictureIds.add(imageId)
-          })
-
-          pictures.forEach(({ lineIndex, image }) => {
-            if (anchoredPictureIds.has(image.id)) return
-            const description = String(previewQuote.lineItems?.[lineIndex]?.description || '')
-              .replace(/\s+/g, ' ')
-              .trim()
-              .toLowerCase()
-            if (!description) return
-            const words = description.split(' ').filter(Boolean)
-            const needle = words.slice(0, Math.min(5, words.length)).join(' ')
-            const shorterNeedle = words.slice(0, Math.min(3, words.length)).join(' ')
-            const descriptionItem = positionedTextItems.find((item) => (
-              (needle.length >= 8 && item.normalized.includes(needle))
-              || (shorterNeedle.length >= 8 && item.normalized.includes(shorterNeedle))
-            ))
-            if (!descriptionItem) return
-            anchors[image.id] = {
-              x: descriptionItem.x,
-              y: descriptionItem.y - descriptionItem.height,
+            const endMarkerMatch = item.str.match(/__APE(\d+)_(\d+)__/)
+            if (endMarkerMatch) {
+              const sourceLineIndex = Number(endMarkerMatch[1])
+              const imageIndex = Number(endMarkerMatch[2])
+              const targetPicture = pictures.find((picture) => picture.lineIndex === sourceLineIndex && picture.imageIndex === imageIndex)
+              const existingAnchor = targetPicture ? anchors[targetPicture.image.id] : null
+              if (existingAnchor) existingAnchor.height = Math.max(PDF_LAYOUT_RENDER_SCALE, y - existingAnchor.y + PDF_LAYOUT_RENDER_SCALE)
+              return
             }
-            anchoredPictureIds.add(image.id)
+
+            const markerMatch = item.str.match(/__AP(\d+)_(\d+)__/)
+            if (!markerMatch) return
+            const sourceLineIndex = Number(markerMatch[1])
+            const imageIndex = Number(markerMatch[2])
+            const targetPicture = pictures.find((picture) => picture.lineIndex === sourceLineIndex && picture.imageIndex === imageIndex)
+            if (!targetPicture) return
+            const imageId = targetPicture.image.id
+            anchors[imageId] = {
+              x,
+              y: y - PDF_LAYOUT_RENDER_SCALE,
+              layoutX: renderedLayouts[imageId]?.x || 0,
+            }
           })
 
           renderedPages.push({
@@ -956,10 +1036,7 @@ export const QuotePdfPictureLayoutDialog = memo(function QuotePdfPictureLayoutDi
         }
 
         if (!cancelled) {
-          if (anchoredPictureIds.size < pictures.length) {
-            const missingCount = pictures.length - anchoredPictureIds.size
-            throw new Error(`${missingCount} quote picture${missingCount === 1 ? '' : 's'} could not be positioned in the PDF preview. Please close and reopen the quote, then try again.`)
-          }
+          latestPdfBlobRef.current = blob
           setPages(renderedPages)
         }
       } catch (error) {
@@ -971,7 +1048,7 @@ export const QuotePdfPictureLayoutDialog = memo(function QuotePdfPictureLayoutDi
 
     void renderActualPdf()
     return () => { cancelled = true }
-  }, [open, pictures.length, quote, settings])
+  }, [layoutRenderVersion, open, pictures, quote, settings])
 
   const startInteraction = (mode: 'move' | 'resize', image: CrmQuoteLineImage, scale: number, event: ReactPointerEvent<HTMLElement>) => {
     const layout = layoutsRef.current[image.id]
@@ -989,7 +1066,7 @@ export const QuotePdfPictureLayoutDialog = memo(function QuotePdfPictureLayoutDi
     const dy = (event.clientY - interaction.clientY) / interaction.scale
     const aspect = resolveProductImageAspect(interaction.image)
     const nextLayout = interaction.mode === 'move'
-      ? { ...interaction.layout, x: interaction.layout.x + dx, y: interaction.layout.y + dy }
+      ? { ...interaction.layout, x: interaction.layout.x + dx }
       : { ...interaction.layout, width: interaction.layout.width + Math.max(dx, dy * aspect) }
     updateLayouts({
       ...layoutsRef.current,
@@ -997,55 +1074,228 @@ export const QuotePdfPictureLayoutDialog = memo(function QuotePdfPictureLayoutDi
     })
   }
 
+  const savePictureLayouts = useCallback((nextLayouts = layoutsRef.current) => {
+    onSave(pictures.map(({ lineIndex, image }) => ({
+      lineIndex,
+      imageId: image.id,
+      layout: normalizePictureLayout(image, nextLayouts[image.id] || defaultPictureLayout(image)),
+    })))
+  }, [onSave, pictures])
+
+  const finishInteraction = useCallback(() => {
+    if (!interactionRef.current) return
+    interactionRef.current = null
+    savePictureLayouts()
+    if (layoutRenderTimerRef.current !== null) window.clearTimeout(layoutRenderTimerRef.current)
+    layoutRenderTimerRef.current = window.setTimeout(() => {
+      layoutRenderTimerRef.current = null
+      setLayoutRenderVersion((version) => version + 1)
+    }, 350)
+  }, [savePictureLayouts])
+
+  useEffect(() => () => {
+    if (layoutRenderTimerRef.current !== null) window.clearTimeout(layoutRenderTimerRef.current)
+  }, [])
+
+  const resetPictureLayouts = useCallback(() => {
+    const next = Object.fromEntries(pictures.map(({ image }) => [
+      image.id,
+      normalizePictureLayout(image, defaultPictureLayout(image)),
+    ]))
+    updateLayouts(next)
+    savePictureLayouts(next)
+    setLayoutRenderVersion((version) => version + 1)
+  }, [pictures, savePictureLayouts, updateLayouts])
+
+  const handlePrint = useCallback(() => {
+    const blob = latestPdfBlobRef.current
+    if (!blob) return
+    const blobUrl = URL.createObjectURL(blob)
+    const frame = document.createElement('iframe')
+    frame.style.position = 'fixed'
+    frame.style.right = '0'
+    frame.style.bottom = '0'
+    frame.style.width = '1px'
+    frame.style.height = '1px'
+    frame.style.border = '0'
+    frame.src = blobUrl
+    frame.onload = () => {
+      frame.contentWindow?.focus()
+      frame.contentWindow?.print()
+      window.setTimeout(() => {
+        frame.remove()
+        URL.revokeObjectURL(blobUrl)
+      }, 60_000)
+    }
+    document.body.appendChild(frame)
+  }, [])
+
+  const handleDownload = useCallback(() => {
+    const blob = latestPdfBlobRef.current
+    if (!blob) return
+    const blobUrl = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = blobUrl
+    link.download = `Estimate-${plain(quote?.quoteNumber, quote?.id || 'quote').replace(/[^a-z0-9._-]+/gi, '-')}.pdf`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    window.setTimeout(() => URL.revokeObjectURL(blobUrl), 1_000)
+  }, [quote?.id, quote?.quoteNumber])
+
   if (!quote) return null
+
+  const workspace = (
+    <>
+      <Box sx={{ position: 'sticky', top: 0, zIndex: 5, px: 2, py: 1, bgcolor: '#eef5fb', borderBottom: '1px solid #b8cadc' }}>
+        <Stack direction="row" spacing={1} alignItems="center">
+          <Alert severity="info" icon={<OpenWithRoundedIcon />} sx={{ py: 0, flex: 1 }}>
+              {pictures.length
+                ? 'Drag a picture left or right within Description; drag its red corner to resize it.'
+                : 'This is the PDF used for printing.'}
+          </Alert>
+          <Stack direction="row" spacing={0.25}>
+            <Tooltip title="Zoom out"><span><IconButton size="small" aria-label="Zoom out" disabled={zoom <= 0.75} onClick={() => setZoom((current) => Math.max(0.75, current - 0.25))}><ZoomOutRoundedIcon /></IconButton></span></Tooltip>
+            <Tooltip title="Zoom in"><span><IconButton size="small" aria-label="Zoom in" disabled={zoom >= 1.75} onClick={() => setZoom((current) => Math.min(1.75, current + 0.25))}><ZoomInRoundedIcon /></IconButton></span></Tooltip>
+            <Tooltip title="Print PDF"><span><IconButton size="small" aria-label="Print PDF" disabled={isRendering || pages.length === 0} onClick={handlePrint}><PrintRoundedIcon /></IconButton></span></Tooltip>
+            <Tooltip title="Download PDF"><span><IconButton size="small" aria-label="Download PDF" disabled={isRendering || pages.length === 0} onClick={handleDownload}><DownloadRoundedIcon /></IconButton></span></Tooltip>
+          </Stack>
+        </Stack>
+      </Box>
+      {isRendering && pages.length === 0 ? (
+        <Stack alignItems="center" spacing={1.5} sx={{ py: 8, color: '#fff' }}><CircularProgress color="inherit" /><Typography>Rendering the actual estimate…</Typography></Stack>
+      ) : renderError && pages.length === 0 ? (
+        <Alert severity="error" sx={{ m: 2 }}>{renderError}</Alert>
+      ) : (
+        <Stack spacing={2.5} alignItems="center" sx={{ p: 2.5, position: 'relative' }}>
+          {isRendering ? (
+            <Stack direction="row" spacing={1} alignItems="center" sx={{ position: 'sticky', top: 68, zIndex: 6, px: 1.5, py: 0.75, borderRadius: 1, bgcolor: 'rgba(255,255,255,.96)', boxShadow: 2 }}>
+              <CircularProgress size={18} />
+              <Typography variant="caption" fontWeight={700}>Updating text layout…</Typography>
+            </Stack>
+          ) : null}
+          {renderError ? <Alert severity="warning" sx={{ width: 'min(100%, 720px)' }}>{renderError}</Alert> : null}
+          {pages.map((page) => (
+            <Box key={page.pageNumber} sx={{ position: 'relative', width: page.width * zoom, height: page.height * zoom, bgcolor: '#fff', boxShadow: '0 8px 28px rgba(0,0,0,.38)' }}>
+              <Box component="img" src={page.imageUrl} alt={`Estimate page ${page.pageNumber}`} sx={{ display: 'block', width: '100%', height: '100%', pointerEvents: 'none' }} />
+              {pictures.map(({ image, imageIndex, lineIndex }) => {
+                if (imageIndex > 0) return null
+                const anchor = page.anchors[image.id]
+                const layout = layouts[image.id]
+                if (!anchor || !layout) return null
+                const scale = page.width / 612 * zoom
+                const linePictures = pictures
+                  .filter((picture) => picture.lineIndex === lineIndex)
+                  .map((picture) => {
+                    const pictureLayout = layouts[picture.image.id] || normalizePictureLayout(picture.image, picture.image.pdfLayout || defaultPictureLayout(picture.image))
+                    return {
+                      ...picture,
+                      layout: pictureLayout,
+                      height: pictureLayout.width / resolveProductImageAspect(picture.image),
+                    }
+                  })
+                const pictureRailWidth = Math.max(...linePictures.map((picture) => picture.layout.width))
+                const pictureRailHeight = linePictures.reduce((total, picture, pictureIndex) => total + picture.height + (pictureIndex > 0 ? 4 : 0), 0)
+                const pictureX = Math.min(layout.x, PDF_PRODUCT_LAYOUT_WIDTH - pictureRailWidth)
+                const sourceLine = quote.lineItems?.find((lineItem) => (lineItem.images || []).some((lineImage) => lineImage.id === image.id))
+                const childLines = sourceLine?.id
+                  ? (quote.lineItems || []).filter((lineItem) => lineItem.parentLineId === sourceLine.id)
+                  : []
+                const descriptionText = [
+                  sourceLine?.description,
+                  sourceLine?.detailLabel,
+                  ...childLines.flatMap((lineItem) => [lineItem.detailLabel, lineItem.description]),
+                ].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim()
+                const pictureOnLeft = pictureX < (PDF_PRODUCT_LAYOUT_WIDTH - pictureRailWidth) / 2
+                const descriptionLeft = anchor.x * zoom - anchor.layoutX * scale
+                const trailingSpace = Math.max(0, PDF_PRODUCT_LAYOUT_WIDTH - pictureX - pictureRailWidth)
+
+                return (
+                  <Box
+                    key={image.id}
+                    sx={{
+                      position: 'absolute',
+                      left: descriptionLeft,
+                      top: anchor.y * zoom,
+                      width: PDF_PRODUCT_LAYOUT_WIDTH * scale,
+                      minHeight: Math.max(pictureRailHeight * scale, (anchor.height || 0) * zoom),
+                      bgcolor: '#fff',
+                      color: '#172033',
+                      fontFamily: 'Arial, sans-serif',
+                      fontSize: 9 * scale,
+                      lineHeight: 1.15,
+                      display: 'flow-root',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    <Box
+                      aria-label={image.name || 'Quote picture'}
+                      onPointerDown={(event) => startInteraction('move', image, scale, event)}
+                      onPointerMove={continueInteraction}
+                      onPointerUp={finishInteraction}
+                      onPointerCancel={finishInteraction}
+                      sx={{
+                        position: 'relative',
+                        float: pictureOnLeft ? 'left' : 'right',
+                        ml: `${(pictureOnLeft ? pictureX : PDF_PRODUCT_LAYOUT_GAP) * scale}px`,
+                        mr: `${(pictureOnLeft ? PDF_PRODUCT_LAYOUT_GAP : trailingSpace) * scale}px`,
+                        width: pictureRailWidth * scale,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        gap: `${4 * scale}px`,
+                        cursor: 'grab',
+                        touchAction: 'none',
+                        userSelect: 'none',
+                        '&:active': { cursor: 'grabbing' },
+                      }}
+                    >
+                      {linePictures.map((picture) => (
+                        <Box
+                          key={picture.image.id}
+                          sx={{
+                            position: 'relative',
+                            width: picture.layout.width * scale,
+                            height: picture.height * scale,
+                            border: '2px solid #b1161b',
+                            borderRadius: 0.5,
+                            bgcolor: '#fff',
+                            boxShadow: '0 4px 14px rgba(0,0,0,.25)',
+                          }}
+                        >
+                          <Box component="img" src={picture.image.url} alt={picture.image.name || 'Quote picture'} draggable={false} sx={{ width: '100%', height: '100%', display: 'block', objectFit: 'contain', pointerEvents: 'none' }} />
+                          <Box aria-label={`Resize ${picture.image.name || 'quote picture'}`} onPointerDown={(event) => startInteraction('resize', picture.image, scale, event)} sx={{ position: 'absolute', right: -8, bottom: -8, width: 20, height: 20, borderRadius: '50%', bgcolor: '#b1161b', border: '3px solid #fff', boxShadow: '0 1px 5px rgba(0,0,0,.35)', cursor: 'nwse-resize' }} />
+                        </Box>
+                      ))}
+                    </Box>
+                    <Box component="span">{descriptionText}</Box>
+                  </Box>
+                )
+              })}
+            </Box>
+          ))}
+        </Stack>
+      )}
+    </>
+  )
+
+  const actions = (
+    <>
+        {pictures.length ? <Button onClick={resetPictureLayouts}>Reset All</Button> : null}
+        <Box sx={{ flex: 1 }} />
+        {!embedded ? <Button onClick={onCancel}>Cancel</Button> : null}
+    </>
+  )
+
+  if (embedded) {
+    return <Box sx={{ bgcolor: '#525659', border: 1, borderColor: 'divider', borderRadius: 1, overflow: 'hidden' }}><Box sx={{ maxHeight: '72vh', overflow: 'auto' }}>{workspace}</Box>{hideEmbeddedActions ? null : <Stack direction="row" spacing={1} sx={{ px: 1.5, py: 1, bgcolor: '#fff' }}>{actions}</Stack>}</Box>
+  }
 
   return (
     <Dialog open={open} onClose={onCancel} fullScreen>
-      <DialogTitle sx={{ py: 1.2 }}>
-        <Stack direction="row" alignItems="center" justifyContent="space-between">
-          <Box>Actual Estimate PDF — Arrange Pictures</Box>
-          <IconButton onClick={onCancel}><CloseRoundedIcon /></IconButton>
-        </Stack>
-      </DialogTitle>
-      <DialogContent dividers sx={{ p: 0, bgcolor: '#525659' }}>
-        <Box sx={{ position: 'sticky', top: 0, zIndex: 5, px: 2, py: 1, bgcolor: '#eef5fb', borderBottom: '1px solid #b8cadc' }}>
-          <Alert severity="info" icon={<OpenWithRoundedIcon />} sx={{ py: 0 }}>
-            This is the same PDF used for printing. Drag a picture to move it; drag its red corner to resize it.
-          </Alert>
-        </Box>
-        {isRendering ? (
-          <Stack alignItems="center" spacing={1.5} sx={{ py: 8, color: '#fff' }}><CircularProgress color="inherit" /><Typography>Rendering the actual estimate…</Typography></Stack>
-        ) : renderError ? (
-          <Alert severity="error" sx={{ m: 2 }}>{renderError}</Alert>
-        ) : (
-          <Stack spacing={2.5} alignItems="center" sx={{ p: 2.5 }}>
-            {pages.map((page) => (
-              <Box key={page.pageNumber} sx={{ position: 'relative', width: page.width, height: page.height, bgcolor: '#fff', boxShadow: '0 8px 28px rgba(0,0,0,.38)' }}>
-                <Box component="img" src={page.imageUrl} alt={`Estimate page ${page.pageNumber}`} sx={{ display: 'block', width: '100%', height: '100%', pointerEvents: 'none' }} />
-                {pictures.map(({ image }) => {
-                  const anchor = page.anchors[image.id]
-                  const layout = layouts[image.id]
-                  if (!anchor || !layout) return null
-                  const scale = page.width / 612
-                  const height = layout.width / resolveProductImageAspect(image)
-                  return (
-                    <Box key={image.id} onPointerDown={(event) => startInteraction('move', image, scale, event)} onPointerMove={continueInteraction} onPointerUp={() => { interactionRef.current = null }} onPointerCancel={() => { interactionRef.current = null }} sx={{ position: 'absolute', left: anchor.x + layout.x * scale, top: anchor.y + layout.y * scale, width: layout.width * scale, height: height * scale, border: '2px solid #b1161b', borderRadius: 0.5, bgcolor: '#fff', boxShadow: '0 4px 14px rgba(0,0,0,.25)', cursor: 'grab', touchAction: 'none', userSelect: 'none', '&:active': { cursor: 'grabbing' } }}>
-                      <Box component="img" src={image.url} alt={image.name || 'Quote picture'} draggable={false} sx={{ width: '100%', height: '100%', display: 'block', objectFit: 'contain', pointerEvents: 'none' }} />
-                      <Box aria-label="Resize picture" onPointerDown={(event) => startInteraction('resize', image, scale, event)} onPointerMove={continueInteraction} onPointerUp={() => { interactionRef.current = null }} onPointerCancel={() => { interactionRef.current = null }} sx={{ position: 'absolute', right: -8, bottom: -8, width: 20, height: 20, borderRadius: '50%', bgcolor: '#b1161b', border: '3px solid #fff', boxShadow: '0 1px 5px rgba(0,0,0,.35)', cursor: 'nwse-resize' }} />
-                    </Box>
-                  )
-                })}
-              </Box>
-            ))}
-          </Stack>
-        )}
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={() => updateLayouts(Object.fromEntries(pictures.map(({ image }) => [image.id, normalizePictureLayout(image, defaultPictureLayout(image))])))}>Reset All</Button>
-        <Box sx={{ flex: 1 }} />
-        <Button onClick={onCancel}>Cancel</Button>
-        <Button variant="contained" disabled={isRendering || pages.length === 0} onClick={() => onSave(pictures.map(({ lineIndex, image }) => ({ lineIndex, imageId: image.id, layout: normalizePictureLayout(image, layoutsRef.current[image.id] || defaultPictureLayout(image)) })))}>Save Picture Layout</Button>
-      </DialogActions>
+      <DialogTitle sx={{ py: 1.2 }}><Stack direction="row" alignItems="center" justifyContent="space-between"><Box>Actual Estimate PDF — Arrange Pictures</Box><IconButton onClick={onCancel}><CloseRoundedIcon /></IconButton></Stack></DialogTitle>
+      <DialogContent dividers sx={{ p: 0, bgcolor: '#525659' }}>{workspace}</DialogContent>
+      <DialogActions>{actions}</DialogActions>
     </Dialog>
   )
 })
@@ -1152,77 +1402,5 @@ export const QuotePdfPreviewDialog = memo(function QuotePdfPreviewDialog({
         </Button>
       </DialogActions>
     </Dialog>
-  )
-})
-
-export const QuotePdfInlinePreview = memo(function QuotePdfInlinePreview({
-  quote,
-  settings,
-  onArrangePictures,
-}: {
-  quote: CrmQuote
-  settings: CrmQuotePrintSettings
-  onArrangePictures: () => void
-}) {
-  const termsQuery = useQuery({
-    queryKey: QUERY_KEYS.crmDocumentTerms(quote.dealerSourceId || ''),
-    queryFn: () => fetchCrmDocumentTerms(quote.dealerSourceId),
-  })
-  const quoteTerms = useMemo(
-    () => termsQuery.data?.terms.filter((term) => term.documentType === 'quote'),
-    [termsQuery.data?.terms],
-  )
-  const document = useMemo(
-    () => <NativeQuotePdfDocument quote={quote} settings={settings} quoteTerms={quoteTerms} />,
-    [quote, quoteTerms, settings],
-  )
-  const pictures = useMemo(() => (quote.lineItems || []).flatMap((lineItem, lineIndex) => (
-    (lineItem.images || []).map((image) => ({ image, lineIndex }))
-  )), [quote.lineItems])
-
-  return (
-    <Stack spacing={1.25}>
-      {pictures.length ? (
-        <Box>
-          <Typography variant="subtitle2" fontWeight={800}>Pictures</Typography>
-          <Typography variant="caption" color="text.secondary">
-            Click any picture to move or resize it directly on the PDF.
-          </Typography>
-          <Stack direction="row" spacing={1} sx={{ mt: 1, overflowX: 'auto', pb: 0.5 }}>
-            {pictures.map(({ image, lineIndex }) => (
-              <Box
-                component="button"
-                type="button"
-                key={`${lineIndex}-${image.id}`}
-                onClick={onArrangePictures}
-                aria-label={`Arrange picture ${image.name || lineIndex + 1} in PDF`}
-                sx={{
-                  width: 92,
-                  height: 72,
-                  p: 0.5,
-                  flex: '0 0 auto',
-                  border: '2px solid',
-                  borderColor: 'primary.main',
-                  borderRadius: 1.5,
-                  bgcolor: '#fff',
-                  cursor: 'pointer',
-                  overflow: 'hidden',
-                  '&:hover': { boxShadow: 3, transform: 'translateY(-1px)' },
-                }}
-              >
-                <Box component="img" src={image.url} alt={image.name || `Quote item ${lineIndex + 1}`} sx={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }} />
-              </Box>
-            ))}
-          </Stack>
-        </Box>
-      ) : (
-        <Alert severity="info">Add product pictures in Quote Lines to arrange them in the PDF.</Alert>
-      )}
-      <Box sx={{ height: { xs: 520, md: 650 }, overflow: 'hidden', borderRadius: 1.5, border: 1, borderColor: 'divider', bgcolor: '#525659' }}>
-        <PDFViewer width="100%" height="100%" showToolbar>
-          {document}
-        </PDFViewer>
-      </Box>
-    </Stack>
   )
 })

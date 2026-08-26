@@ -18,6 +18,21 @@ type ViewerModel = {
   glbUrl?: string | null
   embedUrl: string | null
   status?: 'processing' | 'ready' | 'failed'
+  viewerSettings?: {
+    exposure?: number
+    shadowIntensity?: number
+    toneMapping?: 'neutral' | 'aces' | 'agx' | 'cineon'
+    environmentImage?: 'even' | 'neutral' | 'legacy'
+    backgroundColor?: string
+    autoRotate?: boolean
+    fieldOfView?: number
+  }
+}
+
+// 'even' is Arnold's azimuthally uniform studio lighting: colors stay accurate
+// and stable while the model rotates, matching how SketchUp shades models.
+function modelViewerEnvironmentImage(environmentImage: 'even' | 'neutral' | 'legacy') {
+  return environmentImage === 'even' ? '/3d-backgrounds/even-studio.png' : environmentImage
 }
 
 type ViewerData = {
@@ -30,6 +45,16 @@ type ViewerData = {
   glbUrl?: string | null
   embedUrl: string | null
   models?: ViewerModel[]
+}
+
+const defaultViewerSettings = {
+  exposure: 1.08,
+  shadowIntensity: 0.8,
+  toneMapping: 'neutral' as const,
+  environmentImage: 'even' as const,
+  backgroundColor: '#f4f2ed',
+  autoRotate: true,
+  fieldOfView: 30,
 }
 
 function modelDisplayLabel(model: Pick<ViewerModel, 'label' | 'fileName'>, index = 0) {
@@ -93,6 +118,7 @@ export default function Public3dViewerPage() {
     return sourceModels.map((model, index) => ({ ...model, label: modelDisplayLabel(model, index) }))
   }, [data])
   const activeModel = models[Math.min(activeIndex, Math.max(0, models.length - 1))]
+  const activeViewerSettings = { ...defaultViewerSettings, ...activeModel?.viewerSettings }
   useEffect(() => {
     if (!activeModel?.embedUrl && !activeModel?.glbUrl) return undefined
     if (revealTimerRef.current !== null) window.clearTimeout(revealTimerRef.current)
@@ -301,10 +327,12 @@ export default function Public3dViewerPage() {
                 src={`${activeModel.glbUrl}${activeModel.glbUrl.includes('?') ? '&' : '?'}reload=${viewerNonce}`}
                 alt={`${data.projectName} – ${activeModel.label}`}
                 camera-controls
-                auto-rotate
-                shadow-intensity="0.8"
-                exposure="1"
-                environment-image="neutral"
+                auto-rotate={activeViewerSettings.autoRotate || undefined}
+                shadow-intensity={activeViewerSettings.shadowIntensity}
+                exposure={activeViewerSettings.exposure}
+                environment-image={modelViewerEnvironmentImage(activeViewerSettings.environmentImage)}
+                tone-mapping={activeViewerSettings.toneMapping}
+                field-of-view={`${activeViewerSettings.fieldOfView}deg`}
                 onLoad={() => setViewerLoading(false)}
                 sx={{
                   position: 'absolute',
@@ -312,8 +340,8 @@ export default function Public3dViewerPage() {
                   width: '100%',
                   height: '100%',
                   display: 'block',
-                  bgcolor: '#f4f2ed',
-                  '--poster-color': '#f4f2ed',
+                  bgcolor: activeViewerSettings.backgroundColor,
+                  '--poster-color': activeViewerSettings.backgroundColor,
                 }}
               />
             ) : (

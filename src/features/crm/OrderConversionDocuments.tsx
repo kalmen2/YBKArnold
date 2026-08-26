@@ -129,6 +129,20 @@ const styles = StyleSheet.create({
   infoRow: { flexDirection: 'row', marginBottom: 3.5, lineHeight: 1.18 },
   label: { width: 72, fontSize: 7, color: '#66788a', textTransform: 'uppercase' },
   value: { flex: 1, fontSize: 8.2, fontFamily: 'Helvetica-Bold' },
+  achBox: { marginTop: 8, borderWidth: 1, borderColor: '#cbd6df', backgroundColor: '#f7f9fb' },
+  achHeader: { paddingVertical: 5, paddingHorizontal: 10, backgroundColor: '#0f4c81', color: '#fff' },
+  achTitle: { fontSize: 9, fontFamily: 'Helvetica-Bold', letterSpacing: 0.35, textTransform: 'uppercase' },
+  achContent: { flexDirection: 'row', height: 76 },
+  achInstructions: { width: '53%', paddingVertical: 7, paddingHorizontal: 10 },
+  achIntro: { fontSize: 7.4, color: '#334a5f', lineHeight: 1.3, marginBottom: 4 },
+  achBulletRow: { flexDirection: 'row', marginBottom: 1.6 },
+  achBullet: { width: 10, color: '#b51f2e', fontFamily: 'Helvetica-Bold' },
+  achBulletText: { flex: 1, fontSize: 7.2, color: '#15283b' },
+  achBankDetails: { width: '47%', paddingVertical: 7, paddingHorizontal: 10, borderLeftWidth: 1, borderLeftColor: '#cbd6df', backgroundColor: '#fff' },
+  achBankRow: { flexDirection: 'row', marginBottom: 2.3, lineHeight: 1.15 },
+  achBankLabel: { width: 58, fontSize: 6.4, color: '#66788a', textTransform: 'uppercase' },
+  achBankValue: { flex: 1, fontSize: 7.2, fontFamily: 'Helvetica-Bold', color: '#15283b' },
+  orderConfirmationBottom: { marginTop: 'auto', paddingTop: 10 },
   depositBanner: { width: '60%', marginRight: 8, paddingVertical: 11, paddingHorizontal: 10, textAlign: 'center', fontSize: 10.5, fontFamily: 'Helvetica-Bold', letterSpacing: 0.7, justifyContent: 'center' },
   depositRequired: { backgroundColor: '#f9ecee', color: '#a9192d', borderLeftWidth: 4, borderLeftColor: '#b51f2e' },
   depositNotRequired: { backgroundColor: '#eef4f8', color: '#0f4c81', borderLeftWidth: 4, borderLeftColor: '#0f4c81' },
@@ -325,6 +339,45 @@ function Metadata({ data }: { data: OrderDocumentData }) {
   </View>
 }
 
+function AchRemittanceInformation() {
+  const remittanceDetails = [
+    'Customer name',
+    'Acknowledgment number',
+    'Invoice number',
+    'Any additional information needed for processing',
+  ]
+  const bankDetails = [
+    ['Bank', 'JPMorgan Chase Bank, N.A.'],
+    ['Address', '270 Park Avenue, New York, NY 10017'],
+    ['Telephone', '1 (800) 935-9935'],
+    ['Routing #', '021000021'],
+    ['Account #', '2908362951'],
+  ]
+
+  return <View style={styles.achBox} wrap={false}>
+    <View style={styles.achHeader}>
+      <Text style={styles.achTitle}>ACH Remittance Information</Text>
+    </View>
+    <View style={styles.achContent}>
+      <View style={styles.achInstructions}>
+        <Text style={styles.achIntro}>
+          To ensure prompt and accurate payment processing, please send a remittance notification to Arnold Contract that includes:
+        </Text>
+        {remittanceDetails.map((detail) => <View key={detail} style={styles.achBulletRow}>
+          <Text style={styles.achBullet}>-</Text>
+          <Text style={styles.achBulletText}>{detail}</Text>
+        </View>)}
+      </View>
+      <View style={styles.achBankDetails}>
+        {bankDetails.map(([label, value]) => <View key={label} style={styles.achBankRow}>
+          <Text style={styles.achBankLabel}>{label}</Text>
+          <Text style={styles.achBankValue}>{value}</Text>
+        </View>)}
+      </View>
+    </View>
+  </View>
+}
+
 function Lines({ data }: { data: OrderDocumentData }) {
   const lines = mergeOrderDocumentSublines(data.lines)
   const depositPercent = data.depositRequired ? Number(data.depositPercent || 50) : 0
@@ -467,12 +520,15 @@ export function OrderDocument({ data, settings, terms }: { data: OrderDocumentDa
       </View>
       <Metadata data={data} />
       <Lines data={data} />
-      <View wrap={false}>
-        <View style={styles.nextSteps}>
-          <Text style={styles.nextStepsTitle}>{data.depositRequired ? 'Deposit and Processing Terms and Conditions' : 'Processing Terms and Conditions'}</Text>
-          <Text style={styles.nextStepsText}>{depositInstructions}{`\n\n`}{conditionsText}</Text>
+      <View style={styles.orderConfirmationBottom}>
+        <View wrap={false}>
+          <AchRemittanceInformation />
+          <View style={styles.nextSteps}>
+            <Text style={styles.nextStepsTitle}>{data.depositRequired ? 'Deposit and Processing Terms and Conditions' : 'Processing Terms and Conditions'}</Text>
+            <Text style={styles.nextStepsText}>{depositInstructions}{`\n\n`}{conditionsText}</Text>
+          </View>
+          <Text style={styles.managers}>Project Managers: {settings.projectManagers}</Text>
         </View>
-        <Text style={styles.managers}>Project Managers: {settings.projectManagers}</Text>
       </View>
       <Text style={styles.footer} fixed>Arnold Contract | 120 Coit Street, Irvington, NJ 07111 | 866-425-6529</Text>
     </Page>

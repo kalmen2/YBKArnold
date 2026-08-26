@@ -16,25 +16,53 @@ import {
   DialogTitle,
   Divider,
   Paper,
+  FormControl,
+  FormControlLabel,
+  InputLabel,
+  MenuItem,
+  Select,
+  Slider,
   Stack,
+  Switch,
   TextField,
   Typography,
 } from '@mui/material'
 import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type ElementType } from 'react'
+import '@google/model-viewer'
 import { firebaseStorage } from '../../auth/firebase'
 import { sanitizeStoragePathSegment } from '../../lib/fileUtils'
 import {
   commitTrimbleQuoteModelUpload,
   fetchTrimbleConnectionStatus,
   initiateTrimbleQuoteModelUpload,
+  modelViewerEnvironmentImage,
   publishGlbQuoteModels,
   publishSketchUpShareLink,
+  prepareQuote3dCustomerModel,
   removeTrimbleQuoteModel,
+  saveQuote3dViewerSettings,
   startTrimbleConnection,
   uploadTrimbleSavedQuoteModels,
+  type Crm3dViewerSettings,
   type CrmQuote,
 } from './api'
+
+const SmoothModelViewer = 'model-viewer' as unknown as ElementType
+
+const defaultViewerSettings: Required<Crm3dViewerSettings> = {
+  exposure: 1.08,
+  shadowIntensity: 0.8,
+  toneMapping: 'neutral',
+  environmentImage: 'even',
+  backgroundColor: '#f4f2ed',
+  autoRotate: true,
+  fieldOfView: 30,
+}
+
+function resolveViewerSettings(settings?: Crm3dViewerSettings | null): Required<Crm3dViewerSettings> {
+  return { ...defaultViewerSettings, ...settings }
+}
 
 type Props = {
   quote: CrmQuote
@@ -45,6 +73,10 @@ type Props = {
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : 'The 3D model action could not be completed.'
+}
+
+function isTrimbleReconnectError(message: string) {
+  return /trimble session refresh failed|invalid refresh token|trimble must be connected again/i.test(message)
 }
 
 function savedSketchUpName(name: string | null | undefined) {
@@ -86,24 +118,27 @@ export default function Quote3dModelPanel({ quote, revisionNumber, canManage, on
   const [connected, setConnected] = useState<boolean | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [needsReconnect, setNeedsReconnect] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
+  const [viewerEditorOpen, setViewerEditorOpen] = useState(false)
+  const [viewerSettings, setViewerSettings] = useState<Required<Crm3dViewerSettings>>(defaultViewerSettings)
   const [selectedUrls, setSelectedUrls] = useState<string[]>([])
   const [sketchUpShareUrl, setSketchUpShareUrl] = useState('')
 
-  useEffect(() => {
-    let active = true
-    fetchTrimbleConnectionStatus()
-      .then((status) => {
-        if (!active) return
-        setConnected(status.connected)
-      })
-      .catch((requestError) => {
-        if (!active) return
-        setConnected(false)
-        setError(errorMessage(requestError))
-      })
-    return () => { active = false }
+  const refreshTrimbleConnection = useCallback(async () => {
+    try {
+      const status = await fetchTrimbleConnectionStatus()
+      setConnected(status.connected)
+      return status.connected
+    } catch {
+      setConnected(false)
+      return false
+    }
   }, [])
+
+  useEffect(() => {
+    void refreshTrimbleConnection()
+  }, [refreshTrimbleConnection])
 
   const connect = async () => {
     setBusy(true)
@@ -115,6 +150,17 @@ export default function Quote3dModelPanel({ quote, revisionNumber, canManage, on
       setError(errorMessage(requestError))
       setBusy(false)
     }
+  }
+
+  const showTrimbleError = (requestError: unknown) => {
+    const message = errorMessage(requestError)
+    if (isTrimbleReconnectError(message)) {
+      setConnected(false)
+      setNeedsReconnect(true)
+      setError('Your Trimble session expired. Reconnect Trimble to continue uploading SketchUp files.')
+      return
+    }
+    setError(message)
   }
 
   const upload = async (file: File) => {
@@ -140,7 +186,8 @@ export default function Quote3dModelPanel({ quote, revisionNumber, canManage, on
           revisionNumber,
         )
       } else if (/\.skp$/i.test(file.name)) {
-        if (!connected) throw new Error('Connect Trimble before publishing a SketchUp .skp file, or upload a smooth .glb web model instead.')
+        const trimbleConnected = connected || await refreshTrimbleConnection()
+        if (!trimbleConnected) throw new Error('Connect Trimble before publishing a SketchUp .skp file, or upload a smooth .glb web model instead.')
         const session = await initiateTrimbleQuoteModelUpload(quote.id, file, revisionNumber)
         const uploadResponse = await fetch(session.uploadUrl, { method: 'PUT', body: file })
         if (!uploadResponse.ok) throw new Error(`SketchUp upload failed (${uploadResponse.status}).`)
@@ -150,7 +197,7 @@ export default function Quote3dModelPanel({ quote, revisionNumber, canManage, on
       }
       await onChanged()
     } catch (requestError) {
-      setError(errorMessage(requestError))
+      showTrimbleError(requestError)
     } finally {
       setBusy(false)
       if (inputRef.current) inputRef.current.value = ''
@@ -165,7 +212,7 @@ export default function Quote3dModelPanel({ quote, revisionNumber, canManage, on
       await removeTrimbleQuoteModel(quote.id, revisionNumber)
       await onChanged()
     } catch (requestError) {
-      setError(errorMessage(requestError))
+      showTrimbleError(requestError)
     } finally {
       setBusy(false)
     }
@@ -181,12 +228,48 @@ export default function Quote3dModelPanel({ quote, revisionNumber, canManage, on
   const publishedModels = model?.models?.length
     ? model.models
     : (model?.fileName ? [{ fileName: model.fileName, label: sketchUpViewLabel(model.fileName) }] : [])
+  const primaryGlbModel = publishedModels.find((entry) => entry.viewerType === 'glb' && entry.webModelUrl)
+  const primaryGlbUrl = primaryGlbModel?.webModelUrl || (model?.viewerType === 'glb' ? model.webModelUrl || null : null)
+
+  const openViewerEditor = () => {
+    setViewerSettings(resolveViewerSettings(model?.viewerSettings))
+    setError('')
+    setViewerEditorOpen(true)
+  }
+
+  const saveViewerSettings = async () => {
+    setBusy(true)
+    setError('')
+    try {
+      await saveQuote3dViewerSettings(quote.id, viewerSettings, revisionNumber)
+      setViewerEditorOpen(false)
+      await onChanged()
+    } catch (requestError) {
+      setError(errorMessage(requestError))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const prepareCustomerModel = async () => {
+    setBusy(true)
+    setError('')
+    try {
+      await prepareQuote3dCustomerModel(quote.id, revisionNumber)
+      await onChanged()
+    } catch (requestError) {
+      setError(errorMessage(requestError))
+    } finally {
+      setBusy(false)
+    }
+  }
 
   const openPicker = () => {
     setSelectedUrls([])
     setSketchUpShareUrl('')
     setError('')
     setPickerOpen(true)
+    void refreshTrimbleConnection()
   }
 
   const publishSharedSketchUpView = async () => {
@@ -200,7 +283,7 @@ export default function Quote3dModelPanel({ quote, revisionNumber, canManage, on
       setPickerOpen(false)
       await onChanged()
     } catch (requestError) {
-      setError(errorMessage(requestError))
+      showTrimbleError(requestError)
     } finally {
       setBusy(false)
     }
@@ -238,7 +321,8 @@ export default function Quote3dModelPanel({ quote, revisionNumber, canManage, on
           revisionNumber,
         )
       } else {
-        if (!connected) throw new Error('Connect Trimble before publishing SketchUp .skp files.')
+        const trimbleConnected = connected || await refreshTrimbleConnection()
+        if (!trimbleConnected) throw new Error('Connect Trimble before publishing SketchUp .skp files.')
         await uploadTrimbleSavedQuoteModels(
           quote.id,
           selectedDocuments.map((document, index) => ({
@@ -252,7 +336,7 @@ export default function Quote3dModelPanel({ quote, revisionNumber, canManage, on
       setPickerOpen(false)
       await onChanged()
     } catch (requestError) {
-      setError(errorMessage(requestError))
+      showTrimbleError(requestError)
     } finally {
       setBusy(false)
     }
@@ -282,7 +366,7 @@ export default function Quote3dModelPanel({ quote, revisionNumber, canManage, on
               <Typography variant="body2" color="text.secondary">
                 {model
                   ? 'Customers receive a permanent Arnold link for interactive 3D viewing.'
-                  : 'Use a SketchUp Share Link for the exact SketchUp colors and lines, or publish an SKP/GLB file.'}
+                  : 'Export the SketchUp model as a GLB and publish it for a smooth, customer-ready 3D presentation.'}
               </Typography>
               {publishedModels.length ? (
                 <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ mt: 1 }}>
@@ -298,6 +382,11 @@ export default function Quote3dModelPanel({ quote, revisionNumber, canManage, on
                   Open 3D view
                 </Button>
               ) : null}
+              {canManage && primaryGlbUrl ? (
+                <Button disabled={busy} variant="outlined" startIcon={<ViewInArRoundedIcon />} onClick={openViewerEditor} sx={{ textTransform: 'none' }}>
+                  Preview & edit 3D view
+                </Button>
+              ) : null}
               {canManage ? (
                 <Button disabled={busy} variant={model ? 'outlined' : 'contained'} startIcon={busy ? <CircularProgress size={16} /> : <CloudUploadRoundedIcon />} onClick={openPicker} sx={{ textTransform: 'none' }}>
                   {model ? 'Change 3D views' : 'Publish 3D views'}
@@ -305,7 +394,7 @@ export default function Quote3dModelPanel({ quote, revisionNumber, canManage, on
               ) : null}
               {canManage && connected === false ? (
                 <Button disabled={busy} variant="contained" onClick={() => void connect()} sx={{ textTransform: 'none' }}>
-                  Connect Trimble for SKP
+                  {needsReconnect ? 'Reconnect Trimble' : 'Connect Trimble for SKP'}
                 </Button>
               ) : null}
               {canManage && model ? (
@@ -336,8 +425,22 @@ export default function Quote3dModelPanel({ quote, revisionNumber, canManage, on
         </DialogTitle>
         <DialogContent>
           <Stack spacing={2}>
+            <Alert severity="success">
+              Recommended: in SketchUp use File → Export → 3D Model → GLTF Binary (.glb), then upload it here. Arnold automatically restores the exact SketchUp colors and materials and prepares a fast, smooth customer viewer — no SketchUp login, interface, or visible cursors.
+            </Alert>
+            <Button
+              disabled={busy}
+              variant="contained"
+              size="large"
+              startIcon={<CloudUploadRoundedIcon />}
+              onClick={() => inputRef.current?.click()}
+              sx={{ justifyContent: 'flex-start', textTransform: 'none', py: 1.4 }}
+            >
+              Upload a .glb or .skp file
+            </Button>
+            <Divider><Typography variant="caption" color="text.secondary">OR USE A SKETCHUP SHARE LINK</Typography></Divider>
             <Alert severity="info">
-              Recommended for exact SketchUp colors and lines: paste a SketchUp shared-model link. Arnold opens it in presentation mode without the editing sidebars.
+              A share link opens SketchUp’s own viewer: customers see the SketchUp interface and may see other viewers’ cursors. Prefer the GLB upload for customer presentations.
             </Alert>
             <TextField
               label="SketchUp Share Link"
@@ -349,28 +452,14 @@ export default function Quote3dModelPanel({ quote, revisionNumber, canManage, on
             />
             <Button
               disabled={busy || !sketchUpShareUrl.trim()}
-              variant="contained"
+              variant="outlined"
               size="large"
               startIcon={<ViewInArRoundedIcon />}
               onClick={() => void publishSharedSketchUpView()}
               sx={{ justifyContent: 'flex-start', textTransform: 'none', py: 1.4 }}
             >
-              Use exact SketchUp view
+              Use SketchUp share link
             </Button>
-            <Divider><Typography variant="caption" color="text.secondary">OR UPLOAD A MODEL FILE</Typography></Divider>
-            <Button
-              disabled={busy}
-              variant="outlined"
-              size="large"
-              startIcon={<CloudUploadRoundedIcon />}
-              onClick={() => inputRef.current?.click()}
-              sx={{ justifyContent: 'flex-start', textTransform: 'none', py: 1.4 }}
-            >
-              Upload a .glb or .skp file
-            </Button>
-            <Alert severity="success">
-              For smooth curves without segment lines, export from SketchUp as GLTF Binary (.glb), then upload that file here.
-            </Alert>
             <Divider><Typography variant="caption" color="text.secondary">OR USE CURRENT RENDERINGS</Typography></Divider>
             {!renderingDocuments.length ? (
               <Alert severity="info">No files are currently saved in this quote’s Renderings section.</Alert>
@@ -421,7 +510,12 @@ export default function Quote3dModelPanel({ quote, revisionNumber, canManage, on
                 </Typography>
               </Stack>
             )}
-            {error ? <Alert severity="error">{error}</Alert> : null}
+            {error ? <Alert
+              severity="error"
+              action={needsReconnect ? <Button color="inherit" size="small" disabled={busy} onClick={() => void connect()}>Reconnect Trimble</Button> : undefined}
+            >
+              {error}
+            </Alert> : null}
           </Stack>
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2.5 }}>
@@ -435,6 +529,88 @@ export default function Quote3dModelPanel({ quote, revisionNumber, canManage, on
           >
             {busy ? 'Publishing…' : `Publish ${selectedUrls.length || ''} selected`}
           </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={viewerEditorOpen} onClose={busy ? undefined : () => setViewerEditorOpen(false)} fullWidth maxWidth="lg">
+        <DialogTitle sx={{ pb: 1 }}>
+          <Typography variant="h6" fontWeight={900}>Preview & edit 3D view</Typography>
+          <Typography variant="body2" color="text.secondary">This is the same presentation customers see after you save it.</Typography>
+        </DialogTitle>
+        <DialogContent>
+          <Stack spacing={2}>
+            <Paper
+              variant="outlined"
+              sx={{ height: { xs: 330, md: 520 }, overflow: 'hidden', borderRadius: 2, bgcolor: viewerSettings.backgroundColor, position: 'relative' }}
+            >
+              {primaryGlbUrl ? (
+                <Box
+                  component={SmoothModelViewer}
+                  src={primaryGlbUrl}
+                  alt={`${quote.title} 3D model preview`}
+                  camera-controls
+                  auto-rotate={viewerSettings.autoRotate || undefined}
+                  shadow-intensity={viewerSettings.shadowIntensity}
+                  exposure={viewerSettings.exposure}
+                  environment-image={modelViewerEnvironmentImage(viewerSettings.environmentImage)}
+                  tone-mapping={viewerSettings.toneMapping}
+                  field-of-view={`${viewerSettings.fieldOfView}deg`}
+                  sx={{ width: '100%', height: '100%', display: 'block', '--poster-color': viewerSettings.backgroundColor }}
+                />
+              ) : null}
+            </Paper>
+            <Alert severity="info">
+              Customer preparation creates a separate web-ready copy of this GLB. Your uploaded original remains unchanged.
+            </Alert>
+            <Stack direction={{ xs: 'column', md: 'row' }} spacing={2}>
+              <Stack spacing={1.2} sx={{ flex: 1 }}>
+                <Typography variant="subtitle2" fontWeight={850}>Lighting and color</Typography>
+                <Typography variant="caption" color="text.secondary">Exposure</Typography>
+                <Slider value={viewerSettings.exposure} min={0.5} max={1.5} step={0.05} valueLabelDisplay="auto" onChange={(_, value) => setViewerSettings((current) => ({ ...current, exposure: Number(value) }))} />
+                <Typography variant="caption" color="text.secondary">Shadow strength</Typography>
+                <Slider value={viewerSettings.shadowIntensity} min={0} max={2} step={0.1} valueLabelDisplay="auto" onChange={(_, value) => setViewerSettings((current) => ({ ...current, shadowIntensity: Number(value) }))} />
+                <FormControl fullWidth size="small">
+                  <InputLabel id="tone-mapping-label">Color rendering</InputLabel>
+                  <Select labelId="tone-mapping-label" label="Color rendering" value={viewerSettings.toneMapping} onChange={(event) => setViewerSettings((current) => ({ ...current, toneMapping: event.target.value as Required<Crm3dViewerSettings>['toneMapping'] }))}>
+                    <MenuItem value="neutral">Accurate product color</MenuItem>
+                    <MenuItem value="aces">High-contrast studio</MenuItem>
+                    <MenuItem value="agx">Soft product studio</MenuItem>
+                    <MenuItem value="cineon">Warm presentation</MenuItem>
+                  </Select>
+                </FormControl>
+                <FormControl fullWidth size="small">
+                  <InputLabel id="environment-label">Lighting environment</InputLabel>
+                  <Select labelId="environment-label" label="Lighting environment" value={viewerSettings.environmentImage} onChange={(event) => setViewerSettings((current) => ({ ...current, environmentImage: event.target.value as Required<Crm3dViewerSettings>['environmentImage'] }))}>
+                    <MenuItem value="even">Even studio — true SketchUp colors</MenuItem>
+                    <MenuItem value="neutral">Neutral studio</MenuItem>
+                    <MenuItem value="legacy">Soft legacy studio</MenuItem>
+                  </Select>
+                </FormControl>
+              </Stack>
+              <Stack spacing={1.2} sx={{ flex: 1 }}>
+                <Typography variant="subtitle2" fontWeight={850}>Presentation</Typography>
+                <Typography variant="caption" color="text.secondary">Camera field of view</Typography>
+                <Slider value={viewerSettings.fieldOfView} min={15} max={55} step={1} valueLabelDisplay="auto" onChange={(_, value) => setViewerSettings((current) => ({ ...current, fieldOfView: Number(value) }))} />
+                <FormControlLabel control={<Switch checked={viewerSettings.autoRotate} onChange={(event) => setViewerSettings((current) => ({ ...current, autoRotate: event.target.checked }))} />} label="Rotate automatically when idle" />
+                <TextField
+                  label="Viewer background"
+                  type="color"
+                  value={viewerSettings.backgroundColor}
+                  onChange={(event) => setViewerSettings((current) => ({ ...current, backgroundColor: event.target.value }))}
+                  slotProps={{ inputLabel: { shrink: true } }}
+                  fullWidth
+                  size="small"
+                />
+                <Button variant="text" onClick={() => setViewerSettings(defaultViewerSettings)} sx={{ alignSelf: 'flex-start', textTransform: 'none' }}>Restore Arnold default</Button>
+              </Stack>
+            </Stack>
+            {error ? <Alert severity="error">{error}</Alert> : null}
+          </Stack>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2.5 }}>
+          <Button disabled={busy} onClick={() => setViewerEditorOpen(false)} sx={{ textTransform: 'none' }}>Cancel</Button>
+          <Button disabled={busy} variant="outlined" onClick={() => void prepareCustomerModel()} sx={{ textTransform: 'none' }}>{busy ? 'Preparing…' : 'Prepare customer model'}</Button>
+          <Button disabled={busy} variant="contained" onClick={() => void saveViewerSettings()} sx={{ textTransform: 'none' }}>{busy ? 'Saving…' : 'Save customer view'}</Button>
         </DialogActions>
       </Dialog>
     </>

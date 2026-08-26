@@ -19,7 +19,6 @@ import * as WebBrowser from 'expo-web-browser'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
-  Alert,
   AppState,
   Image,
   Linking,

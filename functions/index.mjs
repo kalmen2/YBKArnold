@@ -688,6 +688,7 @@ const {
   isApprovedAdminUser,
   isReviewerLoginEmail,
   normalizeEmail,
+  ownerEmail,
   slackAllowedChannelIds,
   slackBotToken,
   slackSigningSecret,
@@ -2713,6 +2714,8 @@ export const apiV1 = functions
   .region('us-central1')
   .runWith({
     timeoutSeconds: 300,
-    memory: '512MB',
+    // 3D model preparation (draco encode + texture recompression) needs the
+    // extra headroom on larger SketchUp exports.
+    memory: '1GB',
   })
   .https.onRequest(app)

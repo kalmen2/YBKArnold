@@ -78,6 +78,8 @@ import {
   fetchCrmQuoteDetails,
   fetchCrmDocumentTerms,
   fetchCrmQuotePrintSettings,
+  fetchCrmQuoteLineLibrary,
+  createCrmQuoteLineLibraryEntry,
   fetchCrmQuotes,
   fetchCrmSalesReps,
   markCrmQuoteFollowedUp,
@@ -105,6 +107,7 @@ import {
   type CrmQuote,
   type CrmQuoteChatMessage,
   type CrmQuotePrintSettings,
+  type CrmQuoteLineLibraryEntry,
 } from '../features/crm/api'
 import { resolveQuoteAgeDays } from '../features/crm/utils'
 import Quote3dModelPanel from '../features/crm/Quote3dModelPanel'
@@ -150,9 +153,6 @@ const QuotePdfPreviewDialog = lazy(() => import('../features/crm/NativeQuotePdf'
 })))
 const QuotePdfPictureLayoutDialog = lazy(() => import('../features/crm/NativeQuotePdf').then((module) => ({
   default: module.QuotePdfPictureLayoutDialog,
-})))
-const QuotePdfInlinePreview = lazy(() => import('../features/crm/NativeQuotePdf').then((module) => ({
-  default: module.QuotePdfInlinePreview,
 })))
 const DEFAULT_QUOTE_PRINT_SETTINGS: CrmQuotePrintSettings = {
   id: 'default',
@@ -468,6 +468,7 @@ type LineItemsEditorProps = {
   onAddImages: (index: number, images: PreparedQuoteImage[], replaceImageId?: string) => Promise<void>
   onRemoveImage: (lineIndex: number, imageId: string) => void
   onUpdateImageLayout: (lineIndex: number, imageId: string, layout: QuoteImagePdfLayout) => void
+  onInsertLibraryEntry: (entry: CrmQuoteLineLibraryEntry) => void
   isUploadingImage: boolean
   showPdfLayoutAction?: boolean
 }
@@ -669,6 +670,56 @@ function createEmptyLineItemFormState(parentLineId: string | null = null): Oppor
     extPrice: '',
     images: [],
   }
+}
+
+function cloneQuoteLineLibraryEntry(entry: CrmQuoteLineLibraryEntry) {
+  const idBySourceId = new Map<string, string>()
+  const sourceLines = Array.isArray(entry.lines) ? entry.lines : []
+
+  sourceLines.forEach((line) => {
+    idBySourceId.set(String(line.id || crypto.randomUUID()), crypto.randomUUID())
+  })
+
+  return sourceLines.map((line) => {
+    const sourceId = String(line.id || '')
+    return {
+      id: idBySourceId.get(sourceId) || crypto.randomUUID(),
+      parentLineId: line.parentLineId ? (idBySourceId.get(String(line.parentLineId)) || null) : null,
+      itemNumber: '',
+      detailLabel: String(line.detailLabel || ''),
+      description: String(line.description || ''),
+      qty: '',
+      unitPrice: '',
+      extPrice: '',
+      images: Array.isArray(line.images) ? line.images.map((image) => ({ ...image, id: crypto.randomUUID() })) : [],
+    }
+  }) satisfies OpportunityLineItemFormState[]
+}
+
+function insertQuoteLineLibraryEntry(
+  currentLines: OpportunityLineItemFormState[],
+  entry: CrmQuoteLineLibraryEntry,
+) {
+  const insertedLines = cloneQuoteLineLibraryEntry(entry)
+  if (insertedLines.length === 0) return currentLines
+
+  const emptyMainLineIndex = currentLines.findIndex((line) => (
+    !line.parentLineId
+    && !line.detailLabel.trim()
+    && !line.description.trim()
+    && !line.qty.trim()
+    && !line.unitPrice.trim()
+    && line.images.length === 0
+    && !currentLines.some((candidate) => candidate.parentLineId === line.id)
+  ))
+
+  if (emptyMainLineIndex >= 0) {
+    const nextLines = [...currentLines]
+    nextLines.splice(emptyMainLineIndex, 1, ...insertedLines)
+    return nextLines
+  }
+
+  return [...currentLines, ...insertedLines]
 }
 
 function calculateExtendedPrice(qty: string, unitPrice: string) {
@@ -1269,7 +1320,7 @@ function QuotePicturesPdfLayoutDialog({
         <Button onClick={() => setLayouts(Object.fromEntries(images.map(({ image }) => [image.id, normalizeQuoteImagePdfLayout(image, resolveDefaultQuoteImagePdfLayout(image))])))}>Reset All</Button>
         <Box sx={{ flex: 1 }} />
         <Button onClick={onCancel}>Cancel</Button>
-        <Button variant="contained" onClick={() => onSave(images.map(({ lineIndex, image }) => ({ lineIndex, imageId: image.id, layout: normalizeQuoteImagePdfLayout(image, layouts[image.id] || resolveDefaultQuoteImagePdfLayout(image)) })))}>Save Picture Layout</Button>
+        <Button variant="contained" onClick={() => onSave(images.map(({ lineIndex, image }) => ({ lineIndex, imageId: image.id, layout: normalizeQuoteImagePdfLayout(image, layouts[image.id] || resolveDefaultQuoteImagePdfLayout(image)) })))}>Done</Button>
       </DialogActions>
     </Dialog>
   )
@@ -2641,6 +2692,7 @@ function LineItemsEditor({
   onAddImages,
   onRemoveImage,
   onUpdateImageLayout,
+  onInsertLibraryEntry,
   isUploadingImage,
   showPdfLayoutAction = true,
 }: LineItemsEditorProps) {
@@ -2648,7 +2700,58 @@ function LineItemsEditor({
   const [cropTarget, setCropTarget] = useState<QuoteImageCropTarget | null>(null)
   const [isPictureLayoutOpen, setIsPictureLayoutOpen] = useState(false)
   const [imageEditError, setImageEditError] = useState('')
+  const [isLibraryOpen, setIsLibraryOpen] = useState(false)
+  const [librarySearch, setLibrarySearch] = useState('')
+  const [saveLibraryTargetIndex, setSaveLibraryTargetIndex] = useState<number | null>(null)
+  const [libraryNameDraft, setLibraryNameDraft] = useState('')
+  const [libraryError, setLibraryError] = useState('')
+  const [isSavingLibrary, setIsSavingLibrary] = useState(false)
+  const libraryQuery = useQuery({
+    queryKey: QUERY_KEYS.crmQuoteLineLibrary,
+    queryFn: () => fetchCrmQuoteLineLibrary(),
+    enabled: canEdit,
+    staleTime: 60 * 1000,
+  })
   const pictureCount = lineItems.reduce((total, lineItem) => total + lineItem.images.length, 0)
+  const visibleLibraryEntries = (libraryQuery.data?.entries || []).filter((entry) => (
+    entry.name.toLowerCase().includes(librarySearch.trim().toLowerCase())
+  ))
+
+  const saveLineToLibrary = async () => {
+    if (saveLibraryTargetIndex === null) return
+    const sourceLine = lineItems[saveLibraryTargetIndex]
+    if (!sourceLine || sourceLine.parentLineId) return
+    const linesToSave = [sourceLine, ...lineItems.filter((line) => line.parentLineId === sourceLine.id)]
+    const name = libraryNameDraft.trim()
+    if (!name) {
+      setLibraryError('Enter a name for this library item.')
+      return
+    }
+    setIsSavingLibrary(true)
+    setLibraryError('')
+    try {
+      await createCrmQuoteLineLibraryEntry({
+        name,
+        lines: linesToSave.map((line, index) => ({
+          id: line.id,
+          parentLineId: line.parentLineId,
+          itemNumber: index + 1,
+          detailLabel: line.detailLabel || null,
+          description: line.description || null,
+          qty: null,
+          unitPrice: null,
+          extPrice: null,
+          images: line.parentLineId ? [] : line.images,
+        })),
+      })
+      await libraryQuery.refetch()
+      setSaveLibraryTargetIndex(null)
+    } catch (error) {
+      setLibraryError(error instanceof Error ? error.message : 'Could not save this library item.')
+    } finally {
+      setIsSavingLibrary(false)
+    }
+  }
 
   const handlePasteLineImage = (index: number, event: ReactClipboardEvent<HTMLElement>) => {
     if (!canEdit || isUploadingImage || lineItems[index].images.length >= 2) return
@@ -2700,6 +2803,9 @@ function LineItemsEditor({
         </Stack>
 
         <Stack direction="row" spacing={0.8}>
+          <Button size="small" variant="outlined" startIcon={<WorkspacesRoundedIcon />} onClick={() => setIsLibraryOpen(true)} disabled={!canEdit}>
+            Insert from library
+          </Button>
           {showPdfLayoutAction ? (
             <Button size="small" variant="outlined" startIcon={<PreviewRoundedIcon />} onClick={() => setIsPictureLayoutOpen(true)} disabled={!canEdit || pictureCount === 0}>
               Preview PDF &amp; Arrange Pictures
@@ -2842,6 +2948,20 @@ function LineItemsEditor({
                           sx={{ alignSelf: 'flex-start', px: 0.25, fontWeight: 400 }}
                         >
                           Add Subline
+                        </Button>
+                        <Button
+                          size="small"
+                          variant="text"
+                          startIcon={<WorkspacesRoundedIcon />}
+                          onClick={() => {
+                            setLibraryError('')
+                            setSaveLibraryTargetIndex(index)
+                            setLibraryNameDraft(splitQuoteLineDescription(lineItem.description).heading)
+                          }}
+                          disabled={!canEdit}
+                          sx={{ alignSelf: 'flex-start', px: 0.25, fontWeight: 400 }}
+                        >
+                          Save to library
                         </Button>
                       </Stack>
                     </Stack>
@@ -3003,6 +3123,23 @@ function LineItemsEditor({
           setIsPictureLayoutOpen(false)
         }}
       />
+      <Dialog open={isLibraryOpen} onClose={() => setIsLibraryOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Insert from Quote Line Library</DialogTitle>
+        <DialogContent><Stack spacing={1} sx={{ pt: 1 }}>
+          <TextField autoFocus size="small" value={librarySearch} onChange={(event) => setLibrarySearch(event.target.value)} placeholder="Search library" />
+          {visibleLibraryEntries.map((entry) => <Paper key={entry.id} variant="outlined" sx={{ p: 1 }}><Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}><Box><Typography fontWeight={700}>{entry.name}</Typography><Typography variant="caption" color="text.secondary">{entry.lines.length} line{entry.lines.length === 1 ? '' : 's'}</Typography></Box><Button size="small" variant="contained" onClick={() => { onInsertLibraryEntry(entry); setIsLibraryOpen(false); setLibrarySearch('') }}>Insert</Button></Stack></Paper>)}
+          {!libraryQuery.isLoading && visibleLibraryEntries.length === 0 ? <Typography color="text.secondary" textAlign="center" py={2}>No matching library items.</Typography> : null}
+        </Stack></DialogContent>
+        <DialogActions><Button onClick={() => setIsLibraryOpen(false)}>Close</Button></DialogActions>
+      </Dialog>
+      <Dialog open={saveLibraryTargetIndex !== null} onClose={() => !isSavingLibrary && setSaveLibraryTargetIndex(null)} maxWidth="sm" fullWidth>
+        <DialogTitle>Save to Quote Line Library</DialogTitle>
+        <DialogContent><Stack spacing={1} sx={{ pt: 1 }}>
+          {libraryError ? <Alert severity="error">{libraryError}</Alert> : null}
+          <TextField autoFocus label="Library name" value={libraryNameDraft} onChange={(event) => setLibraryNameDraft(event.target.value)} helperText="The bold top line is used as the default name." />
+        </Stack></DialogContent>
+        <DialogActions><Button disabled={isSavingLibrary} onClick={() => setSaveLibraryTargetIndex(null)}>Cancel</Button><Button variant="contained" disabled={isSavingLibrary} onClick={() => void saveLineToLibrary()}>{isSavingLibrary ? 'Saving...' : 'Save to library'}</Button></DialogActions>
+      </Dialog>
     </Stack>
   )
 }
@@ -4244,7 +4381,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   const [formState, setFormState] = useState<OpportunityFormState>(createEmptyOpportunityForm)
   const [addOpportunityStage, setAddOpportunityStage] = useState<AddOpportunityStage>(0)
   const [addOpportunitySubmitAttempted, setAddOpportunitySubmitAttempted] = useState(false)
-  const [isAddPictureLayoutOpen, setIsAddPictureLayoutOpen] = useState(false)
   const [dealerSearchInput, setDealerSearchInput] = useState('')
   const [isNewDealerDialogOpen, setIsNewDealerDialogOpen] = useState(false)
   const [newDealerForm, setNewDealerForm] = useState<NewDealerFormState>({
@@ -4962,7 +5098,10 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   )
 
   const selectedOpportunityChatCount = selectedOpportunityChatMessages.length
-  const quoteChatUsers = quoteChatUsersQuery.data?.users ?? []
+  const quoteChatUsers = useMemo(
+    () => quoteChatUsersQuery.data?.users ?? [],
+    [quoteChatUsersQuery.data?.users],
+  )
   const quoteChatMentionOptions = useMemo(() => [
     { id: MENTION_ALL_ID, display: 'all' },
     ...quoteChatUsers.map((user) => ({
@@ -4980,7 +5119,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     [addDialogInitialSnapshot, formState],
   )
 
-  const canUploadQuoteDocument = Boolean(formState.quoteNumber.trim())
 
   const addPricingPreview = useMemo(() => {
     const pricing = resolveQuotePricing(formState.lineItems, formState.subtotal, formState.freight, 0, formState.additionalServices, formState.shippingServices, formState.discountPercent, formState.discountScope)
@@ -5035,6 +5173,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     } else {
       enteredLineItems.forEach((lineItem, index) => {
         if (!lineItem.description.trim()) quoteLinesMissing.push(`Line ${index + 1} description`)
+        if (lineItem.parentLineId) return
         if (!lineItem.qty.trim() || !Number.isFinite(Number(lineItem.qty)) || Number(lineItem.qty) <= 0) {
           quoteLinesMissing.push(`Line ${index + 1} quantity`)
         }
@@ -5063,6 +5202,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
 
   const addOpportunityTotalMissing = addOpportunityMissingByStage
     .reduce((total, missingFields) => total + missingFields.length, 0)
+  const addOpportunityCurrentStageMissing = addOpportunityMissingByStage[addOpportunityStage]
 
   const addOpportunityPreviewQuote = useMemo(() => ({
     id: 'new-opportunity-preview',
@@ -5741,9 +5881,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       }
 
       const normalizedQuoteNumber = formState.quoteNumber.trim()
-      if (!normalizedQuoteNumber) {
-        throw new Error('Enter quote number before uploading the 3D model.')
-      }
 
       if (/\.skp$/i.test(file.name)) {
         setPendingSketchupFile(file)
@@ -5756,7 +5893,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       }
 
       const companySegment = sanitizeStoragePathSegment(formState.companyName.trim() || 'company', 'company')
-      const quoteSegment = sanitizeStoragePathSegment(normalizedQuoteNumber, 'opportunity')
+      const quoteSegment = sanitizeStoragePathSegment(normalizedQuoteNumber || `draft-${crypto.randomUUID()}`, 'opportunity')
       const extension = file.name.toLowerCase().endsWith('.glb') ? 'glb' : 'skp'
       const filePath = `crm/opportunities/${companySegment}/${quoteSegment}-rendering-${Date.now()}.${extension}`
       const fileRef = storageRef(firebaseStorage, filePath)
@@ -6699,6 +6836,13 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     }))
   }, [])
 
+  const handleInsertFormLibraryEntry = useCallback((entry: CrmQuoteLineLibraryEntry) => {
+    setFormState((current) => ({
+      ...current,
+      lineItems: insertQuoteLineLibraryEntry(current.lineItems, entry),
+    }))
+  }, [])
+
   const handleAddFormSubline = useCallback((index: number) => {
     setFormState((current) => {
       const parentLine = current.lineItems[index]
@@ -6793,6 +6937,13 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         lineItems: [...current.lineItems, createEmptyLineItemFormState()],
       }
     })
+  }, [])
+
+  const handleInsertDetailsLibraryEntry = useCallback((entry: CrmQuoteLineLibraryEntry) => {
+    setOpportunityDetailsFormState((current) => current ? ({
+      ...current,
+      lineItems: insertQuoteLineLibraryEntry(current.lineItems, entry),
+    }) : current)
   }, [])
 
   const handleAddDetailsSubline = useCallback((index: number) => {
@@ -7193,6 +7344,8 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     formState.convertedPdfName,
     formState.convertedPdfUrl,
     formState.dealerSourceId,
+    formState.discountPercent,
+    formState.discountScope,
     formState.freight,
     formState.freightDescription,
     formState.leadTime,
@@ -9167,6 +9320,17 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                     }}
                     onInputChange={(_event, inputValue, reason) => {
                       if (reason !== 'input') return
+                      const selectedLabel = selectedAddOpportunityContact
+                        ? resolveContactSelectionLabel(selectedAddOpportunityContact)
+                        : ''
+                      const normalizedInput = inputValue.trim().replace(/\s+/g, ' ')
+                      const normalizedSelectedLabel = selectedLabel.trim().replace(/\s+/g, ' ')
+
+                      if (selectedAddContactSourceId && normalizedInput === normalizedSelectedLabel) {
+                        setFormState((current) => ({ ...current, contactName: inputValue }))
+                        return
+                      }
+
                       setSelectedAddContactSourceId('')
                       setFormState((current) => ({ ...current, contactName: inputValue }))
                     }}
@@ -9315,6 +9479,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                 onAddImages={handleAddFormLineImages}
                 onRemoveImage={handleRemoveFormLineImage}
                 onUpdateImageLayout={handleUpdateFormLineImageLayout}
+                onInsertLibraryEntry={handleInsertFormLibraryEntry}
                 isUploadingImage={isUploadingLineImage}
               />
             </Stack>
@@ -9358,14 +9523,12 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
           ) : null}
 
           {addOpportunityStage === 3 ? (
-            <Stack spacing={1.5}>
-              <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
-                <Typography variant="subtitle2" fontWeight={800}>Customer 3D</Typography>
-                <Typography variant="caption" color="text.secondary" display="block">
-                  Select the SketchUp file once. When you submit, it goes directly to Trimble and the customer viewer is published automatically—no reopening the quote or separate Publish 3D Views step.
-                </Typography>
-                <Stack direction="row" spacing={1} alignItems="center" mt={1} flexWrap="wrap" useFlexGap>
-                  <Button component="label" size="small" variant="outlined" startIcon={<FileUploadRoundedIcon />} disabled={!canUploadQuoteDocument || isUploadingQuoteDocument}>
+            <Stack spacing={0.75}>
+              <Paper variant="outlined" sx={{ px: 1.25, py: 0.65, borderRadius: 1 }}>
+                <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'center' }} justifyContent="space-between">
+                  <Typography variant="subtitle2" fontWeight={800}>Customer 3D</Typography>
+                  <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                  <Button component="label" size="small" variant="outlined" startIcon={<FileUploadRoundedIcon />} disabled={isUploadingQuoteDocument}>
                     {isUploadingQuoteDocument ? 'Preparing...' : (formState.sketchupDocumentName ? 'Replace 3D File' : 'Select SKP or GLB')}
                     <input hidden type="file" accept=".glb,.skp,model/gltf-binary,application/octet-stream" onChange={handleSketchupDocumentUpload} />
                   </Button>
@@ -9380,9 +9543,10 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                       Remove
                     </Button>
                   ) : null}
+                  </Stack>
                 </Stack>
                 {formState.sketchupDocumentName ? (
-                  <Alert severity="success" sx={{ mt: 1 }}>
+                  <Alert severity="success" sx={{ mt: 0.75, py: 0 }}>
                     {formState.sketchupDocumentName} is ready and will publish automatically with this opportunity.
                   </Alert>
                 ) : null}
@@ -9392,24 +9556,26 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                   {addOpportunityTotalMissing} required {addOpportunityTotalMissing === 1 ? 'field is' : 'fields are'} missing. Open the red stage tabs to finish them.
                 </Alert>
               ) : null}
-              <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
-                <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={2}>
-                  <Box>
-                    <Typography variant="h6" fontWeight={800}>{formState.title || 'Untitled quote'}</Typography>
-                    <Typography variant="body2" color="text.secondary">
-                      {formState.quoteNumber || 'No quote number'} • {formState.companyName || 'No dealer selected'}
-                    </Typography>
-                    <Typography variant="body2" color="text.secondary">
-                      {normalizeLineItemsForPayload(formState.lineItems).length} quote lines • Total {formatCurrency(addPricingPreview.totalAmount, 2)}
-                    </Typography>
-                  </Box>
+              <Paper variant="outlined" sx={{ px: 1.25, py: 0.65, borderRadius: 1 }}>
+                <Stack direction={{ xs: 'column', md: 'row' }} alignItems={{ md: 'center' }} spacing={{ xs: 0.25, md: 1.5 }} flexWrap="wrap" useFlexGap>
+                  <Typography variant="body2" fontWeight={800}>{formState.title || 'Untitled quote'}</Typography>
+                  <Typography variant="caption" color="text.secondary">{formState.quoteNumber || 'No quote number'} • {formState.companyName || 'No dealer selected'}</Typography>
+                  <Typography variant="caption" color="text.secondary">{normalizeLineItemsForPayload(formState.lineItems).length} quote lines • Total {formatCurrency(addPricingPreview.totalAmount, 2)}</Typography>
                 </Stack>
               </Paper>
               <Suspense fallback={<Stack alignItems="center" py={8}><CircularProgress /></Stack>}>
-                <QuotePdfInlinePreview
+                <QuotePdfPictureLayoutDialog
+                  open
+                  embedded
                   quote={addOpportunityPreviewQuote}
                   settings={quotePrintSettingsQuery.data?.settings || DEFAULT_QUOTE_PRINT_SETTINGS}
-                  onArrangePictures={() => setIsAddPictureLayoutOpen(true)}
+                  onCancel={() => {}}
+                  onSave={(layouts) => {
+                    layouts.forEach(({ lineIndex, imageId, layout }) => {
+                      handleUpdateFormLineImageLayout(lineIndex, imageId, layout)
+                    })
+                  }}
+                  hideEmbeddedActions
                 />
               </Suspense>
             </Stack>
@@ -9422,11 +9588,22 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
           {addOpportunityStage > 0 ? (
             <Button onClick={() => setAddOpportunityStage((addOpportunityStage - 1) as AddOpportunityStage)}>Back</Button>
           ) : null}
-          <Typography variant="body2" color={addOpportunityMissingByStage[addOpportunityStage].length ? 'warning.main' : 'text.secondary'}>
-            {addOpportunityMissingByStage[addOpportunityStage].length
-              ? `${addOpportunityMissingByStage[addOpportunityStage].length} ${addOpportunityMissingByStage[addOpportunityStage].length === 1 ? 'field' : 'fields'} missing`
-              : 'All required fields complete'}
-          </Typography>
+          <Tooltip
+            arrow
+            disableHoverListener={addOpportunityCurrentStageMissing.length === 0}
+            title={(
+              <Stack spacing={0.4} sx={{ py: 0.25 }}>
+                <Typography variant="caption" fontWeight={800}>Missing fields</Typography>
+                {addOpportunityCurrentStageMissing.map((field) => <Typography key={field} variant="caption">{field}</Typography>)}
+              </Stack>
+            )}
+          >
+            <Typography variant="body2" sx={{ cursor: addOpportunityCurrentStageMissing.length ? 'help' : 'default' }} color={addOpportunityCurrentStageMissing.length ? 'warning.main' : 'text.secondary'}>
+              {addOpportunityCurrentStageMissing.length
+                ? `${addOpportunityCurrentStageMissing.length} ${addOpportunityCurrentStageMissing.length === 1 ? 'field' : 'fields'} missing`
+                : 'All required fields complete'}
+            </Typography>
+          </Tooltip>
           {addOpportunityStage < 3 ? (
             <Button
               variant="contained"
@@ -9640,19 +9817,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
           </Button>
         </DialogActions>
       </Dialog>
-      <QuotePicturesPdfLayoutDialog
-        open={isAddPictureLayoutOpen}
-        lineItems={formState.lineItems}
-        quote={addOpportunityPreviewQuote}
-        settings={quotePrintSettingsQuery.data?.settings || DEFAULT_QUOTE_PRINT_SETTINGS}
-        onCancel={() => setIsAddPictureLayoutOpen(false)}
-        onSave={(layouts) => {
-          layouts.forEach(({ lineIndex, imageId, layout }) => {
-            handleUpdateFormLineImageLayout(lineIndex, imageId, layout)
-          })
-          setIsAddPictureLayoutOpen(false)
-        }}
-      />
       </> : null}
 
       <Dialog
@@ -10430,6 +10594,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                 onAddImages={handleAddDetailsLineImages}
                 onRemoveImage={handleRemoveDetailsLineImage}
                 onUpdateImageLayout={handleUpdateDetailsLineImageLayout}
+                onInsertLibraryEntry={handleInsertDetailsLibraryEntry}
                 isUploadingImage={isUploadingLineImage}
               />
 

@@ -580,6 +580,26 @@ export type CrmQuoteLineItem = {
   images?: CrmQuoteLineImage[]
 }
 
+export type CrmQuoteLineLibraryEntry = {
+  id: string
+  name: string
+  lines: CrmQuoteLineItem[]
+  recordStatus?: 'active' | 'deleted'
+  createdAt: string | null
+  createdByUid: string | null
+  createdByEmail: string | null
+  updatedAt: string | null
+  updatedByEmail: string | null
+  deleteRequestedAt: string | null
+  deleteRequestedByUid: string | null
+  deleteRequestedByEmail: string | null
+}
+
+export type CrmQuoteLineLibraryInput = {
+  name: string
+  lines: CrmQuoteLineItem[]
+}
+
 export type CrmQuoteServiceItem = {
   id: string
   title: string
@@ -593,6 +613,24 @@ export type CrmQuoteServiceItem = {
 
 export type CrmQuoteOrigin = 'website' | 'excel'
 
+export type Crm3dViewerSettings = {
+  exposure?: number
+  shadowIntensity?: number
+  toneMapping?: 'neutral' | 'aces' | 'agx' | 'cineon'
+  environmentImage?: 'even' | 'neutral' | 'legacy'
+  backgroundColor?: string
+  autoRotate?: boolean
+  fieldOfView?: number
+}
+
+// 'even' is an azimuthally uniform studio environment served from the app:
+// colors stay accurate and stable while the model rotates, matching how
+// SketchUp itself shades models. model-viewer's built-in 'neutral'/'legacy'
+// names pass through unchanged.
+export function modelViewerEnvironmentImage(environmentImage: 'even' | 'neutral' | 'legacy'): string {
+  return environmentImage === 'even' ? '/3d-backgrounds/even-studio.png' : environmentImage
+}
+
 export type CrmQuote3dModel = {
   status: 'ready' | string
   viewerType?: 'trimble' | 'glb' | 'sketchup' | string | null
@@ -604,7 +642,12 @@ export type CrmQuote3dModel = {
     fileName: string
     label: string
     viewerType?: 'trimble' | 'glb' | 'sketchup' | string | null
+    webModelUrl?: string | null
+    viewerSettings?: Crm3dViewerSettings | null
+    quality?: { status?: string; normalizedMaterialCount?: number; materialCount?: number; reason?: string | null } | null
   }> | null
+  webModelUrl?: string | null
+  viewerSettings?: Crm3dViewerSettings | null
 }
 
 export type CrmQuotePrintSettings = {
@@ -1351,6 +1394,47 @@ export function updateCrmQuoteReminderSettings(settings: CrmQuoteReminderSetting
   })
 }
 
+export function fetchCrmQuoteLineLibrary(options: { includeDeleted?: boolean } = {}) {
+  return apiRequest<{ entries: CrmQuoteLineLibraryEntry[] }>(
+    withQuery('/api/crm/quote-line-library', { includeDeleted: options.includeDeleted ? 'true' : undefined }),
+  )
+}
+
+export function createCrmQuoteLineLibraryEntry(input: CrmQuoteLineLibraryInput) {
+  return apiRequest<{ entry: CrmQuoteLineLibraryEntry }>('/api/crm/quote-line-library', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export function updateCrmQuoteLineLibraryEntry(entryId: string, input: CrmQuoteLineLibraryInput) {
+  return apiRequest<{ entry: CrmQuoteLineLibraryEntry }>(`/api/crm/quote-line-library/${encodeURIComponent(entryId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(input),
+  })
+}
+
+export function removeCrmQuoteLineLibraryEntry(entryId: string) {
+  return apiRequest<{ ok: true; queuedForDeletion: true; entry: CrmQuoteLineLibraryEntry }>(
+    `/api/crm/quote-line-library/${encodeURIComponent(entryId)}`,
+    { method: 'DELETE' },
+  )
+}
+
+export function restoreCrmQuoteLineLibraryEntry(entryId: string) {
+  return apiRequest<{ ok: true; entry: CrmQuoteLineLibraryEntry }>(
+    `/api/crm/quote-line-library/${encodeURIComponent(entryId)}/restore`,
+    { method: 'POST' },
+  )
+}
+
+export function confirmCrmQuoteLineLibraryEntryDeletion(entryId: string) {
+  return apiRequest<{ ok: true; entryId: string }>(
+    `/api/crm/quote-line-library/${encodeURIComponent(entryId)}/confirm-delete`,
+    { method: 'POST' },
+  )
+}
+
 export function fetchCrmQuotePrintSettings() {
   return apiRequest<{ settings: CrmQuotePrintSettings }>('/api/crm/quote-print-settings')
 }
@@ -1475,6 +1559,27 @@ export function publishGlbQuoteModels(
       method: 'POST',
       body: JSON.stringify({ models, revisionNumber }),
     },
+  )
+}
+
+export function saveQuote3dViewerSettings(
+  quoteId: string,
+  settings: Crm3dViewerSettings,
+  revisionNumber?: number,
+) {
+  return apiRequest<{ model: CrmQuote3dModel }>(
+    `/api/trimble/quotes/${encodeURIComponent(quoteId)}/viewer-settings`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({ settings, revisionNumber }),
+    },
+  )
+}
+
+export function prepareQuote3dCustomerModel(quoteId: string, revisionNumber?: number) {
+  return apiRequest<{ model: CrmQuote3dModel }>(
+    `/api/trimble/quotes/${encodeURIComponent(quoteId)}/prepare-customer-model`,
+    { method: 'POST', body: JSON.stringify({ revisionNumber }) },
   )
 }
 

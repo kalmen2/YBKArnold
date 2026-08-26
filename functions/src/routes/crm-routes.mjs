@@ -1305,6 +1305,47 @@ function normalizeQuoteLineItems(input) {
   return normalizedLineItems
 }
 
+function normalizeQuoteLineLibraryEntry(input, fallback = {}) {
+  const source = toOptionalObject(input)
+  const normalizedLines = normalizeQuoteLineItems(source.lines)
+    .slice(0, 80)
+    .map((line) => ({
+      id: line.id,
+      parentLineId: line.parentLineId,
+      itemNumber: 0,
+      detailLabel: line.detailLabel,
+      description: line.description,
+      qty: null,
+      unitPrice: null,
+      extPrice: null,
+      images: line.images,
+    }))
+
+  const hasMainLine = normalizedLines.some((line) => !line.parentLineId)
+  const name = toTrimmedText(source.name ?? fallback.name, 160)
+
+  if (!name || !hasMainLine) {
+    return null
+  }
+
+  return {
+    id: toTrimmedText(source.id ?? fallback.id, 160) || createRandomUuid(),
+    name,
+    lines: normalizedLines,
+    recordStatus: source.recordStatus === crmRecordStatusDeleted
+      ? crmRecordStatusDeleted
+      : crmRecordStatusActive,
+    createdAt: toIsoDateOrNull(source.createdAt ?? fallback.createdAt),
+    createdByUid: toTrimmedText(source.createdByUid ?? fallback.createdByUid, 160) || null,
+    createdByEmail: toLowerText(source.createdByEmail ?? fallback.createdByEmail, 200) || null,
+    updatedAt: toIsoDateOrNull(source.updatedAt ?? fallback.updatedAt),
+    updatedByEmail: toLowerText(source.updatedByEmail ?? fallback.updatedByEmail, 200) || null,
+    deleteRequestedAt: toIsoDateOrNull(source.deleteRequestedAt ?? fallback.deleteRequestedAt),
+    deleteRequestedByUid: toTrimmedText(source.deleteRequestedByUid ?? fallback.deleteRequestedByUid, 160) || null,
+    deleteRequestedByEmail: toLowerText(source.deleteRequestedByEmail ?? fallback.deleteRequestedByEmail, 200) || null,
+  }
+}
+
 function normalizeQuoteServiceItems(input) {
   if (!Array.isArray(input)) {
     return []
@@ -2303,6 +2344,20 @@ export function registerCrmRoutes(app, deps) {
     }
 
     next()
+  }
+
+  async function getQuoteLineLibraryCollection() {
+    const collections = await getCollections()
+    const crmDatabase = collections?.databasesByDomain?.crm
+
+    if (!crmDatabase) {
+      throw new Error('CRM database is unavailable.')
+    }
+
+    const collection = crmDatabase.collection('crm_quote_line_library')
+    await collection.createIndex({ recordStatus: 1, name: 1 })
+    await collection.createIndex({ id: 1 }, { unique: true })
+    return collection
   }
 
   function resolveSalesRepQuoteAccessScope(accessScope) {
@@ -6216,6 +6271,154 @@ export function registerCrmRoutes(app, deps) {
     }
   })
 
+  app.get('/api/crm/quote-line-library', requireFirebaseAuth, requireApprovedCrmAccess, async (req, res, next) => {
+    try {
+      const publicUser = toPublicAuthUser(req.authUser)
+      const includeDeleted = String(req.query?.includeDeleted ?? '').trim() === 'true'
+
+      if (includeDeleted && !publicUser?.isAdmin) {
+        return res.status(403).json({ error: 'Admin access is required to view deleted library entries.' })
+      }
+
+      const collection = await getQuoteLineLibraryCollection()
+      const entries = await collection.find(
+        includeDeleted ? {} : { recordStatus: { $ne: crmRecordStatusDeleted } },
+        { projection: { _id: 0 } },
+      ).sort({ name: 1 }).toArray()
+
+      return res.json({
+        entries: entries
+          .map((entry) => normalizeQuoteLineLibraryEntry(entry, entry))
+          .filter(Boolean),
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.post('/api/crm/quote-line-library', requireFirebaseAuth, requireApprovedCrmAccess, async (req, res, next) => {
+    try {
+      const now = nowIso()
+      const publicUser = toPublicAuthUser(req.authUser)
+      const entry = normalizeQuoteLineLibraryEntry({
+        ...toOptionalObject(req.body),
+        id: `quote-line-library-${randomUUID()}`,
+        recordStatus: crmRecordStatusActive,
+        createdAt: now,
+        createdByUid: publicUser?.uid,
+        createdByEmail: publicUser?.email,
+        updatedAt: now,
+        updatedByEmail: publicUser?.email,
+      })
+
+      if (!entry) {
+        return res.status(400).json({ error: 'A library name and at least one main quote line are required.' })
+      }
+
+      const collection = await getQuoteLineLibraryCollection()
+      await collection.insertOne(entry)
+      return res.status(201).json({ entry })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.patch('/api/crm/quote-line-library/:entryId', requireFirebaseAuth, requireApprovedCrmAccess, async (req, res, next) => {
+    try {
+      const entryId = toTrimmedText(req.params.entryId, 160)
+      const collection = await getQuoteLineLibraryCollection()
+      const existing = await collection.findOne({ id: entryId, recordStatus: { $ne: crmRecordStatusDeleted } }, { projection: { _id: 0 } })
+
+      if (!existing) {
+        return res.status(404).json({ error: 'Quote line library entry was not found.' })
+      }
+
+      const publicUser = toPublicAuthUser(req.authUser)
+      const entry = normalizeQuoteLineLibraryEntry({
+        ...existing,
+        ...toOptionalObject(req.body),
+        id: existing.id,
+        recordStatus: crmRecordStatusActive,
+        createdAt: existing.createdAt,
+        createdByUid: existing.createdByUid,
+        createdByEmail: existing.createdByEmail,
+        updatedAt: nowIso(),
+        updatedByEmail: publicUser?.email,
+      }, existing)
+
+      if (!entry) {
+        return res.status(400).json({ error: 'A library name and at least one main quote line are required.' })
+      }
+
+      await collection.updateOne({ id: entryId }, { $set: entry })
+      return res.json({ entry })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.delete('/api/crm/quote-line-library/:entryId', requireFirebaseAuth, requireApprovedCrmAccess, async (req, res, next) => {
+    try {
+      const entryId = toTrimmedText(req.params.entryId, 160)
+      const publicUser = toPublicAuthUser(req.authUser)
+      const collection = await getQuoteLineLibraryCollection()
+      const result = await collection.findOneAndUpdate(
+        { id: entryId, recordStatus: { $ne: crmRecordStatusDeleted } },
+        {
+          $set: {
+            recordStatus: crmRecordStatusDeleted,
+            deleteRequestedAt: nowIso(),
+            deleteRequestedByUid: publicUser?.uid || null,
+            deleteRequestedByEmail: publicUser?.email || null,
+            updatedAt: nowIso(),
+            updatedByEmail: publicUser?.email || null,
+          },
+        },
+        { returnDocument: 'after', projection: { _id: 0 } },
+      )
+
+      if (!result) {
+        return res.status(404).json({ error: 'Quote line library entry was not found.' })
+      }
+
+      return res.json({ ok: true, queuedForDeletion: true, entry: normalizeQuoteLineLibraryEntry(result, result) })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.post('/api/crm/quote-line-library/:entryId/restore', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+    try {
+      const entryId = toTrimmedText(req.params.entryId, 160)
+      const collection = await getQuoteLineLibraryCollection()
+      const result = await collection.findOneAndUpdate(
+        { id: entryId, recordStatus: crmRecordStatusDeleted },
+        {
+          $set: { recordStatus: crmRecordStatusActive, updatedAt: nowIso(), updatedByEmail: toLowerText(req.authUser?.email, 200) || null },
+          $unset: { deleteRequestedAt: '', deleteRequestedByUid: '', deleteRequestedByEmail: '' },
+        },
+        { returnDocument: 'after', projection: { _id: 0 } },
+      )
+
+      if (!result) return res.status(404).json({ error: 'Deleted quote line library entry was not found.' })
+      return res.json({ ok: true, entry: normalizeQuoteLineLibraryEntry(result, result) })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.post('/api/crm/quote-line-library/:entryId/confirm-delete', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+    try {
+      const entryId = toTrimmedText(req.params.entryId, 160)
+      const collection = await getQuoteLineLibraryCollection()
+      const result = await collection.deleteOne({ id: entryId, recordStatus: crmRecordStatusDeleted })
+      if (result.deletedCount === 0) return res.status(404).json({ error: 'Deleted quote line library entry was not found.' })
+      return res.json({ ok: true, entryId })
+    } catch (error) {
+      next(error)
+    }
+  })
+
   app.get('/api/crm/quote-print-settings', requireFirebaseAuth, async (_req, res, next) => {
     try {
       const { crmQuotePrintSettingsCollection } = await getCollections()
@@ -6394,9 +6597,12 @@ export function registerCrmRoutes(app, deps) {
       if (
         !storageTarget
         || storageTarget.bucketName !== bucket.name
-        || !storageTarget.objectPath.startsWith('crm/opportunities/')
+        || !(
+          storageTarget.objectPath.startsWith('crm/opportunities/')
+          || storageTarget.objectPath.startsWith('crm/quote-line-library/')
+        )
       ) {
-        return res.status(400).json({ error: 'Only Opportunity storage images can be proxied.' })
+        return res.status(400).json({ error: 'Only approved CRM storage images can be proxied.' })
       }
 
       const fallbackContentType = inferImageContentTypeFromObjectPath(storageTarget.objectPath)

@@ -27,6 +27,7 @@ type OrdersToolbarProps = {
   activeTab: OrdersListTab
   onActiveTabChange: (next: OrdersListTab) => void
   tabCounts: {
+    all: number
     orders: number
     design: number
     waitingProduction: number
@@ -96,6 +97,7 @@ export function OrdersToolbar({
             },
           }}
         >
+          <Tab value="all" label={`All (${tabCounts.all})`} />
           <Tab value="orders" label={`Orders (${tabCounts.orders})`} />
           <Tab value="design" label={`Design (${tabCounts.design})`} />
           <Tab value="waiting_production" label={`Waiting for Production (${tabCounts.waitingProduction})`} />

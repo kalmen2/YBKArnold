@@ -3,6 +3,7 @@ import BugReportOutlinedIcon from '@mui/icons-material/BugReportOutlined'
 import NotificationsNoneOutlinedIcon from '@mui/icons-material/NotificationsNoneOutlined'
 import PeopleOutlineRoundedIcon from '@mui/icons-material/PeopleOutlineRounded'
 import TextSnippetOutlinedIcon from '@mui/icons-material/TextSnippetOutlined'
+import FormatListBulletedOutlinedIcon from '@mui/icons-material/FormatListBulletedOutlined'
 import { Box, List, ListItemButton, ListItemIcon, ListItemText, Paper, Stack, Typography } from '@mui/material'
 import { Suspense, lazy, useMemo } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
@@ -12,8 +13,9 @@ const VisitorsPage = lazy(() => import('./VisitorsPage'))
 const QuoteReminderSettingsPage = lazy(() => import('./QuoteReminderSettingsPage'))
 const ReportIssuePage = lazy(() => import('./ReportIssuePage'))
 const DocumentTermsPage = lazy(() => import('./DocumentTermsPage'))
+const QuoteLineLibraryPage = lazy(() => import('./QuoteLineLibraryPage'))
 
-type ConfigTab = 'templates' | 'terms' | 'visitors' | 'quote-reminders' | 'report-issue'
+type ConfigTab = 'templates' | 'quote-library' | 'terms' | 'visitors' | 'quote-reminders' | 'report-issue'
 
 const configTabs: Array<{
   value: ConfigTab
@@ -29,6 +31,11 @@ const configTabs: Array<{
     value: 'templates',
     label: 'Templates',
     icon: ArticleOutlinedIcon,
+  },
+  {
+    value: 'quote-library',
+    label: 'Quote Line Library',
+    icon: FormatListBulletedOutlinedIcon,
   },
   {
     value: 'terms',
@@ -50,6 +57,10 @@ const configTabs: Array<{
 function getConfigTabFromQuery(rawTab: string | null): ConfigTab {
   if (rawTab === 'templates') {
     return 'templates'
+  }
+
+  if (rawTab === 'quote-library') {
+    return 'quote-library'
   }
 
   if (rawTab === 'quote-reminders') {
@@ -117,6 +128,8 @@ export default function ConfigPage() {
         >
           {selectedTab === 'templates'
             ? <TemplatesPage />
+            : selectedTab === 'quote-library'
+              ? <QuoteLineLibraryPage />
             : selectedTab === 'terms'
               ? <DocumentTermsPage />
               : selectedTab === 'quote-reminders'
