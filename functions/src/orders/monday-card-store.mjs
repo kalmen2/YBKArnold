@@ -145,8 +145,62 @@ export function createMondayCardStore({ getCollections }) {
     return mirrorResult
   }
 
+  // Drop-in for `mondayOrdersCollection.findOne(filter, options)`.
+  // A lookup keyed on mondayItemId is served embedded-first so it keeps
+  // working once the mirror is gone; anything else passes through unchanged.
+  async function findOneCompat(filter, options = {}) {
+    const id = String(filter?.mondayItemId ?? '').trim()
+
+    if (!id) {
+      const { mondayOrdersCollection } = await collections()
+      return mondayOrdersCollection.findOne(filter, options)
+    }
+
+    return readMondayCard({ mondayItemId: id })
+  }
+
+  // Bulk equivalent, for callers that pull many cards by id at once.
+  async function findManyByItemIds(mondayItemIds) {
+    const ids = [...new Set((Array.isArray(mondayItemIds) ? mondayItemIds : [])
+      .map((value) => String(value ?? '').trim())
+      .filter(Boolean))]
+
+    if (ids.length === 0) return []
+
+    const { mondayOrdersCollection, ordersUnifiedCollection } = await collections()
+    const [owners, mirrored] = await Promise.all([
+      ordersUnifiedCollection.find({
+        $or: [
+          { monday_production_item_id: { $in: ids } },
+          { monday_financial_item_id: { $in: ids } },
+          { monday_item_id: { $in: ids } },
+        ],
+      }, { projection: { _id: 0, monday: 1 } }).toArray(),
+      mondayOrdersCollection.find({ mondayItemId: { $in: ids } }, { projection: { _id: 0 } }).toArray(),
+    ])
+
+    const embeddedById = new Map()
+    for (const owner of owners) {
+      const card = owner?.monday?.card
+      const id = String(card?.mondayItemId ?? '').trim()
+      if (id) embeddedById.set(id, card)
+    }
+    const mirrorById = new Map(mirrored.map((d) => [String(d.mondayItemId ?? '').trim(), d]))
+
+    return ids
+      .map((id) => {
+        const embedded = embeddedById.get(id)
+        const mirror = mirrorById.get(id)
+        if (embedded) return { ...mirror, ...embedded, mondayItemId: id }
+        return mirror ?? null
+      })
+      .filter(Boolean)
+  }
+
   return {
     writeMondayCard,
+    findOneCompat,
+    findManyByItemIds,
     readMondayCard,
     deleteMondayCard,
     updateOneCompat,

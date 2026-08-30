@@ -56,6 +56,8 @@ import {
 } from '../services/orders-merge-helpers.mjs'
 import { MONDAY_BOARDS } from '../orders/monday-board-map.mjs'
 
+import { createMondayCardStore } from '../orders/monday-card-store.mjs'
+
 export function registerOrdersRoutes(app, deps) {
   const {
     assertMondayLink,
@@ -92,6 +94,8 @@ export function registerOrdersRoutes(app, deps) {
     updateMondayItemStatusColumn,
     updateMondayItemTextColumn,
   } = deps
+
+  const mondayCards = createMondayCardStore({ getCollections })
   const laborLookupsCacheTtlMs = 30 * 1000
   const quickBooksTokenDocId = 'primary'
   const quickBooksAccessTokenRefreshSkewMs = 2 * 60 * 1000
@@ -2769,7 +2773,7 @@ export function registerOrdersRoutes(app, deps) {
         } = await getCollections()
 
         const orderDocument = mondayItemId
-          ? await mondayOrdersCollection.findOne(
+          ? await mondayCards.findOneCompat(
             { mondayItemId },
             {
               projection: {

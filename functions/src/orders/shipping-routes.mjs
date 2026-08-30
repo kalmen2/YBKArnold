@@ -1654,7 +1654,7 @@ export function registerOrderShippingRoutes(app, {
 
         const fallbackMondayItemId = String(req.body?.mondayItemId ?? '').trim()
         const mondayOnlyOrder = !orderDocument && fallbackMondayItemId
-          ? await mondayOrdersCollection.findOne(
+          ? await mondayCards.findOneCompat(
             { mondayItemId: fallbackMondayItemId },
             {
               projection: {
@@ -1973,7 +1973,7 @@ export function registerOrderShippingRoutes(app, {
         )
         const fallbackMondayItemId = String(req.body?.mondayItemId ?? '').trim()
         const mondayOnlyOrder = !orderDocument && fallbackMondayItemId
-          ? await mondayOrdersCollection.findOne(
+          ? await mondayCards.findOneCompat(
             { mondayItemId: fallbackMondayItemId },
             {
               projection: {

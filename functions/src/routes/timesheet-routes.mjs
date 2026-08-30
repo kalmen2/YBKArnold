@@ -1,6 +1,8 @@
 import { AppError } from '../utils/app-error.mjs'
 import { resolveBoardMapById } from '../orders/monday-board-map.mjs'
 
+import { createMondayCardStore } from '../orders/monday-card-store.mjs'
+
 export function registerTimesheetRoutes(app, deps) {
   const {
     resolveMondayLink,
@@ -32,6 +34,8 @@ export function registerTimesheetRoutes(app, deps) {
     validateEntryInput,
     validateWorkerInput,
   } = deps
+
+  const mondayCards = createMondayCardStore({ getCollections })
 
   const isoDatePattern = /^\d{4}-\d{2}-\d{2}$/
   const canonicalOrderNumberPattern = /^\d{4,}([A-Z]|-[A-Z])?$/
@@ -624,24 +628,7 @@ export function registerTimesheetRoutes(app, deps) {
         return new Map()
       }
 
-      const { mondayOrdersCollection } = await getCollections()
-      const orderDocuments = await mondayOrdersCollection
-        .find(
-          {
-            mondayItemId: {
-              $in: normalizedOrderIds,
-            },
-          },
-          {
-            projection: {
-              _id: 0,
-              mondayItemId: 1,
-              movedToShippedAt: 1,
-              shippedAt: 1,
-            },
-          },
-        )
-        .toArray()
+      const orderDocuments = await mondayCards.findManyByItemIds(normalizedOrderIds)
 
       return new Map(
         orderDocuments

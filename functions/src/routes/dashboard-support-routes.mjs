@@ -1336,7 +1336,7 @@ app.get('/api/dashboard/monday/shop-drawing/download', requireFirebaseAuth, asyn
     async function loadOrderDrawingDocument() {
       const { mondayOrdersCollection } = await getCollections()
 
-      return mondayOrdersCollection.findOne(
+      return mondayCards.findOneCompat(
         {
           mondayItemId: orderId,
         },
@@ -1481,7 +1481,7 @@ app.get('/api/dashboard/monday/cut-list/download', requireFirebaseAuth, async (r
     async function loadOrderCutListDocument() {
       const { mondayOrdersCollection } = await getCollections()
 
-      return mondayOrdersCollection.findOne(
+      return mondayCards.findOneCompat(
         {
           mondayItemId: orderId,
         },
@@ -1606,7 +1606,7 @@ app.get('/api/dashboard/monday/bol/download', requireFirebaseAuth, async (req, r
     async function loadOrderBolDocument() {
       const { mondayOrdersCollection, ordersUnifiedCollection } = await getCollections()
       const [mondayOrder, unifiedOrder] = await Promise.all([
-        mondayOrdersCollection.findOne(
+        mondayCards.findOneCompat(
           {
             mondayItemId: orderId,
           },

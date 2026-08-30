@@ -329,7 +329,7 @@ export function createMondaySyncHelpers(deps) {
           },
         },
       ),
-      mondayOrdersCollection.findOne(
+      mondayCards.findOneCompat(
         { mondayItemId: normalizedMondayItemId },
         {
           projection: {

@@ -258,7 +258,7 @@ export function registerOrderProgressRoutes(app, {
             { monday_item_id: mondayItemId },
             { projection: { _id: 0 } },
           ),
-          mondayOrdersCollection.findOne(
+          mondayCards.findOneCompat(
             { mondayItemId },
             { projection: { _id: 0 } },
           ),
@@ -419,7 +419,7 @@ export function registerOrderProgressRoutes(app, {
         // the application database used by generated order documents.
         const [storedOrder, storedMondayOrder] = await Promise.all([
           ordersUnifiedCollection.findOne({ monday_item_id: mondayItemId }, { projection: { _id: 0 } }),
-          mondayOrdersCollection.findOne({ mondayItemId }, { projection: { _id: 0 } }),
+          mondayCards.findOneCompat({ mondayItemId }, { projection: { _id: 0 } }),
         ])
 
         if (!storedOrder && !storedMondayOrder) {
