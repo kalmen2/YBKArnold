@@ -1,14 +1,10 @@
-// Owns the Monday-card payload that used to live only in `monday_orders`.
+// Owns the Monday-card payload, which now lives only on the owning order at
+// `orders.monday.card`. The `monday_orders` mirror this replaced is gone.
 //
-// This is the expand step of an expand/migrate/contract move onto
-// `orders.monday.card`. Every writer goes through here and updates BOTH
-// copies, so the embedded copy stays current while readers are converted one
-// group at a time. Nothing here decides which copy readers prefer — that is
-// readMondayCard's job, and it can be flipped independently.
-//
-// A card with no owning Arnold order has nowhere to embed. Those writes touch
-// the mirror only, which is why `monday_orders` cannot be dropped until the
-// unlinked cards are dealt with separately.
+// A card with no owning Arnold order is deliberately not stored: that history
+// stays on the Monday board rather than being duplicated into Mongo. Reads and
+// writes for such a card are no-ops here, so callers must treat a null card as
+// "not tracked in Arnold" rather than "missing".
 
 const EMBED_ROOT = 'monday.card'
 
@@ -36,126 +32,118 @@ export function buildCardOwnerFilter(mondayItemId) {
   }
 }
 
+
+// A unique index guards monday.card.mondayItemId, so two orders claiming the
+// same card is rejected at write time. That is the correct outcome, but it
+// must not fail the user's operation - the link itself needs review, which the
+// refresh already flags. Swallow only that error.
+async function embedIgnoringDuplicateLink(promise) {
+  try {
+    return await promise
+  } catch (error) {
+    if (Number(error?.code) === 11000) {
+      return { matchedCount: 0, duplicateLink: true }
+    }
+    throw error
+  }
+}
+
 export function createMondayCardStore({ getCollections }) {
   async function collections() {
-    const { mondayOrdersCollection, ordersUnifiedCollection } = await getCollections()
-    return { mondayOrdersCollection, ordersUnifiedCollection }
+    const { ordersUnifiedCollection } = await getCollections()
+    return { ordersUnifiedCollection }
   }
 
-  // Mirrors a $set onto both copies. Returns how many owning orders were
-  // updated so a caller can tell the card is unlinked.
+  // Applies a $set to the owning order's embedded card. Returns how many
+  // orders were updated, so a caller can tell the card is untracked.
   async function writeMondayCard({
     mondayItemId,
     set = {},
-    setOnInsert = null,
-    upsert = false,
     collections: injected = null,
   }) {
     const id = String(mondayItemId ?? '').trim()
-    if (!id) return { mirrored: false, embeddedCount: 0 }
+    if (!id) return { embeddedCount: 0 }
 
-    const { mondayOrdersCollection, ordersUnifiedCollection } = injected ?? await collections()
-    const update = { $set: { ...set, mondayItemId: id } }
-    if (setOnInsert) update.$setOnInsert = setOnInsert
-
+    const { ordersUnifiedCollection } = injected ?? await collections()
     const ownerFilter = buildCardOwnerFilter(id)
     const embedded = toEmbeddedFields({ ...set, mondayItemId: id })
 
-    const [, embeddedResult] = await Promise.all([
-      mondayOrdersCollection.updateOne({ mondayItemId: id }, update, { upsert }),
-      ownerFilter
-        ? ordersUnifiedCollection.updateMany(ownerFilter, { $set: embedded })
-        : Promise.resolve({ matchedCount: 0 }),
-    ])
+    const embeddedResult = ownerFilter
+      ? await embedIgnoringDuplicateLink(ordersUnifiedCollection.updateMany(ownerFilter, { $set: embedded }))
+      : { matchedCount: 0 }
 
-    return { mirrored: true, embeddedCount: Number(embeddedResult?.matchedCount ?? 0) }
+    return { embeddedCount: Number(embeddedResult?.matchedCount ?? 0) }
   }
 
-  // Reads the card. Prefers the embedded copy so the mirror can be retired,
-  // and falls back to it while the migration is in flight.
+  // Reads the card off its owning order. Null means no Arnold order claims
+  // this Monday card.
   async function readMondayCard({ mondayItemId, collections: injected = null }) {
     const id = String(mondayItemId ?? '').trim()
     if (!id) return null
 
-    const { mondayOrdersCollection, ordersUnifiedCollection } = injected ?? await collections()
+    const { ordersUnifiedCollection } = injected ?? await collections()
     const ownerFilter = buildCardOwnerFilter(id)
 
-    const [owner, mirrored] = await Promise.all([
-      ownerFilter
-        ? ordersUnifiedCollection.findOne(ownerFilter, { projection: { _id: 0, monday: 1 } })
-        : Promise.resolve(null),
-      mondayOrdersCollection.findOne({ mondayItemId: id }, { projection: { _id: 0 } }),
-    ])
+    const owner = ownerFilter
+      ? await ordersUnifiedCollection.findOne(ownerFilter, { projection: { _id: 0, monday: 1 } })
+      : null
 
     const embedded = owner?.monday?.card ?? null
-    if (embedded && Object.keys(embedded).length > 0) {
-      return { ...mirrored, ...embedded, mondayItemId: id }
-    }
-    return mirrored
+    return embedded && Object.keys(embedded).length > 0
+      ? { ...embedded, mondayItemId: id }
+      : null
   }
 
   async function deleteMondayCard({ mondayItemId, collections: injected = null }) {
     const id = String(mondayItemId ?? '').trim()
     if (!id) return
-    const { mondayOrdersCollection, ordersUnifiedCollection } = injected ?? await collections()
+    const { ordersUnifiedCollection } = injected ?? await collections()
     const ownerFilter = buildCardOwnerFilter(id)
-    await Promise.all([
-      mondayOrdersCollection.deleteOne({ mondayItemId: id }),
-      ownerFilter
-        ? ordersUnifiedCollection.updateMany(ownerFilter, { $unset: { monday: '' } })
-        : Promise.resolve(null),
-    ])
+    if (ownerFilter) {
+      await ordersUnifiedCollection.updateMany(ownerFilter, { $unset: { monday: '' } })
+    }
   }
 
-  // Drop-in for `mondayOrdersCollection.updateOne(filter, update, options)`.
-  // Same signature on purpose: converting a call site is a one-token change,
-  // which keeps this migration reviewable. Only writes keyed on mondayItemId
-  // can be mirrored to the embedded copy; anything else passes straight
-  // through to the mirror so behaviour is never silently changed.
+  // Kept the shape of the old `collection.updateOne(filter, update, options)`
+  // so converting each call site stayed a one-token change. A filter not keyed
+  // on mondayItemId cannot identify an owning order, so it is a no-op rather
+  // than a guess.
   async function updateOneCompat(filter, update, options = {}) {
-    const { mondayOrdersCollection, ordersUnifiedCollection } = await collections()
+    const { ordersUnifiedCollection } = await collections()
     const id = String(filter?.mondayItemId ?? '').trim()
     const set = update?.$set && typeof update.$set === 'object' ? update.$set : null
     const ownerFilter = id ? buildCardOwnerFilter(id) : null
 
-    const [mirrorResult] = await Promise.all([
-      mondayOrdersCollection.updateOne(filter, update, options),
-      ownerFilter && set
-        ? ordersUnifiedCollection.updateMany(ownerFilter, { $set: toEmbeddedFields(set) })
-        : Promise.resolve(null),
-    ])
+    if (!ownerFilter || !set) {
+      return { matchedCount: 0, modifiedCount: 0 }
+    }
 
-    return mirrorResult
+    return embedIgnoringDuplicateLink(
+      ordersUnifiedCollection.updateMany(ownerFilter, { $set: toEmbeddedFields(set) }),
+    )
   }
 
   // Same idea for findOneAndUpdate.
   async function findOneAndUpdateCompat(filter, update, options = {}) {
-    const { mondayOrdersCollection, ordersUnifiedCollection } = await collections()
+    const { ordersUnifiedCollection } = await collections()
     const id = String(filter?.mondayItemId ?? '').trim()
     const set = update?.$set && typeof update.$set === 'object' ? update.$set : null
     const ownerFilter = id ? buildCardOwnerFilter(id) : null
 
-    const [mirrorResult] = await Promise.all([
-      mondayOrdersCollection.findOneAndUpdate(filter, update, options),
-      ownerFilter && set
-        ? ordersUnifiedCollection.updateMany(ownerFilter, { $set: toEmbeddedFields(set) })
-        : Promise.resolve(null),
-    ])
+    if (ownerFilter && set) {
+      await embedIgnoringDuplicateLink(
+        ordersUnifiedCollection.updateMany(ownerFilter, { $set: toEmbeddedFields(set) }),
+      )
+    }
 
-    return mirrorResult
+    return id ? readMondayCard({ mondayItemId: id }) : null
   }
 
-  // Drop-in for `mondayOrdersCollection.findOne(filter, options)`.
-  // A lookup keyed on mondayItemId is served embedded-first so it keeps
-  // working once the mirror is gone; anything else passes through unchanged.
+  // Kept the shape of the old `collection.findOne(filter, options)`.
   async function findOneCompat(filter, options = {}) {
     const id = String(filter?.mondayItemId ?? '').trim()
 
-    if (!id) {
-      const { mondayOrdersCollection } = await collections()
-      return mondayOrdersCollection.findOne(filter, options)
-    }
-
+    if (!id) return null
     return readMondayCard({ mondayItemId: id })
   }
 
@@ -167,17 +155,14 @@ export function createMondayCardStore({ getCollections }) {
 
     if (ids.length === 0) return []
 
-    const { mondayOrdersCollection, ordersUnifiedCollection } = await collections()
-    const [owners, mirrored] = await Promise.all([
-      ordersUnifiedCollection.find({
+    const { ordersUnifiedCollection } = await collections()
+    const owners = await ordersUnifiedCollection.find({
         $or: [
           { monday_production_item_id: { $in: ids } },
           { monday_financial_item_id: { $in: ids } },
           { monday_item_id: { $in: ids } },
         ],
-      }, { projection: { _id: 0, monday: 1 } }).toArray(),
-      mondayOrdersCollection.find({ mondayItemId: { $in: ids } }, { projection: { _id: 0 } }).toArray(),
-    ])
+      }, { projection: { _id: 0, monday: 1 } }).toArray()
 
     const embeddedById = new Map()
     for (const owner of owners) {
@@ -185,14 +170,10 @@ export function createMondayCardStore({ getCollections }) {
       const id = String(card?.mondayItemId ?? '').trim()
       if (id) embeddedById.set(id, card)
     }
-    const mirrorById = new Map(mirrored.map((d) => [String(d.mondayItemId ?? '').trim(), d]))
-
     return ids
       .map((id) => {
         const embedded = embeddedById.get(id)
-        const mirror = mirrorById.get(id)
-        if (embedded) return { ...mirror, ...embedded, mondayItemId: id }
-        return mirror ?? null
+        return embedded ? { ...embedded, mondayItemId: id } : null
       })
       .filter(Boolean)
   }

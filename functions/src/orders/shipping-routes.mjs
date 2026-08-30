@@ -1839,10 +1839,9 @@ export function registerOrderShippingRoutes(app, {
               order_number: new RegExp(`^${escapeRegex(orderNumber)}$`, 'i'),
             }
 
+        // The embedded card lives on the order row, so deleting the order
+        // removes it; there is no separate mirror row to clean up any more.
         await Promise.all([
-          mondayItemId
-            ? mondayOrdersCollection.deleteOne({ mondayItemId })
-            : Promise.resolve(),
           ordersUnifiedCollection.deleteMany(deletedOrderFilter),
           orderNumber
             ? orderProgressCollection.deleteMany({

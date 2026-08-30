@@ -1,6 +1,6 @@
 import { buildFirebaseStorageDownloadUrl } from '../utils/value-utils.mjs'
 
-import { buildCardOwnerFilter, toEmbeddedFields } from '../orders/monday-card-store.mjs'
+import { buildCardOwnerFilter, createMondayCardStore, toEmbeddedFields } from '../orders/monday-card-store.mjs'
 
 export function createMondayOrderPersistenceService({
   fetchMondayAssetDownloadInfo,
@@ -10,6 +10,8 @@ export function createMondayOrderPersistenceService({
   mondayShippedBoardId,
   randomUUID,
 }) {
+  const mondayCards = createMondayCardStore({ getCollections })
+
   function normalizeMondayItemId(rawValue) {
     const normalized = String(rawValue ?? '').trim()
 
@@ -328,30 +330,10 @@ export function createMondayOrderPersistenceService({
       }
     }
 
-    const { mondayOrdersCollection } = await getCollections()
     const now = new Date().toISOString()
     const board = snapshot?.board ?? null
     const currentBoardId = normalizeBoardId(board?.id)
-    const existingOrders = await mondayOrdersCollection
-      .find(
-        {
-          mondayItemId: {
-            $in: mondayItemIds,
-          },
-        },
-        {
-          projection: {
-            _id: 0,
-            mondayItemId: 1,
-            mondayBoardId: 1,
-            movedToShippedAt: 1,
-            shopDrawingDownloadUrl: 1,
-            cutListDownloadUrl: 1,
-            bolDownloadUrl: 1,
-          },
-        },
-      )
-      .toArray()
+    const existingOrders = await mondayCards.findManyByItemIds(mondayItemIds)
     const existingOrderByItemId = new Map(
       existingOrders.map((orderDocument) => [orderDocument.mondayItemId, orderDocument]),
     )
@@ -431,10 +413,10 @@ export function createMondayOrderPersistenceService({
       })
     }
 
-    const writeResult = await mondayOrdersCollection.bulkWrite(operations, {
-      ordered: false,
-    })
-    const insertedCount = Number(writeResult?.upsertedCount ?? 0)
+    // Contract step: the mirror is no longer written. Card state lives on the
+    // owning order, and a card with no owning order is not persisted at all -
+    // it stays on the Monday board, which is where that history now lives.
+    const insertedCount = 0
 
     // Mirror the same payload onto orders.monday.card. This is the writer that
     // runs on every refresh, so without it the embedded copy goes stale the

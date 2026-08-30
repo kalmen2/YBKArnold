@@ -364,14 +364,17 @@ export function createMongoCollectionsService({
             diagnosticReportsCollection.createIndex({ createdAt: -1 }),
             diagnosticRequestEventsCollection.createIndex({ sessionId: 1, createdAt: 1 }),
             diagnosticRequestEventsCollection.createIndex({ createdAt: 1 }, { expireAfterSeconds: 30 * 24 * 60 * 60 }),
-            mondayOrdersCollection.createIndex({ mondayItemId: 1 }, { unique: true }),
-            mondayOrdersCollection.createIndex({ createdAt: -1 }),
-            mondayOrdersCollection.createIndex({ orderName: 1 }),
             ordersUnifiedCollection.createIndex({ orderKey: 1 }, { unique: true }),
             ordersUnifiedCollection.createIndex({ canonical_order_id: 1 }, { unique: true, sparse: true }),
             ordersUnifiedCollection.createIndex({ source_quote_id: 1 }, { unique: true, sparse: true }),
             ordersUnifiedCollection.createIndex({ order_number: 1 }),
             ordersUnifiedCollection.createIndex({ monday_link_status: 1 }),
+            // Replaces monday_orders' unique index on mondayItemId: one Monday
+            // card may be claimed by at most one Arnold order.
+            ordersUnifiedCollection.createIndex(
+              { 'monday.card.mondayItemId': 1 },
+              { unique: true, sparse: true },
+            ),
             ordersUnifiedCollection.createIndex({ monday_production_item_id: 1 }, { sparse: true }),
             ordersUnifiedCollection.createIndex({ monday_financial_item_id: 1 }, { sparse: true }),
             ordersUnifiedCollection.createIndex({ is_shipped: 1, Due_date: 1 }),

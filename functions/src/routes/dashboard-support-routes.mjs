@@ -789,26 +789,7 @@ export function registerDashboardSupportRoutes(app, deps) {
       return new Map()
     }
 
-    const { mondayOrdersCollection } = await getCollections()
-    const orderDocuments = await mondayOrdersCollection
-      .find(
-        {
-          mondayItemId: {
-            $in: normalizedOrderIds,
-          },
-        },
-        {
-          projection: {
-            _id: 0,
-            mondayItemId: 1,
-            shopDrawingStoragePath: 1,
-            shopDrawingDownloadUrl: 1,
-            shopDrawingContentType: 1,
-            shopDrawingFileName: 1,
-          },
-        },
-      )
-      .toArray()
+    const orderDocuments = await mondayCards.findManyByItemIds(normalizedOrderIds)
 
     return new Map(
       orderDocuments
