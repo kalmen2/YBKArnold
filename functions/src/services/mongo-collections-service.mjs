@@ -3,6 +3,7 @@ import {
   findMissingMongoDomainUris,
   resolveMongoDomainConfiguration,
 } from './mongo-domain-config.mjs'
+import { createEmbeddedMondayOrdersCollection } from './embedded-monday-orders-service.mjs'
 
 export function createMongoCollectionsService({
   mongoDbName,
@@ -296,8 +297,11 @@ export function createMongoCollectionsService({
         const visitorShortcutsCollection = platformDatabase.collection('visitor_shortcuts')
         const diagnosticReportsCollection = platformDatabase.collection('diagnostic_reports')
         const diagnosticRequestEventsCollection = platformDatabase.collection('diagnostic_request_events')
-        const mondayOrdersCollection = ordersDatabase.collection('monday_orders')
         const ordersUnifiedCollection = ordersDatabase.collection('orders')
+        const legacyMondayOrdersCollection = ordersDatabase.collection('monday_orders')
+        const mondayOrdersCollection = createEmbeddedMondayOrdersCollection({
+          ordersUnifiedCollection,
+        })
         const authUsersCollection = authDatabase.collection('auth_users')
         const mobilePushTokensCollection = authDatabase.collection('mobile_push_tokens')
         const mobileAlertsCollection = authDatabase.collection('mobile_alerts')
@@ -364,9 +368,11 @@ export function createMongoCollectionsService({
             diagnosticReportsCollection.createIndex({ createdAt: -1 }),
             diagnosticRequestEventsCollection.createIndex({ sessionId: 1, createdAt: 1 }),
             diagnosticRequestEventsCollection.createIndex({ createdAt: 1 }, { expireAfterSeconds: 30 * 24 * 60 * 60 }),
-            mondayOrdersCollection.createIndex({ mondayItemId: 1 }, { unique: true }),
-            mondayOrdersCollection.createIndex({ createdAt: -1 }),
-            mondayOrdersCollection.createIndex({ orderName: 1 }),
+            // Kept until the deployment using embedded Monday cards has run
+            // cleanly; no application reads or writes target this collection.
+            legacyMondayOrdersCollection.createIndex({ mondayItemId: 1 }, { unique: true }),
+            legacyMondayOrdersCollection.createIndex({ createdAt: -1 }),
+            legacyMondayOrdersCollection.createIndex({ orderName: 1 }),
             ordersUnifiedCollection.createIndex({ orderKey: 1 }, { unique: true }),
             ordersUnifiedCollection.createIndex({ canonical_order_id: 1 }, { unique: true, sparse: true }),
             ordersUnifiedCollection.createIndex({ source_quote_id: 1 }, { unique: true, sparse: true }),
@@ -374,6 +380,7 @@ export function createMongoCollectionsService({
             ordersUnifiedCollection.createIndex({ monday_link_status: 1 }),
             ordersUnifiedCollection.createIndex({ monday_production_item_id: 1 }, { sparse: true }),
             ordersUnifiedCollection.createIndex({ monday_financial_item_id: 1 }, { sparse: true }),
+            ordersUnifiedCollection.createIndex({ 'monday.card.mondayItemId': 1 }, { unique: true, sparse: true }),
             ordersUnifiedCollection.createIndex({ is_shipped: 1, Due_date: 1 }),
             ordersUnifiedCollection.createIndex({ has_monday_record: 1, has_quickbooks_record: 1 }),
             ordersUnifiedCollection.createIndex({ hazard_reason: 1 }),
