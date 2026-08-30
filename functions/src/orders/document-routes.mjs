@@ -14,6 +14,8 @@ import {
   sanitizeStorageSegment,
 } from './order-shared.mjs'
 
+import { createMondayCardStore } from './monday-card-store.mjs'
+
 export function registerOrderDocumentRoutes(app, {
   assertMondayLink,
   clearMondayColumnValue,
@@ -29,6 +31,8 @@ export function registerOrderDocumentRoutes(app, {
   toPublicAuthUser,
   updateMondayLinkColumnValue,
 }) {
+  const mondayCards = createMondayCardStore({ getCollections })
+
   const shippingDocumentMimeTypes = new Set([
     'application/pdf',
     'image/jpeg',
@@ -666,7 +670,7 @@ export function registerOrderDocumentRoutes(app, {
           || downloadUrl
 
         await Promise.all([
-          mondayOrdersCollection.updateOne(
+          mondayCards.updateOneCompat(
             { mondayItemId },
             {
               $set: {
@@ -859,7 +863,7 @@ export function registerOrderDocumentRoutes(app, {
           || null
 
         await Promise.all([
-          mondayOrdersCollection.updateOne(
+          mondayCards.updateOneCompat(
             { mondayItemId },
             {
               $set: {
@@ -1122,7 +1126,7 @@ export function registerOrderDocumentRoutes(app, {
           || downloadUrl
 
         await Promise.all([
-          mondayOrdersCollection.updateOne(
+          mondayCards.updateOneCompat(
             { mondayItemId },
             {
               $set: {
@@ -1515,7 +1519,7 @@ export function registerOrderDocumentRoutes(app, {
         }
 
         await Promise.all([
-          mondayOrdersCollection.updateOne(
+          mondayCards.updateOneCompat(
             { mondayItemId },
             {
               $set: {

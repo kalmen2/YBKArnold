@@ -16,6 +16,8 @@ import {
   resolveMondayProgressStatusLabel,
 } from './order-shared.mjs'
 
+import { createMondayCardStore } from './monday-card-store.mjs'
+
 export function registerOrderProgressRoutes(app, {
   assertMondayLink,
   buildMondayLinkFields,
@@ -50,6 +52,8 @@ export function registerOrderProgressRoutes(app, {
   updateMondayItemTextColumn,
   updateMondayLinkColumnValue,
 }) {
+  const mondayCards = createMondayCardStore({ getCollections })
+
   const linkedOrderNumberChangeMessage =
     'Sorry, this cannot be done because of its linked. If it needs to be done, contact admin.'
 
@@ -285,7 +289,7 @@ export function registerOrderProgressRoutes(app, {
 
         await Promise.all([
           ordersUnifiedCollection.updateOne({ monday_item_id: mondayItemId }, { $set: unifiedUpdate }),
-          mondayOrdersCollection.updateOne({ mondayItemId }, { $set: mondayUpdate }),
+          mondayCards.updateOneCompat({ mondayItemId }, { $set: mondayUpdate }),
         ])
 
         const queueCollection = await getOrdersDetailsQueueCollection()
@@ -449,7 +453,7 @@ export function registerOrderProgressRoutes(app, {
 
         await Promise.all([
           ordersUnifiedCollection.updateOne({ monday_item_id: mondayItemId }, { $set: unifiedUpdate }),
-          mondayOrdersCollection.updateOne({ mondayItemId }, { $set: mondayUpdate }),
+          mondayCards.updateOneCompat({ mondayItemId }, { $set: mondayUpdate }),
         ])
 
         if (Object.keys(mondayChanges).length > 0) {
@@ -608,7 +612,7 @@ export function registerOrderProgressRoutes(app, {
                 },
               },
             ),
-            mondayOrdersCollection.updateOne(
+            mondayCards.updateOneCompat(
               { mondayItemId },
               {
                 $set: {
@@ -1023,7 +1027,7 @@ export function registerOrderProgressRoutes(app, {
         const refreshedOrderName = normalizeOptionalShortText(refreshedLiveOrder?.name, 250) || null
 
         await Promise.all([
-          mondayOrdersCollection.updateOne(
+          mondayCards.updateOneCompat(
             { mondayItemId },
             {
               $set: {
@@ -1384,7 +1388,7 @@ export function registerOrderProgressRoutes(app, {
         if (hasShipToField || hasLeadTimeTextField || hasFreightDescriptionField || hasShippingCarrierField || hasShipNotesField) {
           await Promise.all([
             ordersUnifiedCollection.updateOne({ monday_item_id: mondayItemId }, { $set: localShippingUpdate }),
-            mondayOrdersCollection.updateOne({ mondayItemId }, { $set: localMondayShippingUpdate }),
+            mondayCards.updateOneCompat({ mondayItemId }, { $set: localMondayShippingUpdate }),
           ])
         }
 
@@ -1423,7 +1427,7 @@ export function registerOrderProgressRoutes(app, {
             { $set: localOrderUpdate },
             { returnDocument: 'after', projection: { _id: 0 } },
           ),
-          mondayOrdersCollection.findOneAndUpdate(
+          mondayCards.findOneAndUpdateCompat(
             { mondayItemId },
             { $set: localMondayUpdate },
             { returnDocument: 'after', projection: { _id: 0 } },
@@ -1691,7 +1695,7 @@ export function registerOrderProgressRoutes(app, {
           : null
 
         await Promise.all([
-          mondayOrdersCollection.updateOne(
+          mondayCards.updateOneCompat(
             { mondayItemId },
             {
               $set: {

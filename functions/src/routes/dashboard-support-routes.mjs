@@ -1,5 +1,6 @@
 import { createTtlCache } from '../utils/ttl-cache.mjs'
 import { buildFirebaseStorageDownloadUrl } from '../utils/value-utils.mjs'
+import { createMondayCardStore } from '../orders/monday-card-store.mjs'
 
 export function registerDashboardSupportRoutes(app, deps) {
   const {
@@ -25,6 +26,8 @@ export function registerDashboardSupportRoutes(app, deps) {
     toPublicAuthUser,
     toBoundedInteger,
   } = deps
+
+  const mondayCards = createMondayCardStore({ getCollections })
 
   // Zendesk ticket conversation cache (5-minute TTL)
   // Avoids a live Zendesk API call on every ticket click — conversations rarely
@@ -987,7 +990,7 @@ export function registerDashboardSupportRoutes(app, deps) {
     const cachedDownloadUrl = buildFirebaseStorageDownloadUrl(bucket.name, storagePath, downloadToken)
     const { mondayOrdersCollection } = await getCollections()
 
-    await mondayOrdersCollection.updateOne(
+    await mondayCards.updateOneCompat(
       {
         mondayItemId,
       },
@@ -1124,7 +1127,7 @@ export function registerDashboardSupportRoutes(app, deps) {
     const cachedDownloadUrl = buildFirebaseStorageDownloadUrl(bucket.name, storagePath, downloadToken)
     const { mondayOrdersCollection } = await getCollections()
 
-    await mondayOrdersCollection.updateOne(
+    await mondayCards.updateOneCompat(
       {
         mondayItemId,
       },
@@ -1262,7 +1265,7 @@ export function registerDashboardSupportRoutes(app, deps) {
     const cachedDownloadUrl = buildFirebaseStorageDownloadUrl(bucket.name, storagePath, downloadToken)
     const { mondayOrdersCollection } = await getCollections()
 
-    await mondayOrdersCollection.updateOne(
+    await mondayCards.updateOneCompat(
       {
         mondayItemId,
       },

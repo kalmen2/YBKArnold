@@ -1,5 +1,7 @@
 import { buildFirebaseStorageDownloadUrl } from '../utils/value-utils.mjs'
 
+import { buildCardOwnerFilter, toEmbeddedFields } from '../orders/monday-card-store.mjs'
+
 export function createMondayOrderPersistenceService({
   fetchMondayAssetDownloadInfo,
   getCollections,
@@ -433,6 +435,34 @@ export function createMondayOrderPersistenceService({
       ordered: false,
     })
     const insertedCount = Number(writeResult?.upsertedCount ?? 0)
+
+    // Mirror the same payload onto orders.monday.card. This is the writer that
+    // runs on every refresh, so without it the embedded copy goes stale the
+    // moment anything reads it. Cards with no owning order simply match
+    // nothing here, which is why the mirror still has to exist for now.
+    const { ordersUnifiedCollection } = await getCollections()
+    const embedOperations = operations
+      .map((operation) => {
+        const mondayItemId = String(operation?.updateOne?.filter?.mondayItemId ?? '').trim()
+        const setFields = operation?.updateOne?.update?.$set
+        const ownerFilter = mondayItemId ? buildCardOwnerFilter(mondayItemId) : null
+
+        if (!ownerFilter || !setFields) {
+          return null
+        }
+
+        return {
+          updateMany: {
+            filter: ownerFilter,
+            update: { $set: toEmbeddedFields({ ...setFields, mondayItemId }) },
+          },
+        }
+      })
+      .filter(Boolean)
+
+    if (embedOperations.length > 0) {
+      await ordersUnifiedCollection.bulkWrite(embedOperations, { ordered: false })
+    }
 
     return {
       checkedCount: mondayItemIds.length,

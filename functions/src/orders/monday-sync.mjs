@@ -15,6 +15,8 @@ import {
   resolveRowStatusLabel,
 } from './order-shared.mjs'
 
+import { createMondayCardStore } from './monday-card-store.mjs'
+
 export function createMondaySyncHelpers(deps) {
   const {
     resolveMondayLink,
@@ -68,6 +70,8 @@ export function createMondaySyncHelpers(deps) {
     columnId,
     dateValue,
   }) {
+  const mondayCards = createMondayCardStore({ getCollections })
+
     const normalizedDateValue = normalizeIsoDateInput(dateValue)
 
     if (!normalizedDateValue) {
@@ -462,7 +466,7 @@ export function createMondaySyncHelpers(deps) {
         }
 
     await Promise.all([
-      mondayOrdersCollection.updateOne(
+      mondayCards.updateOneCompat(
         { mondayItemId },
         {
           $set: {

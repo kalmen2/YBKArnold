@@ -13,6 +13,7 @@ import { MONDAY_LINK_ROLES } from './monday-link-service.mjs'
 import { AppError } from '../utils/app-error.mjs'
 import { normalizeOptionalShortText } from '../utils/value-utils.mjs'
 import { getStorage } from 'firebase-admin/storage'
+import { createMondayCardStore } from './monday-card-store.mjs'
 
 export function registerOrderShippingRoutes(app, {
   assertMondayLink,
@@ -43,6 +44,8 @@ export function registerOrderShippingRoutes(app, {
   updateMondayItemStatusColumn,
   updateMondayItemTextColumn,
 }) {
+  const mondayCards = createMondayCardStore({ getCollections })
+
   const orderTrackBoardId = String(MONDAY_BOARDS?.orderTrack?.id ?? '').trim()
   const manualOrderBoardPrefix = normalizeOptionalShortText(
     process.env.MONDAY_NEW_ORDERS_BOARD_PREFIX,
@@ -1327,7 +1330,7 @@ export function registerOrderShippingRoutes(app, {
         const publicUser = toPublicAuthUser(req.authUser)
 
         await Promise.all([
-          mondayOrdersCollection.updateOne(
+          mondayCards.updateOneCompat(
             { mondayItemId },
             {
               $set: {
@@ -2216,7 +2219,7 @@ export function registerOrderShippingRoutes(app, {
         })
 
         await Promise.all([
-          mondayOrdersCollection.updateOne(
+          mondayCards.updateOneCompat(
             { mondayItemId: verifiedItemId },
             {
               $set: {
