@@ -17,6 +17,11 @@ import {
 } from './order-shared.mjs'
 
 export function registerOrderProgressRoutes(app, {
+  assertMondayLink,
+  buildMondayLinkFields,
+  buildMondayLinkHistoryEntry,
+  invalidateMondayLinkCache,
+  resolveMondayLink,
   authApprovalApproved,
   authRoleAdmin,
   buildMondayProgressDetailsResponse,
@@ -509,9 +514,16 @@ export function registerOrderProgressRoutes(app, {
           })
         }
 
+        // The stored item id decided the board above; confirm it still belongs
+        // to this order number before writing a status onto it.
+        const statusLink = await assertMondayLink({
+          orderNumber: context.orderNumber,
+          storedItemId: mondayItemId,
+        })
+
         try {
           const optionsByColumnId = await fetchMondayStatusColumnOptions({
-            boardId: context.boardId,
+            boardId: statusLink.boardId,
             columnIds: [columnId],
           })
           let resolvedStatusLabel = ''
@@ -533,8 +545,8 @@ export function registerOrderProgressRoutes(app, {
           }
 
           await updateMondayItemStatusColumn({
-            boardId: context.boardId,
-            itemId: mondayItemId,
+            boardId: statusLink.boardId,
+            itemId: statusLink.itemId,
             columnId,
             statusLabel: resolvedStatusLabel,
           })
@@ -545,15 +557,15 @@ export function registerOrderProgressRoutes(app, {
             resolvedBoardUrl,
             progressStatusDetails,
           } = await pullLiveMondayProgressDetails({
-            boardId: context.boardId,
+            boardId: statusLink.boardId,
             boardName: context.boardName,
             boardUrl: context.boardUrl,
-            mondayItemId,
+            mondayItemId: statusLink.itemId,
           })
 
           const syncResult = await syncMondayProgressDetailsToCollections({
-            mondayItemId,
-            boardId: context.boardId,
+            mondayItemId: statusLink.itemId,
+            boardId: statusLink.boardId,
             boardName: resolvedBoardName,
             boardUrl: resolvedBoardUrl,
             liveOrder,
@@ -955,20 +967,31 @@ export function registerOrderProgressRoutes(app, {
 
         const orderNumberColumnId = String(liveSnapshot?.columnDetection?.ackColumnId ?? '').trim() || null
 
+        // Verify against the CURRENT order number before rewriting the ACK.
+        // Getting this wrong renames another order's item, and the ACK is the
+        // very key every later lookup depends on.
+        const renameLink = await assertMondayLink({
+          orderNumber: currentOrderNumber,
+          storedItemId: mondayItemId,
+        })
+
         if (orderNumberColumnId) {
           await updateMondayItemTextColumn({
-            boardId: context.boardId,
-            itemId: mondayItemId,
+            boardId: renameLink.boardId,
+            itemId: renameLink.itemId,
             columnId: orderNumberColumnId,
             textValue: requestedOrderNumber,
           })
         } else {
           await updateMondayItemName({
-            boardId: context.boardId,
-            itemId: mondayItemId,
+            boardId: renameLink.boardId,
+            itemId: renameLink.itemId,
             itemName: requestedOrderNumber,
           })
         }
+
+        // The ACK index is now stale for both the old and the new number.
+        invalidateMondayLinkCache()
 
         const {
           liveOrder: refreshedLiveOrder,
@@ -1218,6 +1241,7 @@ export function registerOrderProgressRoutes(app, {
 
         const mondayItemId = String(req.body?.mondayItemId ?? '').trim()
         const hasOrderNameField = hasOwnField(req.body, 'orderName')
+        const hasSalesRepField = hasOwnField(req.body, 'salesRep')
         const hasPoNumberField = hasOwnField(req.body, 'poNumber')
         const hasNotesField = hasOwnField(req.body, 'notes')
         const hasDescriptionField = hasOwnField(req.body, 'description')
@@ -1241,6 +1265,7 @@ export function registerOrderProgressRoutes(app, {
 
         if (
           !hasOrderNameField
+          && !hasSalesRepField
           && !hasPoNumberField
           && !hasNotesField
           && !hasDescriptionField
@@ -1267,6 +1292,7 @@ export function registerOrderProgressRoutes(app, {
         }
 
         const rawOrderNameInput = String(req.body?.orderName ?? '').trim()
+        const rawSalesRepInput = String(req.body?.salesRep ?? '').trim()
         const rawPoNumberInput = String(req.body?.poNumber ?? '').trim()
         const rawNotesInput = String(req.body?.notes ?? '').trim()
         const rawDescriptionInput = String(req.body?.description ?? '').trim()
@@ -1288,6 +1314,7 @@ export function registerOrderProgressRoutes(app, {
         const rawShipNotesInput = String(req.body?.shipNotes ?? '').trim()
 
         const requestedOrderName = normalizeOptionalShortText(rawOrderNameInput, 250)
+        const requestedSalesRep = normalizeOptionalShortText(rawSalesRepInput, 200) || ''
         const requestedPoNumber = normalizeOptionalShortText(rawPoNumberInput, 120) || ''
         const requestedNotes = normalizeOptionalShortText(rawNotesInput, 2000) || ''
         const requestedDescription = normalizeOptionalShortText(rawDescriptionInput, 2000) || ''
@@ -1368,6 +1395,7 @@ export function registerOrderProgressRoutes(app, {
           updatedAt: savedAt,
           monday_sync_status: 'queued',
           ...(hasOrderNameField ? { order_name: requestedOrderName } : {}),
+          ...(hasSalesRepField ? { sales_rep: requestedSalesRep || null } : {}),
           ...(hasPoNumberField ? { po_number: requestedPoNumber || null } : {}),
           ...(hasNotesField ? { monday_notes: requestedNotes || null } : {}),
           ...(hasDescriptionField ? { monday_description: requestedDescription || null } : {}),
@@ -1380,6 +1408,7 @@ export function registerOrderProgressRoutes(app, {
           updatedAt: savedAt,
           mondaySyncStatus: 'queued',
           ...(hasOrderNameField ? { orderName: requestedOrderName } : {}),
+          ...(hasSalesRepField ? { salesRep: requestedSalesRep || null } : {}),
           ...(hasPoNumberField ? { poNumber: requestedPoNumber || null } : {}),
           ...(hasNotesField ? { notes: requestedNotes || null } : {}),
           ...(hasDescriptionField ? { description: requestedDescription || null } : {}),
@@ -1407,6 +1436,7 @@ export function registerOrderProgressRoutes(app, {
 
         const changes = {
           ...(hasOrderNameField ? { orderName: requestedOrderName } : {}),
+          ...(hasSalesRepField ? { salesRep: requestedSalesRep } : {}),
           ...(hasPoNumberField ? { poNumber: requestedPoNumber } : {}),
           ...(hasNotesField ? { notes: requestedNotes } : {}),
           ...(hasDescriptionField ? { description: requestedDescription } : {}),
@@ -1432,6 +1462,7 @@ export function registerOrderProgressRoutes(app, {
           order: {
             mondayItemId,
             orderName: String(storedOrder?.order_name ?? storedMondayOrder?.orderName ?? '').trim() || null,
+            salesRep: String(storedOrder?.sales_rep ?? storedMondayOrder?.salesRep ?? '').trim() || null,
             poNumber: String(storedOrder?.po_number ?? storedMondayOrder?.poNumber ?? '').trim() || null,
             notes: String(storedOrder?.monday_notes ?? storedMondayOrder?.notes ?? '').trim() || null,
             description: String(storedOrder?.monday_description ?? storedMondayOrder?.description ?? '').trim() || null,
@@ -1462,11 +1493,17 @@ export function registerOrderProgressRoutes(app, {
           })
         }
 
+        // Confirm the stored id before any of the direct field writes below.
+        const detailsLink = await assertMondayLink({
+          orderNumber: context.orderNumber,
+          storedItemId: mondayItemId,
+        })
+
         const snapshot = await fetchMondayBoardItemsByIds({
-          boardId: context.boardId,
+          boardId: detailsLink.boardId,
           boardName: context.boardName,
           boardUrl: context.boardUrl,
-          itemIds: [mondayItemId],
+          itemIds: [detailsLink.itemId],
         })
         const liveOrder = Array.isArray(snapshot?.orders)
           ? snapshot.orders[0]
@@ -1489,8 +1526,8 @@ export function registerOrderProgressRoutes(app, {
 
         if (hasOrderNameField) {
           await updateMondayItemName({
-            boardId: context.boardId,
-            itemId: mondayItemId,
+            boardId: detailsLink.boardId,
+            itemId: detailsLink.itemId,
             itemName: requestedOrderName,
           })
         }
@@ -1503,8 +1540,8 @@ export function registerOrderProgressRoutes(app, {
           }
 
           await updateMondayItemTextColumn({
-            boardId: context.boardId,
-            itemId: mondayItemId,
+            boardId: detailsLink.boardId,
+            itemId: detailsLink.itemId,
             columnId: poNumberColumnId,
             textValue: requestedPoNumber,
           })
@@ -1518,8 +1555,8 @@ export function registerOrderProgressRoutes(app, {
           }
 
           await updateMondayItemTextColumn({
-            boardId: context.boardId,
-            itemId: mondayItemId,
+            boardId: detailsLink.boardId,
+            itemId: detailsLink.itemId,
             columnId: notesColumnId,
             textValue: requestedNotes,
           })
@@ -1533,8 +1570,8 @@ export function registerOrderProgressRoutes(app, {
           }
 
           await updateMondayItemTextColumn({
-            boardId: context.boardId,
-            itemId: mondayItemId,
+            boardId: detailsLink.boardId,
+            itemId: detailsLink.itemId,
             columnId: descriptionColumnId,
             textValue: requestedDescription,
           })
@@ -1548,8 +1585,8 @@ export function registerOrderProgressRoutes(app, {
           }
 
           await updateMondayItemTextColumn({
-            boardId: context.boardId,
-            itemId: mondayItemId,
+            boardId: detailsLink.boardId,
+            itemId: detailsLink.itemId,
             columnId: benchColumnId,
             textValue: requestedBench,
           })
@@ -1563,8 +1600,8 @@ export function registerOrderProgressRoutes(app, {
           }
 
           await updateMondayDateColumnValue({
-            boardId: context.boardId,
-            itemId: mondayItemId,
+            boardId: detailsLink.boardId,
+            itemId: detailsLink.itemId,
             columnId: orderDateColumnId,
             dateValue: requestedOrderDate,
           })
@@ -1580,8 +1617,8 @@ export function registerOrderProgressRoutes(app, {
           }
 
           await updateMondayDateColumnValue({
-            boardId: context.boardId,
-            itemId: mondayItemId,
+            boardId: detailsLink.boardId,
+            itemId: detailsLink.itemId,
             columnId: targetDueDateColumnId,
             dateValue: requestedDueDate,
           })
@@ -1595,8 +1632,8 @@ export function registerOrderProgressRoutes(app, {
           }
 
           await updateMondayItemTextColumn({
-            boardId: context.boardId,
-            itemId: mondayItemId,
+            boardId: detailsLink.boardId,
+            itemId: detailsLink.itemId,
             columnId: leadTimeColumnId,
             textValue: requestedLeadTimeDaysText,
           })
@@ -1610,8 +1647,8 @@ export function registerOrderProgressRoutes(app, {
           }
 
           await updateMondayDateColumnValue({
-            boardId: context.boardId,
-            itemId: mondayItemId,
+            boardId: detailsLink.boardId,
+            itemId: detailsLink.itemId,
             columnId: shipDateColumnId,
             dateValue: requestedPodDate,
           })

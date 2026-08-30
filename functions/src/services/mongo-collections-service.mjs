@@ -219,6 +219,45 @@ export function createMongoCollectionsService({
     return Object.fromEntries(domainEntries)
   }
 
+  // This intentionally does not create indexes, seed defaults, or run any
+  // migration logic. It is for integrations that must remain strictly
+  // read-only at the database level, such as the external MCP server.
+  async function getReadOnlyCollections() {
+    const databasesByDomain = await ensureAllDomainDatabases()
+    const platformDatabase = databasesByDomain.platform.database
+    const ordersDatabase = databasesByDomain.orders.database
+    const crmDatabase = databasesByDomain.crm.database
+    const timesheetDatabase = databasesByDomain.timesheet.database
+    const authDatabase = databasesByDomain.auth.database
+    const purchasingDatabase = databasesByDomain.purchasing.database
+
+    return {
+      databasesByDomain: {
+        platform: platformDatabase,
+        orders: ordersDatabase,
+        crm: crmDatabase,
+        timesheet: timesheetDatabase,
+        auth: authDatabase,
+        purchasing: purchasingDatabase,
+      },
+      dashboardSnapshotsCollection: platformDatabase.collection('dashboard_snapshots'),
+      ordersUnifiedCollection: ordersDatabase.collection('orders'),
+      authUsersCollection: authDatabase.collection('auth_users'),
+      mobileAlertsCollection: authDatabase.collection('mobile_alerts'),
+      crmAccountsCollection: crmDatabase.collection('crm_accounts'),
+      crmContactsCollection: crmDatabase.collection('crm_contacts'),
+      crmSalesRepsCollection: crmDatabase.collection('crm_sales_reps'),
+      crmQuotesCollection: crmDatabase.collection('crm_quotes'),
+      crmOrdersCollection: crmDatabase.collection('crm_orders'),
+      purchasingItemsCollection: purchasingDatabase.collection('purchasing_items'),
+      purchasingTransactionsCollection: purchasingDatabase.collection('purchasing_transactions'),
+      workersCollection: timesheetDatabase.collection('workers'),
+      entriesCollection: timesheetDatabase.collection('timesheet_entries'),
+      stagesCollection: timesheetDatabase.collection('timesheet_stages'),
+      orderProgressCollection: timesheetDatabase.collection('timesheet_order_progress'),
+    }
+  }
+
   async function getCollections() {
     const missingDomainUris = findMissingMongoDomainUris(mongoDomainConfig)
 
@@ -332,6 +371,9 @@ export function createMongoCollectionsService({
             ordersUnifiedCollection.createIndex({ canonical_order_id: 1 }, { unique: true, sparse: true }),
             ordersUnifiedCollection.createIndex({ source_quote_id: 1 }, { unique: true, sparse: true }),
             ordersUnifiedCollection.createIndex({ order_number: 1 }),
+            ordersUnifiedCollection.createIndex({ monday_link_status: 1 }),
+            ordersUnifiedCollection.createIndex({ monday_production_item_id: 1 }, { sparse: true }),
+            ordersUnifiedCollection.createIndex({ monday_financial_item_id: 1 }, { sparse: true }),
             ordersUnifiedCollection.createIndex({ is_shipped: 1, Due_date: 1 }),
             ordersUnifiedCollection.createIndex({ has_monday_record: 1, has_quickbooks_record: 1 }),
             ordersUnifiedCollection.createIndex({ hazard_reason: 1 }),
@@ -747,5 +789,6 @@ export function createMongoCollectionsService({
   return {
     closeMongoConnections,
     getCollections,
+    getReadOnlyCollections,
   }
 }

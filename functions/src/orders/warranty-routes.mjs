@@ -12,6 +12,8 @@ import {
 import { MONDAY_BOARDS } from './monday-board-map.mjs'
 
 export function registerOrderWarrantyRoutes(app, {
+  invalidateMondayLinkCache,
+  resolveMondayLink,
   createMondayItem,
   getCollections,
   refreshOrdersUnifiedCollection,
@@ -117,11 +119,26 @@ export function registerOrderWarrantyRoutes(app, {
       ) || originalOrderNumber
       const warrantyOrderName = `Warranty - ${originalOrderName}`
       const mondayItemName = `${warrantyOrderName} / ${warrantyOrderNumber}`
+
+      // Mongo said this warranty number is free; make sure Monday agrees
+      // before adding a second card carrying the same ACK.
+      const existingWarrantyLink = await resolveMondayLink({
+        orderNumber: warrantyOrderNumber,
+      })
+
+      if (existingWarrantyLink.status !== 'not_found') {
+        return res.status(409).json({
+          error: `Warranty order ${warrantyOrderNumber} already exists on Monday. Needs review.`,
+          candidates: existingWarrantyLink.candidates,
+        })
+      }
+
       const createdItem = await createMondayItem({
         boardId: orderTrackBoardId,
         itemName: mondayItemName,
       })
       const warrantyMondayItemId = String(createdItem?.itemId ?? '').trim()
+      invalidateMondayLinkCache(orderTrackBoardId)
 
       if (!warrantyMondayItemId) {
         return res.status(502).json({

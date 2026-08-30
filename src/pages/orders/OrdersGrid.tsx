@@ -25,6 +25,10 @@ import {
   Checkbox,
   Chip,
   CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   FormControl,
   FormControlLabel,
   IconButton,
@@ -87,12 +91,52 @@ import { formatProgress, resolveOrderProjectIds } from './utils'
 export type OrdersQuickBooksDrilldownMetric = 'purchaseOrders' | 'bills' | 'invoices' | 'payments'
 export type OrdersViewMode = 'standard' | 'admin'
 
+type OrdersPersonalView = {
+  id: string
+  name: string
+}
+
+type OrdersPersonalViewsStorage = {
+  views?: OrdersPersonalView[]
+  activeViewId?: string
+}
+
+const DEFAULT_PERSONAL_VIEW: OrdersPersonalView = { id: 'standard', name: 'Standard' }
+const MAX_ADDITIONAL_PERSONAL_VIEWS = 3
+
 const mondayProgressBreakdownConfig = ORDER_PROGRESS_STAGES
 
 type WebsiteProgressStatusKey = OrderProgressStatusKey
 
 function hasLinkedMondayItem(order: Pick<OrdersOverviewOrder, 'mondayItemId'>) {
   return Boolean(String(order.mondayItemId ?? '').trim())
+}
+
+// Explains why an order's Monday link needs a person to look at it. Returns
+// null while the link is healthy, or while the order simply has no Monday
+// card yet — that is normal, not a problem to flag.
+function describeMondayLinkIssue(
+  order: Pick<OrdersOverviewOrder, 'mondayLinkStatus' | 'mondayLinkCandidates' | 'mondayItemId' | 'orderNumber' | 'isArchived'>,
+): string | null {
+  // Archived orders are parked on purpose (the on-hold tab). Their Monday
+  // link is not something anyone needs to act on, so do not flag them.
+  if (order.isArchived) {
+    return null
+  }
+
+  if (order.mondayLinkStatus === 'duplicate') {
+    const detail = (order.mondayLinkCandidates ?? [])
+      .map((candidate) => [candidate.name, candidate.boardName].filter(Boolean).join(' · '))
+      .filter(Boolean)
+      .join(' / ')
+    return `Order number ${order.orderNumber} matches more than one Monday card${detail ? `: ${detail}` : ''}. Monday updates are blocked until this is resolved.`
+  }
+
+  if (order.mondayLinkStatus === 'not_found' && hasLinkedMondayItem(order)) {
+    return `This order has a stored Monday card, but order number ${order.orderNumber} no longer matches anything on Monday. Monday updates are blocked until this is resolved.`
+  }
+
+  return null
 }
 
 function SubitemsInlinePanel({
@@ -927,6 +971,9 @@ type OrdersGridProps = {
   isLoading: boolean
   shopDrawingHandle: React.MutableRefObject<ShopDrawingPreviewHandle | null>
   onOpenBolDocument: (order: OrdersOverviewOrder) => void
+  onOpenDocumentPreview: (title: string, url: string) => void
+  onOpenCutListDocument: (order: OrdersOverviewOrder) => void
+  onOpenInvoiceDocument: (order: OrdersOverviewOrder) => void
   onOpenJobDialog: (order: OrdersOverviewOrder, mode: JobDetailsMode, initialTab?: JobDetailsTab) => void
   onOpenQuickBooksDialog: (
     order: OrdersOverviewOrder,
@@ -956,6 +1003,9 @@ export function OrdersGrid({
   isLoading,
   shopDrawingHandle,
   onOpenBolDocument,
+  onOpenDocumentPreview,
+  onOpenCutListDocument,
+  onOpenInvoiceDocument,
   onOpenJobDialog,
   onOpenQuickBooksDialog,
   onCopyOrderNumber,
@@ -1001,12 +1051,24 @@ export function OrdersGrid({
   const [columnOrder, setColumnOrder] = useState<string[]>([])
   const [hiddenColumnFields, setHiddenColumnFields] = useState<Set<string>>(() => new Set())
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>({})
+  const [personalViews, setPersonalViews] = useState<OrdersPersonalView[]>([DEFAULT_PERSONAL_VIEW])
+  const [activePersonalViewId, setActivePersonalViewId] = useState(DEFAULT_PERSONAL_VIEW.id)
+  const [personalViewsLoaded, setPersonalViewsLoaded] = useState(false)
+  const [newViewDialogOpen, setNewViewDialogOpen] = useState(false)
+  const [newViewName, setNewViewName] = useState('')
   const [draggedColumnField, setDraggedColumnField] = useState<string | null>(null)
   const [loadedColumnStorageKey, setLoadedColumnStorageKey] = useState('')
   const [editingBenchOrderId, setEditingBenchOrderId] = useState('')
   const [benchDraft, setBenchDraft] = useState('')
   const [savingBenchOrderId, setSavingBenchOrderId] = useState('')
   const [benchEditError, setBenchEditError] = useState<string | null>(null)
+  const [quickEditOrder, setQuickEditOrder] = useState<OrdersOverviewOrder | null>(null)
+  const [quickEditProjectName, setQuickEditProjectName] = useState('')
+  const [quickEditSalesRep, setQuickEditSalesRep] = useState('')
+  const [quickEditPoNumber, setQuickEditPoNumber] = useState('')
+  const [quickEditBench, setQuickEditBench] = useState('')
+  const [quickEditSaving, setQuickEditSaving] = useState(false)
+  const [quickEditError, setQuickEditError] = useState('')
 
   const handleOpenActionsMenu = useCallback((event: React.MouseEvent<HTMLElement>, order: OrdersOverviewOrder) => {
     event.preventDefault()
@@ -1019,6 +1081,48 @@ export function OrdersGrid({
     setActionsAnchorEl(null)
     setActionsOrder(null)
   }, [])
+
+  const handleOpenQuickEdit = useCallback((order: OrdersOverviewOrder) => {
+    setQuickEditOrder(order)
+    setQuickEditProjectName(String(order.orderName ?? '').trim())
+    setQuickEditSalesRep(String(order.salesRep ?? '').trim())
+    setQuickEditPoNumber(String(order.poNumber ?? '').trim())
+    setQuickEditBench(String(order.bench ?? '').trim())
+    setQuickEditError('')
+  }, [])
+
+  const handleCancelQuickEdit = useCallback(() => {
+    if (quickEditSaving) return
+    setQuickEditOrder(null)
+    setQuickEditError('')
+  }, [quickEditSaving])
+
+  const handleSaveQuickEdit = useCallback(async () => {
+    if (!quickEditOrder || quickEditSaving) return
+    const mondayItemId = String(quickEditOrder.mondayItemId ?? '').trim()
+    const orderName = quickEditProjectName.trim()
+    if (!mondayItemId || !orderName) {
+      setQuickEditError('Project name is required.')
+      return
+    }
+    setQuickEditSaving(true)
+    setQuickEditError('')
+    try {
+      await postOrdersOrderDetailsUpdate({
+        mondayItemId,
+        orderName,
+        salesRep: quickEditSalesRep.trim(),
+        poNumber: quickEditPoNumber.trim(),
+        bench: quickEditBench.trim(),
+      })
+      await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.ordersOverview })
+      setQuickEditOrder(null)
+    } catch (error) {
+      setQuickEditError(error instanceof Error ? error.message : 'Could not save order changes.')
+    } finally {
+      setQuickEditSaving(false)
+    }
+  }, [queryClient, quickEditBench, quickEditOrder, quickEditPoNumber, quickEditProjectName, quickEditSalesRep, quickEditSaving])
 
   const handleOpenStatusPopover = useCallback((event: React.MouseEvent<HTMLElement>, order: OrdersOverviewOrder) => {
     event.preventDefault()
@@ -1337,6 +1441,17 @@ export function OrdersGrid({
               <WarningAmberRoundedIcon sx={{ color: 'warning.main', fontSize: '0.72rem' }} />
             </Tooltip>
           ) : null}
+          {describeMondayLinkIssue(row) ? (
+            <Tooltip title={describeMondayLinkIssue(row)}>
+              <Chip
+                size="small"
+                color="error"
+                variant="outlined"
+                label="Link"
+                sx={{ height: 20, fontWeight: 800, fontSize: '0.62rem' }}
+              />
+            </Tooltip>
+          ) : null}
           {row.warrantyIssueActive ? (
             <Chip
               size="small"
@@ -1354,6 +1469,55 @@ export function OrdersGrid({
           >
             <ContentCopyRoundedIcon sx={{ fontSize: '0.19rem' }} />
           </IconButton>
+          {canEditOrderInfo && hasLinkedMondayItem(row) ? (
+            String(quickEditOrder?.id ?? '') === String(row.id ?? '') ? (
+              <>
+                <IconButton
+                  size="small"
+                  color="primary"
+                  aria-label={`Save ${row.orderNumber}`}
+                  title="Save changes"
+                  disabled={quickEditSaving || !quickEditProjectName.trim()}
+                  onClick={(event) => {
+                    event.preventDefault()
+                    event.stopPropagation()
+                    void handleSaveQuickEdit()
+                  }}
+                  sx={{ p: 0.15 }}
+                >
+                  {quickEditSaving ? <CircularProgress size={15} /> : <SaveRoundedIcon sx={{ fontSize: '1rem' }} />}
+                </IconButton>
+                <IconButton
+                  size="small"
+                  aria-label={`Cancel editing ${row.orderNumber}`}
+                  title="Cancel"
+                  disabled={quickEditSaving}
+                  onClick={(event) => {
+                    event.preventDefault()
+                    event.stopPropagation()
+                    handleCancelQuickEdit()
+                  }}
+                  sx={{ p: 0.15 }}
+                >
+                  <CloseRoundedIcon sx={{ fontSize: '1rem' }} />
+                </IconButton>
+              </>
+            ) : (
+              <IconButton
+                size="small"
+                aria-label={`Quick edit ${row.orderNumber}`}
+                title="Edit this row"
+                onClick={(event) => {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  handleOpenQuickEdit(row)
+                }}
+                sx={{ p: 0.15, color: 'primary.main' }}
+              >
+                <EditRoundedIcon sx={{ fontSize: '1rem' }} />
+              </IconButton>
+            )
+          ) : null}
           <IconButton
             size="small"
             aria-label="Open order chat"
@@ -1374,7 +1538,21 @@ export function OrdersGrid({
       minWidth: 190,
       width: 220,
       sortable: false,
-      renderCell: ({ row }) => (
+      renderCell: ({ row }) => String(quickEditOrder?.id ?? '') === String(row.id ?? '') ? (
+        <TextField
+          size="small"
+          fullWidth
+          required
+          value={quickEditProjectName}
+          disabled={quickEditSaving}
+          onClick={(event) => event.stopPropagation()}
+          onChange={(event) => setQuickEditProjectName(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') void handleSaveQuickEdit()
+            if (event.key === 'Escape') handleCancelQuickEdit()
+          }}
+        />
+      ) : (
         <Typography
           variant="body2"
           sx={{ fontSize: '0.78rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
@@ -1392,7 +1570,21 @@ export function OrdersGrid({
       minWidth: 130,
       width: 140,
       sortable: false,
-      renderCell: ({ row }) => (
+      renderCell: ({ row }) => String(quickEditOrder?.id ?? '') === String(row.id ?? '') ? (
+        <TextField
+          size="small"
+          fullWidth
+          value={quickEditPoNumber}
+          disabled={quickEditSaving}
+          placeholder="PO number"
+          onClick={(event) => event.stopPropagation()}
+          onChange={(event) => setQuickEditPoNumber(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') void handleSaveQuickEdit()
+            if (event.key === 'Escape') handleCancelQuickEdit()
+          }}
+        />
+      ) : (
         <Typography
           variant="body2"
           sx={{ fontSize: '0.78rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
@@ -1599,8 +1791,27 @@ export function OrdersGrid({
       sortable: false,
       renderCell: ({ row }) => {
         const orderId = String(row.id ?? '').trim()
+        const isQuickEditing = String(quickEditOrder?.id ?? '') === orderId
         const isEditing = editingBenchOrderId === orderId
         const isSaving = savingBenchOrderId === orderId
+
+        if (isQuickEditing) {
+          return (
+            <TextField
+              size="small"
+              fullWidth
+              value={quickEditBench}
+              disabled={quickEditSaving}
+              placeholder="Bench"
+              onClick={(event) => event.stopPropagation()}
+              onChange={(event) => setQuickEditBench(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') void handleSaveQuickEdit()
+                if (event.key === 'Escape') handleCancelQuickEdit()
+              }}
+            />
+          )
+        }
 
         if (isEditing) {
           return (
@@ -1713,7 +1924,21 @@ export function OrdersGrid({
       headerName: 'Sales Representative',
       minWidth: 170,
       width: 190,
-      renderCell: ({ row }) => row.salesRep || '—',
+      renderCell: ({ row }) => String(quickEditOrder?.id ?? '') === String(row.id ?? '') ? (
+        <TextField
+          size="small"
+          fullWidth
+          value={quickEditSalesRep}
+          disabled={quickEditSaving}
+          placeholder="Sales representative"
+          onClick={(event) => event.stopPropagation()}
+          onChange={(event) => setQuickEditSalesRep(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') void handleSaveQuickEdit()
+            if (event.key === 'Escape') handleCancelQuickEdit()
+          }}
+        />
+      ) : (row.salesRep || '—'),
     },
     {
       field: 'depositReceived',
@@ -1788,84 +2013,66 @@ export function OrdersGrid({
       headerName: 'Cut List',
       minWidth: 115,
       sortable: false,
-      renderCell: ({ row }) => (
-        <Chip
-          size="small"
-          color={row.cutListCachedUrl || row.cutListUrl ? 'success' : 'default'}
-          variant={row.cutListCachedUrl || row.cutListUrl ? 'filled' : 'outlined'}
-          label={row.cutListCachedUrl || row.cutListUrl ? 'Available' : 'Missing'}
-        />
-      ),
+      renderCell: ({ row }) => row.cutListCachedUrl || row.cutListUrl ? (
+        <IconButton size="small" aria-label="Open cut list" title="Open cut list" onClick={() => onOpenCutListDocument(row)}>
+          <PictureAsPdfRoundedIcon fontSize="inherit" />
+        </IconButton>
+      ) : <Typography variant="body2" color="text.secondary">—</Typography>,
     },
     {
       field: 'invoiceDocument',
       headerName: 'Invoice',
       minWidth: 110,
       sortable: false,
-      renderCell: ({ row }) => (
-        <Chip
-          size="small"
-          color={row.hasInvoiceDocument ? 'success' : 'default'}
-          variant={row.hasInvoiceDocument ? 'filled' : 'outlined'}
-          label={row.hasInvoiceDocument ? 'Available' : 'Missing'}
-        />
-      ),
+      renderCell: ({ row }) => row.hasInvoiceDocument ? (
+        <IconButton size="small" aria-label="Open invoice" title="Open invoice" onClick={() => onOpenInvoiceDocument(row)}>
+          <PictureAsPdfRoundedIcon fontSize="inherit" />
+        </IconButton>
+      ) : <Typography variant="body2" color="text.secondary">—</Typography>,
     },
     {
       field: 'orderConfirmationDocument',
       headerName: 'Order Confirmation',
       minWidth: 165,
       sortable: false,
-      renderCell: ({ row }) => (
-        <Chip
-          size="small"
-          color={row.orderConfirmationUrl ? 'success' : 'default'}
-          variant={row.orderConfirmationUrl ? 'filled' : 'outlined'}
-          label={row.orderConfirmationUrl ? 'Available' : 'Missing'}
-        />
-      ),
+      renderCell: ({ row }) => row.orderConfirmationUrl ? (
+        <IconButton size="small" aria-label="Open order confirmation" title="Open order confirmation" onClick={() => onOpenDocumentPreview('Order confirmation', row.orderConfirmationUrl!)}>
+          <PictureAsPdfRoundedIcon fontSize="inherit" />
+        </IconButton>
+      ) : <Typography variant="body2" color="text.secondary">—</Typography>,
     },
     {
       field: 'signedBolDocument',
       headerName: 'Driver Signed BOL',
       minWidth: 145,
       sortable: false,
-      renderCell: ({ row }) => (
-        <Chip
-          size="small"
-          color={row.signedBolUrl || row.signedBol ? 'success' : 'default'}
-          variant={row.signedBolUrl || row.signedBol ? 'filled' : 'outlined'}
-          label={row.signedBolUrl || row.signedBol ? 'Available' : 'Missing'}
-        />
-      ),
+      renderCell: ({ row }) => row.signedBolUrl ? (
+        <IconButton size="small" aria-label="Open driver signed BOL" title="Open driver signed BOL" onClick={() => onOpenDocumentPreview('Driver signed BOL', row.signedBolUrl!)}>
+          <PictureAsPdfRoundedIcon fontSize="inherit" />
+        </IconButton>
+      ) : <Typography variant="body2" color="text.secondary">—</Typography>,
     },
     {
       field: 'customerSignedBolDocument',
       headerName: 'Customer Signed BOL',
       minWidth: 160,
       sortable: false,
-      renderCell: ({ row }) => (
-        <Chip
-          size="small"
-          color={row.customerSignedBolUrl || row.customerSignedBol ? 'success' : 'default'}
-          variant={row.customerSignedBolUrl || row.customerSignedBol ? 'filled' : 'outlined'}
-          label={row.customerSignedBolUrl || row.customerSignedBol ? 'Available' : 'Missing'}
-        />
-      ),
+      renderCell: ({ row }) => row.customerSignedBolUrl ? (
+        <IconButton size="small" aria-label="Open customer signed BOL" title="Open customer signed BOL" onClick={() => onOpenDocumentPreview('Customer signed BOL', row.customerSignedBolUrl!)}>
+          <PictureAsPdfRoundedIcon fontSize="inherit" />
+        </IconButton>
+      ) : <Typography variant="body2" color="text.secondary">—</Typography>,
     },
     {
       field: 'inspectionDocument',
       headerName: 'BOL Inspection',
       minWidth: 135,
       sortable: false,
-      renderCell: ({ row }) => (
-        <Chip
-          size="small"
-          color={row.inspectionSheetUrl || row.inspectionSheet ? 'success' : 'default'}
-          variant={row.inspectionSheetUrl || row.inspectionSheet ? 'filled' : 'outlined'}
-          label={row.inspectionSheetUrl || row.inspectionSheet ? 'Available' : 'Missing'}
-        />
-      ),
+      renderCell: ({ row }) => row.inspectionSheetUrl ? (
+        <IconButton size="small" aria-label="Open BOL inspection" title="Open BOL inspection" onClick={() => onOpenDocumentPreview('BOL inspection', row.inspectionSheetUrl!)}>
+          <PictureAsPdfRoundedIcon fontSize="inherit" />
+        </IconButton>
+      ) : <Typography variant="body2" color="text.secondary">—</Typography>,
     },
     {
       field: 'shipTo',
@@ -2482,6 +2689,15 @@ export function OrdersGrid({
     handleOpenStatusPopover,
     handleOpenActionsMenu,
     canEditOrderInfo,
+    quickEditOrder,
+    quickEditProjectName,
+    quickEditSalesRep,
+    quickEditPoNumber,
+    quickEditBench,
+    quickEditSaving,
+    handleOpenQuickEdit,
+    handleCancelQuickEdit,
+    handleSaveQuickEdit,
     editingBenchOrderId,
     savingBenchOrderId,
     benchDraft,
@@ -2671,10 +2887,56 @@ export function OrdersGrid({
     viewMode,
   ])
 
-  const columnStorageKey = useMemo(
-    () => `arnold:orders-columns:v2:${columnPreferenceKey || 'anonymous'}:${activeTab}:${viewMode}`,
-    [activeTab, columnPreferenceKey, viewMode],
+  const personalViewsStorageKey = useMemo(
+    () => `arnold:orders-views:v1:${columnPreferenceKey || 'anonymous'}`,
+    [columnPreferenceKey],
   )
+
+  const columnStorageKey = useMemo(
+    () => `arnold:orders-view-layout:v1:${columnPreferenceKey || 'anonymous'}:${activePersonalViewId}`,
+    [activePersonalViewId, columnPreferenceKey],
+  )
+
+  useEffect(() => {
+    let storedViews: OrdersPersonalView[] = [DEFAULT_PERSONAL_VIEW]
+    let storedActiveViewId = DEFAULT_PERSONAL_VIEW.id
+
+    try {
+      const raw = window.localStorage.getItem(personalViewsStorageKey)
+      if (raw) {
+        const parsed = JSON.parse(raw) as OrdersPersonalViewsStorage
+        const parsedViews = Array.isArray(parsed.views)
+          ? parsed.views
+            .map((view) => ({
+              id: String(view?.id ?? '').trim(),
+              name: String(view?.name ?? '').trim(),
+            }))
+            .filter((view) => Boolean(view.id && view.name))
+            .slice(0, MAX_ADDITIONAL_PERSONAL_VIEWS + 1)
+          : []
+        const customViews = parsedViews.filter((view) => view.id !== DEFAULT_PERSONAL_VIEW.id)
+        storedViews = [DEFAULT_PERSONAL_VIEW, ...customViews]
+        const requestedActiveViewId = String(parsed.activeViewId ?? '').trim()
+        if (storedViews.some((view) => view.id === requestedActiveViewId)) {
+          storedActiveViewId = requestedActiveViewId
+        }
+      }
+    } catch {
+      // Use the default view if the saved local preference is malformed.
+    }
+
+    setPersonalViews(storedViews)
+    setActivePersonalViewId(storedActiveViewId)
+    setPersonalViewsLoaded(true)
+  }, [personalViewsStorageKey])
+
+  useEffect(() => {
+    if (!personalViewsLoaded) return
+    window.localStorage.setItem(personalViewsStorageKey, JSON.stringify({
+      views: personalViews,
+      activeViewId: activePersonalViewId,
+    } satisfies OrdersPersonalViewsStorage))
+  }, [activePersonalViewId, personalViews, personalViewsLoaded, personalViewsStorageKey])
 
   const defaultVisibleColumnFields = useMemo(
     () => standardColumns
@@ -2752,7 +3014,7 @@ export function OrdersGrid({
     editorFilterIdRef.current = null
     pendingAdditionalFilterIdRef.current = null
     setPaginationModel((current) => ({ ...current, page: 0 }))
-  }, [activeTab, viewMode])
+  }, [activeTab])
 
   const availableColumnByField = useMemo(
     () => new Map(availableColumns.map((column) => [String(column.field), column])),
@@ -3015,18 +3277,20 @@ export function OrdersGrid({
   )
 
   const handleFilterModelChange = (nextModel: GridFilterModel) => {
-    const previousEditorItem = filterModel.items[0]
-    const nextEditorItem = nextModel.items[0]
+    const previousEditorItem = filterModel.items.find((item) => (
+      item.id === editorFilterIdRef.current
+    )) ?? filterModel.items[0]
+    const nextEditorItem = nextModel.items.find((item) => (
+      item.id === editorFilterIdRef.current
+      || filterItemIsActive(item)
+    )) ?? nextModel.items[0]
 
     setFilterModel(nextModel)
     setColumnFilterItems((current) => {
       if (!nextEditorItem) {
-        const editorFilterId = editorFilterIdRef.current
-        editorFilterIdRef.current = null
-        pendingAdditionalFilterIdRef.current = null
-        return editorFilterId !== null
-          ? current.filter((item) => item.id !== editorFilterId)
-          : current
+        // The grid sends an empty model while its filter panel changes columns.
+        // Keep existing filters; filters are removed deliberately from their chip.
+        return current
       }
 
       if (filterItemIsActive(nextEditorItem)) {
@@ -3040,16 +3304,6 @@ export function OrdersGrid({
           ...current.filter((item) => item.id !== filterId),
           { ...nextEditorItem, id: filterId },
         ]
-      }
-
-      if (
-        previousEditorItem?.field === nextEditorItem.field
-        && pendingAdditionalFilterIdRef.current === null
-        && editorFilterIdRef.current !== null
-      ) {
-        const editorFilterId = editorFilterIdRef.current
-        editorFilterIdRef.current = null
-        return current.filter((item) => item.id !== editorFilterId)
       }
 
       return current
@@ -3156,6 +3410,16 @@ export function OrdersGrid({
     setExpandedSubitemOrderIds(new Set())
   }
 
+  const handleCreatePersonalView = () => {
+    const name = newViewName.trim().slice(0, 40)
+    if (!name || personalViews.length > MAX_ADDITIONAL_PERSONAL_VIEWS) return
+    const id = `view-${Date.now()}`
+    setPersonalViews((current) => [...current, { id, name }])
+    setActivePersonalViewId(id)
+    setNewViewName('')
+    setNewViewDialogOpen(false)
+  }
+
   return (
     <Paper
       variant="outlined"
@@ -3248,6 +3512,22 @@ export function OrdersGrid({
               <MoreVertRoundedIcon />
             </IconButton>
           </Tooltip>
+          <Select
+            size="small"
+            value={activePersonalViewId}
+            onChange={(event) => setActivePersonalViewId(String(event.target.value))}
+            inputProps={{ 'aria-label': 'Orders view' }}
+            sx={{ minWidth: 128, height: 30, fontSize: '0.78rem', fontWeight: 700 }}
+          >
+            {personalViews.map((view) => (
+              <MenuItem key={view.id} value={view.id}>{view.name}</MenuItem>
+            ))}
+          </Select>
+          {personalViews.length <= MAX_ADDITIONAL_PERSONAL_VIEWS ? (
+            <Button size="small" onClick={() => setNewViewDialogOpen(true)}>
+              New view
+            </Button>
+          ) : null}
         </Stack>
       </Stack>
 
@@ -3294,6 +3574,9 @@ export function OrdersGrid({
           pageSizeOptions={[25, 50, 100]}
           getRowClassName={({ row }) => {
             if (row.__subitemPanel) return 'orders-row--subitems-panel'
+            if (describeMondayLinkIssue(row)) {
+              return 'orders-row--link-review'
+            }
             if (row.hazardReason) {
               return 'orders-row--hazard'
             }
@@ -3346,6 +3629,7 @@ export function OrdersGrid({
               fontSize: isStandardView ? '0.95rem' : '0.88rem',
             },
             '& .orders-row--hazard': { backgroundColor: 'rgba(237, 108, 2, 0.08)' },
+            '& .orders-row--link-review': { backgroundColor: 'rgba(211, 47, 47, 0.10)' },
             '& .orders-row--quickbooks-only': { backgroundColor: 'rgba(2, 136, 209, 0.06)' },
             '& .orders-row--subitems-panel': {
               bgcolor: '#f8fbff',
@@ -3355,6 +3639,43 @@ export function OrdersGrid({
           }}
         />
       </Box>
+
+      <Dialog
+        open={newViewDialogOpen}
+        onClose={() => setNewViewDialogOpen(false)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>Create a view</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+            Each view saves its own columns, order, and column widths.
+          </Typography>
+          <TextField
+            autoFocus
+            fullWidth
+            label="View name"
+            value={newViewName}
+            onChange={(event) => setNewViewName(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') handleCreatePersonalView()
+            }}
+            inputProps={{ maxLength: 40 }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setNewViewDialogOpen(false)}>Cancel</Button>
+          <Button variant="contained" onClick={handleCreatePersonalView} disabled={!newViewName.trim()}>
+            Create
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {quickEditError ? (
+        <Alert severity="error" sx={{ mt: 1 }} onClose={() => setQuickEditError('')}>
+          {quickEditError}
+        </Alert>
+      ) : null}
 
       {orderValueColumnVisible ? (
         <Stack

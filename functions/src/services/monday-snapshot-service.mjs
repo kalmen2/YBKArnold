@@ -1771,6 +1771,8 @@ query GetItemsByIds($itemIds: [ID!]!) {
   items(ids: $itemIds) {
     id
     name
+    state
+    board { id name }
     created_at
     updated_at
     group {
@@ -1815,7 +1817,12 @@ query GetItemsByIds($itemIds: [ID!]!) {
       rawItems.push(...items)
     }
 
-    const uniqueRawItems = dedupeMondayItems(rawItems)
+    // items(ids:) is global in Monday.  Do not trust a returned item merely
+    // because its id exists: it must still be active on the board requested.
+    const uniqueRawItems = dedupeMondayItems(rawItems).filter((item) => (
+      String(item?.state ?? '').trim().toLowerCase() === 'active'
+      && String(item?.board?.id ?? '').trim() === normalizedBoardId
+    ))
     const columnMap = detectMondayColumns(uniqueRawItems, normalizedBoardId)
     const orders = uniqueRawItems
       .map((item) => ({

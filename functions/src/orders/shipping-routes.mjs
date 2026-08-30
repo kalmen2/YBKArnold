@@ -9,15 +9,21 @@ import {
   normalizeProgressStatusDetails,
 } from './order-shared.mjs'
 import { MONDAY_BOARDS } from './monday-board-map.mjs'
+import { MONDAY_LINK_ROLES } from './monday-link-service.mjs'
+import { AppError } from '../utils/app-error.mjs'
 import { normalizeOptionalShortText } from '../utils/value-utils.mjs'
 import { getStorage } from 'firebase-admin/storage'
 
 export function registerOrderShippingRoutes(app, {
+  assertMondayLink,
+  buildMondayLinkFields,
+  buildMondayLinkHistoryEntry,
+  invalidateMondayLinkCache,
+  resolveMondayLink,
   authApprovalApproved,
   createMondayItem,
   deleteMondayItem,
   fetchMondayBoardColumns,
-  fetchMondayBoardItemNames,
   fetchMondayBoardsCatalog,
   fetchMondayBoardItemsByIds,
   fetchMondayStatusColumnOptions,
@@ -462,29 +468,39 @@ export function registerOrderShippingRoutes(app, {
     }
   }
 
-  async function findOrCreateMondayItem({ boardId, boardName, boardUrl, itemName, orderNumber, knownItemId }) {
+  // Matching on the item NAME here is what creates duplicate ACKs: an item
+  // whose name was edited stops matching, a second item gets created, and the
+  // order number then lives on two live items. Match on the ACK column
+  // instead, and refuse to create anything when the number is already
+  // ambiguous.
+  async function findOrCreateMondayItem({ boardId, boardName, itemName, orderNumber, knownItemId, role }) {
     const normalizedKnownItemId = String(knownItemId ?? '').trim()
     if (normalizedKnownItemId) return { itemId: normalizedKnownItemId, created: false }
 
     if (typeof invalidateMondayBoardNamesCache === 'function') {
       invalidateMondayBoardNamesCache(boardId)
     }
-    const snapshot = await fetchMondayBoardItemNames({ boardId, boardName, boardUrl })
-    const normalizedOrderNumber = String(orderNumber ?? '').trim().toLowerCase()
-    const exactMatch = (Array.isArray(snapshot?.items) ? snapshot.items : []).find((item) => {
-      const normalizedName = String(item?.name ?? '').trim().toLowerCase()
-      return normalizedName === itemName.toLowerCase()
-        || (normalizedOrderNumber && (
-          normalizedName === normalizedOrderNumber
-          || normalizedName.endsWith(` / ${normalizedOrderNumber}`)
-        ))
-    })
-    const existingId = String(exactMatch?.id ?? '').trim()
-    if (existingId) return { itemId: existingId, created: false }
+    invalidateMondayLinkCache(boardId)
+
+    const existingLink = await resolveMondayLink({ orderNumber, role, boardIds: [boardId] })
+
+    if (existingLink.status === 'duplicate') {
+      const error = new AppError(
+        `Order number ${orderNumber} already matches more than one live Monday item. Needs review before another can be created.`,
+        409,
+      )
+      error.code = 'monday_link_needs_review'
+      throw error
+    }
+
+    if (existingLink.status === 'ok') {
+      return { itemId: existingLink.itemId, created: false }
+    }
 
     const created = await createMondayItem({ boardId, itemName })
     const createdId = String(created?.itemId ?? '').trim()
     if (!createdId) throw new Error(`Monday did not return an item id for ${boardName}.`)
+    invalidateMondayLinkCache(boardId)
     return { itemId: createdId, created: true }
   }
 
@@ -971,16 +987,16 @@ export function registerOrderShippingRoutes(app, {
             primaryItem = await findOrCreateMondayItem({
               boardId: selectedBoard.boardId,
               boardName: selectedBoardName,
-              boardUrl: selectedBoardUrl,
               itemName,
               orderNumber: requestedAcknowledgement,
+              role: MONDAY_LINK_ROLES.financial,
             })
             secondaryItem = await findOrCreateMondayItem({
               boardId: secondaryBoardId,
               boardName: secondaryBoardName,
-              boardUrl: secondaryBoardUrl,
               itemName,
               orderNumber: requestedAcknowledgement,
+              role: MONDAY_LINK_ROLES.production,
             })
 
             const secondaryBoardSnapshot = await fetchMondayBoardColumns({ boardId: secondaryBoardId })
@@ -1100,16 +1116,25 @@ export function registerOrderShippingRoutes(app, {
         if (typeof invalidateMondayBoardNamesCache === 'function') {
           invalidateMondayBoardNamesCache(selectedBoard.boardId)
         }
-        const boardItems = await fetchMondayBoardItemNames({
-          boardId: selectedBoard.boardId,
-          boardName: selectedBoardName,
-          boardUrl: selectedBoardUrl,
+        invalidateMondayLinkCache(selectedBoard.boardId)
+
+        // Reuse an existing card only when the ACK identifies exactly one.
+        // Picking the earliest of several same-named cards is how a wrong link
+        // gets baked in at creation time.
+        const existingLink = await resolveMondayLink({
+          orderNumber: requestedAcknowledgement,
+          role: MONDAY_LINK_ROLES.financial,
+          boardIds: [selectedBoard.boardId],
         })
-        const matchingItemIds = (Array.isArray(boardItems?.items) ? boardItems.items : [])
-          .filter((item) => String(item?.name ?? '').trim().toLowerCase() === itemName.toLowerCase())
-          .map((item) => String(item?.id ?? '').trim())
-          .filter(Boolean)
-        const existingMondayItemId = matchingItemIds[0] || ''
+
+        if (existingLink.status === 'duplicate') {
+          return res.status(409).json({
+            error: `Order number ${requestedAcknowledgement} already matches more than one live Monday card. Needs review before this order can be created.`,
+            candidates: existingLink.candidates,
+          })
+        }
+
+        const existingMondayItemId = existingLink.status === 'ok' ? existingLink.itemId : ''
         const createdItem = existingMondayItemId
           ? null
           : await createMondayItem({
@@ -1124,12 +1149,10 @@ export function registerOrderShippingRoutes(app, {
           })
         }
 
+        invalidateMondayLinkCache(selectedBoard.boardId)
+
         if (existingMondayItemId) {
-          warnings.push(
-            matchingItemIds.length > 1
-              ? 'Multiple matching Monday cards were found. The earliest matching card was reused; duplicate cards should be reviewed.'
-              : 'An existing matching Monday card was reused instead of creating another card.',
-          )
+          warnings.push('An existing Monday card with this order number was reused instead of creating another card.')
         }
         if (!ackColumnId) {
           warnings.push(`ACK was saved in item name, but ${selectedBoardName} has no mapped ACK column.`)
@@ -1733,10 +1756,31 @@ export function registerOrderShippingRoutes(app, {
         let mondayDeleteResult = null
 
         if (mondayItemId) {
-          mondayDeleteResult = await deleteMondayItem({
-            itemId: mondayItemId,
-            boardId,
+          // Deleting a Monday item cannot be undone from here, so confirm the
+          // stored id really belongs to this order number first. An order
+          // number Monday no longer knows about is not an error on delete —
+          // there is simply nothing left to remove.
+          const deleteLink = await resolveMondayLink({
+            orderNumber,
+            storedItemId: mondayItemId,
           })
+
+          if (deleteLink.status === 'duplicate') {
+            return res.status(409).json({
+              error: `Order number ${orderNumber} matches more than one live Monday item. Needs review before this order can be deleted.`,
+              candidates: deleteLink.candidates,
+            })
+          }
+
+          if (deleteLink.status === 'ok') {
+            mondayDeleteResult = await deleteMondayItem({
+              itemId: deleteLink.itemId,
+              boardId: deleteLink.boardId || boardId,
+            })
+            invalidateMondayLinkCache()
+          } else {
+            warnings.push(`Order number ${orderNumber} was not found on Monday, so no Monday item was deleted.`)
+          }
         }
 
         const generatedDocumentCleanup = orderDocument
@@ -2033,7 +2077,7 @@ export function registerOrderShippingRoutes(app, {
           orderIdentityFilter,
           {
             projection: {
-              _id: 0,
+              _id: 1,
               orderKey: 1,
               order_number: 1,
               order_name: 1,
@@ -2093,15 +2137,8 @@ export function registerOrderShippingRoutes(app, {
           })
         }
 
-        const sourceBoardId = String(orderDocument?.monday_board_id ?? '').trim()
         const targetBoardId = String(process.env.MONDAY_SHIPPED_BOARD_ID ?? '').trim()
         const targetBoardUrl = String(process.env.MONDAY_SHIPPED_BOARD_URL ?? '').trim() || null
-
-        if (!sourceBoardId) {
-          return res.status(409).json({
-            error: 'Could not resolve source Monday board for this order.',
-          })
-        }
 
         if (!targetBoardId) {
           return res.status(500).json({
@@ -2109,37 +2146,62 @@ export function registerOrderShippingRoutes(app, {
           })
         }
 
+        // Confirm by order number before moving boards. Shipping the wrong
+        // card is unrecoverable from the website, so an unclear match must
+        // stop here rather than guess.
+        const shipLink = await assertMondayLink({
+          orderNumber: orderDocument?.order_number,
+          storedItemId: mondayItemId,
+        })
+        const verifiedItemId = shipLink.itemId
+        const sourceBoardId = shipLink.boardId
+
+        if (!sourceBoardId) {
+          return res.status(409).json({
+            error: 'Could not resolve source Monday board for this order.',
+          })
+        }
+
         const moveResult = await moveMondayItemToBoard({
           sourceBoardId,
           targetBoardId,
-          itemId: mondayItemId,
+          itemId: verifiedItemId,
         })
+        invalidateMondayLinkCache()
         await updateMondayItemJsonColumn({
           boardId: targetBoardId,
-          itemId: mondayItemId,
+          itemId: verifiedItemId,
           columnId: MONDAY_BOARDS.shipped.columns.shipDate,
           jsonValue: { date: requestedShipDate },
         })
+        // Read back scoped to the target board: fetchMondayBoardItemsByIds
+        // now drops anything not active there, so an empty result means the
+        // move did not land.
         const movedSnapshot = await fetchMondayBoardItemsByIds({
           boardId: targetBoardId,
           boardName: moveResult?.targetBoardName,
           boardUrl: targetBoardUrl,
-          itemIds: [mondayItemId],
+          itemIds: [verifiedItemId],
         })
         const movedOrder = Array.isArray(movedSnapshot?.orders)
           ? movedSnapshot.orders[0]
           : null
+
+        if (!movedOrder) {
+          return res.status(409).json({
+            error: 'Monday did not confirm the move to the Shipped board. Needs review before shipping again.',
+          })
+        }
+
         const now = new Date().toISOString()
         const mondayUpdatedAt = String(movedOrder?.updatedAt ?? '').trim() || now
         const mondayStatus = String(movedOrder?.statusLabel ?? '').trim() || 'Shipped'
         const shippedAt = requestedShipDate
         const progressStatusDetails = normalizeProgressStatusDetails(movedOrder?.progressStatusDetails)
         const publicUser = toPublicAuthUser(req.authUser)
-        const updateFilter = buildOrderIdentityFilter({
-          orderKey: orderDocument?.orderKey,
-          mondayItemId,
-          orderNumber: orderDocument?.order_number,
-        })
+        // The order was already resolved above; update by its immutable _id
+        // so a stale identity cannot silently match nothing (or another row).
+        const updateFilter = orderDocument?._id ? { _id: orderDocument._id } : null
 
         if (!updateFilter) {
           return res.status(409).json({
@@ -2147,12 +2209,18 @@ export function registerOrderShippingRoutes(app, {
           })
         }
 
+        const shipLinkFields = buildMondayLinkFields(shipLink, { verifiedAt: now })
+        const shipLinkHistoryEntry = buildMondayLinkHistoryEntry(shipLink, {
+          previousItemId: mondayItemId,
+          verifiedAt: now,
+        })
+
         await Promise.all([
           mondayOrdersCollection.updateOne(
-            { mondayItemId },
+            { mondayItemId: verifiedItemId },
             {
               $set: {
-                mondayItemId,
+                mondayItemId: verifiedItemId,
                 mondayBoardId: targetBoardId,
                 mondayBoardName: moveResult?.targetBoardName || String(orderDocument?.monday_board_name ?? '').trim() || null,
                 mondayBoardUrl: targetBoardUrl,
@@ -2194,9 +2262,14 @@ export function registerOrderShippingRoutes(app, {
           ordersUnifiedCollection.updateOne(
             updateFilter,
             {
+              ...(shipLinkHistoryEntry
+                ? { $push: { monday_link_history: { $each: [shipLinkHistoryEntry], $slice: -30 } } }
+                : {}),
               $set: {
+                ...shipLinkFields,
                 has_monday_record: true,
-                monday_item_id: mondayItemId,
+                monday_item_id: verifiedItemId,
+                monday_production_item_id: verifiedItemId,
                 monday_board_id: targetBoardId,
                 monday_board_name: moveResult?.targetBoardName || String(orderDocument?.monday_board_name ?? '').trim() || 'Shipped Orders',
                 Monday_url: String(movedOrder?.itemUrl ?? '').trim() || String(orderDocument?.Monday_url ?? '').trim() || null,
@@ -2230,7 +2303,7 @@ export function registerOrderShippingRoutes(app, {
         return res.json({
           ok: true,
           move: {
-            itemId: mondayItemId,
+            itemId: verifiedItemId,
             sourceBoardId: moveResult?.sourceBoardId || sourceBoardId,
             sourceBoardName: moveResult?.sourceBoardName || null,
             targetBoardId: moveResult?.targetBoardId || targetBoardId,
@@ -2243,7 +2316,7 @@ export function registerOrderShippingRoutes(app, {
           },
           order: {
             orderKey: String(orderDocument?.orderKey ?? '').trim() || null,
-            mondayItemId,
+            mondayItemId: verifiedItemId,
             orderNumber: String(orderDocument?.order_number ?? '').trim() || null,
             isShipped: true,
             shippedAt,

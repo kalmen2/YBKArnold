@@ -18,6 +18,8 @@ import { registerDashboardSupportRoutes } from './src/routes/dashboard-support-r
 import { registerDiagnosticReportsRoutes } from './src/routes/diagnostic-reports-routes.mjs'
 import { registerEmailRoutes } from './src/routes/email-routes.mjs'
 import { registerOrderPhotoRoutes } from './src/routes/order-photos-routes.mjs'
+import { registerReadOnlyMcpRoutes } from './src/routes/mcp-readonly-routes.mjs'
+import { registerMcpOAuthRoutes } from './src/routes/mcp-oauth-routes.mjs'
 import { registerOrdersRoutes } from './src/routes/orders-routes.mjs'
 import { registerPurchasingRoutes } from './src/routes/purchasing-routes.mjs'
 import { registerQuickBooksRoutes } from './src/routes/quickbooks-routes.mjs'
@@ -39,6 +41,7 @@ import {
   resolveMongoDomainConfiguration,
 } from './src/services/mongo-domain-config.mjs'
 import { createOrdersUnifiedService } from './src/services/orders-unified-service.mjs'
+import { createMondayLinkService } from './src/orders/monday-link-service.mjs'
 import { createOrderPhotoService } from './src/services/order-photo-service.mjs'
 import { createPlatformConfigService } from './src/services/platform-config-service.mjs'
 import { createPushAlertService } from './src/services/push-alert-service.mjs'
@@ -67,6 +70,24 @@ import {
 
 export const app = express()
 app.set('trust proxy', 1)
+
+// Deliberately separate from apiV1: this app registers only the read-only MCP
+// protocol endpoint and has no business routes that can change data.
+const mcpReadOnlyApp = express()
+mcpReadOnlyApp.set('trust proxy', 1)
+mcpReadOnlyApp.use(cors({
+  origin: true,
+  methods: ['POST', 'GET', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'MCP-Protocol-Version'],
+  maxAge: 600,
+}))
+mcpReadOnlyApp.use(express.json({ limit: '1mb' }))
+mcpReadOnlyApp.use((req, res, next) => {
+  res.on('finish', () => {
+    console.info('MCP request', { method: req.method, path: req.path, status: res.statusCode })
+  })
+  next()
+})
 
 const allowedOrigins = String(process.env.ALLOWED_ORIGINS ?? '').trim()
   ? String(process.env.ALLOWED_ORIGINS).split(',').map((o) => o.trim()).filter(Boolean)
@@ -637,17 +658,31 @@ async function getCollections() {
   return mongoCollectionsService.getCollections()
 }
 
+async function getReadOnlyCollections() {
+  return mongoCollectionsService.getReadOnlyCollections()
+}
+
 const { persistNewMondayOrders } = createMondayOrderPersistenceService({
   fetchMondayAssetDownloadInfo,
   getCollections,
+  getReadOnlyCollections,
   getOrderPhotosBucket,
   mondayBoardId,
   mondayShippedBoardId,
   randomUUID,
 })
 
+const {
+  assertMondayLink,
+  buildLinkFields: buildMondayLinkFields,
+  buildLinkHistoryEntry: buildMondayLinkHistoryEntry,
+  invalidateMondayLinkCache,
+  resolveMondayLink,
+} = createMondayLinkService({
+  fetchMondayBoardSelectedColumns,
+})
+
 const { refreshOrdersUnifiedCollection } = createOrdersUnifiedService({
-  fetchMondayBoardItemNames,
   fetchMondayBoardItemsByIds,
   fetchMondayBoardSelectedColumns,
   fetchMondayDashboardSnapshot,
@@ -1677,6 +1712,11 @@ function listRegisteredApiRoutes() {
 }
 
 const routeDeps = {
+  assertMondayLink,
+  buildMondayLinkFields,
+  buildMondayLinkHistoryEntry,
+  invalidateMondayLinkCache,
+  resolveMondayLink,
   batchSummarizeComments,
   callClaude,
   callOpenAi,
@@ -2499,6 +2539,20 @@ registerDiagnosticReportsRoutes(app, routeDeps)
 registerEmailRoutes(app, routeDeps)
 const { runEmailIntakeSyncCycle } = registerEmailIntakeRoutes(app, routeDeps)
 registerOrderPhotoRoutes(app, routeDeps)
+const { tokenIdentity: verifyMcpAccessToken } = registerMcpOAuthRoutes(mcpReadOnlyApp, {
+  getCollections,
+  ownerEmail,
+})
+registerReadOnlyMcpRoutes(mcpReadOnlyApp, {
+  ...routeDeps,
+  getReadOnlyCollections,
+  verifyMcpAccessToken,
+})
+mcpReadOnlyApp.use((error, _req, res, _next) => {
+  const status = Number(error?.status) || 500
+  console[status >= 500 ? 'error' : 'warn']('MCP OAuth request failed.', { status, message: error?.message || 'Unknown error' })
+  res.status(status).json({ error: String(error?.message || 'MCP OAuth request failed.') })
+})
 registerPurchasingRoutes(app, routeDeps)
 registerQuickBooksRoutes(app, routeDeps)
 registerSlackRoutes(app, routeDeps)
@@ -2721,3 +2775,18 @@ export const apiV1 = functions
     memory: '1GB',
   })
   .https.onRequest(app)
+
+export const mcpReadOnly = functions
+  .region('us-central1')
+  .runWith({
+    timeoutSeconds: 60,
+    memory: '512MB',
+    secrets: [
+      'MCP_GOOGLE_CLIENT_ID',
+      'MCP_GOOGLE_CLIENT_SECRET',
+      'MCP_OAUTH_ES256_PRIVATE_KEY',
+      'MCP_OAUTH_ISSUER',
+      'MCP_OAUTH_AUDIENCE',
+    ],
+  })
+  .https.onRequest(mcpReadOnlyApp)

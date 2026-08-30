@@ -66,8 +66,10 @@ export function calculateDateDifferenceDays(startDate, endDate) {
   return Math.round((endMs - startMs) / (24 * 60 * 60 * 1000))
 }
 
-// Builds the Mongo filter that identifies one order by any of its identities
-// (orderKey, Monday item id, or order number).
+// Builds a filter for ONE order.  Do not use $or for a mutation: a stale
+// Monday id combined with a reused order number can otherwise update a
+// different order.  Callers must resolve the record first and prefer its
+// immutable orderKey.
 export function buildOrderIdentityFilter({
   orderKey,
   mondayItemId,
@@ -76,29 +78,55 @@ export function buildOrderIdentityFilter({
   const normalizedOrderKey = String(orderKey ?? '').trim()
   const normalizedMondayItemId = String(mondayItemId ?? '').trim()
   const normalizedOrderNumber = String(orderNumber ?? '').trim()
-  const filters = []
-
   if (normalizedOrderKey) {
-    filters.push({ orderKey: normalizedOrderKey })
+    return { orderKey: normalizedOrderKey }
   }
-
   if (normalizedMondayItemId) {
-    filters.push({ monday_item_id: normalizedMondayItemId })
+    return { monday_item_id: normalizedMondayItemId }
   }
-
   if (normalizedOrderNumber) {
-    filters.push({ order_number: normalizedOrderNumber })
+    return { order_number: normalizedOrderNumber }
+  }
+  return null
+}
+
+// Finds the ONE order a request is about, then hands back a filter keyed on
+// its immutable _id so the caller's update cannot drift onto another record.
+//
+// buildOrderIdentityFilter alone is not enough: it returns only the highest
+// priority identity it was given, so a stale client-supplied orderKey would
+// match nothing and updateOne would silently no-op. Here each identity is
+// tried in turn, and an identity that matches more than one order is rejected
+// rather than resolved arbitrarily.
+export async function resolveSingleOrder(collection, {
+  orderKey,
+  mondayItemId,
+  orderNumber,
+}) {
+  const identities = [
+    ['orderKey', String(orderKey ?? '').trim()],
+    ['monday_production_item_id', String(mondayItemId ?? '').trim()],
+    ['monday_item_id', String(mondayItemId ?? '').trim()],
+    ['order_number', String(orderNumber ?? '').trim()],
+  ]
+
+  for (const [field, value] of identities) {
+    if (!value) {
+      continue
+    }
+
+    const matches = await collection.find({ [field]: value }).limit(2).toArray()
+
+    if (matches.length === 1) {
+      return { order: matches[0], filter: { _id: matches[0]._id }, matchedBy: field }
+    }
+
+    if (matches.length > 1) {
+      return { order: null, filter: null, matchedBy: field, ambiguous: true }
+    }
   }
 
-  if (filters.length === 0) {
-    return null
-  }
-
-  if (filters.length === 1) {
-    return filters[0]
-  }
-
-  return { $or: filters }
+  return { order: null, filter: null, matchedBy: null, ambiguous: false }
 }
 
 export function normalizeOrderNumberInput(value) {

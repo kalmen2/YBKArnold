@@ -94,6 +94,7 @@ export type OrdersOrderDetailsUpdateResponse = {
   order: {
     mondayItemId: string
     orderName: string | null
+    salesRep: string | null
     poNumber: string | null
     notes: string | null
     description: string | null
@@ -535,6 +536,9 @@ export type OrdersOverviewOrder = {
   mondayBoardName: string | null
   mondayUpdatedAt: string | null
   mondayItemUrl: string | null
+  mondayLinkStatus: 'ok' | 'not_found' | 'duplicate' | null
+  mondayLinkSource: 'ack' | 'name_inferred' | null
+  mondayLinkCandidates: OrdersMondayLinkCandidate[]
   dueDate: string | null
   shopDrawingCachedUrl: string | null
   shopDrawingUrl: string | null
@@ -616,6 +620,14 @@ export function postOrdersSubOrderLink(input: {
     method: 'POST',
     body: JSON.stringify(input),
   })
+}
+
+export type OrdersMondayLinkCandidate = {
+  itemId: string | null
+  name: string | null
+  boardId: string | null
+  boardName: string | null
+  ack: string | null
 }
 
 export type OrdersOverviewResponse = {
@@ -931,6 +943,7 @@ export function postOrdersOrderNumberContactAdmin(input: ContactAdminForOrderNum
 type UpdateOrdersOrderDetailsInput = {
   mondayItemId: string
   orderName?: string | null
+  salesRep?: string | null
   poNumber?: string | null
   notes?: string | null
   description?: string | null
@@ -958,6 +971,10 @@ export function postOrdersOrderDetailsUpdate(input: UpdateOrdersOrderDetailsInpu
 
   if (Object.prototype.hasOwnProperty.call(input, 'orderName')) {
     payload.orderName = input.orderName ?? ''
+  }
+
+  if (Object.prototype.hasOwnProperty.call(input, 'salesRep')) {
+    payload.salesRep = input.salesRep ?? ''
   }
 
   if (Object.prototype.hasOwnProperty.call(input, 'poNumber')) {

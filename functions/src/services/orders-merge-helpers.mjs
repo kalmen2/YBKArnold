@@ -230,59 +230,92 @@ function sortAndDedupeStatusHistory(rows) {
     .slice(0, 60)
 }
 
-// ---- Targeted name-only lookups (for shipped + design boards) -----------
+// ---- Strict Monday order-number lookups ---------------------------------
+//
+// ACK is the authoritative order number.  A Monday item's mutable name is
+// only a fallback when its ACK is blank.  Never use a digits-only key here:
+// 260306-A, 260306-B, and 260306-C are different orders.
 
-export function buildNameLookupFromMondayItems(items) {
-  const byNormalized = new Map()
-  const byOrderNumber = new Map()
-  const byDigits = new Map()
+// ACK and name are kept in SEPARATE tiers.  Merging them would let an item
+// whose ACK is blank collide with an item whose ACK genuinely holds that
+// number, and report a duplicate where the ACK match should simply win.
+export function buildMondayOrderNumberLookup(items, getAck) {
+  const byAck = new Map()
+  const byName = new Map()
+
+  const push = (map, key, item) => {
+    if (!key) return
+    const matches = map.get(key)
+    if (matches) {
+      matches.push(item)
+    } else {
+      map.set(key, [item])
+    }
+  }
 
   ;(Array.isArray(items) ? items : []).forEach((item) => {
-    const normalized = normalizeLookupToken(item?.name)
-    const orderNumber = normalizeOrderNumberKey(extractOrderNumberReference(item?.name))
-    const digits = extractOrderNumberToken(item?.name)
-    if (normalized && !byNormalized.has(normalized)) {
-      byNormalized.set(normalized, item)
+    const ack = typeof getAck === 'function' ? getAck(item) : item?.jobNumber
+    const ackKey = normalizeOrderNumberKey(normalizeText(ack, 120))
+
+    if (ackKey) {
+      push(byAck, ackKey, item)
+      return
     }
-    if (orderNumber && !byOrderNumber.has(orderNumber)) {
-      byOrderNumber.set(orderNumber, item)
-    }
-    if (digits && !byDigits.has(digits)) {
-      byDigits.set(digits, item)
-    }
+
+    push(byName, normalizeOrderNumberKey(extractOrderNumberReference(item?.name)), item)
   })
 
-  return { byNormalized, byOrderNumber, byDigits }
+  return { byAck, byName }
 }
 
-export function findNameLookupMatch(row, lookup) {
+// Returns WHY a match failed, not just that it did.  'not_found' and
+// 'duplicate' need different handling: the first may be a Monday item nobody
+// created yet, the second is a data conflict a person has to resolve.
+export function resolveMondayOrderMatch(row, lookup) {
   const orderNumberKey = normalizeOrderNumberKey(row?.order_number)
 
-  if (orderNumberKey) {
-    const exactOrderNumberMatch = lookup.byOrderNumber?.get(orderNumberKey)
+  if (!orderNumberKey) {
+    return { status: 'not_found', item: null, linkSource: null, candidates: [] }
+  }
 
-    if (exactOrderNumberMatch) {
-      return exactOrderNumberMatch
+  const tiers = [
+    { source: 'ack', matches: lookup?.byAck?.get(orderNumberKey) ?? [] },
+    { source: 'name_inferred', matches: lookup?.byName?.get(orderNumberKey) ?? [] },
+  ]
+
+  for (const tier of tiers) {
+    if (tier.matches.length === 1) {
+      return {
+        status: 'ok',
+        item: tier.matches[0],
+        linkSource: tier.source,
+        candidates: [],
+      }
+    }
+
+    if (tier.matches.length > 1) {
+      return {
+        status: 'duplicate',
+        item: null,
+        linkSource: tier.source,
+        candidates: tier.matches.map(toMondayCandidate),
+      }
     }
   }
 
-  const candidates = buildOrderLookupValues([
-    row?.order_number,
-    row?.order_name,
-    row?.qb_project_name,
-    row?.monday_item_id,
-  ])
+  return { status: 'not_found', item: null, linkSource: null, candidates: [] }
+}
 
-  for (const value of candidates.normalizedValues) {
-    const match = lookup.byNormalized.get(value)
-    if (match) return match
+function toMondayCandidate(item) {
+  return {
+    itemId: normalizeText(item?.id, 120) || null,
+    name: normalizeText(item?.name, 260) || null,
   }
-  for (const value of candidates.digitValues) {
-    const match = lookup.byDigits.get(value)
-    if (match) return match
-  }
+}
 
-  return null
+export function findUniqueMondayOrderMatch(row, lookup) {
+  const result = resolveMondayOrderMatch(row, lookup)
+  return result.status === 'ok' ? result.item : null
 }
 
 // ---- Unified row shape --------------------------------------------------
@@ -355,6 +388,16 @@ export function createEmptyUnifiedOrder(orderKey) {
     monday_board_id: null,
     monday_board_name: null,
     monday_updated_at: null,
+    // Per-role Monday links.  An order legitimately has one production item
+    // (Design -> Order Track -> Shipped) AND one financial item on New Orders.
+    monday_production_item_id: null,
+    monday_financial_item_id: null,
+    monday_financial_board_id: null,
+    monday_link_status: null,
+    monday_link_source: null,
+    monday_link_candidates: [],
+    monday_link_history: [],
+    monday_links_verified_at: null,
     manager_ready_percent: null,
     manager_ready_date: null,
     manager_ready_updated_at: null,

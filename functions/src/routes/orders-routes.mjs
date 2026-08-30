@@ -58,6 +58,11 @@ import { MONDAY_BOARDS } from '../orders/monday-board-map.mjs'
 
 export function registerOrdersRoutes(app, deps) {
   const {
+    assertMondayLink,
+    buildMondayLinkFields,
+    buildMondayLinkHistoryEntry,
+    invalidateMondayLinkCache,
+    resolveMondayLink,
     authApprovalApproved,
     authRoleAdmin,
     createMondayItem,
@@ -65,7 +70,6 @@ export function registerOrdersRoutes(app, deps) {
     deleteMondayItem,
     decodeBase64Image,
     fetchMondayBoardColumns,
-    fetchMondayBoardItemNames,
     fetchMondayBoardItemsByIds,
     fetchMondayBoardsCatalog,
     fetchMondayStatusColumnOptions,
@@ -111,6 +115,7 @@ export function registerOrdersRoutes(app, deps) {
     updateMondayDateColumnValue,
     updateMondayLinkColumnValue,
   } = createMondaySyncHelpers({
+    resolveMondayLink,
     fetchMondayBoardItemsByIds,
     fetchMondayStatusColumnOptions,
     getCollections,
@@ -1178,6 +1183,11 @@ export function registerOrdersRoutes(app, deps) {
       mondayBoardName: String(orderDocument?.monday_board_name ?? '').trim() || null,
       mondayUpdatedAt: String(orderDocument?.monday_updated_at ?? '').trim() || null,
       mondayItemUrl: String(orderDocument?.Monday_url ?? '').trim() || null,
+      mondayLinkStatus: String(orderDocument?.monday_link_status ?? '').trim() || null,
+      mondayLinkSource: String(orderDocument?.monday_link_source ?? '').trim() || null,
+      mondayLinkCandidates: Array.isArray(orderDocument?.monday_link_candidates)
+        ? orderDocument.monday_link_candidates
+        : [],
       dueDate: String(orderDocument?.Due_date ?? '').trim() || null,
       shopDrawingCachedUrl: String(orderDocument?.Shop_drawing_cached ?? '').trim() || null,
       shopDrawingUrl:
@@ -1777,12 +1787,20 @@ export function registerOrdersRoutes(app, deps) {
         updatedAt: now,
         updatedByEmail: String(publicUser?.email ?? req.authUser?.email ?? '').trim() || null,
       }
-      const mondayParentItemId = String(orderExists?.monday_item_id ?? '').trim()
+      const mondayParentItemId = String(
+        orderExists?.monday_production_item_id ?? orderExists?.monday_item_id ?? '',
+      ).trim()
       if (mondayParentItemId && typeof createMondaySubitem === 'function') {
+        // A subitem hung off the wrong parent silently moves a part onto
+        // another order, so confirm the parent by order number first.
+        const partLink = await assertMondayLink({
+          orderNumber: orderExists?.order_number,
+          storedItemId: mondayParentItemId,
+        })
         const nameParts = [part.itemName, part.dimensions, part.quantity !== 1 ? `Qty ${part.quantity}` : null]
           .filter(Boolean)
         const mondaySubitem = await createMondaySubitem({
-          parentItemId: mondayParentItemId,
+          parentItemId: partLink.itemId,
           itemName: nameParts.join(' · '),
         })
         part.mondaySubitemId = mondaySubitem.id
@@ -1963,29 +1981,58 @@ export function registerOrdersRoutes(app, deps) {
         if (order.production_handoff_status !== 'waiting_for_production') {
           return res.status(409).json({ error: 'This order is not waiting for production approval.' })
         }
-        const mondayItemId = String(order.monday_item_id ?? '').trim()
+        const mondayItemId = String(
+          order.monday_production_item_id ?? order.monday_item_id ?? '',
+        ).trim()
         if (!mondayItemId) return res.status(409).json({ error: 'This order is not linked to a Monday item.' })
 
-        const moveResult = await moveMondayItemToBoard({
-          sourceBoardId: MONDAY_BOARDS.design.id,
-          targetBoardId: MONDAY_BOARDS.orderTrack.id,
-          itemId: mondayItemId,
+        // Confirm by order number, and take the source board from the
+        // resolver rather than assuming Design — the item may already have
+        // been moved by hand.
+        const moveLink = await assertMondayLink({
+          orderNumber: order?.order_number,
+          storedItemId: mondayItemId,
         })
         const now = new Date().toISOString()
+
+        if (moveLink.boardId === MONDAY_BOARDS.orderTrack.id) {
+          return res.status(409).json({
+            error: 'This order is already on the Order Track board in Monday.',
+          })
+        }
+
+        const moveResult = await moveMondayItemToBoard({
+          sourceBoardId: moveLink.boardId,
+          targetBoardId: MONDAY_BOARDS.orderTrack.id,
+          itemId: moveLink.itemId,
+        })
+        invalidateMondayLinkCache()
         const publicUser = toPublicAuthUser(req.authUser)
+        const moveLinkHistoryEntry = buildMondayLinkHistoryEntry(moveLink, {
+          previousItemId: mondayItemId,
+          verifiedAt: now,
+        })
         await ordersUnifiedCollection.updateOne(
           { orderKey },
-          { $set: {
-            in_design: false,
-            is_production_started: true,
-            monday_board_id: MONDAY_BOARDS.orderTrack.id,
-            monday_board_name: MONDAY_BOARDS.orderTrack.name,
-            production_handoff_status: 'in_production',
-            production_handoff_approved_at: now,
-            production_handoff_approved_by_uid: String(publicUser?.uid ?? req.authUser?.uid ?? '').trim() || null,
-            production_handoff_approved_by_email: String(publicUser?.email ?? req.authUser?.email ?? '').trim() || null,
-            updatedAt: now,
-          } },
+          {
+            ...(moveLinkHistoryEntry
+              ? { $push: { monday_link_history: { $each: [moveLinkHistoryEntry], $slice: -30 } } }
+              : {}),
+            $set: {
+              ...buildMondayLinkFields(moveLink, { verifiedAt: now }),
+              in_design: false,
+              is_production_started: true,
+              monday_item_id: moveLink.itemId,
+              monday_production_item_id: moveLink.itemId,
+              monday_board_id: MONDAY_BOARDS.orderTrack.id,
+              monday_board_name: MONDAY_BOARDS.orderTrack.name,
+              production_handoff_status: 'in_production',
+              production_handoff_approved_at: now,
+              production_handoff_approved_by_uid: String(publicUser?.uid ?? req.authUser?.uid ?? '').trim() || null,
+              production_handoff_approved_by_email: String(publicUser?.email ?? req.authUser?.email ?? '').trim() || null,
+              updatedAt: now,
+            },
+          },
         )
         return res.json({ ok: true, status: 'in_production', move: moveResult })
       } catch (error) {
@@ -2156,6 +2203,11 @@ export function registerOrdersRoutes(app, deps) {
               monday_board_id: 1,
               monday_board_name: 1,
               monday_updated_at: 1,
+              monday_link_status: 1,
+              monday_link_source: 1,
+              monday_link_candidates: 1,
+              monday_production_item_id: 1,
+              monday_financial_item_id: 1,
               manager_ready_percent: 1,
               manager_ready_date: 1,
               manager_ready_updated_at: 1,
@@ -2586,6 +2638,11 @@ export function registerOrdersRoutes(app, deps) {
   )
 
   registerOrderProgressRoutes(app, {
+    assertMondayLink,
+    buildMondayLinkFields,
+    buildMondayLinkHistoryEntry,
+    invalidateMondayLinkCache,
+    resolveMondayLink,
     authApprovalApproved,
     authRoleAdmin,
     buildMondayProgressDetailsResponse,
@@ -2617,6 +2674,8 @@ export function registerOrdersRoutes(app, deps) {
   })
 
   registerOrderWarrantyRoutes(app, {
+    invalidateMondayLinkCache,
+    resolveMondayLink,
     createMondayItem,
     getCollections,
     refreshOrdersUnifiedCollection,
@@ -2628,6 +2687,7 @@ export function registerOrdersRoutes(app, deps) {
   })
 
   registerOrderDocumentRoutes(app, {
+    assertMondayLink,
     clearMondayColumnValue,
     decodeBase64Image,
     fetchMondayBoardItemsByIds,
@@ -2643,11 +2703,15 @@ export function registerOrdersRoutes(app, deps) {
   })
 
   registerOrderShippingRoutes(app, {
+    assertMondayLink,
+    buildMondayLinkFields,
+    buildMondayLinkHistoryEntry,
+    invalidateMondayLinkCache,
+    resolveMondayLink,
     authApprovalApproved,
     createMondayItem,
     deleteMondayItem,
     fetchMondayBoardColumns,
-    fetchMondayBoardItemNames,
     fetchMondayBoardItemsByIds,
     fetchMondayBoardsCatalog,
     fetchMondayStatusColumnOptions,
@@ -2934,6 +2998,9 @@ export function registerOrdersRoutes(app, deps) {
                     monday_board_id: 1,
                     monday_board_name: 1,
                     monday_updated_at: 1,
+                    monday_link_status: 1,
+                    monday_link_source: 1,
+                    monday_link_candidates: 1,
                     manager_ready_percent: 1,
                     manager_ready_date: 1,
                     manager_ready_updated_at: 1,

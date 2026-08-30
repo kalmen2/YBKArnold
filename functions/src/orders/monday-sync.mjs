@@ -17,6 +17,7 @@ import {
 
 export function createMondaySyncHelpers(deps) {
   const {
+    resolveMondayLink,
     fetchMondayBoardItemsByIds,
     fetchMondayStatusColumnOptions,
     getCollections,
@@ -25,6 +26,27 @@ export function createMondaySyncHelpers(deps) {
     updateMondayItemStatusColumn,
     updateMondayItemTextColumn,
   } = deps
+
+  // Queue jobs are written against a Monday id captured earlier, sometimes
+  // much earlier. Confirm the id still belongs to the order number before the
+  // worker writes, and fail the job to "needs review" rather than retrying
+  // forever when the match is unclear.
+  async function resolveQueueTarget(context, mondayItemId) {
+    if (typeof resolveMondayLink !== 'function') {
+      return { ok: true, itemId: mondayItemId, boardId: context?.boardId ?? null }
+    }
+
+    const link = await resolveMondayLink({
+      orderNumber: context?.orderNumber,
+      storedItemId: mondayItemId,
+    })
+
+    if (link.status !== 'ok') {
+      return { ok: false, retryable: false, message: link.reason }
+    }
+
+    return { ok: true, itemId: link.itemId, boardId: link.boardId, link }
+  }
 
   let ordersProgressStatusQueueIndexesPromise
   let ordersProgressStatusQueueInFlight = null
@@ -288,7 +310,10 @@ export function createMondaySyncHelpers(deps) {
         {
           projection: {
             _id: 0,
+            orderKey: 1,
+            order_number: 1,
             monday_item_id: 1,
+            monday_production_item_id: 1,
             monday_board_id: 1,
             monday_board_name: 1,
             Monday_url: 1,
@@ -348,6 +373,12 @@ export function createMondaySyncHelpers(deps) {
 
     return {
       mondayItemId: normalizedMondayItemId,
+      orderKey: String(unifiedDocument?.orderKey ?? '').trim() || null,
+      orderNumber: String(
+        unifiedDocument?.order_number
+        ?? mondayOrderDocument?.jobNumber
+        ?? '',
+      ).trim() || null,
       boardId,
       boardName,
       boardUrl,
@@ -745,10 +776,17 @@ export function createMondaySyncHelpers(deps) {
           resolvedStatusLabel = resolvedStatusResult.statusLabel
         }
 
+        const statusTarget = await resolveQueueTarget(context, mondayItemId)
+
+        if (!statusTarget.ok) {
+          await finalizeQueueFailure(statusTarget.message, { retryable: statusTarget.retryable })
+          continue
+        }
+
         try {
           await updateMondayItemStatusColumn({
-            boardId: context.boardId,
-            itemId: mondayItemId,
+            boardId: statusTarget.boardId,
+            itemId: statusTarget.itemId,
             columnId,
             statusLabel: resolvedStatusLabel,
           })
@@ -918,11 +956,21 @@ export function createMondaySyncHelpers(deps) {
           })
           if (!context?.boardId) throw new Error('Could not resolve Monday board for this order.')
 
+          const detailsTarget = await resolveQueueTarget(context, mondayItemId)
+
+          if (!detailsTarget.ok) {
+            await fail(detailsTarget.message, Boolean(detailsTarget.retryable))
+            continue
+          }
+
+          const targetBoardId = detailsTarget.boardId
+          const targetItemId = detailsTarget.itemId
+
           const snapshot = await fetchMondayBoardItemsByIds({
-            boardId: context.boardId,
+            boardId: targetBoardId,
             boardName: context.boardName,
             boardUrl: context.boardUrl,
-            itemIds: [mondayItemId],
+            itemIds: [targetItemId],
           })
           if (!Array.isArray(snapshot?.orders) || !snapshot.orders[0]) {
             throw new Error('Monday item was not found on the configured board.')
@@ -934,7 +982,7 @@ export function createMondaySyncHelpers(deps) {
             const columnId = String(columns?.[columnName] ?? '').trim()
             if (!columnId) throw new Error(`${changeName} column could not be resolved for this board.`)
             await updateMondayItemTextColumn({
-              boardId: context.boardId, itemId: mondayItemId, columnId, textValue: String(changes[changeName] ?? ''),
+              boardId: targetBoardId, itemId: targetItemId, columnId, textValue: String(changes[changeName] ?? ''),
             })
           }
           const writeDate = async (changeName, columnName) => {
@@ -942,18 +990,19 @@ export function createMondaySyncHelpers(deps) {
             const columnId = String(columns?.[columnName] ?? '').trim()
             if (!columnId) throw new Error(`${changeName} column could not be resolved for this board.`)
             await updateMondayDateColumnValue({
-              boardId: context.boardId, itemId: mondayItemId, columnId, dateValue: changes[changeName],
+              boardId: targetBoardId, itemId: targetItemId, columnId, dateValue: changes[changeName],
             })
           }
 
           if (Object.prototype.hasOwnProperty.call(changes, 'orderName')) {
             await updateMondayItemName({
-              boardId: context.boardId,
-              itemId: mondayItemId,
+              boardId: targetBoardId,
+              itemId: targetItemId,
               itemName: String(changes.orderName ?? ''),
             })
           }
           await writeText('poNumber', 'poNumberColumnId')
+          await writeText('salesRep', 'salesRepColumnId')
           await writeText('notes', 'notesColumnId')
           await writeText('description', 'descriptionColumnId')
           await writeText('bench', 'benchColumnId')

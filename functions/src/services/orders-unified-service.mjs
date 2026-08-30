@@ -22,14 +22,15 @@ import {
   normalizeProgressStageKey,
   normalizeProgressStageStatus,
 } from '../orders/stage-registry.mjs'
-import { NEW_ORDERS_FINANCIAL_BOARDS_BY_PREFIX } from '../orders/monday-board-map.mjs'
+import { MONDAY_BOARDS, NEW_ORDERS_FINANCIAL_BOARDS_BY_PREFIX } from '../orders/monday-board-map.mjs'
 import { createQuickBooksProjectsService } from './quickbooks-projects-service.mjs'
 import {
-  buildNameLookupFromMondayItems,
+  buildMondayOrderNumberLookup,
   buildOrderKey,
   buildStatusHistoryLookups,
   createEmptyUnifiedOrder,
-  findNameLookupMatch,
+  findUniqueMondayOrderMatch,
+  resolveMondayOrderMatch,
   hydrateUnifiedRowFromStoredDocument,
   isShippedOrderDocument,
   normalizeOrderNumberKey,
@@ -77,6 +78,25 @@ function mapMondaySubitems(subitems) {
     createdAt: toIsoOrNull(subitem?.createdAt),
     updatedAt: toIsoOrNull(subitem?.updatedAt),
   })).filter((part) => part.mondaySubitemId)
+}
+
+// Records why a Monday match failed so the order can be shown as needing
+// review. A 'duplicate' is sticky within one refresh: once any board reports
+// an ambiguous order number, a later clean board must not paper over it.
+function applyMondayMatchStatus(row, matchResult) {
+  if (!row || !matchResult) {
+    return
+  }
+
+  if (row.monday_link_status === 'duplicate' && matchResult.status !== 'duplicate') {
+    return
+  }
+
+  row.monday_link_status = matchResult.status
+  row.monday_link_source = matchResult.linkSource ?? null
+  row.monday_link_candidates = matchResult.status === 'duplicate'
+    ? matchResult.candidates
+    : []
 }
 
 function selectedMondayColumnText(item, columnId) {
@@ -317,7 +337,6 @@ function isPendingManualPlacementRow(row, {
 
 export function createOrdersUnifiedService(deps) {
   const {
-    fetchMondayBoardItemNames,
     fetchMondayBoardItemsByIds,
     fetchMondayBoardSelectedColumns,
     fetchMondayDashboardSnapshot,
@@ -335,6 +354,22 @@ export function createOrdersUnifiedService(deps) {
   const { fetchProjectsFinancials } = createQuickBooksProjectsService({ getCollections })
 
   let inFlightRefresh = null
+
+  async function fetchMondayOrderNumberLookup({ boardId, boardName, boardUrl, ackColumnId }) {
+    const snapshot = await fetchMondayBoardSelectedColumns({
+      boardId,
+      boardName,
+      boardUrl,
+      columnIds: [ackColumnId],
+    })
+    return {
+      snapshot,
+      lookup: buildMondayOrderNumberLookup(
+        snapshot?.items,
+        (item) => selectedMondayColumnText(item, ackColumnId),
+      ),
+    }
+  }
 
   async function enrichFromNewOrdersBoards(mergedByKey, refreshedAt, warnings) {
     if (typeof fetchMondayBoardSelectedColumns !== 'function') {
@@ -385,20 +420,26 @@ export function createOrdersUnifiedService(deps) {
         })
         checkedBoardCount += 1
 
-        const itemByAck = new Map()
-
-        ;(Array.isArray(snapshot?.items) ? snapshot.items : []).forEach((item) => {
-          const ack = selectedMondayColumnText(item, board.ackColumnId)
-          const ackKey = normalizeOrderNumberKey(ack)
-
-          if (ackKey && !itemByAck.has(ackKey)) {
-            itemByAck.set(ackKey, item)
-          }
-        })
+        // Financial items carry money. Silently taking the first of several
+        // cards sharing an ACK would copy the wrong order value onto an order,
+        // so an ambiguous number is flagged and skipped instead.
+        const financialLookup = buildMondayOrderNumberLookup(
+          snapshot?.items,
+          (item) => selectedMondayColumnText(item, board.ackColumnId),
+        )
 
         rows.forEach((row) => {
-          const orderKey = normalizeOrderNumberKey(row?.order_number)
-          const item = orderKey ? itemByAck.get(orderKey) : null
+          const financialMatch = resolveMondayOrderMatch(row, financialLookup)
+
+          if (financialMatch.status === 'duplicate') {
+            applyMondayMatchStatus(row, financialMatch)
+            warnings.push(
+              `Order ${row?.order_number} matches ${financialMatch.candidates.length} New Orders ${board.year} items; financial values were left unchanged.`,
+            )
+            return
+          }
+
+          const item = financialMatch.status === 'ok' ? financialMatch.item : null
 
           if (!item) {
             return
@@ -432,13 +473,15 @@ export function createOrdersUnifiedService(deps) {
 
           row.new_orders_board_id = board.boardId
           row.new_orders_item_id = normalizeText(item?.id, 120) || null
+          row.monday_financial_item_id = normalizeText(item?.id, 120) || null
+          row.monday_financial_board_id = board.boardId
           row.new_orders_financial_synced_at = refreshedAt
 
           if (changed) {
             updatedOrderCount += 1
           }
         })
-      } catch (error) {4
+      } catch (error) {
         warnings.push(
           `New Orders ${board.year} enrichment failed: ${normalizeText(error?.message, 400) || 'unknown error'}`,
         )
@@ -518,6 +561,7 @@ export function createOrdersUnifiedService(deps) {
       const incoming = {
         order_number: orderNumber,
         monday_item_id: mondayItemId,
+        monday_production_item_id: mondayItemId,
         Monday_url: normalizeText(order?.itemUrl, 500) || null,
         Monday_status: normalizeText(order?.statusLabel, 260) || null,
         order_name: normalizeText(order?.name, 260) || null,
@@ -580,6 +624,7 @@ export function createOrdersUnifiedService(deps) {
       if (shouldReplaceMondayDetails(row, incoming)) {
         Object.assign(row, {
           monday_item_id: incoming.monday_item_id,
+          monday_production_item_id: incoming.monday_production_item_id,
           Monday_url: incoming.Monday_url,
           Monday_status: incoming.is_shipped ? 'Shipped' : incoming.Monday_status,
           order_name: incoming.order_name || row.order_name,
@@ -783,12 +828,16 @@ export function createOrdersUnifiedService(deps) {
     })
 
     let snapshot = null
+    let lookup = null
     try {
-      snapshot = await fetchMondayBoardItemNames({
+      const result = await fetchMondayOrderNumberLookup({
         boardId: designBoardId,
         boardUrl: normalizeText(mondayPreproductionBoardUrl, 400) || null,
         boardName: 'Pre-Production / Design AKF',
+        ackColumnId: MONDAY_BOARDS.design.columns.ackNumber,
       })
+      snapshot = result.snapshot
+      lookup = result.lookup
     } catch (error) {
       warnings.push(`Design board lookup failed: ${normalizeText(error?.message, 400) || 'unknown error'}`)
       return {
@@ -802,13 +851,14 @@ export function createOrdersUnifiedService(deps) {
     }
 
     const designItems = Array.isArray(snapshot?.items) ? snapshot.items : []
-    const lookup = buildNameLookupFromMondayItems(designItems)
     const matchedRowsByItemId = new Map()
     const activeItemIds = new Set()
     let matchedCount = 0
 
     candidates.forEach((row) => {
-      const match = findNameLookupMatch(row, lookup)
+      const matchResult = resolveMondayOrderMatch(row, lookup)
+      applyMondayMatchStatus(row, matchResult)
+      const match = matchResult.status === 'ok' ? matchResult.item : null
 
       if (!match) {
         return
@@ -823,6 +873,7 @@ export function createOrdersUnifiedService(deps) {
       row.in_design = true
       row.Monday_status = 'In Design'
       row.monday_item_id = matchedItemId
+      row.monday_production_item_id = matchedItemId
       row.monday_board_id = designBoardId
       row.monday_board_name = snapshot.board?.name || row.monday_board_name
 
@@ -844,6 +895,7 @@ export function createOrdersUnifiedService(deps) {
 
       const itemName = normalizeText(item?.name, 260) || null
       const orderNumber = resolveOrderNumberFromMondayOrder({
+        jobNumber: selectedMondayColumnText(item, MONDAY_BOARDS.design.columns.ackNumber),
         orderName: itemName,
       })
       const orderKey = buildOrderKey({
@@ -865,6 +917,7 @@ export function createOrdersUnifiedService(deps) {
       row.hazard_reason = null
       row.Monday_status = 'In Design'
       row.monday_item_id = itemId
+      row.monday_production_item_id = itemId
       row.monday_board_id = designBoardId
       row.monday_board_name = normalizeText(snapshot?.board?.name, 260)
         || row.monday_board_name
@@ -915,6 +968,7 @@ export function createOrdersUnifiedService(deps) {
         row.in_design = true
         row.has_monday_record = true
         row.monday_item_id = itemId
+        row.monday_production_item_id = itemId
         row.monday_board_id = designBoardId
         row.monday_board_name = normalizeText(snapshot?.board?.name, 260)
           || row.monday_board_name
@@ -1029,12 +1083,16 @@ export function createOrdersUnifiedService(deps) {
     }
 
     let snapshot = null
+    let lookup = null
     try {
-      snapshot = await fetchMondayBoardItemNames({
+      const result = await fetchMondayOrderNumberLookup({
         boardId: designBoardId,
         boardUrl: normalizeText(mondayPreproductionBoardUrl, 400) || null,
         boardName: 'Pre-Production / Design AKF',
+        ackColumnId: MONDAY_BOARDS.design.columns.ackNumber,
       })
+      snapshot = result.snapshot
+      lookup = result.lookup
     } catch (error) {
       warnings.push(`Pending design lookup failed: ${normalizeText(error?.message, 400) || 'unknown error'}`)
       return {
@@ -1044,12 +1102,13 @@ export function createOrdersUnifiedService(deps) {
       }
     }
 
-    const lookup = buildNameLookupFromMondayItems(snapshot.items)
     const matchedRowsByItemId = new Map()
     let matchedCount = 0
 
     candidates.forEach((row) => {
-      const match = findNameLookupMatch(row, lookup)
+      const matchResult = resolveMondayOrderMatch(row, lookup)
+      applyMondayMatchStatus(row, matchResult)
+      const match = matchResult.status === 'ok' ? matchResult.item : null
 
       if (!match) {
         return
@@ -1065,6 +1124,7 @@ export function createOrdersUnifiedService(deps) {
       row.hazard_reason = null
       row.Monday_status = 'In Design'
       row.monday_item_id = matchedItemId
+      row.monday_production_item_id = matchedItemId
       row.monday_board_id = designBoardId
       row.monday_board_name = snapshot.board?.name || row.monday_board_name
 
@@ -1089,13 +1149,14 @@ export function createOrdersUnifiedService(deps) {
     }
 
     try {
-      const snapshot = await fetchMondayBoardItemNames({
+      const { snapshot, lookup } = await fetchMondayOrderNumberLookup({
         boardId: shippedBoardId,
         boardUrl: normalizeText(mondayShippedBoardUrl, 400) || null,
         boardName: 'Shipped Orders',
+        ackColumnId: MONDAY_BOARDS.shipped.columns.ackNumber,
       })
       return {
-        lookup: buildNameLookupFromMondayItems(snapshot.items),
+        lookup,
         snapshot,
       }
     } catch (error) {
@@ -1136,6 +1197,7 @@ export function createOrdersUnifiedService(deps) {
         row.is_shipped = true
         row.Monday_status = 'Shipped'
         row.monday_item_id = itemId
+        row.monday_production_item_id = itemId
         row.monday_board_id = shippedBoardId
         row.monday_board_name = normalizeText(snapshot?.board?.name, 260)
           || row.monday_board_name
@@ -1378,6 +1440,11 @@ export function createOrdersUnifiedService(deps) {
               orderKey: 1,
               shipped_at: 1,
               shipped_at_inferred: 1,
+              // Carried so a shipped order's Monday links survive a refresh
+              // that cannot resolve them; see the link carry-forward below.
+              monday_production_item_id: 1,
+              monday_financial_item_id: 1,
+              monday_link_history: 1,
             },
           },
         )
@@ -1617,7 +1684,17 @@ export function createOrdersUnifiedService(deps) {
     const movedToShippedOutsideWebsiteRows = []
 
     rowsToCheckOnShipped.forEach((row) => {
-      const match = shippedLookup ? findNameLookupMatch(row, shippedLookup) : null
+      // A row not on the Shipped board is the normal case here, so only a
+      // genuine ambiguity is worth flagging.
+      const shippedMatchResult = shippedLookup
+        ? resolveMondayOrderMatch(row, shippedLookup)
+        : null
+
+      if (shippedMatchResult?.status === 'duplicate') {
+        applyMondayMatchStatus(row, shippedMatchResult)
+      }
+
+      const match = shippedMatchResult?.status === 'ok' ? shippedMatchResult.item : null
 
       if (match) {
         const matchedItemId = normalizeText(match?.id, 120)
@@ -1633,6 +1710,7 @@ export function createOrdersUnifiedService(deps) {
             : true
         row.has_monday_record = true
         row.monday_item_id = matchedItemId || row.monday_item_id
+        row.monday_production_item_id = matchedItemId || row.monday_production_item_id || row.monday_item_id
         row.monday_board_id = normalizeText(mondayShippedBoardId, 120) || row.monday_board_id
         row.monday_board_name = row.monday_board_name || 'Shipped Orders'
         row.hazard_reason = null
@@ -1737,8 +1815,14 @@ export function createOrdersUnifiedService(deps) {
 
     // -- Final mapping --------------------------------------------------------
 
+    // Shipped rows are included too: without them a shipped order has no
+    // stored counterpart here, so its Monday links look like they were never
+    // set and get cleared on any refresh that cannot resolve them.
     const storedRowsByOrderKey = new Map(
-      (Array.isArray(existingNonShippedRows) ? existingNonShippedRows : [])
+      [
+        ...(Array.isArray(existingShippedRows) ? existingShippedRows : []),
+        ...(Array.isArray(existingNonShippedRows) ? existingNonShippedRows : []),
+      ]
         .map((stored) => [normalizeText(stored?.orderKey, 200), stored])
         .filter(([orderKey]) => Boolean(orderKey)),
     )
@@ -1857,6 +1941,61 @@ export function createOrdersUnifiedService(deps) {
         if (storedRow?.source_quote_snapshot && typeof storedRow.source_quote_snapshot === 'object') {
           row.source_quote_snapshot = storedRow.source_quote_snapshot
         }
+      }
+
+      const priorLinks = Array.isArray(storedRow?.monday_link_history)
+        ? storedRow.monday_link_history
+        : []
+      const recordLinkChange = (role, previousItemId, nextItemId) => {
+        if (!nextItemId || previousItemId === nextItemId) return
+        priorLinks.push({
+          role,
+          previousItemId: previousItemId || null,
+          nextItemId,
+          verifiedAt: refreshedAt,
+          reason: previousItemId ? 'refresh_relinked_by_order_number' : 'refresh_linked_by_order_number',
+        })
+      }
+      recordLinkChange(
+        'production',
+        normalizeText(storedRow?.monday_production_item_id ?? storedRow?.monday_item_id, 120),
+        normalizeText(row?.monday_production_item_id ?? row?.monday_item_id, 120),
+      )
+      recordLinkChange(
+        'financial',
+        normalizeText(storedRow?.monday_financial_item_id, 120),
+        normalizeText(row?.monday_financial_item_id, 120),
+      )
+      row.monday_link_history = priorLinks.slice(-30)
+      row.monday_links_verified_at = refreshedAt
+
+      // Status is about the PRODUCTION link only, and never falls back to
+      // monday_item_id — that field can hold a financial card id, which is
+      // exactly the role confusion these two fields exist to remove.
+      //
+      // A new order with only a New Orders card and no production card yet is
+      // healthy, not broken. Only losing a production link we previously had
+      // is worth a person's attention.
+      const resolvedProductionItemId = normalizeText(row?.monday_production_item_id, 120)
+      const previousProductionItemId = normalizeText(storedRow?.monday_production_item_id, 120)
+      const resolvedFinancialItemId = normalizeText(row?.monday_financial_item_id, 120)
+      const previousFinancialItemId = normalizeText(storedRow?.monday_financial_item_id, 120)
+
+      // An unresolved match must never CLEAR the link we already had. Dropping
+      // it would destroy the only pointer anyone has while a person sorts out
+      // the conflict, and "do not change anything when the match is unclear"
+      // includes not erasing it.
+      if (!resolvedProductionItemId && previousProductionItemId) {
+        row.monday_production_item_id = previousProductionItemId
+      }
+      if (!resolvedFinancialItemId && previousFinancialItemId) {
+        row.monday_financial_item_id = previousFinancialItemId
+      }
+
+      if (row.monday_link_status !== 'duplicate') {
+        row.monday_link_status = resolvedProductionItemId || !previousProductionItemId
+          ? 'ok'
+          : 'not_found'
       }
 
       return row

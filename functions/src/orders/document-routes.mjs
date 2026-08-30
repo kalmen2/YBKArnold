@@ -15,6 +15,7 @@ import {
 } from './order-shared.mjs'
 
 export function registerOrderDocumentRoutes(app, {
+  assertMondayLink,
   clearMondayColumnValue,
   decodeBase64Image,
   fetchMondayBoardItemsByIds,
@@ -517,6 +518,13 @@ export function registerOrderDocumentRoutes(app, {
           })
         }
 
+        // Confirm the stored id still belongs to this order number before
+        // attaching a document link to it.
+        const documentLink = await assertMondayLink({
+          orderNumber: context.orderNumber,
+          storedItemId: mondayItemId,
+        })
+
         const snapshot = await fetchMondayBoardItemsByIds({
           boardId: context.boardId,
           boardName: context.boardName,
@@ -623,8 +631,8 @@ export function registerOrderDocumentRoutes(app, {
         ]
 
         await updateMondayLinkColumnValue({
-          boardId: context.boardId,
-          itemId: mondayItemId,
+          boardId: documentLink.boardId,
+          itemId: documentLink.itemId,
           columnId: shopDrawingColumnId,
           urlValue: downloadUrl,
           linkText: storedFileName,
@@ -785,6 +793,13 @@ export function registerOrderDocumentRoutes(app, {
           })
         }
 
+        // Confirm the stored id still belongs to this order number before
+        // attaching a document link to it.
+        const documentLink = await assertMondayLink({
+          orderNumber: context.orderNumber,
+          storedItemId: mondayItemId,
+        })
+
         const snapshot = await fetchMondayBoardItemsByIds({
           boardId: context.boardId,
           boardName: context.boardName,
@@ -810,8 +825,8 @@ export function registerOrderDocumentRoutes(app, {
         }
 
         await clearMondayColumnValue({
-          boardId: context.boardId,
-          itemId: mondayItemId,
+          boardId: documentLink.boardId,
+          itemId: documentLink.itemId,
           columnId: shopDrawingColumnId,
         })
 
@@ -991,6 +1006,13 @@ export function registerOrderDocumentRoutes(app, {
           })
         }
 
+        // Confirm the stored id still belongs to this order number before
+        // attaching a document link to it.
+        const documentLink = await assertMondayLink({
+          orderNumber: context.orderNumber,
+          storedItemId: mondayItemId,
+        })
+
         const snapshot = await fetchMondayBoardItemsByIds({
           boardId: context.boardId,
           boardName: context.boardName,
@@ -1065,8 +1087,8 @@ export function registerOrderDocumentRoutes(app, {
         const downloadUrl = buildFirebaseStorageDownloadUrl(bucket.name, storagePath, downloadToken)
 
         await updateMondayLinkColumnValue({
-          boardId: context.boardId,
-          itemId: mondayItemId,
+          boardId: documentLink.boardId,
+          itemId: documentLink.itemId,
           columnId: cutListColumnId,
           urlValue: downloadUrl,
           linkText: storedFileName,
@@ -1354,6 +1376,13 @@ export function registerOrderDocumentRoutes(app, {
           })
         }
 
+        // Confirm the stored id still belongs to this order number before
+        // attaching a document link to it.
+        const documentLink = await assertMondayLink({
+          orderNumber: context.orderNumber,
+          storedItemId: mondayItemId,
+        })
+
         const snapshot = await fetchMondayBoardItemsByIds({
           boardId: context.boardId,
           boardName: context.boardName,
@@ -1432,16 +1461,16 @@ export function registerOrderDocumentRoutes(app, {
 
         if (latestCutListDocument) {
           await updateMondayLinkColumnValue({
-            boardId: context.boardId,
-            itemId: mondayItemId,
+            boardId: documentLink.boardId,
+            itemId: documentLink.itemId,
             columnId: cutListColumnId,
             urlValue: latestCutListDocument.url,
             linkText: latestCutListDocument.fileName,
           })
         } else {
           await clearMondayColumnValue({
-            boardId: context.boardId,
-            itemId: mondayItemId,
+            boardId: documentLink.boardId,
+            itemId: documentLink.itemId,
             columnId: cutListColumnId,
           })
         }
@@ -1619,7 +1648,7 @@ export function registerOrderDocumentRoutes(app, {
           orderIdentityFilter,
           {
             projection: {
-              _id: 0,
+              _id: 1,
               orderKey: 1,
               monday_item_id: 1,
               order_number: 1,
@@ -1704,11 +1733,8 @@ export function registerOrderDocumentRoutes(app, {
         })
 
         const downloadUrl = buildFirebaseStorageDownloadUrl(bucket.name, storagePath, downloadToken)
-        const updateFilter = buildOrderIdentityFilter({
-          orderKey: orderDocument?.orderKey,
-          mondayItemId: orderDocument?.monday_item_id,
-          orderNumber: orderDocument?.order_number,
-        })
+        // Resolved above; key the write on the immutable _id.
+        const updateFilter = orderDocument?._id ? { _id: orderDocument._id } : null
 
         if (!updateFilter) {
           return res.status(409).json({
@@ -1897,7 +1923,7 @@ export function registerOrderDocumentRoutes(app, {
           orderIdentityFilter,
           {
             projection: {
-              _id: 0,
+              _id: 1,
               orderKey: 1,
               monday_item_id: 1,
               order_number: 1,
@@ -1943,11 +1969,8 @@ export function registerOrderDocumentRoutes(app, {
           }
         }
 
-        const updateFilter = buildOrderIdentityFilter({
-          orderKey: orderDocument?.orderKey,
-          mondayItemId: orderDocument?.monday_item_id,
-          orderNumber: orderDocument?.order_number,
-        })
+        // Resolved above; key the write on the immutable _id.
+        const updateFilter = orderDocument?._id ? { _id: orderDocument._id } : null
 
         if (!updateFilter) {
           return res.status(409).json({

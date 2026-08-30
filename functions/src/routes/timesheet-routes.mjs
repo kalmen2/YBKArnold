@@ -3,6 +3,7 @@ import { resolveBoardMapById } from '../orders/monday-board-map.mjs'
 
 export function registerTimesheetRoutes(app, deps) {
   const {
+    resolveMondayLink,
     authApprovalApproved,
     fetchMondayDashboardSnapshot,
     allocateWorkerNumbers,
@@ -979,12 +980,26 @@ app.put('/api/timesheet/order-progress', requireFirebaseAuth, requireManagerOrAd
           })
         } else {
           try {
-            await updateMondayItemTextColumn({
-              boardId: mondayBoardId,
-              itemId: mondayItemId,
-              columnId: benchColumnId,
-              textValue: bench || '',
-            })
+            // Arnold already holds the Bench value, so an unclear Monday match
+            // is a warning here rather than a failed save.
+            const benchLink = typeof resolveMondayLink === 'function'
+              ? await resolveMondayLink({ orderNumber, storedItemId: mondayItemId })
+              : { status: 'ok', itemId: mondayItemId, boardId: mondayBoardId }
+
+            if (benchLink.status === 'ok') {
+              await updateMondayItemTextColumn({
+                boardId: benchLink.boardId || mondayBoardId,
+                itemId: benchLink.itemId,
+                columnId: benchColumnId,
+                textValue: bench || '',
+              })
+            } else {
+              warnings.push({
+                code: 'bench_monday_sync_needs_review',
+                orderNumber,
+                message: `Order ${orderNumber}: Bench was saved in Arnold, but its Monday link needs review, so Monday was not updated.`,
+              })
+            }
           } catch (mondayError) {
             console.error('Unable to mirror manager-sheet Bench assignment to Monday.', {
               orderNumber,
