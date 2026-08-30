@@ -10,6 +10,8 @@ import {
   MenuItem,
   TextField,
   Stack,
+  Tab,
+  Tabs,
   Typography,
 } from '@mui/material'
 import { useCallback, useEffect, useMemo, useState } from 'react'
@@ -30,11 +32,15 @@ export type AddManualOrderDialogForm = {
   description: string
   shipTo: string
   notes: string
+  documentLines: Array<{ id: string; parentLineId: string | null; detailLabel: string; description: string; qty: string; unitPrice: string; category: 'product' | 'additional' | 'freight' }>
 }
 
 type AddManualOrderDialogProps = {
   open: boolean
   isSubmitting: boolean
+  initialForm?: Partial<AddManualOrderDialogForm> | null
+  title?: string
+  submitLabel?: string
   onClose: () => void
   onSubmit: (form: AddManualOrderDialogForm) => void
 }
@@ -51,11 +57,15 @@ const INITIAL_FORM: AddManualOrderDialogForm = {
   description: '',
   shipTo: '',
   notes: '',
+  documentLines: [],
 }
 
 export function AddManualOrderDialog({
   open,
   isSubmitting,
+  initialForm,
+  title = 'Add Manual Order',
+  submitLabel = 'Create Order',
   onClose,
   onSubmit,
 }: AddManualOrderDialogProps) {
@@ -65,6 +75,7 @@ export function AddManualOrderDialog({
   const [boardOptionsError, setBoardOptionsError] = useState<string | null>(null)
   const [isLoadingBoardOptions, setIsLoadingBoardOptions] = useState(false)
   const [isRefreshingBoardOptions, setIsRefreshingBoardOptions] = useState(false)
+  const [activeTab, setActiveTab] = useState<'info' | 'lines'>('info')
 
   const loadBoardOptions = useCallback(async (refresh: boolean) => {
     if (refresh) {
@@ -91,6 +102,7 @@ export function AddManualOrderDialog({
       setDefaultBoardYear(nextDefaultYear)
       const defaultBoardId = String(response?.defaultBoardId ?? '').trim()
       setBoardOptions(nextOptions)
+      const suggestedAcknowledgementNumber = String(response?.suggestedAcknowledgementNumber ?? '').trim()
       setForm((current) => {
         const currentBoardId = String(current.boardId ?? '').trim()
         const hasCurrent = nextOptions.some((board) => String(board?.id ?? '').trim() === currentBoardId)
@@ -102,13 +114,18 @@ export function AddManualOrderDialog({
           ? currentBoardId
           : resolvedDefaultBoardId
 
-        if (currentBoardId === nextBoardId) {
+        const nextAcknowledgementNumber = current.acknowledgementNumber || suggestedAcknowledgementNumber
+        if (
+          currentBoardId === nextBoardId
+          && current.acknowledgementNumber === nextAcknowledgementNumber
+        ) {
           return current
         }
 
         return {
           ...current,
           boardId: nextBoardId,
+          acknowledgementNumber: nextAcknowledgementNumber,
         }
       })
     } catch (error) {
@@ -136,12 +153,13 @@ export function AddManualOrderDialog({
       return
     }
 
-    setForm(INITIAL_FORM)
+    setForm({ ...INITIAL_FORM, ...(initialForm || {}) })
+    setActiveTab('info')
     setDefaultBoardYear(2026)
     setBoardOptions([])
     setBoardOptionsError(null)
     void loadBoardOptions(false)
-  }, [loadBoardOptions, open])
+  }, [initialForm, loadBoardOptions, open])
 
   const canSubmit = useMemo(() => {
     return Boolean(
@@ -156,10 +174,34 @@ export function AddManualOrderDialog({
     key: Key,
     value: AddManualOrderDialogForm[Key],
   ) => {
-    setForm((current) => ({
-      ...current,
-      [key]: value,
-    }))
+    setForm((current) => {
+      const next = {
+        ...current,
+        [key]: value,
+      }
+      if (key !== 'documentLines' || !Array.isArray(value)) {
+        return next
+      }
+
+      const totals = value.reduce(
+        (sum, line) => {
+          const qty = Number(line.qty)
+          const unitPrice = Number(line.unitPrice)
+          const extension = Number.isFinite(qty) && Number.isFinite(unitPrice)
+            ? qty * unitPrice
+            : 0
+          if (line.category === 'freight') sum.freight += extension
+          else sum.product += extension
+          return sum
+        },
+        { product: 0, freight: 0 },
+      )
+      return {
+        ...next,
+        orderValue: totals.product.toFixed(2),
+        freightValue: totals.freight.toFixed(2),
+      }
+    })
   }
 
   const handleSubmit = () => {
@@ -179,6 +221,7 @@ export function AddManualOrderDialog({
       description: String(form.description ?? '').trim(),
       shipTo: String(form.shipTo ?? '').trim(),
       notes: String(form.notes ?? '').trim(),
+      documentLines: form.documentLines.map((line) => ({ ...line, detailLabel: line.detailLabel.trim(), description: line.description.trim(), qty: line.qty.trim(), unitPrice: line.unitPrice.trim() })),
     })
   }
 
@@ -189,14 +232,19 @@ export function AddManualOrderDialog({
       maxWidth="md"
       fullWidth
     >
-      <DialogTitle>Add Manual Order</DialogTitle>
+      <DialogTitle>{title}</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ mt: 0.5 }}>
           {boardOptionsError ? (
             <Alert severity="warning">{boardOptionsError}</Alert>
           ) : null}
 
-          <Grid container spacing={1.5}>
+          <Tabs value={activeTab} onChange={(_event, value: 'info' | 'lines') => setActiveTab(value)}>
+            <Tab value="info" label="Order Information" />
+            <Tab value="lines" label={`Order Lines (${form.documentLines.length})`} />
+          </Tabs>
+
+          {activeTab === 'info' ? <Grid container spacing={1.5}>
             <Grid size={{ xs: 12 }}>
               <TextField
                 select
@@ -273,6 +321,7 @@ export function AddManualOrderDialog({
                 label="Acknowledgement Number (ACK)"
                 value={form.acknowledgementNumber}
                 onChange={(event) => updateField('acknowledgementNumber', event.target.value)}
+                helperText="Defaults to the next YYMMNN acknowledgement number. You can change it before creating the order."
               />
             </Grid>
 
@@ -364,7 +413,24 @@ export function AddManualOrderDialog({
                 minRows={2}
               />
             </Grid>
-          </Grid>
+          </Grid> : null}
+
+          {activeTab === 'lines' ? (
+            <Stack spacing={1}>
+              <Alert severity="info">Edit the copied lines before creating the duplicate.</Alert>
+              {form.documentLines.map((line, index) => (
+                <Grid container spacing={1} key={line.id}>
+                  <Grid size={{ xs: 12, md: 2 }}><TextField select fullWidth size="small" label="Type" value={line.category} onChange={(event) => updateField('documentLines', form.documentLines.map((entry, entryIndex) => entryIndex === index ? { ...entry, category: event.target.value as typeof entry.category } : entry))}><MenuItem value="product">Product</MenuItem><MenuItem value="additional">Additional</MenuItem><MenuItem value="freight">Freight</MenuItem></TextField></Grid>
+                  <Grid size={{ xs: 12, md: 2 }}><TextField fullWidth size="small" label="Detail" value={line.detailLabel} onChange={(event) => updateField('documentLines', form.documentLines.map((entry, entryIndex) => entryIndex === index ? { ...entry, detailLabel: event.target.value } : entry))} /></Grid>
+                  <Grid size={{ xs: 12, md: 4 }}><TextField fullWidth size="small" label="Description" value={line.description} onChange={(event) => updateField('documentLines', form.documentLines.map((entry, entryIndex) => entryIndex === index ? { ...entry, description: event.target.value } : entry))} /></Grid>
+                  <Grid size={{ xs: 6, md: 1 }}><TextField fullWidth size="small" type="number" label="Qty" value={line.qty} onChange={(event) => updateField('documentLines', form.documentLines.map((entry, entryIndex) => entryIndex === index ? { ...entry, qty: event.target.value } : entry))} /></Grid>
+                  <Grid size={{ xs: 6, md: 2 }}><TextField fullWidth size="small" type="number" label="Unit Price" value={line.unitPrice} onChange={(event) => updateField('documentLines', form.documentLines.map((entry, entryIndex) => entryIndex === index ? { ...entry, unitPrice: event.target.value } : entry))} /></Grid>
+                  <Grid size={{ xs: 12, md: 1 }}><Button color="error" size="small" onClick={() => updateField('documentLines', form.documentLines.filter((_entry, entryIndex) => entryIndex !== index))}>Remove</Button></Grid>
+                </Grid>
+              ))}
+              <Button size="small" variant="outlined" onClick={() => updateField('documentLines', [...form.documentLines, { id: crypto.randomUUID(), parentLineId: null, detailLabel: '', description: '', qty: '1', unitPrice: '', category: 'product' }])} sx={{ alignSelf: 'flex-start' }}>Add line</Button>
+            </Stack>
+          ) : null}
         </Stack>
       </DialogContent>
       <DialogActions>
@@ -379,7 +445,7 @@ export function AddManualOrderDialog({
           onClick={handleSubmit}
           disabled={!canSubmit || isSubmitting}
         >
-          {isSubmitting ? 'Creating...' : 'Create Order'}
+          {isSubmitting ? 'Creating...' : submitLabel}
         </Button>
       </DialogActions>
     </Dialog>

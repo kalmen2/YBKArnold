@@ -60,6 +60,7 @@ import { UpdateOrdersDialog } from './orders/UpdateOrdersDialog'
 import { useOrdersOverview } from './orders/useOrdersOverview'
 
 const FEEDBACK_TOAST_MS = 2000
+const ERROR_TOAST_MS = 10000
 const WARNING_TOAST_MS = 3000
 
 type ApiRequestError = Error & {
@@ -116,6 +117,7 @@ export default function OrdersPage() {
   const requestedInitialTab = String(searchParams.get('tab') ?? '').trim()
   const canUseAdminView = appUser?.isAdmin === true
   const canEditMondayStages = appUser?.isAdmin === true || appUser?.isManager === true
+  const canCreateOrders = appUser?.isOfficeWorker === true || canEditMondayStages
 
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
@@ -129,7 +131,11 @@ export default function OrdersPage() {
     useState<OrdersQuickBooksDrilldownMetric | null>(null)
   const [updateOrdersDialogOpen, setUpdateOrdersDialogOpen] = useState(false)
   const [addManualOrderDialogOpen, setAddManualOrderDialogOpen] = useState(false)
+  const [manualOrderInitialForm, setManualOrderInitialForm] = useState<Partial<AddManualOrderDialogForm> | null>(null)
+  const [duplicateSourceOrder, setDuplicateSourceOrder] = useState<OrdersOverviewOrder | null>(null)
+  const [pendingDuplicateOrderMondayItemId, setPendingDuplicateOrderMondayItemId] = useState('')
   const [isCreatingManualOrder, setIsCreatingManualOrder] = useState(false)
+  const [orderCreationProgress, setOrderCreationProgress] = useState<string | null>(null)
   const [deletingOrderKey, setDeletingOrderKey] = useState<string | null>(null)
   const [deletingOrderLabel, setDeletingOrderLabel] = useState<string | null>(null)
   const [archivingOrderKey, setArchivingOrderKey] = useState<string | null>(null)
@@ -194,7 +200,7 @@ export default function OrdersPage() {
     if (!errorMessage) {
       return
     }
-    const timer = window.setTimeout(() => setErrorMessage(null), FEEDBACK_TOAST_MS)
+    const timer = window.setTimeout(() => setErrorMessage(null), ERROR_TOAST_MS)
     return () => window.clearTimeout(timer)
   }, [errorMessage])
 
@@ -248,6 +254,27 @@ export default function OrdersPage() {
 
     setSelectedOrder(refreshedSelectedOrder)
   }, [selectedOrder, visibleOrders])
+
+  // A new Monday item may reach the overview cache a moment after creation.
+  // Keep the requested duplicate open action until the complete order record is available.
+  useEffect(() => {
+    if (!pendingDuplicateOrderMondayItemId) {
+      return
+    }
+
+    const createdOrder = allOrders.find((order) => (
+      String(order.mondayItemId ?? '').trim() === pendingDuplicateOrderMondayItemId
+    ))
+
+    if (!createdOrder) {
+      return
+    }
+
+    setSelectedOrder(createdOrder)
+    setJobDialogInitialTab('info')
+    setJobDialogMode('details')
+    setPendingDuplicateOrderMondayItemId('')
+  }, [allOrders, pendingDuplicateOrderMondayItemId])
 
   useEffect(() => {
     if (!requestedOrderId || openedDeepLinkRef.current === requestedOrderId) {
@@ -376,6 +403,38 @@ export default function OrdersPage() {
   }, [])
 
   const handleOpenAddManualOrderDialog = useCallback(() => {
+    setManualOrderInitialForm(null)
+    setDuplicateSourceOrder(null)
+    setAddManualOrderDialogOpen(true)
+  }, [])
+
+  const handleDuplicateOrder = useCallback((order: OrdersOverviewOrder) => {
+    const sourceName = String(order.dealerName || order.orderName || '')
+      .replace(/\s*\/\s*\d{6,}\s*$/, '')
+      .trim()
+    setManualOrderInitialForm({
+      name: sourceName,
+      salesRep: String(order.salesRep || '').trim(),
+      orderValue: order.productValue !== null && order.productValue !== undefined
+        ? String(order.productValue)
+        : String(order.orderValue ?? ''),
+      freightValue: String(order.freightValue ?? ''),
+      poDate: String(order.orderDate || '').trim(),
+      poNumber: String(order.poNumber || '').trim(),
+      description: String(order.description || '').trim(),
+      shipTo: String(order.shipTo || '').trim(),
+      notes: String(order.notes || '').trim(),
+      documentLines: (order.orderDocumentLines || []).map((line) => ({
+        id: crypto.randomUUID(),
+        parentLineId: line.parentLineId || null,
+        detailLabel: String(line.detailLabel || '').trim(),
+        description: String(line.description || '').trim(),
+        qty: line.qty === null || line.qty === undefined ? '' : String(line.qty),
+        unitPrice: line.unitPrice === null || line.unitPrice === undefined ? '' : String(line.unitPrice),
+        category: line.category,
+      })),
+    })
+    setDuplicateSourceOrder(order)
     setAddManualOrderDialogOpen(true)
   }, [])
 
@@ -385,6 +444,8 @@ export default function OrdersPage() {
     }
 
     setAddManualOrderDialogOpen(false)
+    setManualOrderInitialForm(null)
+    setDuplicateSourceOrder(null)
   }, [isCreatingManualOrder])
 
   const handleCreateManualOrder = useCallback(async (form: AddManualOrderDialogForm) => {
@@ -392,9 +453,19 @@ export default function OrdersPage() {
       return
     }
 
+    const sourceOrder = duplicateSourceOrder
+    const isDuplicate = Boolean(sourceOrder)
+    const requestedOrderNumber = String(form.acknowledgementNumber ?? '').trim()
+
     setErrorMessage(null)
     setWarningMessage(null)
     setIsCreatingManualOrder(true)
+    if (isDuplicate) {
+      setAddManualOrderDialogOpen(false)
+      setManualOrderInitialForm(null)
+      setDuplicateSourceOrder(null)
+      setOrderCreationProgress(`Creating duplicate ${requestedOrderNumber} in New Orders, Design, and the website...`)
+    }
 
     try {
       const response = await postOrdersCreate({
@@ -409,11 +480,26 @@ export default function OrdersPage() {
         description: form.description || undefined,
         shipTo: form.shipTo || undefined,
         notes: form.notes || undefined,
+        documentLines: form.documentLines,
+        duplicateFrom: sourceOrder
+          ? {
+            orderKey: sourceOrder.id,
+            mondayItemId: sourceOrder.mondayItemId,
+            orderNumber: sourceOrder.orderNumber,
+          }
+          : undefined,
       })
 
       await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.ordersOverview })
       setAddManualOrderDialogOpen(false)
-      setSuccessMessage(`Created order ${response.order.orderNumber}.`)
+      setManualOrderInitialForm(null)
+      setDuplicateSourceOrder(null)
+      if (isDuplicate) {
+        setPendingDuplicateOrderMondayItemId(String(response.order.mondayItemId ?? '').trim())
+        setSuccessMessage(`Duplicate ${response.order.orderNumber} was created in Monday and on the website.`)
+      } else {
+        setSuccessMessage(`Created order ${response.order.orderNumber}.`)
+      }
 
       const warningText = (Array.isArray(response.warnings) ? response.warnings : [])
         .map((entry) => String(entry ?? '').trim())
@@ -430,9 +516,10 @@ export default function OrdersPage() {
           : 'Could not create manual order.',
       )
     } finally {
+      setOrderCreationProgress(null)
       setIsCreatingManualOrder(false)
     }
-  }, [isCreatingManualOrder, queryClient])
+  }, [duplicateSourceOrder, isCreatingManualOrder, queryClient])
 
   const handleDeleteOrder = useCallback(async (order: OrdersOverviewOrder) => {
     const orderKey = String(order?.id ?? '').trim()
@@ -836,7 +923,7 @@ export default function OrdersPage() {
         canOpenBulkUpdate={canEditMondayStages}
         onOpenBulkUpdate={handleOpenUpdateOrdersDialog}
         bulkUpdateDisabled={bulkEditableOrders.length === 0}
-        canAddOrder={canEditMondayStages}
+        canAddOrder={canCreateOrders}
         onAddOrder={handleOpenAddManualOrderDialog}
         addOrderDisabled={isCreatingManualOrder || Boolean(deletingOrderKey)}
         searchText={overview.searchText}
@@ -850,6 +937,15 @@ export default function OrdersPage() {
       {successMessage ? <Alert severity="success">{successMessage}</Alert> : null}
       {overview.queryError ? <Alert severity="error">{overview.queryError}</Alert> : null}
       {warningMessage ? <Alert severity="warning">{warningMessage}</Alert> : null}
+      {orderCreationProgress ? (
+        <Alert
+          severity="info"
+          icon={<CircularProgress size={18} color="inherit" />}
+          sx={{ position: 'sticky', top: 8, zIndex: 20, fontWeight: 700 }}
+        >
+          {orderCreationProgress}
+        </Alert>
+      ) : null}
       {deletingOrderLabel ? (
         <Alert
           severity="info"
@@ -881,6 +977,8 @@ export default function OrdersPage() {
         onOpenQuickBooksDialog={handleOpenQuickBooksDialog}
         onCopyOrderNumber={handleCopyOrderNumber}
         onOpenOrderChat={handleOpenOrderChat}
+        canDuplicateOrders={canCreateOrders}
+        onDuplicateOrder={handleDuplicateOrder}
         canDeleteOrders
         onDeleteOrder={handleDeleteOrder}
         onArchiveOrder={handleArchiveOrder}
@@ -924,6 +1022,9 @@ export default function OrdersPage() {
       <AddManualOrderDialog
         open={addManualOrderDialogOpen}
         isSubmitting={isCreatingManualOrder}
+        initialForm={manualOrderInitialForm}
+        title={manualOrderInitialForm ? 'Duplicate Order' : 'Add Manual Order'}
+        submitLabel={manualOrderInitialForm ? 'Create Duplicate' : 'Create Order'}
         onClose={handleCloseAddManualOrderDialog}
         onSubmit={handleCreateManualOrder}
       />

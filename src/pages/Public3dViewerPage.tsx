@@ -5,11 +5,10 @@ import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined'
 import ReplayRoundedIcon from '@mui/icons-material/ReplayRounded'
 import ViewInArRoundedIcon from '@mui/icons-material/ViewInArRounded'
 import { Alert, Box, Button, CircularProgress, IconButton, Stack, Typography } from '@mui/material'
-import { useEffect, useMemo, useRef, useState, type ElementType } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import '@google/model-viewer'
-
-const SmoothModelViewer = 'model-viewer' as unknown as ElementType
+import SketchUpStyleViewer, { type ViewerControls } from '../features/crm/SketchUpStyleViewer'
+import { resolve3dViewerSettings, type Crm3dViewerSettings } from '../features/crm/api'
 
 type ViewerModel = {
   label: string
@@ -18,21 +17,7 @@ type ViewerModel = {
   glbUrl?: string | null
   embedUrl: string | null
   status?: 'processing' | 'ready' | 'failed'
-  viewerSettings?: {
-    exposure?: number
-    shadowIntensity?: number
-    toneMapping?: 'neutral' | 'aces' | 'agx' | 'cineon'
-    environmentImage?: 'even' | 'neutral' | 'legacy'
-    backgroundColor?: string
-    autoRotate?: boolean
-    fieldOfView?: number
-  }
-}
-
-// 'even' is Arnold's azimuthally uniform studio lighting: colors stay accurate
-// and stable while the model rotates, matching how SketchUp shades models.
-function modelViewerEnvironmentImage(environmentImage: 'even' | 'neutral' | 'legacy') {
-  return environmentImage === 'even' ? '/3d-backgrounds/even-studio.png' : environmentImage
+  viewerSettings?: Crm3dViewerSettings
 }
 
 type ViewerData = {
@@ -45,16 +30,6 @@ type ViewerData = {
   glbUrl?: string | null
   embedUrl: string | null
   models?: ViewerModel[]
-}
-
-const defaultViewerSettings = {
-  exposure: 1.08,
-  shadowIntensity: 0.8,
-  toneMapping: 'neutral' as const,
-  environmentImage: 'even' as const,
-  backgroundColor: '#f4f2ed',
-  autoRotate: true,
-  fieldOfView: 30,
 }
 
 function modelDisplayLabel(model: Pick<ViewerModel, 'label' | 'fileName'>, index = 0) {
@@ -76,6 +51,7 @@ export default function Public3dViewerPage() {
   const [takingLonger, setTakingLonger] = useState(false)
   const [showViewerHelp, setShowViewerHelp] = useState(false)
   const revealTimerRef = useRef<number | null>(null)
+  const viewerControlsRef = useRef<ViewerControls | null>(null)
 
   useEffect(() => {
     const existingRobotsMeta = document.querySelector<HTMLMetaElement>('meta[name="robots"]')
@@ -118,18 +94,21 @@ export default function Public3dViewerPage() {
     return sourceModels.map((model, index) => ({ ...model, label: modelDisplayLabel(model, index) }))
   }, [data])
   const activeModel = models[Math.min(activeIndex, Math.max(0, models.length - 1))]
-  const activeViewerSettings = { ...defaultViewerSettings, ...activeModel?.viewerSettings }
+  const activeViewerSettings = resolve3dViewerSettings(activeModel?.viewerSettings)
+  const isGlbViewer = Boolean(activeModel?.glbUrl)
+
   useEffect(() => {
     if (!activeModel?.embedUrl && !activeModel?.glbUrl) return undefined
     if (revealTimerRef.current !== null) window.clearTimeout(revealTimerRef.current)
     const isSketchUpViewer = activeModel.viewerType === 'sketchup'
+    // The GLB viewer reports its own load event, so it only needs a safety net.
     const slowTimer = isSketchUpViewer
       ? null
-      : window.setTimeout(() => setTakingLonger(true), 5_000)
+      : window.setTimeout(() => setTakingLonger(true), 8_000)
     const hardRevealTimer = window.setTimeout(() => {
       setViewerLoading(false)
       if (!isSketchUpViewer) setTakingLonger(true)
-    }, isSketchUpViewer ? 1_000 : 15_000)
+    }, isSketchUpViewer ? 1_000 : 45_000)
     return () => {
       if (slowTimer !== null) window.clearTimeout(slowTimer)
       window.clearTimeout(hardRevealTimer)
@@ -149,15 +128,31 @@ export default function Public3dViewerPage() {
     if (index === activeIndex) return
     setViewerLoading(true)
     setTakingLonger(false)
+    setError('')
     setActiveIndex(index)
     setViewerNonce((value) => value + 1)
   }
 
   const retryViewer = () => {
+    // For the GLB viewer this is a camera reset, which needs no reload.
+    if (isGlbViewer && viewerControlsRef.current) {
+      viewerControlsRef.current.resetView()
+      return
+    }
     setViewerLoading(true)
     setTakingLonger(false)
     setViewerNonce((value) => value + 1)
   }
+
+  const handleViewerLoaded = useCallback(() => {
+    setViewerLoading(false)
+    setTakingLonger(false)
+  }, [])
+
+  const handleViewerError = useCallback(() => {
+    setViewerLoading(false)
+    setError('This 3D model could not be displayed. Please reload the page or contact Arnold Contract.')
+  }, [])
 
   const checkModelStatus = () => {
     setCheckingStatus(true)
@@ -199,7 +194,7 @@ export default function Public3dViewerPage() {
           </Typography>
           <Typography variant="caption" sx={{ color: '#71808b', display: { xs: 'none', sm: 'block' } }}>Interactive project presentation</Typography>
         </Box>
-        {data && activeModel?.viewerType === 'sketchup' ? (
+        {data && (activeModel?.viewerType === 'sketchup' || isGlbViewer) ? (
           <Button
             aria-label="3D viewing controls"
             onClick={() => setShowViewerHelp(true)}
@@ -315,33 +310,26 @@ export default function Public3dViewerPage() {
               width: '100%',
               height: '100%',
               minHeight: 360,
-              bgcolor: '#f4f2ed',
+              bgcolor: isGlbViewer ? activeViewerSettings.backgroundColor : '#f4f2ed',
               overflow: 'hidden',
               position: 'relative',
             }}
           >
             {activeModel.glbUrl ? (
-              <Box
+              <SketchUpStyleViewer
                 key={`${activeModel.glbUrl}-${viewerNonce}`}
-                component={SmoothModelViewer}
-                src={`${activeModel.glbUrl}${activeModel.glbUrl.includes('?') ? '&' : '?'}reload=${viewerNonce}`}
+                controlsRef={viewerControlsRef}
+                src={activeModel.glbUrl}
                 alt={`${data.projectName} – ${activeModel.label}`}
-                camera-controls
-                auto-rotate={activeViewerSettings.autoRotate || undefined}
-                shadow-intensity={activeViewerSettings.shadowIntensity}
-                exposure={activeViewerSettings.exposure}
-                environment-image={modelViewerEnvironmentImage(activeViewerSettings.environmentImage)}
-                tone-mapping={activeViewerSettings.toneMapping}
-                field-of-view={`${activeViewerSettings.fieldOfView}deg`}
-                onLoad={() => setViewerLoading(false)}
+                settings={activeViewerSettings}
+                onLoad={handleViewerLoaded}
+                onError={handleViewerError}
                 sx={{
                   position: 'absolute',
                   inset: 0,
                   width: '100%',
                   height: '100%',
-                  display: 'block',
                   bgcolor: activeViewerSettings.backgroundColor,
-                  '--poster-color': activeViewerSettings.backgroundColor,
                 }}
               />
             ) : (
@@ -373,7 +361,7 @@ export default function Public3dViewerPage() {
               />
             )}
 
-            {activeModel.viewerType === 'sketchup' && showViewerHelp ? (
+            {(activeModel.viewerType === 'sketchup' || isGlbViewer) && showViewerHelp ? (
               <Box
                 role="dialog"
                 aria-label="How to navigate the 3D model"
@@ -397,10 +385,18 @@ export default function Public3dViewerPage() {
                   </IconButton>
                 </Stack>
                 <Stack spacing={0.75} sx={{ mt: 1 }}>
-                  {[
-                    ['Orbit', 'Hold the scroll wheel and drag.'],
-                    ['Pan', 'Hold the scroll wheel and left mouse button, then drag.'],
-                  ].map(([title, description]) => (
+                  {(isGlbViewer
+                    ? [
+                      ['Rotate', 'Click and drag, or swipe on a touch screen.'],
+                      ['Zoom', 'Scroll, or pinch on a touch screen.'],
+                      ['Pan', 'Right-click and drag, or drag with two fingers.'],
+                      ['Reset', 'Use the Reset view button to return to the starting angle.'],
+                    ]
+                    : [
+                      ['Orbit', 'Hold the scroll wheel and drag.'],
+                      ['Pan', 'Hold the scroll wheel and left mouse button, then drag.'],
+                    ]
+                  ).map(([title, description]) => (
                     <Typography key={title} sx={{ color: '#526471', fontSize: '0.8rem' }}>
                       <Box component="span" sx={{ color: '#263746', fontWeight: 850 }}>{title}:</Box> {description}
                     </Typography>
@@ -455,7 +451,7 @@ export default function Public3dViewerPage() {
                 '&:hover': { bgcolor: '#263746' },
               }}
             >
-              {activeModel.viewerType === 'sketchup' ? 'Reset view' : 'Reload 3D'}
+              {activeModel.viewerType === 'sketchup' || isGlbViewer ? 'Reset view' : 'Reload 3D'}
             </Button>
 
             {viewerLoading ? (
@@ -465,7 +461,7 @@ export default function Public3dViewerPage() {
                 </Box>
                 <Stack spacing={0.35} alignItems="center">
                   <Typography fontWeight={900}>{takingLonger ? `Still loading ${activeModel.label}` : `Opening ${activeModel.label}`}</Typography>
-                  <Typography variant="body2" color="text.secondary">{takingLonger ? 'Larger SketchUp models can take a little longer.' : 'Preparing the 3D model…'}</Typography>
+                  <Typography variant="body2" color="text.secondary">{takingLonger ? 'Larger models can take a little longer on a slow connection.' : 'Preparing the 3D model…'}</Typography>
                 </Stack>
                 {takingLonger ? (
                   <Button variant="outlined" startIcon={<ReplayRoundedIcon />} onClick={retryViewer} sx={{ mt: 1, textTransform: 'none' }}>

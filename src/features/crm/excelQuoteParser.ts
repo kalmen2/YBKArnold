@@ -1,5 +1,17 @@
 import * as XLSX from 'xlsx'
-import type { CrmQuoteLineItem, CrmExcelQuoteSyncInput } from './api'
+import JSZip from 'jszip'
+import type { CrmExcelQuoteImportSummary, CrmQuoteLineItem, CrmExcelQuoteSyncInput } from './api'
+
+export type ParsedExcelQuoteLineImage = {
+  mainLineIndex: number
+  sourceRow: number
+  file: File
+}
+
+export type ParsedExcelQuoteSync = CrmExcelQuoteSyncInput & {
+  importSummary: CrmExcelQuoteImportSummary
+  embeddedLineImages: ParsedExcelQuoteLineImage[]
+}
 
 const supportedQuoteSyncExtensions = new Set([
   'xls',
@@ -262,12 +274,6 @@ function toNumberOrNull(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null
 }
 
-function isPlainInteger(value: unknown): boolean {
-  const parsed = toNumberOrNull(value)
-
-  return parsed !== null && parsed >= 0 && Math.floor(parsed) === parsed
-}
-
 function toIsoDateFromParts(year: number, month: number, day: number): string | null {
   if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) {
     return null
@@ -330,47 +336,91 @@ function isSubtotalRow(rows: unknown[][], row: number, layout: LineItemLayout): 
   return subtotalLabelSet.has(itemLabel)
 }
 
-function buildLineItems(rows: unknown[][], layout: LineItemLayout): CrmQuoteLineItem[] {
+type ParsedLineItems = {
+  lineItems: CrmQuoteLineItem[]
+  mainLineRows: number[]
+  pairedSublineCount: number
+  singleColumnSublineCount: number
+}
+
+function buildLineItems(rows: unknown[][], layout: LineItemLayout): ParsedLineItems {
   const lineItems: CrmQuoteLineItem[] = []
+  const mainLineRows: number[] = []
+  let pairedSublineCount = 0
+  let singleColumnSublineCount = 0
   const lastRow = rows.length
 
-  for (let row = layout.lineItemsStartRow; row <= lastRow; row += 1) {
-    if (isSubtotalRow(rows, row, layout)) {
-      break
-    }
+  const pricedRows: number[] = []
 
-    const itemCell = getCell(rows, row, layout.colItem)
+  for (let row = layout.lineItemsStartRow; row <= lastRow; row += 1) {
+    if (isSubtotalRow(rows, row, layout)) break
+
+    const extPrice = toNumberOrNull(getCell(rows, row, layout.colExtPrice))
+    const qty = toNumberOrNull(getCell(rows, row, layout.colQty))
+
+    if (extPrice !== null && qty !== 0) {
+      pricedRows.push(row)
+    }
+  }
+
+  pricedRows.forEach((row, mainLineIndex) => {
     const extPriceCell = getCell(rows, row, layout.colExtPrice)
     const extPrice = toNumberOrNull(extPriceCell)
-
-    if (extPrice === null) {
-      continue
-    }
-
     const qtyCell = getCell(rows, row, layout.colQty)
     const unitPriceCell = getCell(rows, row, layout.colUnitPrice)
     const qty = toNumberOrNull(qtyCell)
-
-    // Additional-service defaults in the legacy workbook can carry a price
-    // while their quantity is zero. They are not product lines until selected.
-    if (qty === 0) {
-      continue
-    }
-
-    const itemNumber = isPlainInteger(itemCell)
-      ? Math.max(0, Math.trunc(toNumberOrNull(itemCell) || 0))
-      : lineItems.length + 1
+    const parentId = `excel-row-${row}`
 
     lineItems.push({
-      itemNumber,
+      id: parentId,
+      // Workbook references such as 1.1 are source references, not the quote's
+      // display sequence. The application numbers main lines in order.
+      itemNumber: mainLineIndex + 1,
       description: toOptionalText(getCell(rows, row, layout.colDescription)) || null,
       qty,
       unitPrice: toNumberOrNull(unitPriceCell),
       extPrice,
     })
-  }
+    mainLineRows.push(row)
 
-  return lineItems
+    const nextMainLineRow = pricedRows[mainLineIndex + 1] ?? (lastRow + 1)
+    for (let detailRow = row + 1; detailRow < nextMainLineRow; detailRow += 1) {
+      if (isSubtotalRow(rows, detailRow, layout)) break
+
+      const left = toOptionalText(getCell(rows, detailRow, layout.colDescription)) || ''
+      const right = toOptionalText(getCell(rows, detailRow, layout.colDescription + 1)) || ''
+
+      if (!left && !right) continue
+
+      if (left && right) {
+        pairedSublineCount += 1
+        lineItems.push({
+          id: `excel-row-${detailRow}`,
+          parentLineId: parentId,
+          itemNumber: mainLineIndex + 1,
+          detailLabel: left,
+          description: right,
+          qty: null,
+          unitPrice: null,
+          extPrice: null,
+        })
+      } else {
+        singleColumnSublineCount += 1
+        lineItems.push({
+          id: `excel-row-${detailRow}`,
+          parentLineId: parentId,
+          itemNumber: mainLineIndex + 1,
+          detailLabel: null,
+          description: left || right,
+          qty: null,
+          unitPrice: null,
+          extPrice: null,
+        })
+      }
+    }
+  })
+
+  return { lineItems, mainLineRows, pairedSublineCount, singleColumnSublineCount }
 }
 
 function findSubtotal(rows: unknown[][], layout: LineItemLayout): { found: boolean; subtotal: number } {
@@ -634,10 +684,84 @@ function resolvePreferredQuoteSheetName(workbook: XLSX.WorkBook, preferredQuoteN
   return candidates[0].name
 }
 
+function getOdsElementName(element: Element): string {
+  return element.localName || element.nodeName.split(':').at(-1) || ''
+}
+
+async function extractOdsLineImages(
+  workbookBuffer: ArrayBuffer,
+  sheetName: string,
+  mainLineRows: number[],
+): Promise<ParsedExcelQuoteLineImage[]> {
+  if (mainLineRows.length === 0) return []
+
+  try {
+    const archive = await JSZip.loadAsync(workbookBuffer)
+    const contentFile = archive.file('content.xml')
+    if (!contentFile) return []
+
+    const contentXml = await contentFile.async('text')
+    const document = new DOMParser().parseFromString(contentXml, 'application/xml')
+    if (document.querySelector('parsererror')) return []
+
+    const table = Array.from(document.getElementsByTagName('*')).find((element) => (
+      getOdsElementName(element) === 'table'
+      && String(element.getAttribute('table:name') || '').trim() === sheetName
+    ))
+
+    if (!table) return []
+
+    const extracted: ParsedExcelQuoteLineImage[] = []
+    const seen = new Set<string>()
+    let rowNumber = 0
+
+    for (const child of Array.from(table.children)) {
+      if (getOdsElementName(child) !== 'table-row') continue
+
+      const repeats = Math.max(1, Number(child.getAttribute('table:number-rows-repeated') || 1))
+      const imagePaths = Array.from(child.getElementsByTagName('*'))
+        .filter((element) => getOdsElementName(element) === 'image')
+        .map((element) => String(element.getAttribute('xlink:href') || '').trim())
+        .filter((path) => path.startsWith('Pictures/'))
+
+      for (let repeat = 0; repeat < repeats; repeat += 1) {
+        rowNumber += 1
+        if (imagePaths.length === 0) continue
+
+        const mainLineIndex = mainLineRows.findLastIndex((mainRow) => mainRow <= rowNumber)
+        if (mainLineIndex < 0) continue
+
+        for (const imagePath of imagePaths) {
+          const dedupeKey = `${mainLineIndex}:${imagePath}`
+          if (seen.has(dedupeKey)) continue
+
+          const imageFile = archive.file(imagePath)
+          if (!imageFile) continue
+
+          const blob = await imageFile.async('blob')
+          const extension = imagePath.split('.').pop()?.toLowerCase() || 'jpg'
+          const mimeType = extension === 'png' ? 'image/png' : extension === 'webp' ? 'image/webp' : 'image/jpeg'
+          extracted.push({
+            mainLineIndex,
+            sourceRow: rowNumber,
+            file: new File([blob], `workbook-line-${mainLineIndex + 1}.${extension}`, { type: mimeType }),
+          })
+          seen.add(dedupeKey)
+        }
+      }
+    }
+
+    return extracted
+  } catch {
+    // A workbook's images are supplemental. Its quote data should still sync.
+    return []
+  }
+}
+
 export async function parseExcelQuoteForSync(
   file: File,
   options: { preferredQuoteNumber?: string } = {},
-): Promise<CrmExcelQuoteSyncInput> {
+): Promise<ParsedExcelQuoteSync> {
   const fileName = String(file.name ?? '').trim()
   const extension = fileName.includes('.')
     ? fileName.split('.').pop()?.toLowerCase() ?? ''
@@ -697,7 +821,8 @@ export async function parseExcelQuoteForSync(
   const inferredProjectType = inferProjectTypeFromTitle(title)
   const lineItemLayout = findLineItemLayout(rows)
 
-  const lineItems = buildLineItems(rows, lineItemLayout)
+  const parsedLineItems = buildLineItems(rows, lineItemLayout)
+  const { lineItems } = parsedLineItems
   const subtotalResult = findSubtotal(rows, lineItemLayout)
   const freightInfo = findFreightInfo(rows, lineItemLayout)
   const calculatedLineSubtotal = Number(lineItems.reduce((sum, item) => sum + Number(item.extPrice || 0), 0).toFixed(2))
@@ -706,9 +831,25 @@ export async function parseExcelQuoteForSync(
     throw new Error(`No priced product lines were found on sheet "${preferredSheetName}". The quote was not updated.`)
   }
 
-  const payload: CrmExcelQuoteSyncInput = {
+  const embeddedLineImages = extension === 'ods'
+    ? await extractOdsLineImages(workbookBuffer, preferredSheetName, parsedLineItems.mainLineRows)
+    : []
+  const importSummary: CrmExcelQuoteImportSummary = {
+    sheetName: preferredSheetName,
+    mainLineCount: parsedLineItems.mainLineRows.length,
+    sublineCount: parsedLineItems.pairedSublineCount + parsedLineItems.singleColumnSublineCount,
+    pairedSublineCount: parsedLineItems.pairedSublineCount,
+    singleColumnSublineCount: parsedLineItems.singleColumnSublineCount,
+    embeddedImageCount: embeddedLineImages.length,
+    matchedImageCount: embeddedLineImages.length,
+    unmatchedImageCount: 0,
+  }
+
+  const payload: ParsedExcelQuoteSync = {
     quoteNumber,
     lineItems,
+    importSummary,
+    embeddedLineImages,
   }
 
   if (title) {

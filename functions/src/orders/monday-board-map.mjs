@@ -15,6 +15,7 @@
 const ORDER_TRACK_BOARD_ID = '1062951447'
 const DESIGN_BOARD_ID = '1064270065'
 const SHIPPED_BOARD_ID = '1072680042'
+const NEW_ORDERS_2026_BOARD_ID = '18393945685'
 
 // Financial source boards used only to enrich the unified Orders records.
 // They are matched by ACK, never by the mutable Monday board name.
@@ -39,7 +40,7 @@ export const NEW_ORDERS_FINANCIAL_BOARDS_BY_PREFIX = Object.freeze({
   }),
   26: Object.freeze({
     year: 2026,
-    boardId: '18393945685',
+    boardId: NEW_ORDERS_2026_BOARD_ID,
     ackColumnId: 'text9',
     orderValueColumnId: 'numbers',
     freightValueColumnId: 'numbers5',
@@ -142,7 +143,21 @@ const shippedColumns = Object.freeze({
   pictures: 'file_mm2tzp5k',
 })
 
+// --- New Orders 2026 --------------------------------------------------------
+// The website creates new and duplicated orders on this board before they
+// enter the operational Order Track board. Only the ACK is needed by the
+// unified-order parser at this stage; the create route writes other optional
+// fields using the live board-column lookup.
+const newOrders2026Columns = Object.freeze({
+  ackNumber: 'text9',
+})
+
 export const MONDAY_BOARDS = Object.freeze({
+  newOrders2026: Object.freeze({
+    id: NEW_ORDERS_2026_BOARD_ID,
+    name: 'New Orders 2026',
+    columns: newOrders2026Columns,
+  }),
   orderTrack: Object.freeze({
     id: ORDER_TRACK_BOARD_ID,
     name: 'Order Track AKF',

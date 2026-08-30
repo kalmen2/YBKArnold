@@ -614,21 +614,33 @@ export type CrmQuoteServiceItem = {
 export type CrmQuoteOrigin = 'website' | 'excel'
 
 export type Crm3dViewerSettings = {
-  exposure?: number
-  shadowIntensity?: number
-  toneMapping?: 'neutral' | 'aces' | 'agx' | 'cineon'
-  environmentImage?: 'even' | 'neutral' | 'legacy'
+  /** Overall lightness of the flat shading, 1 = as authored. */
+  brightness?: number
+  /** Colour of the SketchUp-style profile lines. */
+  edgeColor?: string
+  /** Angle in degrees above which an edge is drawn; low values draw more lines. */
+  edgeThreshold?: number
+  /** Outline thickness in screen pixels. */
+  edgeWidth?: number
+  showEdges?: boolean
   backgroundColor?: string
   autoRotate?: boolean
   fieldOfView?: number
 }
 
-// 'even' is an azimuthally uniform studio environment served from the app:
-// colors stay accurate and stable while the model rotates, matching how
-// SketchUp itself shades models. model-viewer's built-in 'neutral'/'legacy'
-// names pass through unchanged.
-export function modelViewerEnvironmentImage(environmentImage: 'even' | 'neutral' | 'legacy'): string {
-  return environmentImage === 'even' ? '/3d-backgrounds/even-studio.png' : environmentImage
+export const default3dViewerSettings: Required<Crm3dViewerSettings> = {
+  brightness: 1,
+  edgeColor: '#000000',
+  edgeThreshold: 18,
+  edgeWidth: 2,
+  showEdges: true,
+  backgroundColor: '#ffffff',
+  autoRotate: true,
+  fieldOfView: 28,
+}
+
+export function resolve3dViewerSettings(settings?: Crm3dViewerSettings | null): Required<Crm3dViewerSettings> {
+  return { ...default3dViewerSettings, ...(settings || {}) }
 }
 
 export type CrmQuote3dModel = {
@@ -896,6 +908,17 @@ export type CrmExcelQuoteSyncInput = {
   sourceWorkbookName?: string | null
   convertedPdfUrl?: string | null
   convertedPdfName?: string | null
+}
+
+export type CrmExcelQuoteImportSummary = {
+  sheetName: string
+  mainLineCount: number
+  sublineCount: number
+  pairedSublineCount: number
+  singleColumnSublineCount: number
+  embeddedImageCount: number
+  matchedImageCount: number
+  unmatchedImageCount: number
 }
 
 export type CrmExcelQuoteSyncResponse = {

@@ -17,11 +17,14 @@ export function registerOrderShippingRoutes(app, {
   createMondayItem,
   deleteMondayItem,
   fetchMondayBoardColumns,
+  fetchMondayBoardItemNames,
   fetchMondayBoardsCatalog,
   fetchMondayBoardItemsByIds,
+  fetchMondayStatusColumnOptions,
   getCollections,
   mobileAlertTargetModeSelected,
   moveMondayItemToBoard,
+  invalidateMondayBoardNamesCache,
   normalizeEmail,
   randomUUID,
   refreshOrdersUnifiedCollection,
@@ -31,6 +34,7 @@ export function registerOrderShippingRoutes(app, {
   toPublicMobileAlert,
   updateMondayItemJsonColumn,
   updateMondayItemName,
+  updateMondayItemStatusColumn,
   updateMondayItemTextColumn,
 }) {
   const orderTrackBoardId = String(MONDAY_BOARDS?.orderTrack?.id ?? '').trim()
@@ -136,6 +140,35 @@ export function registerOrderShippingRoutes(app, {
       value: Number(parsed.toFixed(2)),
       error: null,
     }
+  }
+
+  async function getSuggestedAcknowledgementNumber() {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      year: 'numeric',
+      month: '2-digit',
+    }).formatToParts(new Date())
+    const partValue = (type) => parts.find((part) => part.type === type)?.value || ''
+    const prefix = `${partValue('year').slice(-2)}${partValue('month')}`
+    const { ordersUnifiedCollection } = await getCollections()
+    const existingOrders = await ordersUnifiedCollection.find(
+      {
+        order_number: new RegExp(`^${prefix}\\d{2}$`, 'i'),
+        is_deleted: { $ne: true },
+        is_cancelled: { $ne: true },
+      },
+      { projection: { _id: 0, order_number: 1 } },
+    ).toArray()
+    const highestSequence = existingOrders.reduce((highest, order) => {
+      const match = String(order?.order_number ?? '').trim().match(new RegExp(`^${prefix}(\\d{2})$`, 'i'))
+      return match ? Math.max(highest, Number(match[1])) : highest
+    }, 0)
+
+    if (highestSequence >= 99) {
+      throw new Error(`All acknowledgement numbers for ${prefix} have been used.`)
+    }
+
+    return `${prefix}${String(highestSequence + 1).padStart(2, '0')}`
   }
 
   function requireOfficeManagerOrAdminRole(req, _res, next) {
@@ -406,6 +439,116 @@ export function registerOrderShippingRoutes(app, {
         titleCandidates: ['sales rep', 'sales person', 'people'],
         preferredTypes: ['multiple-person', 'people'],
       }),
+      salesRepColumnId: resolveBoardColumnId(columns, {
+        idCandidates: ['text_mm3x9wep'],
+        titleCandidates: ['sale rep', 'sales rep', 'sales representative'],
+        preferredTypes: ['text'],
+      }),
+      orderValueColumnId: resolveBoardColumnId(columns, {
+        idCandidates: ['numbers'],
+        titleCandidates: ['order value'],
+        preferredTypes: ['numbers', 'numeric'],
+      }),
+      freightValueColumnId: resolveBoardColumnId(columns, {
+        idCandidates: ['numbers5'],
+        titleCandidates: ['freight value'],
+        preferredTypes: ['numbers', 'numeric'],
+      }),
+      designStatusColumnId: resolveBoardColumnId(columns, {
+        idCandidates: ['status'],
+        titleCandidates: ['design'],
+        preferredTypes: ['status', 'color'],
+      }),
+    }
+  }
+
+  async function findOrCreateMondayItem({ boardId, boardName, boardUrl, itemName, orderNumber, knownItemId }) {
+    const normalizedKnownItemId = String(knownItemId ?? '').trim()
+    if (normalizedKnownItemId) return { itemId: normalizedKnownItemId, created: false }
+
+    if (typeof invalidateMondayBoardNamesCache === 'function') {
+      invalidateMondayBoardNamesCache(boardId)
+    }
+    const snapshot = await fetchMondayBoardItemNames({ boardId, boardName, boardUrl })
+    const normalizedOrderNumber = String(orderNumber ?? '').trim().toLowerCase()
+    const exactMatch = (Array.isArray(snapshot?.items) ? snapshot.items : []).find((item) => {
+      const normalizedName = String(item?.name ?? '').trim().toLowerCase()
+      return normalizedName === itemName.toLowerCase()
+        || (normalizedOrderNumber && (
+          normalizedName === normalizedOrderNumber
+          || normalizedName.endsWith(` / ${normalizedOrderNumber}`)
+        ))
+    })
+    const existingId = String(exactMatch?.id ?? '').trim()
+    if (existingId) return { itemId: existingId, created: false }
+
+    const created = await createMondayItem({ boardId, itemName })
+    const createdId = String(created?.itemId ?? '').trim()
+    if (!createdId) throw new Error(`Monday did not return an item id for ${boardName}.`)
+    return { itemId: createdId, created: true }
+  }
+
+  async function writeMondayCreateFields({
+    boardId,
+    itemId,
+    columns,
+    payload,
+    includeFinancials = false,
+    setInitialDesignStatus = false,
+  }) {
+    const writeText = async (columnId, value) => {
+      const normalizedColumnId = String(columnId ?? '').trim()
+      const normalizedValue = String(value ?? '').trim()
+      if (!normalizedColumnId || !normalizedValue) return
+      await updateMondayItemTextColumn({ boardId, itemId, columnId: normalizedColumnId, textValue: normalizedValue })
+    }
+    const writeDate = async (columnId, value) => {
+      const normalizedColumnId = String(columnId ?? '').trim()
+      const normalizedValue = normalizeIsoDateInput(value)
+      if (!normalizedColumnId || !normalizedValue) return
+      await updateMondayItemJsonColumn({ boardId, itemId, columnId: normalizedColumnId, jsonValue: { date: normalizedValue } })
+    }
+    const writeLocation = async (columnId, value) => {
+      const normalizedColumnId = String(columnId ?? '').trim()
+      const address = String(value ?? '').trim()
+      if (!normalizedColumnId || !address) return
+      await updateMondayItemJsonColumn({ boardId, itemId, columnId: normalizedColumnId, jsonValue: { address, lat: '0', lng: '0' } })
+    }
+
+    await updateMondayItemName({ boardId, itemId, itemName: payload.itemName })
+    await writeText(columns.ackColumnId, payload.orderNumber)
+    await writeDate(columns.poDateColumnId, payload.poDate)
+    await writeText(columns.poNumberColumnId, payload.poNumber)
+    await writeText(columns.descriptionColumnId, payload.description)
+    await writeLocation(columns.shipToColumnId, payload.shipTo)
+    await writeText(columns.notesColumnId, payload.notes)
+
+    if (includeFinancials) {
+      await writeText(columns.salesRepColumnId, payload.salesRep)
+      await writeText(columns.orderValueColumnId, payload.productValue)
+      await writeText(columns.freightValueColumnId, payload.freightValue)
+    }
+
+    if (setInitialDesignStatus && columns.designStatusColumnId && typeof updateMondayItemStatusColumn === 'function') {
+      const requestedStatus = payload.depositRequired === false
+        ? 'NO DEPOSIT REQUIRED'
+        : 'waiting on deposit'
+      const statusOptions = typeof fetchMondayStatusColumnOptions === 'function'
+        ? await fetchMondayStatusColumnOptions({ boardId, columnIds: [columns.designStatusColumnId] })
+        : null
+      const options = Array.isArray(statusOptions?.[columns.designStatusColumnId])
+        ? statusOptions[columns.designStatusColumnId]
+        : []
+      const matched = options.find((option) => String(option?.label ?? '').trim().toLowerCase() === requestedStatus.toLowerCase())
+      if (matched) {
+        await updateMondayItemStatusColumn({
+          boardId,
+          itemId,
+          columnId: columns.designStatusColumnId,
+          statusIndex: matched.index,
+          statusLabel: String(matched.label).trim(),
+        })
+      }
     }
   }
 
@@ -512,7 +655,7 @@ export function registerOrderShippingRoutes(app, {
   app.get(
     '/api/orders/create/boards',
     requireFirebaseAuth,
-    requireManagerOrAdminRole,
+    requireOfficeManagerOrAdminRole,
     async (req, res, next) => {
       try {
         const refreshQuery = String(req.query?.refresh ?? '').trim().toLowerCase()
@@ -525,10 +668,13 @@ export function registerOrderShippingRoutes(app, {
           forceRefresh: shouldRefresh,
         })
 
+        const suggestedAcknowledgementNumber = await getSuggestedAcknowledgementNumber()
+
         return res.json({
           ok: true,
           defaultYear: manualOrderDefaultYear,
           defaultBoardId: defaultBoard.boardId,
+          suggestedAcknowledgementNumber,
           boards: boards.map((board) => ({
             id: board.boardId,
             name: board.boardName,
@@ -548,7 +694,7 @@ export function registerOrderShippingRoutes(app, {
   app.get(
     '/api/orders/create/board-columns',
     requireFirebaseAuth,
-    requireManagerOrAdminRole,
+    requireOfficeManagerOrAdminRole,
     async (req, res, next) => {
       try {
         const requestedBoardId = String(req.query?.boardId ?? '').trim()
@@ -585,7 +731,7 @@ export function registerOrderShippingRoutes(app, {
   app.post(
     '/api/orders/create',
     requireFirebaseAuth,
-    requireManagerOrAdminRole,
+    requireOfficeManagerOrAdminRole,
     async (req, res, next) => {
       try {
         const requestedAccountName = normalizeOptionalShortText(
@@ -605,6 +751,32 @@ export function registerOrderShippingRoutes(app, {
         const requestedShipTo = normalizeOptionalShortText(req.body?.shipTo, 500) || null
         const requestedNotes = normalizeOptionalShortText(req.body?.notes, 2000) || null
         const requestedReasonableName = `${requestedAccountName || ''}`.trim()
+        const duplicateFrom = req.body?.duplicateFrom && typeof req.body.duplicateFrom === 'object'
+          ? req.body.duplicateFrom
+          : null
+        const hasRequestedDocumentLines = Array.isArray(req.body?.documentLines)
+        const requestedDocumentLines = hasRequestedDocumentLines
+          ? req.body.documentLines.slice(0, 150).map((line, index) => {
+            const category = ['product', 'additional', 'freight'].includes(String(line?.category ?? ''))
+              ? String(line.category)
+              : 'product'
+            const qty = Number(line?.qty)
+            const unitPrice = Number(line?.unitPrice)
+            const normalizedQty = Number.isFinite(qty) && qty >= 0 ? Number(qty.toFixed(2)) : 0
+            const normalizedUnitPrice = Number.isFinite(unitPrice) && unitPrice >= 0 ? Number(unitPrice.toFixed(2)) : 0
+            return {
+              id: normalizeOptionalShortText(line?.id, 160) || randomUUID(),
+              parentLineId: normalizeOptionalShortText(line?.parentLineId, 160) || null,
+              detailLabel: normalizeOptionalShortText(line?.detailLabel, 1000) || null,
+              description: normalizeOptionalShortText(line?.description, 4000) || '',
+              qty: normalizedQty,
+              unitPrice: normalizedUnitPrice,
+              extPrice: Number((normalizedQty * normalizedUnitPrice).toFixed(2)),
+              category,
+              itemNumber: index + 1,
+            }
+          }).filter((line) => line.description || line.detailLabel)
+          : []
 
         if (!requestedAcknowledgement) {
           return res.status(400).json({
@@ -662,10 +834,55 @@ export function registerOrderShippingRoutes(app, {
           mondayOrdersCollection,
           ordersUnifiedCollection,
         } = await getCollections()
+        const duplicateSourceFilter = duplicateFrom
+          ? buildOrderIdentityFilter({
+            orderKey: duplicateFrom.orderKey,
+            mondayItemId: duplicateFrom.mondayItemId,
+            orderNumber: duplicateFrom.orderNumber,
+          })
+          : null
+
+        if (duplicateFrom && !duplicateSourceFilter) {
+          return res.status(400).json({ error: 'The source order for duplication is required.' })
+        }
+
+        const duplicateSourceOrder = duplicateSourceFilter
+          ? await ordersUnifiedCollection.findOne({
+            $and: [duplicateSourceFilter, { is_deleted: { $ne: true }, is_cancelled: { $ne: true } }],
+          })
+          : null
+
+        if (duplicateSourceFilter && !duplicateSourceOrder) {
+          return res.status(404).json({ error: 'The source order for duplication was not found.' })
+        }
+
+        // Only operational order data is copied. Generated documents, delivery records,
+        // billing, production history, and linked external projects always start clean.
+        let duplicateSnapshot = duplicateSourceOrder?.source_quote_snapshot
+          && typeof duplicateSourceOrder.source_quote_snapshot === 'object'
+          ? JSON.parse(JSON.stringify(duplicateSourceOrder.source_quote_snapshot))
+          : null
+        if (hasRequestedDocumentLines) {
+          const productLines = requestedDocumentLines.filter((line) => line.category === 'product')
+          const additionalLines = requestedDocumentLines.filter((line) => line.category === 'additional')
+          const freightLines = requestedDocumentLines.filter((line) => line.category === 'freight')
+          const productTotal = Number([...productLines, ...additionalLines].reduce((sum, line) => sum + line.extPrice, 0).toFixed(2))
+          const freightTotal = Number(freightLines.reduce((sum, line) => sum + line.extPrice, 0).toFixed(2))
+          duplicateSnapshot = {
+            ...(duplicateSnapshot || {}),
+            lineItems: productLines,
+            additionalServices: additionalLines,
+            shippingServices: freightLines,
+            productTotal,
+            freight: freightTotal,
+            totalAmount: productTotal + freightTotal,
+          }
+        }
         const duplicateOrder = await ordersUnifiedCollection.findOne(
           {
             order_number: new RegExp(`^${escapeRegex(requestedAcknowledgement)}$`, 'i'),
             is_deleted: { $ne: true },
+            is_cancelled: { $ne: true },
           },
           {
             projection: {
@@ -689,11 +906,217 @@ export function registerOrderShippingRoutes(app, {
         }
 
         const itemName = `${requestedReasonableName} / ${requestedAcknowledgement}`
-        const createdItem = await createMondayItem({
+        if (duplicateSourceOrder) {
+          const localOrderKey = buildManualOrderKey(requestedAcknowledgement, null)
+          const now = new Date().toISOString()
+          const staleCancelledOrder = await ordersUnifiedCollection.findOne({
+            orderKey: localOrderKey,
+            is_cancelled: true,
+          }, { projection: { _id: 1 } })
+          if (staleCancelledOrder) {
+            await ordersUnifiedCollection.updateOne(
+              { _id: staleCancelledOrder._id, orderKey: localOrderKey, is_cancelled: true },
+              { $set: { orderKey: `cancelled:${randomUUID()}`, updatedAt: now } },
+            )
+          }
+
+          const productValue = hasRequestedDocumentLines
+            ? Number(duplicateSnapshot?.productTotal ?? 0)
+            : parsedOrderValue.value !== null
+              ? parsedOrderValue.value
+              : Number(duplicateSnapshot?.productTotal ?? duplicateSourceOrder?.canonical_product_value ?? 0)
+          const freightValue = hasRequestedDocumentLines
+            ? Number(duplicateSnapshot?.freight ?? 0)
+            : parsedFreightValue.value !== null
+              ? parsedFreightValue.value
+              : Number(duplicateSnapshot?.freight ?? duplicateSourceOrder?.canonical_freight_value ?? 0)
+          const orderValue = Number((Number(productValue || 0) + Number(freightValue || 0)).toFixed(2))
+          const dealerSourceId = String(
+            duplicateSourceOrder?.dealer_source_id
+            || duplicateSnapshot?.dealerSourceId
+            || '',
+          ).trim() || null
+          const dealerName = String(
+            duplicateSourceOrder?.dealer_name
+            || duplicateSnapshot?.dealerName
+            || duplicateSnapshot?.companyName
+            || requestedReasonableName,
+          ).trim() || null
+          const projectDescription = requestedDescription
+            || String(duplicateSnapshot?.description || duplicateSnapshot?.title || '').trim()
+            || String(duplicateSourceOrder?.monday_description ?? '').trim()
+            || requestedReasonableName
+          const orderName = projectDescription
+          const publicUser = toPublicAuthUser(req.authUser)
+          const secondaryBoardId = String(MONDAY_BOARDS.design.id)
+          const secondaryBoardName = MONDAY_BOARDS.design.name
+          const secondaryBoardUrl = buildMondayBoardUrl(secondaryBoardId)
+          const mondayPayload = {
+            orderNumber: requestedAcknowledgement,
+            itemName,
+            salesRep: requestedSalesRep,
+            productValue,
+            freightValue,
+            poDate: requestedPoDate,
+            poNumber: requestedPoNumber,
+            description: projectDescription,
+            shipTo: requestedShipTo,
+            notes: requestedNotes,
+            depositRequired: duplicateSourceOrder?.deposit_required !== false,
+          }
+
+          let primaryItem = null
+          let secondaryItem = null
+          try {
+            primaryItem = await findOrCreateMondayItem({
+              boardId: selectedBoard.boardId,
+              boardName: selectedBoardName,
+              boardUrl: selectedBoardUrl,
+              itemName,
+              orderNumber: requestedAcknowledgement,
+            })
+            secondaryItem = await findOrCreateMondayItem({
+              boardId: secondaryBoardId,
+              boardName: secondaryBoardName,
+              boardUrl: secondaryBoardUrl,
+              itemName,
+              orderNumber: requestedAcknowledgement,
+            })
+
+            const secondaryBoardSnapshot = await fetchMondayBoardColumns({ boardId: secondaryBoardId })
+            await writeMondayCreateFields({
+              boardId: selectedBoard.boardId,
+              itemId: primaryItem.itemId,
+              columns: buildManualOrderColumnMap(selectedBoardSnapshot?.columns),
+              payload: mondayPayload,
+              includeFinancials: true,
+            })
+            await writeMondayCreateFields({
+              boardId: secondaryBoardId,
+              itemId: secondaryItem.itemId,
+              columns: buildManualOrderColumnMap(secondaryBoardSnapshot?.columns),
+              payload: mondayPayload,
+              setInitialDesignStatus: true,
+            })
+
+            await ordersUnifiedCollection.insertOne({
+              orderKey: localOrderKey,
+              order_number: requestedAcknowledgement,
+              order_name: orderName,
+              dealer_source_id: dealerSourceId,
+              dealer_name: dealerName,
+              source_quote_number: String(duplicateSourceOrder?.source_quote_number ?? duplicateSnapshot?.quoteNumber ?? '').trim() || null,
+              source_quote_title: String(duplicateSourceOrder?.source_quote_title ?? duplicateSnapshot?.title ?? '').trim() || null,
+              source_quote_snapshot: duplicateSnapshot,
+              duplicate_source_quote_id: String(duplicateSourceOrder?.source_quote_id ?? duplicateSnapshot?.id ?? '').trim() || null,
+              duplicated_from_order_key: String(duplicateSourceOrder.orderKey ?? '').trim() || null,
+              duplicated_from_order_number: String(duplicateSourceOrder.order_number ?? '').trim() || null,
+              po_number: requestedPoNumber,
+              monday_description: projectDescription,
+              monday_notes: requestedNotes,
+              ship_to: requestedShipTo,
+              ship_notes: null,
+              lead_time_text: duplicateSourceOrder?.lead_time_text ?? duplicateSnapshot?.leadTime ?? null,
+              freight_description: duplicateSourceOrder?.freight_description ?? duplicateSnapshot?.freightDescription ?? null,
+              shipping_carrier: duplicateSourceOrder?.shipping_carrier ?? null,
+              bench: duplicateSourceOrder?.bench ?? null,
+              order_date: requestedPoDate,
+              sales_rep: requestedSalesRep,
+              canonical_product_value: Number(productValue || 0),
+              canonical_order_value: orderValue,
+              canonical_freight_value: Number(freightValue || 0),
+              orderValue,
+              freightValue: Number(freightValue || 0),
+              poAmount: Number(productValue || 0),
+              website_calculated_order_total: orderValue,
+              website_calculated_order_total_at: now,
+              deposit_required: duplicateSourceOrder?.deposit_required ?? null,
+              deposit_percent: duplicateSourceOrder?.deposit_percent ?? null,
+              monday_primary_board_id: selectedBoard.boardId,
+              monday_primary_item_id: primaryItem.itemId,
+              monday_secondary_board_id: secondaryBoardId,
+              monday_secondary_item_id: secondaryItem.itemId,
+              monday_item_id: secondaryItem.itemId,
+              monday_board_id: secondaryBoardId,
+              monday_board_name: secondaryBoardName,
+              Monday_url: `${secondaryBoardUrl}/pulses/${secondaryItem.itemId}`,
+              has_monday_record: true,
+              has_quickbooks_record: false,
+              in_design: true,
+              is_shipped: false,
+              source: 'monday',
+              monday_sync_status: 'synced',
+              monday_sync_error: null,
+              monday_updated_at: now,
+              hazard_reason: 'Order Track item not found in QuickBooks projects.',
+              created_via_website_manual_at: now,
+              created_via_website_manual_by_uid: String(publicUser?.uid ?? '').trim() || null,
+              created_via_website_manual_by_email: normalizeEmail(publicUser?.email) || null,
+              createdAt: now,
+              updatedAt: now,
+              lastSyncedAt: now,
+              status: [],
+            })
+          } catch (createError) {
+            const cleanupTasks = []
+            if (primaryItem?.created && primaryItem.itemId) {
+              cleanupTasks.push(deleteMondayItem({ boardId: selectedBoard.boardId, itemId: primaryItem.itemId }))
+            }
+            if (secondaryItem?.created && secondaryItem.itemId) {
+              cleanupTasks.push(deleteMondayItem({ boardId: secondaryBoardId, itemId: secondaryItem.itemId }))
+            }
+            if (cleanupTasks.length > 0) {
+              await Promise.allSettled(cleanupTasks)
+            }
+            throw createError
+          }
+
+          return res.status(201).json({
+            ok: true,
+            order: {
+              orderKey: localOrderKey,
+              mondayItemId: secondaryItem.itemId,
+              orderNumber: requestedAcknowledgement,
+              orderName,
+              mondayItemUrl: `${secondaryBoardUrl}/pulses/${secondaryItem.itemId}`,
+              poDate: requestedPoDate,
+              poNumber: requestedPoNumber,
+              description: projectDescription,
+              shipTo: requestedShipTo,
+              notes: requestedNotes,
+              salesRep: requestedSalesRep,
+              orderValue: Number(productValue || 0),
+              freightValue: Number(freightValue || 0),
+              mondayBoardId: secondaryBoardId,
+              mondayBoardName: MONDAY_BOARDS.design.name,
+              mondayBoardYear: selectedBoard.boardYear,
+              mondayUpdatedAt: now,
+            },
+            warnings: [],
+          })
+        }
+
+        const warnings = []
+        if (typeof invalidateMondayBoardNamesCache === 'function') {
+          invalidateMondayBoardNamesCache(selectedBoard.boardId)
+        }
+        const boardItems = await fetchMondayBoardItemNames({
           boardId: selectedBoard.boardId,
-          itemName,
+          boardName: selectedBoardName,
+          boardUrl: selectedBoardUrl,
         })
-        const mondayItemId = String(createdItem?.itemId ?? '').trim()
+        const matchingItemIds = (Array.isArray(boardItems?.items) ? boardItems.items : [])
+          .filter((item) => String(item?.name ?? '').trim().toLowerCase() === itemName.toLowerCase())
+          .map((item) => String(item?.id ?? '').trim())
+          .filter(Boolean)
+        const existingMondayItemId = matchingItemIds[0] || ''
+        const createdItem = existingMondayItemId
+          ? null
+          : await createMondayItem({
+            boardId: selectedBoard.boardId,
+            itemName,
+          })
+        const mondayItemId = existingMondayItemId || String(createdItem?.itemId ?? '').trim()
 
         if (!mondayItemId) {
           return res.status(502).json({
@@ -701,7 +1124,13 @@ export function registerOrderShippingRoutes(app, {
           })
         }
 
-        const warnings = []
+        if (existingMondayItemId) {
+          warnings.push(
+            matchingItemIds.length > 1
+              ? 'Multiple matching Monday cards were found. The earliest matching card was reused; duplicate cards should be reviewed.'
+              : 'An existing matching Monday card was reused instead of creating another card.',
+          )
+        }
         if (!ackColumnId) {
           warnings.push(`ACK was saved in item name, but ${selectedBoardName} has no mapped ACK column.`)
         }
@@ -922,8 +1351,38 @@ export function registerOrderShippingRoutes(app, {
                 Monday_url: String(liveOrder?.itemUrl ?? '').trim() || null,
                 Monday_status: normalizeOptionalShortText(liveOrder?.statusLabel, 260) || null,
                 order_name: resolvedOrderName,
+                dealer_source_id: String(
+                  duplicateSourceOrder?.dealer_source_id
+                  ?? duplicateSnapshot?.dealerSourceId
+                  ?? '',
+                ).trim() || null,
+                dealer_name: String(
+                  duplicateSourceOrder?.dealer_name
+                  ?? duplicateSnapshot?.dealerName
+                  ?? duplicateSnapshot?.companyName
+                  ?? '',
+                ).trim() || null,
+                source_quote_id: String(
+                  duplicateSourceOrder?.source_quote_id
+                  ?? duplicateSnapshot?.id
+                  ?? '',
+                ).trim() || null,
+                source_quote_number: String(
+                  duplicateSourceOrder?.source_quote_number
+                  ?? duplicateSnapshot?.quoteNumber
+                  ?? '',
+                ).trim() || null,
+                source_quote_title: String(
+                  duplicateSourceOrder?.source_quote_title
+                  ?? duplicateSnapshot?.title
+                  ?? '',
+                ).trim() || null,
                 ship_to: resolvedShipTo,
                 ship_notes: normalizeOptionalShortText(liveOrder?.shipNotes, 2000) || null,
+                lead_time_text: duplicateSourceOrder?.lead_time_text ?? null,
+                freight_description: duplicateSourceOrder?.freight_description ?? null,
+                shipping_carrier: duplicateSourceOrder?.shipping_carrier ?? null,
+                bench: duplicateSourceOrder?.bench ?? null,
                 po_number: resolvedPoNumber,
                 monday_notes: resolvedNotes,
                 monday_description: resolvedDescription,
@@ -951,6 +1410,16 @@ export function registerOrderShippingRoutes(app, {
                   ).toFixed(2)),
                 website_calculated_order_total_at: parsedOrderValue.value === null ? null : now,
                 sales_rep: requestedSalesRep,
+                ...(duplicateSnapshot ? { source_quote_snapshot: duplicateSnapshot } : {}),
+                ...(duplicateSourceOrder ? {
+                  canonical_product_value: duplicateSourceOrder.canonical_product_value ?? null,
+                  canonical_order_value: duplicateSourceOrder.canonical_order_value ?? parsedOrderValue.value,
+                  canonical_freight_value: duplicateSourceOrder.canonical_freight_value ?? parsedFreightValue.value,
+                  deposit_required: duplicateSourceOrder.deposit_required ?? null,
+                  deposit_percent: duplicateSourceOrder.deposit_percent ?? null,
+                  duplicated_from_order_key: String(duplicateSourceOrder.orderKey ?? '').trim() || null,
+                  duplicated_from_order_number: String(duplicateSourceOrder.order_number ?? '').trim() || null,
+                } : {}),
                 created_via_website_manual_at: now,
                 created_via_website_manual_by_uid: String(publicUser?.uid ?? '').trim() || null,
                 created_via_website_manual_by_email: normalizeEmail(publicUser?.email) || null,

@@ -934,6 +934,8 @@ type OrdersGridProps = {
   ) => void
   onCopyOrderNumber: (orderNumber: string) => void
   onOpenOrderChat: (order: OrdersOverviewOrder) => void
+  canDuplicateOrders: boolean
+  onDuplicateOrder: (order: OrdersOverviewOrder) => void
   canDeleteOrders: boolean
   onDeleteOrder: (order: OrdersOverviewOrder) => void
   onArchiveOrder: (order: OrdersOverviewOrder, archived: boolean) => void
@@ -958,6 +960,8 @@ export function OrdersGrid({
   onOpenQuickBooksDialog,
   onCopyOrderNumber,
   onOpenOrderChat,
+  canDuplicateOrders,
+  onDuplicateOrder,
   canDeleteOrders,
   onDeleteOrder,
   onArchiveOrder,
@@ -3530,6 +3534,19 @@ export function OrdersGrid({
           <LinkRoundedIcon fontSize="small" sx={{ mr: 1 }} />
           {actionsOrder?.parentOrderNumber ? 'Change linked order' : 'Link to another order'}
         </MenuItem>
+        {canDuplicateOrders ? (
+          <MenuItem
+            disabled={!actionsOrder}
+            onClick={() => {
+              const order = actionsOrder
+              handleCloseActionsMenu()
+              if (order) onDuplicateOrder(order)
+            }}
+          >
+            <ContentCopyRoundedIcon fontSize="small" sx={{ mr: 1 }} />
+            Duplicate order
+          </MenuItem>
+        ) : null}
         <MenuItem
           disabled={!actionsOrder}
           onClick={() => {

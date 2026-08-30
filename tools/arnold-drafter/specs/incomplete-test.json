@@ -1,0 +1,15 @@
+{
+  "specVersion": 1,
+  "units": "in",
+  "project": { "description": "Reception credenza" },
+  "product": {
+    "type": "casegood.credenza",
+    "params": {
+      "width": 72,
+      "depth": 20,
+      "height": 30,
+      "baseType": "toe-kick",
+      "doorCount": 3
+    }
+  }
+}

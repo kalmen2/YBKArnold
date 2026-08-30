@@ -330,27 +330,6 @@ const resolveProductImageAspect = (image: CrmQuoteLineImage) => {
   return 4 / 3
 }
 
-function splitTextForPictureFlow(text: string, availableWidth: number, pictureHeight: number) {
-  const normalized = text.replace(/\s+/g, ' ').trim()
-  if (!normalized) return { beside: '', below: '' }
-
-  const charactersPerLine = Math.max(16, Math.floor(availableWidth / 4.7))
-  const linesBesidePicture = Math.min(4, Math.max(2, Math.floor(pictureHeight / 12)))
-  const characterLimit = charactersPerLine * linesBesidePicture
-  if (normalized.length <= characterLimit) return { beside: normalized, below: '' }
-
-  const words = normalized.split(' ')
-  let beside = ''
-  let nextWordIndex = 0
-  while (nextWordIndex < words.length) {
-    const candidate = beside ? `${beside} ${words[nextWordIndex]}` : words[nextWordIndex]
-    if (candidate.length > characterLimit && beside) break
-    beside = candidate
-    nextWordIndex += 1
-  }
-  return { beside, below: words.slice(nextWordIndex).join(' ') }
-}
-
 const resolveProductImagePlacements = (images: CrmQuoteLineImage[]) => images.slice(0, 2).map((image) => {
   const metrics = resolveProductImageMetrics(image, images.length)
   const layout = normalizePictureLayout(image, image.pdfLayout || defaultPictureLayout(image))
@@ -625,27 +604,57 @@ export function NativeQuotePdfDocument({
           const pictureOnLeft = primaryPlacement
             ? pictureX < (PDF_PRODUCT_LAYOUT_WIDTH - pictureRailWidth) / 2
             : false
-          const inlineDescriptionText = (() => {
-            const description = plain(lineItem.description, '')
-            const [heading = '', ...detailLines] = description.split('\n')
-            const sections = [heading]
-            const mainDetail = [lineItem.detailLabel, detailLines.join(' ')].filter(Boolean).join('  ')
-            if (mainDetail) sections.push(mainDetail)
-            lineItem.sublineDescriptions.forEach((subline) => {
-              const detail = [subline.detail, subline.description].filter(Boolean).join('  ')
-              if (detail) sections.push(detail)
-            })
-            return sections.filter(Boolean).join(' ')
-          })()
-          const pictureFlow = primaryPlacement
-            ? splitTextForPictureFlow(
-              inlineDescriptionText,
-              Math.max(PDF_PRODUCT_LAYOUT_MIN_TEXT_WIDTH, pictureOnLeft
-                ? PDF_PRODUCT_LAYOUT_WIDTH - pictureX - pictureRailWidth - PDF_PRODUCT_LAYOUT_GAP
-                : pictureX - PDF_PRODUCT_LAYOUT_GAP),
-              primaryPlacement.height,
-            )
-            : { beside: '', below: '' }
+          const description = plain(lineItem.description, '')
+          const [heading = '', ...detailLines] = description.split('\n')
+          const hasMainDescriptionLine = Boolean(lineItem.detailLabel || detailLines.length > 0)
+          const sharedDetailWidth = detailColumnWidth([
+            lineItem.detailLabel && detailLines.length > 0 ? lineItem.detailLabel : '',
+            ...lineItem.sublineDescriptions
+              .filter((subline) => subline.detail && subline.description)
+              .map((subline) => subline.detail),
+          ])
+          const renderFieldLines = (value: string) => value
+            .replace(/\r\n?/g, '\n')
+            .split('\n')
+            .map((fieldLine, fieldLineIndex) => (
+              <Text key={`${fieldLineIndex}-${fieldLine}`} style={styles.descriptionFieldText}>
+                {fieldLine || ' '}
+              </Text>
+            ))
+          const renderStructuredDescription = () => lineItem.continuation ? (
+            <Text style={styles.descriptionText}>{description}</Text>
+          ) : (
+            <View style={styles.descriptionContent}>
+              {heading ? <Text style={styles.descriptionHeading}>{heading}</Text> : null}
+              {(lineItem.detailLabel || detailLines.length > 0) ? (
+                <View style={[styles.descriptionLine, heading ? styles.descriptionLineAfterHeading : {}]}>
+                  {lineItem.detailLabel && detailLines.length > 0 ? (
+                    <>
+                      <View style={[styles.descriptionLineDetail, { width: sharedDetailWidth }]}>{renderFieldLines(lineItem.detailLabel)}</View>
+                      <View style={[styles.descriptionLineBody, styles.descriptionLineBodyPaired]}>{renderFieldLines(detailLines.join('\n'))}</View>
+                    </>
+                  ) : (
+                    <View style={styles.descriptionLineBody}>{renderFieldLines(plain(lineItem.detailLabel || detailLines.join('\n'), ''))}</View>
+                  )}
+                </View>
+              ) : null}
+              {lineItem.sublineDescriptions.map((subline, sublineIndex) => (
+                <View
+                  key={`${subline.detail}-${sublineIndex}`}
+                  style={[styles.descriptionLine, heading || hasMainDescriptionLine || sublineIndex > 0 ? styles.descriptionSubline : {}]}
+                >
+                  {subline.detail && subline.description ? (
+                    <>
+                      <View style={[styles.descriptionLineDetail, { width: sharedDetailWidth }]}>{renderFieldLines(subline.detail)}</View>
+                      <View style={[styles.descriptionLineBody, styles.descriptionLineBodyPaired]}>{renderFieldLines(subline.description)}</View>
+                    </>
+                  ) : (
+                    <View style={styles.descriptionLineBody}>{renderFieldLines(subline.detail || subline.description)}</View>
+                  )}
+                </View>
+              ))}
+            </View>
+          )
           const pictureRail = primaryPlacement ? (
             <View
               style={[
@@ -683,68 +692,14 @@ export function NativeQuotePdfDocument({
                 <>
                   <View style={styles.descriptionBody}>
                     {pictureOnLeft ? pictureRail : null}
-                    <Text style={styles.descriptionFlowText}>{pictureFlow.beside}</Text>
+                    {renderStructuredDescription()}
                     {!pictureOnLeft ? pictureRail : null}
                   </View>
-                  {pictureFlow.below ? <Text style={[styles.descriptionText, { marginTop: 3 }]}>{pictureFlow.below}</Text> : null}
                   {pictureLayoutMode ? <Text style={{ fontSize: 1, lineHeight: 1, color: '#ffffff' }}>{`__APE${sourceLineIndex}_0__`}</Text> : null}
                 </>
               ) : (
                 <View style={styles.descriptionBody}>
-                {(() => {
-                  const description = plain(lineItem.description, '')
-                  const [heading = '', ...detailLines] = description.split('\n')
-                  const hasMainDescriptionLine = Boolean(lineItem.detailLabel || detailLines.length > 0)
-                  const sharedDetailWidth = detailColumnWidth([
-                    lineItem.detailLabel && detailLines.length > 0 ? lineItem.detailLabel : '',
-                    ...lineItem.sublineDescriptions
-                      .filter((subline) => subline.detail && subline.description)
-                      .map((subline) => subline.detail),
-                  ])
-                  const renderFieldLines = (value: string) => value
-                    .replace(/\r\n?/g, '\n')
-                    .split('\n')
-                    .map((fieldLine, fieldLineIndex) => (
-                      <Text key={`${fieldLineIndex}-${fieldLine}`} style={styles.descriptionFieldText}>
-                        {fieldLine || ' '}
-                      </Text>
-                    ))
-
-                  return lineItem.continuation ? (
-                    <Text style={styles.descriptionText}>{description}</Text>
-                  ) : (
-                    <View style={styles.descriptionContent}>
-                      {heading ? <Text style={styles.descriptionHeading}>{heading}</Text> : null}
-                      {(lineItem.detailLabel || detailLines.length > 0) ? (
-                        <View style={[styles.descriptionLine, heading ? styles.descriptionLineAfterHeading : {}]}>
-                          {lineItem.detailLabel && detailLines.length > 0 ? (
-                            <>
-                              <View style={[styles.descriptionLineDetail, { width: sharedDetailWidth }]}>{renderFieldLines(lineItem.detailLabel)}</View>
-                              <View style={[styles.descriptionLineBody, styles.descriptionLineBodyPaired]}>{renderFieldLines(detailLines.join('\n'))}</View>
-                            </>
-                          ) : (
-                            <View style={styles.descriptionLineBody}>{renderFieldLines(plain(lineItem.detailLabel || detailLines.join('\n'), ''))}</View>
-                          )}
-                        </View>
-                      ) : null}
-                      {lineItem.sublineDescriptions.map((subline, sublineIndex) => (
-                        <View
-                          key={`${subline.detail}-${sublineIndex}`}
-                          style={[styles.descriptionLine, heading || hasMainDescriptionLine || sublineIndex > 0 ? styles.descriptionSubline : {}]}
-                        >
-                          {subline.detail && subline.description ? (
-                            <>
-                              <View style={[styles.descriptionLineDetail, { width: sharedDetailWidth }]}>{renderFieldLines(subline.detail)}</View>
-                              <View style={[styles.descriptionLineBody, styles.descriptionLineBodyPaired]}>{renderFieldLines(subline.description)}</View>
-                            </>
-                          ) : (
-                            <View style={styles.descriptionLineBody}>{renderFieldLines(subline.detail || subline.description)}</View>
-                          )}
-                        </View>
-                      ))}
-                    </View>
-                  )
-                })()}
+                {renderStructuredDescription()}
                 {!pictureLayoutMode && lineImages.length > 0 ? (
                   <View style={styles.descriptionMediaRail}>
                     {lineImages.map((image, imageIndex) => {
@@ -919,9 +874,29 @@ export const QuotePdfPictureLayoutDialog = memo(function QuotePdfPictureLayoutDi
   embedded?: boolean
   hideEmbeddedActions?: boolean
 }) {
-  const pictures = useMemo(() => (quote?.lineItems || []).flatMap((lineItem, lineIndex) => (
+  // A layout save updates only pdfLayout. Do not treat that as a new quote and
+  // throw away the rendered pages the user is currently positioning pictures on.
+  const quoteContentKey = useMemo(() => JSON.stringify({
+    id: quote?.id,
+    quoteNumber: quote?.quoteNumber,
+    title: quote?.title,
+    lineItems: (quote?.lineItems || []).map((lineItem) => ({
+      id: lineItem.id,
+      parentLineId: lineItem.parentLineId,
+      detailLabel: lineItem.detailLabel,
+      description: lineItem.description,
+      qty: lineItem.qty,
+      unitPrice: lineItem.unitPrice,
+      extPrice: lineItem.extPrice,
+      images: (lineItem.images || []).map((image) => ({ id: image.id, url: image.url, width: image.width, height: image.height, shape: image.shape })),
+    })),
+  }), [quote])
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- pdfLayout changes are intentionally local until a content change.
+  const renderQuote = useMemo(() => quote, [quoteContentKey])
+  const pictures = useMemo(() => (renderQuote?.lineItems || []).flatMap((lineItem, lineIndex) => (
     (lineItem.images || []).map((image, imageIndex) => ({ lineIndex, imageIndex, image }))
-  )), [quote])
+  )), [renderQuote])
+  const pictureKey = useMemo(() => pictures.map(({ image }) => `${image.id}:${image.url}`).join('|'), [pictures])
   const [layouts, setLayouts] = useState<Record<string, QuotePicturePdfLayout>>({})
   const layoutsRef = useRef<Record<string, QuotePicturePdfLayout>>({})
   const [pages, setPages] = useState<RenderedLayoutPage[]>([])
@@ -958,10 +933,10 @@ export const QuotePdfPictureLayoutDialog = memo(function QuotePdfPictureLayoutDi
       latestPdfBlobRef.current = null
     }, 0)
     return () => window.clearTimeout(resetTimer)
-  }, [open, pictures, updateLayouts])
+  }, [open, pictureKey, pictures, updateLayouts])
 
   useEffect(() => {
-    if (!open || !quote) return
+    if (!open || !renderQuote) return
     let cancelled = false
 
     const renderActualPdf = async () => {
@@ -973,8 +948,8 @@ export const QuotePdfPictureLayoutDialog = memo(function QuotePdfPictureLayoutDi
           normalizePictureLayout(image, layoutsRef.current[image.id] || image.pdfLayout || defaultPictureLayout(image)),
         ]))
         const previewQuote: CrmQuote = {
-          ...quote,
-          lineItems: (quote.lineItems || []).map((lineItem) => ({
+          ...renderQuote,
+          lineItems: (renderQuote.lineItems || []).map((lineItem) => ({
             ...lineItem,
             images: (lineItem.images || []).map((image) => ({
               ...image,
@@ -1048,7 +1023,7 @@ export const QuotePdfPictureLayoutDialog = memo(function QuotePdfPictureLayoutDi
 
     void renderActualPdf()
     return () => { cancelled = true }
-  }, [layoutRenderVersion, open, pictures, quote, settings])
+  }, [layoutRenderVersion, open, pictureKey, pictures, renderQuote, settings])
 
   const startInteraction = (mode: 'move' | 'resize', image: CrmQuoteLineImage, scale: number, event: ReactPointerEvent<HTMLElement>) => {
     const layout = layoutsRef.current[image.id]
@@ -1201,11 +1176,25 @@ export const QuotePdfPictureLayoutDialog = memo(function QuotePdfPictureLayoutDi
                 const childLines = sourceLine?.id
                   ? (quote.lineItems || []).filter((lineItem) => lineItem.parentLineId === sourceLine.id)
                   : []
-                const descriptionText = [
-                  sourceLine?.description,
-                  sourceLine?.detailLabel,
-                  ...childLines.flatMap((lineItem) => [lineItem.detailLabel, lineItem.description]),
-                ].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim()
+                const [heading = '', ...mainDetailLines] = String(sourceLine?.description || '')
+                  .replace(/\r\n?/g, '\n')
+                  .split('\n')
+                const descriptionRows = [
+                  {
+                    detail: String(sourceLine?.detailLabel || '').trim(),
+                    description: mainDetailLines.join('\n').trim(),
+                  },
+                  ...childLines.map((lineItem) => ({
+                    detail: String(lineItem.detailLabel || '').trim(),
+                    description: String(lineItem.description || '').trim(),
+                  })),
+                ].filter((row) => row.detail || row.description)
+                const pairedDetails = descriptionRows
+                  .filter((row) => row.detail && row.description)
+                  .map((row) => row.detail)
+                const detailColumnWidth = pairedDetails.length
+                  ? Math.min(42, Math.max(12, ...pairedDetails.map((detail) => detail.length + 1)))
+                  : 0
                 const pictureOnLeft = pictureX < (PDF_PRODUCT_LAYOUT_WIDTH - pictureRailWidth) / 2
                 const descriptionLeft = anchor.x * zoom - anchor.layoutX * scale
                 const trailingSpace = Math.max(0, PDF_PRODUCT_LAYOUT_WIDTH - pictureX - pictureRailWidth)
@@ -1268,7 +1257,34 @@ export const QuotePdfPictureLayoutDialog = memo(function QuotePdfPictureLayoutDi
                         </Box>
                       ))}
                     </Box>
-                    <Box component="span">{descriptionText}</Box>
+                    {heading ? (
+                      <Box component="div" sx={{ fontWeight: 700, lineHeight: 1.15, mb: descriptionRows.length ? 0.45 : 0, overflowWrap: 'anywhere' }}>
+                        {heading}
+                      </Box>
+                    ) : null}
+                    {descriptionRows.map((row, rowIndex) => (
+                      <Box
+                        key={`${row.detail}-${row.description}-${rowIndex}`}
+                        component="div"
+                        sx={{
+                          mt: rowIndex > 0 || heading ? 0.35 : 0,
+                          minHeight: `${10.4 * scale}px`,
+                          overflowWrap: 'anywhere',
+                          whiteSpace: 'pre-wrap',
+                        }}
+                      >
+                        {row.detail && row.description ? (
+                          <>
+                            <Box component="span" sx={{ display: 'inline-block', width: `${detailColumnWidth}ch`, pr: 0.8, verticalAlign: 'top', color: '#26384a' }}>
+                              {row.detail}
+                            </Box>
+                            <Box component="span">{row.description}</Box>
+                          </>
+                        ) : (
+                          row.detail || row.description
+                        )}
+                      </Box>
+                    ))}
                   </Box>
                 )
               })}

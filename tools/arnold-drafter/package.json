@@ -1,0 +1,11 @@
+{
+  "name": "arnold-drafter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Parametric furniture spec -> GLB (and later DXF/PDF) generator for Arnold Contract.",
+  "bin": { "arnold-drafter": "./cli.mjs" },
+  "dependencies": {
+    "@gltf-transform/core": "^4.4.2"
+  }
+}

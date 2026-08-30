@@ -25,7 +25,14 @@
       "Bash(sed -n '4,16p' functions/src/services/orders-merge-helpers.mjs)",
       "Bash(sed -n '19,32p' functions/src/services/quickbooks-projects-service.mjs)",
       "Bash(sed -n '89,105p' functions/src/services/mongo-domain-config.mjs)",
-      "Bash(node -e ' *)"
+      "Bash(node -e ' *)",
+      "Bash(npm uninstall *)",
+      "Bash(pkill -f \"vite --port 5199\")",
+      "Bash(node shootvar.mjs '[[\"C\",\"edgeColor=%23000000&fat=2&amb=0.50&hemi=0.80&dir=0.35&fixedLight=1\"],[\"D\",\"edgeColor=%23000000&fat=2&amb=0.60&hemi=1.10&dir=0.30&fixedLight=1\"],[\"E\",\"edgeColor=%23000000&fat=2&amb=0.65&hemi=1.40&dir=0.28&fixedLight=1\"]]')",
+      "Bash(node shootvar.mjs '[[\"G\",\"edgeColor=%23000000&fat=2&amb=0.55&hemi=1.15&dir=0.60\"]]')",
+      "Bash(node shootmulti.mjs '[[\"G\",\"edgeColor=%23000000&fat=2&amb=0.55&hemi=1.15&dir=0.60\"]]')",
+      "Bash(node scripts/verify-3d-model.mjs /private/tmp/claude-501/-Users-kalmankamionka-Desktop-Arnold-api/bea36f19-a588-49ed-a433-baa9ff1b031e/scratchpad/3d/fixed.glb --out /private/tmp/claude-501/-Users-kalmankamionka-Desktop-Arnold-api/bea36f19-a588-49ed-a433-baa9ff1b031e/scratchpad/3d/v-final2)",
+      "WebFetch(domain:pro.kubity.com)"
     ]
   }
 }

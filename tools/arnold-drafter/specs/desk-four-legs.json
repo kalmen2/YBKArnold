@@ -1,0 +1,15 @@
+{
+  "specVersion": 1,
+  "units": "in",
+  "project": { "quoteNumber": "DEMO-003", "description": "Executive desk" },
+  "product": {
+    "type": "table.rectangular",
+    "params": {
+      "topWidth": 72, "topDepth": 30, "topThickness": "1 1/4\"", "overallHeight": 29,
+      "baseType": "four-legs",
+      "legSection": "2 1/2\"", "legInsetFromEnd": 3, "legInsetFromSide": 2,
+      "hasApron": true, "apronHeight": 4, "apronThickness": "3/4\"", "apronSetback": "1 1/2\"",
+      "topFinish": "white-oak", "baseFinish": "blackened-steel"
+    }
+  }
+}

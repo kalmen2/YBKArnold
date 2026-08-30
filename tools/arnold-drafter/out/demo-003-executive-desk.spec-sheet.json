@@ -1,0 +1,109 @@
+{
+  "summary": {
+    "description": "Executive desk",
+    "productType": "table.rectangular",
+    "productLabel": "Rectangular table / desk",
+    "units": "in",
+    "quoteNumber": "DEMO-003",
+    "client": null,
+    "itemNumber": null,
+    "overall": {
+      "width": "72\"",
+      "height": "29\"",
+      "depth": "30\""
+    },
+    "triangles": 108,
+    "glbBytes": 7768,
+    "unknownParams": []
+  },
+  "cutList": {
+    "rows": [
+      {
+        "description": "apron end L, apron end R",
+        "qty": 2,
+        "material": "blackened-steel",
+        "materialLabel": "Blackened steel",
+        "width": "3/4\"",
+        "height": "4\"",
+        "depth": "21\"",
+        "widthRaw": 0.75,
+        "heightRaw": 4,
+        "depthRaw": 21,
+        "faceAreaSqFt": 1.167
+      },
+      {
+        "description": "apron front, apron back",
+        "qty": 2,
+        "material": "blackened-steel",
+        "materialLabel": "Blackened steel",
+        "width": "61\"",
+        "height": "4\"",
+        "depth": "3/4\"",
+        "widthRaw": 61,
+        "heightRaw": 4,
+        "depthRaw": 0.75,
+        "faceAreaSqFt": 3.389
+      },
+      {
+        "description": "leg L-back, leg R-back, leg L-front, leg R-front",
+        "qty": 4,
+        "material": "blackened-steel",
+        "materialLabel": "Blackened steel",
+        "width": "2 1/2\"",
+        "height": "27 3/4\"",
+        "depth": "2 1/2\"",
+        "widthRaw": 2.5,
+        "heightRaw": 27.75,
+        "depthRaw": 2.5,
+        "faceAreaSqFt": 1.927
+      },
+      {
+        "description": "top",
+        "qty": 1,
+        "material": "white-oak",
+        "materialLabel": "White Oak, clear",
+        "width": "72\"",
+        "height": "1 1/4\"",
+        "depth": "30\"",
+        "widthRaw": 72,
+        "heightRaw": 1.25,
+        "depthRaw": 30,
+        "faceAreaSqFt": 15
+      }
+    ],
+    "totals": {
+      "partCount": 9,
+      "faceAreaSqFtByFinish": {
+        "blackened-steel": 6.483,
+        "white-oak": 15
+      }
+    }
+  },
+  "spec": {
+    "specVersion": 1,
+    "units": "in",
+    "project": {
+      "quoteNumber": "DEMO-003",
+      "description": "Executive desk"
+    },
+    "product": {
+      "type": "table.rectangular",
+      "params": {
+        "topWidth": 72,
+        "topDepth": 30,
+        "topThickness": "1 1/4\"",
+        "overallHeight": 29,
+        "baseType": "four-legs",
+        "legSection": "2 1/2\"",
+        "legInsetFromEnd": 3,
+        "legInsetFromSide": 2,
+        "hasApron": true,
+        "apronHeight": 4,
+        "apronThickness": "3/4\"",
+        "apronSetback": "1 1/2\"",
+        "topFinish": "white-oak",
+        "baseFinish": "blackened-steel"
+      }
+    }
+  }
+}

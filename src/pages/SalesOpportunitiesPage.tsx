@@ -51,7 +51,7 @@ import {
   Typography,
 } from '@mui/material'
 import { alpha } from '@mui/material/styles'
-import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage'
+import { deleteObject, getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type ClipboardEvent as ReactClipboardEvent, type MouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
@@ -98,6 +98,7 @@ import {
   type CrmContact,
   type CrmConvertOrderBoardOption,
   type CrmExcelQuoteLookupResponse,
+  type CrmExcelQuoteImportSummary,
   type CrmExcelQuoteSyncInput,
   type CrmQuoteDocument,
   type CrmQuoteLineImage,
@@ -183,6 +184,17 @@ const DEFAULT_QUOTE_PRINT_SETTINGS: CrmQuotePrintSettings = {
 async function parseExcelQuoteForSync(file: File, preferredQuoteNumber?: string) {
   const parser = await import('../features/crm/excelQuoteParser')
   return parser.parseExcelQuoteForSync(file, { preferredQuoteNumber })
+}
+
+type ExcelSyncEmbeddedImage = {
+  mainLineIndex: number
+  sourceRow: number
+  file: File
+}
+
+type ParsedExcelQuoteSyncInput = CrmExcelQuoteSyncInput & {
+  importSummary: CrmExcelQuoteImportSummary
+  embeddedLineImages: ExcelSyncEmbeddedImage[]
 }
 
 type OpportunityLineItemFormState = {
@@ -2709,7 +2721,9 @@ function LineItemsEditor({
   const libraryQuery = useQuery({
     queryKey: QUERY_KEYS.crmQuoteLineLibrary,
     queryFn: () => fetchCrmQuoteLineLibrary(),
-    enabled: canEdit,
+    // The library is only needed after the user opens its dialog. Fetching it
+    // while the Quote Lines stage mounts made that tab wait on an unrelated API call.
+    enabled: canEdit && isLibraryOpen,
     staleTime: 60 * 1000,
   })
   const pictureCount = lineItems.reduce((total, lineItem) => total + lineItem.images.length, 0)
@@ -4409,6 +4423,8 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   const [isExcelAccountDialogOpen, setIsExcelAccountDialogOpen] = useState(false)
   const [isExcelSyncDialogOpen, setIsExcelSyncDialogOpen] = useState(false)
   const [excelSyncDraft, setExcelSyncDraft] = useState<CrmExcelQuoteSyncInput | null>(null)
+  const [excelSyncImportSummary, setExcelSyncImportSummary] = useState<CrmExcelQuoteImportSummary | null>(null)
+  const [excelSyncEmbeddedImages, setExcelSyncEmbeddedImages] = useState<ExcelSyncEmbeddedImage[]>([])
   const [excelSyncLookupResult, setExcelSyncLookupResult] = useState<CrmExcelQuoteLookupResponse | null>(null)
   const [excelSyncSourceFileName, setExcelSyncSourceFileName] = useState('')
   const [excelSyncSourceFile, setExcelSyncSourceFile] = useState<File | null>(null)
@@ -5342,6 +5358,8 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     setExcelSyncLaunchMode('excel_file')
     setPendingFolderScanFiles(null)
     setExcelSyncDraft(null)
+    setExcelSyncImportSummary(null)
+    setExcelSyncEmbeddedImages([])
     setExcelSyncLookupResult(null)
     setExcelSyncSourceFileName('')
     setExcelSyncSourceFile(null)
@@ -5431,7 +5449,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   }, [quotesQuery])
 
   const initializeExcelSyncFromPayload = useCallback(async (
-    excelPayload: CrmExcelQuoteSyncInput,
+    excelPayload: ParsedExcelQuoteSyncInput,
     sourceFileName: string,
     options: {
       launchMode: ExcelSyncLaunchMode
@@ -5457,6 +5475,8 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     setPendingFolderScanFiles(options.launchMode === 'folder_scan' ? (options.scannedFiles ?? []) : null)
     setExcelSyncLookupResult(lookupResult)
     setExcelSyncDraft(excelPayload)
+    setExcelSyncImportSummary(excelPayload.importSummary)
+    setExcelSyncEmbeddedImages(excelPayload.embeddedLineImages)
     setExcelSyncSourceFileName(sourceFileName)
     setExcelSyncSourceFile(options.sourceFile || null)
     setExcelSyncQuoteNumberInput(quoteNumberFromExcel)
@@ -5649,6 +5669,62 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     return nextQueue
   }, [resetExcelSyncDialog])
 
+  const uploadLineItemImages = useCallback(async (
+    files: Array<File | PreparedQuoteImage>,
+    quoteNumber: string,
+    companyName: string,
+  ): Promise<CrmQuoteLineImage[]> => {
+    const normalizedQuoteNumber = quoteNumber.trim()
+    const companySegment = sanitizeStoragePathSegment(companyName.trim() || 'company', 'company')
+    const quoteSegment = sanitizeStoragePathSegment(
+      normalizedQuoteNumber || `draft-${crypto.randomUUID()}`,
+      'opportunity',
+    )
+    const uploadedImages: CrmQuoteLineImage[] = []
+
+    for (const imageInput of files) {
+      const file = imageInput instanceof File ? imageInput : imageInput.file
+      if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+        throw new Error(`${file.name} must be a JPG, PNG, or WebP image.`)
+      }
+      if (file.size > 10 * 1024 * 1024) {
+        throw new Error(`${file.name} must be 10 MB or smaller.`)
+      }
+
+      const id = crypto.randomUUID()
+      const extension = resolveFileExtension(file) || '.jpg'
+      const filePath = `crm/opportunities/${companySegment}/${quoteSegment}-line-image-${id}${extension}`
+      const reference = storageRef(firebaseStorage, filePath)
+      const dimensions = await readImageDimensions(file)
+      await uploadBytes(reference, file, { contentType: file.type })
+      uploadedImages.push({
+        id,
+        url: await getDownloadURL(reference),
+        name: file.name,
+        width: dimensions.width,
+        height: dimensions.height,
+        shape: imageInput instanceof File ? null : imageInput.shape,
+        displaySize: imageInput instanceof File ? 'medium' : imageInput.displaySize,
+      })
+    }
+
+    return uploadedImages
+  }, [])
+
+  const deleteUploadedDraftImages = useCallback(async (images: CrmQuoteLineImage[]) => {
+    await Promise.all(images.map(async (image) => {
+      const imageUrl = String(image.url || '').trim()
+      if (!imageUrl) return
+
+      try {
+        await deleteObject(storageRef(firebaseStorage, imageUrl))
+      } catch {
+        // Cleanup is best-effort. The quote itself never saves an image URL
+        // when its draft is discarded, so a failed cleanup remains harmless.
+      }
+    }))
+  }, [])
+
   const handleConfirmExcelQuoteSync = useCallback(async () => {
     if (!excelSyncDraft) {
       return
@@ -5711,6 +5787,39 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         throw new Error('The source workbook must be 25 MB or smaller.')
       }
 
+      const syncedLineItems = Array.isArray(excelSyncDraft.lineItems)
+        ? excelSyncDraft.lineItems.map((lineItem) => ({
+          ...lineItem,
+          images: Array.isArray(lineItem.images) ? [...lineItem.images] : [],
+        }))
+        : []
+
+      if (excelSyncEmbeddedImages.length > 0) {
+        const mainLineIndexes = syncedLineItems
+          .map((lineItem, index) => ({ lineItem, index }))
+          .filter(({ lineItem }) => !lineItem.parentLineId)
+          .map(({ index }) => index)
+
+        for (const embeddedImage of excelSyncEmbeddedImages) {
+          const targetLineIndex = mainLineIndexes[embeddedImage.mainLineIndex]
+          if (targetLineIndex === undefined) continue
+
+          const targetLine = syncedLineItems[targetLineIndex]
+          const existingImages = Array.isArray(targetLine.images) ? targetLine.images : []
+          if (existingImages.length >= 2) continue
+
+          const uploadedImages = await uploadLineItemImages(
+            [embeddedImage.file],
+            quoteNumber,
+            resolvedCompanyName || String(excelSyncDraft.companyName || ''),
+          )
+          syncedLineItems[targetLineIndex] = {
+            ...targetLine,
+            images: [...existingImages, ...uploadedImages].slice(0, 2),
+          }
+        }
+      }
+
       const companySegment = sanitizeStoragePathSegment(resolvedCompanyName || 'company', 'company')
       const quoteSegment = sanitizeStoragePathSegment(quoteNumber, 'opportunity')
       const workbookExtension = resolveFileExtension(excelSyncSourceFile) || '.xlsx'
@@ -5735,6 +5844,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         dealerState: dealerStateCode,
         projectType: projectTypeInput,
         origin: 'excel',
+        lineItems: syncedLineItems,
         sourceWorkbookUrl,
         sourceWorkbookName: excelSyncSourceFile.name,
         convertedPdfUrl: converted.convertedPdfUrl,
@@ -5846,6 +5956,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     excelSyncLaunchMode,
     excelSyncDealerStateCode,
     excelSyncDraft,
+    excelSyncEmbeddedImages,
     excelSyncSourceFile,
     excelSyncLookupResult,
     excelSyncAccountMode,
@@ -5859,6 +5970,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     pendingFolderScanFiles,
     quotes,
     resetExcelSyncDialog,
+    uploadLineItemImages,
   ])
 
   const handleSketchupDocumentUpload = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
@@ -5914,48 +6026,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       setIsUploadingQuoteDocument(false)
     }
   }, [formState.companyName, formState.quoteNumber])
-
-  const uploadLineItemImages = useCallback(async (
-    files: Array<File | PreparedQuoteImage>,
-    quoteNumber: string,
-    companyName: string,
-  ): Promise<CrmQuoteLineImage[]> => {
-    const normalizedQuoteNumber = quoteNumber.trim()
-    const companySegment = sanitizeStoragePathSegment(companyName.trim() || 'company', 'company')
-    const quoteSegment = sanitizeStoragePathSegment(
-      normalizedQuoteNumber || `draft-${crypto.randomUUID()}`,
-      'opportunity',
-    )
-    const uploadedImages: CrmQuoteLineImage[] = []
-
-    for (const imageInput of files) {
-      const file = imageInput instanceof File ? imageInput : imageInput.file
-      if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
-        throw new Error(`${file.name} must be a JPG, PNG, or WebP image.`)
-      }
-      if (file.size > 10 * 1024 * 1024) {
-        throw new Error(`${file.name} must be 10 MB or smaller.`)
-      }
-
-      const id = crypto.randomUUID()
-      const extension = resolveFileExtension(file) || '.jpg'
-      const filePath = `crm/opportunities/${companySegment}/${quoteSegment}-line-image-${id}${extension}`
-      const reference = storageRef(firebaseStorage, filePath)
-      const dimensions = await readImageDimensions(file)
-      await uploadBytes(reference, file, { contentType: file.type })
-      uploadedImages.push({
-        id,
-        url: await getDownloadURL(reference),
-        name: file.name,
-        width: dimensions.width,
-        height: dimensions.height,
-        shape: imageInput instanceof File ? null : imageInput.shape,
-        displaySize: imageInput instanceof File ? 'medium' : imageInput.displaySize,
-      })
-    }
-
-    return uploadedImages
-  }, [])
 
   const uploadSelectedOpportunityDocumentFile = useCallback(async (
     quote: CrmQuote,
@@ -6043,7 +6113,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         return
       }
 
-      let parsedExcelPayload: CrmExcelQuoteSyncInput | null = null
+      let parsedExcelPayload: ParsedExcelQuoteSyncInput | null = null
       let sourceExcelFileName = ''
       let sourceExcelFile: File | null = null
       const preferredQuoteNumber = resolveFolderScanPreferredQuoteNumber(scannedFiles, quotes)
@@ -6070,61 +6140,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         throw new Error('Excel quote file is missing a quote number.')
       }
 
-      const normalizedQuoteNumber = normalizeMatchValue(quoteNumberFromExcel)
-      const existingQuote = quotes.find((entry) => normalizeMatchValue(entry.quoteNumber) === normalizedQuoteNumber) || null
-
-      if (existingQuote) {
-        let syncedQuote: CrmQuote | null = existingQuote
-        let syncErrorMessage = ''
-
-        try {
-          const syncResponse = await syncCrmQuoteFromExcel({
-            ...parsedExcelPayload,
-            quoteNumber: quoteNumberFromExcel,
-          })
-
-          syncedQuote = syncResponse.quote || syncedQuote
-        } catch (error) {
-          const apiError = error as {
-            status?: number
-            payload?: {
-              error?: unknown
-              message?: unknown
-            }
-          }
-
-          const payloadError = typeof apiError.payload === 'object' && apiError.payload
-            ? String(apiError.payload.error ?? apiError.payload.message ?? '').trim()
-            : ''
-
-          syncErrorMessage = payloadError || (error instanceof Error ? error.message : 'Failed to sync Excel data for this quote.')
-
-          if (apiError.status !== 409) {
-            throw error
-          }
-        }
-
-        if (!syncedQuote) {
-          throw new Error('Could not resolve the existing quote for this scanned folder.')
-        }
-
-        syncedQuote = await loadOpportunityDetails(syncedQuote)
-
-        const nextQueue = openFolderScanSelectionDialogForQuote(syncedQuote, scannedFiles)
-        const queueLabel = nextQueue.length === 1 ? '1 new file' : `${nextQueue.length} new files`
-
-        setSuccessMessage(
-          `Quote ${quoteNumberFromExcel} already exists. Showing ${queueLabel}. Only the main Quotes-folder Excel file is always included.`,
-        )
-
-        if (syncErrorMessage) {
-          setErrorMessage(syncErrorMessage)
-        }
-
-        await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.crmOpportunitiesQuotes })
-        return
-      }
-
       await initializeExcelSyncFromPayload(parsedExcelPayload, sourceExcelFileName, {
         launchMode: 'folder_scan',
         scannedFiles,
@@ -6135,7 +6150,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     } finally {
       setIsUploadingFolderSelection(false)
     }
-  }, [canManage, initializeExcelSyncFromPayload, loadOpportunityDetails, openFolderScanSelectionDialogForQuote, queryClient, quotes])
+  }, [canManage, initializeExcelSyncFromPayload, quotes])
 
   const handleToggleFolderScanEntry = useCallback((entryId: string, checked: boolean) => {
     setFolderScanQueue((current) => current.map((entry) => {
@@ -6773,6 +6788,10 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       }
     }
 
+    // New-quote pictures upload for immediate preview. Remove every one when
+    // the draft is discarded so Storage cannot accumulate orphan files.
+    void deleteUploadedDraftImages(formState.lineItems.flatMap((lineItem) => lineItem.images))
+
     const emptyFormState = createEmptyOpportunityForm()
 
     setFormState(emptyFormState)
@@ -6788,7 +6807,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     setAddDialogInitialSnapshot(serializeOpportunityFormState(emptyFormState))
     setIsAddDialogDraftFromExcelSync(false)
     setIsDialogOpen(false)
-  }, [isAddDialogDirty, isSavingOpportunity, isUploadingQuoteDocument])
+  }, [deleteUploadedDraftImages, formState.lineItems, isAddDialogDirty, isSavingOpportunity, isUploadingQuoteDocument])
 
   const handleCloseOpportunityDetails = useCallback(() => {
     if (
@@ -6856,10 +6875,16 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   }, [])
 
   const handleRemoveFormLineItem = useCallback((index: number) => {
+    const removedLine = formState.lineItems[index]
+    const removedImages = formState.lineItems
+      .filter((entry, entryIndex) => entryIndex === index || entry.parentLineId === removedLine?.id)
+      .flatMap((entry) => entry.images)
+    void deleteUploadedDraftImages(removedImages)
+
     setFormState((current) => {
-      const removedLine = current.lineItems[index]
+      const currentRemovedLine = current.lineItems[index]
       const nextLineItems = current.lineItems.filter((entry, entryIndex) => (
-        entryIndex !== index && entry.parentLineId !== removedLine?.id
+        entryIndex !== index && entry.parentLineId !== currentRemovedLine?.id
       ))
 
       return {
@@ -6867,7 +6892,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         lineItems: nextLineItems.length > 0 ? nextLineItems : [createEmptyLineItemFormState()],
       }
     })
-  }, [])
+  }, [deleteUploadedDraftImages, formState.lineItems])
 
   const handleUpdateFormLineItem = useCallback(
     (index: number, field: 'detailLabel' | 'description' | 'qty' | 'unitPrice' | 'extPrice', value: string) => {
@@ -6888,6 +6913,12 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     setIsUploadingLineImage(true)
     try {
       const images = await uploadLineItemImages(files, formState.quoteNumber, formState.companyName)
+      const replacedImage = replaceImageId
+        ? formState.lineItems[index]?.images.find((image) => image.id === replaceImageId)
+        : null
+      if (replacedImage && images[0]) {
+        void deleteUploadedDraftImages([replacedImage])
+      }
       setFormState((current) => ({
         ...current,
         lineItems: current.lineItems.map((line, lineIndex) => lineIndex === index
@@ -6906,16 +6937,20 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     } finally {
       setIsUploadingLineImage(false)
     }
-  }, [formState.companyName, formState.quoteNumber, uploadLineItemImages])
+  }, [deleteUploadedDraftImages, formState.companyName, formState.lineItems, formState.quoteNumber, uploadLineItemImages])
 
   const handleRemoveFormLineImage = useCallback((lineIndex: number, imageId: string) => {
+    const removedImage = formState.lineItems[lineIndex]?.images.find((image) => image.id === imageId)
+    if (removedImage) {
+      void deleteUploadedDraftImages([removedImage])
+    }
     setFormState((current) => ({
       ...current,
       lineItems: current.lineItems.map((line, index) => index === lineIndex
         ? { ...line, images: line.images.filter((image) => image.id !== imageId) }
         : line),
     }))
-  }, [])
+  }, [deleteUploadedDraftImages, formState.lineItems])
 
   const handleUpdateFormLineImageLayout = useCallback((lineIndex: number, imageId: string, pdfLayout: QuoteImagePdfLayout) => {
     setFormState((current) => ({
@@ -8875,6 +8910,22 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
               <Typography variant="caption" color="text.secondary">
                 File: {excelSyncSourceFileName}
               </Typography>
+            ) : null}
+
+            {excelSyncImportSummary ? (
+              <Alert severity="info" sx={{ alignItems: 'flex-start' }}>
+                <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                  {excelSyncImportSummary.sheetName}
+                </Typography>
+                <Typography variant="caption" component="div">
+                  {excelSyncImportSummary.mainLineCount} main lines, {excelSyncImportSummary.pairedSublineCount} two-column sublines, and {excelSyncImportSummary.singleColumnSublineCount} single-column sublines detected.
+                </Typography>
+                {excelSyncImportSummary.embeddedImageCount > 0 ? (
+                  <Typography variant="caption" component="div">
+                    {excelSyncImportSummary.matchedImageCount} embedded line {excelSyncImportSummary.matchedImageCount === 1 ? 'image' : 'images'} will be uploaded with this quote.
+                  </Typography>
+                ) : null}
+              </Alert>
             ) : null}
 
             <Stack spacing={0.55}>

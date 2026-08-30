@@ -1,0 +1,96 @@
+{
+  "summary": {
+    "description": "Conference table 10ft",
+    "productType": "table.rectangular",
+    "productLabel": "Rectangular table / desk",
+    "units": "in",
+    "quoteNumber": "DEMO-002",
+    "client": "Sample Client",
+    "itemNumber": 2,
+    "overall": {
+      "width": "120\"",
+      "height": "29\"",
+      "depth": "48\""
+    },
+    "triangles": 48,
+    "glbBytes": 3752,
+    "unknownParams": []
+  },
+  "cutList": {
+    "rows": [
+      {
+        "description": "end panel L, end panel R",
+        "qty": 2,
+        "material": "walnut",
+        "materialLabel": "American Walnut",
+        "width": "1 1/2\"",
+        "height": "27 1/2\"",
+        "depth": "32\"",
+        "widthRaw": 1.5,
+        "heightRaw": 27.5,
+        "depthRaw": 32,
+        "faceAreaSqFt": 12.222
+      },
+      {
+        "description": "stretcher",
+        "qty": 1,
+        "material": "walnut",
+        "materialLabel": "American Walnut",
+        "width": "93\"",
+        "height": "3\"",
+        "depth": "3\"",
+        "widthRaw": 93,
+        "heightRaw": 3,
+        "depthRaw": 3,
+        "faceAreaSqFt": 1.938
+      },
+      {
+        "description": "top",
+        "qty": 1,
+        "material": "walnut",
+        "materialLabel": "American Walnut",
+        "width": "120\"",
+        "height": "1 1/2\"",
+        "depth": "48\"",
+        "widthRaw": 120,
+        "heightRaw": 1.5,
+        "depthRaw": 48,
+        "faceAreaSqFt": 40
+      }
+    ],
+    "totals": {
+      "partCount": 4,
+      "faceAreaSqFtByFinish": {
+        "walnut": 54.16
+      }
+    }
+  },
+  "spec": {
+    "specVersion": 1,
+    "units": "in",
+    "project": {
+      "quoteNumber": "DEMO-002",
+      "client": "Sample Client",
+      "itemNumber": 2,
+      "description": "Conference table 10ft"
+    },
+    "product": {
+      "type": "table.rectangular",
+      "params": {
+        "topWidth": 120,
+        "topDepth": 48,
+        "topThickness": "1 1/2\"",
+        "overallHeight": 29,
+        "baseType": "panel-ends",
+        "panelThickness": "1 1/2\"",
+        "panelInsetFromEnd": 12,
+        "panelInsetFromSide": 8,
+        "hasStretcher": true,
+        "stretcherSection": 3,
+        "stretcherHeightFromFloor": 8,
+        "topFinish": "walnut",
+        "baseFinish": "walnut"
+      }
+    }
+  }
+}

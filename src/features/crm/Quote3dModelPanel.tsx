@@ -16,11 +16,7 @@ import {
   DialogTitle,
   Divider,
   Paper,
-  FormControl,
   FormControlLabel,
-  InputLabel,
-  MenuItem,
-  Select,
   Slider,
   Stack,
   Switch,
@@ -28,19 +24,20 @@ import {
   Typography,
 } from '@mui/material'
 import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage'
-import { useCallback, useEffect, useRef, useState, type ElementType } from 'react'
-import '@google/model-viewer'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { firebaseStorage } from '../../auth/firebase'
 import { sanitizeStoragePathSegment } from '../../lib/fileUtils'
+import SketchUpStyleViewer from './SketchUpStyleViewer'
 import {
   commitTrimbleQuoteModelUpload,
+  default3dViewerSettings,
   fetchTrimbleConnectionStatus,
   initiateTrimbleQuoteModelUpload,
-  modelViewerEnvironmentImage,
   publishGlbQuoteModels,
   publishSketchUpShareLink,
   prepareQuote3dCustomerModel,
   removeTrimbleQuoteModel,
+  resolve3dViewerSettings,
   saveQuote3dViewerSettings,
   startTrimbleConnection,
   uploadTrimbleSavedQuoteModels,
@@ -48,21 +45,8 @@ import {
   type CrmQuote,
 } from './api'
 
-const SmoothModelViewer = 'model-viewer' as unknown as ElementType
-
-const defaultViewerSettings: Required<Crm3dViewerSettings> = {
-  exposure: 1.08,
-  shadowIntensity: 0.8,
-  toneMapping: 'neutral',
-  environmentImage: 'even',
-  backgroundColor: '#f4f2ed',
-  autoRotate: true,
-  fieldOfView: 30,
-}
-
-function resolveViewerSettings(settings?: Crm3dViewerSettings | null): Required<Crm3dViewerSettings> {
-  return { ...defaultViewerSettings, ...settings }
-}
+const defaultViewerSettings = default3dViewerSettings
+const resolveViewerSettings = resolve3dViewerSettings
 
 type Props = {
   quote: CrmQuote
@@ -544,18 +528,11 @@ export default function Quote3dModelPanel({ quote, revisionNumber, canManage, on
               sx={{ height: { xs: 330, md: 520 }, overflow: 'hidden', borderRadius: 2, bgcolor: viewerSettings.backgroundColor, position: 'relative' }}
             >
               {primaryGlbUrl ? (
-                <Box
-                  component={SmoothModelViewer}
+                <SketchUpStyleViewer
                   src={primaryGlbUrl}
                   alt={`${quote.title} 3D model preview`}
-                  camera-controls
-                  auto-rotate={viewerSettings.autoRotate || undefined}
-                  shadow-intensity={viewerSettings.shadowIntensity}
-                  exposure={viewerSettings.exposure}
-                  environment-image={modelViewerEnvironmentImage(viewerSettings.environmentImage)}
-                  tone-mapping={viewerSettings.toneMapping}
-                  field-of-view={`${viewerSettings.fieldOfView}deg`}
-                  sx={{ width: '100%', height: '100%', display: 'block', '--poster-color': viewerSettings.backgroundColor }}
+                  settings={viewerSettings}
+                  sx={{ width: '100%', height: '100%' }}
                 />
               ) : null}
             </Paper>
@@ -564,31 +541,48 @@ export default function Quote3dModelPanel({ quote, revisionNumber, canManage, on
             </Alert>
             <Stack direction={{ xs: 'column', md: 'row' }} spacing={2}>
               <Stack spacing={1.2} sx={{ flex: 1 }}>
-                <Typography variant="subtitle2" fontWeight={850}>Lighting and color</Typography>
-                <Typography variant="caption" color="text.secondary">Exposure</Typography>
-                <Slider value={viewerSettings.exposure} min={0.5} max={1.5} step={0.05} valueLabelDisplay="auto" onChange={(_, value) => setViewerSettings((current) => ({ ...current, exposure: Number(value) }))} />
-                <Typography variant="caption" color="text.secondary">Shadow strength</Typography>
-                <Slider value={viewerSettings.shadowIntensity} min={0} max={2} step={0.1} valueLabelDisplay="auto" onChange={(_, value) => setViewerSettings((current) => ({ ...current, shadowIntensity: Number(value) }))} />
-                <FormControl fullWidth size="small">
-                  <InputLabel id="tone-mapping-label">Color rendering</InputLabel>
-                  <Select labelId="tone-mapping-label" label="Color rendering" value={viewerSettings.toneMapping} onChange={(event) => setViewerSettings((current) => ({ ...current, toneMapping: event.target.value as Required<Crm3dViewerSettings>['toneMapping'] }))}>
-                    <MenuItem value="neutral">Accurate product color</MenuItem>
-                    <MenuItem value="aces">High-contrast studio</MenuItem>
-                    <MenuItem value="agx">Soft product studio</MenuItem>
-                    <MenuItem value="cineon">Warm presentation</MenuItem>
-                  </Select>
-                </FormControl>
-                <FormControl fullWidth size="small">
-                  <InputLabel id="environment-label">Lighting environment</InputLabel>
-                  <Select labelId="environment-label" label="Lighting environment" value={viewerSettings.environmentImage} onChange={(event) => setViewerSettings((current) => ({ ...current, environmentImage: event.target.value as Required<Crm3dViewerSettings>['environmentImage'] }))}>
-                    <MenuItem value="even">Even studio — true SketchUp colors</MenuItem>
-                    <MenuItem value="neutral">Neutral studio</MenuItem>
-                    <MenuItem value="legacy">Soft legacy studio</MenuItem>
-                  </Select>
-                </FormControl>
+                <Typography variant="subtitle2" fontWeight={850}>SketchUp outlines</Typography>
+                <FormControlLabel
+                  control={<Switch checked={viewerSettings.showEdges} onChange={(event) => setViewerSettings((current) => ({ ...current, showEdges: event.target.checked }))} />}
+                  label="Draw outlines like SketchUp"
+                />
+                <Typography variant="caption" color="text.secondary">
+                  Outline detail — lower shows more lines, higher shows only the main profiles
+                </Typography>
+                <Slider
+                  value={viewerSettings.edgeThreshold}
+                  min={5}
+                  max={45}
+                  step={1}
+                  disabled={!viewerSettings.showEdges}
+                  valueLabelDisplay="auto"
+                  onChange={(_, value) => setViewerSettings((current) => ({ ...current, edgeThreshold: Number(value) }))}
+                />
+                <Typography variant="caption" color="text.secondary">Outline thickness</Typography>
+                <Slider
+                  value={viewerSettings.edgeWidth}
+                  min={1}
+                  max={4}
+                  step={0.25}
+                  disabled={!viewerSettings.showEdges}
+                  valueLabelDisplay="auto"
+                  onChange={(_, value) => setViewerSettings((current) => ({ ...current, edgeWidth: Number(value) }))}
+                />
+                <TextField
+                  label="Outline color"
+                  type="color"
+                  value={viewerSettings.edgeColor}
+                  disabled={!viewerSettings.showEdges}
+                  onChange={(event) => setViewerSettings((current) => ({ ...current, edgeColor: event.target.value }))}
+                  slotProps={{ inputLabel: { shrink: true } }}
+                  fullWidth
+                  size="small"
+                />
               </Stack>
               <Stack spacing={1.2} sx={{ flex: 1 }}>
                 <Typography variant="subtitle2" fontWeight={850}>Presentation</Typography>
+                <Typography variant="caption" color="text.secondary">Brightness</Typography>
+                <Slider value={viewerSettings.brightness} min={0.6} max={1.4} step={0.02} valueLabelDisplay="auto" onChange={(_, value) => setViewerSettings((current) => ({ ...current, brightness: Number(value) }))} />
                 <Typography variant="caption" color="text.secondary">Camera field of view</Typography>
                 <Slider value={viewerSettings.fieldOfView} min={15} max={55} step={1} valueLabelDisplay="auto" onChange={(_, value) => setViewerSettings((current) => ({ ...current, fieldOfView: Number(value) }))} />
                 <FormControlLabel control={<Switch checked={viewerSettings.autoRotate} onChange={(event) => setViewerSettings((current) => ({ ...current, autoRotate: event.target.checked }))} />} label="Rotate automatically when idle" />

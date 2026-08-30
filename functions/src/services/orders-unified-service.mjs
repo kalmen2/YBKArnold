@@ -1737,6 +1737,11 @@ export function createOrdersUnifiedService(deps) {
 
     // -- Final mapping --------------------------------------------------------
 
+    const storedRowsByOrderKey = new Map(
+      (Array.isArray(existingNonShippedRows) ? existingNonShippedRows : [])
+        .map((stored) => [normalizeText(stored?.orderKey, 200), stored])
+        .filter(([orderKey]) => Boolean(orderKey)),
+    )
     const storedPartsByOrderKey = new Map(
       (Array.isArray(existingNonShippedRows) ? existingNonShippedRows : [])
         .map((stored) => [normalizeText(stored?.orderKey, 200), Array.isArray(stored?.design_parts) ? stored.design_parts : []])
@@ -1744,6 +1749,7 @@ export function createOrdersUnifiedService(deps) {
     )
 
     const mergedRows = [...mergedByKey.values()].map((row) => {
+      const storedRow = storedRowsByOrderKey.get(normalizeText(row?.orderKey, 200)) || null
       const storedParts = storedPartsByOrderKey.get(normalizeText(row?.orderKey, 200)) || []
       const localParts = storedParts.filter((part) => String(part?.sourceType ?? '').trim() !== 'monday')
       const localMondayIds = new Set(localParts.map((part) => normalizeText(part?.mondaySubitemId, 120)).filter(Boolean))
@@ -1831,6 +1837,27 @@ export function createOrdersUnifiedService(deps) {
       row.lastSyncedAt = refreshedAt
       row.updatedAt = refreshedAt
       row.quickbooks_synced_at = quickBooksData?.generatedAt || null
+
+      // Once document lines are edited on the website, their total is the
+      // source of truth. Monday/Excel refreshes do not carry those edits and
+      // must not restore the original imported order total.
+      const websiteCalculatedOrderTotal = toMoney(storedRow?.website_calculated_order_total)
+      if (websiteCalculatedOrderTotal !== null) {
+        row.website_calculated_order_total = websiteCalculatedOrderTotal
+        row.website_calculated_order_total_at = toIsoOrNull(
+          storedRow?.website_calculated_order_total_at,
+        ) || refreshedAt
+        row.canonical_order_value = websiteCalculatedOrderTotal
+        row.orderValue = websiteCalculatedOrderTotal
+
+        const productValue = toMoney(storedRow?.canonical_product_value)
+        const freightValue = toMoney(storedRow?.canonical_freight_value)
+        if (productValue !== null) row.canonical_product_value = productValue
+        if (freightValue !== null) row.canonical_freight_value = freightValue
+        if (storedRow?.source_quote_snapshot && typeof storedRow.source_quote_snapshot === 'object') {
+          row.source_quote_snapshot = storedRow.source_quote_snapshot
+        }
+      }
 
       return row
     })

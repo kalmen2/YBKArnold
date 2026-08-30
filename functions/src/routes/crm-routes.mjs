@@ -1396,15 +1396,40 @@ function normalizeExcelQuoteLineItems(input, existingLineItems) {
     return existing
   }
 
-  return incoming.map((lineItem, index) => {
-    const matchingLine = existing.find((entry) => entry.id === lineItem.id)
-      || existing.find((entry) => entry.itemNumber > 0 && entry.itemNumber === lineItem.itemNumber)
-      || existing[index]
+  const existingMainLines = existing.filter((entry) => !entry.parentLineId)
+  const mainLineIds = new Map()
+  let mainLineIndex = 0
+
+  return incoming.map((lineItem) => {
+    const isSubline = Boolean(lineItem.parentLineId)
+    let matchingLine = null
+    let parentLineId = lineItem.parentLineId
+
+    if (!isSubline) {
+      matchingLine = existing.find((entry) => !entry.parentLineId && entry.id === lineItem.id)
+        || existingMainLines.find((entry) => entry.itemNumber > 0 && entry.itemNumber === lineItem.itemNumber)
+        || existingMainLines[mainLineIndex]
+        || null
+      mainLineIds.set(lineItem.id, matchingLine?.id || lineItem.id)
+      mainLineIndex += 1
+    } else {
+      parentLineId = mainLineIds.get(lineItem.parentLineId) || lineItem.parentLineId
+      matchingLine = existing.find((entry) => (
+        entry.parentLineId === parentLineId
+        && entry.detailLabel === lineItem.detailLabel
+        && entry.description === lineItem.description
+      )) || null
+    }
 
     return {
       ...lineItem,
       id: matchingLine?.id || lineItem.id,
-      images: Array.isArray(matchingLine?.images) ? matchingLine.images : lineItem.images,
+      parentLineId,
+      // Excel sync can now bring an embedded workbook image. Keep existing
+      // manually uploaded images as well instead of replacing either source.
+      images: [...(Array.isArray(matchingLine?.images) ? matchingLine.images : []), ...(Array.isArray(lineItem.images) ? lineItem.images : [])]
+        .filter((image, imageIndex, images) => images.findIndex((candidate) => candidate.url === image.url) === imageIndex)
+        .slice(0, 2),
     }
   })
 }

@@ -65,11 +65,13 @@ export function registerOrdersRoutes(app, deps) {
     deleteMondayItem,
     decodeBase64Image,
     fetchMondayBoardColumns,
+    fetchMondayBoardItemNames,
     fetchMondayBoardItemsByIds,
     fetchMondayBoardsCatalog,
     fetchMondayStatusColumnOptions,
     getCollections,
     getOrderPhotosBucket,
+    invalidateMondayBoardNamesCache,
     mobileAlertTargetModeSelected,
     moveMondayItemToBoard,
     normalizeEmail,
@@ -1004,8 +1006,17 @@ export function registerOrdersRoutes(app, deps) {
       quoteAcceptedAt: String(orderDocument?.quote_accepted_at ?? '').trim() || null,
       convertedAt: String(orderDocument?.converted_at ?? '').trim() || null,
       convertedByEmail: String(orderDocument?.converted_by_email ?? '').trim() || null,
-      dealerSourceId: String(orderDocument?.dealer_source_id ?? '').trim() || null,
-      dealerName: String(orderDocument?.dealer_name ?? '').trim() || null,
+      dealerSourceId: String(
+        orderDocument?.dealer_source_id
+        || quoteSnapshot?.dealerSourceId
+        || '',
+      ).trim() || null,
+      dealerName: String(
+        orderDocument?.dealer_name
+        || quoteSnapshot?.dealerName
+        || quoteSnapshot?.companyName
+        || '',
+      ).trim() || null,
       mondayItemId,
       orderNumber: resolvedOrderNumber,
       jobNumber: resolvedOrderNumber,
@@ -1057,7 +1068,12 @@ export function registerOrdersRoutes(app, deps) {
       poNumber: String(orderDocument?.po_number ?? '').trim() || null,
       bench: String(orderDocument?.bench ?? '').trim() || null,
       notes: String(orderDocument?.monday_notes ?? '').trim() || null,
-      description: String(orderDocument?.monday_description ?? '').trim() || null,
+      description: String(
+        orderDocument?.monday_description
+        || quoteSnapshot?.description
+        || quoteSnapshot?.title
+        || '',
+      ).trim() || null,
       contactName: String(quoteSnapshot?.contactName ?? '').trim() || null,
       contactEmail: String(quoteSnapshot?.contactEmail ?? '').trim() || null,
       contactPhone: String(quoteSnapshot?.contactPhone ?? '').trim() || null,
@@ -2631,11 +2647,14 @@ export function registerOrdersRoutes(app, deps) {
     createMondayItem,
     deleteMondayItem,
     fetchMondayBoardColumns,
+    fetchMondayBoardItemNames,
     fetchMondayBoardItemsByIds,
     fetchMondayBoardsCatalog,
+    fetchMondayStatusColumnOptions,
     getCollections,
     mobileAlertTargetModeSelected,
     moveMondayItemToBoard,
+    invalidateMondayBoardNamesCache,
     normalizeEmail,
     randomUUID,
     refreshOrdersUnifiedCollection,
@@ -2645,6 +2664,7 @@ export function registerOrdersRoutes(app, deps) {
     toPublicMobileAlert,
     updateMondayItemJsonColumn,
     updateMondayItemName,
+    updateMondayItemStatusColumn,
     updateMondayItemTextColumn,
   })
 

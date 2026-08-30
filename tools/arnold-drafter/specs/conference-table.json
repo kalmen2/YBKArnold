@@ -1,0 +1,28 @@
+{
+  "specVersion": 1,
+  "units": "in",
+  "project": {
+    "quoteNumber": "DEMO-002",
+    "client": "Sample Client",
+    "itemNumber": 2,
+    "description": "Conference table 10ft"
+  },
+  "product": {
+    "type": "table.rectangular",
+    "params": {
+      "topWidth": 120,
+      "topDepth": 48,
+      "topThickness": "1 1/2\"",
+      "overallHeight": 29,
+      "baseType": "panel-ends",
+      "panelThickness": "1 1/2\"",
+      "panelInsetFromEnd": 12,
+      "panelInsetFromSide": 8,
+      "hasStretcher": true,
+      "stretcherSection": 3,
+      "stretcherHeightFromFloor": 8,
+      "topFinish": "walnut",
+      "baseFinish": "walnut"
+    }
+  }
+}

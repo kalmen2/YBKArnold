@@ -26,27 +26,20 @@ import { tmpdir } from 'node:os'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
-// Keep in sync with defaultViewerSettings in src/pages/Public3dViewerPage.tsx.
+// Keep in sync with default3dViewerSettings in src/features/crm/api.ts.
 const VIEWER_SETTINGS = {
-  exposure: 1.08,
-  shadowIntensity: 0.8,
-  toneMapping: 'neutral',
-  environmentImage: '/3d-backgrounds/even-studio.png',
-  backgroundColor: '#f4f2ed',
-  fieldOfView: 30,
+  brightness: 1,
+  edgeColor: '#000000',
+  edgeThreshold: 18,
+  edgeWidth: 2,
+  showEdges: true,
+  backgroundColor: '#ffffff',
+  fieldOfView: 28,
 }
 
-// One elevation, six azimuths: rotation drift then isolates the compass
-// direction a surface faces, which is the axis directional lighting breaks on.
-// 55deg looks slightly down at the model so top faces are sampled too.
-const ORBITS = [
-  '0deg 55deg 105%',
-  '60deg 55deg 105%',
-  '120deg 55deg 105%',
-  '180deg 55deg 105%',
-  '240deg 55deg 105%',
-  '300deg 55deg 105%',
-]
+// One elevation, six azimuths: drift across them isolates the compass direction
+// a surface faces. 55deg looks slightly down so top faces are sampled too.
+const ORBITS = [0, 60, 120, 180, 240, 300].map((azimuth) => ({ azimuth, elevation: 55 }))
 
 const BUDGET = {
   maxBytes: 8 * 1024 * 1024,
@@ -189,35 +182,118 @@ function auditMaterials(gltf) {
   return { usesSpecGloss, metallicTextured }
 }
 
+// Mirrors src/features/crm/SketchUpStyleViewer.tsx: flat matte materials, no
+// environment map, and SketchUp-style edge lines. Kept in sync by hand — if the
+// component's shading changes, change it here too or the test stops measuring
+// what customers actually see.
 const HARNESS_HTML = `<!doctype html>
 <html><head><meta charset="utf-8">
-<script type="module" src="/model-viewer.min.js"></script>
-<style>html,body{margin:0;height:100%}model-viewer{width:100%;height:100%;--poster-color:transparent}</style>
+<style>html,body{margin:0;height:100%;overflow:hidden}canvas{display:block}</style>
+<script type="importmap">
+{"imports":{"three":"/three/build/three.module.js","three/addons/":"/three/examples/jsm/"}}
+</script>
 </head><body>
-<model-viewer id="mv" camera-controls disable-zoom interaction-prompt="none"></model-viewer>
-<script>
-  const params = new URLSearchParams(location.search)
-  const settings = JSON.parse(decodeURIComponent(params.get('settings')))
-  const mv = document.getElementById('mv')
-  mv.style.backgroundColor = settings.backgroundColor
-  mv.exposure = settings.exposure
-  mv.shadowIntensity = settings.shadowIntensity
-  mv.toneMapping = settings.toneMapping
-  mv.environmentImage = settings.environmentImage
-  mv.fieldOfView = settings.fieldOfView + 'deg'
-  mv.addEventListener('load', () => { window.__loaded = true })
-  mv.addEventListener('error', (event) => {
-    window.__error = String((event.detail && event.detail.sourceError) || event.type)
-  })
-  mv.src = params.get('model')
+<script type="module">
+import * as THREE from 'three'
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js'
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
+import { LineMaterial } from 'three/addons/lines/LineMaterial.js'
+import { LineSegments2 } from 'three/addons/lines/LineSegments2.js'
+import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js'
 
-  window.__renderAt = async (orbit) => {
-    mv.cameraOrbit = orbit
-    await mv.updateComplete
-    await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))
-    await new Promise((done) => setTimeout(done, 450))
-    return mv.toDataURL('image/png')
+const params = new URLSearchParams(location.search)
+const settings = JSON.parse(decodeURIComponent(params.get('settings')))
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true })
+renderer.setPixelRatio(1)
+renderer.setSize(window.innerWidth, window.innerHeight, false)
+renderer.outputColorSpace = THREE.SRGBColorSpace
+document.body.appendChild(renderer.domElement)
+
+const scene = new THREE.Scene()
+scene.background = new THREE.Color(settings.backgroundColor)
+const camera = new THREE.PerspectiveCamera(settings.fieldOfView, window.innerWidth / window.innerHeight, 0.1, 10000)
+
+const hemisphere = new THREE.HemisphereLight(0xffffff, 0xd8d4cc, 1.15 * settings.brightness)
+const ambient = new THREE.AmbientLight(0xffffff, 0.55 * settings.brightness)
+const keyLight = new THREE.DirectionalLight(0xffffff, 0.6 * settings.brightness)
+scene.add(hemisphere, ambient, keyLight)
+
+const group = new THREE.Group()
+scene.add(group)
+let center = new THREE.Vector3()
+let distance = 10
+
+const draco = new DRACOLoader()
+draco.setDecoderPath('/draco/')
+const loader = new GLTFLoader()
+loader.setDRACOLoader(draco)
+
+loader.load(params.get('model'), (gltf) => {
+  const root = gltf.scene
+  root.updateWorldMatrix(true, true)
+  const edgeGeometries = []
+  root.traverse((child) => {
+    if (!child.isMesh) return
+    const source = child.material
+    child.material = new THREE.MeshLambertMaterial({
+      color: source.color ? source.color.clone() : new THREE.Color(0xffffff),
+      map: source.map || null,
+      transparent: source.transparent,
+      opacity: source.opacity,
+      alphaTest: source.alphaTest,
+      depthWrite: source.transparent ? false : true,
+      side: THREE.DoubleSide,
+    })
+    if (settings.showEdges && child.geometry) {
+      const edges = new THREE.EdgesGeometry(child.geometry, settings.edgeThreshold)
+      if (edges.getAttribute('position') && edges.getAttribute('position').count) {
+        edges.applyMatrix4(child.matrixWorld)
+        edgeGeometries.push(edges)
+      }
+    }
+  })
+  if (edgeGeometries.length) {
+    const merged = mergeGeometries(edgeGeometries, false)
+    if (merged) {
+      const lineGeometry = new LineSegmentsGeometry()
+      lineGeometry.setPositions(merged.getAttribute('position').array)
+      const lineMaterial = new LineMaterial({ color: new THREE.Color(settings.edgeColor), linewidth: settings.edgeWidth })
+      lineMaterial.resolution.set(window.innerWidth, window.innerHeight)
+      group.add(new LineSegments2(lineGeometry, lineMaterial))
+    }
   }
+  group.add(root)
+
+  const sphere = new THREE.Box3().setFromObject(group).getBoundingSphere(new THREE.Sphere())
+  center = sphere.center.clone()
+  const radius = sphere.radius || 1
+  const vFov = THREE.MathUtils.degToRad(camera.fov)
+  const hFov = 2 * Math.atan(Math.tan(vFov / 2) * camera.aspect)
+  distance = Math.max(radius / Math.sin(vFov / 2), radius / Math.sin(hFov / 2)) * 1.06
+  camera.near = Math.max(distance / 1000, 0.01)
+  camera.far = distance * 100
+  camera.updateProjectionMatrix()
+  window.__loaded = true
+}, undefined, (error) => {
+  window.__error = String((error && error.message) || 'load failed')
+})
+
+window.__renderAt = async (azimuth, elevation) => {
+  const theta = THREE.MathUtils.degToRad(azimuth)
+  const phi = THREE.MathUtils.degToRad(elevation)
+  camera.position.set(
+    center.x + distance * Math.sin(phi) * Math.sin(theta),
+    center.y + distance * Math.cos(phi),
+    center.z + distance * Math.sin(phi) * Math.cos(theta),
+  )
+  camera.lookAt(center)
+  keyLight.position.copy(camera.position)
+  renderer.render(scene, camera)
+  await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))
+  return renderer.domElement.toDataURL('image/png')
+}
 
   // Measures the rendered frame: overall luminance health plus, for each
   // tracked material, the mean color of the pixels that match its hue.
@@ -281,13 +357,39 @@ const HARNESS_HTML = `<!doctype html>
       // several materials can share a hue window (and textured surfaces can
       // stray into it), so the honest question is whether the material's true
       // vivid color is present at all, measured on its most saturated decile.
+      // The SketchUp-style outlines are deliberately near-black. They are
+      // strokes, not surfaces, so they must not count toward "the model is
+      // rendering dark". A dark pixel belonging to a thin stroke has bright
+      // pixels a few px away; a genuinely dark surface does not.
+      const luminance = new Float32Array(width * height)
+      for (let p = 0; p < width * height; p++) {
+        const i = p * 4
+        luminance[p] = 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2]
+      }
+      const STROKE_PROBE = 3
+      const isStroke = new Uint8Array(width * height)
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const p = y * width + x
+          if (!isInterior[p] || luminance[p] >= 60) continue
+          const neighbours = [
+            x - STROKE_PROBE >= 0 ? luminance[p - STROKE_PROBE] : 255,
+            x + STROKE_PROBE < width ? luminance[p + STROKE_PROBE] : 255,
+            y - STROKE_PROBE >= 0 ? luminance[p - STROKE_PROBE * width] : 255,
+            y + STROKE_PROBE < height ? luminance[p + STROKE_PROBE * width] : 255,
+          ]
+          // Bright on any side ⇒ this is a line, not a dark surface.
+          if (neighbours.some((value) => value >= 60)) isStroke[p] = 1
+        }
+      }
+
       const buckets = tracked.map(() => ({ matched: 0, sat: [], hue: [], lum: [] }))
       let modelPixels = 0, lumSum = 0, dark = 0, blown = 0
       for (let p = 0; p < width * height; p++) {
-        if (!isInterior[p]) continue
+        if (!isInterior[p] || isStroke[p]) continue
         const i = p * 4
         const r = data[i], g = data[i + 1], b = data[i + 2]
-        const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
+        const lum = luminance[p]
         modelPixels++; lumSum += lum
         if (lum < 40) dark++
         if (lum > 250) blown++
@@ -364,11 +466,8 @@ async function main() {
   const outIndex = args.indexOf('--out')
   const outDir = outIndex >= 0 ? resolve(args[outIndex + 1]) : resolve(tmpdir(), 'arnold-3d-verify')
   const asJson = args.includes('--json')
-  // --env lets a comparison run use model-viewer's built-in environments
-  // instead of Arnold's; production always uses the value in VIEWER_SETTINGS.
-  const envIndex = args.indexOf('--env')
-  if (envIndex >= 0) VIEWER_SETTINGS.environmentImage = args[envIndex + 1]
-  const usingBuiltInEnvironment = !VIEWER_SETTINGS.environmentImage.startsWith('/')
+  // --no-edges renders without the SketchUp outlines, for comparison runs.
+  if (args.includes('--no-edges')) VIEWER_SETTINGS.showEdges = false
   mkdirSync(outDir, { recursive: true })
 
   const modelBytes = await loadModelBytes(target)
@@ -378,24 +477,35 @@ async function main() {
   const textureCount = (gltf.textures || []).length
   const materialCount = (gltf.materials || []).length
 
-  const viewerScript = resolve(repoRoot, 'node_modules/@google/model-viewer/dist/model-viewer.min.js')
-  if (!existsSync(viewerScript)) throw new Error('model-viewer is not installed. Run npm install first.')
+  const threeRoot = resolve(repoRoot, 'node_modules/three')
+  if (!existsSync(threeRoot)) throw new Error('three is not installed. Run npm install first.')
   const files = {
     '/harness.html': { body: Buffer.from(HARNESS_HTML), type: 'text/html' },
-    '/model-viewer.min.js': { body: readFileSync(viewerScript), type: 'text/javascript' },
     [`/${modelName}`]: { body: modelBytes, type: 'model/gltf-binary' },
   }
-  if (!usingBuiltInEnvironment) {
-    const environmentFile = resolve(repoRoot, 'public', VIEWER_SETTINGS.environmentImage.replace(/^\//, ''))
-    if (!existsSync(environmentFile)) throw new Error(`Missing environment image: ${environmentFile}`)
-    files[VIEWER_SETTINGS.environmentImage] = { body: readFileSync(environmentFile), type: 'image/png' }
+  const mimeFor = (path) => {
+    if (path.endsWith('.js')) return 'text/javascript'
+    if (path.endsWith('.wasm')) return 'application/wasm'
+    if (path.endsWith('.glb')) return 'model/gltf-binary'
+    return 'application/octet-stream'
   }
   const server = createServer((request, response) => {
     const path = decodeURIComponent(new URL(request.url, 'http://localhost').pathname)
     const file = files[path]
-    if (!file) { response.writeHead(404); return response.end() }
-    response.writeHead(200, { 'content-type': file.type })
-    response.end(file.body)
+    if (file) {
+      response.writeHead(200, { 'content-type': file.type })
+      return response.end(file.body)
+    }
+    // three.js modules and the Draco decoder are served straight from disk.
+    let onDisk = null
+    if (path.startsWith('/three/')) onDisk = resolve(threeRoot, path.slice('/three/'.length))
+    else if (path.startsWith('/draco/')) onDisk = resolve(repoRoot, 'public', path.slice(1))
+    if (onDisk && onDisk.startsWith(repoRoot) && existsSync(onDisk)) {
+      response.writeHead(200, { 'content-type': mimeFor(path) })
+      return response.end(readFileSync(onDisk))
+    }
+    response.writeHead(404)
+    response.end()
   })
   await new Promise((ready) => server.listen(0, ready))
   const port = server.address().port
@@ -420,16 +530,21 @@ async function main() {
     if (loadError) throw new Error(`The model failed to load in the viewer: ${loadError}`)
 
     for (const orbit of ORBITS) {
-      const dataUrl = await page.evaluate((value) => window.__renderAt(value), orbit)
+      const dataUrl = await page.evaluate(
+        (azimuth, elevation) => window.__renderAt(azimuth, elevation),
+        orbit.azimuth,
+        orbit.elevation,
+      )
       const measurement = await page.evaluate(
         (url, list, background) => window.__measure(url, list, background),
         dataUrl,
         tracked,
         VIEWER_SETTINGS.backgroundColor,
       )
-      if (!measurement) throw new Error(`Could not measure the render at ${orbit}.`)
-      frames.push({ orbit, ...measurement })
-      writeFileSync(resolve(outDir, `render-${orbit.split('deg')[0]}.png`), Buffer.from(dataUrl.split(',')[1], 'base64'))
+      const label = `${orbit.azimuth}° / ${orbit.elevation}°`
+      if (!measurement) throw new Error(`Could not measure the render at ${label}.`)
+      frames.push({ orbit: label, ...measurement })
+      writeFileSync(resolve(outDir, `render-${orbit.azimuth}.png`), Buffer.from(dataUrl.split(',')[1], 'base64'))
     }
   } finally {
     await browser.close()

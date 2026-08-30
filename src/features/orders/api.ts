@@ -148,6 +148,7 @@ export type OrdersCreateBoardsResponse = {
   ok: boolean
   defaultYear: number
   defaultBoardId: string
+  suggestedAcknowledgementNumber: string
   boards: OrdersCreateBoardOption[]
 }
 
@@ -1029,6 +1030,20 @@ type CreateOrdersManualInput = {
   description?: string | null
   shipTo?: string | null
   notes?: string | null
+  documentLines?: Array<{
+    id: string
+    parentLineId?: string | null
+    detailLabel?: string | null
+    description: string
+    qty?: string | number | null
+    unitPrice?: string | number | null
+    category: 'product' | 'additional' | 'freight'
+  }>
+  duplicateFrom?: {
+    orderKey?: string | null
+    mondayItemId?: string | null
+    orderNumber?: string | null
+  } | null
 }
 
 export function postOrdersCreate(input: CreateOrdersManualInput) {
@@ -1082,6 +1097,18 @@ export function postOrdersCreate(input: CreateOrdersManualInput) {
 
   if (Object.prototype.hasOwnProperty.call(input, 'notes')) {
     payload.notes = input.notes ?? ''
+  }
+
+  if (input.documentLines) {
+    payload.documentLines = input.documentLines
+  }
+
+  if (input.duplicateFrom) {
+    payload.duplicateFrom = {
+      orderKey: input.duplicateFrom.orderKey ?? '',
+      mondayItemId: input.duplicateFrom.mondayItemId ?? '',
+      orderNumber: input.duplicateFrom.orderNumber ?? '',
+    }
   }
 
   return apiRequest<OrdersCreateResponse>(

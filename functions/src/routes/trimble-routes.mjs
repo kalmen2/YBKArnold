@@ -274,19 +274,22 @@ function clampNumber(value, fallback, minimum, maximum) {
   return Number.isFinite(number) ? Math.min(maximum, Math.max(minimum, number)) : fallback
 }
 
+// Settings for the SketchUp-style viewer. Older records may still carry the
+// previous photoreal keys (exposure, toneMapping, environmentImage); those are
+// simply dropped, and the defaults below apply instead.
 function normalizedViewerSettings(value) {
   const source = value && typeof value === 'object' ? value : {}
-  const toneMapping = text(source.toneMapping, 20).toLowerCase()
-  const environmentImage = text(source.environmentImage, 20).toLowerCase()
   const backgroundColor = text(source.backgroundColor, 20)
+  const edgeColor = text(source.edgeColor, 20)
   return {
-    exposure: clampNumber(source.exposure, 1.08, 0.5, 1.5),
-    shadowIntensity: clampNumber(source.shadowIntensity, 0.8, 0, 2),
-    toneMapping: ['neutral', 'aces', 'agx', 'cineon'].includes(toneMapping) ? toneMapping : 'neutral',
-    environmentImage: ['even', 'neutral', 'legacy'].includes(environmentImage) ? environmentImage : 'even',
-    backgroundColor: /^#[0-9a-f]{6}$/i.test(backgroundColor) ? backgroundColor : '#f4f2ed',
+    brightness: clampNumber(source.brightness, 1, 0.6, 1.4),
+    edgeColor: /^#[0-9a-f]{6}$/i.test(edgeColor) ? edgeColor : '#000000',
+    edgeThreshold: clampNumber(source.edgeThreshold, 18, 5, 45),
+    edgeWidth: clampNumber(source.edgeWidth, 2, 1, 4),
+    showEdges: source.showEdges !== false,
+    backgroundColor: /^#[0-9a-f]{6}$/i.test(backgroundColor) ? backgroundColor : '#ffffff',
     autoRotate: source.autoRotate !== false,
-    fieldOfView: clampNumber(source.fieldOfView, 30, 15, 55),
+    fieldOfView: clampNumber(source.fieldOfView, 28, 15, 55),
   }
 }
 
