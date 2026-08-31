@@ -29,6 +29,8 @@ export function createMondaySyncHelpers(deps) {
     updateMondayItemTextColumn,
   } = deps
 
+  const mondayCards = createMondayCardStore({ getCollections })
+
   // Queue jobs are written against a Monday id captured earlier, sometimes
   // much earlier. Confirm the id still belongs to the order number before the
   // worker writes, and fail the job to "needs review" rather than retrying
@@ -70,8 +72,6 @@ export function createMondaySyncHelpers(deps) {
     columnId,
     dateValue,
   }) {
-  const mondayCards = createMondayCardStore({ getCollections })
-
     const normalizedDateValue = normalizeIsoDateInput(dateValue)
 
     if (!normalizedDateValue) {
@@ -981,18 +981,30 @@ export function createMondaySyncHelpers(deps) {
           }
 
           const columns = snapshot?.columnDetection ?? {}
-          const writeText = async (changeName, columnName) => {
-            if (!Object.prototype.hasOwnProperty.call(changes, changeName)) return
+          // A field the target board has no column for is not an error - some
+          // columns only exist on the financial boards. Skip it and record it,
+          // rather than failing the whole job and discarding the edits that
+          // CAN be written. One unsupported field used to lose all of them.
+          const skippedFields = []
+          const resolveColumnId = (changeName, columnName) => {
+            if (!Object.prototype.hasOwnProperty.call(changes, changeName)) return null
             const columnId = String(columns?.[columnName] ?? '').trim()
-            if (!columnId) throw new Error(`${changeName} column could not be resolved for this board.`)
+            if (!columnId) {
+              skippedFields.push(changeName)
+              return null
+            }
+            return columnId
+          }
+          const writeText = async (changeName, columnName) => {
+            const columnId = resolveColumnId(changeName, columnName)
+            if (!columnId) return
             await updateMondayItemTextColumn({
               boardId: targetBoardId, itemId: targetItemId, columnId, textValue: String(changes[changeName] ?? ''),
             })
           }
           const writeDate = async (changeName, columnName) => {
-            if (!Object.prototype.hasOwnProperty.call(changes, changeName)) return
-            const columnId = String(columns?.[columnName] ?? '').trim()
-            if (!columnId) throw new Error(`${changeName} column could not be resolved for this board.`)
+            const columnId = resolveColumnId(changeName, columnName)
+            if (!columnId) return
             await updateMondayDateColumnValue({
               boardId: targetBoardId, itemId: targetItemId, columnId, dateValue: changes[changeName],
             })
@@ -1021,7 +1033,15 @@ export function createMondaySyncHelpers(deps) {
               statusState: 'processing',
               processingStartedAt: claimedJob.processingStartedAt,
             },
-            { $set: { statusState: 'synced', syncedAt, lastError: null, updatedAt: syncedAt } },
+            {
+              $set: {
+                statusState: 'synced',
+                syncedAt,
+                lastError: null,
+                skippedFields: skippedFields.length > 0 ? skippedFields : null,
+                updatedAt: syncedAt,
+              },
+            },
           )
           syncedCount += 1
         } catch (error) {
