@@ -52,6 +52,7 @@ const MONGO_DOMAIN_COLLECTIONS = Object.freeze({
     'monday_orders',
     'orders',
     'orders_unified',
+    'deleted_orders',
   ]),
   crm: Object.freeze([
     'crm_import_runs',

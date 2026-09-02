@@ -6,8 +6,9 @@ import { buildCutList } from './cutlist.mjs'
 import { resolveParams } from './validate.mjs'
 import { SUPPORTED_UNITS, formatDimension } from './units.mjs'
 import { getProduct } from '../catalog/index.mjs'
+import { buildDrawing } from './drawing.mjs'
 
-export async function generate(spec) {
+export async function generate(spec, { date } = {}) {
   if (!spec || typeof spec !== 'object') throw new Error('spec must be a JSON object')
 
   const units = spec.units
@@ -21,7 +22,7 @@ export async function generate(spec) {
   }
 
   const product = getProduct(spec.product?.type)
-  const { params, unknown } = resolveParams(product, spec.product?.params, units)
+  const { params, derived, unknown } = resolveParams(product, spec.product?.params, units)
 
   const mesh = new MeshBuilder()
   product.build(mesh, params)
@@ -30,9 +31,29 @@ export async function generate(spec) {
   const cutList = buildCutList(mesh.parts, units)
   const bounds = mesh.bounds()
 
+  const derivedReport = derived.map((item) => ({
+    key: item.key,
+    rule: item.rule,
+    confirm: item.confirm,
+    value:
+      item.type === 'dimension' ? formatDimension(item.value, units)
+      : item.type === 'finish' ? item.value
+      : String(item.value),
+  }))
+
+  const summaryForSheet = {
+    description: description.trim(),
+    client: spec.project?.client ?? null,
+    quoteNumber: spec.project?.quoteNumber ?? null,
+    itemNumber: spec.project?.itemNumber ?? null,
+  }
+  const { dxf } = buildDrawing(mesh.parts, summaryForSheet, { date })
+
   return {
     glb,
+    dxf: dxf.toString(),
     cutList,
+    derived: derivedReport,
     summary: {
       description: description.trim(),
       productType: product.type,
@@ -49,6 +70,7 @@ export async function generate(spec) {
       triangles: mesh.triangleCount(),
       glbBytes: glb.byteLength,
       unknownParams: unknown,
+      derivedCount: derived.length,
     },
   }
 }
@@ -58,10 +80,13 @@ export function questionsFor(type) {
   const product = getProduct(type)
   return product.params.map((param) => ({
     key: param.key,
-    ask: param.ask,
+    ask: param.ask ?? null,
     type: param.type,
     values: param.values ?? null,
     conditional: Boolean(param.when),
+    derived: Boolean(param.derive),
+    confirm: Boolean(param.confirm),
+    rule: param.rule ?? null,
     note: param.note ?? null,
   }))
 }

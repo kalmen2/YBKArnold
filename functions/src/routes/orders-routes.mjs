@@ -1083,9 +1083,10 @@ export function registerOrdersRoutes(app, deps) {
         || quoteSnapshot?.title
         || '',
       ).trim() || null,
-      contactName: String(quoteSnapshot?.contactName ?? '').trim() || null,
-      contactEmail: String(quoteSnapshot?.contactEmail ?? '').trim() || null,
-      contactPhone: String(quoteSnapshot?.contactPhone ?? '').trim() || null,
+      contactSourceId: String(orderDocument?.contact_source_id || quoteSnapshot?.contactSourceId || '').trim() || null,
+      contactName: String(orderDocument?.contact_name || quoteSnapshot?.contactName || '').trim() || null,
+      contactEmail: String(orderDocument?.contact_email || quoteSnapshot?.contactEmail || '').trim() || null,
+      contactPhone: String(orderDocument?.contact_phone || quoteSnapshot?.contactPhone || '').trim() || null,
       leadTime: String(orderDocument?.lead_time_text ?? quoteSnapshot?.leadTime ?? '').trim() || null,
       freightDescription: String(
         orderDocument?.freight_description
@@ -2086,6 +2087,10 @@ export function registerOrdersRoutes(app, deps) {
               converted_by_email: 1,
               dealer_source_id: 1,
               dealer_name: 1,
+              contact_source_id: 1,
+              contact_name: 1,
+              contact_email: 1,
+              contact_phone: 1,
               order_number: 1,
               monday_item_id: 1,
               Monday_url: 1,

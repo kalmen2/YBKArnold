@@ -1,0 +1,18 @@
+{
+  "specVersion": 1,
+  "units": "in",
+  "project": { "quoteNumber": "MIN-002", "description": "Reception credenza" },
+  "product": {
+    "type": "casegood.credenza",
+    "params": {
+      "width": 72,
+      "baseType": "toe-kick",
+      "doorCount": 3,
+      "pullStyle": "bar",
+      "carcassFinish": "white-laminate",
+      "doorFinish": "rift-white-oak",
+      "topFinish": "white-quartz",
+      "pullFinish": "brushed-brass"
+    }
+  }
+}

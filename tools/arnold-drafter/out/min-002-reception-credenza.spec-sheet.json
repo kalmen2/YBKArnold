@@ -1,0 +1,158 @@
+{
+  "summary": {
+    "description": "Reception credenza",
+    "productType": "casegood.credenza",
+    "productLabel": "Credenza / low storage casegood",
+    "units": "in",
+    "quoteNumber": "MIN-002",
+    "client": null,
+    "itemNumber": null,
+    "overall": {
+      "width": "74\"",
+      "height": "30\"",
+      "depth": "21 1/2\""
+    },
+    "triangles": 228,
+    "glbBytes": 15848,
+    "unknownParams": [],
+    "derivedCount": 14
+  },
+  "cutList": {
+    "rows": [
+      {
+        "description": "pull",
+        "qty": 3,
+        "material": "brushed-brass",
+        "materialLabel": "Brushed brass",
+        "width": "10 3/4\"",
+        "height": "5/8\"",
+        "depth": "5/8\"",
+        "widthRaw": 10.763,
+        "heightRaw": 0.625,
+        "depthRaw": 0.625,
+        "faceAreaSqFt": 0.14
+      },
+      {
+        "description": "pull 1 standoff a, pull 1 standoff b, pull 2 standoff a, pull 2 standoff b, pull 3 standoff a, pull 3 standoff b",
+        "qty": 6,
+        "material": "brushed-brass",
+        "materialLabel": "Brushed brass",
+        "width": "5/8\"",
+        "height": "5/8\"",
+        "depth": "7/8\"",
+        "widthRaw": 0.625,
+        "heightRaw": 0.625,
+        "depthRaw": 0.875,
+        "faceAreaSqFt": 0.023
+      },
+      {
+        "description": "door",
+        "qty": 3,
+        "material": "rift-white-oak",
+        "materialLabel": "Rift White Oak",
+        "width": "23 15/16\"",
+        "height": "24 3/4\"",
+        "depth": "3/4\"",
+        "widthRaw": 23.917,
+        "heightRaw": 24.75,
+        "depthRaw": 0.75,
+        "faceAreaSqFt": 12.332
+      },
+      {
+        "description": "back panel",
+        "qty": 1,
+        "material": "white-laminate",
+        "materialLabel": "White laminate",
+        "width": "70 1/2\"",
+        "height": "23 1/4\"",
+        "depth": "3/4\"",
+        "widthRaw": 70.5,
+        "heightRaw": 23.25,
+        "depthRaw": 0.75,
+        "faceAreaSqFt": 11.383
+      },
+      {
+        "description": "bottom deck, top deck",
+        "qty": 2,
+        "material": "white-laminate",
+        "materialLabel": "White laminate",
+        "width": "70 1/2\"",
+        "height": "3/4\"",
+        "depth": "19 1/4\"",
+        "widthRaw": 70.5,
+        "heightRaw": 0.75,
+        "depthRaw": 19.25,
+        "faceAreaSqFt": 18.849
+      },
+      {
+        "description": "end panel L, end panel R",
+        "qty": 2,
+        "material": "white-laminate",
+        "materialLabel": "White laminate",
+        "width": "3/4\"",
+        "height": "24 3/4\"",
+        "depth": "19 1/4\"",
+        "widthRaw": 0.75,
+        "heightRaw": 24.75,
+        "depthRaw": 19.25,
+        "faceAreaSqFt": 6.617
+      },
+      {
+        "description": "toe kick",
+        "qty": 1,
+        "material": "white-laminate",
+        "materialLabel": "White laminate",
+        "width": "72\"",
+        "height": "4\"",
+        "depth": "16 1/4\"",
+        "widthRaw": 72,
+        "heightRaw": 4,
+        "depthRaw": 16.25,
+        "faceAreaSqFt": 8.125
+      },
+      {
+        "description": "top",
+        "qty": 1,
+        "material": "white-quartz",
+        "materialLabel": "White quartz",
+        "width": "74\"",
+        "height": "1 1/4\"",
+        "depth": "21\"",
+        "widthRaw": 74,
+        "heightRaw": 1.25,
+        "depthRaw": 21,
+        "faceAreaSqFt": 10.792
+      }
+    ],
+    "totals": {
+      "partCount": 19,
+      "faceAreaSqFtByFinish": {
+        "brushed-brass": 0.163,
+        "rift-white-oak": 12.332,
+        "white-laminate": 44.974,
+        "white-quartz": 10.792
+      }
+    }
+  },
+  "spec": {
+    "specVersion": 1,
+    "units": "in",
+    "project": {
+      "quoteNumber": "MIN-002",
+      "description": "Reception credenza"
+    },
+    "product": {
+      "type": "casegood.credenza",
+      "params": {
+        "width": 72,
+        "baseType": "toe-kick",
+        "doorCount": 3,
+        "pullStyle": "bar",
+        "carcassFinish": "white-laminate",
+        "doorFinish": "rift-white-oak",
+        "topFinish": "white-quartz",
+        "pullFinish": "brushed-brass"
+      }
+    }
+  }
+}

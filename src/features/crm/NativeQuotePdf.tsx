@@ -1,7 +1,6 @@
 import {
   Document,
   Image,
-  Link,
   Page,
   PDFDownloadLink,
   PDFViewer,
@@ -394,9 +393,6 @@ function createStyles(accentColor: string) {
     label: { fontSize: 7.5, color: '#334155', fontWeight: 700, textTransform: 'uppercase', marginBottom: 2 },
     value: { fontSize: 9, lineHeight: 1.2, marginBottom: 5 },
     contactLine: { fontSize: 8, color: '#344155', lineHeight: 1.25, marginBottom: 2 },
-    modelViewer: { marginBottom: 12, paddingVertical: 8, paddingHorizontal: 10, borderRadius: 3, backgroundColor: '#eef5fa', borderWidth: 1, borderColor: accentColor, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-    modelViewerLabel: { fontSize: 9, fontWeight: 700, color: '#172033' },
-    modelViewerLink: { fontSize: 9, fontWeight: 700, color: accentColor, textDecoration: 'none' },
     sectionTitleFirst: { paddingVertical: 5, paddingHorizontal: 6, backgroundColor: '#eef2f7', borderWidth: 1, borderColor: '#cbd5e1', fontSize: 10, fontWeight: 700, color: accentColor },
     tableHeader: {
       flexDirection: 'row',
@@ -571,13 +567,6 @@ export function NativeQuotePdfDocument({
             {resolvedSettings.showPaymentTerms ? <><Text style={styles.label}>Payment Terms</Text><Text style={styles.value}>{plain(quote.paymentTerms)}</Text></> : null}
           </View>
         </View>
-
-        {quote.trimble3d?.viewerUrl ? (
-          <View style={styles.modelViewer} wrap={false}>
-            <Text style={styles.modelViewerLabel}>Customer 3D project view</Text>
-            <Link src={quote.trimble3d.viewerUrl} style={styles.modelViewerLink}>Open 3D View</Link>
-          </View>
-        ) : null}
 
         {rows.length > 0 ? (
           <View minPresenceAhead={48}>

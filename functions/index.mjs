@@ -26,7 +26,6 @@ import { registerQuickBooksRoutes } from './src/routes/quickbooks-routes.mjs'
 import { registerSlackRoutes } from './src/routes/slack-routes.mjs'
 import { registerSmsBridgeRoutes } from './src/routes/sms-bridge-routes.mjs'
 import { registerTimesheetRoutes } from './src/routes/timesheet-routes.mjs'
-import { registerTrimbleRoutes } from './src/routes/trimble-routes.mjs'
 import { registerVisitorsRoutes } from './src/routes/visitors-routes.mjs'
 import { createAuthUtils } from './src/services/auth-utils.mjs'
 import { createAuthActivityService } from './src/services/auth-activity-service.mjs'
@@ -2558,7 +2557,6 @@ registerQuickBooksRoutes(app, routeDeps)
 registerSlackRoutes(app, routeDeps)
 registerSmsBridgeRoutes(app, routeDeps)
 registerTimesheetRoutes(app, routeDeps)
-registerTrimbleRoutes(app, routeDeps)
 registerVisitorsRoutes(app, routeDeps)
 app.use((error, _req, res, _next) => {
   const status = Number(error?.status ?? 500)

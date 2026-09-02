@@ -24,7 +24,6 @@
     "axios": "^1.13.0",
     "compression": "^1.8.1",
     "cors": "^2.8.5",
-    "draco3dgltf": "^1.5.7",
     "express": "^5.1.0",
     "express-rate-limit": "^7.5.0",
     "firebase-admin": "^13.7.0",

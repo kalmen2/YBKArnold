@@ -90,6 +90,10 @@ import { formatProgress, resolveOrderProjectIds } from './utils'
 
 export type OrdersQuickBooksDrilldownMetric = 'purchaseOrders' | 'bills' | 'invoices' | 'payments'
 export type OrdersViewMode = 'standard' | 'admin'
+export type OrdersBoardExport = {
+  sheetName: string
+  rows: Record<string, string | number | boolean>[]
+}
 
 type OrdersPersonalView = {
   id: string
@@ -103,6 +107,13 @@ type OrdersPersonalViewsStorage = {
 
 const DEFAULT_PERSONAL_VIEW: OrdersPersonalView = { id: 'standard', name: 'Standard' }
 const MAX_ADDITIONAL_PERSONAL_VIEWS = 3
+
+function compareOrderNumbers(left: unknown, right: unknown) {
+  return String(left ?? '').localeCompare(String(right ?? ''), undefined, {
+    numeric: true,
+    sensitivity: 'base',
+  })
+}
 
 const mondayProgressBreakdownConfig = ORDER_PROGRESS_STAGES
 
@@ -988,6 +999,7 @@ type OrdersGridProps = {
   onArchiveOrder: (order: OrdersOverviewOrder, archived: boolean) => void
   onLinkOrder: (order: OrdersOverviewOrder) => void
   onMissingMondayLink: () => void
+  onCurrentBoardExportChange: (board: OrdersBoardExport) => void
 }
 
 export function OrdersGrid({
@@ -1017,6 +1029,7 @@ export function OrdersGrid({
   onArchiveOrder,
   onLinkOrder,
   onMissingMondayLink,
+  onCurrentBoardExportChange,
 }: OrdersGridProps) {
   const queryClient = useQueryClient()
   const gridApiRef = useGridApiRef()
@@ -1410,6 +1423,7 @@ export function OrdersGrid({
       field: 'orderNumber',
       headerName: 'Order #',
       minWidth: 190,
+      sortComparator: compareOrderNumbers,
       renderCell: ({ row }) => {
         const canOpenDetails = hasLinkedMondayItem(row) || activeTab === 'design' || activeTab === 'waiting_production'
 
@@ -2888,11 +2902,21 @@ export function OrdersGrid({
   ])
 
   const personalViewsStorageKey = useMemo(
+    () => `arnold:orders-views:v2:${columnPreferenceKey || 'anonymous'}:${activeTab}`,
+    [activeTab, columnPreferenceKey],
+  )
+
+  const legacyPersonalViewsStorageKey = useMemo(
     () => `arnold:orders-views:v1:${columnPreferenceKey || 'anonymous'}`,
     [columnPreferenceKey],
   )
 
   const columnStorageKey = useMemo(
+    () => `arnold:orders-view-layout:v2:${columnPreferenceKey || 'anonymous'}:${activeTab}:${activePersonalViewId}`,
+    [activePersonalViewId, activeTab, columnPreferenceKey],
+  )
+
+  const legacyColumnStorageKey = useMemo(
     () => `arnold:orders-view-layout:v1:${columnPreferenceKey || 'anonymous'}:${activePersonalViewId}`,
     [activePersonalViewId, columnPreferenceKey],
   )
@@ -2902,7 +2926,13 @@ export function OrdersGrid({
     let storedActiveViewId = DEFAULT_PERSONAL_VIEW.id
 
     try {
+      // Before views were tab-specific, there was one shared set. Keep it on
+      // the default Orders tab during this one-way migration; never copy it
+      // into the other tabs.
       const raw = window.localStorage.getItem(personalViewsStorageKey)
+        ?? (activeTab === 'orders'
+          ? window.localStorage.getItem(legacyPersonalViewsStorageKey)
+          : null)
       if (raw) {
         const parsed = JSON.parse(raw) as OrdersPersonalViewsStorage
         const parsedViews = Array.isArray(parsed.views)
@@ -2928,7 +2958,7 @@ export function OrdersGrid({
     setPersonalViews(storedViews)
     setActivePersonalViewId(storedActiveViewId)
     setPersonalViewsLoaded(true)
-  }, [personalViewsStorageKey])
+  }, [activeTab, legacyPersonalViewsStorageKey, personalViewsStorageKey])
 
   useEffect(() => {
     if (!personalViewsLoaded) return
@@ -2953,7 +2983,12 @@ export function OrdersGrid({
     let hasSavedPreferences = false
 
     try {
+      // Keep an existing shared layout on the default Orders tab only. Every
+      // other tab starts with, and saves to, its own independent layout.
       const raw = window.localStorage.getItem(columnStorageKey)
+        ?? (activeTab === 'orders'
+          ? window.localStorage.getItem(legacyColumnStorageKey)
+          : null)
       if (raw) {
         hasSavedPreferences = true
         const parsed = JSON.parse(raw) as { order?: unknown; hidden?: unknown; widths?: unknown; showSubitemsInline?: unknown }
@@ -2992,7 +3027,7 @@ export function OrdersGrid({
     setColumnWidths(savedWidths)
     if (!hasSavedPreferences) setShowSubitemsInline(false)
     setLoadedColumnStorageKey(columnStorageKey)
-  }, [availableColumns, columnStorageKey, defaultVisibleColumnFields])
+  }, [activeTab, availableColumns, columnStorageKey, defaultVisibleColumnFields, legacyColumnStorageKey])
 
   useEffect(() => {
     if (columnOrder.length === 0 || loadedColumnStorageKey !== columnStorageKey) return
@@ -3248,6 +3283,63 @@ export function OrdersGrid({
       return rowValueMatchesFilter(filterValue, item)
     }))
   }, [availableColumnByField, columnFilterItems, prioritizedRows])
+
+  useEffect(() => {
+    // Use the same rows and ordered visible columns as the grid. Action-only
+    // cells are deliberately left out because they have no spreadsheet value.
+    const exportColumns = columns.filter((column) => String(column.field) !== 'mondayLink')
+    const headerCounts = new Map<string, number>()
+    const resolvedColumns = exportColumns.map((column) => {
+      const baseHeader = String(column.headerName ?? column.field)
+      const duplicateCount = (headerCounts.get(baseHeader) ?? 0) + 1
+      headerCounts.set(baseHeader, duplicateCount)
+      return {
+        column,
+        header: duplicateCount === 1 ? baseHeader : `${baseHeader} (${duplicateCount})`,
+      }
+    })
+
+    const normalizeValue = (value: unknown): string | number | boolean => {
+      if (value === null || value === undefined) return ''
+      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value
+      if (value instanceof Date) return value.toISOString()
+      if (Array.isArray(value)) return value.map((item) => String(item ?? '')).filter(Boolean).join(', ')
+      return String(value)
+    }
+
+    const resolveValue = (column: GridColDef<OrdersOverviewOrder>, row: OrdersOverviewOrder) => {
+      const field = String(column.field)
+      if (field === 'totalProfit') {
+        const invoice = Number(row.invoiceAmount)
+        const billed = Number(row.billedAmount)
+        const labor = Number(row.totalLaborCost)
+        return Number.isFinite(invoice) && Number.isFinite(billed) && Number.isFinite(labor)
+          ? Number((invoice - billed - labor).toFixed(2))
+          : ''
+      }
+
+      const rawValue = row[field as keyof OrdersOverviewOrder]
+      if (typeof column.valueGetter !== 'function') return normalizeValue(rawValue)
+
+      try {
+        return normalizeValue((column.valueGetter as unknown as (
+          value: unknown,
+          currentRow: OrdersOverviewOrder,
+          currentColumn: GridColDef<OrdersOverviewOrder>,
+          apiRef: null,
+        ) => unknown)(rawValue, row, column, null))
+      } catch {
+        return normalizeValue(rawValue)
+      }
+    }
+
+    onCurrentBoardExportChange({
+      sheetName: activeTab === 'all' ? 'All Orders' : activeTab.replace(/_/g, ' '),
+      rows: filteredRows.map((row) => Object.fromEntries(
+        resolvedColumns.map(({ column, header }) => [header, resolveValue(column, row)]),
+      )),
+    })
+  }, [activeTab, columns, filteredRows, onCurrentBoardExportChange])
 
   const displayedRows = useMemo<OrdersGridRow[]>(() => {
     if (!showSubitemsInline || expandedSubitemOrderIds.size === 0) return filteredRows
@@ -3551,6 +3643,11 @@ export function OrdersGrid({
           filterModel={filterModel}
           onFilterModelChange={handleFilterModelChange}
           paginationMode="client"
+          initialState={{
+            sorting: {
+              sortModel: [{ field: 'orderNumber', sort: 'asc' }],
+            },
+          }}
           paginationModel={paginationModel}
           onPaginationModelChange={setPaginationModel}
           onColumnWidthChange={(params) => {

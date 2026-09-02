@@ -1,14 +1,24 @@
-// Parameter validation — the "Claude may not assume anything" rule, enforced.
+// Parameter validation — the "don't assume, but don't interrogate" rule.
 //
-// Schemas here deliberately have NO default values. If a parameter applies and
-// the spec does not supply it, generation fails. The failure lists every
-// missing parameter at once, each with the question to put to the customer, so
-// the gap is closed in a single conversation rather than a dozen round trips.
+// Parameters come in two tiers:
 //
-// A parameter may be conditional (`when`), but it can never be optional-with-a-
-// fallback. That distinction is the whole point: a conditional parameter does
-// not apply, whereas an optional one would mean the generator picked a number
-// nobody approved.
+//   PRIMARY  Carries commercial or functional intent: overall size, how many
+//            doors, which finish, what kind of base. These must come from the
+//            customer. Missing one stops the build and produces the question.
+//
+//   DETAIL   Proportion and construction detail: reveals, overhangs, panel
+//            thickness, pull sizing. These derive from the primaries via a
+//            stated rule. Asking about every one of them is how a five-minute
+//            sketch turns into a forty-question interview.
+//
+// A derived value is NOT a silent assumption. Every one is reported back with
+// the rule that produced it, so a wrong proportion gets caught by eye. Any
+// detail parameter can be pinned by putting it in the spec — an explicit value
+// always wins over its rule.
+//
+// `default` remains forbidden. A default is a number with no stated reasoning
+// that nobody sees; a derive rule is visible arithmetic on confirmed inputs.
+// That distinction is the whole point.
 
 import { toMetres } from './units.mjs'
 import { resolveFinish } from './materials.mjs'
@@ -18,7 +28,7 @@ export class SpecIncompleteError extends Error {
     const lines = []
     if (missing.length) {
       lines.push(`Missing ${missing.length} required parameter(s) for "${productType}".`)
-      lines.push('Ask the customer / estimator these, then add them to the spec:')
+      lines.push('Ask the customer for these — they are design decisions, not proportions:')
       for (const item of missing) {
         lines.push(`  • ${item.key} — ${item.ask}`)
         if (item.note) lines.push(`      note: ${item.note}`)
@@ -30,7 +40,7 @@ export class SpecIncompleteError extends Error {
       for (const item of invalid) lines.push(`  • ${item.key} — ${item.reason}`)
     }
     lines.push('')
-    lines.push('Nothing was generated. No values were guessed.')
+    lines.push('Nothing was generated. No primary dimension was guessed.')
     super(lines.join('\n'))
     this.name = 'SpecIncompleteError'
     this.missing = missing
@@ -58,9 +68,7 @@ function coerce(param, raw, units) {
       return raw
     }
     case 'boolean': {
-      if (typeof raw !== 'boolean') {
-        throw new Error(`must be true or false, got ${JSON.stringify(raw)}`)
-      }
+      if (typeof raw !== 'boolean') throw new Error(`must be true or false, got ${JSON.stringify(raw)}`)
       return raw
     }
     case 'enum': {
@@ -82,28 +90,46 @@ function coerce(param, raw, units) {
 
 /**
  * Resolve a product's raw params against its schema.
- * @param {{type: string, params: Array}} productDef catalog entry
- * @param {Record<string, unknown>} raw params straight from the spec file
- * @param {'in'|'mm'} units
+ * @returns {{params: object, derived: Array, unknown: string[]}}
  */
 export function resolveParams(productDef, raw, units) {
   const supplied = raw ?? {}
   const resolved = {}
+  const derived = []
   const missing = []
   const invalid = []
 
   for (const param of productDef.params) {
     if (param.default !== undefined) {
-      throw new Error(`schema bug: "${param.key}" declares a default; defaults are forbidden in this catalog`)
+      throw new Error(`schema bug: "${param.key}" declares a default; use a derive rule so the value is disclosed`)
+    }
+    if (param.derive && !param.rule) {
+      throw new Error(`schema bug: "${param.key}" derives a value without a \`rule\` string to disclose it`)
     }
 
-    // `when` is evaluated against values resolved so far, so schemas must list
-    // the controlling parameter before anything conditional on it.
+    // `when` sees values resolved so far, so a schema must list the controlling
+    // parameter before anything conditional on it.
     if (param.when && !param.when(resolved)) continue
 
     const value = supplied[param.key]
+
     if (value === undefined || value === null) {
-      missing.push(param)
+      if (param.derive) {
+        try {
+          resolved[param.key] = param.derive(resolved)
+          derived.push({
+            key: param.key,
+            value: resolved[param.key],
+            rule: param.rule,
+            type: param.type,
+            confirm: Boolean(param.confirm),
+          })
+        } catch (error) {
+          invalid.push({ key: param.key, reason: `derive rule failed: ${error.message}` })
+        }
+      } else {
+        missing.push(param)
+      }
       continue
     }
 
@@ -119,5 +145,5 @@ export function resolveParams(productDef, raw, units) {
 
   if (missing.length || invalid.length) throw new SpecIncompleteError(missing, invalid, productDef.type)
 
-  return { params: resolved, unknown }
+  return { params: resolved, derived, unknown }
 }

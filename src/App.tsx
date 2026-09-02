@@ -4,12 +4,6 @@ import { router } from './router/index'
 import DiagnosticReportProvider from './features/diagnostics/DiagnosticReportProvider'
 
 function App() {
-  const isPublic3dViewer = window.location.pathname.startsWith('/3d/')
-
-  if (isPublic3dViewer) {
-    return <RouterProvider router={router} />
-  }
-
   return (
     <AuthGate>
       <DiagnosticReportProvider>

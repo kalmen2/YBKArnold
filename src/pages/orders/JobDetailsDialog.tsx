@@ -67,7 +67,14 @@ import {
   groupOrderDocumentTerms,
 } from '../../features/crm/OrderConversionDocuments'
 import { DEFAULT_QUOTE_PRINT_SETTINGS } from '../../features/crm/NativeQuotePdf'
-import { fetchCrmDocumentTerms, fetchCrmQuotePrintSettings } from '../../features/crm/api'
+import {
+  createCrmDealerContact,
+  fetchCrmContacts,
+  fetchCrmDocumentTerms,
+  fetchCrmQuotePrintSettings,
+  updateCrmContact,
+  type CrmContact,
+} from '../../features/crm/api'
 import { OrderDesignPartsTab } from '../../features/orders/OrderDesignPartsTab'
 import {
   createOrderChatMessage,
@@ -83,6 +90,7 @@ import {
   postOrdersCutListDelete,
   postOrdersCutListUpload,
   postOrdersOrderDetailsUpdate,
+  postOrdersOrderContactUpdate,
   postOrdersOrderConfirmationUpdate,
   postOrdersDocumentLinesUpdate,
   postOrdersChangeOrderCreate,
@@ -677,6 +685,7 @@ export function JobDetailsDialog({
   const [managerEditSuccess, setManagerEditSuccess] = useState<string | null>(null)
   const [managerEditWarning, setManagerEditWarning] = useState<string | null>(null)
   const [orderNameDraft, setOrderNameDraft] = useState('')
+  const [salesRepDraft, setSalesRepDraft] = useState('')
   const [poNumberDraft, setPoNumberDraft] = useState('')
   const [notesDraft, setNotesDraft] = useState('')
   const [descriptionDraft, setDescriptionDraft] = useState('')
@@ -689,6 +698,14 @@ export function JobDetailsDialog({
   const [freightDescriptionDraft, setFreightDescriptionDraft] = useState('')
   const [shippingCarrierDraft, setShippingCarrierDraft] = useState('')
   const [shipNotesDraft, setShipNotesDraft] = useState('')
+  const [isContactDialogOpen, setIsContactDialogOpen] = useState(false)
+  const [contactDialogMode, setContactDialogMode] = useState<'choose' | 'edit' | 'add'>('choose')
+  const [selectedContactSourceId, setSelectedContactSourceId] = useState('')
+  const [contactNameDraft, setContactNameDraft] = useState('')
+  const [contactEmailDraft, setContactEmailDraft] = useState('')
+  const [contactPhoneDraft, setContactPhoneDraft] = useState('')
+  const [isSavingContact, setIsSavingContact] = useState(false)
+  const [contactActionError, setContactActionError] = useState<string | null>(null)
   const [warrantyState, setWarrantyState] = useState<OrderWarrantyState>(() => buildOrderWarrantyState(order))
   const [warrantyIssueDescriptionDraft, setWarrantyIssueDescriptionDraft] = useState('')
   const [warrantyLeadTimeDateDraft, setWarrantyLeadTimeDateDraft] = useState('')
@@ -701,6 +718,12 @@ export function JobDetailsDialog({
     queryFn: fetchCrmQuotePrintSettings,
     enabled: open,
     staleTime: 10 * 60 * 1000,
+  })
+  const dealerContactsQuery = useQuery({
+    queryKey: ['crm', 'dealer-contacts', order?.dealerSourceId],
+    queryFn: () => fetchCrmContacts({ dealerSourceId: String(order?.dealerSourceId ?? ''), limit: 1000, includeArchived: false }),
+    enabled: open && Boolean(order?.dealerSourceId),
+    staleTime: 5 * 60 * 1000,
   })
   const [warrantyActionSuccess, setWarrantyActionSuccess] = useState<string | null>(null)
   const [showWarrantyWorkspace, setShowWarrantyWorkspace] = useState(initialTab === 'warranty')
@@ -834,6 +857,7 @@ export function JobDetailsDialog({
     setManagerEditSuccess(null)
     setManagerEditWarning(null)
     setOrderNameDraft(String(order?.orderName ?? '').trim())
+    setSalesRepDraft(String(order?.salesRep ?? '').trim())
     setPoNumberDraft(String(order?.poNumber ?? '').trim())
     setNotesDraft(String(order?.notes ?? '').trim())
     setDescriptionDraft(String(order?.description ?? '').trim())
@@ -1423,14 +1447,19 @@ export function JobDetailsDialog({
         ? Number(sourceOrder.depositPercent)
         : 50
       const documentName = `Order Confirmation - ${orderNumber}.pdf`
-      const effectiveChangeVersion = Number(override?.version ?? sourceOrder.changeVersion ?? 0)
+      // A pending change order has not been approved by the customer yet. A
+      // metadata-only refresh must keep producing the current/baseline order,
+      // rather than silently issuing documents for the pending changes.
+      const effectiveChangeVersion = hasPendingChangeOrder && !override
+        ? 0
+        : Number(override?.version ?? sourceOrder.changeVersion ?? 0)
       const workOrderName = effectiveChangeVersion > 0
         ? `Work Order Change V${effectiveChangeVersion} - ${orderNumber}.pdf`
         : `Work Order - ${orderNumber}.pdf`
       const proformaInvoiceName = `Proforma Invoice - ${orderNumber}.pdf`
       const bolName = `Bill of Lading - ${orderNumber}.pdf`
       const documentData = {
-        changeVersion: override?.version ?? sourceOrder.changeVersion,
+        changeVersion: effectiveChangeVersion || undefined,
         documentDate: String(sourceOrder.orderDate ?? '').trim(),
         companyName: String(sourceOrder.dealerName || order.dealerName || '').trim(),
         contactName: String(sourceOrder.contactName || order.contactName || '').trim(),
@@ -1447,7 +1476,9 @@ export function JobDetailsDialog({
           || sourceOrder.dueDate
           || '',
         ).trim(),
-        freightType: String(freightDescriptionDraft).trim(),
+        // The description is an internal delivery note; confirmations should
+        // consistently label the charge as Delivery.
+        freightType: freightNet > 0 ? 'Delivery' : '',
         carrier: String(shippingCarrierDraft).trim(),
         shipmentDate: String(sourceOrder.shippedAt ?? '').trim(),
         shipTo: String(shipToDraft).trim(),
@@ -1666,6 +1697,85 @@ export function JobDetailsDialog({
     })
   }
 
+  const currentContact = useMemo(() => {
+    const contacts = dealerContactsQuery.data?.contacts || []
+    const sourceId = String(order?.contactSourceId ?? '').trim()
+    if (sourceId) return contacts.find((contact) => contact.sourceId === sourceId) || null
+
+    const email = String(order?.contactEmail ?? '').trim().toLowerCase()
+    const name = String(order?.contactName ?? '').trim().toLowerCase()
+    return contacts.find((contact) => (
+      (email && String(contact.primaryEmail ?? '').trim().toLowerCase() === email)
+      || (name && String(contact.name ?? '').trim().toLowerCase() === name)
+    )) || null
+  }, [dealerContactsQuery.data?.contacts, order?.contactEmail, order?.contactName, order?.contactSourceId])
+
+  const openContactDialog = () => {
+    setContactActionError(null)
+    setSelectedContactSourceId(currentContact?.sourceId || '')
+    setContactNameDraft(String(currentContact?.name ?? order?.contactName ?? '').trim())
+    setContactEmailDraft(String(currentContact?.primaryEmail ?? order?.contactEmail ?? '').trim())
+    setContactPhoneDraft(String(currentContact?.phone ?? order?.contactPhone ?? '').trim())
+    setContactDialogMode('choose')
+    setIsContactDialogOpen(true)
+  }
+
+  const applyOrderContact = async (contact: CrmContact) => {
+    if (!order) return
+    const response = await postOrdersOrderContactUpdate({
+      mondayItemId: order.mondayItemId,
+      contactSourceId: contact.sourceId,
+    })
+    const applyContact = (entry: OrdersOverviewOrder) => ({
+      ...entry,
+      contactSourceId: response.order.contactSourceId,
+      contactName: response.order.contactName,
+      contactEmail: response.order.contactEmail,
+      contactPhone: response.order.contactPhone,
+    })
+    queryClient.setQueryData<OrdersJobDetailsResponse>(jobDetailsQueryKey, (current) => (
+      current?.order ? { ...current, order: applyContact(current.order) } : current
+    ))
+    queryClient.setQueryData<OrdersOverviewResponse>(QUERY_KEYS.ordersOverview, (current) => (
+      current ? { ...current, orders: current.orders.map((entry) => entry.mondayItemId === order.mondayItemId ? applyContact(entry) : entry) } : current
+    ))
+    await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.ordersOverview })
+    await queryClient.invalidateQueries({ queryKey: jobDetailsQueryKey })
+  }
+
+  const handleSaveContact = async () => {
+    if (!order || isSavingContact) return
+    const name = String(contactNameDraft ?? '').trim()
+    if (!name) {
+      setContactActionError('Contact name is required.')
+      return
+    }
+    setIsSavingContact(true)
+    setContactActionError(null)
+    try {
+      let contact: CrmContact
+      if (contactDialogMode === 'edit') {
+        if (!currentContact?.sourceId) throw new Error('This order is not linked to a CRM contact. Choose or add a contact instead.')
+        const response = await updateCrmContact(currentContact.sourceId, { name, primaryEmail: String(contactEmailDraft ?? '').trim() || null, phone: String(contactPhoneDraft ?? '').trim() || null })
+        contact = response.contact
+      } else if (contactDialogMode === 'add') {
+        if (!order.dealerSourceId) throw new Error('This order is not linked to a CRM company.')
+        const response = await createCrmDealerContact(order.dealerSourceId, { name, primaryEmail: String(contactEmailDraft ?? '').trim() || null, phone: String(contactPhoneDraft ?? '').trim() || null })
+        contact = response.contact
+      } else {
+        contact = (dealerContactsQuery.data?.contacts || []).find((entry) => entry.sourceId === selectedContactSourceId) as CrmContact
+        if (!contact) throw new Error('Choose a contact or add a new one.')
+      }
+      await applyOrderContact(contact)
+      await queryClient.invalidateQueries({ queryKey: ['crm', 'dealer-contacts', order.dealerSourceId] })
+      setIsContactDialogOpen(false)
+    } catch (error) {
+      setContactActionError(error instanceof Error ? error.message : 'Could not save the order contact.')
+    } finally {
+      setIsSavingContact(false)
+    }
+  }
+
   const handleOpenOrderLinesEditor = () => {
     const sourceOrder = documentOrder || order
     setOrderLineDraftLines(
@@ -1813,7 +1923,7 @@ export function JobDetailsDialog({
         projectName: String(order.orderName ?? '').trim(),
         acknowledgmentNumber: orderNumber,
         leadTime: String(order.leadTime || order.dueDate || '').trim(),
-        freightType: String(order.freightDescription ?? '').trim(),
+        freightType: freightNet > 0 ? 'Delivery' : '',
         shipTo: String(order.shipTo ?? '').trim(),
         productNet,
         freightNet,
@@ -2030,31 +2140,13 @@ export function JobDetailsDialog({
   }) => (
     <Box
       sx={{
-        display: 'grid',
-        gridTemplateColumns: multiline ? '1fr' : { xs: '1fr', sm: '128px minmax(0, 1fr)' },
-        alignItems: 'start',
-        gap: multiline ? 0.35 : 1,
-        py: 0.55,
+        py: 0.45,
         minWidth: 0,
-        borderBottom: '1px solid',
-        borderColor: 'rgba(15, 42, 68, 0.08)',
       }}
     >
-      <Typography
-        variant="caption"
-        sx={{
-          fontWeight: 850,
-          letterSpacing: '0.045em',
-          textTransform: 'uppercase',
-          color: `${accent}.main`,
-          lineHeight: 1.45,
-          pt: multiline ? 0 : 0.8,
-        }}
-      >
-        {label}
-      </Typography>
       <TextField
         size="small"
+        label={label}
         value={value}
         type={type}
         onChange={(event) => onChange(event.target.value)}
@@ -2065,6 +2157,14 @@ export function JobDetailsDialog({
         helperText={helperText}
         InputLabelProps={type === 'date' ? { shrink: true } : undefined}
         fullWidth
+        sx={{
+          '& .MuiOutlinedInput-root': {
+            bgcolor: 'rgba(255, 255, 255, 0.96)',
+          },
+          '& .MuiOutlinedInput-notchedOutline': {
+            borderColor: `${accent}.main`,
+          },
+        }}
       />
     </Box>
   )
@@ -2246,6 +2346,7 @@ export function JobDetailsDialog({
 
   const resetManagerEditDraftsFromOrder = () => {
     setOrderNameDraft(String(order?.orderName ?? '').trim())
+    setSalesRepDraft(String(order?.salesRep ?? '').trim())
     setPoNumberDraft(String(order?.poNumber ?? '').trim())
     setNotesDraft(String(order?.notes ?? '').trim())
     setDescriptionDraft(String(order?.description ?? '').trim())
@@ -2330,6 +2431,9 @@ export function JobDetailsDialog({
       const response = await postOrdersOrderDetailsUpdate({
         mondayItemId,
         orderName: nextOrderName,
+        ...(String(salesRepDraft ?? '').trim() !== String(order.salesRep ?? '').trim()
+          ? { salesRep: String(salesRepDraft ?? '').trim() }
+          : {}),
         ...(String(poNumberDraft ?? '').trim() !== String(order.poNumber ?? '').trim()
           ? { poNumber: String(poNumberDraft ?? '').trim() }
           : {}),
@@ -2366,6 +2470,7 @@ export function JobDetailsDialog({
       })
 
       setOrderNameDraft(String(response.order.orderName ?? '').trim())
+      setSalesRepDraft(String(response.order.salesRep ?? '').trim())
       setPoNumberDraft(String(response.order.poNumber ?? '').trim())
       setNotesDraft(String(response.order.notes ?? '').trim())
       setDescriptionDraft(String(response.order.description ?? '').trim())
@@ -2888,16 +2993,6 @@ export function JobDetailsDialog({
 
   const handleOpenBolPreview = async () => {
     if (!order || isLoadingBolPreview) {
-      return
-    }
-
-    if (bolUrl) {
-      handleOpenDocumentPreview({
-        title: 'BOL Preview',
-        url: bolUrl,
-        fileName: 'bill-of-lading.pdf',
-        mimeType: 'application/pdf',
-      })
       return
     }
 
@@ -5316,9 +5411,30 @@ export function JobDetailsDialog({
                                 onChange: setOrderNameDraft,
                               })
                             : renderOrderFact('Project', orderNameDraft)}
-                          {renderOrderFact('Dealer', order?.dealerName)}
-                          {appUser?.canViewOrderValue
-                            ? renderOrderFact('Sales representative', order?.salesRep)
+                          {renderOrderFact('Company', order?.dealerName)}
+                          <Box sx={{ py: 0.55 }}>
+                            <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
+                              <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                                Contact
+                              </Typography>
+                              {canEditOrderInformation ? (
+                                <Button size="small" variant="text" onClick={openContactDialog} sx={{ minWidth: 0, px: 0.5, textTransform: 'none', fontWeight: 800 }}>
+                                  Edit / Change
+                                </Button>
+                              ) : null}
+                            </Stack>
+                            <Typography variant="body2" sx={{ fontWeight: 700 }}>{order?.contactName || '—'}</Typography>
+                            {order?.contactPhone ? <Typography variant="body2" color="text.secondary">{order.contactPhone}</Typography> : null}
+                            {order?.contactEmail ? <Typography variant="body2" color="text.secondary">{order.contactEmail}</Typography> : null}
+                          </Box>
+                          {(canEditOrderInformation || appUser?.canViewOrderValue)
+                            ? isManagerEditMode
+                              ? renderEditableOrderFact({
+                                  label: 'Sales representative',
+                                  value: salesRepDraft,
+                                  onChange: setSalesRepDraft,
+                                })
+                              : renderOrderFact('Sales representative', order?.salesRep)
                             : null}
                           {appUser?.canViewOrderValue
                             ? renderOrderFact(
@@ -5413,7 +5529,7 @@ export function JobDetailsDialog({
                               sx={{ fontWeight: 750 }}
                             />
                           </Stack>
-                          <Box
+                          {!isManagerEditMode ? <Box
                             sx={{
                               p: 1.05,
                               mb: 0.55,
@@ -5429,7 +5545,7 @@ export function JobDetailsDialog({
                           <Typography variant="body2" sx={{ mt: 0.2, fontWeight: 650, whiteSpace: 'pre-wrap' }}>
                               {shipNotesDraft || 'No special shipping instructions.'}
                             </Typography>
-                          </Box>
+                          </Box> : null}
                           {isManagerEditMode
                             ? renderEditableOrderFact({
                                 label: 'Lead time',
@@ -5561,7 +5677,7 @@ export function JobDetailsDialog({
                           <Button
                             variant="outlined"
                             startIcon={<EditRoundedIcon />}
-                            disabled={isGeneratingOrderConfirmation || hasPendingChangeOrder}
+                            disabled={isGeneratingOrderConfirmation}
                             onClick={handleOpenOrderLinesEditor}
                             sx={{ textTransform: 'none', fontWeight: 800 }}
                           >
@@ -5604,6 +5720,8 @@ export function JobDetailsDialog({
                           >
                             {isGeneratingOrderConfirmation
                               ? documentGenerationStage || 'Generating Documents…'
+                              : hasPendingChangeOrder
+                                ? 'Regenerate Current Documents'
                               : orderConfirmationUrl && workOrderUrl && proformaInvoiceUrl && bolUrl
                                 ? 'Regenerate Documents'
                                 : 'Generate Documents'}
@@ -5614,6 +5732,12 @@ export function JobDetailsDialog({
 
                     {infoDocumentActionError ? (
                       <Alert severity="error">{infoDocumentActionError}</Alert>
+                    ) : null}
+
+                    {hasPendingChangeOrder ? (
+                      <Alert severity="info">
+                        A change order is awaiting customer signature. Regenerating here updates the current order documents only; the pending line changes stay separate until approved.
+                      </Alert>
                     ) : null}
 
                     {infoDocumentActionSuccess ? (
@@ -6671,6 +6795,82 @@ export function JobDetailsDialog({
               onClick={() => setSelectedOrderPhoto(null)}
             >
               Close
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        <Dialog
+          open={isContactDialogOpen}
+          onClose={() => !isSavingContact && setIsContactDialogOpen(false)}
+          maxWidth="sm"
+          fullWidth
+        >
+          <DialogTitle>Order contact</DialogTitle>
+          <DialogContent>
+            <Stack spacing={1.5} sx={{ pt: 0.5 }}>
+              <Typography variant="body2" color="text.secondary">
+                Contact information is managed in CRM. Choose the existing contact, edit that contact, or add a new one for {order?.dealerName || 'this company'}.
+              </Typography>
+              {contactActionError ? <Alert severity="error">{contactActionError}</Alert> : null}
+
+              {contactDialogMode === 'choose' ? (
+                <>
+                  <FormControl fullWidth>
+                    <InputLabel id="order-contact-select-label">Contact</InputLabel>
+                    <Select
+                      labelId="order-contact-select-label"
+                      label="Contact"
+                      value={selectedContactSourceId}
+                      onChange={(event) => setSelectedContactSourceId(String(event.target.value))}
+                    >
+                      {(dealerContactsQuery.data?.contacts || []).map((contact) => (
+                        <MenuItem key={contact.sourceId} value={contact.sourceId}>
+                          {[contact.name, contact.primaryEmail, contact.phone].filter(Boolean).join(' · ')}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                  {dealerContactsQuery.isLoading ? <Typography variant="caption">Loading company contacts…</Typography> : null}
+                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
+                    <Button
+                      variant="outlined"
+                      disabled={!currentContact}
+                      onClick={() => setContactDialogMode('edit')}
+                      sx={{ textTransform: 'none' }}
+                    >
+                      Edit this contact
+                    </Button>
+                    <Button variant="outlined" onClick={() => setContactDialogMode('add')} sx={{ textTransform: 'none' }}>
+                      Add new contact
+                    </Button>
+                  </Stack>
+                </>
+              ) : (
+                <>
+                  <TextField label="Contact name" value={contactNameDraft} onChange={(event) => setContactNameDraft(event.target.value)} fullWidth required autoFocus />
+                  <TextField label="Email" type="email" value={contactEmailDraft} onChange={(event) => setContactEmailDraft(event.target.value)} fullWidth />
+                  <TextField label="Phone" value={contactPhoneDraft} onChange={(event) => setContactPhoneDraft(event.target.value)} fullWidth />
+                  <Button
+                    variant="text"
+                    onClick={() => setContactDialogMode('choose')}
+                    disabled={isSavingContact}
+                    sx={{ alignSelf: 'flex-start', textTransform: 'none' }}
+                  >
+                    Back to contacts
+                  </Button>
+                </>
+              )}
+            </Stack>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setIsContactDialogOpen(false)} disabled={isSavingContact}>Cancel</Button>
+            <Button
+              variant="contained"
+              onClick={() => void handleSaveContact()}
+              disabled={isSavingContact || (contactDialogMode === 'choose' && !selectedContactSourceId)}
+              startIcon={isSavingContact ? <CircularProgress size={14} color="inherit" /> : null}
+            >
+              {contactDialogMode === 'edit' ? 'Save contact' : contactDialogMode === 'add' ? 'Add & use contact' : 'Use selected contact'}
             </Button>
           </DialogActions>
         </Dialog>

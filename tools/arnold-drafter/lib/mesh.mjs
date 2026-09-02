@@ -14,22 +14,26 @@ export class MeshBuilder {
   constructor() {
     /** @type {Map<string, {positions: number[], normals: number[], indices: number[]}>} */
     this.groups = new Map()
-    /** @type {Array<{name: string, material: string, size: [number,number,number]}>} */
+    /** @type {Array<{name: string, material: string, size: [number,number,number], at: [number,number,number]}>} */
     this.parts = []
   }
 
   #group(material) {
     let group = this.groups.get(material)
     if (!group) {
-      group = { positions: [], normals: [], indices: [] }
+      group = { positions: [], normals: [], uvs: [], indices: [] }
       this.groups.set(material, group)
     }
     return group
   }
 
-  #quad(group, a, b, c, d, normal) {
+  #quad(group, a, b, c, d, normal, grain = 'length') {
     const base = group.positions.length / 3
-    for (const vertex of [a, b, c, d]) group.positions.push(vertex[0], vertex[1], vertex[2])
+    for (const vertex of [a, b, c, d]) {
+      group.positions.push(vertex[0], vertex[1], vertex[2])
+      const [u, v] = planarUv(vertex, normal, grain)
+      group.uvs.push(u, v)
+    }
     for (let i = 0; i < 4; i += 1) group.normals.push(normal[0], normal[1], normal[2])
     group.indices.push(base, base + 1, base + 2, base, base + 2, base + 3)
   }
@@ -38,7 +42,7 @@ export class MeshBuilder {
    * Add an axis-aligned box from its minimum corner.
    * @param {{x:number,y:number,z:number,w:number,h:number,d:number,material:string,name?:string}} box
    */
-  addBox({ x, y, z, w, h, d, material, name }) {
+  addBox({ x, y, z, w, h, d, material, name, grain = 'length' }) {
     if (!material) throw new Error(`addBox(${name ?? 'unnamed'}): material is required`)
     for (const [label, value] of [['w', w], ['h', h], ['d', d]]) {
       if (!Number.isFinite(value)) throw new Error(`addBox(${name ?? 'unnamed'}): ${label} is ${value}`)
@@ -50,14 +54,14 @@ export class MeshBuilder {
     const [x1, y1, z1] = [x + w, y + h, z + d]
 
     // front (+Z), back (-Z), right (+X), left (-X), top (+Y), bottom (-Y)
-    this.#quad(group, [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1], [0, 0, 1])
-    this.#quad(group, [x1, y0, z0], [x0, y0, z0], [x0, y1, z0], [x1, y1, z0], [0, 0, -1])
-    this.#quad(group, [x1, y0, z1], [x1, y0, z0], [x1, y1, z0], [x1, y1, z1], [1, 0, 0])
-    this.#quad(group, [x0, y0, z0], [x0, y0, z1], [x0, y1, z1], [x0, y1, z0], [-1, 0, 0])
-    this.#quad(group, [x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0], [0, 1, 0])
-    this.#quad(group, [x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1], [0, -1, 0])
+    this.#quad(group, [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1], [0, 0, 1], grain)
+    this.#quad(group, [x1, y0, z0], [x0, y0, z0], [x0, y1, z0], [x1, y1, z0], [0, 0, -1], grain)
+    this.#quad(group, [x1, y0, z1], [x1, y0, z0], [x1, y1, z0], [x1, y1, z1], [1, 0, 0], grain)
+    this.#quad(group, [x0, y0, z0], [x0, y0, z1], [x0, y1, z1], [x0, y1, z0], [-1, 0, 0], grain)
+    this.#quad(group, [x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0], [0, 1, 0], grain)
+    this.#quad(group, [x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1], [0, -1, 0], grain)
 
-    if (name) this.parts.push({ name, material, size: [w, h, d] })
+    if (name) this.parts.push({ name, material, size: [w, h, d], at: [x, y, z] })
     return this
   }
 
@@ -83,16 +87,18 @@ export class MeshBuilder {
       const [bx, bz] = ring[(i + 1) % segments]
       const nx = (ax - x) / radius
       const nz = (az - z) / radius
-      this.#quad(group, [ax, y, az], [bx, y, bz], [bx, y + height, bz], [ax, y + height, az], [nx, 0, nz])
+      this.#quad(group, [ax, y, az], [bx, y, bz], [bx, y + height, bz], [ax, y + height, az], [nx, 0, nz], 'vertical')
     }
 
     for (const [yPlane, normal] of [[y + height, 1], [y, -1]]) {
       const base = group.positions.length / 3
       group.positions.push(x, yPlane, z)
       group.normals.push(0, normal, 0)
+      group.uvs.push(...planarUv([x, yPlane, z], [0, normal, 0], 'length'))
       for (const [rx, rz] of ring) {
         group.positions.push(rx, yPlane, rz)
         group.normals.push(0, normal, 0)
+        group.uvs.push(...planarUv([rx, yPlane, rz], [0, normal, 0], 'length'))
       }
       for (let i = 0; i < segments; i += 1) {
         const a = base + 1 + i
@@ -102,7 +108,15 @@ export class MeshBuilder {
       }
     }
 
-    if (name) this.parts.push({ name, material, size: [radius * 2, height, radius * 2] })
+    if (name) {
+      this.parts.push({
+        name,
+        material,
+        size: [radius * 2, height, radius * 2],
+        at: [x - radius, y, z - radius],
+        round: true,
+      })
+    }
     return this
   }
 
@@ -127,4 +141,32 @@ export class MeshBuilder {
     for (const group of this.groups.values()) total += group.indices.length / 3
     return total
   }
+}
+
+// Metres of model per texture tile. Wood grain and weave read at roughly the
+// right scale on furniture-sized parts at this value.
+export const TEXTURE_SCALE = 0.75
+
+/**
+ * Planar UV for a vertex on an axis-aligned face.
+ *
+ * Textures are authored with the grain running along U, so `grain` chooses
+ * which world axis U follows: 'vertical' aligns it with world Y (door and
+ * panel faces, where veneer runs floor-to-ceiling), 'length' aligns it with the
+ * longer horizontal axis (tops, counters, rails).
+ */
+export function planarUv(vertex, normal, grain) {
+  const [x, y, z] = vertex
+  const vertical = grain === 'vertical'
+  let u
+  let v
+
+  if (Math.abs(normal[2]) > 0.5) {
+    ;[u, v] = vertical ? [y, x] : [x, y]
+  } else if (Math.abs(normal[0]) > 0.5) {
+    ;[u, v] = vertical ? [y, z] : [z, y]
+  } else {
+    ;[u, v] = [x, z]
+  }
+  return [u / TEXTURE_SCALE, v / TEXTURE_SCALE]
 }

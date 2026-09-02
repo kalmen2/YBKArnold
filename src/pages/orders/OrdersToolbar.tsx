@@ -13,12 +13,9 @@ import {
   Tab,
   Tabs,
   TextField,
-  ToggleButton,
-  ToggleButtonGroup,
   Typography,
 } from '@mui/material'
 import { formatDateTime } from '../../lib/formatters'
-import type { OrdersViewMode } from './OrdersGrid'
 import type { OrdersListTab } from './useOrdersOverview'
 
 type OrdersToolbarProps = {
@@ -34,9 +31,6 @@ type OrdersToolbarProps = {
     shipped: number
     archive: number
   }
-  viewMode: OrdersViewMode
-  onViewModeChange: (next: OrdersViewMode) => void
-  canUseAdminView: boolean
   canOpenBulkUpdate: boolean
   onOpenBulkUpdate: () => void
   bulkUpdateDisabled: boolean
@@ -56,9 +50,6 @@ export function OrdersToolbar({
   activeTab,
   onActiveTabChange,
   tabCounts,
-  viewMode,
-  onViewModeChange,
-  canUseAdminView,
   canOpenBulkUpdate,
   onOpenBulkUpdate,
   bulkUpdateDisabled,
@@ -97,12 +88,12 @@ export function OrdersToolbar({
             },
           }}
         >
-          <Tab value="all" label={`All (${tabCounts.all})`} />
-          <Tab value="orders" label={`Orders (${tabCounts.orders})`} />
           <Tab value="design" label={`Design (${tabCounts.design})`} />
-          <Tab value="waiting_production" label={`Waiting for Production (${tabCounts.waitingProduction})`} />
+          <Tab value="waiting_production" label={`Waiting (${tabCounts.waitingProduction})`} />
+          <Tab value="orders" label={`Orders (${tabCounts.orders})`} />
           <Tab value="shipped" label={`Shipped (${tabCounts.shipped})`} />
-          <Tab value="archive" label={`Archive (${tabCounts.archive})`} />
+          <Tab value="all" label={`All (${tabCounts.all})`} />
+          <Tab value="archive" label={`Archived (${tabCounts.archive})`} />
         </Tabs>
 
         <Stack
@@ -179,23 +170,6 @@ export function OrdersToolbar({
           />
 
           <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'flex-start', sm: 'center' }}>
-            {canUseAdminView ? (
-              <ToggleButtonGroup
-                exclusive
-                size="small"
-                value={viewMode}
-                aria-label="Orders view"
-                onChange={(_event, nextView: OrdersViewMode | null) => {
-                  if (nextView) {
-                    onViewModeChange(nextView)
-                  }
-                }}
-              >
-                <ToggleButton value="standard">Standard View</ToggleButton>
-                <ToggleButton value="admin">Admin View</ToggleButton>
-              </ToggleButtonGroup>
-            ) : null}
-
             {canOpenBulkUpdate ? (
               <Button
                 size="small"

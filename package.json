@@ -12,8 +12,7 @@
     "preview": "vite preview",
     "deploy": "npm run build && firebase deploy",
     "deploy:hosting": "npm run build && firebase deploy --only hosting",
-    "deploy:functions": "firebase deploy --only functions",
-    "verify:3d": "node scripts/verify-3d-model.mjs"
+    "deploy:functions": "firebase deploy --only functions"
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",

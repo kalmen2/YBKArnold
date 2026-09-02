@@ -611,7 +611,6 @@ export function registerPurchasingRoutes(app, deps) {
     randomUUID,
     resolvePurchasingItemSearchMatches,
     requireFirebaseAuth,
-    requireManagerOrAdminRole,
     requireOfficeManagerOrAdminRole,
   } = deps
 
@@ -2737,7 +2736,9 @@ export function registerPurchasingRoutes(app, deps) {
     }
   })
 
-  app.post('/api/purchasing/refresh', requireFirebaseAuth, requireManagerOrAdminRole, async (req, res, next) => {
+  // Any approved, authenticated user can refresh the shared purchasing snapshot.
+  // Creating purchase orders remains restricted by requireOfficeManagerOrAdminRole.
+  app.post('/api/purchasing/refresh', requireFirebaseAuth, async (req, res, next) => {
     try {
       const forceRefresh = String(req.query?.force ?? '').trim() === '1'
       const summary = await syncPurchasingFromQuickBooks({ force: forceRefresh })

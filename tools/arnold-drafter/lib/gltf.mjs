@@ -1,7 +1,15 @@
 // MeshBuilder -> GLB, via the same @gltf-transform stack functions/ already uses.
+//
+// Materials carry a generated base-colour texture where the finish declares one,
+// so veneer reads as grain rather than a flat brown, and brushed metal reads as
+// brushed. Textures are embedded in the GLB, so the file stays a single portable
+// asset for the customer viewer.
 
 import { Document, NodeIO } from '@gltf-transform/core'
 import { resolveFinish, hexToLinear } from './materials.mjs'
+import { generateTexture } from './textures.mjs'
+
+const WRAP_REPEAT = 10497
 
 /**
  * @param {import('./mesh.mjs').MeshBuilder} builder
@@ -32,6 +40,12 @@ export async function buildGlb(builder, meta) {
       .setArray(new Float32Array(group.normals))
       .setBuffer(buffer)
 
+    const texcoord = document
+      .createAccessor(`${finishName}_TEXCOORD_0`)
+      .setType('VEC2')
+      .setArray(new Float32Array(group.uvs))
+      .setBuffer(buffer)
+
     const vertexCount = group.positions.length / 3
     const IndexArray = vertexCount > 65535 ? Uint32Array : Uint16Array
     const indices = document
@@ -42,18 +56,37 @@ export async function buildGlb(builder, meta) {
 
     const material = document
       .createMaterial(finish.label)
-      .setBaseColorFactor([...hexToLinear(finish.hex), finish.alpha ?? 1])
       .setMetallicFactor(finish.metallic ?? 0)
       .setRoughnessFactor(finish.roughness)
-      .setDoubleSided(false)
+      .setDoubleSided(Boolean(finish.doubleSided))
 
-    if (finish.alpha != null && finish.alpha < 1) material.setAlphaMode('BLEND')
+    if (finish.texture) {
+      // The texture carries the colour, so the factor stays white or the two
+      // would multiply and darken every surface.
+      material.setBaseColorFactor([1, 1, 1, finish.alpha ?? 1])
+      const texture = document
+        .createTexture(`${finishName}_baseColor`)
+        .setImage(generateTexture(finish.texture, finish.hex))
+        .setMimeType('image/png')
+      material.setBaseColorTexture(texture)
+      const info = material.getBaseColorTextureInfo()
+      info.setWrapS(WRAP_REPEAT).setWrapT(WRAP_REPEAT)
+    } else {
+      material.setBaseColorFactor([...hexToLinear(finish.hex), finish.alpha ?? 1])
+    }
+
+    if (finish.alphaMode === 'MASK') {
+      material.setAlphaMode('MASK').setAlphaCutoff(finish.alphaCutoff ?? 0.5)
+    } else if (finish.alpha != null && finish.alpha < 1) {
+      material.setAlphaMode('BLEND')
+    }
 
     mesh.addPrimitive(
       document
         .createPrimitive()
         .setAttribute('POSITION', position)
         .setAttribute('NORMAL', normal)
+        .setAttribute('TEXCOORD_0', texcoord)
         .setIndices(indices)
         .setMaterial(material),
     )

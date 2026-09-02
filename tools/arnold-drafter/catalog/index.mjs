@@ -4,9 +4,10 @@
 // { type, label, params, build } and list it here. No other file changes.
 
 import credenza from './casegood.credenza.mjs'
+import receptionDesk from './casegood.reception-desk.mjs'
 import table from './table.rectangular.mjs'
 
-const PRODUCTS = [credenza, table]
+const PRODUCTS = [credenza, receptionDesk, table]
 
 export const CATALOG = new Map(PRODUCTS.map((product) => [product.type, product]))
 

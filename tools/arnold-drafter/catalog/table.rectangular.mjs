@@ -1,42 +1,102 @@
 // Rectangular table or desk: conference table, work desk, occasional table.
 //
-// Two base families are modelled: four legs (with an optional apron) and solid
-// panel ends (with an optional stretcher). Trestle and pedestal bases are not
-// built yet — see the gaps list in SKILL.md.
+// PRIMARY params: the long dimension, the base family, and the finishes. Give
+// it "10 foot walnut conference table, panel ends" and it builds — depth,
+// height, thickness and every base detail scale from there and get reported
+// back. Put any of them in the spec to pin it.
+
+import { IN } from '../lib/units.mjs'
 
 export default {
   type: 'table.rectangular',
   label: 'Rectangular table / desk',
   params: [
+    // --- primary -----------------------------------------------------------
     { key: 'topWidth', type: 'dimension', ask: 'Top width (the long dimension)?' },
-    { key: 'topDepth', type: 'dimension', ask: 'Top depth (the short dimension)?' },
-    { key: 'topThickness', type: 'dimension', ask: 'Top thickness?' },
-    { key: 'overallHeight', type: 'dimension', ask: 'Overall height, floor to the top surface?' },
-
     {
-      key: 'baseType',
-      type: 'enum',
-      values: ['four-legs', 'panel-ends'],
+      key: 'topDepth', type: 'dimension', confirm: true,
+      rule: '40% of the length, held between 30" and 60"',
+      derive: (p) => Math.min(Math.max(p.topWidth * 0.4, 30 * IN), 60 * IN),
+      ask: 'Top depth (the short dimension)?',
+    },
+    {
+      key: 'overallHeight', type: 'dimension', confirm: true,
+      rule: 'contract standard 29" table height',
+      derive: () => 29 * IN,
+      ask: 'Overall height, floor to the top surface?',
+    },
+    {
+      key: 'baseType', type: 'enum', values: ['four-legs', 'panel-ends'],
       ask: 'Base type — four legs, or solid panel ends?',
     },
-
-    { key: 'legSection', type: 'dimension', ask: 'Leg section (square legs, so one dimension)?', when: (p) => p.baseType === 'four-legs' },
-    { key: 'legInsetFromEnd', type: 'dimension', ask: 'How far in from each END of the top does the leg start?', when: (p) => p.baseType === 'four-legs' },
-    { key: 'legInsetFromSide', type: 'dimension', ask: 'How far in from each SIDE edge of the top does the leg start?', when: (p) => p.baseType === 'four-legs' },
-    { key: 'hasApron', type: 'boolean', ask: 'Is there an apron / rail below the top? (true or false)', when: (p) => p.baseType === 'four-legs' },
-    { key: 'apronHeight', type: 'dimension', ask: 'Apron height (its vertical face)?', when: (p) => p.hasApron === true },
-    { key: 'apronThickness', type: 'dimension', ask: 'Apron thickness?', when: (p) => p.hasApron === true },
-    { key: 'apronSetback', type: 'dimension', ask: 'How far is the apron set back from the top edge?', when: (p) => p.hasApron === true },
-
-    { key: 'panelThickness', type: 'dimension', ask: 'End panel thickness?', when: (p) => p.baseType === 'panel-ends' },
-    { key: 'panelInsetFromEnd', type: 'dimension', ask: 'How far in from each end of the top does the panel sit?', when: (p) => p.baseType === 'panel-ends' },
-    { key: 'panelInsetFromSide', type: 'dimension', ask: 'How far in from the front and back edges of the top does the panel sit?', when: (p) => p.baseType === 'panel-ends' },
-    { key: 'hasStretcher', type: 'boolean', ask: 'Is there a stretcher between the end panels? (true or false)', when: (p) => p.baseType === 'panel-ends' },
-    { key: 'stretcherSection', type: 'dimension', ask: 'Stretcher section (square, so one dimension)?', when: (p) => p.hasStretcher === true },
-    { key: 'stretcherHeightFromFloor', type: 'dimension', ask: 'Height from the floor to the centreline of the stretcher?', when: (p) => p.hasStretcher === true },
-
     { key: 'topFinish', type: 'finish', ask: 'Top finish?' },
-    { key: 'baseFinish', type: 'finish', ask: 'Base finish (legs or end panels)?' },
+    {
+      key: 'baseFinish', type: 'finish', ask: 'Base finish (legs or end panels)?',
+      rule: 'matches the top finish', derive: (p) => p.topFinish,
+    },
+
+    // --- detail ------------------------------------------------------------
+    {
+      key: 'topThickness', type: 'dimension',
+      rule: '1 1/4" up to 8ft, 1 1/2" beyond', derive: (p) => (p.topWidth > 96 * IN ? 1.5 : 1.25) * IN,
+    },
+
+    {
+      key: 'legSection', type: 'dimension', when: (p) => p.baseType === 'four-legs',
+      rule: '2 1/2" square, 3" on tops over 8ft', derive: (p) => (p.topWidth > 96 * IN ? 3 : 2.5) * IN,
+    },
+    {
+      key: 'legInsetFromEnd', type: 'dimension', when: (p) => p.baseType === 'four-legs',
+      rule: '1.5x the leg section', derive: (p) => p.legSection * 1.5,
+    },
+    {
+      key: 'legInsetFromSide', type: 'dimension', when: (p) => p.baseType === 'four-legs',
+      rule: '80% of the leg section', derive: (p) => p.legSection * 0.8,
+    },
+    {
+      key: 'hasApron', type: 'boolean', when: (p) => p.baseType === 'four-legs',
+      rule: 'aprons on tables over 6ft, which need the rail for stiffness',
+      derive: (p) => p.topWidth > 72 * IN,
+    },
+    {
+      key: 'apronHeight', type: 'dimension', when: (p) => p.hasApron === true,
+      rule: 'shop standard 4" apron', derive: () => 4 * IN,
+    },
+    {
+      key: 'apronThickness', type: 'dimension', when: (p) => p.hasApron === true,
+      rule: 'shop standard 3/4" stock', derive: () => 0.75 * IN,
+    },
+    {
+      key: 'apronSetback', type: 'dimension', when: (p) => p.hasApron === true,
+      rule: '60% of the leg section, so the apron sits behind the leg face',
+      derive: (p) => p.legSection * 0.6,
+    },
+
+    {
+      key: 'panelThickness', type: 'dimension', when: (p) => p.baseType === 'panel-ends',
+      rule: '1 1/2" panel, 2" on tops over 10ft', derive: (p) => (p.topWidth > 120 * IN ? 2 : 1.5) * IN,
+    },
+    {
+      key: 'panelInsetFromEnd', type: 'dimension', when: (p) => p.baseType === 'panel-ends',
+      rule: '10% of the length, so the top cantilevers evenly', derive: (p) => p.topWidth * 0.1,
+    },
+    {
+      key: 'panelInsetFromSide', type: 'dimension', when: (p) => p.baseType === 'panel-ends',
+      rule: '15% of the depth', derive: (p) => p.topDepth * 0.15,
+    },
+    {
+      key: 'hasStretcher', type: 'boolean', when: (p) => p.baseType === 'panel-ends',
+      rule: 'stretcher on tops over 7ft, which need the span tied together',
+      derive: (p) => p.topWidth > 84 * IN,
+    },
+    {
+      key: 'stretcherSection', type: 'dimension', when: (p) => p.hasStretcher === true,
+      rule: 'twice the panel thickness', derive: (p) => p.panelThickness * 2,
+    },
+    {
+      key: 'stretcherHeightFromFloor', type: 'dimension', when: (p) => p.hasStretcher === true,
+      rule: '28% of overall height, clear of knees', derive: (p) => p.overallHeight * 0.28,
+    },
   ],
 
   build(mesh, p) {

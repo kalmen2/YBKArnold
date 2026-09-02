@@ -113,6 +113,17 @@ export type OrdersOrderDetailsUpdateResponse = {
   warning?: string | null
 }
 
+export type OrdersOrderContactUpdateResponse = {
+  ok: boolean
+  order: {
+    mondayItemId: string
+    contactSourceId: string | null
+    contactName: string | null
+    contactEmail: string | null
+    contactPhone: string | null
+  }
+}
+
 export type OrdersCreateResponse = {
   ok: boolean
   order: {
@@ -173,7 +184,7 @@ export type OrdersCreateBoardColumnsResponse = {
 
 export type OrdersDeleteResponse = {
   ok: boolean
-  queuedForDeletion?: boolean
+  archivedId?: string | null
   deleted: {
     orderKey: string | null
     orderNumber: string | null
@@ -424,6 +435,7 @@ export type OrdersOverviewOrder = {
   convertedByEmail: string | null
   dealerSourceId: string | null
   dealerName: string | null
+  contactSourceId?: string | null
   mondayItemId: string
   orderNumber: string
   jobNumber: string
@@ -1035,6 +1047,19 @@ export function postOrdersOrderDetailsUpdate(input: UpdateOrdersOrderDetailsInpu
   )
 }
 
+export function postOrdersOrderContactUpdate(input: { mondayItemId: string; contactSourceId: string }) {
+  const mondayItemId = String(input?.mondayItemId ?? '').trim()
+  const contactSourceId = String(input?.contactSourceId ?? '').trim()
+
+  if (!mondayItemId) throw new Error('mondayItemId is required.')
+  if (!contactSourceId) throw new Error('contactSourceId is required.')
+
+  return apiRequest<OrdersOrderContactUpdateResponse>('/api/orders/monday/contact', {
+    method: 'POST',
+    body: JSON.stringify({ mondayItemId, contactSourceId }),
+  })
+}
+
 type CreateOrdersManualInput = {
   name: string
   acknowledgementNumber: string
@@ -1222,13 +1247,16 @@ export function postOrdersDeleteRequest(input: DeleteOrdersRequestInput) {
 }
 
 export type DeletedOrderQueueRecord = {
-  orderKey: string
+  /** Archive id. Set for deleted orders, null for cancelled ones. */
+  archivedId: string | null
+  /** Live-collection key. Set for cancelled orders, null for deleted ones. */
+  orderKey: string | null
   order_number: string | null
   order_name: string | null
   monday_item_id: string | null
-  deleteRequestedAt: string | null
-  deleteRequestedByEmail: string | null
-  updatedAt: string | null
+  state: 'deleted' | 'cancelled'
+  finishedAt: string | null
+  finishedByEmail: string | null
   has_quickbooks_record: boolean
 }
 
@@ -1238,10 +1266,19 @@ export function fetchDeletedOrders(limit = 200) {
   )
 }
 
-export function restoreDeletedOrder(orderKey: string) {
-  return apiRequest<{ ok: true }>(`/api/orders/deletion-queue/${encodeURIComponent(orderKey)}/restore`, {
-    method: 'POST',
-  })
+export function restoreDeletedOrder(archivedId: string) {
+  return apiRequest<{ ok: true; warnings?: string[] }>(
+    `/api/orders/deletion-queue/${encodeURIComponent(archivedId)}/restore`,
+    { method: 'POST' },
+  )
+}
+
+/** Clears an archived order for good, along with its generated PDFs. */
+export function purgeDeletedOrder(archivedId: string) {
+  return apiRequest<{ ok: true; warning?: string | null }>(
+    `/api/orders/deletion-queue/${encodeURIComponent(archivedId)}/purge`,
+    { method: 'POST' },
+  )
 }
 
 export function postOrdersOrderConfirmationUpdate(input: {

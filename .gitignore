@@ -13,6 +13,8 @@ dist-ssr
 .firebase
 .expo
 *.local
+.local/
+.mcp-oauth/
 .env
 .env.*
 !.env.example

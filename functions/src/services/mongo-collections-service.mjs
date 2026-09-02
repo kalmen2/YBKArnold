@@ -242,6 +242,7 @@ export function createMongoCollectionsService({
       },
       dashboardSnapshotsCollection: platformDatabase.collection('dashboard_snapshots'),
       ordersUnifiedCollection: ordersDatabase.collection('orders'),
+      deletedOrdersCollection: ordersDatabase.collection('deleted_orders'),
       authUsersCollection: authDatabase.collection('auth_users'),
       mobileAlertsCollection: authDatabase.collection('mobile_alerts'),
       crmAccountsCollection: crmDatabase.collection('crm_accounts'),
@@ -298,6 +299,9 @@ export function createMongoCollectionsService({
         const diagnosticRequestEventsCollection = platformDatabase.collection('diagnostic_request_events')
         const mondayOrdersCollection = ordersDatabase.collection('monday_orders')
         const ordersUnifiedCollection = ordersDatabase.collection('orders')
+        // Deleted orders leave the live Orders collection entirely and land here.
+        // Nothing outside the admin trash reads this collection.
+        const deletedOrdersCollection = ordersDatabase.collection('deleted_orders')
         const authUsersCollection = authDatabase.collection('auth_users')
         const mobilePushTokensCollection = authDatabase.collection('mobile_push_tokens')
         const mobileAlertsCollection = authDatabase.collection('mobile_alerts')
@@ -320,8 +324,6 @@ export function createMongoCollectionsService({
         const quickBooksStatesCollection = integrationsDatabase.collection('quickbooks_oauth_states')
         const emailConnectionsCollection = integrationsDatabase.collection('email_oauth_connections')
         const emailOauthStatesCollection = integrationsDatabase.collection('email_oauth_states')
-        const trimbleOauthConnectionsCollection = integrationsDatabase.collection('trimble_oauth_connections')
-        const trimbleOauthStatesCollection = integrationsDatabase.collection('trimble_oauth_states')
         const emailSyncStatesCollection = integrationsDatabase.collection('email_sync_states')
         const emailIntakeMessagesCollection = integrationsDatabase.collection('email_intake_messages')
         const emailIntakeSuggestionsCollection = integrationsDatabase.collection('email_intake_suggestions')
@@ -368,6 +370,9 @@ export function createMongoCollectionsService({
             ordersUnifiedCollection.createIndex({ canonical_order_id: 1 }, { unique: true, sparse: true }),
             ordersUnifiedCollection.createIndex({ source_quote_id: 1 }, { unique: true, sparse: true }),
             ordersUnifiedCollection.createIndex({ order_number: 1 }),
+            deletedOrdersCollection.createIndex({ id: 1 }, { unique: true }),
+            deletedOrdersCollection.createIndex({ deletedAt: -1 }),
+            deletedOrdersCollection.createIndex({ order_number: 1 }),
             ordersUnifiedCollection.createIndex({ monday_link_status: 1 }),
             // Replaces monday_orders' unique index on mondayItemId: one Monday
             // card may be claimed by at most one Arnold order.
@@ -471,10 +476,6 @@ export function createMongoCollectionsService({
             emailConnectionsCollection.createIndex({ updatedAt: -1 }),
             emailOauthStatesCollection.createIndex({ id: 1 }, { unique: true }),
             emailOauthStatesCollection.createIndex({ provider: 1, createdAt: 1 }),
-            trimbleOauthConnectionsCollection.createIndex({ id: 1 }, { unique: true }),
-            trimbleOauthConnectionsCollection.createIndex({ updatedAt: -1 }),
-            trimbleOauthStatesCollection.createIndex({ id: 1 }, { unique: true }),
-            trimbleOauthStatesCollection.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
             emailSyncStatesCollection.createIndex({ id: 1 }, { unique: true }),
             emailSyncStatesCollection.createIndex({ provider: 1, uid: 1 }, { unique: true }),
             emailSyncStatesCollection.createIndex({ autoSyncEnabled: 1, updatedAt: -1 }),
@@ -557,6 +558,7 @@ export function createMongoCollectionsService({
           diagnosticRequestEventsCollection,
           mondayOrdersCollection,
           ordersUnifiedCollection,
+          deletedOrdersCollection,
           authUsersCollection,
           mobilePushTokensCollection,
           mobileAlertsCollection,
@@ -577,8 +579,6 @@ export function createMongoCollectionsService({
           quickBooksStatesCollection,
           emailConnectionsCollection,
           emailOauthStatesCollection,
-          trimbleOauthConnectionsCollection,
-          trimbleOauthStatesCollection,
           emailSyncStatesCollection,
           emailIntakeMessagesCollection,
           emailIntakeSuggestionsCollection,

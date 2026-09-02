@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install *)",
+      "Bash(npx tsc *)",
+      "Bash(npm run *)",
+      "Bash(wc -l /Users/kalmankamionka/Desktop/Arnold-api/functions/index.mjs /Users/kalmankamionka/Desktop/Arnold-api/functions/src/routes/*.mjs /Users/kalmankamionka/Desktop/Arnold-api/functions/src/services/*.mjs)",
+      "Bash(grep -n \"projection:\" /Users/kalmankamionka/Desktop/Arnold-api/functions/src/routes/*.mjs)",
+      "Bash(wc -l /Users/kalmankamionka/Desktop/Arnold-api/src/pages/*.tsx /Users/kalmankamionka/Desktop/Arnold-api/functions/src/routes/*.mjs)",
+      "Bash(wc -l /Users/kalmankamionka/Desktop/Arnold-api/functions/src/routes/*.mjs /Users/kalmankamionka/Desktop/Arnold-api/functions/src/utils/*.mjs /Users/kalmankamionka/Desktop/Arnold-api/functions/src/services/*.mjs)",
+      "Bash(wc -l /Users/kalmankamionka/Desktop/Arnold-api/src/pages/*.tsx)",
+      "Bash(git -C /Users/kalmankamionka/Desktop/Arnold-api check-ignore functions/.env)",
+      "Bash(git -C /Users/kalmankamionka/Desktop/Arnold-api ls-files functions/.env)",
+      "Bash(wc -l /Users/kalmankamionka/Desktop/Arnold-api/functions/src/routes/*.mjs)",
+      "Bash(git -C /Users/kalmankamionka/Desktop/Arnold-api log --all --oneline)",
+      "Bash(grep -l \"fetchCrmDealers\\\\|fetchTimesheetState\\\\|fetchSupportAlerts\\\\|fetchZendeskTicketSummary\\\\|fetchCrmOverview\\\\|fetchMondayDashboardSnapshot\" /Users/kalmankamionka/Desktop/Arnold-api/src/pages/*.tsx)",
+      "Bash(grep -h \"^import.*from.*features/.*api\" /Users/kalmankamionka/Desktop/Arnold-api/src/pages/*.tsx)",
+      "Bash(git -C /Users/kalmankamionka/Desktop/Arnold-api show 58a9a7e --name-status)",
+      "Bash(grep -rh \"apiRequest\\\\|withQuery\\\\|withRefreshQuery\" /Users/kalmankamionka/Desktop/Arnold-api/src/features/*.ts)",
+      "Bash(grep -n \"Promise.all\\\\|Promise.allSettled\" /Users/kalmankamionka/Desktop/Arnold-api/functions/src/routes/*.mjs)",
+      "Bash(xxd)",
+      "Bash(grep -n '$text\\\\|text search\\\\|buildContainsRegex' /Users/kalmankamionka/Desktop/Arnold-api/functions/src/routes/crm-routes.mjs)"
+    ]
+  }
+}

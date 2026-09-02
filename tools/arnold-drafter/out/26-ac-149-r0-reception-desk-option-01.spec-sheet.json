@@ -1,0 +1,169 @@
+{
+  "summary": {
+    "description": "Reception Desk Option 01",
+    "productType": "casegood.reception-desk",
+    "productLabel": "Reception / transaction desk",
+    "units": "in",
+    "quoteNumber": "26_AC 149_R0",
+    "client": "Floor Play — Complete Wellness",
+    "itemNumber": "1a",
+    "overall": {
+      "width": "87\"",
+      "height": "42\"",
+      "depth": "36\""
+    },
+    "triangles": 144,
+    "glbBytes": 644532,
+    "unknownParams": [],
+    "derivedCount": 6
+  },
+  "cutList": {
+    "rows": [
+      {
+        "description": "back panel",
+        "qty": 1,
+        "material": "corian-group-3-tbd",
+        "materialLabel": "Corian Group 3 — COLOUR TBD",
+        "width": "85 1/2\"",
+        "height": "27\"",
+        "depth": "3/4\"",
+        "widthRaw": 85.5,
+        "heightRaw": 27,
+        "depthRaw": 0.75,
+        "faceAreaSqFt": 16.031
+      },
+      {
+        "description": "chassis face segment",
+        "qty": 3,
+        "material": "corian-group-3-tbd",
+        "materialLabel": "Corian Group 3 — COLOUR TBD",
+        "width": "13\"",
+        "height": "38 3/4\"",
+        "depth": "3/4\"",
+        "widthRaw": 13,
+        "heightRaw": 38.75,
+        "depthRaw": 0.75,
+        "faceAreaSqFt": 10.495
+      },
+      {
+        "description": "end panel L, end panel R",
+        "qty": 2,
+        "material": "corian-group-3-tbd",
+        "materialLabel": "Corian Group 3 — COLOUR TBD",
+        "width": "3/4\"",
+        "height": "38 3/4\"",
+        "depth": "36\"",
+        "widthRaw": 0.75,
+        "heightRaw": 38.75,
+        "depthRaw": 36,
+        "faceAreaSqFt": 19.375
+      },
+      {
+        "description": "work surface",
+        "qty": 1,
+        "material": "corian-group-3-tbd",
+        "materialLabel": "Corian Group 3 — COLOUR TBD",
+        "width": "85 1/2\"",
+        "height": "1 1/4\"",
+        "depth": "25 1/4\"",
+        "widthRaw": 85.5,
+        "heightRaw": 1.25,
+        "depthRaw": 25.25,
+        "faceAreaSqFt": 14.992
+      },
+      {
+        "description": "B/B/F pedestal",
+        "qty": 1,
+        "material": "tbd-wood-grain-laminate",
+        "materialLabel": "Wilsonart/Formica wood grain laminate — TBD matte",
+        "width": "16\"",
+        "height": "25 3/4\"",
+        "depth": "25 1/4\"",
+        "widthRaw": 16,
+        "heightRaw": 25.75,
+        "depthRaw": 25.25,
+        "faceAreaSqFt": 4.515
+      },
+      {
+        "description": "accent panel",
+        "qty": 2,
+        "material": "tbd-wood-veneer",
+        "materialLabel": "Arnold std. wood veneer — SPECIES TBD",
+        "width": "24\"",
+        "height": "38 3/4\"",
+        "depth": "3/4\"",
+        "widthRaw": 24,
+        "heightRaw": 38.75,
+        "depthRaw": 0.75,
+        "faceAreaSqFt": 12.917
+      },
+      {
+        "description": "transaction counter",
+        "qty": 1,
+        "material": "wilsonart-black-velvet",
+        "materialLabel": "Wilsonart Traceless Black Velvet #15505-138-31",
+        "width": "87\"",
+        "height": "1 1/4\"",
+        "depth": "10\"",
+        "widthRaw": 87,
+        "heightRaw": 1.25,
+        "depthRaw": 10,
+        "faceAreaSqFt": 6.042
+      },
+      {
+        "description": "toe kick",
+        "qty": 1,
+        "material": "wilsonart-satin-black-aluminum",
+        "materialLabel": "Wilsonart Metal Satin Brushed Black Aluminum #6296-419",
+        "width": "87\"",
+        "height": "2\"",
+        "depth": "33\"",
+        "widthRaw": 87,
+        "heightRaw": 2,
+        "depthRaw": 33,
+        "faceAreaSqFt": 19.938
+      }
+    ],
+    "totals": {
+      "partCount": 12,
+      "faceAreaSqFtByFinish": {
+        "corian-group-3-tbd": 60.893,
+        "tbd-wood-grain-laminate": 4.515,
+        "tbd-wood-veneer": 12.917,
+        "wilsonart-black-velvet": 6.042,
+        "wilsonart-satin-black-aluminum": 19.938
+      }
+    }
+  },
+  "spec": {
+    "specVersion": 1,
+    "units": "in",
+    "project": {
+      "quoteNumber": "26_AC 149_R0",
+      "client": "Floor Play — Complete Wellness",
+      "itemNumber": "1a",
+      "description": "Reception Desk Option 01"
+    },
+    "product": {
+      "type": "casegood.reception-desk",
+      "params": {
+        "width": 87,
+        "depth": 36,
+        "height": 42,
+        "counterDepth": 10,
+        "counterThickness": "1 1/4\"",
+        "toeKickHeight": 2,
+        "accentPanelCount": 2,
+        "accentPanelWidth": 24,
+        "accentPanelRecess": "1/2\"",
+        "pedestalWidth": 16,
+        "chassisFinish": "corian-group-3-tbd",
+        "counterFinish": "wilsonart-black-velvet",
+        "accentPanelFinish": "tbd-wood-veneer",
+        "toeKickFinish": "wilsonart-satin-black-aluminum",
+        "pedestalFinish": "tbd-wood-grain-laminate",
+        "workSurfaceFinish": "corian-group-3-tbd"
+      }
+    }
+  }
+}

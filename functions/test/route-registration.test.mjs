@@ -62,3 +62,25 @@ test('the card store constructs and exposes the compat surface', async () => {
     assert.equal(typeof s[fn], 'function', `${fn} exists`)
   }
 })
+
+// The admin trash is three endpoints working together: list, push back, clear
+// for good. A rename that leaves one of them behind is only visible in prod.
+test('the deleted-order archive endpoints are all registered', async () => {
+  const { registerOrderShippingRoutes } = await import('../src/orders/shipping-routes.mjs')
+  const app = fakeApp()
+  registerOrderShippingRoutes(app, deps)
+
+  for (const route of [
+    'GET /api/orders/deletion-queue',
+    'POST /api/orders/deletion-queue/:archivedId/restore',
+    'POST /api/orders/deletion-queue/:archivedId/purge',
+    'POST /api/orders/delete',
+  ]) {
+    assert.ok(app.routes.includes(route), `${route} is registered`)
+  }
+})
+
+test('the orders domain owns the deleted-order archive collection', async () => {
+  const { MONGO_DOMAIN_COLLECTIONS } = await import('../src/services/mongo-domain-config.mjs')
+  assert.ok(MONGO_DOMAIN_COLLECTIONS.orders.includes('deleted_orders'))
+})

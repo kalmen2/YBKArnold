@@ -1,0 +1,31 @@
+{
+  "specVersion": 1,
+  "units": "in",
+  "project": {
+    "quoteNumber": "26_AC 149_R0",
+    "client": "Floor Play — Complete Wellness",
+    "itemNumber": "1a",
+    "description": "Reception Desk Option 01"
+  },
+  "product": {
+    "type": "casegood.reception-desk",
+    "params": {
+      "width": 87,
+      "depth": 36,
+      "height": 42,
+      "counterDepth": 10,
+      "counterThickness": "1 1/4\"",
+      "toeKickHeight": 2,
+      "accentPanelCount": 2,
+      "accentPanelWidth": 24,
+      "accentPanelRecess": "1/2\"",
+      "pedestalWidth": 16,
+      "chassisFinish": "corian-group-3-tbd",
+      "counterFinish": "wilsonart-black-velvet",
+      "accentPanelFinish": "tbd-wood-veneer",
+      "toeKickFinish": "wilsonart-satin-black-aluminum",
+      "pedestalFinish": "tbd-wood-grain-laminate",
+      "workSurfaceFinish": "corian-group-3-tbd"
+    }
+  }
+}

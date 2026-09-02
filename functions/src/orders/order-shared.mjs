@@ -66,6 +66,68 @@ export function calculateDateDifferenceDays(startDate, endDate) {
   return Math.round((endMs - startMs) / (24 * 60 * 60 * 1000))
 }
 
+// A deleted or cancelled order is finished. It stays in Mongo as history, but
+// it must never reserve an order number, block a rename, or win an identity
+// lookup away from the live order that reused its number.
+export const LIVE_ORDER_FILTER = Object.freeze({
+  is_deleted: { $ne: true },
+  is_cancelled: { $ne: true },
+})
+
+export function isTerminalOrderDocument(orderDocument) {
+  return orderDocument?.is_deleted === true || orderDocument?.is_cancelled === true
+}
+
+// Terminal orders are moved off their natural `order:<number>` key so the
+// unique index stops reserving the acknowledgement number. The archived key
+// still has to be unique, hence the identity suffix.
+export function buildArchivedOrderKey(state, identity) {
+  const normalizedIdentity = String(identity ?? '').trim()
+  const prefix = state === 'cancelled' ? 'cancelled' : 'deleted'
+
+  return `${prefix}:${normalizedIdentity || randomUUID()}`
+}
+
+// Moves a finished order off the natural `order:<number>` key so the unique
+// index stops reserving the acknowledgement number, and so an upsert keyed on
+// that number cannot land inside the finished record. The unique index means
+// at most one row can be holding the key. Returns true when one was released.
+export async function releaseFinishedOrderKey(collection, naturalOrderKey) {
+  const normalizedKey = String(naturalOrderKey ?? '').trim()
+
+  if (!normalizedKey) {
+    return false
+  }
+
+  const finishedOrder = await collection.findOne(
+    {
+      orderKey: normalizedKey,
+      $or: [{ is_deleted: true }, { is_cancelled: true }],
+    },
+    { projection: { _id: 1, is_cancelled: 1 } },
+  )
+
+  if (!finishedOrder) {
+    return false
+  }
+
+  const result = await collection.updateOne(
+    { _id: finishedOrder._id, orderKey: normalizedKey },
+    {
+      $set: {
+        orderKey: buildArchivedOrderKey(
+          finishedOrder?.is_cancelled === true ? 'cancelled' : 'deleted',
+          String(finishedOrder._id ?? ''),
+        ),
+        restore_order_key: normalizedKey,
+        updatedAt: new Date().toISOString(),
+      },
+    },
+  )
+
+  return (result?.modifiedCount ?? 0) > 0
+}
+
 // Builds a filter for ONE order.  Do not use $or for a mutation: a stale
 // Monday id combined with a reused order number can otherwise update a
 // different order.  Callers must resolve the record first and prefer its
@@ -98,6 +160,12 @@ export function buildOrderIdentityFilter({
 // match nothing and updateOne would silently no-op. Here each identity is
 // tried in turn, and an identity that matches more than one order is rejected
 // rather than resolved arbitrarily.
+//
+// Live orders are tried before history. A reused acknowledgement number would
+// otherwise match both the finished order and the new one and report every
+// request about it as ambiguous; the deleted or cancelled record must not
+// disturb the live one. History is still reachable when nothing live matches,
+// which is how the admin queue addresses a finished order by its key.
 export async function resolveSingleOrder(collection, {
   orderKey,
   mondayItemId,
@@ -115,14 +183,19 @@ export async function resolveSingleOrder(collection, {
       continue
     }
 
-    const matches = await collection.find({ [field]: value }).limit(2).toArray()
+    for (const scope of [{ ...LIVE_ORDER_FILTER }, {}]) {
+      const matches = await collection
+        .find({ [field]: value, ...scope })
+        .limit(2)
+        .toArray()
 
-    if (matches.length === 1) {
-      return { order: matches[0], filter: { _id: matches[0]._id }, matchedBy: field }
-    }
+      if (matches.length === 1) {
+        return { order: matches[0], filter: { _id: matches[0]._id }, matchedBy: field }
+      }
 
-    if (matches.length > 1) {
-      return { order: null, filter: null, matchedBy: field, ambiguous: true }
+      if (matches.length > 1) {
+        return { order: null, filter: null, matchedBy: field, ambiguous: true }
+      }
     }
   }
 

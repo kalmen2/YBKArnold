@@ -104,3 +104,7 @@ export function formatDimension(metres, specUnits, { fractionDenominator = 16 } 
   }
   return whole === 0 ? `${numerator}/${denominator}"` : `${whole} ${numerator}/${denominator}"`
 }
+
+/** Metre constants, so catalog derive rules can state shop standards plainly. */
+export const IN = 0.0254
+export const MM = 0.001

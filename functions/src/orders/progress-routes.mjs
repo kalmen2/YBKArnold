@@ -10,6 +10,7 @@ import {
   buildOrderIdentityFilter,
   enqueueMondayProgressStatusUpdates,
   hasOwnField,
+  LIVE_ORDER_FILTER,
   normalizeIsoDateInput,
   normalizeOrderNumberInput,
   normalizeQueuedProgressStatusValue,
@@ -57,19 +58,19 @@ export function registerOrderProgressRoutes(app, {
   const linkedOrderNumberChangeMessage =
     'Sorry, this cannot be done because of its linked. If it needs to be done, contact admin.'
 
+  // Timesheet rows are deliberately not a blocker. Workers type the job number
+  // in by hand, so those rows are their own record of what they worked on, not
+  // a link back to this order. Renaming the order neither rewrites them nor
+  // needs their permission. QuickBooks is a real link and still blocks.
   function hasLinkedOrderNumberBlockers(linkState) {
     return Boolean(
-      linkState?.hasTimesheetEntries
-      || linkState?.hasTimesheetProgressHistory
-      || linkState?.hasQuickBooksRecordOnOrder
+      linkState?.hasQuickBooksRecordOnOrder
       || linkState?.hasQuickBooksOrderForCurrentNumber
       || linkState?.hasQuickBooksOrderForNextNumber,
     )
   }
 
   async function resolveOrderNumberChangeLinkState({
-    entriesCollection,
-    orderProgressCollection,
     ordersUnifiedCollection,
     mondayItemId,
     currentOrderNumber,
@@ -80,18 +81,6 @@ export function registerOrderProgressRoutes(app, {
     const normalizedNextOrderNumber = normalizeOrderNumberInput(nextOrderNumber)
     const normalizedMondayItemId = String(mondayItemId ?? '').trim()
 
-    const timesheetEntriesPromise = normalizedCurrentOrderNumber
-      ? entriesCollection.countDocuments(
-        { jobName: normalizedCurrentOrderNumber },
-        { limit: 1 },
-      )
-      : Promise.resolve(0)
-    const timesheetProgressPromise = normalizedCurrentOrderNumber
-      ? orderProgressCollection.countDocuments(
-        { jobName: normalizedCurrentOrderNumber },
-        { limit: 1 },
-      )
-      : Promise.resolve(0)
     const quickBooksCurrentPromise = normalizedCurrentOrderNumber
       ? ordersUnifiedCollection.countDocuments(
         {
@@ -115,20 +104,14 @@ export function registerOrderProgressRoutes(app, {
       : Promise.resolve(0)
 
     const [
-      timesheetEntriesCount,
-      timesheetProgressCount,
       quickBooksCurrentCount,
       quickBooksNextCount,
     ] = await Promise.all([
-      timesheetEntriesPromise,
-      timesheetProgressPromise,
       quickBooksCurrentPromise,
       quickBooksNextPromise,
     ])
 
     return {
-      hasTimesheetEntries: Number(timesheetEntriesCount) > 0,
-      hasTimesheetProgressHistory: Number(timesheetProgressCount) > 0,
       hasQuickBooksRecordOnOrder: Boolean(hasQuickBooksRecordOnOrder),
       hasQuickBooksOrderForCurrentNumber: Number(quickBooksCurrentCount) > 0,
       hasQuickBooksOrderForNextNumber: Number(quickBooksNextCount) > 0,
@@ -177,10 +160,6 @@ export function registerOrderProgressRoutes(app, {
     const nextValue = normalizeOrderNumberInput(requestedOrderNumber) || '(unknown)'
 
     const reasonParts = []
-
-    if (linkedState?.hasTimesheetEntries || linkedState?.hasTimesheetProgressHistory) {
-      reasonParts.push('linked to timesheet history')
-    }
 
     if (
       linkedState?.hasQuickBooksRecordOnOrder
@@ -855,8 +834,6 @@ export function registerOrderProgressRoutes(app, {
         const {
           mondayOrdersCollection,
           ordersUnifiedCollection,
-          entriesCollection,
-          orderProgressCollection,
         } = await getCollections()
 
         const context = await resolveMondayOrderContext({
@@ -931,10 +908,13 @@ export function registerOrderProgressRoutes(app, {
           })
         }
 
+        // Only a live order can own a number. A deleted or cancelled one keeps
+        // its order_number as history and must not block the rename.
         const conflictingOrder = await ordersUnifiedCollection.findOne(
           {
             order_number: requestedOrderNumber,
             monday_item_id: { $ne: mondayItemId },
+            ...LIVE_ORDER_FILTER,
           },
           {
             projection: {
@@ -951,8 +931,6 @@ export function registerOrderProgressRoutes(app, {
         }
 
         const linkedState = await resolveOrderNumberChangeLinkState({
-          entriesCollection,
-          orderProgressCollection,
           ordersUnifiedCollection,
           mondayItemId,
           currentOrderNumber,
@@ -1141,10 +1119,8 @@ export function registerOrderProgressRoutes(app, {
 
         const {
           authUsersCollection,
-          entriesCollection,
           mobileAlertsCollection,
           mondayOrdersCollection,
-          orderProgressCollection,
           ordersUnifiedCollection,
         } = await getCollections()
 
@@ -1196,8 +1172,6 @@ export function registerOrderProgressRoutes(app, {
           || requestedCurrentOrderNumber
 
         const linkedState = await resolveOrderNumberChangeLinkState({
-          entriesCollection,
-          orderProgressCollection,
           ordersUnifiedCollection,
           mondayItemId,
           currentOrderNumber,
@@ -1227,6 +1201,74 @@ export function registerOrderProgressRoutes(app, {
 
   // POST /api/orders/monday/order-details — office/manager/admin edit endpoint
   // for key order fields that must write through to Monday first.
+  app.post(
+    '/api/orders/monday/contact',
+    requireFirebaseAuth,
+    async (req, res, next) => {
+      try {
+        const publicUser = toPublicAuthUser(req.authUser)
+        if (!publicUser?.isApproved || (!publicUser.isAdmin && !publicUser.isManager && !publicUser.isOfficeWorker)) {
+          return res.status(403).json({ error: 'Only office workers, managers, and admins can change an order contact.' })
+        }
+
+        const mondayItemId = String(req.body?.mondayItemId ?? '').trim()
+        const contactSourceId = String(req.body?.contactSourceId ?? '').trim()
+        if (!mondayItemId || !contactSourceId) {
+          return res.status(400).json({ error: 'mondayItemId and contactSourceId are required.' })
+        }
+
+        const { ordersUnifiedCollection, crmContactsCollection } = await getCollections()
+        const [storedOrder, contact] = await Promise.all([
+          ordersUnifiedCollection.findOne({ monday_item_id: mondayItemId }, { projection: { _id: 0, dealer_source_id: 1, source_quote_snapshot: 1 } }),
+          crmContactsCollection.findOne({ sourceId: contactSourceId, isArchived: { $ne: true } }, { projection: { _id: 0 } }),
+        ])
+
+        if (!storedOrder) return res.status(404).json({ error: 'Order was not found in the application database.' })
+        if (!contact) return res.status(404).json({ error: 'Contact was not found or is archived.' })
+
+        const orderDealerSourceId = String(storedOrder.dealer_source_id ?? '').trim()
+        const contactDealerSourceId = String(contact.accountSourceId ?? '').trim()
+        if (orderDealerSourceId && contactDealerSourceId && orderDealerSourceId !== contactDealerSourceId) {
+          return res.status(400).json({ error: 'Choose a contact belonging to this order’s company.' })
+        }
+
+        const contactName = String(contact.name ?? '').trim()
+        const contactEmail = String(contact.primaryEmail ?? '').trim()
+        const contactPhone = String(contact.phone ?? '').trim()
+        const snapshot = storedOrder.source_quote_snapshot && typeof storedOrder.source_quote_snapshot === 'object'
+          ? storedOrder.source_quote_snapshot
+          : {}
+        const updatedAt = new Date().toISOString()
+        await ordersUnifiedCollection.updateOne(
+          { monday_item_id: mondayItemId },
+          {
+            $set: {
+              contact_source_id: contactSourceId,
+              contact_name: contactName || null,
+              contact_email: contactEmail || null,
+              contact_phone: contactPhone || null,
+              source_quote_snapshot: {
+                ...snapshot,
+                contactSourceId,
+                contactName,
+                contactEmail,
+                contactPhone,
+              },
+              updatedAt,
+            },
+          },
+        )
+
+        return res.json({
+          ok: true,
+          order: { mondayItemId, contactSourceId, contactName: contactName || null, contactEmail: contactEmail || null, contactPhone: contactPhone || null },
+        })
+      } catch (error) {
+        next(error)
+      }
+    },
+  )
+
   app.post(
     '/api/orders/monday/order-details',
     requireFirebaseAuth,

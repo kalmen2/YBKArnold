@@ -3,10 +3,14 @@
 // sub-order link that combines a family's money/labor on its main order.
 
 import {
+  buildArchivedOrderKey,
   buildOrderIdentityFilter,
+  isTerminalOrderDocument,
+  LIVE_ORDER_FILTER,
   normalizeIsoDateInput,
   normalizeOrderNumberInput,
   normalizeProgressStatusDetails,
+  releaseFinishedOrderKey,
 } from './order-shared.mjs'
 import { MONDAY_BOARDS } from './monday-board-map.mjs'
 import { MONDAY_LINK_ROLES } from './monday-link-service.mjs'
@@ -108,6 +112,57 @@ export function registerOrderShippingRoutes(app, {
       }
     }))
     return { attemptedCount: targets.length, deletedCount: results.filter(Boolean).length, failedCount: results.filter((result) => !result).length }
+  }
+
+  // Migration for orders soft-deleted before the archive existed. They still
+  // sit in the live collection behind an is_deleted flag, which is exactly the
+  // half-state the archive replaced, so the first admin who opens the trash
+  // moves them across. Converges to zero and can be dropped once it has run.
+  async function absorbLegacySoftDeletedOrders({
+    deletedOrdersCollection,
+    orderProgressCollection,
+    ordersUnifiedCollection,
+  }) {
+    const legacyOrders = await ordersUnifiedCollection.find({ is_deleted: true }).limit(100).toArray()
+
+    for (const legacyOrder of legacyOrders) {
+      const orderNumber = normalizeOrderNumberInput(legacyOrder?.order_number) || null
+      const progressFilter = orderNumber
+        ? { jobName: new RegExp(`^${escapeRegex(orderNumber)}$`, 'i') }
+        : null
+      const progressEntries = progressFilter
+        ? await orderProgressCollection.find(progressFilter).toArray()
+        : []
+
+      await deletedOrdersCollection.insertOne({
+        id: randomUUID(),
+        deletedAt: String(legacyOrder?.deletedAt ?? '').trim() || new Date().toISOString(),
+        deletedByUid: legacyOrder?.deletedByUid ?? null,
+        deletedByEmail: legacyOrder?.deletedByEmail ?? null,
+        order_number: orderNumber,
+        order_name: normalizeOptionalShortText(legacyOrder?.order_name, 260) || null,
+        monday_item_id: String(legacyOrder?.monday_item_id ?? '').trim() || null,
+        monday_delete_mode: null,
+        has_quickbooks_record: Boolean(legacyOrder?.has_quickbooks_record),
+        quickbooks_project_ids: Array.isArray(legacyOrder?.qb_project_ids) ? legacyOrder.qb_project_ids : [],
+        // These were archived off their natural key when the deletion was
+        // queued, so the key they should reclaim is the remembered one.
+        restore_order_key: String(legacyOrder?.restore_order_key ?? '').trim()
+          || buildManualOrderKey(orderNumber, null)
+          || null,
+        absorbed_from_soft_delete_at: new Date().toISOString(),
+        order: legacyOrder,
+        progressEntries,
+      })
+
+      await ordersUnifiedCollection.deleteOne({ _id: legacyOrder._id })
+
+      if (progressFilter) {
+        await orderProgressCollection.deleteMany(progressFilter)
+      }
+    }
+
+    return legacyOrders.length
   }
 
   function buildManualOrderKey(orderNumber, mondayItemId) {
@@ -925,20 +980,17 @@ export function registerOrderShippingRoutes(app, {
         }
 
         const itemName = `${requestedReasonableName} / ${requestedAcknowledgement}`
-        if (duplicateSourceOrder) {
-          const localOrderKey = buildManualOrderKey(requestedAcknowledgement, null)
-          const now = new Date().toISOString()
-          const staleCancelledOrder = await ordersUnifiedCollection.findOne({
-            orderKey: localOrderKey,
-            is_cancelled: true,
-          }, { projection: { _id: 1 } })
-          if (staleCancelledOrder) {
-            await ordersUnifiedCollection.updateOne(
-              { _id: staleCancelledOrder._id, orderKey: localOrderKey, is_cancelled: true },
-              { $set: { orderKey: `cancelled:${randomUUID()}`, updatedAt: now } },
-            )
-          }
+        const localOrderKey = buildManualOrderKey(requestedAcknowledgement, null)
 
+        // A deleted or cancelled order left on the natural `order:<number>` key
+        // would silently swallow this create: the upsert below matches on that
+        // key, so the new order would land inside the finished record and stay
+        // hidden. Move history off the key before anything writes to it. This
+        // also repairs rows finished before the key was released on the spot.
+        await releaseFinishedOrderKey(ordersUnifiedCollection, localOrderKey)
+
+        if (duplicateSourceOrder) {
+          const now = new Date().toISOString()
           const productValue = hasRequestedDocumentLines
             ? Number(duplicateSnapshot?.productTotal ?? 0)
             : parsedOrderValue.value !== null
@@ -1137,7 +1189,22 @@ export function registerOrderShippingRoutes(app, {
           })
         }
 
-        const existingMondayItemId = existingLink.status === 'ok' ? existingLink.itemId : ''
+        // A card left behind by a deleted or cancelled order is not this order's
+        // card. Queuing a deletion does not remove the Monday card, so reusing it
+        // here would quietly graft the new order onto the finished one's history.
+        const linkedItemId = existingLink.status === 'ok' ? existingLink.itemId : ''
+        const finishedCardOwner = linkedItemId
+          ? await ordersUnifiedCollection.findOne(
+            { monday_item_id: linkedItemId },
+            { projection: { _id: 0, is_deleted: 1, is_cancelled: 1 } },
+          )
+          : null
+
+        if (linkedItemId && isTerminalOrderDocument(finishedCardOwner)) {
+          warnings.push('A Monday card with this order number belongs to a deleted order and was left alone; a new card was created.')
+        }
+
+        const existingMondayItemId = isTerminalOrderDocument(finishedCardOwner) ? '' : linkedItemId
         const createdItem = existingMondayItemId
           ? null
           : await createMondayItem({
@@ -1591,8 +1658,10 @@ export function registerOrderShippingRoutes(app, {
     },
   )
 
-  // POST /api/orders/delete — remove an order from website collections and
-  // Monday (blocked when linked to QuickBooks).
+  // POST /api/orders/delete — a real delete for everyone who can reach it. The
+  // Monday card is removed, the order leaves the live Orders collection whole,
+  // and the record lands in the deleted archive, which is the only place it
+  // exists afterwards and the only place an admin can push it back from.
   app.post(
     '/api/orders/delete',
     requireFirebaseAuth,
@@ -1612,45 +1681,22 @@ export function registerOrderShippingRoutes(app, {
 
         const {
           crmQuotesCollection,
+          deletedOrdersCollection,
           mondayOrdersCollection,
           orderProgressCollection,
           ordersUnifiedCollection,
         } = await getCollections()
         const publicUser = toPublicAuthUser(req.authUser)
-        const isAdmin = Boolean(publicUser?.isApproved && publicUser?.isAdmin)
-        const orderDocument = await ordersUnifiedCollection.findOne(
-          {
-            $and: [
-              orderIdentityFilter,
-              ...(isAdmin ? [] : [{ is_deleted: { $ne: true } }]),
-            ],
-          },
-          {
-            projection: {
-              _id: 0,
-              orderKey: 1,
-              order_number: 1,
-              order_name: 1,
-              monday_item_id: 1,
-              monday_board_id: 1,
-              has_quickbooks_record: 1,
-              qb_project_id: 1,
-              qb_project_ids: 1,
-              qb_project_names: 1,
-              canonical_order_id: 1,
-              source_quote_id: 1,
-              selected_line_items: 1,
-              selected_additional_services: 1,
-              selected_shipping_services: 1,
-              include_quote_freight: 1,
-              deposit_request_url: 1,
-              order_confirmation_url: 1,
-              work_order_url: 1,
-              proforma_invoice_url: 1,
-              BOL_source: 1,
-            },
-          },
-        )
+
+        if (!publicUser?.isApproved) {
+          return res.status(403).json({
+            error: 'Approved access is required.',
+          })
+        }
+
+        // The whole record is archived, so it is read whole rather than
+        // projected down to the fields this handler happens to use.
+        const orderDocument = await ordersUnifiedCollection.findOne(orderIdentityFilter)
 
         const fallbackMondayItemId = String(req.body?.mondayItemId ?? '').trim()
         const mondayOnlyOrder = !orderDocument && fallbackMondayItemId
@@ -1703,58 +1749,6 @@ export function registerOrderShippingRoutes(app, {
         const hasQuickBooksRecord = Boolean(orderDocument?.has_quickbooks_record)
           || quickBooksProjectIds.length > 0
 
-        if (!isAdmin) {
-          if (!orderDocument) {
-            return res.status(409).json({
-              error: 'This order cannot be queued for deletion until it is synced to the application database.',
-            })
-          }
-
-          const requestedAt = new Date().toISOString()
-          await ordersUnifiedCollection.updateOne(
-            { orderKey: String(orderDocument.orderKey ?? '').trim() },
-            {
-              $set: {
-                is_deleted: true,
-                deletedAt: requestedAt,
-                deletedByUid: String(publicUser?.uid ?? '').trim() || null,
-                deletedByEmail: String(publicUser?.email ?? '').trim() || null,
-                deleteRequestedAt: requestedAt,
-                deleteRequestedByUid: String(publicUser?.uid ?? '').trim() || null,
-                deleteRequestedByEmail: String(publicUser?.email ?? '').trim() || null,
-                updatedAt: requestedAt,
-              },
-            },
-          )
-
-          return res.json({
-            ok: true,
-            queuedForDeletion: true,
-            deleted: {
-              orderKey: String(orderDocument.orderKey ?? '').trim() || null,
-              orderNumber,
-              orderName,
-              mondayItemId,
-              mondayDeleteMode: null,
-              generatedDocumentCleanup: { attemptedCount: 0, deletedCount: 0, failedCount: 0 },
-            },
-          })
-        }
-
-        if (hasQuickBooksRecord) {
-          return res.status(409).json({
-            error: 'This order is linked to QuickBooks and cannot be deleted directly. Request deletion from admin.',
-            requiresAdminRequest: true,
-            order: {
-              orderKey: String(orderDocument?.orderKey ?? '').trim() || null,
-              orderNumber,
-              orderName,
-              mondayItemId,
-              quickBooksProjectIds,
-            },
-          })
-        }
-
         const warnings = []
         let mondayDeleteResult = null
 
@@ -1786,12 +1780,10 @@ export function registerOrderShippingRoutes(app, {
           }
         }
 
-        const generatedDocumentCleanup = orderDocument
-          ? await deleteGeneratedOrderDocuments(orderDocument)
-          : { attemptedCount: 0, deletedCount: 0, failedCount: 0 }
-        if (generatedDocumentCleanup.failedCount > 0) {
-          warnings.push(`Could not remove ${generatedDocumentCleanup.failedCount} generated order document${generatedDocumentCleanup.failedCount === 1 ? '' : 's'}.`)
-        }
+        // Generated PDFs stay in storage until the archived order is cleared for
+        // good. Removing them here would make a restore hand back an order whose
+        // paperwork is gone.
+        const generatedDocumentCleanup = { attemptedCount: 0, deletedCount: 0, failedCount: 0 }
 
         const sourceQuoteId = String(orderDocument?.source_quote_id ?? '').trim()
         if (sourceQuoteId) {
@@ -1838,20 +1830,51 @@ export function registerOrderShippingRoutes(app, {
             : {
               order_number: new RegExp(`^${escapeRegex(orderNumber)}$`, 'i'),
             }
+        const progressFilter = orderNumber
+          ? { jobName: new RegExp(`^${escapeRegex(orderNumber)}$`, 'i') }
+          : null
+
+        // A deleted order leaves the live Orders collection completely — no
+        // hidden row, no reserved acknowledgement number, no half-state for the
+        // rest of the app to filter out. The whole record moves to the archive,
+        // which is the only place it exists afterwards and the only place an
+        // admin can push it back from. Its progress rows travel with it so a
+        // restore is a real restore.
+        const archiveId = randomUUID()
+        const progressEntries = progressFilter
+          ? await orderProgressCollection.find(progressFilter).toArray()
+          : []
+
+        if (orderDocument) {
+          await deletedOrdersCollection.insertOne({
+            id: archiveId,
+            deletedAt: new Date().toISOString(),
+            deletedByUid: String(publicUser?.uid ?? '').trim() || null,
+            deletedByEmail: String(publicUser?.email ?? '').trim() || null,
+            order_number: orderNumber,
+            order_name: orderName,
+            monday_item_id: mondayItemId,
+            monday_delete_mode: String(mondayDeleteResult?.mode ?? '').trim() || null,
+            has_quickbooks_record: hasQuickBooksRecord,
+            quickbooks_project_ids: quickBooksProjectIds,
+            restore_order_key: orderKey || null,
+            order: orderDocument,
+            progressEntries,
+          })
+        }
 
         // The embedded card lives on the order row, so deleting the order
         // removes it; there is no separate mirror row to clean up any more.
         await Promise.all([
           ordersUnifiedCollection.deleteMany(deletedOrderFilter),
-          orderNumber
-            ? orderProgressCollection.deleteMany({
-              jobName: new RegExp(`^${escapeRegex(orderNumber)}$`, 'i'),
-            })
+          progressFilter
+            ? orderProgressCollection.deleteMany(progressFilter)
             : Promise.resolve(),
         ])
 
         return res.json({
           ok: true,
+          archivedId: orderDocument ? archiveId : null,
           deleted: {
             orderKey: orderKey || null,
             orderNumber,
@@ -1869,54 +1892,210 @@ export function registerOrderShippingRoutes(app, {
     },
   )
 
+  // The archive is the only place a deleted order exists. Cancelled orders are
+  // still live-collection history, so the queue shows both and each row says
+  // which it is.
   app.get('/api/orders/deletion-queue', requireFirebaseAuth, async (req, res, next) => {
     try {
       const publicUser = toPublicAuthUser(req.authUser)
       if (!publicUser?.isAdmin) return res.status(403).json({ error: 'Admin access is required.' })
       const limit = Math.min(500, Math.max(1, Number(req.query?.limit) || 200))
-      const { ordersUnifiedCollection } = await getCollections()
-      const orders = await ordersUnifiedCollection.find(
-        { is_deleted: true },
-        {
-          projection: {
-            _id: 0,
-            orderKey: 1,
-            order_number: 1,
-            order_name: 1,
-            monday_item_id: 1,
-            deleteRequestedAt: 1,
-            deleteRequestedByEmail: 1,
-            updatedAt: 1,
-            has_quickbooks_record: 1,
+      const {
+        deletedOrdersCollection,
+        orderProgressCollection,
+        ordersUnifiedCollection,
+      } = await getCollections()
+
+      await absorbLegacySoftDeletedOrders({
+        deletedOrdersCollection,
+        orderProgressCollection,
+        ordersUnifiedCollection,
+      })
+
+      const [archivedOrders, cancelledOrders] = await Promise.all([
+        deletedOrdersCollection.find(
+          {},
+          {
+            projection: {
+              _id: 0,
+              id: 1,
+              order_number: 1,
+              order_name: 1,
+              monday_item_id: 1,
+              deletedAt: 1,
+              deletedByEmail: 1,
+              has_quickbooks_record: 1,
+            },
           },
-        },
-      ).sort({ deleteRequestedAt: -1, updatedAt: -1 }).limit(limit).toArray()
-      return res.json({ orders })
+        ).sort({ deletedAt: -1 }).limit(limit).toArray(),
+        ordersUnifiedCollection.find(
+          { is_cancelled: true },
+          {
+            projection: {
+              _id: 0,
+              orderKey: 1,
+              order_number: 1,
+              order_name: 1,
+              monday_item_id: 1,
+              cancelled_at: 1,
+              cancelled_by_email: 1,
+              updatedAt: 1,
+              has_quickbooks_record: 1,
+            },
+          },
+        ).sort({ cancelled_at: -1, updatedAt: -1 }).limit(limit).toArray(),
+      ])
+
+      const orders = [
+        ...archivedOrders.map((entry) => ({
+          ...entry,
+          state: 'deleted',
+          archivedId: entry.id,
+          orderKey: null,
+          finishedAt: String(entry?.deletedAt ?? '').trim() || null,
+          finishedByEmail: String(entry?.deletedByEmail ?? '').trim() || null,
+        })),
+        ...cancelledOrders.map((order) => ({
+          ...order,
+          state: 'cancelled',
+          archivedId: null,
+          finishedAt: String(order?.cancelled_at || order?.updatedAt || '').trim() || null,
+          finishedByEmail: String(order?.cancelled_by_email ?? '').trim() || null,
+        })),
+      ].sort((left, right) => String(right.finishedAt ?? '').localeCompare(String(left.finishedAt ?? '')))
+
+      return res.json({ orders: orders.slice(0, limit) })
     } catch (error) {
       next(error)
     }
   })
 
-  app.post('/api/orders/deletion-queue/:orderKey/restore', requireFirebaseAuth, async (req, res, next) => {
+  // Moves an archived order back into the live Orders collection. Its Monday
+  // card was deleted for good, so the restored order comes back unlinked and
+  // has to be re-linked or re-created on Monday.
+  app.post('/api/orders/deletion-queue/:archivedId/restore', requireFirebaseAuth, async (req, res, next) => {
     try {
       const publicUser = toPublicAuthUser(req.authUser)
       if (!publicUser?.isAdmin) return res.status(403).json({ error: 'Admin access is required.' })
-      const orderKey = String(req.params.orderKey ?? '').trim()
-      if (!orderKey) return res.status(400).json({ error: 'orderKey is required.' })
-      const { ordersUnifiedCollection } = await getCollections()
-      const order = await ordersUnifiedCollection.findOneAndUpdate(
-        { orderKey, is_deleted: true },
-        {
-          $set: { is_deleted: false, updatedAt: new Date().toISOString() },
-          $unset: {
-            deletedAt: '', deletedByUid: '', deletedByEmail: '',
-            deleteRequestedAt: '', deleteRequestedByUid: '', deleteRequestedByEmail: '',
-          },
+      const archivedId = String(req.params.archivedId ?? '').trim()
+      if (!archivedId) return res.status(400).json({ error: 'archivedId is required.' })
+      const {
+        deletedOrdersCollection,
+        orderProgressCollection,
+        ordersUnifiedCollection,
+      } = await getCollections()
+      const archived = await deletedOrdersCollection.findOne({ id: archivedId })
+      if (!archived) return res.status(404).json({ error: 'Deleted order not found.' })
+
+      // Deleting released the acknowledgement number, so someone may have taken
+      // it since. Restoring on top of that would put two live orders on one
+      // number, so the admin has to renumber first.
+      const restoreOrderKey = String(archived?.restore_order_key ?? '').trim()
+      const orderNumber = String(archived?.order_number ?? '').trim()
+      const numberOwner = restoreOrderKey
+        ? await ordersUnifiedCollection.findOne(
+          { orderKey: restoreOrderKey, ...LIVE_ORDER_FILTER },
+          { projection: { _id: 0, order_name: 1 } },
+        )
+        : null
+
+      if (numberOwner) {
+        return res.status(409).json({
+          error: `Order number ${orderNumber || restoreOrderKey} is now used by ${String(numberOwner?.order_name ?? '').trim() || 'another live order'}. Renumber that order before restoring this one.`,
+        })
+      }
+
+      const restoredAt = new Date().toISOString()
+      const { _id: archivedMongoId, ...restoredOrder } = archived.order || {}
+      void archivedMongoId
+
+      // The archived record carries its old unique keys — source quote, canonical
+      // order id, QuickBooks project. Any of them may have been claimed while it
+      // sat in the archive, and a raw duplicate-key error would surface as a 500.
+      try {
+        await ordersUnifiedCollection.insertOne({
+          ...restoredOrder,
+          orderKey: restoreOrderKey || buildArchivedOrderKey('deleted', archivedId),
+          // The Monday card is gone, so nothing may claim to be linked to it.
+          monday: null,
+          monday_item_id: null,
+          monday_primary_item_id: null,
+          monday_secondary_item_id: null,
+          monday_production_item_id: null,
+          monday_financial_item_id: null,
+          monday_link_status: 'unlinked',
+          has_monday_record: false,
+          is_deleted: false,
+          restored_at: restoredAt,
+          restored_by_uid: String(publicUser?.uid ?? '').trim() || null,
+          restored_by_email: String(publicUser?.email ?? '').trim() || null,
+          updatedAt: restoredAt,
+        })
+      } catch (insertError) {
+        if (Number(insertError?.code) === 11000) {
+          return res.status(409).json({
+            error: 'This order cannot be pushed back: something it was linked to (its quote, canonical order, or Monday card) now belongs to another order.',
+          })
+        }
+
+        throw insertError
+      }
+
+      const progressEntries = Array.isArray(archived?.progressEntries) ? archived.progressEntries : []
+      if (progressEntries.length > 0) {
+        await orderProgressCollection.insertMany(
+          progressEntries.map(({ _id: progressMongoId, ...entry }) => {
+            void progressMongoId
+
+            return entry
+          }),
+          { ordered: false },
+        ).catch(() => null)
+      }
+
+      await deletedOrdersCollection.deleteOne({ id: archivedId })
+
+      return res.json({
+        ok: true,
+        order: { orderNumber: orderNumber || null, orderName: String(archived?.order_name ?? '').trim() || null },
+        warnings: ['The Monday card was deleted with the order and was not recreated. Re-link or recreate it on Monday.'],
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  // Clears an archived order for good: the record and its generated PDFs.
+  app.post('/api/orders/deletion-queue/:archivedId/purge', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const publicUser = toPublicAuthUser(req.authUser)
+      if (!publicUser?.isAdmin) return res.status(403).json({ error: 'Admin access is required.' })
+      const archivedId = String(req.params.archivedId ?? '').trim()
+      if (!archivedId) return res.status(400).json({ error: 'archivedId is required.' })
+      const { deletedOrdersCollection } = await getCollections()
+      const archived = await deletedOrdersCollection.findOne({ id: archivedId })
+      if (!archived) return res.status(404).json({ error: 'Deleted order not found.' })
+
+      const warnings = []
+      const generatedDocumentCleanup = archived?.order
+        ? await deleteGeneratedOrderDocuments(archived.order)
+        : { attemptedCount: 0, deletedCount: 0, failedCount: 0 }
+      if (generatedDocumentCleanup.failedCount > 0) {
+        warnings.push(`Could not remove ${generatedDocumentCleanup.failedCount} generated order document${generatedDocumentCleanup.failedCount === 1 ? '' : 's'}.`)
+      }
+
+      await deletedOrdersCollection.deleteOne({ id: archivedId })
+
+      return res.json({
+        ok: true,
+        purged: {
+          archivedId,
+          orderNumber: String(archived?.order_number ?? '').trim() || null,
+          generatedDocumentCleanup,
         },
-        { returnDocument: 'after', projection: { _id: 0 } },
-      )
-      if (!order) return res.status(404).json({ error: 'Deleted order not found.' })
-      return res.json({ ok: true, order })
+        warning: warnings.length > 0 ? warnings[0] : null,
+        warnings,
+      })
     } catch (error) {
       next(error)
     }

@@ -1,0 +1,13 @@
+{
+  "specVersion": 1,
+  "units": "in",
+  "project": { "quoteNumber": "MIN-001", "description": "Conference table" },
+  "product": {
+    "type": "table.rectangular",
+    "params": {
+      "topWidth": 120,
+      "baseType": "panel-ends",
+      "topFinish": "walnut"
+    }
+  }
+}

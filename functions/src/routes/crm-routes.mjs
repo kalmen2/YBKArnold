@@ -2,6 +2,7 @@ import { createHash, randomUUID as createRandomUuid, timingSafeEqual } from 'nod
 import { getStorage } from 'firebase-admin/storage'
 import { createTtlCache } from '../utils/ttl-cache.mjs'
 import { normalizeText, nowIso } from '../utils/value-utils.mjs'
+import { releaseFinishedOrderKey } from '../orders/order-shared.mjs'
 
 const _cache = createTtlCache()
 const cacheGet = (key) => _cache.get(key)
@@ -408,7 +409,6 @@ const quoteRevisionSnapshotFields = [
   'sourceWorkbookName',
   'convertedPdfUrl',
   'convertedPdfName',
-  'trimble3d',
   'status',
   'totalAmount',
   'currency',
@@ -972,44 +972,6 @@ function normalizeChatReminderInput(input) {
   }
 }
 
-function normalizeQuoteDocuments(input) {
-  if (!Array.isArray(input)) {
-    return []
-  }
-
-  const maxDocuments = 500
-  const normalizedDocuments = []
-  const seenUrls = new Set()
-
-  for (const rawDocument of input) {
-    const documentEntry = toOptionalObject(rawDocument)
-    const url = toTrimmedText(documentEntry.url ?? documentEntry.documentUrl, 2000)
-
-    if (!url) {
-      continue
-    }
-
-    const dedupeKey = toLowerText(url, 2000)
-
-    if (!dedupeKey || seenUrls.has(dedupeKey)) {
-      continue
-    }
-
-    seenUrls.add(dedupeKey)
-
-    normalizedDocuments.push({
-      url,
-      name: toTrimmedText(documentEntry.name ?? documentEntry.documentName, 1200) || null,
-    })
-
-    if (normalizedDocuments.length >= maxDocuments) {
-      break
-    }
-  }
-
-  return normalizedDocuments
-}
-
 function extractFirebaseStorageObjectFromUrl(rawUrl) {
   const normalizedUrl = toTrimmedText(rawUrl, 4000)
 
@@ -1078,44 +1040,29 @@ function inferImageContentTypeFromObjectPath(objectPath) {
   return null
 }
 
-function resolveQuoteDocumentUrls(quote) {
+function resolveQuoteAssetUrls(quote) {
   const source = toOptionalObject(quote)
   const urls = []
   const seen = new Set()
-  const normalizedDocuments = normalizeQuoteDocuments(source.documents)
-
-  for (const document of normalizedDocuments) {
-    const url = toTrimmedText(document?.url, 2000)
-    const dedupeKey = toLowerText(url, 2000)
-
-    if (!url || !dedupeKey || seen.has(dedupeKey)) {
-      continue
-    }
-
-    seen.add(dedupeKey)
-    urls.push(url)
-  }
-
-  const legacyUrls = [
-    toTrimmedText(source.documentUrl ?? source.document_url, 2000),
+  const assetUrls = [
     toTrimmedText(source.sourceWorkbookUrl, 2000),
     toTrimmedText(source.convertedPdfUrl, 2000),
     toTrimmedText(source.archivedPdfUrl, 2000),
   ]
 
   for (const revision of Array.isArray(source.revisions) ? source.revisions : []) {
-    legacyUrls.push(...resolveQuoteDocumentUrls(revision))
+    assetUrls.push(...resolveQuoteAssetUrls(revision))
   }
 
   for (const itemCollection of [source.lineItems, source.additionalServices, source.shippingServices]) {
     for (const item of Array.isArray(itemCollection) ? itemCollection : []) {
       for (const image of Array.isArray(item?.images) ? item.images : []) {
-        legacyUrls.push(toTrimmedText(image?.url, 2000))
+        assetUrls.push(toTrimmedText(image?.url, 2000))
       }
     }
   }
 
-  for (const url of legacyUrls) {
+  for (const url of assetUrls) {
     const dedupeKey = toLowerText(url, 2000)
 
     if (!url || !dedupeKey || seen.has(dedupeKey)) {
@@ -1133,7 +1080,7 @@ function resolveQuoteStorageTargets(quote) {
   const dedupe = new Set()
   const targets = []
 
-  for (const url of resolveQuoteDocumentUrls(quote)) {
+  for (const url of resolveQuoteAssetUrls(quote)) {
     const target = extractFirebaseStorageObjectFromUrl(url)
 
     if (!target) {
@@ -7323,18 +7270,6 @@ export function registerCrmRoutes(app, deps) {
       }
 
       const now = nowIso()
-      const explicitDocumentUrl = toTrimmedText(body.documentUrl, 2000) || null
-      const explicitDocumentName = toTrimmedText(body.documentName, 240) || null
-      const normalizedDocuments = normalizeQuoteDocuments(body.documents)
-
-      if (normalizedDocuments.length === 0 && explicitDocumentUrl) {
-        normalizedDocuments.push({
-          url: explicitDocumentUrl,
-          name: explicitDocumentName,
-        })
-      }
-
-      const primaryDocument = normalizedDocuments[0] || null
       const lineItems = normalizeQuoteLineItems(body.lineItems)
       const discountPercent = toNonNegativeNumberOrNull(body.discountPercent)
 
@@ -7376,9 +7311,6 @@ export function registerCrmRoutes(app, deps) {
         shippingServices: normalizeQuoteServiceItems(body.shippingServices),
         title,
         description: toTrimmedText(body.description, 2000) || null,
-        documentUrl: primaryDocument?.url || explicitDocumentUrl || null,
-        documentName: primaryDocument?.name || explicitDocumentName || null,
-        documents: normalizedDocuments,
         origin: normalizeQuoteOrigin(body.origin, 'website'),
         sourceWorkbookUrl: toTrimmedText(body.sourceWorkbookUrl, 2000) || null,
         sourceWorkbookName: toTrimmedText(body.sourceWorkbookName, 500) || null,
@@ -7504,11 +7436,6 @@ export function registerCrmRoutes(app, deps) {
       )) {
         return res.status(404).json({ error: 'The revision selected as current was not found.' })
       }
-      const hasDocumentsInput = Object.prototype.hasOwnProperty.call(body, 'documents')
-      const hasLegacyDocumentUrlInput = Object.prototype.hasOwnProperty.call(body, 'documentUrl')
-      const hasLegacyDocumentNameInput = Object.prototype.hasOwnProperty.call(body, 'documentName')
-      const hasLegacyDocumentInput = hasLegacyDocumentUrlInput || hasLegacyDocumentNameInput
-
       if (Object.prototype.hasOwnProperty.call(body, 'title')) {
         const nextTitle = toTrimmedText(body.title, 240)
 
@@ -7742,38 +7669,6 @@ export function registerCrmRoutes(app, deps) {
         updates.contactName = toTrimmedText(body.contactName, 240) || null
       }
 
-      if (hasDocumentsInput) {
-        const normalizedDocuments = normalizeQuoteDocuments(body.documents)
-        const primaryDocument = normalizedDocuments[0] || null
-
-        updates.documents = normalizedDocuments
-        updates.documentUrl = primaryDocument?.url || null
-        updates.documentName = primaryDocument?.name || null
-      }
-
-      if (!hasDocumentsInput && hasLegacyDocumentUrlInput) {
-        updates.documentUrl = toTrimmedText(body.documentUrl, 2000) || null
-      }
-
-      if (!hasDocumentsInput && hasLegacyDocumentNameInput) {
-        updates.documentName = toTrimmedText(body.documentName, 240) || null
-      }
-
-      if (!hasDocumentsInput && hasLegacyDocumentInput) {
-        const nextDocumentUrl = toTrimmedText(
-          updates.documentUrl ?? existingQuote.documentUrl,
-          2000,
-        ) || null
-        const nextDocumentName = toTrimmedText(
-          updates.documentName ?? existingQuote.documentName,
-          240,
-        ) || null
-
-        updates.documents = nextDocumentUrl
-          ? [{ url: nextDocumentUrl, name: nextDocumentName }]
-          : []
-      }
-
       if (Object.prototype.hasOwnProperty.call(body, 'sentAt')) {
         updates.sentAt = toIsoDateOrNull(body.sentAt)
       }
@@ -7959,12 +7854,7 @@ export function registerCrmRoutes(app, deps) {
       const actorEmail = toTrimmedText(req.authUser?.email, 200) || null
       const nextRevisionNumber = revisionState.revisionCount + 1
       const nextRevision = buildQuoteRevisionSnapshot(
-        {
-          ...sourceRevision,
-          // A new revision intentionally starts without a SketchUp/public 3D
-          // model. Everything else is copied from the chosen revision.
-          trimble3d: null,
-        },
+        sourceRevision,
         {
           id: randomUUID(),
           baseQuoteNumber: revisionState.baseQuoteNumber,
@@ -8333,45 +8223,12 @@ export function registerCrmRoutes(app, deps) {
         })
       }
 
-      // Cancelled orders remain in MongoDB as audit history, but their natural
-      // order key must not reserve the acknowledgement number forever. This
-      // also repairs orders cancelled before the key-archiving behavior was
-      // introduced, so the same quote can be converted again immediately.
-      const staleCancelledOrder = await ordersUnifiedCollection.findOne(
-        {
-          orderKey: canonicalOrderKey,
-          is_cancelled: true,
-        },
-        {
-          projection: {
-            _id: 1,
-            canonical_order_id: 1,
-            id: 1,
-          },
-        },
-      )
-
-      if (staleCancelledOrder) {
-        const cancelledOrderIdentity = toTrimmedText(
-          staleCancelledOrder?.canonical_order_id || staleCancelledOrder?.id,
-          160,
-        ) || String(staleCancelledOrder._id)
-
-        await ordersUnifiedCollection.updateOne(
-          {
-            _id: staleCancelledOrder._id,
-            orderKey: canonicalOrderKey,
-            is_cancelled: true,
-          },
-          {
-            $set: {
-              orderKey: `cancelled:${cancelledOrderIdentity}`,
-              canonical_updated_at: nowIso(),
-              updatedAt: nowIso(),
-            },
-          },
-        )
-      }
+      // Cancelled and deleted orders remain in MongoDB as audit history, but
+      // their natural order key must not reserve the acknowledgement number
+      // forever — the insert below would fail on the unique index. This also
+      // repairs orders finished before the key was released on the spot, so the
+      // same quote can be converted again immediately.
+      await releaseFinishedOrderKey(ordersUnifiedCollection, canonicalOrderKey)
 
       const lineItems = normalizeQuoteLineItems(quote?.lineItems)
       const additionalServices = normalizeQuoteServiceItems(quote?.additionalServices)
@@ -8910,7 +8767,6 @@ export function registerCrmRoutes(app, deps) {
         for (const item of [...createdMondayItems].reverse()) {
           try {
             // Best effort rollback to avoid half-converted Monday state.
-            // eslint-disable-next-line no-await-in-loop
             await deleteMondayItem({
               boardId: item.boardId,
               itemId: item.itemId,
@@ -9060,7 +8916,6 @@ export function registerCrmRoutes(app, deps) {
       if (typeof deleteMondayItem === 'function') {
         for (const item of mondayItems) {
           try {
-            // eslint-disable-next-line no-await-in-loop
             await deleteMondayItem({ boardId: item.boardId || null, itemId: item.itemId })
           } catch (error) {
             warnings.push(`Could not remove Monday item ${item.itemId}: ${error instanceof Error ? error.message : 'Unknown error'}`)
@@ -9539,9 +9394,6 @@ export function registerCrmRoutes(app, deps) {
           lineItems: normalizeQuoteLineItems(body.lineItems),
           title: toTrimmedText(body.title, 240) || `Opportunity ${quoteNumber}`,
           description: null,
-          documentUrl: null,
-          documentName: null,
-          documents: [],
           origin: 'excel',
           sourceWorkbookUrl: toTrimmedText(body.sourceWorkbookUrl, 2000) || null,
           sourceWorkbookName: toTrimmedText(body.sourceWorkbookName, 500) || null,

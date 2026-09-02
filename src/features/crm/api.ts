@@ -548,11 +548,6 @@ export type CrmOpportunityStage =
   | 'proposal_submission'
   | 'order_placement'
 
-export type CrmQuoteDocument = {
-  url: string
-  name: string | null
-}
-
 export type CrmQuoteLineImage = {
   id: string
   url: string
@@ -612,55 +607,6 @@ export type CrmQuoteServiceItem = {
 }
 
 export type CrmQuoteOrigin = 'website' | 'excel'
-
-export type Crm3dViewerSettings = {
-  /** Overall lightness of the flat shading, 1 = as authored. */
-  brightness?: number
-  /** Colour of the SketchUp-style profile lines. */
-  edgeColor?: string
-  /** Angle in degrees above which an edge is drawn; low values draw more lines. */
-  edgeThreshold?: number
-  /** Outline thickness in screen pixels. */
-  edgeWidth?: number
-  showEdges?: boolean
-  backgroundColor?: string
-  autoRotate?: boolean
-  fieldOfView?: number
-}
-
-export const default3dViewerSettings: Required<Crm3dViewerSettings> = {
-  brightness: 1,
-  edgeColor: '#000000',
-  edgeThreshold: 18,
-  edgeWidth: 2,
-  showEdges: true,
-  backgroundColor: '#ffffff',
-  autoRotate: true,
-  fieldOfView: 28,
-}
-
-export function resolve3dViewerSettings(settings?: Crm3dViewerSettings | null): Required<Crm3dViewerSettings> {
-  return { ...default3dViewerSettings, ...(settings || {}) }
-}
-
-export type CrmQuote3dModel = {
-  status: 'ready' | string
-  viewerType?: 'trimble' | 'glb' | 'sketchup' | string | null
-  fileName: string | null
-  uploadedAt: string | null
-  uploadedByEmail: string | null
-  viewerUrl: string | null
-  models?: Array<{
-    fileName: string
-    label: string
-    viewerType?: 'trimble' | 'glb' | 'sketchup' | string | null
-    webModelUrl?: string | null
-    viewerSettings?: Crm3dViewerSettings | null
-    quality?: { status?: string; normalizedMaterialCount?: number; materialCount?: number; reason?: string | null } | null
-  }> | null
-  webModelUrl?: string | null
-  viewerSettings?: Crm3dViewerSettings | null
-}
 
 export type CrmQuotePrintSettings = {
   id: 'default'
@@ -769,10 +715,6 @@ export type CrmQuote = {
   shippingServices?: CrmQuoteServiceItem[] | null
   title: string
   description: string | null
-  documentUrl?: string | null
-  documentName?: string | null
-  documents?: CrmQuoteDocument[] | null
-  trimble3d?: CrmQuote3dModel | null
   origin?: CrmQuoteOrigin | null
   sourceWorkbookUrl?: string | null
   sourceWorkbookName?: string | null
@@ -794,7 +736,7 @@ export type CrmQuote = {
   linkOpenCount?: number | null
   activityLog?: Array<{
     id: string
-    type: 'follow_up' | 'public_3d_opened' | string
+    type: 'follow_up' | string
     occurredAt: string
     createdByUid?: string | null
     createdByEmail?: string | null
@@ -867,9 +809,6 @@ export type CrmQuoteUpsertInput = {
   additionalServices?: CrmQuoteServiceItem[] | null
   shippingServices?: CrmQuoteServiceItem[] | null
   description?: string | null
-  documentUrl?: string | null
-  documentName?: string | null
-  documents?: CrmQuoteDocument[] | null
   origin?: CrmQuoteOrigin | null
   sourceWorkbookUrl?: string | null
   sourceWorkbookName?: string | null
@@ -1537,129 +1476,6 @@ export function removeCrmQuoteRevision(quoteId: string, revisionNumber: number) 
     `/api/crm/quotes/${encodeURIComponent(quoteId)}/revisions/${revisionNumber}`,
     { method: 'DELETE' },
   )
-}
-
-export type TrimbleConnectionStatus = {
-  connected: boolean
-  projectName: string
-  connectedAt: string | null
-  connectedByEmail: string | null
-}
-
-export function fetchTrimbleConnectionStatus() {
-  return apiRequest<TrimbleConnectionStatus>('/api/trimble/status')
-}
-
-export function startTrimbleConnection() {
-  return apiRequest<{ authorizationUrl: string }>('/api/trimble/oauth/start', { method: 'POST' })
-}
-
-export function initiateTrimbleQuoteModelUpload(quoteId: string, file: File, revisionNumber?: number) {
-  return apiRequest<{ uploadId: string; uploadUrl: string }>(
-    `/api/trimble/quotes/${encodeURIComponent(quoteId)}/uploads/initiate`,
-    {
-      method: 'POST',
-      body: JSON.stringify({ fileName: file.name, fileSize: file.size, revisionNumber }),
-    },
-  )
-}
-
-export function commitTrimbleQuoteModelUpload(quoteId: string, uploadId: string, revisionNumber?: number) {
-  return apiRequest<{ model: CrmQuote3dModel }>(
-    `/api/trimble/quotes/${encodeURIComponent(quoteId)}/uploads/commit`,
-    { method: 'POST', body: JSON.stringify({ uploadId, revisionNumber }) },
-  )
-}
-
-export function publishGlbQuoteModels(
-  quoteId: string,
-  models: Array<{ fileName: string; fileSize?: number | null; downloadUrl: string; label?: string }>,
-  revisionNumber?: number,
-) {
-  return apiRequest<{ model: CrmQuote3dModel }>(
-    `/api/trimble/quotes/${encodeURIComponent(quoteId)}/web-models`,
-    {
-      method: 'POST',
-      body: JSON.stringify({ models, revisionNumber }),
-    },
-  )
-}
-
-export function saveQuote3dViewerSettings(
-  quoteId: string,
-  settings: Crm3dViewerSettings,
-  revisionNumber?: number,
-) {
-  return apiRequest<{ model: CrmQuote3dModel }>(
-    `/api/trimble/quotes/${encodeURIComponent(quoteId)}/viewer-settings`,
-    {
-      method: 'PUT',
-      body: JSON.stringify({ settings, revisionNumber }),
-    },
-  )
-}
-
-export function prepareQuote3dCustomerModel(quoteId: string, revisionNumber?: number) {
-  return apiRequest<{ model: CrmQuote3dModel }>(
-    `/api/trimble/quotes/${encodeURIComponent(quoteId)}/prepare-customer-model`,
-    { method: 'POST', body: JSON.stringify({ revisionNumber }) },
-  )
-}
-
-export function publishSketchUpShareLink(
-  quoteId: string,
-  shareUrl: string,
-  revisionNumber?: number,
-) {
-  return apiRequest<{ model: CrmQuote3dModel }>(
-    `/api/trimble/quotes/${encodeURIComponent(quoteId)}/sketchup-share`,
-    {
-      method: 'POST',
-      body: JSON.stringify({ shareUrl, revisionNumber }),
-    },
-  )
-}
-
-export function uploadTrimbleSavedQuoteModel(
-  quoteId: string,
-  document: CrmQuoteDocument,
-  fileName: string,
-) {
-  return apiRequest<{ model: CrmQuote3dModel }>(
-    `/api/trimble/quotes/${encodeURIComponent(quoteId)}/uploads/from-document`,
-    {
-      method: 'POST',
-      body: JSON.stringify({ documentUrl: document.url, fileName }),
-    },
-  )
-}
-
-export function uploadTrimbleSavedQuoteModels(
-  quoteId: string,
-  documents: Array<{ document: CrmQuoteDocument; fileName: string; label: string }>,
-  revisionNumber?: number,
-) {
-  return apiRequest<{ model: CrmQuote3dModel }>(
-    `/api/trimble/quotes/${encodeURIComponent(quoteId)}/uploads/from-documents`,
-    {
-      method: 'POST',
-      body: JSON.stringify({
-        documents: documents.map(({ document, fileName, label }) => ({
-          documentUrl: document.url,
-          fileName,
-          label,
-        })),
-        revisionNumber,
-      }),
-    },
-  )
-}
-
-export function removeTrimbleQuoteModel(quoteId: string, revisionNumber?: number) {
-  const query = revisionNumber === undefined ? '' : `?revisionNumber=${encodeURIComponent(String(revisionNumber))}`
-  return apiRequest<{ ok: true }>(`/api/trimble/quotes/${encodeURIComponent(quoteId)}/model${query}`, {
-    method: 'DELETE',
-  })
 }
 
 export function removeCrmQuote(quoteId: string) {

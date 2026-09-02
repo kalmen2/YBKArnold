@@ -21,7 +21,6 @@ import {
   postOrdersArchiveUpdate,
   postOrdersCreate,
   postOrdersDelete,
-  postOrdersDeleteRequest,
   postOrdersSubOrderLink,
   type OrdersMondayProgressStatusBulkQueuedRow,
   type OrdersOverviewOrder,
@@ -35,8 +34,8 @@ import {
 } from './orders/JobDetailsDialog'
 import {
   OrdersGrid,
+  type OrdersBoardExport,
   type OrdersQuickBooksDrilldownMetric,
-  type OrdersViewMode,
 } from './orders/OrdersGrid'
 import {
   AddManualOrderDialog,
@@ -115,14 +114,14 @@ export default function OrdersPage() {
   const [searchParams] = useSearchParams()
   const requestedOrderId = String(searchParams.get('orderId') ?? '').trim()
   const requestedInitialTab = String(searchParams.get('tab') ?? '').trim()
-  const canUseAdminView = appUser?.isAdmin === true
   const canEditMondayStages = appUser?.isAdmin === true || appUser?.isManager === true
   const canCreateOrders = appUser?.isOfficeWorker === true || canEditMondayStages
 
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
   const [warningMessage, setWarningMessage] = useState<string | null>(null)
-  const [viewMode, setViewMode] = useState<OrdersViewMode>('standard')
+  const [documentPreview, setDocumentPreview] = useState<{ title: string; url: string } | null>(null)
+  const bolPreviewObjectUrlRef = useRef<string | null>(null)
   const [jobDialogMode, setJobDialogMode] = useState<JobDetailsMode | null>(null)
   const [jobDialogInitialTab, setJobDialogInitialTab] = useState<JobDetailsTab>('info')
   const [selectedOrder, setSelectedOrder] = useState<OrdersOverviewOrder | null>(null)
@@ -166,7 +165,7 @@ export default function OrdersPage() {
     }
 
     try {
-      const query = new URLSearchParams({ orderId })
+      const query = new URLSearchParams({ orderId, inline: '1' })
       const response = await apiFetch(`/api/dashboard/monday/bol/download?${query.toString()}`)
       const blob = await response.blob()
 
@@ -174,9 +173,10 @@ export default function OrdersPage() {
         throw new Error('Could not open BOL document.')
       }
 
+      if (bolPreviewObjectUrlRef.current) URL.revokeObjectURL(bolPreviewObjectUrlRef.current)
       const objectUrl = URL.createObjectURL(blob)
-      window.open(objectUrl, '_blank', 'noopener,noreferrer')
-      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000)
+      bolPreviewObjectUrlRef.current = objectUrl
+      setDocumentPreview({ title: `BOL — ${order.orderNumber || 'Order'}`, url: objectUrl })
     } catch (requestError) {
       setErrorMessage(
         requestError instanceof Error
@@ -184,6 +184,23 @@ export default function OrdersPage() {
           : 'Could not open BOL document.',
       )
     }
+  }, [])
+
+  const handleCloseDocumentPreview = useCallback(() => {
+    setDocumentPreview(null)
+    if (bolPreviewObjectUrlRef.current) {
+      URL.revokeObjectURL(bolPreviewObjectUrlRef.current)
+      bolPreviewObjectUrlRef.current = null
+    }
+  }, [])
+
+  const handleOpenDocumentPreview = useCallback((title: string, url: string) => {
+    const normalizedUrl = String(url ?? '').trim()
+    if (!normalizedUrl) {
+      setErrorMessage('This document is not available yet.')
+      return
+    }
+    setDocumentPreview({ title, url: normalizedUrl })
   }, [])
 
   // Auto-dismiss success toasts so they don't stick forever.
@@ -219,13 +236,6 @@ export default function OrdersPage() {
     const timer = window.setTimeout(() => setWarningMessage(null), WARNING_TOAST_MS)
     return () => window.clearTimeout(timer)
   }, [warningMessage])
-
-  useEffect(() => {
-    if (canUseAdminView || viewMode === 'standard') {
-      return
-    }
-    setViewMode('standard')
-  }, [canUseAdminView, viewMode])
 
   useEffect(() => {
     if (!selectedOrder) {
@@ -542,42 +552,12 @@ export default function OrdersPage() {
     }
 
     const pendingKey = orderKey || mondayItemId || orderNumber || 'order-delete'
-    const sendDeleteRequest = async () => {
-      setDeletingOrderKey(pendingKey)
-      setDeletingOrderLabel(orderLabel)
-
-      try {
-        await postOrdersDeleteRequest(requestPayload)
-        setSuccessMessage(`Delete request sent to admin for order ${orderLabel}.`)
-      } catch (requestError) {
-        setErrorMessage(
-          requestError instanceof Error
-            ? requestError.message
-            : 'Could not send delete request to admin.',
-        )
-      } finally {
-        setDeletingOrderKey(null)
-        setDeletingOrderLabel(null)
-      }
-    }
-
     setErrorMessage(null)
 
-    if (order.hasQuickBooksRecord && !order.parentOrderNumber) {
-      const shouldRequest = window.confirm(
-        `Order ${orderLabel} is linked to QuickBooks and cannot be deleted directly. Send delete request to admin?`,
-      )
-
-      if (!shouldRequest) {
-        return
-      }
-
-      await sendDeleteRequest()
-      return
-    }
-
     const shouldDelete = window.confirm(
-      `Delete order ${orderLabel} from website and Monday? This action cannot be undone.`,
+      order.hasQuickBooksRecord
+        ? `Order ${orderLabel} is linked to QuickBooks. Delete it from the website and Monday anyway? It moves to admin Deleted Items, where an admin can push it back or clear it for good.`
+        : `Delete order ${orderLabel} from the website and Monday? It moves to admin Deleted Items, where an admin can push it back or clear it for good.`,
     )
 
     if (!shouldDelete) {
@@ -591,11 +571,7 @@ export default function OrdersPage() {
       const response = await postOrdersDelete(requestPayload)
 
       await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.ordersOverview })
-      setSuccessMessage(
-        response?.queuedForDeletion
-          ? `Delete request sent to admin for order ${orderLabel}.`
-          : `Deleted order ${orderLabel}.`,
-      )
+      setSuccessMessage(`Deleted order ${orderLabel}.`)
 
       const warningText = String(response?.warning ?? '').trim()
 
@@ -604,21 +580,6 @@ export default function OrdersPage() {
       }
     } catch (deleteError) {
       const requestError = deleteError as ApiRequestError
-      const payload = requestError?.payload && typeof requestError.payload === 'object'
-        ? requestError.payload as Record<string, unknown>
-        : {}
-      const requiresAdminRequest = Boolean(payload?.requiresAdminRequest)
-
-      if (Number(requestError?.status) === 409 && requiresAdminRequest) {
-        const shouldRequest = window.confirm(
-          `${requestError.message} Send delete request to admin now?`,
-        )
-
-        if (shouldRequest) {
-          await sendDeleteRequest()
-          return
-        }
-      }
 
       setErrorMessage(
         requestError instanceof Error
@@ -827,6 +788,11 @@ export default function OrdersPage() {
   const bulkEditableOrders = overview.visibleOrders.filter(
     (order) => order.hasMondayRecord && !order.isShipped,
   )
+  const currentBoardExportRef = useRef<OrdersBoardExport>({ sheetName: 'Orders', rows: [] })
+
+  const handleCurrentBoardExportChange = useCallback((board: OrdersBoardExport) => {
+    currentBoardExportRef.current = board
+  }, [])
 
   const handleOpenShopDrawingDocument = useCallback((order: OrdersOverviewOrder) => {
     if (!shopDrawingHandle.current) {
@@ -858,56 +824,13 @@ export default function OrdersPage() {
   }, [])
 
   const handleExport = useCallback(() => {
-    const rows = overview.visibleOrders.map((order) => {
-      const invoice = Number(order.invoiceAmount)
-      const billed = Number(order.billedAmount)
-      const labor = Number(order.totalLaborCost)
-      const profit =
-        Number.isFinite(invoice) && Number.isFinite(billed) && Number.isFinite(labor)
-          ? Number((invoice - billed - labor).toFixed(2))
-          : ''
-      return {
-        'Order #': order.orderNumber ?? '',
-        'Customer Name': order.orderName ?? '',
-        'PO Number': order.poNumber ?? '',
-        'Description': order.description ?? '',
-        'Notes': order.notes ?? '',
-        'Ship To': order.shipTo ?? '',
-        'Ship Notes': order.shipNotes ?? '',
-        'BOL': order.bol ?? '',
-        'BOL URL': order.bolCachedUrl ?? order.bolUrl ?? '',
-        'Job Status': order.rowStatus ?? '',
-        'Invoice #': order.invoiceNumber ?? '',
-        'PO Amount': Number.isFinite(Number(order.poAmount)) ? Number(order.poAmount) : '',
-        'Billed Amount': Number.isFinite(billed) ? billed : '',
-        'Bills Left to Pay':
-          order.billBalanceAmount !== null
-          && order.billBalanceAmount !== undefined
-          && Number.isFinite(Number(order.billBalanceAmount))
-          ? Math.max(0, Number(Number(order.billBalanceAmount).toFixed(2)))
-          : '',
-        'PO Not Yet Billed': Number.isFinite(Number(order.poAmount)) && Number.isFinite(billed)
-          ? Math.max(0, Number((Number(order.poAmount) - billed).toFixed(2)))
-          : '',
-        'Invoice Amount': Number.isFinite(invoice) ? invoice : '',
-        'Amount Owed': Number.isFinite(Number(order.amountOwed)) ? Number(order.amountOwed) : '',
-        'Total Hours': Number.isFinite(Number(order.totalHours)) ? Number(order.totalHours) : '',
-        'Total Cost': Number.isFinite(labor) ? labor : '',
-        'Total Profit': profit,
-        Paid: order.paidInFull === true ? 'Yes' : order.paidInFull === false ? 'No' : '',
-        'Order Date': order.orderDate ?? '',
-        'Shipped': order.isShipped ? 'Yes' : 'No',
-        'Shipped At': order.shippedAt ?? '',
-        'Cut List URL': order.cutListCachedUrl ?? order.cutListUrl ?? '',
-        'Source': order.source ?? '',
-      }
-    })
-    const sheet = XLSX.utils.json_to_sheet(rows)
+    const board = currentBoardExportRef.current
+    const sheet = XLSX.utils.json_to_sheet(board.rows)
     const book = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(book, sheet, 'Orders')
+    XLSX.utils.book_append_sheet(book, sheet, board.sheetName.slice(0, 31) || 'Orders')
     const date = new Date().toISOString().slice(0, 10)
-    XLSX.writeFile(book, `orders-export-${date}.xlsx`)
-  }, [overview.visibleOrders])
+    XLSX.writeFile(book, `orders-${overview.activeTab}-export-${date}.xlsx`)
+  }, [overview.activeTab])
 
   return (
     <Stack spacing={3}>
@@ -917,9 +840,6 @@ export default function OrdersPage() {
         activeTab={overview.activeTab}
         onActiveTabChange={overview.setActiveTab}
         tabCounts={overview.tabCounts}
-        viewMode={viewMode}
-        onViewModeChange={setViewMode}
-        canUseAdminView={canUseAdminView}
         canOpenBulkUpdate={canEditMondayStages}
         onOpenBulkUpdate={handleOpenUpdateOrdersDialog}
         bulkUpdateDisabled={bulkEditableOrders.length === 0}
@@ -959,7 +879,7 @@ export default function OrdersPage() {
       <OrdersGrid
         orders={overview.visibleOrders}
         activeTab={overview.activeTab}
-        viewMode={viewMode}
+        viewMode="standard"
         canEditMondayStages={canEditMondayStages}
         canEditOrderInfo={
           appUser?.isOfficeWorker === true
@@ -973,6 +893,9 @@ export default function OrdersPage() {
         isLoading={overview.isLoading || overview.isFetching || overview.isRefreshing}
         shopDrawingHandle={shopDrawingHandle}
         onOpenBolDocument={handleOpenBolDocument}
+        onOpenDocumentPreview={handleOpenDocumentPreview}
+        onOpenCutListDocument={handleOpenCutListDocument}
+        onOpenInvoiceDocument={handleOpenInvoiceDocument}
         onOpenJobDialog={handleOpenJobDialog}
         onOpenQuickBooksDialog={handleOpenQuickBooksDialog}
         onCopyOrderNumber={handleCopyOrderNumber}
@@ -984,11 +907,20 @@ export default function OrdersPage() {
         onArchiveOrder={handleArchiveOrder}
         onLinkOrder={handleOpenLinkOrder}
         onMissingMondayLink={handleMissingMondayLink}
+        onCurrentBoardExportChange={handleCurrentBoardExportChange}
       />
 
       <ShopDrawingPreview onError={setErrorMessage} bind={bindShopDrawing} />
       <CutListPreview onError={setErrorMessage} bind={bindCutList} />
       <InvoicePreview onError={setErrorMessage} bind={bindInvoice} />
+      <Dialog open={Boolean(documentPreview)} onClose={handleCloseDocumentPreview} maxWidth="xl" fullWidth>
+        <DialogTitle>{documentPreview?.title || 'Document preview'}</DialogTitle>
+        <DialogContent dividers sx={{ p: 0, height: '82vh' }}>
+          {documentPreview ? (
+            <iframe title={documentPreview.title} src={documentPreview.url} style={{ width: '100%', height: '100%', border: 0 }} />
+          ) : null}
+        </DialogContent>
+      </Dialog>
 
       <JobDetailsDialog
         open={Boolean(jobDialogMode && selectedOrder)}

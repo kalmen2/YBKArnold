@@ -135,12 +135,13 @@ export function useOrdersOverview() {
         return order.isArchived === true
       }
 
-      if (order.isArchived === true) {
-        return false
-      }
-
+      // "All" is the complete order history, including archived records.
       if (activeTab === 'all') {
         return true
+      }
+
+      if (order.isArchived === true) {
+        return false
       }
 
       if (activeTab === 'shipped') {
@@ -174,12 +175,12 @@ export function useOrdersOverview() {
     let archive = 0
 
     allOrders.forEach((order) => {
+      all += 1
+
       if (order.isArchived === true) {
         archive += 1
         return
       }
-
-      all += 1
 
       if (order.isShipped) {
         shipped += 1

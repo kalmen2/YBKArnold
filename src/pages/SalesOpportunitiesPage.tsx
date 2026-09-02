@@ -2,7 +2,6 @@ import AddRoundedIcon from '@mui/icons-material/AddRounded'
 import ArrowDropDownRoundedIcon from '@mui/icons-material/ArrowDropDownRounded'
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded'
 import ArrowForwardRoundedIcon from '@mui/icons-material/ArrowForwardRounded'
-import ChatBubbleOutlineRoundedIcon from '@mui/icons-material/ChatBubbleOutlineRounded'
 import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded'
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
 import FileUploadRoundedIcon from '@mui/icons-material/FileUploadRounded'
@@ -17,7 +16,6 @@ import {
   Alert,
   Autocomplete,
   Avatar,
-  Badge,
   Box,
   Button,
   ButtonGroup,
@@ -31,7 +29,6 @@ import {
   FormControlLabel,
   IconButton,
   InputAdornment,
-  Link,
   Menu,
   MenuItem,
   Paper,
@@ -56,7 +53,6 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type ClipboardEvent as ReactClipboardEvent, type MouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import Cropper, { type Area } from 'react-easy-crop'
-import { Mention, MentionsInput } from 'react-mentions'
 import { useAuth } from '../auth/useAuth'
 import { firebaseStorage } from '../auth/firebase'
 import { LoadingPanel } from '../components/LoadingPanel'
@@ -67,14 +63,11 @@ import {
   convertCrmQuoteToOrder,
   createCrmQuote,
   createCrmQuoteRevision,
-  createCrmQuoteChatMessage,
   convertCrmQuoteWorkbook,
   fetchCrmConvertOrderBoards,
-  fetchCrmChatUsers,
   fetchCrmDealers,
   fetchCrmContacts,
   fetchCrmExcelQuoteLookup,
-  fetchCrmQuoteChats,
   fetchCrmQuoteDetails,
   fetchCrmDocumentTerms,
   fetchCrmQuotePrintSettings,
@@ -83,14 +76,8 @@ import {
   fetchCrmQuotes,
   fetchCrmSalesReps,
   markCrmQuoteFollowedUp,
-  commitTrimbleQuoteModelUpload,
-  initiateTrimbleQuoteModelUpload,
-  publishGlbQuoteModels,
-  uploadTrimbleSavedQuoteModels,
-  removeCrmQuoteChatMessage,
   removeCrmQuote,
   removeCrmQuoteRevision,
-  syncCrmQuoteFromExcel,
   updateCrmContact,
   updateCrmDealer,
   updateCrmQuote,
@@ -100,18 +87,15 @@ import {
   type CrmExcelQuoteLookupResponse,
   type CrmExcelQuoteImportSummary,
   type CrmExcelQuoteSyncInput,
-  type CrmQuoteDocument,
   type CrmQuoteLineImage,
   type CrmQuoteLineItem,
   type CrmQuoteServiceItem,
   type CrmOpportunityStage,
   type CrmQuote,
-  type CrmQuoteChatMessage,
   type CrmQuotePrintSettings,
   type CrmQuoteLineLibraryEntry,
 } from '../features/crm/api'
 import { resolveQuoteAgeDays } from '../features/crm/utils'
-import Quote3dModelPanel from '../features/crm/Quote3dModelPanel'
 import {
   buildOrderDocumentBlob,
   buildProformaInvoiceBlob,
@@ -128,27 +112,6 @@ const DEFAULT_OPPORTUNITY_TITLE_PREFIX = 'Opportunity '
 const DEFAULT_WEBSITE_PAYMENT_TERMS = '50% Deposit / 50% CBD'
 const DEFAULT_NEW_ORDERS_2026_BOARD_ID = '18393945685'
 const DEFAULT_DESIGN_AKF_BOARD_ID = '1064270065'
-const MENTION_ALL_ID = '__mention_all__'
-const quoteChatMentionsInputStyle = {
-  control: { width: '100%', fontFamily: 'inherit', fontSize: 14, lineHeight: 1.45 },
-  '&multiLine': {
-    control: { minHeight: 76, maxHeight: 180, border: '1px solid rgba(15, 23, 42, 0.26)', borderRadius: 8, backgroundColor: '#fff', overflowY: 'auto' },
-    highlighter: { padding: '10px 12px', border: '1px solid transparent', boxSizing: 'border-box', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', color: 'transparent' },
-    input: { padding: '10px 12px', minHeight: 76, border: '1px solid transparent', outline: 0, boxSizing: 'border-box', fontFamily: 'inherit', fontSize: 14, lineHeight: 1.45, color: '#0f172a', backgroundColor: 'transparent' },
-  },
-  suggestions: {
-    list: { zIndex: 1700, backgroundColor: '#fff', border: '1px solid rgba(15, 23, 42, 0.2)', borderRadius: 8, boxShadow: '0 10px 28px rgba(15, 23, 42, 0.16)', maxHeight: 240, overflowY: 'auto', padding: 4 },
-    item: { padding: '8px 10px', borderRadius: 6 },
-  },
-} as const
-
-function extractQuoteChatMentionUids(markup: string) {
-  return [...new Set(
-    Array.from(String(markup ?? '').matchAll(/@\[[^\]]+\]\(([^)]+)\)/g))
-      .map((entry) => String(entry[1] ?? '').trim())
-      .filter(Boolean),
-  )]
-}
 const QuotePdfPreviewDialog = lazy(() => import('../features/crm/NativeQuotePdf').then((module) => ({
   default: module.QuotePdfPreviewDialog,
 })))
@@ -259,15 +222,11 @@ type OpportunityFormState = {
   lineItems: OpportunityLineItemFormState[]
   additionalServices: OpportunityServiceItemFormState[]
   shippingServices: OpportunityServiceItemFormState[]
-  quoteDocumentUrl: string
-  quoteDocumentName: string
   origin: 'website' | 'excel'
   sourceWorkbookUrl: string
   sourceWorkbookName: string
   convertedPdfUrl: string
   convertedPdfName: string
-  sketchupDocumentUrl: string
-  sketchupDocumentName: string
 }
 
 type AddOpportunityStage = 0 | 1 | 2 | 3
@@ -310,7 +269,6 @@ type OpportunityDetailsFormState = {
   lineItems: OpportunityLineItemFormState[]
   additionalServices: OpportunityServiceItemFormState[]
   shippingServices: OpportunityServiceItemFormState[]
-  documents: CrmQuoteDocument[]
   origin: 'website' | 'excel'
   sourceWorkbookUrl: string
   sourceWorkbookName: string
@@ -348,7 +306,6 @@ type OpportunityCardProps = {
   quote: CrmQuote
   dealerName: string
   dealerPictureUrl: string | null
-  chatMessageCount: number
   ageDays: number
   stage: CrmOpportunityStage
   canManage: boolean
@@ -359,7 +316,6 @@ type OpportunityCardProps = {
   onDeleteQuote: (quote: CrmQuote) => void
   onPrintQuote: (quote: CrmQuote) => void
   onOpenDetails: (quote: CrmQuote) => void
-  onOpenChat: (quote: CrmQuote) => void
 }
 
 type StageColumnProps = {
@@ -374,7 +330,6 @@ type StageColumnProps = {
   onDeleteQuote: (quote: CrmQuote) => void
   onPrintQuote: (quote: CrmQuote) => void
   onOpenDetails: (quote: CrmQuote) => void
-  onOpenChat: (quote: CrmQuote) => void
 }
 
 type StageSortMode =
@@ -388,7 +343,6 @@ type StageAmountCondition = 'any' | 'gt' | 'gte' | 'lt' | 'lte' | 'between'
 
 type ExcelSyncProjectTypeOption = 'Reception Desk' | 'Courtroom' | 'Conference Table' | 'Libraries' | 'Other'
 type ExcelSyncAccountMode = 'existing' | 'create' | 'none'
-type ExcelSyncLaunchMode = 'excel_file' | 'folder_scan'
 
 type UsStateOption = {
   code: string
@@ -408,64 +362,6 @@ type OpportunityDetailsSaveMode = 'save' | 'save_close' | 'decline'
 type OpportunitySavePreference = 'save' | 'save_close'
 type PendingRevisionSave = {
   mode: OpportunitySavePreference
-}
-type QuoteSidebarFolderKey =
-  | 'client_doc'
-  | 'renderings'
-  | 'vendor_quotes'
-  | 'quotes'
-  | 'site_visits'
-  | 'shop_drawings'
-  | 'admin'
-  | 'product_picture'
-  | 'service_call'
-  | 'material_estimate'
-  | 'cut_list'
-
-type QuoteSidebarFolderDefinition = {
-  key: QuoteSidebarFolderKey
-  label: string
-}
-
-type OpportunityDetailsTab = 'details' | 'chat' | 'activity' | QuoteSidebarFolderKey
-
-type FolderScanQueueEntry = {
-  id: string
-  file: File
-  folderKey: QuoteSidebarFolderKey
-  folderLabel: string
-  relativePath: string
-  documentName: string
-  selected: boolean
-  duplicateBlocked: boolean
-  duplicateReason: string | null
-}
-
-type FolderScanSidebarKey = 'all' | QuoteSidebarFolderKey
-
-type FolderScanSidebarSection = {
-  key: FolderScanSidebarKey
-  label: string
-  totalCount: number
-  selectedCount: number
-  blockedCount: number
-}
-
-type FolderScanUploadSummary = {
-  uploadedCount: number
-  attemptedCount: number
-  failedCount: number
-}
-
-type FolderScanNestedSection = {
-  path: string
-  totalCount: number
-  selectedCount: number
-}
-
-type QuoteNestedFolderGroup = {
-  path: string
-  documents: CrmQuoteDocument[]
 }
 
 type LineItemsEditorProps = {
@@ -505,39 +401,6 @@ const excelSyncProjectTypeOptions: ExcelSyncProjectTypeOption[] = [
   'Libraries',
   'Other',
 ]
-
-const quoteSidebarFolders: QuoteSidebarFolderDefinition[] = [
-  { key: 'client_doc', label: 'Client Doc' },
-  { key: 'renderings', label: 'Renderings' },
-  { key: 'vendor_quotes', label: 'Vendor Quotes' },
-  { key: 'quotes', label: 'Quotes' },
-  { key: 'site_visits', label: 'Site Visits' },
-  { key: 'shop_drawings', label: 'Shop Drawings' },
-  { key: 'admin', label: 'Admin' },
-  { key: 'product_picture', label: 'Product Picture' },
-  { key: 'service_call', label: 'Service Call' },
-  { key: 'material_estimate', label: 'Material Estimate' },
-  { key: 'cut_list', label: 'Cut List' },
-]
-
-const quoteSidebarFolderByKey = new Map(quoteSidebarFolders.map((entry) => [entry.key, entry] as const))
-const quoteSidebarFolderKeySet = new Set<QuoteSidebarFolderKey>(quoteSidebarFolders.map((entry) => entry.key))
-const quoteSidebarFolderAliases: Record<QuoteSidebarFolderKey, string[]> = {
-  client_doc: ['client doc', 'client docs', 'client', 'customer doc', 'customer docs'],
-  renderings: ['renderings', 'rendering', 'renders'],
-  vendor_quotes: ['vendor quotes', 'vendor quote', 'vendor'],
-  quotes: ['quotes', 'quote'],
-  site_visits: ['site visits', 'site visit', 'site'],
-  shop_drawings: ['shop drawings', 'shop drawing', 'shop'],
-  admin: ['admin', 'administration'],
-  product_picture: ['product picture', 'product pictures', 'product photo', 'product photos', 'pictures'],
-  service_call: ['service call', 'service calls', 'service'],
-  material_estimate: ['material estimate', 'material estimates', 'materials', 'material'],
-  cut_list: ['cut list', 'cut lists'],
-}
-const excelDocumentExtensions = new Set(['xls', 'xlsx', 'xlsm', 'ods', 'csv'])
-const imagePreviewDocumentExtensions = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'])
-const officePreviewDocumentExtensions = new Set(['xls', 'xlsx', 'xlsm', 'csv', 'ods'])
 
 const usStateOptions: UsStateOption[] = [
   { code: 'AL', label: 'AL - Alabama' },
@@ -1438,7 +1301,6 @@ function calculateLineItemsTotal(lineItems: CrmQuoteLineItem[]) {
 
 function resolveQuotePricing(
   lineItems: OpportunityLineItemFormState[],
-  subtotalInput: string,
   freightInput: string,
   fallbackTotal = 0,
   additionalServices: OpportunityServiceItemFormState[] = [],
@@ -1454,9 +1316,8 @@ function resolveQuotePricing(
     .reduce((sum, item) => sum + Number(resolveServiceItemExtPrice(item) || 0), 0)
   const shippingServicesTotal = normalizedShippingServices
     .reduce((sum, item) => sum + Number(resolveServiceItemExtPrice(item) || 0), 0)
-  const enteredSubtotal = toOptionalNumber(subtotalInput)
   const enteredFreight = toOptionalNumber(freightInput)
-  const grossSubtotal = Number(((enteredSubtotal ?? lineItemsTotal) + additionalServicesTotal).toFixed(2))
+  const grossSubtotal = Number((lineItemsTotal + additionalServicesTotal).toFixed(2))
   const parsedDiscountPercent = toOptionalNumber(discountPercentInput)
   const discountPercent = Math.min(100, Math.max(0, parsedDiscountPercent ?? 0))
   const productDiscountAmount = Number((grossSubtotal * (discountPercent / 100)).toFixed(2))
@@ -1510,15 +1371,11 @@ function createEmptyOpportunityForm(): OpportunityFormState {
     lineItems: Array.from({ length: 4 }, () => createEmptyLineItemFormState()),
     additionalServices: createDefaultAdditionalServices(),
     shippingServices: createDefaultShippingServices(),
-    quoteDocumentUrl: '',
-    quoteDocumentName: '',
     origin: 'website',
     sourceWorkbookUrl: '',
     sourceWorkbookName: '',
     convertedPdfUrl: '',
     convertedPdfName: '',
-    sketchupDocumentUrl: '',
-    sketchupDocumentName: '',
   }
 }
 
@@ -1559,14 +1416,6 @@ function resolveDateInputFromIso(value: string | null | undefined) {
 function createOpportunityDetailsFormState(quote: CrmQuote): OpportunityDetailsFormState {
   const origin = quote.origin === 'excel' ? 'excel' : 'website'
   const additionalServices = mapServiceItemsToFormState(quote.additionalServices, createDefaultAdditionalServices)
-  const storedAdditionalServicesTotal = (quote.additionalServices || [])
-    .reduce((sum, item) => sum + Number(resolveServiceItemExtPrice(item) || 0), 0)
-  const storedProductDiscountAmount = Number(quote.discountAmount || 0) - Number(quote.discountFreightAmount || 0)
-  const grossStoredSubtotal = Number(quote.subtotal || 0) + storedProductDiscountAmount
-  const productSubtotal = quote.subtotal === null || quote.subtotal === undefined
-    ? ''
-    : String(Math.max(0, grossStoredSubtotal - storedAdditionalServicesTotal))
-
   return {
     dealerSourceId: String(quote.dealerSourceId || ''),
     quoteNumber: String(quote.quoteNumber || ''),
@@ -1579,7 +1428,7 @@ function createOpportunityDetailsFormState(quote: CrmQuote): OpportunityDetailsF
     salesRep: String(quote.salesRep || ''),
     leadTime: String(quote.leadTime || ''),
     paymentTerms: String(quote.paymentTerms || ''),
-    subtotal: origin === 'excel' ? productSubtotal : '',
+    subtotal: '',
     discountPercent: quote.discountPercent === null || quote.discountPercent === undefined ? '' : String(quote.discountPercent),
     discountScope: quote.discountScope === 'products_and_freight' ? 'products_and_freight' : 'products',
     freight: origin === 'excel' && quote.freight !== null && quote.freight !== undefined ? String(quote.freight) : '',
@@ -1588,7 +1437,6 @@ function createOpportunityDetailsFormState(quote: CrmQuote): OpportunityDetailsF
     lineItems: mapQuoteLineItemsToFormState(quote.lineItems),
     additionalServices,
     shippingServices: mapServiceItemsToFormState(quote.shippingServices, createDefaultShippingServices),
-    documents: resolveQuoteDocuments(quote),
     origin,
     sourceWorkbookUrl: String(quote.sourceWorkbookUrl || ''),
     sourceWorkbookName: String(quote.sourceWorkbookName || ''),
@@ -1610,7 +1458,6 @@ function resolveQuoteRevision(quote: CrmQuote, revisionNumber: number): CrmQuote
     ...quote,
     ...revision,
     id: quote.id,
-    documents: quote.documents,
     opportunityStage: quote.opportunityStage,
     convertedItemKeys: quote.convertedItemKeys,
     convertedOrderId: quote.convertedOrderId,
@@ -1649,12 +1496,6 @@ function mergeExcelSyncIntoDetailsFormState(
   const nextLineItems = Array.isArray(syncInput.lineItems) && syncInput.lineItems.length > 0
     ? mapQuoteLineItemsToFormState(syncInput.lineItems)
     : baseState.lineItems
-  const nextDocuments = Array.from(new Map([
-    ...baseState.documents,
-    ...(syncInput.sourceWorkbookUrl ? [{ url: syncInput.sourceWorkbookUrl, name: syncInput.sourceWorkbookName || null }] : []),
-    ...(syncInput.convertedPdfUrl ? [{ url: syncInput.convertedPdfUrl, name: syncInput.convertedPdfName || null }] : []),
-  ].map((document) => [document.url, document])).values())
-
   return {
     ...baseState,
     dealerSourceId: String(options.dealerSourceId ?? '').trim() || baseState.dealerSourceId,
@@ -1681,7 +1522,6 @@ function mergeExcelSyncIntoDetailsFormState(
     sourceWorkbookName: String(syncInput.sourceWorkbookName || baseState.sourceWorkbookName),
     convertedPdfUrl: String(syncInput.convertedPdfUrl || baseState.convertedPdfUrl),
     convertedPdfName: String(syncInput.convertedPdfName || baseState.convertedPdfName),
-    documents: nextDocuments,
   }
 }
 
@@ -1699,16 +1539,6 @@ function serializeOpportunityFormState(state: OpportunityFormState | null): stri
   }
 
   return JSON.stringify(state)
-}
-
-function formatQuoteChatTimestamp(value: string | null | undefined) {
-  const parsed = new Date(String(value || '').trim())
-
-  if (Number.isNaN(parsed.getTime())) {
-    return 'Unknown time'
-  }
-
-  return parsed.toLocaleString()
 }
 
 function parseOpportunityLikeDate(value: string | null | undefined) {
@@ -1746,33 +1576,6 @@ function formatOpportunityLikeDate(value: string | null | undefined) {
     month: '2-digit',
     day: '2-digit',
   })
-}
-
-function parseQuoteChatRefreshRequest(rawMessage: string): {
-  messageText: string
-  refreshRequested: boolean
-} {
-  const input = String(rawMessage || '')
-  const refreshPattern = /(?:^|\s)(?:\/refresh|@refresh)[.,!?]?(?=\s|$)/gi
-  const refreshRequested = refreshPattern.test(input)
-  const messageText = input
-    .replace(/(?:^|\s)(?:\/refresh|@refresh)[.,!?]?(?=\s|$)/gi, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-
-  return {
-    messageText,
-    refreshRequested,
-  }
-}
-
-function resolveQuoteChatAuthorLabel(message: CrmQuoteChatMessage) {
-  return String(
-    message.createdByName
-    || message.createdByEmail
-    || message.createdByUid
-    || 'Unknown sender',
-  ).trim()
 }
 
 function normalizeMatchValue(value: string | null | undefined) {
@@ -1835,516 +1638,6 @@ function compareQuotesByDate(left: CrmQuote, right: CrmQuote, direction: 'asc' |
   }
 
   return compareQuotesByQuoteNumber(left, right)
-}
-
-function normalizeFolderComparableValue(value: string | null | undefined) {
-  return normalizeMatchValue(value)
-    .replace(/^\d+\s*[-.)]\s*/g, '')
-    .replace(/[_-]+/g, ' ')
-    .replace(/[^a-z0-9 ]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-}
-
-function normalizeFolderComparableCompactValue(value: string | null | undefined) {
-  return normalizeFolderComparableValue(value).replace(/\s+/g, '')
-}
-
-function folderComparableMatches(normalizedValue: string, candidateValue: string | null | undefined) {
-  const normalizedCandidate = normalizeFolderComparableValue(candidateValue)
-
-  if (!normalizedCandidate) {
-    return false
-  }
-
-  if (normalizedCandidate === normalizedValue) {
-    return true
-  }
-
-  const compactValue = normalizeFolderComparableCompactValue(normalizedValue)
-  const compactCandidate = normalizeFolderComparableCompactValue(normalizedCandidate)
-
-  if (!compactCandidate) {
-    return false
-  }
-
-  if (compactCandidate === compactValue) {
-    return true
-  }
-
-  if (compactCandidate.length < 4) {
-    return false
-  }
-
-  return compactValue.startsWith(compactCandidate) || compactValue.endsWith(compactCandidate)
-}
-
-function resolveQuoteSidebarFolderKey(value: string | null | undefined): QuoteSidebarFolderKey | null {
-  const normalizedValue = normalizeFolderComparableValue(value)
-
-  if (!normalizedValue) {
-    return null
-  }
-
-  for (const folder of quoteSidebarFolders) {
-    if (folderComparableMatches(normalizedValue, folder.label)) {
-      return folder.key
-    }
-
-    const aliases = quoteSidebarFolderAliases[folder.key] ?? []
-
-    for (const alias of aliases) {
-      if (folderComparableMatches(normalizedValue, alias)) {
-        return folder.key
-      }
-    }
-  }
-
-  return null
-}
-
-function resolveQuoteSidebarFolderKeyFromRelativePath(relativePath: string | null | undefined): QuoteSidebarFolderKey | null {
-  const normalizedPath = String(relativePath ?? '').trim()
-
-  if (!normalizedPath) {
-    return null
-  }
-
-  const segments = normalizedPath
-    .split(/[\\/]+/)
-    .map((segment) => segment.trim())
-    .filter(Boolean)
-
-  for (const segment of segments) {
-    const folderKey = resolveQuoteSidebarFolderKey(segment)
-
-    if (folderKey) {
-      return folderKey
-    }
-  }
-
-  return null
-}
-
-function parseDocumentNameMetadata(name: string | null | undefined): {
-  folderKey: QuoteSidebarFolderKey | null
-  plainName: string
-} {
-  const normalizedName = String(name ?? '').trim()
-
-  if (!normalizedName) {
-    return {
-      folderKey: null,
-      plainName: '',
-    }
-  }
-
-  const prefixedMatch = normalizedName.match(/^\[([^\]]+)\]\s*(.+)$/)
-
-  if (!prefixedMatch) {
-    return {
-      folderKey: null,
-      plainName: normalizedName,
-    }
-  }
-
-  const folderKey = resolveQuoteSidebarFolderKey(prefixedMatch[1])
-
-  if (!folderKey) {
-    return {
-      folderKey: null,
-      plainName: normalizedName,
-    }
-  }
-
-  return {
-    folderKey,
-    plainName: String(prefixedMatch[2] ?? '').trim() || normalizedName,
-  }
-}
-
-function buildDocumentNameWithFolder(folderLabel: string, fileName: string): string {
-  const normalizedLabel = String(folderLabel ?? '').trim()
-  const normalizedFileName = String(fileName ?? '').trim()
-
-  if (!normalizedLabel || !normalizedFileName) {
-    return normalizedFileName || normalizedLabel
-  }
-
-  return `[${normalizedLabel}] ${normalizedFileName}`
-}
-
-function resolveDocumentDisplayName(document: CrmQuoteDocument): string {
-  const parsed = parseDocumentNameMetadata(document.name)
-
-  if (parsed.plainName) {
-    return parsed.plainName
-  }
-
-  const fallbackName = String(document.name ?? '').trim()
-
-  if (fallbackName) {
-    return fallbackName
-  }
-
-  return 'Open document'
-}
-
-function resolveDocumentPathSegments(document: CrmQuoteDocument): string[] {
-  return resolveDocumentDisplayName(document)
-    .split(/[\\/]+/)
-    .map((segment) => segment.trim())
-    .filter(Boolean)
-}
-
-function resolveDocumentPathSegmentsForFolder(
-  document: CrmQuoteDocument,
-  folderKey: QuoteSidebarFolderKey | null | undefined,
-): string[] {
-  const segments = resolveDocumentPathSegments(document)
-
-  if (!folderKey || segments.length === 0) {
-    return segments
-  }
-
-  const firstSegmentFolderKey = resolveQuoteSidebarFolderKey(segments[0])
-
-  if (firstSegmentFolderKey && firstSegmentFolderKey === folderKey) {
-    return segments.slice(1)
-  }
-
-  return segments
-}
-
-function resolveDocumentNestedFolderPath(
-  document: CrmQuoteDocument,
-  folderKey: QuoteSidebarFolderKey | null | undefined = null,
-): string | null {
-  const segments = resolveDocumentPathSegmentsForFolder(document, folderKey)
-
-  if (segments.length <= 1) {
-    return null
-  }
-
-  return segments.slice(0, -1).join('/')
-}
-
-function resolveDocumentLeafName(
-  document: CrmQuoteDocument,
-  folderKey: QuoteSidebarFolderKey | null | undefined = null,
-): string {
-  const segments = resolveDocumentPathSegmentsForFolder(document, folderKey)
-
-  if (segments.length === 0) {
-    return resolveDocumentDisplayName(document)
-  }
-
-  return segments[segments.length - 1]
-}
-
-function buildQuoteNestedFolderGroups(
-  documents: CrmQuoteDocument[],
-  folderKey: QuoteSidebarFolderKey | null | undefined = null,
-): QuoteNestedFolderGroup[] {
-  const grouped = new Map<string, CrmQuoteDocument[]>()
-
-  for (const document of documents) {
-    const nestedFolderPath = resolveDocumentNestedFolderPath(document, folderKey)
-
-    if (!nestedFolderPath) {
-      continue
-    }
-
-    const existing = grouped.get(nestedFolderPath) ?? []
-    grouped.set(nestedFolderPath, [...existing, document])
-  }
-
-  return Array.from(grouped.entries())
-    .map(([path, folderDocuments]) => ({
-      path,
-      documents: [...folderDocuments].sort((left, right) => (
-        resolveDocumentDisplayName(left).localeCompare(resolveDocumentDisplayName(right))
-      )),
-    }))
-    .sort((left, right) => left.path.localeCompare(right.path))
-}
-
-function resolveDocumentTypeLabel(document: CrmQuoteDocument): string {
-  const displayName = resolveDocumentDisplayName(document)
-  const extensionMatch = displayName.toLowerCase().match(/\.([a-z0-9]{2,8})$/)
-
-  if (!extensionMatch) {
-    return 'FILE'
-  }
-
-  return extensionMatch[1].toUpperCase()
-}
-
-function resolveDocumentFileExtension(document: CrmQuoteDocument): string {
-  const displayName = resolveDocumentDisplayName(document)
-  const extensionMatch = displayName.toLowerCase().match(/\.([a-z0-9]{2,8})$/)
-  return extensionMatch?.[1] ?? ''
-}
-
-function resolveDocumentPreviewKind(document: CrmQuoteDocument): 'image' | 'pdf' | 'office' | 'file' {
-  const extension = resolveDocumentFileExtension(document)
-
-  if (!extension) {
-    return 'file'
-  }
-
-  if (imagePreviewDocumentExtensions.has(extension)) {
-    return 'image'
-  }
-
-  if (extension === 'pdf') {
-    return 'pdf'
-  }
-
-  if (officePreviewDocumentExtensions.has(extension)) {
-    return 'office'
-  }
-
-  return 'file'
-}
-
-function resolveDocumentPreviewSource(
-  document: CrmQuoteDocument,
-  previewKind: 'image' | 'pdf' | 'office' | 'file',
-): string | null {
-  const url = String(document.url ?? '').trim()
-
-  if (!url) {
-    return null
-  }
-
-  if (previewKind === 'image') {
-    return url
-  }
-
-  if (previewKind === 'pdf') {
-    return `${url}#toolbar=0&navpanes=0&scrollbar=0&page=1&view=FitH`
-  }
-
-  if (previewKind === 'office') {
-    return `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(url)}`
-  }
-
-  return null
-}
-
-function resolveDocumentFolderKey(document: CrmQuoteDocument): QuoteSidebarFolderKey {
-  const parsed = parseDocumentNameMetadata(document.name)
-
-  if (parsed.folderKey) {
-    return parsed.folderKey
-  }
-
-  return 'quotes'
-}
-
-function normalizeFileNameForComparison(value: string | null | undefined) {
-  return normalizeMatchValue(value)
-    .replace(/\s+/g, ' ')
-    .trim()
-}
-
-function resolvePathSegments(value: string | null | undefined): string[] {
-  return String(value ?? '')
-    .trim()
-    .split(/[\\/]+/)
-    .map((segment) => segment.trim())
-    .filter(Boolean)
-}
-
-function buildFolderScanDocumentName(relativePath: string | null | undefined, fileName: string | null | undefined) {
-  const normalizedPath = String(relativePath ?? '').trim()
-  const normalizedFileName = String(fileName ?? '').trim()
-
-  if (!normalizedPath) {
-    return normalizedFileName
-  }
-
-  const segments = resolvePathSegments(normalizedPath)
-
-  if (segments.length === 0) {
-    return normalizedFileName
-  }
-
-  if (segments.length === 1) {
-    return segments[0]
-  }
-
-  return segments.slice(1).join('/')
-}
-
-function isExcelDocumentFileName(fileName: string | null | undefined): boolean {
-  const normalizedName = String(fileName ?? '').trim()
-
-  if (!normalizedName || !normalizedName.includes('.')) {
-    return false
-  }
-
-  const extension = normalizedName.split('.').pop()?.toLowerCase() ?? ''
-  return excelDocumentExtensions.has(extension)
-}
-
-function isIgnoredFolderScanFile(file: File): boolean {
-  const normalizedName = String(file.name ?? '').trim().toLowerCase()
-
-  return !normalizedName
-    || normalizedName === 'thumbs.db'
-    || normalizedName === '.ds_store'
-    || normalizedName === 'desktop.ini'
-    || normalizedName.startsWith('~$')
-    || normalizedName.startsWith('._')
-}
-
-function resolveFolderScanPreferredQuoteNumber(scannedFiles: File[], quotes: CrmQuote[]): string | undefined {
-  const rootFolderKeys = new Set(scannedFiles.map((file) => {
-    const [rootFolder = ''] = resolvePathSegments(file.webkitRelativePath || file.name)
-    return rootFolder.toLowerCase().replace(/[^a-z0-9]+/g, '')
-  }).filter(Boolean))
-
-  return quotes.find((quote) => {
-    const quoteKey = String(quote.quoteNumber ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '')
-    return quoteKey && [...rootFolderKeys].some((rootKey) => rootKey.includes(quoteKey))
-  })?.quoteNumber || undefined
-}
-
-function isAlwaysResyncedQuotesExcelFile(
-  relativePath: string | null | undefined,
-  fileName: string | null | undefined,
-): boolean {
-  if (!isExcelDocumentFileName(fileName)) {
-    return false
-  }
-
-  const segments = resolvePathSegments(relativePath)
-
-  if (segments.length <= 1) {
-    return false
-  }
-
-  const fileSegmentIndex = segments.length - 1
-
-  for (let index = fileSegmentIndex - 1; index >= 0; index -= 1) {
-    const segmentFolderKey = resolveQuoteSidebarFolderKey(segments[index])
-
-    if (segmentFolderKey !== 'quotes') {
-      continue
-    }
-
-    return index === fileSegmentIndex - 1
-  }
-
-  return false
-}
-
-function isAlwaysResyncedQuotesExcelDocument(document: CrmQuoteDocument): boolean {
-  const displayName = resolveDocumentDisplayName(document)
-
-  if (!isExcelDocumentFileName(displayName)) {
-    return false
-  }
-
-  if (resolveDocumentFolderKey(document) !== 'quotes') {
-    return false
-  }
-
-  const segments = resolvePathSegments(displayName)
-
-  if (segments.length === 0) {
-    return false
-  }
-
-  const firstSegmentFolderKey = resolveQuoteSidebarFolderKey(segments[0])
-
-  if (firstSegmentFolderKey === 'quotes') {
-    return segments.length === 2
-  }
-
-  return segments.length === 1
-}
-
-function resolveFolderScanEntryPathSegments(entry: FolderScanQueueEntry): string[] {
-  const segments = resolvePathSegments(entry.documentName)
-
-  if (segments.length === 0) {
-    return []
-  }
-
-  const firstFolderKey = resolveQuoteSidebarFolderKey(segments[0])
-
-  if (firstFolderKey && firstFolderKey === entry.folderKey) {
-    return segments.slice(1)
-  }
-
-  return segments
-}
-
-function resolveFolderScanEntryNestedFolderPath(entry: FolderScanQueueEntry): string | null {
-  const segments = resolveFolderScanEntryPathSegments(entry)
-
-  if (segments.length <= 1) {
-    return null
-  }
-
-  return segments.slice(0, -1).join('/')
-}
-
-function buildFolderScanQueueEntriesForQuote(targetQuote: CrmQuote, scannedFiles: File[]): FolderScanQueueEntry[] {
-  const existingDocuments = resolveQuoteDocuments(targetQuote)
-  const existingDuplicateKeys = new Set(
-    existingDocuments
-      .filter((document) => !isAlwaysResyncedQuotesExcelDocument(document))
-      .map((document) => `${resolveDocumentFolderKey(document)}::${normalizeFileNameForComparison(resolveDocumentDisplayName(document))}`),
-  )
-  const pendingDuplicateKeys = new Set<string>()
-  const fallbackFolder = quoteSidebarFolderByKey.get('quotes')
-
-  return scannedFiles.flatMap((file, index) => {
-    if (isIgnoredFolderScanFile(file)) {
-      return []
-    }
-
-    const relativePath = String(file.webkitRelativePath || file.name).trim()
-    const documentName = buildFolderScanDocumentName(relativePath, file.name)
-    const folderKey = resolveQuoteSidebarFolderKeyFromRelativePath(relativePath) || 'quotes'
-    const folder = quoteSidebarFolderByKey.get(folderKey) ?? fallbackFolder
-
-    if (!folder) {
-      return []
-    }
-
-    const isExcelFile = isExcelDocumentFileName(file.name)
-    const isAlwaysResyncedExcel = isExcelFile && isAlwaysResyncedQuotesExcelFile(relativePath, file.name)
-    const shouldEnforceDuplicateCheck = !isAlwaysResyncedExcel
-
-    const duplicateKey = `${folderKey}::${normalizeFileNameForComparison(documentName)}`
-    const duplicateExists = shouldEnforceDuplicateCheck
-      && (existingDuplicateKeys.has(duplicateKey) || pendingDuplicateKeys.has(duplicateKey))
-
-    if (duplicateExists) {
-      return []
-    }
-
-    if (shouldEnforceDuplicateCheck) {
-      pendingDuplicateKeys.add(duplicateKey)
-    }
-
-    return [{
-      id: `${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`,
-      file,
-      folderKey,
-      folderLabel: folder.label,
-      relativePath,
-      documentName,
-      selected: true,
-      duplicateBlocked: false,
-      duplicateReason: null,
-    }]
-  })
 }
 
 function normalizeDealerLookupKey(value: string | null | undefined) {
@@ -2627,36 +1920,6 @@ function resolveDefaultExcelProjectType(value: string | null | undefined): Excel
 
 function isExcelSyncProjectTypeOption(value: string): value is ExcelSyncProjectTypeOption {
   return excelSyncProjectTypeOptions.includes(value as ExcelSyncProjectTypeOption)
-}
-
-function resolveQuoteDocuments(quote: CrmQuote | null | undefined): CrmQuoteDocument[] {
-  if (!quote) {
-    return []
-  }
-
-  const fromArray = Array.isArray(quote.documents)
-    ? quote.documents
-      .map((entry) => ({
-        url: String(entry?.url ?? '').trim(),
-        name: String(entry?.name ?? '').trim() || null,
-      }))
-      .filter((entry) => Boolean(entry.url))
-    : []
-
-  if (fromArray.length > 0) {
-    return fromArray
-  }
-
-  const legacyDocumentUrl = String(quote.documentUrl ?? '').trim()
-
-  if (!legacyDocumentUrl) {
-    return []
-  }
-
-  return [{
-    url: legacyDocumentUrl,
-    name: String(quote.documentName ?? '').trim() || null,
-  }]
 }
 
 function resolveOpportunityStage(quote: CrmQuote): CrmOpportunityStage {
@@ -3158,150 +2421,6 @@ function LineItemsEditor({
   )
 }
 
-type QuoteServiceItemsEditorProps = {
-  heading: string
-  description: string
-  items: OpportunityServiceItemFormState[]
-  canEdit: boolean
-  isUploadingImage: boolean
-  onChange: (items: OpportunityServiceItemFormState[]) => void
-  onAddImages: (index: number, images: PreparedQuoteImage[]) => Promise<void>
-}
-
-function QuoteServiceItemsEditor({ heading, description, items, canEdit, isUploadingImage, onChange, onAddImages }: QuoteServiceItemsEditorProps) {
-  const [cropTarget, setCropTarget] = useState<{ index: number; file: File } | null>(null)
-  const updateItem = (index: number, patch: Partial<OpportunityServiceItemFormState>) => {
-    onChange(items.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item))
-  }
-  const updateItemField = (
-    index: number,
-    field: 'title' | 'description' | 'qty' | 'unitPrice' | 'extPrice',
-    value: string,
-  ) => {
-    onChange(items.map((item, itemIndex) => (
-      itemIndex === index
-        ? updateServiceItemPricing(item, field, value)
-        : item
-    )))
-  }
-
-  return (
-    <Paper
-      variant="outlined"
-      sx={{
-        overflow: 'hidden',
-        borderRadius: 2,
-        borderColor: alpha('#0f4c81', 0.2),
-        boxShadow: '0 8px 24px rgba(15, 76, 129, 0.06)',
-      }}
-    >
-      <Stack
-        direction={{ xs: 'column', sm: 'row' }}
-        justifyContent="space-between"
-        alignItems={{ xs: 'stretch', sm: 'center' }}
-        gap={1}
-        sx={{ px: 1.6, py: 1.3, background: `linear-gradient(135deg, ${alpha('#0f4c81', 0.1)}, ${alpha('#0f4c81', 0.025)})` }}
-      >
-        <Box>
-          <Typography variant="subtitle1" fontWeight={800} color="primary.dark">{heading}</Typography>
-          <Typography variant="caption" color="text.secondary">{description}</Typography>
-        </Box>
-        <Button size="small" variant="contained" disabled={!canEdit} onClick={() => onChange([...items, createServiceItemFormState()])}>Add service</Button>
-      </Stack>
-      <Box
-        sx={{
-          display: 'grid',
-          gridTemplateColumns: { xs: '1fr', xl: 'repeat(2, minmax(0, 1fr))' },
-          gap: 1,
-          p: 1.2,
-          backgroundColor: '#f8fafc',
-        }}
-      >
-        {items.map((item, index) => (
-          <Paper key={item.id} variant="outlined" sx={{ p: 1.2, borderRadius: 1.5, borderColor: alpha('#0f4c81', 0.16), bgcolor: '#fff' }}>
-            <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} alignItems="flex-start" height="100%">
-              <Stack spacing={0.8} flex={1} width="100%">
-                <TextField size="small" label="Service" value={item.title} disabled={!canEdit} onChange={(event) => updateItemField(index, 'title', event.target.value)} />
-                <TextField size="small" label="Description / conditions" value={item.description} disabled={!canEdit} multiline minRows={2} maxRows={4} onChange={(event) => updateItemField(index, 'description', event.target.value)} />
-                <Stack direction="row" spacing={0.8}>
-                  <TextField
-                    size="small"
-                    label="Qty"
-                    type="number"
-                    value={item.qty}
-                    disabled={!canEdit}
-                    onChange={(event) => updateItemField(index, 'qty', event.target.value)}
-                    inputProps={{ inputMode: 'decimal' }}
-                    sx={{ width: 90 }}
-                  />
-                  <TextField
-                    size="small"
-                    label="Unit Price"
-                    type="number"
-                    value={item.unitPrice}
-                    disabled={!canEdit}
-                    onChange={(event) => updateItemField(index, 'unitPrice', event.target.value)}
-                    inputProps={{ inputMode: 'decimal' }}
-                    InputProps={{ startAdornment: <InputAdornment position="start">$</InputAdornment> }}
-                    sx={{ flex: 1, minWidth: 120 }}
-                  />
-                  <TextField
-                    size="small"
-                    label="Ext"
-                    type="text"
-                    value={item.extPrice}
-                    disabled={!canEdit}
-                    inputProps={{ inputMode: 'decimal' }}
-                    InputProps={{
-                      readOnly: true,
-                      startAdornment: <InputAdornment position="start">$</InputAdornment>,
-                    }}
-                    sx={{ flex: 1, minWidth: 120 }}
-                  />
-                </Stack>
-              </Stack>
-              <Stack spacing={0.6} sx={{ width: { xs: '100%', md: 150 } }}>
-                {item.images.length > 0 ? (
-                  <Stack direction="row" spacing={0.5}>
-                    {item.images.map((image) => (
-                      <Box key={image.id} sx={{ position: 'relative', width: item.images.length === 1 ? 150 : 72, height: 76, border: 1, borderColor: 'divider', borderRadius: 1, overflow: 'hidden' }}>
-                        <Box component="img" src={image.url} alt={image.name || item.title} sx={{ width: '100%', height: '100%', objectFit: 'contain' }} />
-                        {canEdit ? <IconButton size="small" color="error" onClick={() => updateItem(index, { images: item.images.filter((entry) => entry.id !== image.id) })} sx={{ position: 'absolute', top: 1, right: 1, bgcolor: 'rgba(255,255,255,.9)', p: 0.2 }}><DeleteOutlineRoundedIcon sx={{ fontSize: 15 }} /></IconButton> : null}
-                      </Box>
-                    ))}
-                  </Stack>
-                ) : <Typography variant="caption" color="text.secondary">Picture optional</Typography>}
-                {item.images.length < 2 ? (
-                  <Button component="label" size="small" variant="text" startIcon={<FileUploadRoundedIcon />} disabled={!canEdit || isUploadingImage} sx={{ alignSelf: 'flex-start', px: 0.4 }}>
-                    Add picture
-                    <input hidden type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => {
-                      const file = event.target.files?.[0]
-                      event.target.value = ''
-                      if (file) setCropTarget({ index, file })
-                    }} />
-                  </Button>
-                ) : null}
-              </Stack>
-              <Tooltip title="Remove service">
-                <span><IconButton size="small" color="error" disabled={!canEdit} onClick={() => onChange(items.filter((_entry, itemIndex) => itemIndex !== index))}><DeleteOutlineRoundedIcon /></IconButton></span>
-              </Tooltip>
-            </Stack>
-          </Paper>
-        ))}
-      </Box>
-      <QuoteImageCropDialog
-        open={Boolean(cropTarget)}
-        file={cropTarget?.file || null}
-        onCancel={() => setCropTarget(null)}
-        onComplete={async (image) => {
-          if (!cropTarget) return
-          await onAddImages(cropTarget.index, [image])
-          setCropTarget(null)
-        }}
-      />
-    </Paper>
-  )
-}
 
 function QuoteServiceCardSelector({
   heading,
@@ -3500,7 +2619,6 @@ function OpportunityCard({
   quote,
   dealerName,
   dealerPictureUrl,
-  chatMessageCount,
   ageDays,
   stage,
   canManage,
@@ -3511,12 +2629,8 @@ function OpportunityCard({
   onDeleteQuote,
   onPrintQuote,
   onOpenDetails,
-  onOpenChat,
 }: OpportunityCardProps) {
   const dealerInitial = String(dealerName).trim().charAt(0).toUpperCase() || 'D'
-  const normalizedChatMessageCount = Number.isFinite(Number(chatMessageCount))
-    ? Math.max(0, Number(chatMessageCount))
-    : 0
   const quoteDateLabel = formatOpportunityLikeDate(quote.opportunityDate)
   const [menuAnchorEl, setMenuAnchorEl] = useState<HTMLElement | null>(null)
   const suppressCardOpenUntilRef = useRef(0)
@@ -3638,26 +2752,6 @@ function OpportunityCard({
               <PrintRoundedIcon sx={{ fontSize: 20 }} />
             </IconButton>
 
-            <IconButton
-              size="small"
-              disabled={isBusy}
-              onClick={(event) => {
-                preventCardClick(event)
-                onOpenChat(quote)
-              }}
-              sx={{ p: 0.15, color: '#0f4c81' }}
-              title="Open quote chat"
-              aria-label="Open quote chat"
-            >
-              <Badge
-                color="primary"
-                badgeContent={normalizedChatMessageCount > 0 ? normalizedChatMessageCount : undefined}
-                max={99}
-              >
-                <ChatBubbleOutlineRoundedIcon sx={{ fontSize: 20 }} />
-              </Badge>
-            </IconButton>
-
             {canManage && stage === 'proposal_submission' ? (
               <IconButton
                 size="medium"
@@ -3750,7 +2844,6 @@ function StageColumn({
   onDeleteQuote,
   onPrintQuote,
   onOpenDetails,
-  onOpenChat,
 }: StageColumnProps) {
   const [menuAnchorEl, setMenuAnchorEl] = useState<HTMLElement | null>(null)
   const [sortSubmenuAnchorEl, setSortSubmenuAnchorEl] = useState<HTMLElement | null>(null)
@@ -4173,7 +3266,6 @@ function StageColumn({
                 quote={quote}
                 dealerName={dealerName}
                 dealerPictureUrl={dealerPictureUrl}
-                chatMessageCount={Math.max(0, Number(quote.chatMessageCount || 0))}
                 ageDays={ageDays}
                 stage={stage.id}
                 canManage={canManage}
@@ -4184,7 +3276,6 @@ function StageColumn({
                 onDeleteQuote={onDeleteQuote}
                 onPrintQuote={onPrintQuote}
                 onOpenDetails={onOpenDetails}
-                onOpenChat={onOpenChat}
               />
             )
           })
@@ -4440,10 +3531,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   const [excelSyncResolvedDealerName, setExcelSyncResolvedDealerName] = useState('')
   const [excelSyncDialogError, setExcelSyncDialogError] = useState<string | null>(null)
   const [isSavingOpportunity, setIsSavingOpportunity] = useState(false)
-  const [isUploadingQuoteDocument, setIsUploadingQuoteDocument] = useState(false)
-  const [pendingSketchupFile, setPendingSketchupFile] = useState<File | null>(null)
   const [isUploadingLineImage, setIsUploadingLineImage] = useState(false)
-  const [isUploadingFolderSelection, setIsUploadingFolderSelection] = useState(false)
   const [isSavingOpportunityDetails, setIsSavingOpportunityDetails] = useState(false)
   const [isConvertOrderDialogOpen, setIsConvertOrderDialogOpen] = useState(false)
   const [isSubmittingConvertOrder, setIsSubmittingConvertOrder] = useState(false)
@@ -4451,6 +3539,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   const [loadingOpportunityId, setLoadingOpportunityId] = useState<string | null>(null)
   const [quotePrintPreview, setQuotePrintPreview] = useState<CrmQuote | null>(null)
   const [selectedOpportunity, setSelectedOpportunity] = useState<CrmQuote | null>(null)
+  const [opportunityDetailsStage, setOpportunityDetailsStage] = useState<AddOpportunityStage>(0)
   const [selectedRevisionNumber, setSelectedRevisionNumber] = useState(0)
   const [pendingRevisionSave, setPendingRevisionSave] = useState<PendingRevisionSave | null>(null)
   const [saveTargetRevisionNumber, setSaveTargetRevisionNumber] = useState(0)
@@ -4460,26 +3549,8 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   const [convertOrderFormState, setConvertOrderFormState] = useState<OpportunityConvertOrderFormState>(() => (
     createEmptyConvertOrderForm()
   ))
-  const [selectedOpportunityDetailsTab, setSelectedOpportunityDetailsTab] = useState<OpportunityDetailsTab>('details')
-  const [selectedOpportunityNestedFolderPath, setSelectedOpportunityNestedFolderPath] = useState<string | null>(null)
   const [opportunityDetailsFormState, setOpportunityDetailsFormState] = useState<OpportunityDetailsFormState | null>(null)
-  const [folderScanQueue, setFolderScanQueue] = useState<FolderScanQueueEntry[]>([])
-  const [excelSyncLaunchMode, setExcelSyncLaunchMode] = useState<ExcelSyncLaunchMode>('excel_file')
-  const [pendingFolderScanFiles, setPendingFolderScanFiles] = useState<File[] | null>(null)
-  const [isFolderScanSelectionDialogOpen, setIsFolderScanSelectionDialogOpen] = useState(false)
-  const [folderScanTargetQuoteId, setFolderScanTargetQuoteId] = useState('')
-  const [folderScanTargetQuoteSnapshot, setFolderScanTargetQuoteSnapshot] = useState<CrmQuote | null>(null)
-  const [folderScanActiveSidebarKey, setFolderScanActiveSidebarKey] = useState<FolderScanSidebarKey>('all')
-  const [folderScanExpandedSidebarFolderKey, setFolderScanExpandedSidebarFolderKey] = useState<QuoteSidebarFolderKey | null>(null)
-  const [folderScanActiveNestedPath, setFolderScanActiveNestedPath] = useState<string | null>(null)
-  const [folderScanUploadSummary, setFolderScanUploadSummary] = useState<FolderScanUploadSummary | null>(null)
-  const [folderScanUploadProgress, setFolderScanUploadProgress] = useState({ completed: 0, total: 0 })
   const [opportunityDetailsInitialSnapshot, setOpportunityDetailsInitialSnapshot] = useState('')
-  const [selectedOpportunityChatDraft, setSelectedOpportunityChatDraft] = useState('')
-  const [selectedOpportunityChatDraftMarkup, setSelectedOpportunityChatDraftMarkup] = useState('')
-  const [selectedOpportunityRefreshOnSend, setSelectedOpportunityRefreshOnSend] = useState(false)
-  const [isSendingSelectedOpportunityChat, setIsSendingSelectedOpportunityChat] = useState(false)
-  const [deletingSelectedOpportunityChatMessageId, setDeletingSelectedOpportunityChatMessageId] = useState('')
   const [detailsActionMenuAnchorEl, setDetailsActionMenuAnchorEl] = useState<HTMLElement | null>(null)
   const [saveActionMenuAnchorEl, setSaveActionMenuAnchorEl] = useState<HTMLElement | null>(null)
   const savePreferenceStorageKey = `arnold:quote-save-action:${appUser?.uid || 'current-user'}`
@@ -4492,7 +3563,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   const [globalSearch, setGlobalSearch] = useState('')
   const activePipelineStage: CrmOpportunityStage = 'proposal_submission'
   const pipelineUploadExcelInputRef = useRef<HTMLInputElement | null>(null)
-  const folderScanInputRef = useRef<HTMLInputElement | null>(null)
   const selectedOpportunityId = selectedOpportunity?.id ?? ''
   const shouldLoadDealers = Boolean(
     isDialogOpen
@@ -4500,7 +3570,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     || loadingOpportunityId
     || isExcelAccountDialogOpen
     || isExcelSyncDialogOpen
-    || isFolderScanSelectionDialogOpen
   )
 
   const dealersQuery = useQuery({
@@ -4510,14 +3579,18 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     enabled: shouldLoadDealers,
   })
 
+  const activeQuoteDealerSourceId = isDialogOpen
+    ? formState.dealerSourceId
+    : (opportunityDetailsFormState?.dealerSourceId || '')
+
   const addOpportunityContactsQuery = useQuery({
-    queryKey: ['crm', 'dealer-contacts', formState.dealerSourceId],
+    queryKey: ['crm', 'dealer-contacts', activeQuoteDealerSourceId],
     queryFn: () => fetchCrmContacts({
-      dealerSourceId: formState.dealerSourceId,
+      dealerSourceId: activeQuoteDealerSourceId,
       limit: 1000,
       includeArchived: false,
     }),
-    enabled: Boolean(isDialogOpen && formState.dealerSourceId),
+    enabled: Boolean((isDialogOpen || selectedOpportunityId) && activeQuoteDealerSourceId),
     staleTime: 5 * 60 * 1000,
   })
 
@@ -4553,22 +3626,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     enabled: isConvertOrderDialogOpen,
   })
 
-  const selectedOpportunityChatsQuery = useQuery({
-    queryKey: QUERY_KEYS.crmQuoteChats(selectedOpportunityId),
-    queryFn: () => fetchCrmQuoteChats(selectedOpportunityId, {
-      limit: 250,
-      offset: 0,
-    }),
-    enabled: Boolean(selectedOpportunityId),
-    staleTime: 20 * 1000,
-  })
-  const quoteChatUsersQuery = useQuery({
-    queryKey: ['crm', 'chat-users'],
-    queryFn: fetchCrmChatUsers,
-    enabled: Boolean(selectedOpportunityId && selectedOpportunityDetailsTab === 'chat'),
-    staleTime: 2 * 60 * 1000,
-  })
-
   const isLoading = quotesQuery.isLoading
   const isRefreshing = (
     quotesQuery.isFetching
@@ -4579,9 +3636,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   ]
     .find((entry) => entry instanceof Error)
 
-  const currentUserUid = String(appUser?.uid ?? '').trim()
-  const currentUserEmail = String(appUser?.email ?? '').trim().toLowerCase()
-  const isCurrentUserAdmin = appUser?.isAdmin === true
   const canManage = Boolean(appUser?.uid)
 
   const dealers = useMemo(
@@ -4849,286 +3903,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     [opportunityDetailsFormState, opportunityDetailsInitialSnapshot],
   )
 
-  const selectedOpportunityDocuments = useMemo(
-    () => (opportunityDetailsFormState?.documents ?? []),
-    [opportunityDetailsFormState],
-  )
-
-  const selectedOpportunitySidebarFolderKey = useMemo<QuoteSidebarFolderKey | null>(() => {
-    if (quoteSidebarFolderKeySet.has(selectedOpportunityDetailsTab as QuoteSidebarFolderKey)) {
-      return selectedOpportunityDetailsTab as QuoteSidebarFolderKey
-    }
-
-    return null
-  }, [selectedOpportunityDetailsTab])
-
-  const selectedOpportunitySidebarFolder = useMemo(
-    () => (selectedOpportunitySidebarFolderKey
-      ? (quoteSidebarFolderByKey.get(selectedOpportunitySidebarFolderKey) ?? null)
-      : null),
-    [selectedOpportunitySidebarFolderKey],
-  )
-
-  const selectedOpportunityDocumentsByFolder = useMemo(() => {
-    const grouped = new Map<QuoteSidebarFolderKey, CrmQuoteDocument[]>()
-
-    for (const folder of quoteSidebarFolders) {
-      grouped.set(folder.key, [])
-    }
-
-    for (const document of selectedOpportunityDocuments) {
-      const folderKey = resolveDocumentFolderKey(document)
-      const existing = grouped.get(folderKey) ?? []
-      grouped.set(folderKey, [...existing, document])
-    }
-
-    return grouped
-  }, [selectedOpportunityDocuments])
-
-  const selectedOpportunityFolderDocuments = useMemo(
-    () => (selectedOpportunitySidebarFolderKey
-      ? (selectedOpportunityDocumentsByFolder.get(selectedOpportunitySidebarFolderKey) ?? [])
-      : []),
-    [selectedOpportunityDocumentsByFolder, selectedOpportunitySidebarFolderKey],
-  )
-
-  const selectedOpportunityNestedGroupsByFolder = useMemo(() => {
-    const grouped = new Map<QuoteSidebarFolderKey, QuoteNestedFolderGroup[]>()
-
-    for (const folder of quoteSidebarFolders) {
-      grouped.set(folder.key, buildQuoteNestedFolderGroups(selectedOpportunityDocumentsByFolder.get(folder.key) ?? [], folder.key))
-    }
-
-    return grouped
-  }, [selectedOpportunityDocumentsByFolder])
-
-  const selectedOpportunityFolderRootDocuments = useMemo(
-    () => selectedOpportunityFolderDocuments.filter(
-      (document) => !resolveDocumentNestedFolderPath(document, selectedOpportunitySidebarFolderKey),
-    ),
-    [selectedOpportunityFolderDocuments, selectedOpportunitySidebarFolderKey],
-  )
-
-  const selectedOpportunityFolderNestedGroups = useMemo(
-    () => buildQuoteNestedFolderGroups(selectedOpportunityFolderDocuments, selectedOpportunitySidebarFolderKey),
-    [selectedOpportunityFolderDocuments, selectedOpportunitySidebarFolderKey],
-  )
-
-  const selectedOpportunityActiveNestedFolderGroup = useMemo(
-    () => (selectedOpportunityNestedFolderPath
-      ? (selectedOpportunityFolderNestedGroups.find((entry) => entry.path === selectedOpportunityNestedFolderPath) ?? null)
-      : null),
-    [selectedOpportunityFolderNestedGroups, selectedOpportunityNestedFolderPath],
-  )
-
-  useEffect(() => {
-    if (!selectedOpportunityNestedFolderPath) {
-      return
-    }
-
-    const isNestedFolderStillVisible = selectedOpportunityFolderNestedGroups
-      .some((entry) => entry.path === selectedOpportunityNestedFolderPath)
-
-    if (!isNestedFolderStillVisible) {
-      setSelectedOpportunityNestedFolderPath(null)
-    }
-  }, [selectedOpportunityFolderNestedGroups, selectedOpportunityNestedFolderPath])
-
-  const folderScanTargetQuote = useMemo(
-    () => quotes.find((entry) => entry.id === folderScanTargetQuoteId) || folderScanTargetQuoteSnapshot || null,
-    [folderScanTargetQuoteId, folderScanTargetQuoteSnapshot, quotes],
-  )
-
-  const folderScanSelectedQueueCount = useMemo(
-    () => folderScanQueue.filter((entry) => entry.selected && !entry.duplicateBlocked).length,
-    [folderScanQueue],
-  )
-
-  const folderScanQueueByFolder = useMemo(() => {
-    const grouped = new Map<QuoteSidebarFolderKey, FolderScanQueueEntry[]>()
-
-    for (const folder of quoteSidebarFolders) {
-      grouped.set(folder.key, [])
-    }
-
-    for (const entry of folderScanQueue) {
-      const existing = grouped.get(entry.folderKey)
-
-      if (existing) {
-        existing.push(entry)
-      } else {
-        grouped.set(entry.folderKey, [entry])
-      }
-    }
-
-    return grouped
-  }, [folderScanQueue])
-
-  const folderScanNestedSectionsByFolder = useMemo(() => {
-    const grouped = new Map<QuoteSidebarFolderKey, FolderScanNestedSection[]>()
-
-    for (const folder of quoteSidebarFolders) {
-      const entries = folderScanQueueByFolder.get(folder.key) ?? []
-      const nestedPathCounts = new Map<string, { totalCount: number; selectedCount: number }>()
-
-      for (const entry of entries) {
-        const nestedFolderPath = resolveFolderScanEntryNestedFolderPath(entry)
-
-        if (!nestedFolderPath) {
-          continue
-        }
-
-        const existing = nestedPathCounts.get(nestedFolderPath) ?? { totalCount: 0, selectedCount: 0 }
-
-        nestedPathCounts.set(nestedFolderPath, {
-          totalCount: existing.totalCount + 1,
-          selectedCount: existing.selectedCount + (entry.selected && !entry.duplicateBlocked ? 1 : 0),
-        })
-      }
-
-      const nestedSections = Array.from(nestedPathCounts.entries())
-        .map(([path, counts]) => ({
-          path,
-          totalCount: counts.totalCount,
-          selectedCount: counts.selectedCount,
-        }))
-        .sort((left, right) => left.path.localeCompare(right.path))
-
-      grouped.set(folder.key, nestedSections)
-    }
-
-    return grouped
-  }, [folderScanQueueByFolder])
-
-  const folderScanSidebarSections = useMemo<FolderScanSidebarSection[]>(() => {
-    const allSection: FolderScanSidebarSection = {
-      key: 'all',
-      label: 'All Folders',
-      totalCount: folderScanQueue.length,
-      selectedCount: folderScanSelectedQueueCount,
-      blockedCount: folderScanQueue.filter((entry) => entry.duplicateBlocked).length,
-    }
-
-    const folderSections = quoteSidebarFolders.map((folder) => {
-      const entries = folderScanQueueByFolder.get(folder.key) ?? []
-
-      return {
-        key: folder.key,
-        label: folder.label,
-        totalCount: entries.length,
-        selectedCount: entries.filter((entry) => entry.selected && !entry.duplicateBlocked).length,
-        blockedCount: entries.filter((entry) => entry.duplicateBlocked).length,
-      }
-    })
-
-    return [allSection, ...folderSections]
-  }, [folderScanQueue, folderScanQueueByFolder, folderScanSelectedQueueCount])
-
-  const folderScanVisibleSections = useMemo<Array<QuoteSidebarFolderDefinition & { entries: FolderScanQueueEntry[] }>>(() => {
-    const filterEntriesByActiveNestedPath = (entries: FolderScanQueueEntry[]) => {
-      if (!folderScanActiveNestedPath || folderScanActiveSidebarKey === 'all') {
-        return entries
-      }
-
-      return entries.filter((entry) => resolveFolderScanEntryNestedFolderPath(entry) === folderScanActiveNestedPath)
-    }
-
-    if (folderScanActiveSidebarKey === 'all') {
-      return quoteSidebarFolders.map((folder) => ({
-        ...folder,
-        entries: folderScanQueueByFolder.get(folder.key) ?? [],
-      }))
-    }
-
-    const folder = quoteSidebarFolderByKey.get(folderScanActiveSidebarKey)
-
-    if (!folder) {
-      return []
-    }
-
-    return [{
-      ...folder,
-      entries: filterEntriesByActiveNestedPath(folderScanQueueByFolder.get(folder.key) ?? []),
-    }]
-  }, [folderScanActiveNestedPath, folderScanActiveSidebarKey, folderScanQueueByFolder])
-
-  const folderScanVisibleEntriesCount = useMemo(
-    () => folderScanVisibleSections.reduce((total, section) => total + section.entries.length, 0),
-    [folderScanVisibleSections],
-  )
-
-  const folderScanSelectionScopeLabel = useMemo(() => {
-    if (folderScanActiveSidebarKey === 'all') {
-      return 'all folders'
-    }
-
-    const folderLabel = quoteSidebarFolderByKey.get(folderScanActiveSidebarKey)?.label ?? 'selected folder'
-
-    if (!folderScanActiveNestedPath) {
-      return folderLabel
-    }
-
-    return `${folderLabel} / ${folderScanActiveNestedPath}`
-  }, [folderScanActiveNestedPath, folderScanActiveSidebarKey])
-
-  useEffect(() => {
-    if (folderScanActiveSidebarKey === 'all') {
-      if (folderScanActiveNestedPath) {
-        setFolderScanActiveNestedPath(null)
-      }
-
-      return
-    }
-
-    const activeFolderEntries = folderScanQueueByFolder.get(folderScanActiveSidebarKey) ?? []
-
-    if (activeFolderEntries.length === 0) {
-      setFolderScanActiveSidebarKey('all')
-      setFolderScanExpandedSidebarFolderKey(null)
-      setFolderScanActiveNestedPath(null)
-      return
-    }
-
-    if (!folderScanActiveNestedPath) {
-      return
-    }
-
-    const nestedPathStillExists = activeFolderEntries
-      .some((entry) => resolveFolderScanEntryNestedFolderPath(entry) === folderScanActiveNestedPath)
-
-    if (!nestedPathStillExists) {
-      setFolderScanActiveNestedPath(null)
-    }
-  }, [
-    folderScanActiveNestedPath,
-    folderScanActiveSidebarKey,
-    folderScanQueueByFolder,
-    setFolderScanExpandedSidebarFolderKey,
-  ])
-
-  const selectedOpportunityChatMessages = useMemo(
-    () => (Array.isArray(selectedOpportunityChatsQuery.data?.messages)
-      ? selectedOpportunityChatsQuery.data.messages
-      : []),
-    [selectedOpportunityChatsQuery.data?.messages],
-  )
-
-  const selectedOpportunityChatCount = selectedOpportunityChatMessages.length
-  const quoteChatUsers = useMemo(
-    () => quoteChatUsersQuery.data?.users ?? [],
-    [quoteChatUsersQuery.data?.users],
-  )
-  const quoteChatMentionOptions = useMemo(() => [
-    { id: MENTION_ALL_ID, display: 'all' },
-    ...quoteChatUsers.map((user) => ({
-      id: user.uid,
-      display: String(user.displayName || user.email.split('@')[0] || user.email).trim(),
-    })),
-  ], [quoteChatUsers])
-
-  const selectedOpportunityChatErrorMessage = selectedOpportunityChatsQuery.error instanceof Error
-    ? selectedOpportunityChatsQuery.error.message
-    : null
 
   const isAddDialogDirty = useMemo(
     () => serializeOpportunityFormState(formState) !== addDialogInitialSnapshot,
@@ -5137,7 +3911,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
 
 
   const addPricingPreview = useMemo(() => {
-    const pricing = resolveQuotePricing(formState.lineItems, formState.subtotal, formState.freight, 0, formState.additionalServices, formState.shippingServices, formState.discountPercent, formState.discountScope)
+    const pricing = resolveQuotePricing(formState.lineItems, formState.freight, 0, formState.additionalServices, formState.shippingServices, formState.discountPercent, formState.discountScope)
     return {
       grossSubtotal: pricing.grossSubtotal,
       discountPercent: pricing.discountPercent,
@@ -5247,7 +4021,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     notes: formState.notes.trim() || null,
     status: 'draft',
     origin: formState.origin,
-    documents: [],
     revisions: [],
     revisionCount: 0,
     activeRevisionNumber: 0,
@@ -5279,7 +4052,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
 
     const pricing = resolveQuotePricing(
       opportunityDetailsFormState.lineItems,
-      opportunityDetailsFormState.subtotal,
       opportunityDetailsFormState.freight,
       Number(selectedOpportunity?.totalAmount || 0),
       opportunityDetailsFormState.additionalServices,
@@ -5301,13 +4073,12 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   }, [opportunityDetailsFormState, selectedOpportunity?.totalAmount])
 
   const selectedOpportunityPrintQuote = useMemo<CrmQuote | null>(() => {
-    if (!selectedRevisionQuote || !opportunityDetailsFormState || selectedRevisionQuote.origin === 'excel') {
+    if (!selectedRevisionQuote || !opportunityDetailsFormState) {
       return selectedRevisionQuote
     }
 
     const pricing = resolveQuotePricing(
       opportunityDetailsFormState.lineItems,
-      opportunityDetailsFormState.subtotal,
       opportunityDetailsFormState.freight,
       Number(selectedRevisionQuote.totalAmount || 0),
       opportunityDetailsFormState.additionalServices,
@@ -5355,8 +4126,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   const resetExcelSyncDialog = useCallback(() => {
     setIsExcelAccountDialogOpen(false)
     setIsExcelSyncDialogOpen(false)
-    setExcelSyncLaunchMode('excel_file')
-    setPendingFolderScanFiles(null)
     setExcelSyncDraft(null)
     setExcelSyncImportSummary(null)
     setExcelSyncEmbeddedImages([])
@@ -5451,11 +4220,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   const initializeExcelSyncFromPayload = useCallback(async (
     excelPayload: ParsedExcelQuoteSyncInput,
     sourceFileName: string,
-    options: {
-      launchMode: ExcelSyncLaunchMode
-      scannedFiles?: File[]
-      sourceFile?: File
-    },
+    options: { sourceFile?: File },
   ) => {
     const quoteNumberFromExcel = String(excelPayload.quoteNumber ?? '').trim()
 
@@ -5471,8 +4236,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       ? findMatchingDealersByName(dealers, accountNameFromExcel)
       : []
 
-    setExcelSyncLaunchMode(options.launchMode)
-    setPendingFolderScanFiles(options.launchMode === 'folder_scan' ? (options.scannedFiles ?? []) : null)
     setExcelSyncLookupResult(lookupResult)
     setExcelSyncDraft(excelPayload)
     setExcelSyncImportSummary(excelPayload.importSummary)
@@ -5522,7 +4285,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     try {
       const excelPayload = await parseExcelQuoteForSync(file)
       await initializeExcelSyncFromPayload(excelPayload, file.name, {
-        launchMode: 'excel_file',
         sourceFile: file,
       })
     } catch (error) {
@@ -5652,23 +4414,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     setIsExcelAccountDialogOpen(true)
   }, [isSyncingExcelQuote])
 
-  const openFolderScanSelectionDialogForQuote = useCallback((targetQuote: CrmQuote, scannedFiles: File[]) => {
-    const nextQueue = buildFolderScanQueueEntriesForQuote(targetQuote, scannedFiles)
-
-    resetExcelSyncDialog()
-    setFolderScanQueue(nextQueue)
-    setFolderScanTargetQuoteId(targetQuote.id)
-    setFolderScanTargetQuoteSnapshot(targetQuote)
-    setFolderScanActiveSidebarKey('all')
-    setFolderScanExpandedSidebarFolderKey(null)
-    setFolderScanActiveNestedPath(null)
-    setFolderScanUploadSummary(null)
-    setFolderScanUploadProgress({ completed: 0, total: 0 })
-    setIsFolderScanSelectionDialogOpen(true)
-
-    return nextQueue
-  }, [resetExcelSyncDialog])
-
   const uploadLineItemImages = useCallback(async (
     files: Array<File | PreparedQuoteImage>,
     quoteNumber: string,
@@ -5767,8 +4512,9 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
 
     setExcelSyncDialogError(null)
     setErrorMessage(null)
-    setSuccessMessage(null)
+    setSuccessMessage(`Quote ${quoteNumber} is syncing in the background. You can keep using the site.`)
     setIsSyncingExcelQuote(true)
+    setIsExcelSyncDialogOpen(false)
 
     try {
       const dealerFromMap = dealersBySourceId.get(resolvedDealerSourceId)
@@ -5855,33 +4601,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         syncInput.companyName = resolvedCompanyName
       }
 
-      if (excelSyncLaunchMode === 'folder_scan') {
-        if (!pendingFolderScanFiles || pendingFolderScanFiles.length === 0) {
-          throw new Error('No scanned folder files were found for upload.')
-        }
-
-        const syncResponse = await syncCrmQuoteFromExcel(syncInput)
-        let syncedQuote = syncResponse.quote
-
-        if (!syncedQuote) {
-          throw new Error(syncResponse.message || 'Failed to sync quote from scanned folder Excel file.')
-        }
-
-        if (resolvedDealerSourceId || resolvedCompanyName) {
-          const patchResponse = await updateCrmQuote(syncedQuote.id, {
-            ...(resolvedDealerSourceId ? { dealerSourceId: resolvedDealerSourceId } : {}),
-            ...(resolvedCompanyName ? { companyName: resolvedCompanyName } : {}),
-          })
-          syncedQuote = patchResponse.quote
-        }
-
-        const scannedFilesForSelection = pendingFolderScanFiles
-        const nextQueue = openFolderScanSelectionDialogForQuote(syncedQuote, scannedFilesForSelection)
-        const queueLabel = nextQueue.length === 1 ? '1 new file' : `${nextQueue.length} new files`
-        setSuccessMessage(`Excel sync is ready for ${quoteNumber}. Showing ${queueLabel}. Only the main Quotes-folder Excel file is always included.`)
-        return
-      }
-
       const lookupQuoteId = String(excelSyncLookupResult?.id || '').trim()
       const normalizedQuoteNumber = normalizeMatchValue(quoteNumber)
 
@@ -5925,16 +4644,12 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         salesRep: selectedSalesRep,
         leadTime: String(syncInput.leadTime ?? '').trim(),
         paymentTerms: String(syncInput.paymentTerms ?? '').trim(),
-        subtotal: syncInput.subtotal === null || syncInput.subtotal === undefined
-          ? ''
-          : String(syncInput.subtotal),
+        subtotal: '',
         freight: syncInput.freight === null || syncInput.freight === undefined
           ? ''
           : String(syncInput.freight),
         freightDescription: String(syncInput.freightDescription ?? '').trim(),
         lineItems: stagedLineItems,
-        quoteDocumentUrl: '',
-        quoteDocumentName: '',
         origin: syncInput.origin === 'excel' ? 'excel' : 'website',
         sourceWorkbookUrl: String(syncInput.sourceWorkbookUrl || ''),
         sourceWorkbookName: String(syncInput.sourceWorkbookName || ''),
@@ -5953,7 +4668,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     }
   }, [
     dealersBySourceId,
-    excelSyncLaunchMode,
     excelSyncDealerStateCode,
     excelSyncDraft,
     excelSyncEmbeddedImages,
@@ -5966,380 +4680,10 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     excelSyncResolvedDealerSourceId,
     excelSyncSalesRepInput,
     excelSyncSalesRepOptions,
-    openFolderScanSelectionDialogForQuote,
-    pendingFolderScanFiles,
     quotes,
     resetExcelSyncDialog,
     uploadLineItemImages,
   ])
-
-  const handleSketchupDocumentUpload = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    event.target.value = ''
-
-    if (!file) {
-      return
-    }
-
-    setErrorMessage(null)
-    setIsUploadingQuoteDocument(true)
-
-    try {
-      if (!/\.(?:skp|glb)$/i.test(file.name)) {
-        throw new Error('Select a SketchUp .skp file or a smooth web .glb file.')
-      }
-      if (file.size > 2 * 1024 * 1024 * 1024) {
-        throw new Error('The 3D model must be 2 GB or smaller.')
-      }
-
-      const normalizedQuoteNumber = formState.quoteNumber.trim()
-
-      if (/\.skp$/i.test(file.name)) {
-        setPendingSketchupFile(file)
-        setFormState((current) => ({
-          ...current,
-          sketchupDocumentUrl: '',
-          sketchupDocumentName: file.name,
-        }))
-        return
-      }
-
-      const companySegment = sanitizeStoragePathSegment(formState.companyName.trim() || 'company', 'company')
-      const quoteSegment = sanitizeStoragePathSegment(normalizedQuoteNumber || `draft-${crypto.randomUUID()}`, 'opportunity')
-      const extension = file.name.toLowerCase().endsWith('.glb') ? 'glb' : 'skp'
-      const filePath = `crm/opportunities/${companySegment}/${quoteSegment}-rendering-${Date.now()}.${extension}`
-      const fileRef = storageRef(firebaseStorage, filePath)
-      await uploadBytes(fileRef, file, {
-        contentType: file.type || 'application/octet-stream',
-      })
-      const downloadUrl = await getDownloadURL(fileRef)
-
-      setFormState((current) => ({
-        ...current,
-        sketchupDocumentUrl: downloadUrl,
-        sketchupDocumentName: file.name,
-      }))
-      setPendingSketchupFile(null)
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Failed to upload the 3D model.')
-    } finally {
-      setIsUploadingQuoteDocument(false)
-    }
-  }, [formState.companyName, formState.quoteNumber])
-
-  const uploadSelectedOpportunityDocumentFile = useCallback(async (
-    quote: CrmQuote,
-    file: File,
-    options: {
-      folderLabel?: string
-      documentName?: string
-    } = {},
-  ) => {
-    const maxFileSize = 15 * 1024 * 1024
-
-    if (file.size > maxFileSize) {
-      throw new Error('File must be 15 MB or smaller.')
-    }
-
-    const companySegment = sanitizeStoragePathSegment(
-      String(quote.companyName || quote.dealerName || 'company').trim() || 'company',
-      'company',
-    )
-    const quoteLabel = String(quote.quoteNumber ?? '').trim() || quote.id
-    const quoteSegment = sanitizeStoragePathSegment(quoteLabel, 'opportunity')
-    const extension = resolveFileExtension(file)
-    const fileStamp = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
-    const filePath = `crm/opportunities/${companySegment}/${quoteSegment}-quote-${fileStamp}${extension}`
-    const fileRef = storageRef(firebaseStorage, filePath)
-
-    await uploadBytes(
-      fileRef,
-      file,
-      file.type ? { contentType: file.type } : undefined,
-    )
-
-    const downloadUrl = await getDownloadURL(fileRef)
-
-    const normalizedFileName = String(file.name ?? '').trim()
-    const normalizedDocumentName = String(options.documentName ?? normalizedFileName).trim() || normalizedFileName
-    const normalizedFolderLabel = String(options.folderLabel ?? '').trim()
-
-    return {
-      url: downloadUrl,
-      name: normalizedFolderLabel
-        ? buildDocumentNameWithFolder(normalizedFolderLabel, normalizedDocumentName)
-        : normalizedDocumentName,
-    }
-  }, [])
-
-  const handleOpenFolderScanDialog = useCallback(() => {
-    const input = folderScanInputRef.current
-
-    if (!input) {
-      return
-    }
-
-    input.value = ''
-    input.setAttribute('webkitdirectory', '')
-    input.setAttribute('directory', '')
-    input.click()
-  }, [])
-
-  const handleFolderScanUpload = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
-    const scannedFiles = Array.from(event.target.files ?? []).filter((file) => !isIgnoredFolderScanFile(file))
-    event.target.value = ''
-
-    if (scannedFiles.length === 0) {
-      return
-    }
-
-    if (!canManage) {
-      setErrorMessage('You do not have permission to upload quote folders.')
-      return
-    }
-
-    setErrorMessage(null)
-    setSuccessMessage(null)
-    setIsUploadingFolderSelection(true)
-
-    try {
-      const excelFiles = scannedFiles.filter((file) => {
-        const relativePath = String(file.webkitRelativePath || file.name).trim()
-        return isAlwaysResyncedQuotesExcelFile(relativePath, file.name)
-      })
-
-      if (excelFiles.length === 0) {
-        setErrorMessage('Scanned folder must include the main Excel file directly inside the Quotes folder (not in Quotes subfolders).')
-        return
-      }
-
-      let parsedExcelPayload: ParsedExcelQuoteSyncInput | null = null
-      let sourceExcelFileName = ''
-      let sourceExcelFile: File | null = null
-      const preferredQuoteNumber = resolveFolderScanPreferredQuoteNumber(scannedFiles, quotes)
-
-      for (const file of excelFiles) {
-        try {
-          parsedExcelPayload = await parseExcelQuoteForSync(file, preferredQuoteNumber)
-          sourceExcelFileName = file.name
-          sourceExcelFile = file
-          break
-        } catch {
-          // Try the next Excel file if this workbook fails to parse.
-        }
-      }
-
-      if (!parsedExcelPayload) {
-        setErrorMessage('Could not parse an Excel quote file from the selected folder.')
-        return
-      }
-
-      const quoteNumberFromExcel = String(parsedExcelPayload.quoteNumber ?? '').trim()
-
-      if (!quoteNumberFromExcel) {
-        throw new Error('Excel quote file is missing a quote number.')
-      }
-
-      await initializeExcelSyncFromPayload(parsedExcelPayload, sourceExcelFileName, {
-        launchMode: 'folder_scan',
-        scannedFiles,
-        sourceFile: sourceExcelFile || undefined,
-      })
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Failed to scan quote folder.')
-    } finally {
-      setIsUploadingFolderSelection(false)
-    }
-  }, [canManage, initializeExcelSyncFromPayload, quotes])
-
-  const handleToggleFolderScanEntry = useCallback((entryId: string, checked: boolean) => {
-    setFolderScanQueue((current) => current.map((entry) => {
-      if (entry.id !== entryId || entry.duplicateBlocked) {
-        return entry
-      }
-
-      return {
-        ...entry,
-        selected: checked,
-      }
-    }))
-  }, [])
-
-  const handleSetAllFolderScanEntries = useCallback((checked: boolean) => {
-    setFolderScanQueue((current) => current.map((entry) => (
-      entry.duplicateBlocked
-      || (folderScanActiveSidebarKey !== 'all' && entry.folderKey !== folderScanActiveSidebarKey)
-      || (folderScanActiveSidebarKey !== 'all'
-        && folderScanActiveNestedPath
-        && resolveFolderScanEntryNestedFolderPath(entry) !== folderScanActiveNestedPath)
-        ? entry
-        : {
-          ...entry,
-          selected: checked,
-        }
-    )))
-  }, [folderScanActiveNestedPath, folderScanActiveSidebarKey])
-
-  const handleClearFolderScanEntries = useCallback(() => {
-    setFolderScanQueue([])
-    setFolderScanActiveSidebarKey('all')
-    setFolderScanExpandedSidebarFolderKey(null)
-    setFolderScanActiveNestedPath(null)
-    setFolderScanUploadSummary(null)
-  }, [])
-
-  const handleCloseFolderScanSelectionDialog = useCallback(() => {
-    if (isUploadingFolderSelection) {
-      return
-    }
-
-    setIsFolderScanSelectionDialogOpen(false)
-    setFolderScanTargetQuoteId('')
-    setFolderScanTargetQuoteSnapshot(null)
-    setFolderScanActiveSidebarKey('all')
-    setFolderScanExpandedSidebarFolderKey(null)
-    setFolderScanActiveNestedPath(null)
-    setFolderScanUploadSummary(null)
-    setFolderScanUploadProgress({ completed: 0, total: 0 })
-    setFolderScanQueue([])
-  }, [isUploadingFolderSelection])
-
-  const handleUploadSelectedFolderEntries = useCallback(async () => {
-    const targetQuote = folderScanTargetQuote
-
-    if (!targetQuote) {
-      setErrorMessage('Could not resolve the target quote for this scanned folder.')
-      return
-    }
-
-    const selectedEntries = folderScanQueue.filter((entry) => entry.selected && !entry.duplicateBlocked)
-
-    if (selectedEntries.length === 0) {
-      setErrorMessage('Select at least one scanned file to upload.')
-      return
-    }
-
-    const existingDocuments = resolveQuoteDocuments(targetQuote)
-    const nextDocuments = [...existingDocuments]
-    const uploadedEntryIds = new Set<string>()
-    const uploadedRenderingModels: Array<{ document: CrmQuoteDocument; fileName: string }> = []
-    const failedFileMessages: string[] = []
-    let automatic3dPublishWarning = ''
-    let cursor = 0
-
-    setErrorMessage(null)
-    setSuccessMessage(null)
-    setFolderScanUploadSummary(null)
-    setIsUploadingFolderSelection(true)
-    setFolderScanUploadProgress({ completed: 0, total: selectedEntries.length })
-
-    try {
-      const workerCount = Math.min(4, selectedEntries.length)
-      const workers = Array.from({ length: workerCount }, async () => {
-        while (cursor < selectedEntries.length) {
-          const entryIndex = cursor
-          cursor += 1
-          const entry = selectedEntries[entryIndex]
-
-          try {
-            const nextDocument = await uploadSelectedOpportunityDocumentFile(targetQuote, entry.file, {
-              folderLabel: entry.folderLabel,
-              documentName: entry.documentName,
-            })
-            nextDocuments.push(nextDocument)
-            uploadedEntryIds.add(entry.id)
-            if (entry.folderKey === 'renderings' && /\.skp$/i.test(entry.file.name)) {
-              uploadedRenderingModels.push({ document: nextDocument, fileName: entry.file.name })
-            }
-          } catch (error) {
-            const message = error instanceof Error ? error.message : 'Failed to upload file.'
-            failedFileMessages.push(`${entry.file.name}: ${message}`)
-          } finally {
-            setFolderScanUploadProgress((current) => ({
-              completed: Math.min(current.total, current.completed + 1),
-              total: current.total,
-            }))
-          }
-        }
-      })
-
-      await Promise.all(workers)
-
-      if (uploadedEntryIds.size > 0) {
-        const updateResponse = await updateCrmQuote(targetQuote.id, {
-          documents: nextDocuments,
-        })
-        setFolderScanTargetQuoteSnapshot(updateResponse.quote)
-
-        if (uploadedRenderingModels.length > 0) {
-          try {
-            const revisionNumber = Number.isInteger(Number(targetQuote.activeRevisionNumber))
-              ? Number(targetQuote.activeRevisionNumber)
-              : 0
-            await uploadTrimbleSavedQuoteModels(
-              targetQuote.id,
-              uploadedRenderingModels.slice(0, 5).map(({ document, fileName }) => ({
-                document,
-                fileName,
-                label: fileName.replace(/\.skp$/i, ''),
-              })),
-              revisionNumber,
-            )
-          } catch (publishError) {
-            automatic3dPublishWarning = publishError instanceof Error ? publishError.message : 'Automatic publishing failed.'
-          }
-        }
-
-        if (selectedOpportunityId && selectedOpportunityId === targetQuote.id) {
-          setOpportunityDetailsFormState((current) => {
-            if (!current) {
-              return current
-            }
-
-            return {
-              ...current,
-              documents: resolveQuoteDocuments(updateResponse.quote),
-            }
-          })
-        }
-
-        await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.crmOpportunitiesQuotes })
-      }
-
-      setFolderScanQueue((current) => current.filter((entry) => !uploadedEntryIds.has(entry.id)))
-
-      const failedCount = failedFileMessages.length
-
-      setFolderScanUploadSummary({
-        uploadedCount: uploadedEntryIds.size,
-        attemptedCount: selectedEntries.length,
-        failedCount,
-      })
-
-      const summaryParts = [
-        `Uploaded ${uploadedEntryIds.size} of ${selectedEntries.length} selected file${selectedEntries.length === 1 ? '' : 's'}.`,
-      ]
-
-      if (failedCount > 0) {
-        summaryParts.push(`${failedCount} file${failedCount === 1 ? '' : 's'} failed.`)
-      }
-
-      if (uploadedRenderingModels.length > 0 && !automatic3dPublishWarning) {
-        summaryParts.push('Customer 3D view published automatically.')
-      }
-
-      setSuccessMessage(summaryParts.join(' '))
-
-      if (failedCount > 0 || automatic3dPublishWarning) {
-        setErrorMessage([
-          ...failedFileMessages,
-          ...(automatic3dPublishWarning ? [`Customer 3D publishing: ${automatic3dPublishWarning}`] : []),
-        ].join(' | '))
-      }
-    } finally {
-      setIsUploadingFolderSelection(false)
-    }
-  }, [folderScanQueue, folderScanTargetQuote, queryClient, selectedOpportunityId, uploadSelectedOpportunityDocumentFile])
 
   const handleOpenUploadQuoteActionMenu = useCallback((event: MouseEvent<HTMLButtonElement>) => {
     setUploadQuoteActionMenuAnchorEl(event.currentTarget)
@@ -6361,169 +4705,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     input.click()
   }, [])
 
-  const handleOpenUploadQuoteFolderScanner = useCallback(() => {
-    setUploadQuoteActionMenuAnchorEl(null)
-    handleOpenFolderScanDialog()
-  }, [handleOpenFolderScanDialog])
-
-  const handleRemoveSelectedOpportunityDocument = useCallback(async (documentUrl: string) => {
-    const confirmed = window.confirm('Remove this document from the opportunity?')
-
-    if (!confirmed) {
-      return
-    }
-
-    setOpportunityDetailsFormState((current) => {
-      if (!current) {
-        return current
-      }
-
-      return {
-        ...current,
-        documents: current.documents.filter((entry) => entry.url !== documentUrl),
-      }
-    })
-  }, [])
-
-  const handleSendSelectedOpportunityChat = useCallback(async () => {
-    const parsedDraft = parseQuoteChatRefreshRequest(selectedOpportunityChatDraft)
-    const nextMessage = parsedDraft.messageText
-    const shouldRefreshQuoteDate = selectedOpportunityRefreshOnSend || parsedDraft.refreshRequested
-
-    if (!selectedOpportunityId || !nextMessage) {
-      if (selectedOpportunityId && shouldRefreshQuoteDate && !nextMessage) {
-        setErrorMessage('Add a chat message with /refresh when refreshing the quote date.')
-      }
-      return
-    }
-
-    if (!canManage) {
-      setErrorMessage('You do not have permission to post quote chat messages.')
-      return
-    }
-
-    setErrorMessage(null)
-    setSuccessMessage(null)
-    setIsSendingSelectedOpportunityChat(true)
-
-    try {
-      const requestedMentionUids = extractQuoteChatMentionUids(selectedOpportunityChatDraftMarkup)
-      const mentionUserUids = requestedMentionUids.includes(MENTION_ALL_ID)
-        ? [...new Set(quoteChatUsers.map((user) => user.uid))]
-        : requestedMentionUids
-
-      await createCrmQuoteChatMessage(selectedOpportunityId, {
-        message: nextMessage,
-        mentionUserUids,
-      })
-
-      let refreshedQuoteDate: string | null = null
-      let refreshErrorMessage = ''
-
-      if (shouldRefreshQuoteDate) {
-        const nextRefreshedQuoteDate = getTodayEasternDateInputValue()
-        refreshedQuoteDate = nextRefreshedQuoteDate
-
-        try {
-          await updateCrmQuote(selectedOpportunityId, {
-            opportunityDate: nextRefreshedQuoteDate,
-          })
-
-          setSelectedOpportunity((current) => {
-            if (!current || current.id !== selectedOpportunityId) {
-              return current
-            }
-
-            return {
-              ...current,
-              opportunityDate: nextRefreshedQuoteDate,
-              updatedAt: new Date().toISOString(),
-            }
-          })
-
-          setOpportunityDetailsFormState((current) => {
-            if (!current) {
-              return current
-            }
-
-            return {
-              ...current,
-              opportunityDateInput: nextRefreshedQuoteDate,
-            }
-          })
-        } catch (refreshError) {
-          refreshErrorMessage = refreshError instanceof Error
-            ? refreshError.message
-            : 'Could not refresh quote date.'
-        }
-      }
-
-      setSelectedOpportunityChatDraft('')
-      setSelectedOpportunityChatDraftMarkup('')
-      setSelectedOpportunityRefreshOnSend(false)
-      await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.crmQuoteChats(selectedOpportunityId) })
-
-      if (shouldRefreshQuoteDate) {
-        await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.crmOpportunitiesQuotes })
-
-        if (refreshErrorMessage) {
-          setErrorMessage(`Message sent, but refresh failed: ${refreshErrorMessage}`)
-        } else if (refreshedQuoteDate) {
-          setSuccessMessage(`Message sent. Quote date refreshed to ${formatOpportunityLikeDate(refreshedQuoteDate)}.`)
-        }
-      }
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Failed to send quote chat message.')
-    } finally {
-      setIsSendingSelectedOpportunityChat(false)
-    }
-  }, [
-    canManage,
-    queryClient,
-    selectedOpportunityRefreshOnSend,
-    selectedOpportunityChatDraft,
-    selectedOpportunityChatDraftMarkup,
-    selectedOpportunityId,
-    quoteChatUsers,
-  ])
-
-  const canManageSelectedOpportunityChatMessage = useCallback((message: CrmQuoteChatMessage) => {
-    if (isCurrentUserAdmin) {
-      return true
-    }
-
-    const createdByUid = String(message.createdByUid ?? '').trim()
-    const createdByEmail = String(message.createdByEmail ?? '').trim().toLowerCase()
-
-    return Boolean(
-      (currentUserUid && createdByUid && currentUserUid === createdByUid)
-      || (currentUserEmail && createdByEmail && currentUserEmail === createdByEmail),
-    )
-  }, [currentUserEmail, currentUserUid, isCurrentUserAdmin])
-
-  const handleDeleteSelectedOpportunityChatMessage = useCallback(async (messageId: string) => {
-    if (!selectedOpportunityId || !messageId) {
-      return
-    }
-
-    if (!window.confirm('Delete this chat message?')) {
-      return
-    }
-
-    setErrorMessage(null)
-    setSuccessMessage(null)
-    setDeletingSelectedOpportunityChatMessageId(messageId)
-
-    try {
-      await removeCrmQuoteChatMessage(selectedOpportunityId, messageId)
-      await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.crmQuoteChats(selectedOpportunityId) })
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Failed to delete quote chat message.')
-    } finally {
-      setDeletingSelectedOpportunityChatMessageId('')
-    }
-  }, [queryClient, selectedOpportunityId])
-
   const handleOpenDialog = useCallback(() => {
     const emptyFormState = createEmptyOpportunityForm()
 
@@ -6534,7 +4715,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     setAddOpportunitySubmitAttempted(false)
     setDealerSearchInput('')
     setSelectedAddContactSourceId('')
-    setPendingSketchupFile(null)
     setAddDialogInitialSnapshot(serializeOpportunityFormState(emptyFormState))
     setIsAddDialogDraftFromExcelSync(false)
     setIsDialogOpen(true)
@@ -6613,14 +4793,15 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   ])
 
   const handleOpenNewContactDialog = useCallback(() => {
+    const contact = opportunityDetailsFormState || formState
     setNewContactError(null)
     setNewContactForm({
-      name: formState.contactName.trim(),
-      email: formState.contactEmail.trim(),
-      phone: formState.contactPhone.trim(),
+      name: contact.contactName.trim(),
+      email: contact.contactEmail.trim(),
+      phone: contact.contactPhone.trim(),
     })
     setIsNewContactDialogOpen(true)
-  }, [formState.contactEmail, formState.contactName, formState.contactPhone])
+  }, [formState, opportunityDetailsFormState])
 
   const handleSavePaymentTerms = useCallback(async () => {
     const paymentTerms = paymentTermsDraft.trim()
@@ -6632,21 +4813,25 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     setIsSavingPaymentTerms(true)
 
     try {
-      if (paymentTermsApplyMode === 'dealer' && formState.dealerSourceId.trim()) {
-        await updateCrmDealer(formState.dealerSourceId.trim(), { paymentTerms })
+      if (paymentTermsApplyMode === 'dealer' && activeQuoteDealerSourceId.trim()) {
+        await updateCrmDealer(activeQuoteDealerSourceId.trim(), { paymentTerms })
         await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.crmOpportunitiesDealers })
       }
-      setFormState((current) => ({ ...current, paymentTerms }))
+      if (selectedOpportunityId) {
+        setOpportunityDetailsFormState((current) => current ? ({ ...current, paymentTerms }) : current)
+      } else {
+        setFormState((current) => ({ ...current, paymentTerms }))
+      }
       setIsPaymentTermsDialogOpen(false)
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Failed to update payment terms.')
     } finally {
       setIsSavingPaymentTerms(false)
     }
-  }, [formState.dealerSourceId, paymentTermsApplyMode, paymentTermsDraft, queryClient])
+  }, [activeQuoteDealerSourceId, paymentTermsApplyMode, paymentTermsDraft, queryClient, selectedOpportunityId])
 
   const handleCreateDealerContact = useCallback(async () => {
-    const dealerSourceId = formState.dealerSourceId.trim()
+    const dealerSourceId = activeQuoteDealerSourceId.trim()
     const name = newContactForm.name.trim()
 
     if (!dealerSourceId) {
@@ -6670,12 +4855,21 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       })
       const contact = response.contact
       setSelectedAddContactSourceId(contact.sourceId)
-      setFormState((current) => ({
-        ...current,
-        contactName: resolveContactSelectionLabel(contact),
-        contactEmail: contact.primaryEmail || '',
-        contactPhone: contact.phone || '',
-      }))
+      if (selectedOpportunityId) {
+        setOpportunityDetailsFormState((current) => current ? ({
+          ...current,
+          contactName: resolveContactSelectionLabel(contact),
+          contactEmail: contact.primaryEmail || '',
+          contactPhone: contact.phone || '',
+        }) : current)
+      } else {
+        setFormState((current) => ({
+          ...current,
+          contactName: resolveContactSelectionLabel(contact),
+          contactEmail: contact.primaryEmail || '',
+          contactPhone: contact.phone || '',
+        }))
+      }
       await queryClient.invalidateQueries({ queryKey: ['crm', 'dealer-contacts', dealerSourceId] })
       setIsNewContactDialogOpen(false)
       setNewContactForm({ name: '', email: '', phone: '' })
@@ -6684,7 +4878,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     } finally {
       setIsSavingNewContact(false)
     }
-  }, [formState.dealerSourceId, newContactForm.email, newContactForm.name, newContactForm.phone, queryClient])
+  }, [activeQuoteDealerSourceId, newContactForm.email, newContactForm.name, newContactForm.phone, queryClient, selectedOpportunityId])
 
   const clearDeepLinkedQuoteId = useCallback(() => {
     if (!searchParams.has('quoteId')) {
@@ -6696,7 +4890,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     setSearchParams(nextSearchParams, { replace: true })
   }, [searchParams, setSearchParams])
 
-  const openLoadedOpportunityDetails = useCallback((quote: CrmQuote, initialTab: OpportunityDetailsTab = 'details') => {
+  const openLoadedOpportunityDetails = useCallback((quote: CrmQuote) => {
     setErrorMessage(null)
     setSuccessMessage(null)
     setDetailsActionMenuAnchorEl(null)
@@ -6706,37 +4900,28 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     const nextRevisionNumber = Number(quote.activeRevisionNumber ?? quote.revisionCount ?? 0)
     const nextRevisionQuote = resolveQuoteRevision(quote, nextRevisionNumber)
     const nextFormState = createOpportunityDetailsFormState(nextRevisionQuote)
-    setSelectedOpportunityChatDraft('')
-    setSelectedOpportunityRefreshOnSend(false)
-    setDeletingSelectedOpportunityChatMessageId('')
-    setSelectedOpportunityDetailsTab(initialTab)
-    setSelectedOpportunityNestedFolderPath(null)
+    setSelectedAddContactSourceId(String(nextRevisionQuote.contactSourceId || ''))
     setSelectedOpportunity(quote)
+    setOpportunityDetailsStage(0)
     setSelectedRevisionNumber(nextRevisionNumber)
     setOpportunityDetailsFormState(nextFormState)
     setOpportunityDetailsInitialSnapshot(serializeOpportunityDetailsFormState(nextFormState))
-    setFolderScanQueue([])
-    setIsUploadingFolderSelection(false)
   }, [])
 
-  const handleOpenOpportunityDetails = useCallback(async (summary: CrmQuote, initialTab: OpportunityDetailsTab = 'details') => {
+  const handleOpenOpportunityDetails = useCallback(async (summary: CrmQuote) => {
     setErrorMessage(null)
     // Open from the card data immediately. Older accepted quotes can take longer
     // to hydrate, but the details surface should never appear unresponsive.
-    openLoadedOpportunityDetails(summary, initialTab)
+    openLoadedOpportunityDetails(summary)
     setBusyQuoteId(summary.id)
     try {
-      openLoadedOpportunityDetails(await loadOpportunityDetails(summary), initialTab)
+      openLoadedOpportunityDetails(await loadOpportunityDetails(summary))
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Failed to load opportunity details.')
     } finally {
       setBusyQuoteId(null)
     }
   }, [loadOpportunityDetails, openLoadedOpportunityDetails])
-
-  const handleOpenOpportunityChat = useCallback((quote: CrmQuote) => {
-    void handleOpenOpportunityDetails(quote, 'chat')
-  }, [handleOpenOpportunityDetails])
 
   useEffect(() => {
     if (!deepLinkedQuoteId) {
@@ -6776,7 +4961,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   ])
 
   const handleCloseDialog = useCallback(() => {
-    if (isSavingOpportunity || isUploadingQuoteDocument) {
+    if (isSavingOpportunity) {
       return
     }
 
@@ -6799,7 +4984,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     setAddOpportunitySubmitAttempted(false)
     setDealerSearchInput('')
     setSelectedAddContactSourceId('')
-    setPendingSketchupFile(null)
     setIsNewDealerDialogOpen(false)
     setIsNewContactDialogOpen(false)
     setIsPaymentTermsDialogOpen(false)
@@ -6807,13 +4991,11 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     setAddDialogInitialSnapshot(serializeOpportunityFormState(emptyFormState))
     setIsAddDialogDraftFromExcelSync(false)
     setIsDialogOpen(false)
-  }, [deleteUploadedDraftImages, formState.lineItems, isAddDialogDirty, isSavingOpportunity, isUploadingQuoteDocument])
+  }, [deleteUploadedDraftImages, formState.lineItems, isAddDialogDirty, isSavingOpportunity])
 
   const handleCloseOpportunityDetails = useCallback(() => {
     if (
       isSavingOpportunityDetails
-      || isUploadingFolderSelection
-      || isSendingSelectedOpportunityChat
     ) {
       return
     }
@@ -6830,22 +5012,15 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     setSaveActionMenuAnchorEl(null)
     setUploadQuoteActionMenuAnchorEl(null)
     setSelectedOpportunity(null)
+    setSelectedAddContactSourceId('')
+    setOpportunityDetailsStage(0)
     setOpportunityDetailsFormState(null)
     setOpportunityDetailsInitialSnapshot('')
-    setSelectedOpportunityDetailsTab('details')
-    setSelectedOpportunityNestedFolderPath(null)
-    setSelectedOpportunityChatDraft('')
-    setSelectedOpportunityRefreshOnSend(false)
-    setFolderScanQueue([])
-    setIsUploadingFolderSelection(false)
     clearDeepLinkedQuoteId()
   }, [
     clearDeepLinkedQuoteId,
-    isSendingSelectedOpportunityChat,
     isOpportunityDetailsDirty,
     isSavingOpportunityDetails,
-    setSelectedOpportunityNestedFolderPath,
-    isUploadingFolderSelection,
   ])
 
   const handleAddFormLineItem = useCallback(() => {
@@ -7080,31 +5255,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     }) : current)
   }, [])
 
-  const handleAddDetailsServiceImages = useCallback(async (
-    section: 'additionalServices' | 'shippingServices',
-    index: number,
-    files: PreparedQuoteImage[],
-  ) => {
-    if (!opportunityDetailsFormState) return
-    setErrorMessage(null)
-    setIsUploadingLineImage(true)
-    try {
-      const images = await uploadLineItemImages(files, opportunityDetailsFormState.quoteNumber, opportunityDetailsFormState.companyName)
-      setOpportunityDetailsFormState((current) => current ? ({
-        ...current,
-        [section]: current[section].map((item, itemIndex) => itemIndex === index
-          ? { ...item, images: [...item.images, ...images].slice(0, 2) }
-          : item),
-      }) : current)
-    } catch (error) {
-      const uploadError = error instanceof Error ? error : new Error('Failed to upload service picture.')
-      setErrorMessage(uploadError.message)
-      throw uploadError
-    } finally {
-      setIsUploadingLineImage(false)
-    }
-  }, [opportunityDetailsFormState, uploadLineItemImages])
-
   const handlePrintQuote = useCallback(async (quoteSummary: CrmQuote, detailsAlreadyLoaded = false) => {
     setErrorMessage(null)
     setBusyQuoteId(quoteSummary.id)
@@ -7137,6 +5287,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
 
     const revisionQuote = resolveQuoteRevision(selectedOpportunity, nextRevisionNumber)
     const nextFormState = createOpportunityDetailsFormState(revisionQuote)
+    setSelectedAddContactSourceId(String(revisionQuote.contactSourceId || ''))
     setSelectedRevisionNumber(nextRevisionNumber)
     setOpportunityDetailsFormState(nextFormState)
     setOpportunityDetailsInitialSnapshot(serializeOpportunityDetailsFormState(nextFormState))
@@ -7176,7 +5327,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       setOpportunityDetailsFormState(nextFormState)
       setOpportunityDetailsInitialSnapshot(serializeOpportunityDetailsFormState(nextFormState))
       await invalidateOpportunityData()
-      setSuccessMessage(`Revision ${nextRevisionNumber} created. Add a GLB or SketchUp model when this revision is ready for a public 3D view.`)
+      setSuccessMessage(`Revision ${nextRevisionNumber} created.`)
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Failed to create the new revision.')
     } finally {
@@ -7238,7 +5389,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     const dealerSourceId = formState.dealerSourceId.trim()
     const quoteNumber = formState.quoteNumber.trim()
     const opportunityDateInput = formState.opportunityDateInput.trim()
-    const pricing = resolveQuotePricing(formState.lineItems, formState.subtotal, formState.freight, 0, formState.additionalServices, formState.shippingServices, formState.discountPercent, formState.discountScope)
+    const pricing = resolveQuotePricing(formState.lineItems, formState.freight, 0, formState.additionalServices, formState.shippingServices, formState.discountPercent, formState.discountScope)
     const lineItems = pricing.normalizedLineItems
     const totalAmount = pricing.totalAmount
 
@@ -7275,10 +5426,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     setIsSavingOpportunity(true)
 
     try {
-      const quoteDocumentUrl = formState.quoteDocumentUrl.trim()
-      const quoteDocumentName = formState.quoteDocumentName.trim()
-      const sketchupDocumentUrl = formState.sketchupDocumentUrl.trim()
-      const sketchupDocumentName = formState.sketchupDocumentName.trim()
 
       if (selectedAddContactSourceId) {
         await updateCrmContact(selectedAddContactSourceId, {
@@ -7288,7 +5435,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         })
       }
 
-      const createResponse = await createCrmQuote({
+      await createCrmQuote({
         dealerSourceId,
         quoteNumber,
         title,
@@ -7296,6 +5443,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         contactName: formState.contactName.trim() || null,
         contactEmail: formState.contactEmail.trim() || null,
         contactPhone: formState.contactPhone.trim() || null,
+        contactSourceId: selectedAddContactSourceId || null,
         salesRep: formState.salesRep.trim() || null,
         leadTime: formState.leadTime.trim() || null,
         paymentTerms: formState.paymentTerms.trim() || null,
@@ -7320,47 +5468,19 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         totalAmount,
         sentAt,
         notes: formState.notes.trim() || null,
-        documents: [
-          ...(quoteDocumentUrl ? [{ url: quoteDocumentUrl, name: quoteDocumentName || null }] : []),
-          ...(formState.sourceWorkbookUrl ? [{ url: formState.sourceWorkbookUrl, name: formState.sourceWorkbookName || null }] : []),
-          ...(formState.convertedPdfUrl ? [{ url: formState.convertedPdfUrl, name: formState.convertedPdfName || null }] : []),
-          ...(sketchupDocumentUrl ? [{ url: sketchupDocumentUrl, name: sketchupDocumentName || '3D model.glb' }] : []),
-        ],
         revisionCount: 0,
       })
-
-      let modelPublishWarning = ''
-      try {
-        if (pendingSketchupFile) {
-          const session = await initiateTrimbleQuoteModelUpload(createResponse.quote.id, pendingSketchupFile, 0)
-          const uploadResponse = await fetch(session.uploadUrl, { method: 'PUT', body: pendingSketchupFile })
-          if (!uploadResponse.ok) throw new Error(`SketchUp upload failed (${uploadResponse.status}).`)
-          await commitTrimbleQuoteModelUpload(createResponse.quote.id, session.uploadId, 0)
-        } else if (sketchupDocumentUrl && /\.glb$/i.test(sketchupDocumentName)) {
-          await publishGlbQuoteModels(createResponse.quote.id, [{
-            fileName: sketchupDocumentName || '3D model.glb',
-            downloadUrl: sketchupDocumentUrl,
-          }], 0)
-        }
-      } catch (publishError) {
-        modelPublishWarning = publishError instanceof Error
-          ? publishError.message
-          : 'The customer 3D view could not be published.'
-      }
 
       await invalidateOpportunityData()
 
       const emptyFormState = createEmptyOpportunityForm()
 
-      setSuccessMessage(modelPublishWarning
-        ? `Opportunity created. The 3D view needs attention: ${modelPublishWarning}`
-        : (pendingSketchupFile || sketchupDocumentUrl ? 'Opportunity created and customer 3D view published.' : 'Opportunity created.'))
+      setSuccessMessage('Opportunity created.')
       setFormState(emptyFormState)
       setAddOpportunityStage(0)
       setAddOpportunitySubmitAttempted(false)
       setDealerSearchInput('')
       setSelectedAddContactSourceId('')
-      setPendingSketchupFile(null)
       setAddDialogInitialSnapshot(serializeOpportunityFormState(emptyFormState))
       setIsAddDialogDraftFromExcelSync(false)
       setIsDialogOpen(false)
@@ -7389,12 +5509,8 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     formState.origin,
     formState.opportunityDateInput,
     formState.paymentTerms,
-    formState.quoteDocumentName,
-    formState.quoteDocumentUrl,
     formState.quoteNumber,
     formState.salesRep,
-    formState.sketchupDocumentName,
-    formState.sketchupDocumentUrl,
     formState.shippingServices,
     formState.sourceWorkbookName,
     formState.sourceWorkbookUrl,
@@ -7402,7 +5518,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     formState.title,
     invalidateOpportunityData,
     isAddDialogDraftFromExcelSync,
-    pendingSketchupFile,
     quotes,
     selectedAddContactSourceId,
   ])
@@ -7434,7 +5549,11 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       .filter((id) => id && !convertedKeys.has(`line:${id}`))
     nextForm.selectedAdditionalServiceIds = (quote.additionalServices || []).filter((item) => Number(resolveServiceItemExtPrice(item) || 0) > 0 && !convertedKeys.has(`additional:${item.id}`)).map((item) => item.id)
     nextForm.selectedShippingServiceIds = (quote.shippingServices || []).filter((item) => Number(resolveServiceItemExtPrice(item) || 0) > 0 && !convertedKeys.has(`shipping:${item.id}`)).map((item) => item.id)
-    nextForm.includeFreight = Number(quote.freight || 0) > 0 && !convertedKeys.has('freight')
+    // A quote-level freight amount is separate from the delivery service. Do
+    // not auto-select both, which otherwise creates duplicate delivery charges.
+    nextForm.includeFreight = nextForm.selectedShippingServiceIds.length === 0
+      && Number(quote.freight || 0) > 0
+      && !convertedKeys.has('freight')
     setConvertOrderFormState(nextForm)
     setIsConvertOrderDialogOpen(true)
   }, [convertOrderPrimaryBoardId, convertOrderSecondaryBoardId])
@@ -7507,8 +5626,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     setSelectedOpportunity(null)
     setOpportunityDetailsFormState(null)
     setOpportunityDetailsInitialSnapshot('')
-    setSelectedOpportunityDetailsTab('details')
-    setSelectedOpportunityNestedFolderPath(null)
     setIsSubmittingConvertOrder(false)
     setBusyQuoteId(null)
 
@@ -7523,7 +5640,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         ]
         const selectedFreightLines: OrderDocumentLine[] = (convertOrderTargetQuote.shippingServices || []).filter((item) => convertOrderFormState.selectedShippingServiceIds.includes(item.id)).map((item) => ({ id: item.id, description: item.title || item.description || 'Freight service', qty: item.qty ?? null, unitPrice: item.unitPrice ?? null, extPrice: Number(resolveServiceItemExtPrice(item) || 0), category: 'freight' as const }))
         const quoteFreight = convertOrderFormState.includeFreight ? Number(convertOrderTargetQuote.freight || 0) : 0
-        if (quoteFreight > 0) selectedFreightLines.push({ id: 'quote-freight', description: convertOrderTargetQuote.freightDescription || 'Freight', qty: 1, unitPrice: quoteFreight, extPrice: quoteFreight, category: 'freight' })
+        if (quoteFreight > 0) selectedFreightLines.push({ id: 'quote-freight', description: 'Delivery', qty: 1, unitPrice: quoteFreight, extPrice: quoteFreight, category: 'freight' })
         const productGross = selectedProductLines.reduce((sum, line) => sum + line.extPrice, 0)
         const discountPercent = Math.min(100, Math.max(0, Number(convertOrderTargetQuote.discountPercent || 0)))
         const discountAmount = Number((productGross * (discountPercent / 100)).toFixed(2))
@@ -7542,7 +5659,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
           description: convertOrderTargetQuote.description || convertOrderTargetQuote.title || '',
           poNumber: convertOrderFormState.poNumber.trim(),
           projectName: convertOrderTargetQuote.title || '', acknowledgmentNumber,
-          leadTime, freightType: convertOrderTargetQuote.freightDescription || selectedFreightLines.map((line) => line.description).join(' / '), shipTo,
+          leadTime, freightType: selectedFreightLines.length > 0 ? 'Delivery' : '', shipTo,
           productGross, discountPercent, discountAmount,
           freightGross, freightDiscountAmount,
           productNet, freightNet, grandTotal: productNet + freightNet, depositRequired, depositPercent,
@@ -7718,7 +5835,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     const opportunityDateInput = opportunityDetailsFormState.opportunityDateInput.trim()
     const pricing = resolveQuotePricing(
       opportunityDetailsFormState.lineItems,
-      opportunityDetailsFormState.subtotal,
       opportunityDetailsFormState.freight,
       Number(selectedOpportunity.totalAmount || 0),
       opportunityDetailsFormState.additionalServices,
@@ -7742,12 +5858,36 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       return
     }
 
+    if (!opportunityDetailsFormState.dealerSourceId.trim()) {
+      setErrorMessage('Dealer account is required.')
+      return
+    }
+
+    if (!opportunityDetailsFormState.contactName.trim() || !opportunityDetailsFormState.contactEmail.trim()) {
+      setErrorMessage('Contact name and email are required.')
+      return
+    }
+
+    if (!opportunityDetailsFormState.salesRep.trim() || !opportunityDetailsFormState.leadTime.trim()) {
+      setErrorMessage('Sales rep and lead time are required.')
+      return
+    }
+
     if (opportunityDateInput && !/^\d{4}-\d{2}-\d{2}$/.test(opportunityDateInput)) {
       setErrorMessage('Opportunity date must be a valid date.')
       return
     }
 
     const quoteLabel = quoteNumber || selectedOpportunity.quoteNumber || selectedOpportunity.title
+
+    const duplicateQuote = quotes.find((entry) => (
+      entry.id !== selectedOpportunity.id
+      && normalizeQuoteFamilyValue(entry.quoteNumber) === normalizeQuoteFamilyValue(quoteNumber)
+    ))
+    if (duplicateQuote) {
+      setErrorMessage(`Quote number ${quoteNumber} already belongs to another opportunity.`)
+      return
+    }
 
     if (mode === 'decline') {
       const confirmedDecline = window.confirm(`Mark ${quoteLabel} as declined?`)
@@ -7764,6 +5904,13 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
 
     try {
       const selectedDealerSourceId = opportunityDetailsFormState.dealerSourceId.trim()
+      if (selectedAddContactSourceId) {
+        await updateCrmContact(selectedAddContactSourceId, {
+          name: opportunityDetailsFormState.contactName.trim(),
+          primaryEmail: opportunityDetailsFormState.contactEmail.trim(),
+          phone: opportunityDetailsFormState.contactPhone.trim() || null,
+        })
+      }
       const detailsPayload = {
         revisionNumber: targetRevisionNumber,
         ...((mode === 'save' || mode === 'save_close')
@@ -7776,6 +5923,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         contactName: opportunityDetailsFormState.contactName.trim() || null,
         contactEmail: opportunityDetailsFormState.contactEmail.trim() || null,
         contactPhone: opportunityDetailsFormState.contactPhone.trim() || null,
+        contactSourceId: selectedAddContactSourceId || null,
         salesRep: opportunityDetailsFormState.salesRep.trim() || null,
         leadTime: opportunityDetailsFormState.leadTime.trim() || null,
         paymentTerms: opportunityDetailsFormState.paymentTerms.trim() || null,
@@ -7790,7 +5938,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         lineItems,
         additionalServices: pricing.normalizedAdditionalServices,
         shippingServices: pricing.normalizedShippingServices,
-        documents: opportunityDetailsFormState.documents,
         origin: opportunityDetailsFormState.origin,
         sourceWorkbookUrl: opportunityDetailsFormState.sourceWorkbookUrl || null,
         sourceWorkbookName: opportunityDetailsFormState.sourceWorkbookName || null,
@@ -7842,7 +5989,9 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   }, [
     invalidateOpportunityData,
     opportunityDetailsFormState,
+    quotes,
     selectedOpportunity,
+    selectedAddContactSourceId,
     selectedRevisionNumber,
   ])
 
@@ -7876,11 +6025,13 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   const convertOrderSelectableRows = useMemo(() => {
     if (!convertOrderTargetQuote) return []
     const converted = new Set(convertOrderTargetQuote.convertedItemKeys || [])
+    const pricedShippingServices = (convertOrderTargetQuote.shippingServices || [])
+      .filter((item) => Number(resolveServiceItemExtPrice(item) || 0) > 0)
     return [
       ...(convertOrderTargetQuote.lineItems || []).filter((item) => Number(item.qty ?? 1) !== 0).map((item) => { const id = String(item.id || item.itemNumber || ''); return { key: `line:${id}`, id, group: 'Product', description: item.description || `Item ${item.itemNumber}`, qty: item.qty, unitPrice: item.unitPrice, amount: Number(item.extPrice || 0), field: 'selectedLineItemIds' as const, converted: converted.has(`line:${id}`) } }),
       ...(convertOrderTargetQuote.additionalServices || []).filter((item) => Number(resolveServiceItemExtPrice(item) || 0) > 0).map((item) => ({ key: `additional:${item.id}`, id: item.id, group: 'Additional Service', description: item.title || item.description || 'Additional service', qty: item.qty ?? null, unitPrice: item.unitPrice ?? null, amount: Number(resolveServiceItemExtPrice(item) || 0), field: 'selectedAdditionalServiceIds' as const, converted: converted.has(`additional:${item.id}`) })),
-      ...(convertOrderTargetQuote.shippingServices || []).filter((item) => Number(resolveServiceItemExtPrice(item) || 0) > 0).map((item) => ({ key: `shipping:${item.id}`, id: item.id, group: 'Freight / Delivery', description: item.title || item.description || 'Freight service', qty: item.qty ?? null, unitPrice: item.unitPrice ?? null, amount: Number(resolveServiceItemExtPrice(item) || 0), field: 'selectedShippingServiceIds' as const, converted: converted.has(`shipping:${item.id}`) })),
-      ...(Number(convertOrderTargetQuote.freight || 0) > 0 ? [{ key: 'freight', id: 'freight', group: 'Freight', description: convertOrderTargetQuote.freightDescription || 'Quote freight', qty: 1, unitPrice: Number(convertOrderTargetQuote.freight), amount: Number(convertOrderTargetQuote.freight), field: 'includeFreight' as const, converted: converted.has('freight') }] : []),
+      ...pricedShippingServices.map((item) => ({ key: `shipping:${item.id}`, id: item.id, group: 'Freight / Delivery', description: item.title || item.description || 'Freight service', qty: item.qty ?? null, unitPrice: item.unitPrice ?? null, amount: Number(resolveServiceItemExtPrice(item) || 0), field: 'selectedShippingServiceIds' as const, converted: converted.has(`shipping:${item.id}`) })),
+      ...(pricedShippingServices.length === 0 && Number(convertOrderTargetQuote.freight || 0) > 0 ? [{ key: 'freight', id: 'freight', group: 'Delivery', description: 'Delivery', qty: 1, unitPrice: Number(convertOrderTargetQuote.freight), amount: Number(convertOrderTargetQuote.freight), field: 'includeFreight' as const, converted: converted.has('freight') }] : []),
     ]
   }, [convertOrderTargetQuote])
 
@@ -7890,7 +6041,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     : convertOrderFormState[row.field].includes(row.id)
   const convertOrderSelectedRows = convertOrderAvailableRows.filter(isConvertOrderRowSelected)
   const convertOrderProductNet = convertOrderSelectedRows.filter((row) => row.group === 'Product' || row.group === 'Additional Service').reduce((sum, row) => sum + row.amount, 0)
-  const convertOrderFreightNet = convertOrderSelectedRows.filter((row) => row.group === 'Freight' || row.group === 'Freight / Delivery').reduce((sum, row) => sum + row.amount, 0)
+  const convertOrderFreightNet = convertOrderSelectedRows.filter((row) => row.group === 'Delivery' || row.group === 'Freight / Delivery').reduce((sum, row) => sum + row.amount, 0)
 
   if (isLoading && !detailsOnly) {
     return <LoadingPanel loading message="Fetching pipeline opportunities..." />
@@ -8251,509 +6402,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         </DialogActions>
       </Dialog>
 
-      <Dialog
-        open={isFolderScanSelectionDialogOpen}
-        onClose={handleCloseFolderScanSelectionDialog}
-        maxWidth="md"
-        fullWidth
-      >
-        <DialogTitle>Select New Scanned Documents</DialogTitle>
-        <DialogContent>
-          <Stack spacing={1} sx={{ mt: 0.6 }}>
-            <Typography variant="body2">
-              Quote <strong>{folderScanTargetQuote?.quoteNumber || 'N/A'}</strong> is ready. Choose which scanned files to upload.
-            </Typography>
 
-            <Typography variant="caption" color="text.secondary">
-              Selected: {folderScanSelectedQueueCount} of {folderScanQueue.length}. Only new files are shown; only the main Excel file in Quotes is always included.
-            </Typography>
-            <Typography variant="caption" color="text.secondary">
-              Viewing: {folderScanSelectionScopeLabel} ({folderScanVisibleEntriesCount} file{folderScanVisibleEntriesCount === 1 ? '' : 's'}).
-            </Typography>
-
-            {folderScanUploadSummary && !isUploadingFolderSelection ? (
-              <Paper
-                variant="outlined"
-                sx={{
-                  px: 1,
-                  py: 0.8,
-                  borderRadius: 1,
-                  borderColor: folderScanUploadSummary.failedCount > 0
-                    ? alpha('#b45309', 0.35)
-                    : alpha('#166534', 0.35),
-                  backgroundColor: folderScanUploadSummary.failedCount > 0
-                    ? alpha('#f59e0b', 0.08)
-                    : alpha('#16a34a', 0.08),
-                }}
-              >
-                <Typography
-                  variant="body2"
-                  sx={{
-                    fontWeight: 700,
-                    color: folderScanUploadSummary.failedCount > 0 ? '#92400e' : '#166534',
-                  }}
-                >
-                  Uploaded {folderScanUploadSummary.uploadedCount} of {folderScanUploadSummary.attemptedCount} selected file{folderScanUploadSummary.attemptedCount === 1 ? '' : 's'}.
-                </Typography>
-                {folderScanUploadSummary.failedCount > 0 ? (
-                  <Typography variant="caption" sx={{ color: '#92400e' }}>
-                    {folderScanUploadSummary.failedCount} file{folderScanUploadSummary.failedCount === 1 ? '' : 's'} failed. You can retry or click Done.
-                  </Typography>
-                ) : (
-                  <Typography variant="caption" sx={{ color: '#166534' }}>
-                    Upload completed. You can close this screen or click Done.
-                  </Typography>
-                )}
-              </Paper>
-            ) : null}
-
-            <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.1} alignItems="stretch">
-              <Stack
-                spacing={0.5}
-                sx={{
-                  width: { xs: '100%', md: 230 },
-                  flexShrink: 0,
-                  border: `1px solid ${alpha('#0f4c81', 0.2)}`,
-                  borderRadius: 1.1,
-                  backgroundColor: '#ffffff',
-                  p: 0.8,
-                }}
-              >
-                {folderScanSidebarSections.map((section) => {
-                  if (section.key === 'all') {
-                    return (
-                      <Button
-                        key={section.key}
-                        size="small"
-                        variant={folderScanActiveSidebarKey === 'all' ? 'contained' : 'text'}
-                        onClick={() => {
-                          setFolderScanActiveSidebarKey('all')
-                          setFolderScanExpandedSidebarFolderKey(null)
-                          setFolderScanActiveNestedPath(null)
-                        }}
-                        sx={{
-                          justifyContent: 'space-between',
-                          textTransform: 'none',
-                          fontWeight: 700,
-                          px: 1,
-                        }}
-                      >
-                        <span>{section.label}</span>
-                        <span>{section.selectedCount}/{section.totalCount}</span>
-                      </Button>
-                    )
-                  }
-
-                  const folderKey = section.key as QuoteSidebarFolderKey
-                  const nestedSections = folderScanNestedSectionsByFolder.get(folderKey) ?? []
-                  const isExpanded = folderScanExpandedSidebarFolderKey === folderKey
-
-                  return (
-                    <Stack key={section.key} spacing={0.35}>
-                      <Button
-                        size="small"
-                        variant={folderScanActiveSidebarKey === folderKey ? 'contained' : 'text'}
-                        onClick={() => {
-                          setFolderScanActiveSidebarKey(folderKey)
-                          setFolderScanActiveNestedPath(null)
-                          setFolderScanExpandedSidebarFolderKey((current) => (
-                            current === folderKey ? null : folderKey
-                          ))
-                        }}
-                        sx={{
-                          justifyContent: 'space-between',
-                          textTransform: 'none',
-                          fontWeight: 700,
-                          px: 1,
-                        }}
-                      >
-                        <Stack direction="row" spacing={0.45} alignItems="center" sx={{ minWidth: 0 }}>
-                          {nestedSections.length > 0 ? (
-                            <ArrowDropDownRoundedIcon
-                              sx={{
-                                fontSize: 17,
-                                transform: isExpanded ? 'rotate(0deg)' : 'rotate(-90deg)',
-                                transition: 'transform 0.15s ease',
-                              }}
-                            />
-                          ) : null}
-                          <span>{section.label}</span>
-                        </Stack>
-                        <span>{section.selectedCount}/{section.totalCount}</span>
-                      </Button>
-
-                      {isExpanded && nestedSections.length > 0 ? (
-                        <Stack spacing={0.25} sx={{ pb: 0.2 }}>
-                          {nestedSections.map((nestedSection) => {
-                            const isActiveNestedSection = (
-                              folderScanActiveSidebarKey === folderKey
-                              && folderScanActiveNestedPath === nestedSection.path
-                            )
-
-                            return (
-                              <Button
-                                key={`${folderKey}::${nestedSection.path}`}
-                                size="small"
-                                variant={isActiveNestedSection ? 'contained' : 'text'}
-                                onClick={() => {
-                                  setFolderScanActiveSidebarKey(folderKey)
-                                  setFolderScanExpandedSidebarFolderKey(folderKey)
-                                  setFolderScanActiveNestedPath(nestedSection.path)
-                                }}
-                                sx={{
-                                  alignSelf: 'flex-end',
-                                  width: 'calc(100% - 14px)',
-                                  justifyContent: 'space-between',
-                                  textTransform: 'none',
-                                  fontWeight: 600,
-                                  pl: 2,
-                                  pr: 1,
-                                  minHeight: 27,
-                                }}
-                              >
-                                <span>{nestedSection.path}</span>
-                                <span>{nestedSection.selectedCount}/{nestedSection.totalCount}</span>
-                              </Button>
-                            )
-                          })}
-                        </Stack>
-                      ) : null}
-                    </Stack>
-                  )
-                })}
-              </Stack>
-
-              <Stack spacing={0.7} sx={{ flex: 1, minWidth: 0 }}>
-                <Stack direction="row" spacing={0.7} flexWrap="wrap" useFlexGap>
-                  <Button
-                    size="small"
-                    variant="text"
-                    disabled={folderScanVisibleEntriesCount === 0 || isUploadingFolderSelection}
-                    onClick={() => {
-                      handleSetAllFolderScanEntries(true)
-                    }}
-                  >
-                    Select shown
-                  </Button>
-                  <Button
-                    size="small"
-                    variant="text"
-                    disabled={folderScanVisibleEntriesCount === 0 || isUploadingFolderSelection}
-                    onClick={() => {
-                      handleSetAllFolderScanEntries(false)
-                    }}
-                  >
-                    Clear shown
-                  </Button>
-                  <Button
-                    size="small"
-                    variant="text"
-                    color="inherit"
-                    disabled={folderScanQueue.length === 0 || isUploadingFolderSelection}
-                    onClick={handleClearFolderScanEntries}
-                  >
-                    Clear scanned list
-                  </Button>
-                </Stack>
-
-                <Paper
-                  variant="outlined"
-                  sx={{
-                    p: 0.9,
-                    borderRadius: 1,
-                    borderColor: alpha('#0f4c81', 0.2),
-                    backgroundColor: '#ffffff',
-                    maxHeight: 360,
-                    overflowY: 'auto',
-                  }}
-                >
-                  {folderScanQueue.length === 0 ? (
-                    <Typography variant="caption" color="text.secondary">
-                      No scanned files queued.
-                    </Typography>
-                  ) : (
-                    <Stack spacing={1}>
-                      {folderScanVisibleSections.map((section) => {
-                        const sectionSelectedCount = section.entries.filter((entry) => entry.selected && !entry.duplicateBlocked).length
-
-                        return (
-                          <Stack key={section.key} spacing={0.45}>
-                            <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
-                              {section.label} ({sectionSelectedCount}/{section.entries.length})
-                            </Typography>
-
-                            {section.entries.length === 0 ? (
-                              <Typography variant="caption" color="text.secondary">
-                                No scanned files in this folder.
-                              </Typography>
-                            ) : (
-                              <Stack spacing={0.6}>
-                                {section.entries.map((entry) => (
-                                  <Stack key={entry.id} direction="row" spacing={0.6} alignItems="center" sx={{ minWidth: 0 }}>
-                                    <Checkbox
-                                      size="small"
-                                      checked={entry.selected}
-                                      disabled={entry.duplicateBlocked || isUploadingFolderSelection}
-                                      onChange={(_event, checked) => {
-                                        handleToggleFolderScanEntry(entry.id, checked)
-                                      }}
-                                    />
-                                    <Stack spacing={0.1} sx={{ flex: 1, minWidth: 0 }}>
-                                      <Typography variant="body2" sx={{ fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                        {entry.file.name}
-                                      </Typography>
-                                      <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                        {entry.relativePath}
-                                      </Typography>
-                                      {entry.duplicateReason ? (
-                                        <Typography variant="caption" color="warning.main">
-                                          {entry.duplicateReason}
-                                        </Typography>
-                                      ) : null}
-                                    </Stack>
-                                  </Stack>
-                                ))}
-                              </Stack>
-                            )}
-                          </Stack>
-                        )
-                      })}
-                    </Stack>
-                  )}
-                </Paper>
-              </Stack>
-            </Stack>
-
-            {isUploadingFolderSelection && folderScanUploadProgress.total > 0 ? (
-              <Typography variant="caption" color="text.secondary">
-                Uploading {folderScanUploadProgress.completed} / {folderScanUploadProgress.total}...
-              </Typography>
-            ) : null}
-          </Stack>
-        </DialogContent>
-        <DialogActions>
-          <Button
-            onClick={handleCloseFolderScanSelectionDialog}
-            disabled={isUploadingFolderSelection}
-          >
-            {folderScanUploadSummary ? 'Done' : 'Close'}
-          </Button>
-          <Button
-            variant="contained"
-            onClick={() => {
-              if (folderScanSelectedQueueCount > 0) {
-                void handleUploadSelectedFolderEntries()
-                return
-              }
-
-              handleCloseFolderScanSelectionDialog()
-            }}
-            disabled={
-              !canManage
-              || isUploadingFolderSelection
-              || (folderScanSelectedQueueCount === 0 && !folderScanUploadSummary)
-            }
-          >
-            {isUploadingFolderSelection
-              ? 'Uploading...'
-              : (folderScanSelectedQueueCount > 0
-                ? `Upload Selected (${folderScanSelectedQueueCount})`
-                : 'Done')}
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      <Dialog
-        open={Boolean(selectedOpportunityActiveNestedFolderGroup)}
-        onClose={() => {
-          setSelectedOpportunityNestedFolderPath(null)
-        }}
-        maxWidth="md"
-        fullWidth
-      >
-        <DialogTitle>
-          {selectedOpportunitySidebarFolder?.label || 'Folder'}
-          {selectedOpportunityActiveNestedFolderGroup ? ` / ${selectedOpportunityActiveNestedFolderGroup.path}` : ''}
-        </DialogTitle>
-        <DialogContent>
-          <Stack spacing={1} sx={{ mt: 0.6 }}>
-            {selectedOpportunityActiveNestedFolderGroup ? (
-              <Typography variant="caption" color="text.secondary">
-                {selectedOpportunityActiveNestedFolderGroup.documents.length} file{selectedOpportunityActiveNestedFolderGroup.documents.length === 1 ? '' : 's'} in this folder.
-              </Typography>
-            ) : null}
-
-            {selectedOpportunityActiveNestedFolderGroup && selectedOpportunityActiveNestedFolderGroup.documents.length > 0 ? (
-              <Box
-                sx={{
-                  display: 'grid',
-                  gap: 0.9,
-                  gridTemplateColumns: {
-                    xs: '1fr',
-                    sm: 'repeat(2, minmax(0, 1fr))',
-                    lg: 'repeat(3, minmax(0, 1fr))',
-                  },
-                }}
-              >
-                {selectedOpportunityActiveNestedFolderGroup.documents.map((document) => {
-                  const documentDisplayName = resolveDocumentDisplayName(document)
-                  const documentLeafName = resolveDocumentLeafName(document, selectedOpportunitySidebarFolderKey)
-                  const previewKind = resolveDocumentPreviewKind(document)
-                  const previewSource = resolveDocumentPreviewSource(document, previewKind)
-
-                  return (
-                    <Paper
-                      key={`nested-doc-${document.url}`}
-                      variant="outlined"
-                      sx={{
-                        p: 1,
-                        borderRadius: 1,
-                        borderColor: alpha('#0f4c81', 0.2),
-                        backgroundColor: '#ffffff',
-                      }}
-                    >
-                      <Stack spacing={0.7} sx={{ minWidth: 0 }}>
-                        <Stack direction="row" spacing={0.8} alignItems="center" justifyContent="space-between">
-                          <Chip
-                            size="small"
-                            label={resolveDocumentTypeLabel(document)}
-                            sx={{
-                              height: 20,
-                              fontSize: 11,
-                              fontWeight: 700,
-                              backgroundColor: alpha('#0f4c81', 0.1),
-                              color: '#0f4c81',
-                            }}
-                          />
-                          <IconButton
-                            size="small"
-                            color="error"
-                            disabled={!canManage || busyQuoteId === selectedOpportunityId || isUploadingFolderSelection}
-                            onClick={() => {
-                              void handleRemoveSelectedOpportunityDocument(document.url)
-                            }}
-                          >
-                            <DeleteOutlineRoundedIcon sx={{ fontSize: 16 }} />
-                          </IconButton>
-                        </Stack>
-
-                        <Box
-                          component="a"
-                          href={document.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          sx={{
-                            display: 'block',
-                            height: 122,
-                            borderRadius: 0.9,
-                            overflow: 'hidden',
-                            border: `1px solid ${alpha('#0f4c81', 0.18)}`,
-                            backgroundColor: alpha('#0f4c81', 0.04),
-                            textDecoration: 'none',
-                          }}
-                        >
-                          {previewKind === 'image' && previewSource ? (
-                            <Box
-                              component="img"
-                              src={previewSource}
-                              alt={documentLeafName || documentDisplayName}
-                              sx={{
-                                width: '100%',
-                                height: '100%',
-                                objectFit: 'cover',
-                                display: 'block',
-                              }}
-                            />
-                          ) : null}
-
-                          {previewKind !== 'image' && previewSource ? (
-                            <Box
-                              component="iframe"
-                              src={previewSource}
-                              title={`preview-${documentDisplayName}`}
-                              sx={{
-                                width: '100%',
-                                height: '100%',
-                                border: 0,
-                                display: 'block',
-                                pointerEvents: 'none',
-                                backgroundColor: '#ffffff',
-                              }}
-                            />
-                          ) : null}
-
-                          {!previewSource ? (
-                            <Stack
-                              alignItems="center"
-                              justifyContent="center"
-                              sx={{ height: '100%', px: 1 }}
-                            >
-                              <Typography variant="caption" sx={{ fontWeight: 700, color: '#0f4c81' }}>
-                                Preview unavailable
-                              </Typography>
-                            </Stack>
-                          ) : null}
-                        </Box>
-
-                        <Link
-                          href={document.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          underline="hover"
-                          sx={{
-                            minWidth: 0,
-                            display: 'block',
-                            fontWeight: 600,
-                            lineHeight: 1.3,
-                            wordBreak: 'break-word',
-                          }}
-                        >
-                          {documentLeafName}
-                        </Link>
-
-                        {documentDisplayName !== documentLeafName ? (
-                          <Typography variant="caption" color="text.secondary" sx={{ wordBreak: 'break-word' }}>
-                            {documentDisplayName}
-                          </Typography>
-                        ) : null}
-
-                        <Button
-                          size="small"
-                          variant="outlined"
-                          component="a"
-                          href={document.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          sx={{
-                            alignSelf: 'flex-start',
-                            textTransform: 'none',
-                            fontWeight: 700,
-                          }}
-                        >
-                          Open File
-                        </Button>
-                      </Stack>
-                    </Paper>
-                  )
-                })}
-              </Box>
-            ) : (
-              <Typography variant="caption" color="text.secondary">
-                No files found in this folder.
-              </Typography>
-            )}
-          </Stack>
-        </DialogContent>
-        <DialogActions>
-          <Button
-            onClick={() => {
-              setSelectedOpportunityNestedFolderPath(null)
-            }}
-          >
-            Close
-          </Button>
-        </DialogActions>
-      </Dialog>
 
       <Dialog
         open={isExcelAccountDialogOpen}
@@ -9122,7 +6771,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                 <IconButton
                   size="small"
                   aria-label="More opportunity actions"
-                  disabled={!canManage || isSyncingExcelQuote || isUploadingFolderSelection}
+                  disabled={!canManage || isSyncingExcelQuote}
                   onClick={handleOpenUploadQuoteActionMenu}
                   sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 1.25 }}
                 >
@@ -9139,16 +6788,10 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
               transformOrigin={{ vertical: 'top', horizontal: 'right' }}
             >
               <MenuItem
-                disabled={!canManage || isSyncingExcelQuote || isUploadingFolderSelection}
+                disabled={!canManage || isSyncingExcelQuote}
                 onClick={handleOpenUploadQuoteExcelPicker}
               >
                 Sync Excel Sheet
-              </MenuItem>
-              <MenuItem
-                disabled={!canManage || isSyncingExcelQuote || isUploadingFolderSelection}
-                onClick={handleOpenUploadQuoteFolderScanner}
-              >
-                Scan Folder
               </MenuItem>
               <MenuItem
                 onClick={() => {
@@ -9165,15 +6808,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
               type="file"
               accept=".xls,.xlsx,.xlsm,.ods,.csv"
               onChange={handleExcelQuoteSyncUpload}
-            />
-            <input
-              hidden
-              ref={folderScanInputRef}
-              type="file"
-              multiple
-              onChange={(event) => {
-                void handleFolderScanUpload(event)
-              }}
             />
           </Stack>
         </Stack>
@@ -9193,7 +6827,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         onDeleteQuote={handleDeleteQuote}
         onPrintQuote={(quote) => void handlePrintQuote(quote)}
         onOpenDetails={handleOpenOpportunityDetails}
-        onOpenChat={handleOpenOpportunityChat}
       />
 
       {quotePrintPreview ? (
@@ -9575,33 +7208,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
 
           {addOpportunityStage === 3 ? (
             <Stack spacing={0.75}>
-              <Paper variant="outlined" sx={{ px: 1.25, py: 0.65, borderRadius: 1 }}>
-                <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'center' }} justifyContent="space-between">
-                  <Typography variant="subtitle2" fontWeight={800}>Customer 3D</Typography>
-                  <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-                  <Button component="label" size="small" variant="outlined" startIcon={<FileUploadRoundedIcon />} disabled={isUploadingQuoteDocument}>
-                    {isUploadingQuoteDocument ? 'Preparing...' : (formState.sketchupDocumentName ? 'Replace 3D File' : 'Select SKP or GLB')}
-                    <input hidden type="file" accept=".glb,.skp,model/gltf-binary,application/octet-stream" onChange={handleSketchupDocumentUpload} />
-                  </Button>
-                  {formState.sketchupDocumentName ? (
-                    <Button
-                      color="error"
-                      onClick={() => {
-                        setPendingSketchupFile(null)
-                        setFormState((current) => ({ ...current, sketchupDocumentUrl: '', sketchupDocumentName: '' }))
-                      }}
-                    >
-                      Remove
-                    </Button>
-                  ) : null}
-                  </Stack>
-                </Stack>
-                {formState.sketchupDocumentName ? (
-                  <Alert severity="success" sx={{ mt: 0.75, py: 0 }}>
-                    {formState.sketchupDocumentName} is ready and will publish automatically with this opportunity.
-                  </Alert>
-                ) : null}
-              </Paper>
               {addOpportunitySubmitAttempted && addOpportunityTotalMissing > 0 ? (
                 <Alert severity="error">
                   {addOpportunityTotalMissing} required {addOpportunityTotalMissing === 1 ? 'field is' : 'fields are'} missing. Open the red stage tabs to finish them.
@@ -9634,7 +7240,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         </DialogContent>
 
         <DialogActions sx={{ borderTop: 1, borderColor: 'divider', px: 2.5 }}>
-          <Button onClick={handleCloseDialog} disabled={isSavingOpportunity || isUploadingQuoteDocument}>Cancel</Button>
+          <Button onClick={handleCloseDialog} disabled={isSavingOpportunity}>Cancel</Button>
           <Box sx={{ flex: 1 }} />
           {addOpportunityStage > 0 ? (
             <Button onClick={() => setAddOpportunityStage((addOpportunityStage - 1) as AddOpportunityStage)}>Back</Button>
@@ -9665,7 +7271,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
           ) : (
             <Button
               variant="contained"
-              disabled={isSavingOpportunity || isUploadingQuoteDocument || !canManage}
+              disabled={isSavingOpportunity || !canManage}
               onClick={() => void handleCreateOpportunity()}
             >
               {isSavingOpportunity ? 'Submitting...' : 'Submit'}
@@ -9833,7 +7439,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         <DialogContent>
           <Stack spacing={1.5} sx={{ pt: 0.8 }}>
             <Typography variant="body2" color="text.secondary">
-              This contact will be saved under {dealersBySourceId.get(formState.dealerSourceId)?.name || 'the selected dealer'} and available on future quotes.
+              This contact will be saved under {dealersBySourceId.get(activeQuoteDealerSourceId)?.name || 'the selected dealer'} and available on future quotes.
             </Typography>
             {newContactError ? <Alert severity="error">{newContactError}</Alert> : null}
             <TextField
@@ -9982,8 +7588,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                 size="medium"
                 disabled={
                   isSavingOpportunityDetails
-                  || isUploadingFolderSelection
-                  || isSendingSelectedOpportunityChat
                 }
                 onClick={(event) => {
                   setDetailsActionMenuAnchorEl(event.currentTarget)
@@ -10007,8 +7611,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
             disabled={
               !selectedOpportunity
               || isSavingOpportunityDetails
-              || isUploadingFolderSelection
-              || isSendingSelectedOpportunityChat
             }
             onClick={() => {
               setDetailsActionMenuAnchorEl(null)
@@ -10021,8 +7623,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
             disabled={
               !canUseProposalDetailsActions
               || isSavingOpportunityDetails
-              || isUploadingFolderSelection
-              || isSendingSelectedOpportunityChat
             }
             onClick={() => {
               setDetailsActionMenuAnchorEl(null)
@@ -10036,8 +7636,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
               !canUseProposalDetailsActions
               || isSavingOpportunityDetails
               || isSubmittingConvertOrder
-              || isUploadingFolderSelection
-              || isSendingSelectedOpportunityChat
             }
             onClick={() => {
               setDetailsActionMenuAnchorEl(null)
@@ -10052,8 +7650,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
             disabled={
               !canUseProposalDetailsActions
               || isSavingOpportunityDetails
-              || isUploadingFolderSelection
-              || isSendingSelectedOpportunityChat
             }
             onClick={() => {
               setDetailsActionMenuAnchorEl(null)
@@ -10073,133 +7669,24 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         >
           {selectedOpportunity && opportunityDetailsFormState ? (
             <Stack spacing={2} sx={{ mt: 0.2 }}>
-              <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.2} alignItems="stretch">
-                <Stack
-                  spacing={0.6}
-                  sx={{
-                    width: { xs: '100%', md: 232 },
-                    flexShrink: 0,
-                    border: `1px solid ${alpha('#0f4c81', 0.2)}`,
-                    borderRadius: 1.2,
-                    backgroundColor: '#ffffff',
-                    p: 0.8,
-                  }}
-                >
-                  <Button
-                    size="small"
-                    variant={selectedOpportunityDetailsTab === 'details' ? 'contained' : 'text'}
-                    onClick={() => {
-                      setSelectedOpportunityDetailsTab('details')
-                    }}
-                    sx={{ justifyContent: 'flex-start', textTransform: 'none', fontWeight: 700 }}
-                  >
-                    Details
-                  </Button>
-
-                  <Stack
-                    spacing={0.2}
-                    sx={{
-                      py: 0.4,
-                      borderTop: `1px solid ${alpha('#0f4c81', 0.16)}`,
-                      borderBottom: `1px solid ${alpha('#0f4c81', 0.16)}`,
-                    }}
-                  >
-                    {quoteSidebarFolders.map((folder) => {
-                      const folderDocumentCount = (selectedOpportunityDocumentsByFolder.get(folder.key) ?? []).length
-                      const folderNestedGroups = selectedOpportunityNestedGroupsByFolder.get(folder.key) ?? []
-                      const isFolderSelected = selectedOpportunityDetailsTab === folder.key
-
-                      return (
-                        <Stack key={folder.key} spacing={0.25}>
-                          <Button
-                            size="small"
-                            variant={isFolderSelected ? 'contained' : 'text'}
-                            onClick={() => {
-                              setSelectedOpportunityDetailsTab(folder.key)
-                              setSelectedOpportunityNestedFolderPath(null)
-                            }}
-                            sx={{
-                              justifyContent: 'space-between',
-                              textTransform: 'none',
-                              fontWeight: 600,
-                              px: 1,
-                            }}
-                          >
-                            <Stack direction="row" spacing={0.45} alignItems="center" sx={{ minWidth: 0 }}>
-                              {folderNestedGroups.length > 0 ? (
-                                <ArrowDropDownRoundedIcon
-                                  sx={{
-                                    fontSize: 17,
-                                    transform: isFolderSelected ? 'rotate(0deg)' : 'rotate(-90deg)',
-                                    transition: 'transform 0.15s ease',
-                                  }}
-                                />
-                              ) : null}
-                              <span>{folder.label}</span>
-                            </Stack>
-                            <span>{folderDocumentCount}</span>
-                          </Button>
-
-                          {isFolderSelected && folderNestedGroups.length > 0 ? (
-                            <Stack spacing={0.2} sx={{ pb: 0.15 }}>
-                              {folderNestedGroups.map((group) => {
-                                const isActiveNestedFolder = selectedOpportunityNestedFolderPath === group.path
-
-                                return (
-                                  <Button
-                                    key={`${folder.key}::${group.path}`}
-                                    size="small"
-                                    variant={isActiveNestedFolder ? 'contained' : 'text'}
-                                    onClick={() => {
-                                      setSelectedOpportunityDetailsTab(folder.key)
-                                      setSelectedOpportunityNestedFolderPath(group.path)
-                                    }}
-                                    sx={{
-                                      alignSelf: 'flex-end',
-                                      width: 'calc(100% - 14px)',
-                                      justifyContent: 'space-between',
-                                      textTransform: 'none',
-                                      fontWeight: 600,
-                                      pl: 2,
-                                      pr: 1,
-                                      minHeight: 27,
-                                    }}
-                                  >
-                                    <span>{group.path}</span>
-                                    <span>{group.documents.length}</span>
-                                  </Button>
-                                )
-                              })}
-                            </Stack>
-                          ) : null}
-                        </Stack>
-                      )
-                    })}
-                  </Stack>
-
-                  <Button
-                    size="small"
-                    variant={selectedOpportunityDetailsTab === 'chat' ? 'contained' : 'text'}
-                    onClick={() => {
-                      setSelectedOpportunityDetailsTab('chat')
-                    }}
-                    sx={{ justifyContent: 'flex-start', textTransform: 'none', fontWeight: 700 }}
-                  >
-                    {selectedOpportunityChatCount > 0 ? `Chat (${selectedOpportunityChatCount})` : 'Chat'}
-                  </Button>
-                  <Button
-                    size="small"
-                    variant={selectedOpportunityDetailsTab === 'activity' ? 'contained' : 'text'}
-                    onClick={() => setSelectedOpportunityDetailsTab('activity')}
-                    sx={{ justifyContent: 'flex-start', textTransform: 'none', fontWeight: 700 }}
-                  >
-                    Activity ({Array.isArray(selectedOpportunity.activityLog) ? selectedOpportunity.activityLog.length : 0})
-                  </Button>
-                </Stack>
-
-                <Stack spacing={1.2} sx={{ flex: 1, minWidth: 0 }}>
-
-              {selectedOpportunityDetailsTab === 'details' ? (
+              <Tabs
+                value={opportunityDetailsStage}
+                onChange={(_event, value: AddOpportunityStage) => setOpportunityDetailsStage(value)}
+                variant="scrollable"
+                scrollButtons="auto"
+                sx={{ bgcolor: '#fff', borderRadius: 2, px: 1, border: 1, borderColor: 'divider' }}
+              >
+                {ADD_OPPORTUNITY_STAGES.map((stageLabel, index) => (
+                  <Tab
+                    key={stageLabel}
+                    value={index}
+                    label={`${index + 1}. ${stageLabel}`}
+                    sx={{ fontWeight: 800 }}
+                  />
+                ))}
+              </Tabs>
+              <Stack spacing={1.2} sx={{ flex: 1, minWidth: 0 }}>
+              {opportunityDetailsStage === 0 ? (
                 <>
               {selectedOpportunity.convertedOrderId ? (
                 <Paper
@@ -10257,6 +7744,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                   options={excelSyncDealerOptions}
                   value={dealersBySourceId.get(opportunityDetailsFormState.dealerSourceId) ?? null}
                   onChange={(_event, value) => {
+                    setSelectedAddContactSourceId('')
                     setOpportunityDetailsFormState((current) => {
                       if (!current || !value) {
                         return current
@@ -10266,6 +7754,9 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                         ...current,
                         dealerSourceId: value.sourceId,
                         companyName: resolveDealerQuoteCompanyName(value) || current.companyName,
+                        contactName: '',
+                        contactEmail: '',
+                        contactPhone: '',
                         salesRep: resolveMatchingOption(value.salesRep, excelSyncSalesRepOptions) || 'House',
                         paymentTerms: current.origin === 'excel'
                           ? current.paymentTerms
@@ -10365,21 +7856,37 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
               </Stack>
 
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.1}>
-                <TextField
-                  label="Contact Name"
-                  value={opportunityDetailsFormState.contactName}
-                  onChange={(event) => {
-                    setOpportunityDetailsFormState((current) => {
-                      if (!current) {
-                        return current
-                      }
-
-                      return {
-                        ...current,
-                        contactName: event.target.value,
-                      }
-                    })
+                <Autocomplete
+                  options={addOpportunityContactOptions}
+                  value={selectedAddOpportunityContact}
+                  inputValue={opportunityDetailsFormState.contactName}
+                  onChange={(_event, contact) => {
+                    setSelectedAddContactSourceId(contact?.sourceId || '')
+                    setOpportunityDetailsFormState((current) => current ? ({
+                      ...current,
+                      contactName: contact ? resolveContactSelectionLabel(contact) : '',
+                      contactEmail: contact?.primaryEmail || '',
+                      contactPhone: contact?.phone || '',
+                    }) : current)
                   }}
+                  onInputChange={(_event, inputValue, reason) => {
+                    if (reason !== 'input') return
+                    setSelectedAddContactSourceId('')
+                    setOpportunityDetailsFormState((current) => current ? ({ ...current, contactName: inputValue }) : current)
+                  }}
+                  isOptionEqualToValue={(option, value) => option.sourceId === value.sourceId}
+                  getOptionLabel={(contact) => resolveContactSelectionLabel(contact)}
+                  PaperComponent={(paperProps) => (
+                    <Paper {...paperProps}>
+                      {paperProps.children}
+                      <Box sx={{ p: 0.8, borderTop: 1, borderColor: 'divider' }}>
+                        <Button fullWidth size="small" onMouseDown={(event) => event.preventDefault()} onClick={handleOpenNewContactDialog}>
+                          Add new contact
+                        </Button>
+                      </Box>
+                    </Paper>
+                  )}
+                  renderInput={(params) => <TextField {...params} required label="Contact Name" />}
                   disabled={!canManage}
                   sx={{ flex: 1 }}
                 />
@@ -10465,49 +7972,50 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                   sx={{ flex: 1 }}
                 />
 
-                <TextField
-                  label="Payment Terms"
-                  value={opportunityDetailsFormState.paymentTerms}
-                  onChange={(event) => {
-                    setOpportunityDetailsFormState((current) => {
-                      if (!current) {
-                        return current
-                      }
-
-                      return {
-                        ...current,
-                        paymentTerms: event.target.value,
-                      }
-                    })
-                  }}
-                  disabled={!canManage}
-                  sx={{ flex: 1 }}
-                />
+                <Paper variant="outlined" sx={{ p: 1.2, flex: 1.3, borderRadius: 1.5 }}>
+                  <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
+                    <Box>
+                      <Stack direction="row" spacing={0.5} alignItems="center">
+                        <Typography variant="caption" color="text.secondary" fontWeight={800}>PAYMENT TERMS</Typography>
+                        <Tooltip title="This is the payment terms for this dealer. You can change it.">
+                          <InfoOutlinedIcon color="action" sx={{ fontSize: 17 }} />
+                        </Tooltip>
+                      </Stack>
+                      <Typography variant="body1" fontWeight={700}>{opportunityDetailsFormState.paymentTerms || 'Not set'}</Typography>
+                      <Typography variant="caption" color="text.secondary">These are the payment terms for this dealer.</Typography>
+                    </Box>
+                    <Button
+                      size="small"
+                      disabled={!canManage}
+                      onClick={() => {
+                        setPaymentTermsDraft(opportunityDetailsFormState.paymentTerms)
+                        setPaymentTermsApplyMode('quote')
+                        setIsPaymentTermsDialogOpen(true)
+                      }}
+                    >
+                      Change
+                    </Button>
+                  </Stack>
+                </Paper>
               </Stack>
+
+                </>
+              ) : null}
+
+              {opportunityDetailsStage === 1 ? (
+                <>
 
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.1}>
                 <TextField
-                  label={opportunityDetailsFormState.origin === 'excel' ? 'Sub Net Total' : 'Subtotal (calculated)'}
-                  value={opportunityDetailsFormState.origin === 'excel' ? opportunityDetailsFormState.subtotal : (detailsPricingPreview?.subtotal.toFixed(2) || '0.00')}
-                  onChange={(event) => {
-                    setOpportunityDetailsFormState((current) => {
-                      if (!current) {
-                        return current
-                      }
-
-                      return {
-                        ...current,
-                        subtotal: event.target.value,
-                      }
-                    })
-                  }}
+                  label="Subtotal (calculated)"
+                  value={detailsPricingPreview?.subtotal.toFixed(2) || '0.00'}
                   disabled={!canManage}
                   type="text"
                   inputProps={{ inputMode: 'decimal' }}
                   placeholder="0.00"
                   sx={{ flex: 1 }}
                   InputProps={{
-                    readOnly: opportunityDetailsFormState.origin !== 'excel',
+                    readOnly: true,
                     startAdornment: <InputAdornment position="start">$</InputAdornment>,
                   }}
                 />
@@ -10574,25 +8082,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                 </ToggleButtonGroup>
               ) : null}
 
-              <TextField
-                label="Freight Description"
-                value={opportunityDetailsFormState.freightDescription}
-                onChange={(event) => {
-                  setOpportunityDetailsFormState((current) => {
-                    if (!current) {
-                      return current
-                    }
-
-                    return {
-                      ...current,
-                      freightDescription: event.target.value,
-                    }
-                  })
-                }}
-                disabled={!canManage}
-                placeholder="Dock delivery, destination, or freight notes"
-              />
-
               {detailsPricingPreview ? (
                 <Box
                   sx={{
@@ -10622,17 +8111,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                 </Box>
               ) : null}
 
-              <Quote3dModelPanel
-                quote={selectedRevisionQuote || selectedOpportunity}
-                revisionNumber={selectedRevisionNumber}
-                canManage={canManage}
-                onChanged={async () => {
-                  const response = await fetchCrmQuoteDetails(selectedOpportunity.id)
-                  setSelectedOpportunity(response.quote)
-                  await quotesQuery.refetch()
-                }}
-              />
-
               <LineItemsEditor
                 lineItems={opportunityDetailsFormState.lineItems}
                 pdfPreviewQuote={selectedOpportunityPrintQuote}
@@ -10649,434 +8127,71 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                 isUploadingImage={isUploadingLineImage}
               />
 
-              <QuoteServiceItemsEditor
+                </>
+              ) : null}
+
+              {opportunityDetailsStage === 2 ? (
+                <>
+              <TextField
+                label="Freight Description"
+                value={opportunityDetailsFormState.freightDescription}
+                onChange={(event) => {
+                  setOpportunityDetailsFormState((current) => current ? ({
+                    ...current,
+                    freightDescription: event.target.value,
+                  }) : current)
+                }}
+                disabled={!canManage}
+                placeholder="Dock delivery, destination, or freight notes"
+              />
+              <QuoteServiceCardSelector
                 heading="Additional Services"
                 description="Standard rates are pre-filled. Adjust quantity or unit price only when the project requires it."
                 items={opportunityDetailsFormState.additionalServices}
                 canEdit={canManage}
-                isUploadingImage={isUploadingLineImage}
                 onChange={(additionalServices) => setOpportunityDetailsFormState((current) => current ? ({ ...current, additionalServices }) : current)}
-                onAddImages={(index, files) => handleAddDetailsServiceImages('additionalServices', index, files)}
+                addButtonLabel="Add another service"
+                itemLabel="service"
               />
 
-              <QuoteServiceItemsEditor
+              <QuoteServiceCardSelector
                 heading="Freight, Delivery & Installation"
-                description="Add delivery or installation lines with Qty, Unit Price, and Ext values."
+                description="Select one of the delivery options to review its details, quantity, and unit price."
                 items={opportunityDetailsFormState.shippingServices}
                 canEdit={canManage}
-                isUploadingImage={isUploadingLineImage}
                 onChange={(shippingServices) => setOpportunityDetailsFormState((current) => current ? ({ ...current, shippingServices }) : current)}
-                onAddImages={(index, files) => handleAddDetailsServiceImages('shippingServices', index, files)}
+                addButtonLabel="Add another delivery option"
+                itemLabel="delivery option"
               />
 
+              <TextField
+                label="Notes"
+                value={opportunityDetailsFormState.notes}
+                onChange={(event) => setOpportunityDetailsFormState((current) => current ? ({ ...current, notes: event.target.value }) : current)}
+                disabled={!canManage}
+                multiline
+                minRows={3}
+              />
                 </>
               ) : null}
 
-              {selectedOpportunitySidebarFolder ? (
-                <Stack spacing={0.9}>
-                  <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
-                    {selectedOpportunitySidebarFolder.label}
-                  </Typography>
-
-                  <Typography variant="caption" color="text.secondary">
-                    Upload quote packages from the Sales Opportunities Pipeline header using Sync Excel Sheet / Scan Folder.
-                  </Typography>
-
-                  <Stack spacing={0.6}>
-                    {selectedOpportunityFolderDocuments.length === 0 ? (
-                      <Typography variant="caption" color="text.secondary">
-                        No files uploaded in this folder yet.
-                      </Typography>
-                    ) : (
-                      <Stack spacing={0.9}>
-                        {selectedOpportunityFolderRootDocuments.length === 0 ? (
-                          <Typography variant="caption" color="text.secondary">
-                            Files in this tab are organized in nested folders. Use the left sidebar subfolders to open them.
-                          </Typography>
-                        ) : (
-                          <Box
-                            sx={{
-                              display: 'grid',
-                              gap: 0.9,
-                              gridTemplateColumns: {
-                                xs: '1fr',
-                                sm: 'repeat(2, minmax(0, 1fr))',
-                                lg: 'repeat(3, minmax(0, 1fr))',
-                              },
-                            }}
-                          >
-                            {selectedOpportunityFolderRootDocuments.map((document) => {
-                              const documentDisplayName = resolveDocumentDisplayName(document)
-                              const documentLeafName = resolveDocumentLeafName(document, selectedOpportunitySidebarFolderKey)
-                              const previewKind = resolveDocumentPreviewKind(document)
-                              const previewSource = resolveDocumentPreviewSource(document, previewKind)
-
-                              return (
-                                <Paper
-                                  key={document.url}
-                                  variant="outlined"
-                                  sx={{
-                                    p: 1,
-                                    borderRadius: 1,
-                                    borderColor: alpha('#0f4c81', 0.2),
-                                    backgroundColor: '#ffffff',
-                                  }}
-                                >
-                                  <Stack spacing={0.7} sx={{ minWidth: 0 }}>
-                                    <Stack direction="row" spacing={0.8} alignItems="center" justifyContent="space-between">
-                                      <Chip
-                                        size="small"
-                                        label={resolveDocumentTypeLabel(document)}
-                                        sx={{
-                                          height: 20,
-                                          fontSize: 11,
-                                          fontWeight: 700,
-                                          backgroundColor: alpha('#0f4c81', 0.1),
-                                          color: '#0f4c81',
-                                        }}
-                                      />
-                                      <IconButton
-                                        size="small"
-                                        color="error"
-                                        disabled={!canManage || busyQuoteId === selectedOpportunityId || isUploadingFolderSelection}
-                                        onClick={() => {
-                                          void handleRemoveSelectedOpportunityDocument(document.url)
-                                        }}
-                                      >
-                                        <DeleteOutlineRoundedIcon sx={{ fontSize: 16 }} />
-                                      </IconButton>
-                                    </Stack>
-
-                                    <Box
-                                      component="a"
-                                      href={document.url}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      sx={{
-                                        display: 'block',
-                                        height: 122,
-                                        borderRadius: 0.9,
-                                        overflow: 'hidden',
-                                        border: `1px solid ${alpha('#0f4c81', 0.18)}`,
-                                        backgroundColor: alpha('#0f4c81', 0.04),
-                                        textDecoration: 'none',
-                                      }}
-                                    >
-                                      {previewKind === 'image' && previewSource ? (
-                                        <Box
-                                          component="img"
-                                          src={previewSource}
-                                          alt={documentLeafName || documentDisplayName}
-                                          sx={{
-                                            width: '100%',
-                                            height: '100%',
-                                            objectFit: 'cover',
-                                            display: 'block',
-                                          }}
-                                        />
-                                      ) : null}
-
-                                      {previewKind !== 'image' && previewSource ? (
-                                        <Box
-                                          component="iframe"
-                                          src={previewSource}
-                                          title={`preview-${documentDisplayName}`}
-                                          sx={{
-                                            width: '100%',
-                                            height: '100%',
-                                            border: 0,
-                                            display: 'block',
-                                            pointerEvents: 'none',
-                                            backgroundColor: '#ffffff',
-                                          }}
-                                        />
-                                      ) : null}
-
-                                      {!previewSource ? (
-                                        <Stack
-                                          alignItems="center"
-                                          justifyContent="center"
-                                          sx={{ height: '100%', px: 1 }}
-                                        >
-                                          <Typography variant="caption" sx={{ fontWeight: 700, color: '#0f4c81' }}>
-                                            Preview unavailable
-                                          </Typography>
-                                        </Stack>
-                                      ) : null}
-                                    </Box>
-
-                                    <Link
-                                      href={document.url}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      underline="hover"
-                                      sx={{
-                                        minWidth: 0,
-                                        display: 'block',
-                                        fontWeight: 600,
-                                        lineHeight: 1.3,
-                                        wordBreak: 'break-word',
-                                      }}
-                                    >
-                                      {documentLeafName}
-                                    </Link>
-
-                                    {documentDisplayName !== documentLeafName ? (
-                                      <Typography variant="caption" color="text.secondary" sx={{ wordBreak: 'break-word' }}>
-                                        {documentDisplayName}
-                                      </Typography>
-                                    ) : null}
-
-                                    <Button
-                                      size="small"
-                                      variant="outlined"
-                                      component="a"
-                                      href={document.url}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      sx={{
-                                        alignSelf: 'flex-start',
-                                        textTransform: 'none',
-                                        fontWeight: 700,
-                                      }}
-                                    >
-                                      Open File
-                                    </Button>
-                                  </Stack>
-                                </Paper>
-                              )
-                            })}
-                          </Box>
-                        )}
-                      </Stack>
-                    )}
-                  </Stack>
-                </Stack>
+              {opportunityDetailsStage === 3 && selectedOpportunityPrintQuote ? (
+                <Suspense fallback={<Stack alignItems="center" py={8}><CircularProgress /></Stack>}>
+                  <QuotePdfPictureLayoutDialog
+                    open
+                    embedded
+                    quote={selectedOpportunityPrintQuote}
+                    settings={quotePrintSettingsQuery.data?.settings || DEFAULT_QUOTE_PRINT_SETTINGS}
+                    onCancel={() => {}}
+                    onSave={(layouts) => {
+                      layouts.forEach(({ lineIndex, imageId, layout }) => {
+                        handleUpdateDetailsLineImageLayout(lineIndex, imageId, layout)
+                      })
+                    }}
+                    hideEmbeddedActions
+                  />
+                </Suspense>
               ) : null}
-
-              {selectedOpportunityDetailsTab === 'chat' ? (
-
-              <Stack spacing={0.8}>
-                <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
-                  Quote Chat
-                </Typography>
-
-                <Paper
-                  variant="outlined"
-                  sx={{
-                    p: 1,
-                    borderRadius: 1,
-                    borderColor: alpha('#0f4c81', 0.22),
-                    backgroundColor: '#ffffff',
-                    maxHeight: 260,
-                    overflowY: 'auto',
-                  }}
-                >
-                  {selectedOpportunityChatsQuery.isLoading ? (
-                    <Typography variant="caption" color="text.secondary">
-                      Loading chat...
-                    </Typography>
-                  ) : selectedOpportunityChatMessages.length === 0 ? (
-                    <Typography variant="caption" color="text.secondary">
-                      No messages yet.
-                    </Typography>
-                  ) : (
-                    <Stack spacing={0.7}>
-                      {selectedOpportunityChatMessages.map((message) => {
-                        const canDeleteMessage = canManageSelectedOpportunityChatMessage(message)
-                        const isDeletingMessage = deletingSelectedOpportunityChatMessageId === message.id
-
-                        return (
-                          <Box
-                            key={message.id}
-                            sx={{
-                              px: 0.8,
-                              py: 0.65,
-                              borderRadius: 0.9,
-                              border: `1px solid ${alpha('#0f4c81', 0.16)}`,
-                              backgroundColor: alpha('#0f4c81', 0.03),
-                            }}
-                          >
-                            <Stack direction="row" spacing={0.8} alignItems="center" justifyContent="space-between">
-                              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.2 }}>
-                                {resolveQuoteChatAuthorLabel(message)} • {formatQuoteChatTimestamp(message.createdAt)}
-                              </Typography>
-
-                              {canDeleteMessage ? (
-                                <Button
-                                  size="small"
-                                  color="error"
-                                  variant="text"
-                                  startIcon={<DeleteOutlineRoundedIcon fontSize="small" />}
-                                  disabled={isDeletingMessage}
-                                  onClick={() => {
-                                    void handleDeleteSelectedOpportunityChatMessage(message.id)
-                                  }}
-                                >
-                                  {isDeletingMessage ? 'Deleting...' : 'Delete'}
-                                </Button>
-                              ) : null}
-                            </Stack>
-
-                            <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
-                              {String(message.message || '').trim()}
-                            </Typography>
-                          </Box>
-                        )
-                      })}
-                    </Stack>
-                  )}
-                </Paper>
-
-                {selectedOpportunityChatErrorMessage ? (
-                  <Typography variant="caption" color="error">
-                    {selectedOpportunityChatErrorMessage}
-                  </Typography>
-                ) : null}
-
-                <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.8} alignItems={{ xs: 'stretch', sm: 'flex-end' }}>
-                  <Box sx={{ flex: 1 }}>
-                    <MentionsInput
-                      value={selectedOpportunityChatDraftMarkup}
-                      onChange={(_event, nextMarkup, nextPlainText) => {
-                        setSelectedOpportunityChatDraftMarkup(nextMarkup)
-                        setSelectedOpportunityChatDraft(nextPlainText)
-                      }}
-                      disabled={!canManage || isSendingSelectedOpportunityChat}
-                      placeholder="Add a note. Use @ to tag someone or @all to notify everyone. /refresh also works."
-                      style={quoteChatMentionsInputStyle}
-                      allowSuggestionsAboveCursor
-                    >
-                      <Mention
-                        trigger="@"
-                        markup="@[__display__](__id__)"
-                        displayTransform={(_id, display) => `@${display}`}
-                        data={quoteChatMentionOptions}
-                        appendSpaceOnAdd
-                      />
-                    </MentionsInput>
-                  </Box>
-
-                  <Stack spacing={0.4} sx={{ minWidth: { xs: 0, sm: 240 } }}>
-                    {selectedOpportunityChatDraft.trim().length > 0 ? (
-                      <FormControlLabel
-                        sx={{ m: 0, alignItems: 'flex-start' }}
-                        control={(
-                          <Checkbox
-                            size="small"
-                            checked={selectedOpportunityRefreshOnSend}
-                            onChange={(event) => {
-                              setSelectedOpportunityRefreshOnSend(event.target.checked)
-                            }}
-                            disabled={!canManage || isSendingSelectedOpportunityChat}
-                          />
-                        )}
-                        label={(
-                          <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.2 }}>
-                            Refresh quote age date on send
-                          </Typography>
-                        )}
-                      />
-                    ) : null}
-
-                    <Button
-                      variant="contained"
-                      onClick={() => {
-                        void handleSendSelectedOpportunityChat()
-                      }}
-                      disabled={
-                        !canManage
-                        || isSendingSelectedOpportunityChat
-                        || selectedOpportunityChatDraft.trim().length === 0
-                      }
-                    >
-                      {isSendingSelectedOpportunityChat ? 'Sending...' : 'Send'}
-                    </Button>
-                  </Stack>
-                </Stack>
-              </Stack>
-
-              ) : null}
-
-              {selectedOpportunityDetailsTab === 'activity' ? (
-                <Stack spacing={1.2}>
-                  <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" gap={0.7}>
-                    <Box>
-                      <Typography variant="subtitle1" fontWeight={800}>Quote Activity</Typography>
-                      <Typography variant="body2" color="text.secondary">Tracked link openings and staff follow-ups, newest first.</Typography>
-                    </Box>
-                    <Stack direction="row" spacing={0.7} flexWrap="wrap" useFlexGap>
-                      <Chip size="small" label={`${Math.max(0, Number(selectedOpportunity.linkOpenCount || 0))} link opens`} />
-                      {selectedOpportunity.lastLinkOpenedAt ? <Chip size="small" label={`Last opened ${formatQuoteChatTimestamp(selectedOpportunity.lastLinkOpenedAt)}`} /> : null}
-                      {selectedOpportunity.lastFollowedUpAt ? <Chip size="small" color="primary" label={`Last follow-up ${formatQuoteChatTimestamp(selectedOpportunity.lastFollowedUpAt)}`} /> : null}
-                    </Stack>
-                  </Stack>
-                  <Paper variant="outlined" sx={{ overflowX: 'auto', borderRadius: 2 }}>
-                    <Table size="small" sx={{ minWidth: 1180 }}>
-                      <TableHead>
-                        <TableRow>
-                          <TableCell sx={{ fontWeight: 800 }}>Date and time</TableCell>
-                          <TableCell sx={{ fontWeight: 800 }}>Event</TableCell>
-                          <TableCell sx={{ fontWeight: 800 }}>IP address</TableCell>
-                          <TableCell sx={{ fontWeight: 800 }}>Approximate location</TableCell>
-                          <TableCell sx={{ fontWeight: 800 }}>Device</TableCell>
-                          <TableCell sx={{ fontWeight: 800 }}>Browser / OS</TableCell>
-                          <TableCell sx={{ fontWeight: 800 }}>Language</TableCell>
-                          <TableCell sx={{ fontWeight: 800 }}>Referring page</TableCell>
-                        </TableRow>
-                      </TableHead>
-                      <TableBody>
-                        {Array.isArray(selectedOpportunity.activityLog) && selectedOpportunity.activityLog.length > 0 ? (
-                          [...selectedOpportunity.activityLog]
-                            .sort((left, right) => String(right.occurredAt || '').localeCompare(String(left.occurredAt || '')))
-                            .slice(0, 500)
-                            .map((activity) => {
-                              const location = [activity.location?.city, activity.location?.region, activity.location?.country].filter(Boolean).join(', ')
-                              return (
-                                <TableRow key={activity.id} hover>
-                                  <TableCell sx={{ whiteSpace: 'nowrap' }}>{formatQuoteChatTimestamp(activity.occurredAt)}</TableCell>
-                                  <TableCell>{activity.type === 'public_3d_opened' ? 'Customer 3D link opened' : activity.type === 'follow_up' ? `Follow-up by ${activity.createdByEmail || 'staff'}` : activity.type.replaceAll('_', ' ')}</TableCell>
-                                  <TableCell sx={{ fontFamily: 'monospace' }}>{activity.ipAddress || 'Unavailable'}</TableCell>
-                                  <TableCell>{location || 'Unavailable'}{activity.location?.coordinates ? <Typography variant="caption" display="block" color="text.secondary">{activity.location.coordinates}</Typography> : null}</TableCell>
-                                  <TableCell>{activity.deviceType || 'Unavailable'}</TableCell>
-                                  <TableCell>{[activity.browser, activity.operatingSystem].filter(Boolean).join(' / ') || 'Unavailable'}{activity.userAgent ? <Typography variant="caption" display="block" color="text.secondary" sx={{ maxWidth: 280, wordBreak: 'break-word' }}>{activity.userAgent}</Typography> : null}</TableCell>
-                                  <TableCell>{activity.acceptLanguage || 'Unavailable'}</TableCell>
-                                  <TableCell sx={{ maxWidth: 240, wordBreak: 'break-word' }}>{activity.referrer || 'Direct / unavailable'}</TableCell>
-                                </TableRow>
-                              )
-                            })
-                        ) : (
-                          <TableRow><TableCell colSpan={8}><Typography color="text.secondary" textAlign="center" sx={{ py: 3 }}>No tracked activity yet.</Typography></TableCell></TableRow>
-                        )}
-                      </TableBody>
-                    </Table>
-                  </Paper>
-                  <Alert severity="info">Location is approximate and appears only when the hosting network supplies city, region, or country information. It is not GPS data.</Alert>
-                </Stack>
-              ) : null}
-
-              {selectedOpportunityDetailsTab === 'details' ? (
-                <TextField
-                  label="Notes"
-                  value={opportunityDetailsFormState.notes}
-                  onChange={(event) => {
-                    setOpportunityDetailsFormState((current) => {
-                      if (!current) {
-                        return current
-                      }
-
-                      return {
-                        ...current,
-                        notes: event.target.value,
-                      }
-                    })
-                  }}
-                  disabled={!canManage}
-                  multiline
-                  minRows={3}
-                />
-              ) : null}
-                </Stack>
               </Stack>
             </Stack>
           ) : null}
@@ -11086,19 +8201,29 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
             onClick={handleCloseOpportunityDetails}
             disabled={
               isSavingOpportunityDetails
-              || isUploadingFolderSelection
-              || isSendingSelectedOpportunityChat
             }
           >
             Close Without Saving
           </Button>
-          <ButtonGroup
+          <Box sx={{ flex: 1 }} />
+          {opportunityDetailsStage > 0 ? (
+            <Button onClick={() => setOpportunityDetailsStage((opportunityDetailsStage - 1) as AddOpportunityStage)}>
+              Back
+            </Button>
+          ) : null}
+          {opportunityDetailsStage < 3 ? (
+            <Button
+              variant="contained"
+              onClick={() => setOpportunityDetailsStage((opportunityDetailsStage + 1) as AddOpportunityStage)}
+            >
+              Go to next stage
+            </Button>
+          ) : (
+            <ButtonGroup
             variant="contained"
             disabled={
               !canManage
               || isSavingOpportunityDetails
-              || isUploadingFolderSelection
-              || isSendingSelectedOpportunityChat
               || !opportunityDetailsFormState
             }
           >
@@ -11115,7 +8240,8 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
             >
               <ArrowDropDownRoundedIcon />
             </Button>
-          </ButtonGroup>
+            </ButtonGroup>
+          )}
           <Menu
             anchorEl={saveActionMenuAnchorEl}
             open={isSaveActionMenuOpen}
