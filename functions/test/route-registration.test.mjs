@@ -37,6 +37,7 @@ const MODULES = [
   ['dashboard-support-routes', '../src/routes/dashboard-support-routes.mjs',   'registerDashboardSupportRoutes'],
   ['orders-routes',            '../src/routes/orders-routes.mjs',              'registerOrdersRoutes'],
   ['timesheet-routes',         '../src/routes/timesheet-routes.mjs',           'registerTimesheetRoutes'],
+  ['crm-routes',               '../src/routes/crm-routes.mjs',                 'registerCrmRoutes'],
 ]
 
 for (const [name, path, exportName] of MODULES) {
@@ -48,6 +49,16 @@ for (const [name, path, exportName] of MODULES) {
     assert.ok(app.routes.length > 0, `${name} registered at least one route`)
   })
 }
+
+// The delivery-location typeahead is the only route that calls out to a third
+// party, so a rename or a scope slip in its helpers must fail here, not live.
+test('the place suggestion endpoint is registered', async () => {
+  const { registerCrmRoutes } = await import('../src/routes/crm-routes.mjs')
+  const app = fakeApp()
+  registerCrmRoutes(app, deps)
+
+  assert.ok(app.routes.includes('GET /api/crm/places/suggest'), 'place suggest is registered')
+})
 
 test('the Monday sync helpers construct without throwing', async () => {
   const { createMondaySyncHelpers } = await import('../src/orders/monday-sync.mjs')

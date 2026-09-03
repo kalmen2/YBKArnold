@@ -522,6 +522,10 @@ export function NativeQuotePdfDocument({
   const productDiscountAmount = Number((discountAmount - discountFreightAmount).toFixed(2))
   const grossSubtotal = Number((Number(subtotal || 0) + productDiscountAmount).toFixed(2))
   const freight = quote.freight ?? shippingTotal
+  const isListPriceTotal = quote.totalPriceType === 'list'
+  const displayedTotal = isListPriceTotal
+    ? Number((grossSubtotal + Number(freight || 0)).toFixed(2))
+    : (quote.totalAmount ?? subtotal + Number(freight || 0))
   const customerInfoLines = resolvedSettings.customerInformation.split('\n').map((line) => line.trim()).filter(Boolean)
   const customerInfoMiddle = Math.ceil(customerInfoLines.length / 2)
   const customerInfoColumns = [customerInfoLines.slice(0, customerInfoMiddle), customerInfoLines.slice(customerInfoMiddle)].filter((column) => column.length > 0)
@@ -782,7 +786,7 @@ export function NativeQuotePdfDocument({
           <View style={styles.totalRow}><Text>Subtotal</Text><Text>{money(grossSubtotal)}</Text></View>
           {resolvedSettings.showFreight ? <View style={styles.totalRow}><Text>{quote.freightDescription || 'Freight'}</Text><Text>{money(freight)}</Text></View> : null}
           {discountAmount > 0 ? <View style={styles.totalRow}><Text>Discount ({Number(quote.discountPercent || 0).toFixed(2).replace(/\.?0+$/, '')}% - {quote.discountScope === 'products_and_freight' ? 'Products + Freight' : 'Products Only'})</Text><Text>-{money(discountAmount)}</Text></View> : null}
-          <View style={styles.grandTotal}><Text>Total</Text><Text>{money(quote.totalAmount ?? subtotal + Number(freight || 0))}</Text></View>
+          <View style={styles.grandTotal}><Text>{isListPriceTotal ? 'List Price Total' : 'Net Price Total'}</Text><Text>{money(displayedTotal)}</Text></View>
         </View>
 
         {quote.notes ? <View style={styles.terms} wrap={false}><View style={styles.termItem}><Text style={styles.label}>Notes</Text><Text>{quote.notes}</Text></View></View> : null}

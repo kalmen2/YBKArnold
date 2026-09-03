@@ -397,6 +397,7 @@ const quoteRevisionSnapshotFields = [
   'discountAmount',
   'discountScope',
   'discountFreightAmount',
+  'totalPriceType',
   'freight',
   'freightDescription',
   'lineItems',
@@ -1293,6 +1294,27 @@ function normalizeQuoteLineLibraryEntry(input, fallback = {}) {
   }
 }
 
+function normalizeQuoteServiceLocation(input) {
+  const location = toOptionalObject(input)
+  const label = toTrimmedText(location.label, 300)
+  const address = toTrimmedText(location.address, 300)
+  const city = toTrimmedText(location.city, 160)
+  const state = normalizeUsStateCode(location.state)
+  const postalCode = toTrimmedText(location.postalCode, 20)
+
+  if (!label && !address && !city && !state) {
+    return null
+  }
+
+  return {
+    label: label || [address, city, state].filter(Boolean).join(', '),
+    address: address || null,
+    city: city || null,
+    state: state || null,
+    postalCode: postalCode || null,
+  }
+}
+
 function normalizeQuoteServiceItems(input) {
   if (!Array.isArray(input)) {
     return []
@@ -1322,6 +1344,7 @@ function normalizeQuoteServiceItems(input) {
       // Keep legacy field for compatibility with older consumers.
       price: extPrice,
       images,
+      location: normalizeQuoteServiceLocation(item.location),
     }
   }).filter((item) => (
     item.title
@@ -7153,6 +7176,172 @@ export function registerCrmRoutes(app, deps) {
     }
   })
 
+  // Delivery-location typeahead for quote service items. The upstream geocoder
+  // is called from here rather than the browser so it gets a real user agent,
+  // answers are cached across users, and a slow or down provider degrades to
+  // plain typing instead of blocking the quote.
+  const placeSuggestCachePrefix = 'crm:places:'
+  const placeSuggestCacheTtlMs = 6 * 60 * 60 * 1000
+  const placeSuggestTimeoutMs = 6000
+  const usStateCodeByName = new Map(
+    Object.entries(usStateNameByCode).map(([code, name]) => [name.toLowerCase(), code]),
+  )
+  usStateCodeByName.set('district of columbia', 'DC')
+  // The geocoder matches place names literally, so everyday shorthand has to be
+  // spelled out first or "NYC" comes back as a list of hospitals named NYC.
+  const placeQueryAliases = new Map([
+    ['nyc', 'New York City'],
+    ['ny c', 'New York City'],
+    ['new york city', 'New York City'],
+    ['la', 'Los Angeles'],
+    ['l a', 'Los Angeles'],
+    ['sf', 'San Francisco'],
+    ['philly', 'Philadelphia'],
+    ['dc', 'Washington, District of Columbia'],
+    ['washington dc', 'Washington, District of Columbia'],
+    ['vegas', 'Las Vegas'],
+    ['nola', 'New Orleans'],
+    ['atl', 'Atlanta'],
+    ['chi', 'Chicago'],
+    ['bmore', 'Baltimore'],
+    ['balt', 'Baltimore'],
+  ])
+
+  function resolvePlaceQuery(query) {
+    return placeQueryAliases.get(toLowerText(query, 120)) || query
+  }
+
+  function toPlaceSuggestion(feature) {
+    const properties = toOptionalObject(feature?.properties)
+
+    if (toTrimmedText(properties.countrycode, 8).toUpperCase() !== 'US') {
+      return null
+    }
+
+    const featureType = toLowerText(properties.type, 40)
+    const name = toTrimmedText(properties.name, 200)
+    const stateName = featureType === 'state' ? name : toTrimmedText(properties.state, 80)
+    const state = usStateCodeByName.get(stateName.toLowerCase())
+      || normalizeUsStateCode(stateName)
+      || ''
+    const city = toTrimmedText(
+      // A district is a neighbourhood in its own right ("Ithaca" inside Twin
+      // Township), so it reads better under its own name than its parent's.
+      (['city', 'locality', 'village', 'town', 'district'].includes(featureType) ? name : '')
+        || properties.city
+        || properties.district,
+      120,
+    )
+    const street = toTrimmedText(properties.street || (featureType === 'street' ? name : ''), 200)
+    const houseNumber = toTrimmedText(properties.housenumber, 40)
+    // A named building ("Javits Center") is as useful an address as a number.
+    const address = [houseNumber, street].filter(Boolean).join(' ')
+      || (featureType === 'house' ? name : '')
+    const postalCode = toTrimmedText(properties.postcode, 20)
+
+    const kind = address
+      ? 'address'
+      : (city ? 'city' : (state ? 'state' : ''))
+
+    // A city or state with no state attached cannot identify a delivery
+    // destination, and reads as a duplicate of the properly resolved entry.
+    if (!kind || (kind !== 'address' && !state)) {
+      return null
+    }
+
+    const placeName = kind === 'address' && name && name !== street && name !== address
+      ? name
+      : ''
+    const label = kind === 'state'
+      ? (stateName || state)
+      : [placeName, address, city, state].filter(Boolean).join(', ')
+
+    if (!label) {
+      return null
+    }
+
+    return {
+      kind,
+      label,
+      address: address || null,
+      city: city || null,
+      state: state || null,
+      postalCode: postalCode || null,
+    }
+  }
+
+  app.get('/api/crm/places/suggest', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const query = toTrimmedText(req.query?.q, 120)
+
+      if (query.length < 3) {
+        return res.json({ suggestions: [] })
+      }
+
+      const cacheKey = `${placeSuggestCachePrefix}${toLowerText(query, 120)}`
+      const cached = cacheGet(cacheKey)
+
+      if (cached) {
+        return res.json(cached)
+      }
+
+      let response = null
+
+      try {
+        response = await fetch(
+          `https://photon.komoot.io/api/?q=${encodeURIComponent(resolvePlaceQuery(query))}&limit=25&lang=en`,
+          {
+            headers: {
+              'User-Agent': 'ArnoldCRM/1.0 (internal quoting tool)',
+            },
+            signal: AbortSignal.timeout(placeSuggestTimeoutMs),
+          },
+        )
+      } catch {
+        return res.json({ suggestions: [], unavailable: true })
+      }
+
+      if (!response.ok) {
+        return res.json({ suggestions: [], unavailable: true })
+      }
+
+      const payload = await response.json().catch(() => null)
+      const seenLabels = new Set()
+      const suggestions = []
+
+      for (const feature of (Array.isArray(payload?.features) ? payload.features : [])) {
+        const suggestion = toPlaceSuggestion(feature)
+
+        if (!suggestion || seenLabels.has(suggestion.label)) {
+          continue
+        }
+
+        seenLabels.add(suggestion.label)
+        suggestions.push(suggestion)
+
+        if (suggestions.length >= 12) {
+          break
+        }
+      }
+
+      // "Ithaca" wants the city; "350 Fifth Ave" wants the building. Only the
+      // first is reordered, so digit-bearing address searches keep their ranking.
+      const rankedSuggestions = /\d/.test(query)
+        ? suggestions
+        : [
+          ...suggestions.filter((suggestion) => suggestion.kind !== 'address'),
+          ...suggestions.filter((suggestion) => suggestion.kind === 'address'),
+        ]
+
+      const body = { suggestions: rankedSuggestions }
+      cacheSet(cacheKey, body, placeSuggestCacheTtlMs)
+
+      return res.json(body)
+    } catch (error) {
+      next(error)
+    }
+  })
+
   app.post('/api/crm/quotes', requireFirebaseAuth, async (req, res, next) => {
     try {
       const accessScope = resolveCrmAccessScope(req)
@@ -7304,6 +7493,7 @@ export function registerCrmRoutes(app, deps) {
         discountAmount: toNonNegativeNumberOrNull(body.discountAmount),
         discountScope: body.discountScope === 'products_and_freight' ? 'products_and_freight' : 'products',
         discountFreightAmount: toNonNegativeNumberOrNull(body.discountFreightAmount),
+        totalPriceType: body.totalPriceType === 'list' ? 'list' : 'net',
         freight: toNonNegativeNumberOrNull(body.freight),
         freightDescription: toTrimmedText(body.freightDescription, 1200) || null,
         lineItems,
@@ -7517,6 +7707,10 @@ export function registerCrmRoutes(app, deps) {
 
       if (Object.prototype.hasOwnProperty.call(body, 'discountFreightAmount')) {
         updates.discountFreightAmount = toNonNegativeNumberOrNull(body.discountFreightAmount)
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'totalPriceType')) {
+        updates.totalPriceType = body.totalPriceType === 'list' ? 'list' : 'net'
       }
 
       if (Object.prototype.hasOwnProperty.call(body, 'freight')) {
@@ -8266,11 +8460,18 @@ export function registerCrmRoutes(app, deps) {
         ? Number((productValue * (depositPercent / 100)).toFixed(2))
         : 0
       selectedKeys.forEach((key) => convertedItemKeys.add(key))
+      const pricedShippingServices = shippingServices
+        .filter((item) => (toNonNegativeNumberOrNull(item.extPrice ?? item.price) ?? 0) > 0)
+      // The convert dialog offers the quote-level freight amount only when the
+      // quote has no priced delivery service, so the two can never both be
+      // converted. Counting freight as billable alongside a delivery service
+      // would leave the quote one key short of fully converted forever, which
+      // locks every remaining row and strands the quote in 'sent'.
       const allBillableKeys = [
         ...lineItems.filter((item) => Number(item.qty ?? 1) !== 0).map((item) => `line:${item.id}`),
         ...additionalServices.filter((item) => (toNonNegativeNumberOrNull(item.extPrice ?? item.price) ?? 0) > 0).map((item) => `additional:${item.id}`),
-        ...shippingServices.filter((item) => (toNonNegativeNumberOrNull(item.extPrice ?? item.price) ?? 0) > 0).map((item) => `shipping:${item.id}`),
-        ...((toNonNegativeNumberOrNull(quote?.freight) ?? 0) > 0 ? ['freight'] : []),
+        ...pricedShippingServices.map((item) => `shipping:${item.id}`),
+        ...(pricedShippingServices.length === 0 && (toNonNegativeNumberOrNull(quote?.freight) ?? 0) > 0 ? ['freight'] : []),
       ]
       const isFullyConverted = allBillableKeys.length > 0 && allBillableKeys.every((key) => convertedItemKeys.has(key))
 

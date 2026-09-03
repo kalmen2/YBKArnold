@@ -70,6 +70,7 @@ import {
   fetchCrmExcelQuoteLookup,
   fetchCrmQuoteDetails,
   fetchCrmDocumentTerms,
+  fetchCrmPlaceSuggestions,
   fetchCrmQuotePrintSettings,
   fetchCrmQuoteLineLibrary,
   createCrmQuoteLineLibraryEntry,
@@ -90,10 +91,13 @@ import {
   type CrmQuoteLineImage,
   type CrmQuoteLineItem,
   type CrmQuoteServiceItem,
+  type CrmQuoteServiceLocation,
+  type CrmPlaceSuggestion,
   type CrmOpportunityStage,
   type CrmQuote,
   type CrmQuotePrintSettings,
   type CrmQuoteLineLibraryEntry,
+  type CrmQuoteTotalPriceType,
 } from '../features/crm/api'
 import { resolveQuoteAgeDays } from '../features/crm/utils'
 import {
@@ -199,6 +203,7 @@ type OpportunityServiceItemFormState = {
   unitPrice: string
   extPrice: string
   images: CrmQuoteLineImage[]
+  location: CrmQuoteServiceLocation | null
 }
 
 type OpportunityFormState = {
@@ -211,11 +216,13 @@ type OpportunityFormState = {
   contactEmail: string
   contactPhone: string
   salesRep: string
+  projectType: string
   leadTime: string
   paymentTerms: string
   subtotal: string
   discountPercent: string
   discountScope: 'products' | 'products_and_freight'
+  totalPriceType: CrmQuoteTotalPriceType
   freight: string
   freightDescription: string
   notes: string
@@ -258,11 +265,13 @@ type OpportunityDetailsFormState = {
   contactEmail: string
   contactPhone: string
   salesRep: string
+  projectType: string
   leadTime: string
   paymentTerms: string
   subtotal: string
   discountPercent: string
   discountScope: 'products' | 'products_and_freight'
+  totalPriceType: CrmQuoteTotalPriceType
   freight: string
   freightDescription: string
   notes: string
@@ -689,7 +698,7 @@ const defaultShippingServiceTemplates = [
 
 function createServiceItemFormState(title = '', description = '', unitPrice: number | null = null): OpportunityServiceItemFormState {
   const price = unitPrice === null ? '' : String(unitPrice)
-  return { id: crypto.randomUUID(), title, description, qty: '', unitPrice: price, extPrice: unitPrice === null ? '' : '0', images: [] }
+  return { id: crypto.randomUUID(), title, description, qty: '', unitPrice: price, extPrice: unitPrice === null ? '' : '0', images: [], location: null }
 }
 
 function createDefaultAdditionalServices() {
@@ -741,6 +750,7 @@ function mapServiceItemsToFormState(items: CrmQuoteServiceItem[] | null | undefi
         : ''
     })(),
     images: Array.isArray(item.images) ? item.images : [],
+    location: item.location ?? null,
   }))
 
   if (!isStandardAdditionalServices) {
@@ -788,6 +798,7 @@ function normalizeServiceItemsForPayload(items: OpportunityServiceItemFormState[
       // Keep legacy field for older records and consumers.
       price: extPrice,
       images: item.images,
+      location: item.location,
     }
   }).filter((item) => item.title && item.qty !== null && item.qty > 0 && item.unitPrice !== null)
 }
@@ -1343,6 +1354,7 @@ function resolveQuotePricing(
     discountScope,
     subtotal,
     freight,
+    listPriceTotal: Number((grossSubtotal + freight).toFixed(2)),
     totalAmount: Number.isFinite(computedTotal)
       ? computedTotal
       : Number(fallbackTotal || 0),
@@ -1360,11 +1372,13 @@ function createEmptyOpportunityForm(): OpportunityFormState {
     contactEmail: '',
     contactPhone: '',
     salesRep: '',
+    projectType: '',
     leadTime: '',
     paymentTerms: DEFAULT_WEBSITE_PAYMENT_TERMS,
     subtotal: '',
     discountPercent: '',
     discountScope: 'products',
+    totalPriceType: 'net',
     freight: '',
     freightDescription: '',
     notes: '',
@@ -1426,11 +1440,13 @@ function createOpportunityDetailsFormState(quote: CrmQuote): OpportunityDetailsF
     contactEmail: String(quote.contactEmail || ''),
     contactPhone: String(quote.contactPhone || ''),
     salesRep: String(quote.salesRep || ''),
+    projectType: resolveDefaultExcelProjectType(quote.projectType),
     leadTime: String(quote.leadTime || ''),
     paymentTerms: String(quote.paymentTerms || ''),
     subtotal: '',
     discountPercent: quote.discountPercent === null || quote.discountPercent === undefined ? '' : String(quote.discountPercent),
     discountScope: quote.discountScope === 'products_and_freight' ? 'products_and_freight' : 'products',
+    totalPriceType: quote.totalPriceType === 'list' ? 'list' : 'net',
     freight: origin === 'excel' && quote.freight !== null && quote.freight !== undefined ? String(quote.freight) : '',
     freightDescription: String(quote.freightDescription || ''),
     notes: String(quote.notes || ''),
@@ -2422,6 +2438,149 @@ function LineItemsEditor({
 }
 
 
+function QuoteServiceLocationPicker({
+  value,
+  onChange,
+}: {
+  value: CrmQuoteServiceLocation | null
+  onChange: (location: CrmQuoteServiceLocation | null) => void
+}) {
+  const [inputValue, setInputValue] = useState(value?.label || '')
+  const [options, setOptions] = useState<CrmPlaceSuggestion[]>([])
+  const [isSearching, setIsSearching] = useState(false)
+  const [isUnavailable, setIsUnavailable] = useState(false)
+
+  const query = inputValue.trim()
+  const isQueryable = query.length >= 3 && query !== value?.label
+  // Options are kept only for the query that fetched them, so a shortened or
+  // re-selected input falls back to an empty list without another render pass.
+  const visibleOptions = isQueryable ? options : []
+
+  useEffect(() => {
+    if (!isQueryable) {
+      return
+    }
+
+    let cancelled = false
+    // Typeahead runs against a shared upstream geocoder, so wait for a pause in
+    // typing rather than firing a lookup per keystroke.
+    const timeoutId = window.setTimeout(() => {
+      setIsSearching(true)
+      fetchCrmPlaceSuggestions(query)
+        .then((response) => {
+          if (cancelled) return
+          setOptions(response.suggestions || [])
+          setIsUnavailable(Boolean(response.unavailable))
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setOptions([])
+            setIsUnavailable(true)
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setIsSearching(false)
+        })
+    }, 350)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timeoutId)
+    }
+  }, [isQueryable, query])
+
+  const detail = value
+    ? [value.address, value.city, value.state, value.postalCode].filter(Boolean).join(', ')
+    : ''
+  const selectedOption: CrmPlaceSuggestion | null = value
+    ? {
+      kind: value.address ? 'address' : (value.city ? 'city' : 'state'),
+      label: value.label,
+      address: value.address,
+      city: value.city,
+      state: value.state,
+      postalCode: value.postalCode,
+    }
+    : null
+
+  return (
+    <Autocomplete
+      freeSolo
+      autoComplete
+      filterOptions={(suppliedOptions) => suppliedOptions}
+      options={visibleOptions}
+      loading={isSearching && isQueryable}
+      inputValue={inputValue}
+      value={selectedOption}
+      isOptionEqualToValue={(option, selected) => option.label === selected?.label}
+      getOptionLabel={(option) => (typeof option === 'string' ? option : option.label)}
+      onInputChange={(_event, nextInput, reason) => {
+        setInputValue(nextInput)
+
+        // Free text still counts as a location; keep whatever was typed so a
+        // spot the geocoder does not know is never silently dropped.
+        if (reason === 'input') {
+          const trimmed = nextInput.trim()
+          onChange(trimmed
+            ? { label: trimmed, address: null, city: null, state: null, postalCode: null }
+            : null)
+        }
+      }}
+      onChange={(_event, nextValue) => {
+        if (!nextValue) {
+          setInputValue('')
+          onChange(null)
+          return
+        }
+
+        if (typeof nextValue === 'string') {
+          setInputValue(nextValue)
+          onChange({ label: nextValue, address: null, city: null, state: null, postalCode: null })
+          return
+        }
+
+        setInputValue(nextValue.label)
+        onChange({
+          label: nextValue.label,
+          address: nextValue.address,
+          city: nextValue.city,
+          state: nextValue.state,
+          postalCode: nextValue.postalCode,
+        })
+      }}
+      renderOption={(props, option) => (
+        <li {...props} key={`${option.kind}:${option.label}`}>
+          <Stack spacing={0.15}>
+            <Typography variant="body2" fontWeight={700}>{option.label}</Typography>
+            <Typography variant="caption" color="text.secondary">
+              {option.kind === 'state' ? 'State' : option.kind === 'city' ? 'City' : 'Address'}
+            </Typography>
+          </Stack>
+        </li>
+      )}
+      renderInput={(params) => (
+        <TextField
+          {...params}
+          label="Location"
+          placeholder="Address, city, or state — e.g. NYC"
+          helperText={isUnavailable
+            ? 'Location lookup is unavailable right now. Type the location and it will be saved as written.'
+            : (detail || 'Start typing a state, city, or street address.')}
+          InputProps={{
+            ...params.InputProps,
+            endAdornment: (
+              <>
+                {isSearching ? <CircularProgress size={16} /> : null}
+                {params.InputProps.endAdornment}
+              </>
+            ),
+          }}
+        />
+      )}
+    />
+  )
+}
+
 function QuoteServiceCardSelector({
   heading,
   description,
@@ -2522,6 +2681,11 @@ function QuoteServiceCardSelector({
                 <Typography variant="body2" color="text.secondary" sx={{ flex: 1 }}>
                   {item.description || `Add the details for this ${itemLabel}.`}
                 </Typography>
+                {item.location?.label ? (
+                  <Typography variant="caption" color="text.secondary" fontWeight={700}>
+                    {item.location.label}
+                  </Typography>
+                ) : null}
                 <Typography variant="body2" fontWeight={750}>
                   {item.unitPrice.trim() ? `${formatCurrency(Number(item.unitPrice), 2)} each` : 'Enter price when selected'}
                 </Typography>
@@ -2566,6 +2730,12 @@ function QuoteServiceCardSelector({
                 multiline
                 minRows={3}
               />
+              {itemLabel === 'delivery option' ? (
+                <QuoteServiceLocationPicker
+                  value={draft.location}
+                  onChange={(location) => setDraft((current) => current ? { ...current, location } : current)}
+                />
+              ) : null}
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.2}>
                 <TextField
                   required
@@ -3920,9 +4090,10 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       discountScope: pricing.discountScope,
       subtotal: pricing.subtotal ?? pricing.lineItemsTotal,
       freight: pricing.freight ?? 0,
+      listPriceTotal: pricing.listPriceTotal,
       totalAmount: pricing.totalAmount,
     }
-  }, [formState.additionalServices, formState.discountPercent, formState.discountScope, formState.freight, formState.lineItems, formState.shippingServices, formState.subtotal])
+  }, [formState.additionalServices, formState.discountPercent, formState.discountScope, formState.freight, formState.lineItems, formState.shippingServices])
 
   const addOpportunityMissingByStage = useMemo(() => {
     const accountMissing: string[] = []
@@ -3954,6 +4125,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     }
     if (!formState.paymentTerms.trim()) accountMissing.push('Payment terms')
     if (!formState.leadTime.trim()) accountMissing.push('Lead time')
+    if (!isExcelSyncProjectTypeOption(formState.projectType.trim())) accountMissing.push('Project type')
 
     const quoteLinesMissing: string[] = []
     const enteredLineItems = formState.lineItems.filter((lineItem) => !isBlankLineItem(lineItem))
@@ -3983,6 +4155,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     formState.lineItems,
     formState.opportunityDateInput,
     formState.paymentTerms,
+    formState.projectType,
     formState.quoteNumber,
     formState.salesRep,
     formState.title,
@@ -4004,6 +4177,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     contactEmail: formState.contactEmail.trim() || null,
     contactPhone: formState.contactPhone.trim() || null,
     salesRep: formState.salesRep.trim() || null,
+    projectType: formState.projectType.trim() || null,
     opportunityDate: formState.opportunityDateInput.trim() || null,
     leadTime: formState.leadTime.trim() || null,
     paymentTerms: formState.paymentTerms.trim() || null,
@@ -4012,6 +4186,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     discountAmount: addPricingPreview.discountAmount,
     discountScope: addPricingPreview.discountScope,
     discountFreightAmount: addPricingPreview.discountFreightAmount,
+    totalPriceType: formState.totalPriceType,
     freight: addPricingPreview.freight,
     freightDescription: formState.freightDescription.trim() || null,
     lineItems: normalizeLineItemsForPayload(formState.lineItems),
@@ -4039,9 +4214,11 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     formState.opportunityDateInput,
     formState.origin,
     formState.paymentTerms,
+    formState.projectType,
     formState.quoteNumber,
     formState.salesRep,
     formState.shippingServices,
+    formState.totalPriceType,
     formState.title,
   ])
 
@@ -4068,6 +4245,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       discountScope: pricing.discountScope,
       subtotal: pricing.subtotal ?? pricing.lineItemsTotal,
       freight: pricing.freight ?? 0,
+      listPriceTotal: pricing.listPriceTotal,
       totalAmount: pricing.totalAmount,
     }
   }, [opportunityDetailsFormState, selectedOpportunity?.totalAmount])
@@ -4105,6 +4283,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       discountAmount: pricing.discountAmount,
       discountScope: pricing.discountScope,
       discountFreightAmount: pricing.discountFreightAmount,
+      totalPriceType: opportunityDetailsFormState.totalPriceType,
       freight: pricing.freight,
       freightDescription: opportunityDetailsFormState.freightDescription.trim() || null,
       lineItems: pricing.normalizedLineItems,
@@ -5445,6 +5624,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         contactPhone: formState.contactPhone.trim() || null,
         contactSourceId: selectedAddContactSourceId || null,
         salesRep: formState.salesRep.trim() || null,
+        projectType: formState.projectType.trim() || null,
         leadTime: formState.leadTime.trim() || null,
         paymentTerms: formState.paymentTerms.trim() || null,
         subtotal: pricing.subtotal,
@@ -5452,6 +5632,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         discountAmount: pricing.discountAmount,
         discountScope: pricing.discountScope,
         discountFreightAmount: pricing.discountFreightAmount,
+        totalPriceType: formState.totalPriceType,
         freight: pricing.freight,
         freightDescription: formState.freightDescription.trim() || null,
         status: targetStatus,
@@ -5509,12 +5690,13 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     formState.origin,
     formState.opportunityDateInput,
     formState.paymentTerms,
+    formState.projectType,
     formState.quoteNumber,
     formState.salesRep,
     formState.shippingServices,
     formState.sourceWorkbookName,
     formState.sourceWorkbookUrl,
-    formState.subtotal,
+    formState.totalPriceType,
     formState.title,
     invalidateOpportunityData,
     isAddDialogDraftFromExcelSync,
@@ -5873,6 +6055,11 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       return
     }
 
+    if (!isExcelSyncProjectTypeOption(opportunityDetailsFormState.projectType.trim())) {
+      setErrorMessage('Select a project type before saving.')
+      return
+    }
+
     if (opportunityDateInput && !/^\d{4}-\d{2}-\d{2}$/.test(opportunityDateInput)) {
       setErrorMessage('Opportunity date must be a valid date.')
       return
@@ -5925,6 +6112,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         contactPhone: opportunityDetailsFormState.contactPhone.trim() || null,
         contactSourceId: selectedAddContactSourceId || null,
         salesRep: opportunityDetailsFormState.salesRep.trim() || null,
+        projectType: opportunityDetailsFormState.projectType.trim() || null,
         leadTime: opportunityDetailsFormState.leadTime.trim() || null,
         paymentTerms: opportunityDetailsFormState.paymentTerms.trim() || null,
         subtotal: pricing.subtotal,
@@ -5932,6 +6120,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         discountAmount: pricing.discountAmount,
         discountScope: pricing.discountScope,
         discountFreightAmount: pricing.discountFreightAmount,
+        totalPriceType: opportunityDetailsFormState.totalPriceType,
         freight: pricing.freight,
         freightDescription: opportunityDetailsFormState.freightDescription.trim() || null,
         opportunityDate: opportunityDateInput || null,
@@ -6050,7 +6239,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   return (
     <Stack spacing={1.75}>
       <StatusAlerts
-        errorMessage={errorMessage || (queryError instanceof Error ? queryError.message : null)}
+        errorMessage={isDialogOpen ? null : (errorMessage || (queryError instanceof Error ? queryError.message : null))}
         successMessage={successMessage}
       />
 
@@ -7083,6 +7272,21 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                     onChange={(event) => setFormState((current) => ({ ...current, leadTime: event.target.value }))}
                     sx={{ flex: 0.7 }}
                   />
+                  <Autocomplete
+                    options={excelSyncProjectTypeOptions}
+                    value={isExcelSyncProjectTypeOption(formState.projectType) ? formState.projectType : null}
+                    onChange={(_event, value) => setFormState((current) => ({ ...current, projectType: value || '' }))}
+                    sx={{ flex: 0.9 }}
+                    renderInput={(params) => (
+                      <TextField
+                        {...params}
+                        required
+                        label="Project Type"
+                        error={addOpportunitySubmitAttempted && !isExcelSyncProjectTypeOption(formState.projectType)}
+                        helperText="Same list the Excel sync uses."
+                      />
+                    )}
+                  />
                   <Paper variant="outlined" sx={{ p: 1.2, flex: 1.3, borderRadius: 1.5 }}>
                     <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
                       <Box>
@@ -7148,7 +7352,9 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                 <Stack direction="row" spacing={1} justifyContent="space-between" flexWrap="wrap" useFlexGap>
                   <Typography variant="body2">Product: {formatCurrency(addPricingPreview.grossSubtotal, 2)}</Typography>
                   <Typography variant="body2">Freight: {formatCurrency(addPricingPreview.freight, 2)}</Typography>
-                  <Typography variant="body2" fontWeight={800} color="primary">Total: {formatCurrency(addPricingPreview.totalAmount, 2)}</Typography>
+                  <Typography variant="body2" fontWeight={800} color="primary">
+                    {formState.totalPriceType === 'list' ? 'List Price Total' : 'Net Price Total'}: {formatCurrency(formState.totalPriceType === 'list' ? addPricingPreview.listPriceTotal : addPricingPreview.totalAmount, 2)}
+                  </Typography>
                 </Stack>
               </Paper>
               <LineItemsEditor
@@ -7166,6 +7372,17 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                 onInsertLibraryEntry={handleInsertFormLibraryEntry}
                 isUploadingImage={isUploadingLineImage}
               />
+              <TextField
+                select
+                label="Total shown on quote"
+                value={formState.totalPriceType}
+                onChange={(event) => setFormState((current) => ({ ...current, totalPriceType: event.target.value as CrmQuoteTotalPriceType }))}
+                helperText="Choose the total shown at the bottom of the estimate."
+                sx={{ alignSelf: 'flex-end', minWidth: 220 }}
+              >
+                <MenuItem value="list">List price total</MenuItem>
+                <MenuItem value="net">Net price total</MenuItem>
+              </TextField>
             </Stack>
           ) : null}
 
@@ -7238,6 +7455,12 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
             </Stack>
           ) : null}
         </DialogContent>
+
+        {errorMessage ? (
+          <Alert severity="error" onClose={() => setErrorMessage(null)} sx={{ mx: 2.5, mb: 1 }}>
+            {errorMessage}
+          </Alert>
+        ) : null}
 
         <DialogActions sx={{ borderTop: 1, borderColor: 'divider', px: 2.5 }}>
           <Button onClick={handleCloseDialog} disabled={isSavingOpportunity}>Cancel</Button>
@@ -7972,6 +8195,21 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                   sx={{ flex: 1 }}
                 />
 
+                <Autocomplete
+                  options={excelSyncProjectTypeOptions}
+                  value={isExcelSyncProjectTypeOption(opportunityDetailsFormState.projectType) ? opportunityDetailsFormState.projectType : null}
+                  onChange={(_event, value) => {
+                    setOpportunityDetailsFormState((current) => (
+                      current ? { ...current, projectType: value || '' } : current
+                    ))
+                  }}
+                  disabled={!canManage}
+                  sx={{ flex: 1 }}
+                  renderInput={(params) => (
+                    <TextField {...params} required label="Project Type" />
+                  )}
+                />
+
                 <Paper variant="outlined" sx={{ p: 1.2, flex: 1.3, borderRadius: 1.5 }}>
                   <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
                     <Box>
@@ -8105,7 +8343,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                       Freight: {formatCurrency(detailsPricingPreview.freight, 2)}
                     </Typography>
                     <Typography variant="body2" sx={{ fontWeight: 800, color: '#0f4c81' }}>
-                      Total: {formatCurrency(detailsPricingPreview.totalAmount, 2)}
+                      {opportunityDetailsFormState.totalPriceType === 'list' ? 'List Price Total' : 'Net Price Total'}: {formatCurrency(opportunityDetailsFormState.totalPriceType === 'list' ? detailsPricingPreview.listPriceTotal : detailsPricingPreview.totalAmount, 2)}
                     </Typography>
                   </Stack>
                 </Box>
@@ -8126,6 +8364,18 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                 onInsertLibraryEntry={handleInsertDetailsLibraryEntry}
                 isUploadingImage={isUploadingLineImage}
               />
+              <TextField
+                select
+                label="Total shown on quote"
+                value={opportunityDetailsFormState.totalPriceType}
+                onChange={(event) => setOpportunityDetailsFormState((current) => current ? ({ ...current, totalPriceType: event.target.value as CrmQuoteTotalPriceType }) : current)}
+                disabled={!canManage}
+                helperText="Choose the total shown at the bottom of the estimate."
+                sx={{ alignSelf: 'flex-end', minWidth: 220 }}
+              >
+                <MenuItem value="list">List price total</MenuItem>
+                <MenuItem value="net">Net price total</MenuItem>
+              </TextField>
 
                 </>
               ) : null}

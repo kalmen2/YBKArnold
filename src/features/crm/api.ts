@@ -595,6 +595,14 @@ export type CrmQuoteLineLibraryInput = {
   lines: CrmQuoteLineItem[]
 }
 
+export type CrmQuoteServiceLocation = {
+  label: string
+  address: string | null
+  city: string | null
+  state: string | null
+  postalCode: string | null
+}
+
 export type CrmQuoteServiceItem = {
   id: string
   title: string
@@ -604,9 +612,20 @@ export type CrmQuoteServiceItem = {
   extPrice?: number | null
   price: number | null
   images?: CrmQuoteLineImage[]
+  location?: CrmQuoteServiceLocation | null
+}
+
+export type CrmPlaceSuggestion = {
+  kind: 'address' | 'city' | 'state'
+  label: string
+  address: string | null
+  city: string | null
+  state: string | null
+  postalCode: string | null
 }
 
 export type CrmQuoteOrigin = 'website' | 'excel'
+export type CrmQuoteTotalPriceType = 'list' | 'net'
 
 export type CrmQuotePrintSettings = {
   id: 'default'
@@ -708,6 +727,7 @@ export type CrmQuote = {
   discountAmount?: number | null
   discountScope?: 'products' | 'products_and_freight' | null
   discountFreightAmount?: number | null
+  totalPriceType?: CrmQuoteTotalPriceType | null
   freight?: number | null
   freightDescription?: string | null
   lineItems?: CrmQuoteLineItem[] | null
@@ -803,6 +823,7 @@ export type CrmQuoteUpsertInput = {
   discountAmount?: number | null
   discountScope?: 'products' | 'products_and_freight' | null
   discountFreightAmount?: number | null
+  totalPriceType?: CrmQuoteTotalPriceType | null
   freight?: number | null
   freightDescription?: string | null
   lineItems?: CrmQuoteLineItem[] | null
@@ -1394,6 +1415,12 @@ export function confirmCrmQuoteLineLibraryEntryDeletion(entryId: string) {
   return apiRequest<{ ok: true; entryId: string }>(
     `/api/crm/quote-line-library/${encodeURIComponent(entryId)}/confirm-delete`,
     { method: 'POST' },
+  )
+}
+
+export function fetchCrmPlaceSuggestions(query: string) {
+  return apiRequest<{ suggestions: CrmPlaceSuggestion[]; unavailable?: boolean }>(
+    withQuery('/api/crm/places/suggest', { q: query }),
   )
 }
 
