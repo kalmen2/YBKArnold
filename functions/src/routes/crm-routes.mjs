@@ -8891,6 +8891,12 @@ export function registerCrmRoutes(app, deps) {
         work_order_name: toTrimmedText(body.workOrderName, 500) || null,
         proforma_invoice_url: toTrimmedText(body.proformaInvoiceUrl, 2000) || null,
         proforma_invoice_name: toTrimmedText(body.proformaInvoiceName, 500) || null,
+        // Same field trio the order-confirmation endpoint writes, so a BOL made
+        // at conversion is read by everything that reads a regenerated one.
+        bol: toTrimmedText(body.bolName, 500) || null,
+        BOL_source: toTrimmedText(body.bolUrl, 2000) || null,
+        BOL: toTrimmedText(body.bolUrl, 2000) || null,
+        bol_generated_at: toTrimmedText(body.bolUrl, 2000) ? nowIso() : null,
         monday_notes: nextOrder.notes,
         monday_description: description,
         is_shipped: false,

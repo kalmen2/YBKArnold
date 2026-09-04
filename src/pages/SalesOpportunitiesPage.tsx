@@ -9,6 +9,7 @@ import MoreVertRoundedIcon from '@mui/icons-material/MoreVertRounded'
 import OpenWithRoundedIcon from '@mui/icons-material/OpenWithRounded'
 import PreviewRoundedIcon from '@mui/icons-material/PreviewRounded'
 import PrintRoundedIcon from '@mui/icons-material/PrintRounded'
+import ChatBubbleOutlineRoundedIcon from '@mui/icons-material/ChatBubbleOutlineRounded'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import WorkspacesRoundedIcon from '@mui/icons-material/WorkspacesRounded'
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined'
@@ -16,6 +17,7 @@ import {
   Alert,
   Autocomplete,
   Avatar,
+  Badge,
   Box,
   Button,
   ButtonGroup,
@@ -62,6 +64,7 @@ import {
   createCrmDealerContact,
   convertCrmQuoteToOrder,
   createCrmQuote,
+  createCrmQuoteChatMessage,
   createCrmQuoteRevision,
   convertCrmQuoteWorkbook,
   fetchCrmConvertOrderBoards,
@@ -100,7 +103,10 @@ import {
   type CrmQuoteTotalPriceType,
 } from '../features/crm/api'
 import { resolveQuoteAgeDays } from '../features/crm/utils'
+import { QuoteChatPanel } from '../features/crm/QuoteChatPanel'
 import {
+  buildBillOfLadingBlob,
+  buildOrderDocumentData,
   buildOrderDocumentBlob,
   buildProformaInvoiceBlob,
   buildWorkOrderDocumentBlob,
@@ -236,14 +242,19 @@ type OpportunityFormState = {
   convertedPdfName: string
 }
 
-type AddOpportunityStage = 0 | 1 | 2 | 3
+type AddOpportunityStage = 0 | 1 | 2 | 3 | 4
 
 const ADD_OPPORTUNITY_STAGES = [
   'Account Information',
   'Quote Lines',
   'Services & Delivery',
   'Review & Submit',
+  'Chat',
 ] as const
+
+// Review & Submit is the last required stage. Chat sits past it as an optional
+// side trip: reachable by its tab, never in the way of submitting.
+const LAST_REQUIRED_ADD_STAGE = 3
 
 type NewDealerFormState = {
   name: string
@@ -325,6 +336,7 @@ type OpportunityCardProps = {
   onDeleteQuote: (quote: CrmQuote) => void
   onPrintQuote: (quote: CrmQuote) => void
   onOpenDetails: (quote: CrmQuote) => void
+  onOpenChat: (quote: CrmQuote) => void
 }
 
 type StageColumnProps = {
@@ -339,6 +351,7 @@ type StageColumnProps = {
   onDeleteQuote: (quote: CrmQuote) => void
   onPrintQuote: (quote: CrmQuote) => void
   onOpenDetails: (quote: CrmQuote) => void
+  onOpenChat: (quote: CrmQuote) => void
 }
 
 type StageSortMode =
@@ -1440,7 +1453,7 @@ function createOpportunityDetailsFormState(quote: CrmQuote): OpportunityDetailsF
     contactEmail: String(quote.contactEmail || ''),
     contactPhone: String(quote.contactPhone || ''),
     salesRep: String(quote.salesRep || ''),
-    projectType: resolveDefaultExcelProjectType(quote.projectType),
+    projectType: resolveStoredProjectType(quote.projectType),
     leadTime: String(quote.leadTime || ''),
     paymentTerms: String(quote.paymentTerms || ''),
     subtotal: '',
@@ -1932,6 +1945,16 @@ function resolveDefaultExcelProjectType(value: string | null | undefined): Excel
 
   // "Other" is never auto-selected; it must be picked manually.
   return ''
+}
+
+function resolveStoredProjectType(value: string | null | undefined): ExcelSyncProjectTypeOption | '' {
+  const stored = String(value ?? '').trim()
+
+  if (isExcelSyncProjectTypeOption(stored)) {
+    return stored
+  }
+
+  return resolveDefaultExcelProjectType(stored)
 }
 
 function isExcelSyncProjectTypeOption(value: string): value is ExcelSyncProjectTypeOption {
@@ -2799,6 +2822,7 @@ function OpportunityCard({
   onDeleteQuote,
   onPrintQuote,
   onOpenDetails,
+  onOpenChat,
 }: OpportunityCardProps) {
   const dealerInitial = String(dealerName).trim().charAt(0).toUpperCase() || 'D'
   const quoteDateLabel = formatOpportunityLikeDate(quote.opportunityDate)
@@ -2908,6 +2932,27 @@ function OpportunityCard({
               <Chip size="small" label={`${ageDays}d`} sx={{ height: 19, fontSize: 10 }} />
             )}
 
+            <Badge
+              badgeContent={Number(quote.chatMessageCount ?? 0)}
+              color="primary"
+              overlap="circular"
+              sx={{ '& .MuiBadge-badge': { fontSize: 9, height: 15, minWidth: 15, fontWeight: 800 } }}
+            >
+              <IconButton
+                size="small"
+                disabled={isBusy}
+                onClick={(event) => {
+                  preventCardClick(event)
+                  onOpenChat(quote)
+                }}
+                sx={{ p: 0.15, color: '#0f4c81' }}
+                title="Quote chat"
+                aria-label="Open quote chat"
+              >
+                <ChatBubbleOutlineRoundedIcon sx={{ fontSize: 19 }} />
+              </IconButton>
+            </Badge>
+
             <IconButton
               size="small"
               disabled={isBusy}
@@ -3014,6 +3059,7 @@ function StageColumn({
   onDeleteQuote,
   onPrintQuote,
   onOpenDetails,
+  onOpenChat,
 }: StageColumnProps) {
   const [menuAnchorEl, setMenuAnchorEl] = useState<HTMLElement | null>(null)
   const [sortSubmenuAnchorEl, setSortSubmenuAnchorEl] = useState<HTMLElement | null>(null)
@@ -3446,6 +3492,7 @@ function StageColumn({
                 onDeleteQuote={onDeleteQuote}
                 onPrintQuote={onPrintQuote}
                 onOpenDetails={onOpenDetails}
+                onOpenChat={onOpenChat}
               />
             )
           })
@@ -3729,6 +3776,8 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   ))
   const [uploadQuoteActionMenuAnchorEl, setUploadQuoteActionMenuAnchorEl] = useState<HTMLElement | null>(null)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const [chatQuote, setChatQuote] = useState<CrmQuote | null>(null)
+  const [addOpportunityChatNote, setAddOpportunityChatNote] = useState('')
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
   const [globalSearch, setGlobalSearch] = useState('')
   const activePipelineStage: CrmOpportunityStage = 'proposal_submission'
@@ -4145,7 +4194,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       })
     }
 
-    return [accountMissing, quoteLinesMissing, [], []] as const
+    return [accountMissing, quoteLinesMissing, [], [], []] as const
   }, [
     addOpportunityContactOptions,
     dealersBySourceId,
@@ -4890,6 +4939,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     setErrorMessage(null)
     setSuccessMessage(null)
     setFormState(emptyFormState)
+    setAddOpportunityChatNote('')
     setAddOpportunityStage(0)
     setAddOpportunitySubmitAttempted(false)
     setDealerSearchInput('')
@@ -5614,7 +5664,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         })
       }
 
-      await createCrmQuote({
+      const createdQuote = await createCrmQuote({
         dealerSourceId,
         quoteNumber,
         title,
@@ -5652,12 +5702,26 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         revisionCount: 0,
       })
 
+      const openingNote = addOpportunityChatNote.trim()
+      const createdQuoteId = String(createdQuote?.quote?.id ?? '').trim()
+
+      if (openingNote && createdQuoteId) {
+        try {
+          await createCrmQuoteChatMessage(createdQuoteId, openingNote)
+        } catch {
+          // The quote itself is saved; a failed opening note must not read as a
+          // failed submission.
+          setErrorMessage('Opportunity created, but the first chat message could not be posted.')
+        }
+      }
+
       await invalidateOpportunityData()
 
       const emptyFormState = createEmptyOpportunityForm()
 
       setSuccessMessage('Opportunity created.')
       setFormState(emptyFormState)
+      setAddOpportunityChatNote('')
       setAddOpportunityStage(0)
       setAddOpportunitySubmitAttempted(false)
       setDealerSearchInput('')
@@ -5671,6 +5735,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       setIsSavingOpportunity(false)
     }
   }, [
+    addOpportunityChatNote,
     addOpportunityTotalMissing,
     formState.additionalServices,
     formState.companyName,
@@ -5832,43 +5897,50 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
           ? Number((freightGross * (discountPercent / 100)).toFixed(2))
           : 0
         const freightNet = Number((freightGross - freightDiscountAmount).toFixed(2))
-        const documentData = {
+        const documentData = buildOrderDocumentData({
           documentDate: poDate,
           companyName: convertOrderTargetQuote.companyName || convertOrderTargetQuote.dealerName || '',
           contactName: convertOrderTargetQuote.contactName || '',
           contactEmail: convertOrderTargetQuote.contactEmail || '',
           contactPhone: convertOrderTargetQuote.contactPhone || '',
-          description: convertOrderTargetQuote.description || convertOrderTargetQuote.title || '',
+          description: convertOrderTargetQuote.description || '',
           poNumber: convertOrderFormState.poNumber.trim(),
-          projectName: convertOrderTargetQuote.title || '', acknowledgmentNumber,
-          leadTime, freightType: selectedFreightLines.length > 0 ? 'Delivery' : '', shipTo,
+          projectName: convertOrderTargetQuote.title || '',
+          acknowledgmentNumber,
+          leadTime,
+          shipTo,
+          freightDescription: String(convertOrderTargetQuote.freightDescription ?? '').trim(),
           productGross, discountPercent, discountAmount,
           freightGross, freightDiscountAmount,
-          productNet, freightNet, grandTotal: productNet + freightNet, depositRequired, depositPercent,
+          productNet, freightNet, depositRequired, depositPercent,
           lines: [...selectedProductLines, ...selectedFreightLines],
-        }
+        })
         const settings = quotePrintSettingsQuery.data?.settings || DEFAULT_QUOTE_PRINT_SETTINGS
         const termsResponse = await fetchCrmDocumentTerms(convertOrderTargetQuote.dealerSourceId)
         const documentTerms = groupOrderDocumentTerms(termsResponse.terms)
-        const [confirmationBlob, workOrderBlob, proformaInvoiceBlob] = await Promise.all([
+        const [confirmationBlob, workOrderBlob, proformaInvoiceBlob, bolBlob] = await Promise.all([
           buildOrderDocumentBlob(documentData, settings, documentTerms),
           buildWorkOrderDocumentBlob(documentData, settings, documentTerms),
           buildProformaInvoiceBlob(documentData, settings, documentTerms),
+          buildBillOfLadingBlob(documentData, settings, documentTerms),
         ])
         const orderPath = sanitizeStoragePathSegment(acknowledgmentNumber, 'order')
         const generatedAt = Date.now()
         const confirmationRef = storageRef(firebaseStorage, `crm/orders/${orderPath}/order-confirmation-${generatedAt}.pdf`)
         const workOrderRef = storageRef(firebaseStorage, `crm/orders/${orderPath}/work-order-${generatedAt}.pdf`)
         const proformaInvoiceRef = storageRef(firebaseStorage, `crm/orders/${orderPath}/proforma-invoice-${generatedAt}.pdf`)
+        const bolRef = storageRef(firebaseStorage, `crm/orders/${orderPath}/bill-of-lading-${generatedAt}.pdf`)
         await Promise.all([
           uploadBytes(confirmationRef, confirmationBlob, { contentType: 'application/pdf' }),
           uploadBytes(workOrderRef, workOrderBlob, { contentType: 'application/pdf' }),
           uploadBytes(proformaInvoiceRef, proformaInvoiceBlob, { contentType: 'application/pdf' }),
+          uploadBytes(bolRef, bolBlob, { contentType: 'application/pdf' }),
         ])
-        const [orderConfirmationUrl, workOrderUrl, proformaInvoiceUrl] = await Promise.all([
+        const [orderConfirmationUrl, workOrderUrl, proformaInvoiceUrl, bolUrl] = await Promise.all([
           getDownloadURL(confirmationRef),
           getDownloadURL(workOrderRef),
           getDownloadURL(proformaInvoiceRef),
+          getDownloadURL(bolRef),
         ])
 
         await convertCrmQuoteToOrder(convertOrderTargetQuote.id, {
@@ -5892,6 +5964,8 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
           workOrderName: `Work Order - ${acknowledgmentNumber}.pdf`,
           proformaInvoiceUrl,
           proformaInvoiceName: `Proforma Invoice - ${acknowledgmentNumber}.pdf`,
+          bolUrl,
+          bolName: `Bill of Lading - ${acknowledgmentNumber}.pdf`,
         })
       })
 
@@ -6056,7 +6130,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     }
 
     if (!isExcelSyncProjectTypeOption(opportunityDetailsFormState.projectType.trim())) {
-      setErrorMessage('Select a project type before saving.')
+      setErrorMessage('Select a Project Type on the Account Information tab before saving.')
       return
     }
 
@@ -6112,7 +6186,9 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         contactPhone: opportunityDetailsFormState.contactPhone.trim() || null,
         contactSourceId: selectedAddContactSourceId || null,
         salesRep: opportunityDetailsFormState.salesRep.trim() || null,
-        projectType: opportunityDetailsFormState.projectType.trim() || null,
+        ...(opportunityDetailsFormState.projectType.trim()
+          ? { projectType: opportunityDetailsFormState.projectType.trim() }
+          : {}),
         leadTime: opportunityDetailsFormState.leadTime.trim() || null,
         paymentTerms: opportunityDetailsFormState.paymentTerms.trim() || null,
         subtotal: pricing.subtotal,
@@ -6239,7 +6315,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   return (
     <Stack spacing={1.75}>
       <StatusAlerts
-        errorMessage={isDialogOpen ? null : (errorMessage || (queryError instanceof Error ? queryError.message : null))}
+        errorMessage={isDialogOpen || selectedOpportunity ? null : (errorMessage || (queryError instanceof Error ? queryError.message : null))}
         successMessage={successMessage}
       />
 
@@ -7016,6 +7092,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         onDeleteQuote={handleDeleteQuote}
         onPrintQuote={(quote) => void handlePrintQuote(quote)}
         onOpenDetails={handleOpenOpportunityDetails}
+        onOpenChat={setChatQuote}
       />
 
       {quotePrintPreview ? (
@@ -7423,6 +7500,23 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
             </Stack>
           ) : null}
 
+          {addOpportunityStage === 4 ? (
+            <Stack spacing={1.25}>
+              <Alert severity="info">
+                Optional. Anything written here is posted as the first chat message once the quote is
+                created, and the thread stays on the quote afterwards.
+              </Alert>
+              <TextField
+                label="First chat message"
+                value={addOpportunityChatNote}
+                onChange={(event) => setAddOpportunityChatNote(event.target.value)}
+                multiline
+                minRows={4}
+                placeholder="Anything the team should know about this quote…"
+              />
+            </Stack>
+          ) : null}
+
           {addOpportunityStage === 3 ? (
             <Stack spacing={0.75}>
               {addOpportunitySubmitAttempted && addOpportunityTotalMissing > 0 ? (
@@ -7484,7 +7578,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                 : 'All required fields complete'}
             </Typography>
           </Tooltip>
-          {addOpportunityStage < 3 ? (
+          {addOpportunityStage < LAST_REQUIRED_ADD_STAGE ? (
             <Button
               variant="contained"
               onClick={() => setAddOpportunityStage((addOpportunityStage + 1) as AddOpportunityStage)}
@@ -7502,6 +7596,33 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
           )}
         </DialogActions>
       </Dialog>
+      <Dialog
+        open={Boolean(chatQuote)}
+        onClose={() => setChatQuote(null)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle sx={{ pb: 0.5 }}>
+          <Stack direction="row" spacing={1} alignItems="center">
+            <ChatBubbleOutlineRoundedIcon sx={{ fontSize: 19, color: 'primary.main' }} />
+            <Box sx={{ minWidth: 0 }}>
+              <Typography variant="h6" fontWeight={850} sx={{ lineHeight: 1.2 }}>
+                {chatQuote?.quoteNumber || chatQuote?.title || 'Quote'} chat
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Notes and follow-ups stay with this quote.
+              </Typography>
+            </Box>
+          </Stack>
+        </DialogTitle>
+        <DialogContent dividers>
+          {chatQuote ? <QuoteChatPanel quoteId={chatQuote.id} canPost={canManage} /> : null}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setChatQuote(null)}>Close</Button>
+        </DialogActions>
+      </Dialog>
+
       <Dialog
         open={isNewDealerDialogOpen}
         onClose={() => {
@@ -7728,9 +7849,29 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
           }}
         >
           <Stack spacing={0.15}>
-            <Typography variant="h6" sx={{ fontWeight: 800, letterSpacing: 0.1 }}>
-              {detailsOnly ? 'Quote Details' : 'Opportunity Details'}
-            </Typography>
+            <Stack direction="row" spacing={0.85} alignItems="center">
+              <Typography variant="h6" sx={{ fontWeight: 800, letterSpacing: 0.1 }}>
+                {detailsOnly ? 'Quote Details' : 'Opportunity Details'}
+              </Typography>
+              {selectedOpportunity ? (
+                <Badge
+                  badgeContent={Number(selectedOpportunity.chatMessageCount ?? 0)}
+                  color="primary"
+                  overlap="circular"
+                  sx={{ '& .MuiBadge-badge': { fontSize: 9, height: 15, minWidth: 15, fontWeight: 800 } }}
+                >
+                  <IconButton
+                    size="small"
+                    onClick={() => setChatQuote(selectedOpportunity)}
+                    title="Quote chat"
+                    aria-label="Open quote chat"
+                    sx={{ color: '#0f4c81', bgcolor: alpha('#ffffff', 0.7), '&:hover': { bgcolor: '#ffffff' } }}
+                  >
+                    <ChatBubbleOutlineRoundedIcon sx={{ fontSize: 17 }} />
+                  </IconButton>
+                </Badge>
+              ) : null}
+            </Stack>
             <Typography variant="caption" sx={{ color: alpha('#0b2239', 0.78) }}>
               {detailsOnly
                 ? 'Review and update this saved quote.'
@@ -8442,10 +8583,29 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                   />
                 </Suspense>
               ) : null}
+
+              {opportunityDetailsStage === 4 ? (
+                <Paper variant="outlined" sx={{ p: { xs: 1.25, md: 1.75 }, borderRadius: 2, bgcolor: '#fff' }}>
+                  <Stack spacing={0.2} sx={{ mb: 1.25 }}>
+                    <Typography variant="subtitle1" fontWeight={850}>Quote chat</Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      Notes and follow-ups for {selectedOpportunity.quoteNumber || selectedOpportunity.title || 'this quote'}.
+                    </Typography>
+                  </Stack>
+                  <QuoteChatPanel quoteId={selectedOpportunity.id} canPost={canManage} />
+                </Paper>
+              ) : null}
               </Stack>
             </Stack>
           ) : null}
         </DialogContent>
+
+        {errorMessage ? (
+          <Alert severity="error" onClose={() => setErrorMessage(null)} sx={{ mx: 2, mb: 1 }}>
+            {errorMessage}
+          </Alert>
+        ) : null}
+
         <DialogActions>
           <Button
             onClick={handleCloseOpportunityDetails}
@@ -8461,7 +8621,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
               Back
             </Button>
           ) : null}
-          {opportunityDetailsStage < 3 ? (
+          {opportunityDetailsStage < LAST_REQUIRED_ADD_STAGE ? (
             <Button
               variant="contained"
               onClick={() => setOpportunityDetailsStage((opportunityDetailsStage + 1) as AddOpportunityStage)}

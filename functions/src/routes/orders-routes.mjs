@@ -1074,6 +1074,12 @@ export function registerOrdersRoutes(app, deps) {
         String(orderDocument?.Inspection_sheet_source ?? '').trim()
         || String(orderDocument?.Inspection_sheet ?? '').trim()
         || null,
+      documentLayout: orderDocument?.document_metadata_layout ?? null,
+      acknowledgmentDocument: String(orderDocument?.acknowledgment_document ?? '').trim() || null,
+      acknowledgmentDocumentUrl:
+        String(orderDocument?.Acknowledgment_source ?? '').trim()
+        || String(orderDocument?.Acknowledgment ?? '').trim()
+        || null,
       poNumber: String(orderDocument?.po_number ?? '').trim() || null,
       bench: String(orderDocument?.bench ?? '').trim() || null,
       notes: String(orderDocument?.monday_notes ?? '').trim() || null,
@@ -2123,6 +2129,10 @@ export function registerOrdersRoutes(app, deps) {
               inspection_sheet: 1,
               Inspection_sheet: 1,
               Inspection_sheet_source: 1,
+              acknowledgment_document: 1,
+              Acknowledgment: 1,
+              Acknowledgment_source: 1,
+              document_metadata_layout: 1,
               po_number: 1,
               bench: 1,
               monday_notes: 1,
@@ -2943,6 +2953,10 @@ export function registerOrdersRoutes(app, deps) {
                     inspection_sheet: 1,
                     Inspection_sheet: 1,
                     Inspection_sheet_source: 1,
+                    acknowledgment_document: 1,
+                    Acknowledgment: 1,
+                    Acknowledgment_source: 1,
+                    document_metadata_layout: 1,
                     po_number: 1,
                     bench: 1,
                     monday_notes: 1,

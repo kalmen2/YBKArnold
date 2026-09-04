@@ -17,6 +17,9 @@ import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded'
 import UploadFileRoundedIcon from '@mui/icons-material/UploadFileRounded'
 import VisibilityRoundedIcon from '@mui/icons-material/VisibilityRounded'
 import ImageRoundedIcon from '@mui/icons-material/ImageRounded'
+import LockRoundedIcon from '@mui/icons-material/LockRounded'
+import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded'
+import VisibilityOffRoundedIcon from '@mui/icons-material/VisibilityOffRounded'
 import {
   Accordion,
   AccordionDetails,
@@ -34,6 +37,7 @@ import {
   FormControl,
   FormControlLabel,
   IconButton,
+  InputAdornment,
   InputLabel,
   LinearProgress,
   MenuItem,
@@ -55,10 +59,14 @@ import { alpha } from '@mui/material/styles'
 import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Mention, MentionsInput } from 'react-mentions'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useAuth } from '../../auth/useAuth'
 import { firebaseStorage } from '../../auth/firebase'
 import {
+  buildOrderDocumentData,
+  ORDER_DOCUMENT_DEFAULT_METADATA_LAYOUT,
+  ORDER_DOCUMENT_METADATA_LABELS,
+  normalizeOrderDocumentMetadataLayout,
   buildBillOfLadingBlob,
   buildOrderDocumentBlob,
   buildChangeOrderDocumentBlob,
@@ -67,6 +75,7 @@ import {
   groupOrderDocumentTerms,
 } from '../../features/crm/OrderConversionDocuments'
 import { DEFAULT_QUOTE_PRINT_SETTINGS } from '../../features/crm/NativeQuotePdf'
+import { fetchCrmSalesReps } from '../../features/crm/api'
 import {
   createCrmDealerContact,
   fetchCrmContacts,
@@ -140,7 +149,7 @@ type JobDetailsDialogProps = {
   onClose: () => void
 }
 
-export type JobDetailsTab = 'hours' | 'shipping' | 'info' | 'pictures' | 'parts' | 'warranty' | 'chat'
+export type JobDetailsTab = 'hours' | 'shipping' | 'info' | 'documents' | 'pictures' | 'parts' | 'warranty' | 'chat'
 
 function normalizeDateInputValue(value: string | null | undefined) {
   const normalized = String(value ?? '').trim()
@@ -611,6 +620,7 @@ export function JobDetailsDialog({
   const customerSignedBolUploadInputRef = useRef<HTMLInputElement | null>(null)
   const customerSignedChangeOrderUploadInputRef = useRef<HTMLInputElement | null>(null)
   const inspectionSheetUploadInputRef = useRef<HTMLInputElement | null>(null)
+  const acknowledgmentUploadInputRef = useRef<HTMLInputElement | null>(null)
   const [isShippingDocumentsEditMode, setIsShippingDocumentsEditMode] = useState(false)
   const [shippingUploadInFlightType, setShippingUploadInFlightType] = useState<OrdersShippingDocumentType | ''>('')
   const [shippingDeleteInFlightType, setShippingDeleteInFlightType] = useState<OrdersShippingDocumentType | ''>('')
@@ -623,9 +633,12 @@ export function JobDetailsDialog({
   const [uploadedSignedBolUrl, setUploadedSignedBolUrl] = useState<string | null>(null)
   const [uploadedCustomerSignedBolUrl, setUploadedCustomerSignedBolUrl] = useState<string | null>(null)
   const [uploadedInspectionSheetUrl, setUploadedInspectionSheetUrl] = useState<string | null>(null)
+  const [uploadedAcknowledgmentUrl, setUploadedAcknowledgmentUrl] = useState<string | null>(null)
   const [uploadedSignedBolName, setUploadedSignedBolName] = useState<string | null>(null)
   const [uploadedCustomerSignedBolName, setUploadedCustomerSignedBolName] = useState<string | null>(null)
   const [uploadedInspectionSheetName, setUploadedInspectionSheetName] = useState<string | null>(null)
+  const [uploadedAcknowledgmentName, setUploadedAcknowledgmentName] = useState<string | null>(null)
+  const [acknowledgmentDeletedLocally, setAcknowledgmentDeletedLocally] = useState(false)
   const [signedBolDeletedLocally, setSignedBolDeletedLocally] = useState(false)
   const [customerSignedBolDeletedLocally, setCustomerSignedBolDeletedLocally] = useState(false)
   const [inspectionSheetDeletedLocally, setInspectionSheetDeletedLocally] = useState(false)
@@ -669,6 +682,8 @@ export function JobDetailsDialog({
   const [documentPreviewCollection, setDocumentPreviewCollection] = useState<OrdersCutListDocument[]>([])
   const [documentPreviewIndex, setDocumentPreviewIndex] = useState(0)
   const [isPrintingDocumentPreview, setIsPrintingDocumentPreview] = useState(false)
+  const [isDownloadingDocumentPreview, setIsDownloadingDocumentPreview] = useState(false)
+  const [documentPreviewFileName, setDocumentPreviewFileName] = useState('')
   const [isLoadingBolPreview, setIsLoadingBolPreview] = useState(false)
   const [selectedOrderPhoto, setSelectedOrderPhoto] = useState<OrderPhoto | null>(null)
   const bolPreviewObjectUrlRef = useRef<string | null>(null)
@@ -694,6 +709,24 @@ export function JobDetailsDialog({
   const [leadTimeDateDraft, setLeadTimeDateDraft] = useState('')
   const [podDateDraft, setPodDateDraft] = useState('')
   const [shipToDraft, setShipToDraft] = useState('')
+  const [documentLayoutDraft, setDocumentLayoutDraft] = useState(ORDER_DOCUMENT_DEFAULT_METADATA_LAYOUT)
+  const [depositPercentDraft, setDepositPercentDraft] = useState('')
+  const [depositReceivedDateDraft, setDepositReceivedDateDraft] = useState('')
+  const salesRepsQuery = useQuery({
+    queryKey: QUERY_KEYS.crmSalesReps,
+    queryFn: () => fetchCrmSalesReps(),
+    enabled: open && mode === 'details',
+    staleTime: 5 * 60 * 1000,
+  })
+  // Keep whatever the order already carries, even if that rep is gone from CRM.
+  const salesRepOptions = useMemo(() => {
+    const names = (salesRepsQuery.data?.salesReps ?? [])
+      .map((rep) => String(rep.name ?? '').trim())
+      .filter(Boolean)
+    const current = String(order?.salesRep ?? '').trim()
+
+    return [...new Set([...names, ...(current ? [current] : [])])].sort((a, b) => a.localeCompare(b))
+  }, [order?.salesRep, salesRepsQuery.data?.salesReps])
   const [leadTimeTextDraft, setLeadTimeTextDraft] = useState('')
   const [freightDescriptionDraft, setFreightDescriptionDraft] = useState('')
   const [shippingCarrierDraft, setShippingCarrierDraft] = useState('')
@@ -866,6 +899,13 @@ export function JobDetailsDialog({
     setLeadTimeDateDraft(normalizeDateInputValue(order?.dueDate ?? ''))
     setPodDateDraft(normalizeDateInputValue(order?.shippedAt ?? ''))
     setShipToDraft(String(order?.shipTo ?? '').trim())
+    setDocumentLayoutDraft(normalizeOrderDocumentMetadataLayout(order?.documentLayout))
+    setDepositPercentDraft(
+      order?.depositPercent === null || order?.depositPercent === undefined
+        ? ''
+        : String(order.depositPercent),
+    )
+    setDepositReceivedDateDraft(String(order?.depositReceivedDate ?? '').slice(0, 10))
     setLeadTimeTextDraft(String(order?.leadTime ?? '').trim())
     setFreightDescriptionDraft(String(order?.freightDescription ?? '').trim())
     setShippingCarrierDraft(String(order?.shippingCarrier ?? '').trim())
@@ -903,6 +943,10 @@ export function JobDetailsDialog({
 
     if (inspectionSheetUploadInputRef.current) {
       inspectionSheetUploadInputRef.current.value = ''
+    }
+
+    if (acknowledgmentUploadInputRef.current) {
+      acknowledgmentUploadInputRef.current.value = ''
     }
   }, [
     mode,
@@ -1330,6 +1374,12 @@ export function JobDetailsDialog({
   const inspectionSheetDisplayName = inspectionSheetDeletedLocally
     ? null
     : uploadedInspectionSheetName || String(order?.inspectionSheet ?? '').trim() || null
+  const acknowledgmentUrl = acknowledgmentDeletedLocally
+    ? null
+    : uploadedAcknowledgmentUrl || String(order?.acknowledgmentDocumentUrl ?? '').trim() || null
+  const acknowledgmentDisplayName = acknowledgmentDeletedLocally
+    ? null
+    : uploadedAcknowledgmentName || String(order?.acknowledgmentDocument ?? '').trim() || null
   const canOpenBolDocument = Boolean(bolUrl || (hasBolText && hasMondayItemId))
   const hasSignedBolForShipping = Boolean(signedBolUrl)
   const hasCustomerSignedBol = Boolean(customerSignedBolUrl)
@@ -1458,14 +1508,14 @@ export function JobDetailsDialog({
         : `Work Order - ${orderNumber}.pdf`
       const proformaInvoiceName = `Proforma Invoice - ${orderNumber}.pdf`
       const bolName = `Bill of Lading - ${orderNumber}.pdf`
-      const documentData = {
+      const documentData = buildOrderDocumentData({
         changeVersion: effectiveChangeVersion || undefined,
         documentDate: String(sourceOrder.orderDate ?? '').trim(),
         companyName: String(sourceOrder.dealerName || order.dealerName || '').trim(),
         contactName: String(sourceOrder.contactName || order.contactName || '').trim(),
         contactEmail: String(sourceOrder.contactEmail || order.contactEmail || '').trim(),
         contactPhone: String(sourceOrder.contactPhone || order.contactPhone || '').trim(),
-        description: String(sourceOrder.description ?? sourceOrder.orderName ?? '').trim(),
+        description: String(sourceOrder.description ?? '').trim(),
         poNumber: String(sourceOrder.poNumber ?? '').trim(),
         projectName: String(sourceOrder.orderName ?? '').trim(),
         acknowledgmentNumber: orderNumber,
@@ -1476,9 +1526,10 @@ export function JobDetailsDialog({
           || sourceOrder.dueDate
           || '',
         ).trim(),
-        // The description is an internal delivery note; confirmations should
-        // consistently label the charge as Delivery.
-        freightType: freightNet > 0 ? 'Delivery' : '',
+        // What was typed into Freight / delivery details wins, so the row is
+        // never blank just because nothing priced landed in the freight bucket.
+        freightDescription: String(freightDescriptionDraft ?? '').trim(),
+        metadataLayout: documentLayoutDraft,
         carrier: String(shippingCarrierDraft).trim(),
         shipmentDate: String(sourceOrder.shippedAt ?? '').trim(),
         shipTo: String(shipToDraft).trim(),
@@ -1489,7 +1540,6 @@ export function JobDetailsDialog({
         freightGross: Number(sourceOrder.freightGrossValue || freightNet + Number(sourceOrder.discountFreightAmount || 0)),
         freightDiscountAmount: Number(sourceOrder.discountFreightAmount || 0),
         freightNet,
-        grandTotal: productNet + freightNet,
         depositRequired,
         depositPercent,
         lines: override?.lines
@@ -1498,7 +1548,7 @@ export function JobDetailsDialog({
         poDate: String(sourceOrder.orderDate ?? '').trim(),
         acknowledgmentDate: String(sourceOrder.convertedAt ?? sourceOrder.orderDate ?? '').trim(),
         estimatedReadyDate: String(sourceOrder.managerReadyDate ?? sourceOrder.dueDate ?? '').trim(),
-      }
+      })
       const settings = quotePrintSettingsQuery.data?.settings || DEFAULT_QUOTE_PRINT_SETTINGS
       const termsResponse = await fetchCrmDocumentTerms(sourceOrder.dealerSourceId)
       const documentTerms = groupOrderDocumentTerms(termsResponse.terms)
@@ -1912,26 +1962,26 @@ export function JobDetailsDialog({
         .toFixed(2))
       const version = Number(order.pendingChangeVersion || order.changeVersion + 1 || 1)
       const orderNumber = String(order.orderNumber ?? '').trim()
-      const documentData = {
+      const documentData = buildOrderDocumentData({
         documentDate: new Date().toISOString().slice(0, 10),
         companyName: String(order.dealerName ?? '').trim(),
         contactName: String(order.contactName ?? '').trim(),
         contactEmail: String(order.contactEmail ?? '').trim(),
         contactPhone: String(order.contactPhone ?? '').trim(),
-        description: String(order.description ?? order.orderName ?? '').trim(),
+        description: String(order.description ?? '').trim(),
         poNumber: String(order.poNumber ?? '').trim(),
         projectName: String(order.orderName ?? '').trim(),
         acknowledgmentNumber: orderNumber,
         leadTime: String(order.leadTime || order.dueDate || '').trim(),
-        freightType: freightNet > 0 ? 'Delivery' : '',
+        freightDescription: String(order.freightDescription ?? '').trim(),
+        metadataLayout: normalizeOrderDocumentMetadataLayout(order.documentLayout),
         shipTo: String(order.shipTo ?? '').trim(),
         productNet,
         freightNet,
-        grandTotal: productNet + freightNet,
         depositRequired: false,
         depositPercent: null,
         lines: normalizedLines,
-      }
+      })
       const settings = quotePrintSettingsQuery.data?.settings || DEFAULT_QUOTE_PRINT_SETTINGS
       const termsResponse = await fetchCrmDocumentTerms(order.dealerSourceId)
       const documentTerms = groupOrderDocumentTerms(termsResponse.terms)
@@ -2077,29 +2127,33 @@ export function JobDetailsDialog({
       multiline?: boolean
       accent?: 'primary' | 'info' | 'warning' | 'success'
     },
-  ) => (
+  ) => {
+    const hasValue = Boolean(String(value ?? '').trim())
+
+    return (
     <Box
       sx={{
         display: 'grid',
-        gridTemplateColumns: options?.multiline ? '1fr' : { xs: '1fr', sm: '128px minmax(0, 1fr)' },
-        alignItems: 'start',
-        gap: options?.multiline ? 0.35 : 1,
-        py: 0.72,
+        gridTemplateColumns: options?.multiline ? '1fr' : { xs: '1fr', sm: '124px minmax(0, 1fr)' },
+        alignItems: 'baseline',
+        gap: options?.multiline ? 0.2 : 1,
+        py: 0.6,
         gridColumn: options?.fullWidth ? '1 / -1' : undefined,
         minWidth: 0,
         borderBottom: '1px solid',
-        borderColor: 'rgba(15, 42, 68, 0.08)',
+        borderColor: 'rgba(15, 42, 68, 0.055)',
         '&:last-of-type': { borderBottom: 0 },
       }}
     >
       <Typography
         variant="caption"
         sx={{
-          fontWeight: 850,
-          letterSpacing: '0.045em',
+          fontWeight: 700,
+          fontSize: '0.7rem',
+          letterSpacing: '0.04em',
           textTransform: 'uppercase',
-          color: `${options?.accent || 'primary'}.main`,
-          lineHeight: 1.45,
+          color: 'text.secondary',
+          lineHeight: 1.6,
         }}
       >
         {fieldLabel}
@@ -2107,18 +2161,318 @@ export function JobDetailsDialog({
       <Typography
         variant="body1"
         sx={{
-          fontWeight: 600,
+          fontWeight: hasValue ? 650 : 500,
           fontSize: { xs: '0.88rem', md: '0.91rem' },
-          lineHeight: 1.45,
+          lineHeight: 1.5,
+          color: hasValue
+            ? (options?.accent === 'success' ? 'success.dark' : 'text.primary')
+            : 'text.disabled',
           whiteSpace: options?.multiline ? 'pre-wrap' : 'normal',
           overflowWrap: 'anywhere',
         }}
       >
-        {String(value ?? '').trim() || '—'}
+        {hasValue ? String(value).trim() : 'Not set'}
       </Typography>
+    </Box>
+    )
+  }
+
+  const moveDocumentLayoutRow = (key: string, direction: 'left' | 'right' | 'up' | 'down') => {
+    setDocumentLayoutDraft((current) => {
+      const side: 'left' | 'right' = current.left.includes(key) ? 'left' : 'right'
+      const other: 'left' | 'right' = side === 'left' ? 'right' : 'left'
+
+      if (direction === 'up' || direction === 'down') {
+        const column = [...current[side]]
+        const index = column.indexOf(key)
+        const nextIndex = direction === 'up' ? index - 1 : index + 1
+
+        if (nextIndex < 0 || nextIndex >= column.length) {
+          return current
+        }
+
+        column.splice(index, 1)
+        column.splice(nextIndex, 0, key)
+
+        return { ...current, [side]: column }
+      }
+
+      if (direction === side) {
+        return current
+      }
+
+      return {
+        ...current,
+        [side]: current[side].filter((entry) => entry !== key),
+        [other]: [...current[other], key],
+      }
+    })
+  }
+
+  const setDocumentLayoutRowHidden = (key: string, hidden: boolean) => {
+    setDocumentLayoutDraft((current) => {
+      const withoutKey = {
+        left: current.left.filter((entry) => entry !== key),
+        right: current.right.filter((entry) => entry !== key),
+        hidden: current.hidden.filter((entry) => entry !== key),
+      }
+
+      if (hidden) {
+        return { ...withoutKey, hidden: [...withoutKey.hidden, key] }
+      }
+
+      // Restoring puts the row back on whichever side it belongs to by default.
+      const side = ORDER_DOCUMENT_DEFAULT_METADATA_LAYOUT.right.includes(key) ? 'right' : 'left'
+
+      return { ...withoutKey, [side]: [...withoutKey[side], key] }
+    })
+  }
+
+  const renderDocumentLayoutColumn = (side: 'left' | 'right') => (
+    <Box sx={{ minWidth: 0 }}>
+      <Typography
+        variant="caption"
+        sx={{ fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'text.secondary' }}
+      >
+        {side === 'left' ? 'Left column' : 'Right column'}
+      </Typography>
+      <Stack spacing={0.4} sx={{ mt: 0.5 }}>
+        {documentLayoutDraft[side].length === 0 ? (
+          <Typography variant="body2" color="text.disabled" sx={{ py: 0.5 }}>Empty</Typography>
+        ) : documentLayoutDraft[side].map((key, index) => (
+          <Stack
+            key={key}
+            direction="row"
+            alignItems="center"
+            spacing={0.25}
+            sx={{
+              px: 0.75,
+              py: 0.3,
+              borderRadius: 1,
+              border: '1px solid',
+              borderColor: 'rgba(15, 42, 68, 0.12)',
+              bgcolor: '#fff',
+            }}
+          >
+            {side === 'right' ? (
+              <IconButton size="small" aria-label={`Move ${key} to the left column`} onClick={() => moveDocumentLayoutRow(key, 'left')}>
+                <NavigateBeforeRoundedIcon sx={{ fontSize: 16 }} />
+              </IconButton>
+            ) : null}
+            <Typography variant="body2" sx={{ flex: 1, fontWeight: 650, minWidth: 0 }} noWrap>
+              {ORDER_DOCUMENT_METADATA_LABELS[key] || key}
+            </Typography>
+            <IconButton
+              size="small"
+              disabled={index === 0}
+              aria-label={`Move ${key} up`}
+              onClick={() => moveDocumentLayoutRow(key, 'up')}
+            >
+              <ExpandMoreRoundedIcon sx={{ fontSize: 15, transform: 'rotate(180deg)' }} />
+            </IconButton>
+            <IconButton
+              size="small"
+              disabled={index === documentLayoutDraft[side].length - 1}
+              aria-label={`Move ${key} down`}
+              onClick={() => moveDocumentLayoutRow(key, 'down')}
+            >
+              <ExpandMoreRoundedIcon sx={{ fontSize: 15 }} />
+            </IconButton>
+            {side === 'left' ? (
+              <IconButton size="small" aria-label={`Move ${key} to the right column`} onClick={() => moveDocumentLayoutRow(key, 'right')}>
+                <NavigateNextRoundedIcon sx={{ fontSize: 16 }} />
+              </IconButton>
+            ) : null}
+            <IconButton
+              size="small"
+              aria-label={`Hide ${key} from the document`}
+              title="Do not print this line"
+              onClick={() => setDocumentLayoutRowHidden(key, true)}
+            >
+              <VisibilityOffRoundedIcon sx={{ fontSize: 15 }} />
+            </IconButton>
+          </Stack>
+        ))}
+      </Stack>
     </Box>
   )
 
+  const renderEditableOrderSelect = ({
+    label,
+    value,
+    onChange,
+    options,
+    loading = false,
+  }: {
+    label: string
+    value: string
+    onChange: (value: string) => void
+    options: string[]
+    loading?: boolean
+  }) => (
+    <Box
+      sx={{
+        display: 'grid',
+        gridTemplateColumns: { xs: '1fr', sm: '124px minmax(0, 1fr)' },
+        alignItems: 'center',
+        gap: 1,
+        py: 0.3,
+        minWidth: 0,
+        borderBottom: '1px solid',
+        borderColor: 'rgba(15, 42, 68, 0.055)',
+        '&:last-of-type': { borderBottom: 0 },
+      }}
+    >
+      <Typography
+        variant="caption"
+        sx={{
+          fontWeight: 700,
+          fontSize: '0.7rem',
+          letterSpacing: '0.04em',
+          textTransform: 'uppercase',
+          color: 'text.secondary',
+          lineHeight: 1.6,
+        }}
+      >
+        {label}
+      </Typography>
+      <TextField
+        select
+        size="small"
+        value={options.includes(value) ? value : ''}
+        onChange={(event) => onChange(event.target.value)}
+        disabled={isSavingManagerEdit || loading}
+        fullWidth
+        SelectProps={{ displayEmpty: true }}
+        sx={{
+          '& .MuiOutlinedInput-root': {
+            bgcolor: 'rgba(15, 42, 68, 0.028)',
+            fontSize: { xs: '0.88rem', md: '0.91rem' },
+            fontWeight: 650,
+            '& fieldset': { borderColor: 'transparent' },
+            '&:hover fieldset': { borderColor: 'rgba(15, 42, 68, 0.22)' },
+            '&.Mui-focused': { bgcolor: '#ffffff' },
+            '&.Mui-focused fieldset': { borderColor: 'primary.main' },
+          },
+          '& .MuiSelect-select': { py: 0.62 },
+        }}
+      >
+        <MenuItem value="">
+          <Typography variant="body2" color="text.disabled">Not set</Typography>
+        </MenuItem>
+        {options.map((option) => (
+          <MenuItem key={option} value={option}>{option}</MenuItem>
+        ))}
+      </TextField>
+    </Box>
+  )
+
+  const renderOrderFactRow = (
+    fieldLabel: string,
+    content: ReactNode,
+    options?: { fullWidth?: boolean; action?: ReactNode },
+  ) => (
+    <Box
+      sx={{
+        display: 'grid',
+        gridTemplateColumns: { xs: '1fr', sm: '124px minmax(0, 1fr)' },
+        alignItems: 'center',
+        gap: 1,
+        py: 0.6,
+        gridColumn: options?.fullWidth ? '1 / -1' : undefined,
+        minWidth: 0,
+        borderBottom: '1px solid',
+        borderColor: 'rgba(15, 42, 68, 0.055)',
+        '&:last-of-type': { borderBottom: 0 },
+      }}
+    >
+      <Typography
+        variant="caption"
+        sx={{
+          fontWeight: 700,
+          fontSize: '0.7rem',
+          letterSpacing: '0.04em',
+          textTransform: 'uppercase',
+          color: 'text.secondary',
+          lineHeight: 1.6,
+          alignSelf: 'start',
+          pt: 0.3,
+        }}
+      >
+        {fieldLabel}
+      </Typography>
+      <Stack direction="row" alignItems="flex-start" spacing={1} sx={{ minWidth: 0 }}>
+        <Box sx={{ minWidth: 0, flex: 1 }}>{content}</Box>
+        {options?.action ? <Box sx={{ flexShrink: 0 }}>{options.action}</Box> : null}
+      </Stack>
+    </Box>
+  )
+
+  // Deposit was two rows that each told half the story - the terms in one place
+  // and whether it arrived in another. It is one question, so it is one row.
+  const renderDepositRow = () => {
+    if (isManagerEditMode) {
+      return (
+        <>
+          {renderEditableOrderFact({
+            label: 'Deposit %',
+            value: depositPercentDraft,
+            onChange: setDepositPercentDraft,
+            helperText: 'Any value above 0 marks the deposit required. Leave blank to keep it as it is.',
+          })}
+          {appUser?.canViewOrderValue
+            ? renderEditableOrderFact({
+                label: 'Deposit received',
+                value: depositReceivedDateDraft,
+                onChange: setDepositReceivedDateDraft,
+                type: 'date',
+                accent: 'success',
+              })
+            : null}
+        </>
+      )
+    }
+
+    const isRequired = order?.depositRequired === true
+    const isNotRequired = order?.depositRequired === false
+    const percent = Number(order?.depositPercent) || 0
+    const receivedDate = appUser?.canViewOrderValue
+      ? String(order?.depositReceivedDate ?? '').trim()
+      : ''
+
+    if (isNotRequired) {
+      return renderOrderFactRow('Deposit', (
+        <Chip size="small" variant="outlined" label="Not required" sx={{ fontWeight: 700 }} />
+      ))
+    }
+
+    if (!isRequired) {
+      return renderOrderFactRow('Deposit', (
+        <Typography variant="body1" sx={{ fontSize: '0.91rem', fontWeight: 500, color: 'text.disabled' }}>
+          Not set
+        </Typography>
+      ))
+    }
+
+    return renderOrderFactRow('Deposit', (
+      <Stack direction="row" spacing={0.7} flexWrap="wrap" useFlexGap alignItems="center">
+        <Chip
+          size="small"
+          color={receivedDate ? 'success' : 'warning'}
+          variant={receivedDate ? 'filled' : 'outlined'}
+          label={receivedDate ? `Received ${formatDisplayDate(receivedDate)}` : 'Awaiting deposit'}
+          sx={{ fontWeight: 750 }}
+        />
+        <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 650 }}>
+          {percent ? `${percent}% required` : 'Required'}
+        </Typography>
+      </Stack>
+    ))
+  }
+
+  // Editing happens in place: the pencil does not rebuild the panel, it just
+  // makes the value cell typable. Same grid, same label column, same row rule,
+  // so nothing moves and the eye keeps its place.
   const renderEditableOrderFact = ({
     label,
     value,
@@ -2140,30 +2494,70 @@ export function JobDetailsDialog({
   }) => (
     <Box
       sx={{
-        py: 0.45,
+        display: 'grid',
+        gridTemplateColumns: multiline ? '1fr' : { xs: '1fr', sm: '124px minmax(0, 1fr)' },
+        alignItems: multiline ? 'stretch' : 'center',
+        gap: multiline ? 0.2 : 1,
+        py: 0.3,
+        gridColumn: multiline ? '1 / -1' : undefined,
         minWidth: 0,
+        borderBottom: '1px solid',
+        borderColor: 'rgba(15, 42, 68, 0.055)',
+        '&:last-of-type': { borderBottom: 0 },
       }}
     >
+      <Typography
+        variant="caption"
+        sx={{
+          fontWeight: 700,
+          fontSize: '0.7rem',
+          letterSpacing: '0.04em',
+          textTransform: 'uppercase',
+          color: 'text.secondary',
+          lineHeight: 1.6,
+          alignSelf: multiline ? 'start' : 'center',
+        }}
+      >
+        {label}
+      </Typography>
       <TextField
         size="small"
-        label={label}
         value={value}
         type={type}
         onChange={(event) => onChange(event.target.value)}
         disabled={disabled || isSavingManagerEdit}
         multiline={multiline}
         minRows={multiline ? 2 : undefined}
-        maxRows={multiline ? 5 : undefined}
+        maxRows={multiline ? 6 : undefined}
         helperText={helperText}
-        InputLabelProps={type === 'date' ? { shrink: true } : undefined}
+        placeholder={disabled ? undefined : 'Not set'}
+        inputProps={{ 'aria-label': label }}
+        InputProps={{
+          endAdornment: disabled
+            ? (
+              <InputAdornment position="end">
+                <LockRoundedIcon sx={{ fontSize: 14, color: 'text.disabled' }} />
+              </InputAdornment>
+            )
+            : undefined,
+        }}
         fullWidth
         sx={{
+          // Reads as the value itself until you touch it, rather than as a form
+          // control dropped on top of the row.
           '& .MuiOutlinedInput-root': {
-            bgcolor: 'rgba(255, 255, 255, 0.96)',
+            bgcolor: disabled ? 'transparent' : 'rgba(15, 42, 68, 0.028)',
+            fontSize: { xs: '0.88rem', md: '0.91rem' },
+            fontWeight: 650,
+            transition: 'background-color 120ms ease',
+            '& fieldset': { borderColor: 'transparent' },
+            '&:hover:not(.Mui-disabled) fieldset': { borderColor: 'rgba(15, 42, 68, 0.22)' },
+            '&.Mui-focused': { bgcolor: '#ffffff' },
+            '&.Mui-focused fieldset': { borderColor: `${accent}.main` },
           },
-          '& .MuiOutlinedInput-notchedOutline': {
-            borderColor: `${accent}.main`,
-          },
+          '& .MuiOutlinedInput-input': { py: 0.45 },
+          '& .MuiOutlinedInput-input::placeholder': { fontWeight: 500, opacity: 0.5 },
+          '& .MuiFormHelperText-root': { mx: 0, mt: 0.15, lineHeight: 1.3 },
         }}
       />
     </Box>
@@ -2451,6 +2845,17 @@ export function JobDetailsDialog({
           : {}),
         ...(String(podDateDraft ?? '').trim() !== normalizeDateInputValue(order.shippedAt ?? '')
           ? { podDate: String(podDateDraft ?? '').trim() }
+          : {}),
+        ...(String(depositPercentDraft ?? '').trim()
+          !== (order.depositPercent === null || order.depositPercent === undefined ? '' : String(order.depositPercent))
+          ? { depositPercent: String(depositPercentDraft ?? '').trim() }
+          : {}),
+        ...(String(depositReceivedDateDraft ?? '').trim() !== String(order.depositReceivedDate ?? '').slice(0, 10)
+          ? { depositReceivedDate: String(depositReceivedDateDraft ?? '').trim() }
+          : {}),
+        ...(JSON.stringify(documentLayoutDraft)
+          !== JSON.stringify(normalizeOrderDocumentMetadataLayout(order.documentLayout))
+          ? { documentLayout: documentLayoutDraft }
           : {}),
         ...(String(shipToDraft ?? '').trim() !== String(order.shipTo ?? '').trim()
           ? { shipTo: String(shipToDraft ?? '').trim() }
@@ -2755,6 +3160,10 @@ export function JobDetailsDialog({
             version: Number(order.pendingChangeVersion || order.changeVersion + 1 || 1),
           })
         }
+      } else if (documentType === 'acknowledgment') {
+        setUploadedAcknowledgmentUrl(response.order.acknowledgmentDocumentUrl || null)
+        setUploadedAcknowledgmentName(response.order.acknowledgmentDocument || file.name)
+        setAcknowledgmentDeletedLocally(false)
       } else {
         setUploadedInspectionSheetUrl(response.order.inspectionSheetUrl || null)
         setUploadedInspectionSheetName(response.order.inspectionSheet || file.name)
@@ -2800,6 +3209,10 @@ export function JobDetailsDialog({
       if (documentType === 'inspection_sheet' && inspectionSheetUploadInputRef.current) {
         inspectionSheetUploadInputRef.current.value = ''
       }
+
+      if (documentType === 'acknowledgment' && acknowledgmentUploadInputRef.current) {
+        acknowledgmentUploadInputRef.current.value = ''
+      }
     }
   }
 
@@ -2836,6 +3249,7 @@ export function JobDetailsDialog({
         : title,
     )
     setDocumentPreviewUrl(previewUrl)
+    setDocumentPreviewFileName(String(selectedDocument?.fileName || fileName || '').trim())
     setDocumentPreviewMode(resolveDocumentPreviewMode({
       fileName: selectedDocument?.fileName || fileName,
       mimeType: selectedDocument?.mimeType || mimeType,
@@ -3036,6 +3450,50 @@ export function JobDetailsDialog({
     }
   }
 
+  // The card already knows the document's name ("Order Confirmation - 260903.pdf").
+  // Fall back to the preview title plus the order number so a download is never
+  // saved as something meaningless, and strip characters a file system rejects.
+  const resolveDownloadFileName = (fileName: string, title: string) => {
+    const orderNumber = String(order?.orderNumber ?? '').trim()
+    const fallbackTitle = String(title || 'Document').replace(/\s*·.*$/, '').replace(/\s+Preview$/i, '').trim()
+    const candidate = String(fileName || '').trim()
+      || [fallbackTitle, orderNumber].filter(Boolean).join(' - ')
+    const safe = candidate.replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, ' ').trim() || 'document'
+
+    return /\.[a-zA-Z0-9]{2,8}$/.test(safe) ? safe : `${safe}.pdf`
+  }
+
+  const handleDownloadDocumentPreview = async () => {
+    if (!documentPreviewUrl || isDownloadingDocumentPreview) {
+      return
+    }
+
+    setIsDownloadingDocumentPreview(true)
+
+    try {
+      const response = await fetch(documentPreviewUrl)
+
+      if (!response.ok) {
+        throw new Error('Could not download this document.')
+      }
+
+      const objectUrl = URL.createObjectURL(await response.blob())
+      const link = document.createElement('a')
+      link.href = objectUrl
+      link.download = resolveDownloadFileName(documentPreviewFileName, documentPreviewTitle)
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      URL.revokeObjectURL(objectUrl)
+    } catch (error) {
+      setInfoDocumentActionError(
+        error instanceof Error ? error.message : 'Could not download this document.',
+      )
+    } finally {
+      setIsDownloadingDocumentPreview(false)
+    }
+  }
+
   const handlePrintDocumentPreview = async () => {
     if (!documentPreviewUrl || isPrintingDocumentPreview) {
       return
@@ -3106,7 +3564,9 @@ export function JobDetailsDialog({
         ? 'Delete Driver Signed BOL from this order?'
         : documentType === 'customer_signed_bol'
           ? 'Delete Customer Signed BOL from this order?'
-          : 'Delete Inspection Sheet from this order?',
+          : documentType === 'acknowledgment'
+            ? 'Delete the acknowledgment from this order?'
+            : 'Delete Inspection Sheet from this order?',
     )
 
     if (!shouldContinue) {
@@ -3140,6 +3600,11 @@ export function JobDetailsDialog({
       setUploadedInspectionSheetUrl(nextInspectionSheetUrl)
       setUploadedInspectionSheetName(response.order.inspectionSheet || null)
       setInspectionSheetDeletedLocally(!nextInspectionSheetUrl)
+
+      const nextAcknowledgmentUrl = response.order.acknowledgmentDocumentUrl || null
+      setUploadedAcknowledgmentUrl(nextAcknowledgmentUrl)
+      setUploadedAcknowledgmentName(response.order.acknowledgmentDocument || null)
+      setAcknowledgmentDeletedLocally(!nextAcknowledgmentUrl)
 
       setShippingActionSuccess(`${response.document.label} deleted.`)
 
@@ -3913,6 +4378,7 @@ export function JobDetailsDialog({
               }}
             >
               <Tab value="info" label="Order overview" />
+              <Tab value="documents" label="Documents" />
               <Tab value="shipping" label="Shipping" />
               <Tab value="hours" label="Hours" />
               <Tab value="pictures" label="Pictures" />
@@ -5178,57 +5644,40 @@ export function JobDetailsDialog({
             {detailsTab === 'info' ? (
               <Stack spacing={1.1} sx={{ order: 1 }}>
                 {order?.sourceQuoteId ? (
-                  <Paper
-                    variant="outlined"
+                  <Stack
+                    direction="row"
+                    alignItems="center"
+                    spacing={1}
                     sx={{
-                      p: { xs: 1.4, md: 1.7 },
-                      borderColor: (theme) => alpha(theme.palette.primary.main, 0.28),
-                      background: (theme) => `linear-gradient(135deg, ${alpha(theme.palette.primary.main, 0.1)} 0%, ${alpha(theme.palette.info.light, 0.08)} 100%)`,
+                      px: 1.25,
+                      py: 0.6,
+                      borderRadius: 1.5,
+                      border: '1px solid',
+                      borderColor: 'rgba(15, 42, 68, 0.1)',
+                      bgcolor: '#fbfcfe',
                     }}
                   >
-                    <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.4} alignItems={{ xs: 'stretch', sm: 'center' }}>
-                      <Box
-                        sx={{
-                          width: 42,
-                          height: 42,
-                          borderRadius: 1.5,
-                          display: 'grid',
-                          placeItems: 'center',
-                          color: 'primary.main',
-                          bgcolor: (theme) => alpha(theme.palette.primary.main, 0.12),
-                          flexShrink: 0,
-                        }}
-                      >
-                        <DescriptionRoundedIcon />
+                    <DescriptionRoundedIcon sx={{ fontSize: 17, color: 'text.secondary', flexShrink: 0 }} />
+                    <Typography variant="body2" color="text.secondary" sx={{ minWidth: 0, flex: 1 }} noWrap>
+                      From quote{' '}
+                      <Box component="span" sx={{ fontWeight: 750, color: 'text.primary' }}>
+                        {order.sourceQuoteNumber || 'linked quote'}
                       </Box>
-                      <Stack spacing={0.35} sx={{ flex: 1, minWidth: 0 }}>
-                        <Typography variant="overline" color="primary.main" sx={{ fontWeight: 800, lineHeight: 1.2 }}>
-                          Accepted Quote
-                        </Typography>
-                        <Typography variant="h6" sx={{ fontWeight: 800 }}>
-                          {order.sourceQuoteNumber || 'Linked quote'}
-                        </Typography>
-                        <Stack direction="row" spacing={0.7} flexWrap="wrap" useFlexGap>
-                          {order.quoteAcceptedAt ? (
-                            <Chip size="small" label={`Accepted ${formatDate(order.quoteAcceptedAt)}`} />
-                          ) : null}
-                          {order.convertedAt ? (
-                            <Chip size="small" variant="outlined" label={`Converted ${formatDateTime(order.convertedAt)}`} />
-                          ) : null}
-                        </Stack>
-                      </Stack>
-                      <Button
-                        variant="contained"
-                        endIcon={<OpenInNewRoundedIcon />}
-                        onClick={() => {
-                          window.open(`/sales?tab=quotes&quoteId=${encodeURIComponent(order.sourceQuoteId || '')}`, '_blank', 'noopener,noreferrer')
-                        }}
-                        sx={{ textTransform: 'none', fontWeight: 700, whiteSpace: 'nowrap' }}
-                      >
-                        Open quote details
-                      </Button>
-                    </Stack>
-                  </Paper>
+                      {order.quoteAcceptedAt ? ` · accepted ${formatDate(order.quoteAcceptedAt)}` : ''}
+                      {order.convertedAt ? ` · converted ${formatDate(order.convertedAt)}` : ''}
+                    </Typography>
+                    <Button
+                      size="small"
+                      variant="text"
+                      endIcon={<OpenInNewRoundedIcon sx={{ fontSize: 15 }} />}
+                      onClick={() => {
+                        window.open(`/sales?tab=quotes&quoteId=${encodeURIComponent(order.sourceQuoteId || '')}`, '_blank', 'noopener,noreferrer')
+                      }}
+                      sx={{ textTransform: 'none', fontWeight: 700, whiteSpace: 'nowrap', flexShrink: 0 }}
+                    >
+                      Open quote
+                    </Button>
+                  </Stack>
                 ) : null}
 
                 <Paper
@@ -5352,13 +5801,15 @@ export function JobDetailsDialog({
                         <Box
                           component="section"
                           sx={{
-                            order: { xs: 2, md: 2 },
+                            order: { xs: 1, md: 1 },
                             px: 1.5,
                             py: 1.25,
                             borderRadius: 2,
                             bgcolor: '#ffffff',
                             border: '1px solid',
                             borderColor: 'rgba(15, 42, 68, 0.1)',
+                            borderTop: '3px solid',
+                            borderTopColor: 'primary.main',
                           }}
                         >
                           <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.65 }}>
@@ -5398,6 +5849,55 @@ export function JobDetailsDialog({
                           {renderOrderFact('Order date', orderDateDraft ? formatDate(orderDateDraft) : '')}
                           {isManagerEditMode
                             ? renderEditableOrderFact({
+                                label: 'Project',
+                                value: orderNameDraft,
+                                onChange: setOrderNameDraft,
+                              })
+                            : renderOrderFact('Project', orderNameDraft)}
+                          {renderOrderFact('Company', order?.dealerName)}
+                          {renderOrderFactRow(
+                            'Contact',
+                            order?.contactName || order?.contactEmail || order?.contactPhone ? (
+                              <Stack spacing={0.1} sx={{ minWidth: 0 }}>
+                                <Typography variant="body1" sx={{ fontSize: '0.91rem', fontWeight: 650, lineHeight: 1.5 }}>
+                                  {order?.contactName || 'Unnamed contact'}
+                                </Typography>
+                                {order?.contactEmail ? (
+                                  <Typography variant="body2" color="text.secondary" sx={{ overflowWrap: 'anywhere' }}>
+                                    {order.contactEmail}
+                                  </Typography>
+                                ) : null}
+                                {order?.contactPhone ? (
+                                  <Typography variant="body2" color="text.secondary">{order.contactPhone}</Typography>
+                                ) : null}
+                              </Stack>
+                            ) : (
+                              <Typography variant="body1" sx={{ fontSize: '0.91rem', fontWeight: 500, color: 'text.disabled' }}>
+                                Not set
+                              </Typography>
+                            ),
+                            {
+                              action: canEditOrderInformation ? (
+                                <Button size="small" variant="text" onClick={openContactDialog} sx={{ minWidth: 0, px: 0.5, textTransform: 'none', fontWeight: 750 }}>
+                                  Change
+                                </Button>
+                              ) : null,
+                            },
+                          )}
+                          {(canEditOrderInformation || appUser?.canViewOrderValue)
+                            ? isManagerEditMode
+                              ? renderEditableOrderSelect({
+                                  label: 'Sales representative',
+                                  value: salesRepDraft,
+                                  onChange: setSalesRepDraft,
+                                  options: salesRepOptions,
+                                  loading: salesRepsQuery.isLoading,
+                                })
+                              : renderOrderFact('Sales representative', order?.salesRep)
+                            : null}
+                          {renderDepositRow()}
+                          {isManagerEditMode
+                            ? renderEditableOrderFact({
                                 label: 'Description',
                                 value: descriptionDraft,
                                 onChange: setDescriptionDraft,
@@ -5406,45 +5906,12 @@ export function JobDetailsDialog({
                             : renderOrderFact('Description', descriptionDraft, { fullWidth: true, multiline: true })}
                           {isManagerEditMode
                             ? renderEditableOrderFact({
-                                label: 'Project',
-                                value: orderNameDraft,
-                                onChange: setOrderNameDraft,
+                                label: 'Notes',
+                                value: notesDraft,
+                                onChange: setNotesDraft,
+                                multiline: true,
                               })
-                            : renderOrderFact('Project', orderNameDraft)}
-                          {renderOrderFact('Company', order?.dealerName)}
-                          <Box sx={{ py: 0.55 }}>
-                            <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
-                              <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                                Contact
-                              </Typography>
-                              {canEditOrderInformation ? (
-                                <Button size="small" variant="text" onClick={openContactDialog} sx={{ minWidth: 0, px: 0.5, textTransform: 'none', fontWeight: 800 }}>
-                                  Edit / Change
-                                </Button>
-                              ) : null}
-                            </Stack>
-                            <Typography variant="body2" sx={{ fontWeight: 700 }}>{order?.contactName || '—'}</Typography>
-                            {order?.contactPhone ? <Typography variant="body2" color="text.secondary">{order.contactPhone}</Typography> : null}
-                            {order?.contactEmail ? <Typography variant="body2" color="text.secondary">{order.contactEmail}</Typography> : null}
-                          </Box>
-                          {(canEditOrderInformation || appUser?.canViewOrderValue)
-                            ? isManagerEditMode
-                              ? renderEditableOrderFact({
-                                  label: 'Sales representative',
-                                  value: salesRepDraft,
-                                  onChange: setSalesRepDraft,
-                                })
-                              : renderOrderFact('Sales representative', order?.salesRep)
-                            : null}
-                          {appUser?.canViewOrderValue
-                            ? renderOrderFact(
-                              'Deposit received',
-                              order?.depositReceivedDate
-                                ? formatDisplayDate(order.depositReceivedDate)
-                                : '',
-                              { accent: 'success' },
-                            )
-                            : null}
+                            : renderOrderFact('Notes', notesDraft, { fullWidth: true, multiline: true })}
                           {isManagerEditMode
                             ? renderEditableOrderFact({
                                 label: 'PO number',
@@ -5468,35 +5935,19 @@ export function JobDetailsDialog({
                                 : 'Standard order',
                             { accent: 'success' },
                           )}
-                          {renderOrderFact(
-                            'Deposit terms',
-                            order?.depositRequired === false
-                              ? 'Not required'
-                              : order?.depositRequired
-                                ? `${Number(order?.depositPercent) || 0}% required`
-                                : '',
-                          )}
-                          {isManagerEditMode
-                            ? renderEditableOrderFact({
-                                label: 'Internal notes',
-                                value: notesDraft,
-                                onChange: setNotesDraft,
-                                multiline: true,
-                              })
-                            : renderOrderFact('Internal notes', notesDraft, { fullWidth: true, multiline: true })}
                         </Box>
 
                         <Box
                           component="section"
                           sx={{
-                            order: { xs: 1, md: 1 },
+                            order: { xs: 2, md: 2 },
                             px: 1.5,
                             py: 1.25,
                             borderRadius: 2,
                             bgcolor: '#ffffff',
                             border: '1px solid',
                             borderColor: 'rgba(15, 42, 68, 0.1)',
-                            borderTop: '4px solid',
+                            borderTop: '3px solid',
                             borderTopColor: 'info.main',
                           }}
                         >
@@ -5529,23 +5980,25 @@ export function JobDetailsDialog({
                               sx={{ fontWeight: 750 }}
                             />
                           </Stack>
-                          {!isManagerEditMode ? <Box
-                            sx={{
-                              p: 1.05,
-                              mb: 0.55,
-                              borderRadius: 1.5,
-                              bgcolor: (theme) => alpha(theme.palette.warning.main, 0.08),
-                              borderLeft: '3px solid',
-                              borderLeftColor: 'warning.main',
-                            }}
-                          >
-                            <Typography variant="caption" color="warning.dark" sx={{ fontWeight: 850, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                              Shipping note
-                            </Typography>
-                          <Typography variant="body2" sx={{ mt: 0.2, fontWeight: 650, whiteSpace: 'pre-wrap' }}>
-                              {shipNotesDraft || 'No special shipping instructions.'}
-                            </Typography>
-                          </Box> : null}
+                          {!isManagerEditMode && shipNotesDraft.trim() ? (
+                            <Box
+                              sx={{
+                                p: 1.05,
+                                mb: 0.55,
+                                borderRadius: 1.5,
+                                bgcolor: (theme) => alpha(theme.palette.warning.main, 0.08),
+                                borderLeft: '3px solid',
+                                borderLeftColor: 'warning.main',
+                              }}
+                            >
+                              <Typography variant="caption" color="warning.dark" sx={{ fontWeight: 850, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                                Shipping note
+                              </Typography>
+                              <Typography variant="body2" sx={{ mt: 0.2, fontWeight: 650, whiteSpace: 'pre-wrap' }}>
+                                {shipNotesDraft}
+                              </Typography>
+                            </Box>
+                          ) : null}
                           {isManagerEditMode
                             ? renderEditableOrderFact({
                                 label: 'Lead time',
@@ -5557,15 +6010,6 @@ export function JobDetailsDialog({
                             : renderOrderFact('Lead time', leadTimeDateDraft ? formatDate(leadTimeDateDraft) : '', { accent: 'info' })}
                           {isManagerEditMode
                             ? renderEditableOrderFact({
-                                label: 'Lead time details',
-                                value: leadTimeTextDraft,
-                                onChange: setLeadTimeTextDraft,
-                                multiline: true,
-                                accent: 'info',
-                              })
-                            : renderOrderFact('Lead time details', leadTimeTextDraft, { fullWidth: true, multiline: true, accent: 'info' })}
-                          {isManagerEditMode
-                            ? renderEditableOrderFact({
                                 label: 'Ship to',
                                 value: shipToDraft,
                                 onChange: setShipToDraft,
@@ -5573,6 +6017,32 @@ export function JobDetailsDialog({
                                 accent: 'info',
                               })
                             : renderOrderFact('Ship to', shipToDraft, { fullWidth: true, multiline: true, accent: 'info' })}
+                          {isManagerEditMode
+                            ? renderEditableOrderFact({
+                                label: 'Shipping note',
+                                value: shipNotesDraft,
+                                onChange: setShipNotesDraft,
+                                multiline: true,
+                                accent: 'info',
+                              })
+                            : null}
+                          {renderOrderFact('Status', order?.mondayStatus || order?.rowStatus, { accent: 'info' })}
+                          {renderOrderFact(
+                            'Progress',
+                            Number.isFinite(Number(order?.progressPercent))
+                              ? `${Number(order?.progressPercent).toFixed(0)}%`
+                              : '',
+                            { accent: 'info' },
+                          )}
+                          {isManagerEditMode
+                            ? renderEditableOrderFact({
+                                label: 'Lead time details',
+                                value: leadTimeTextDraft,
+                                onChange: setLeadTimeTextDraft,
+                                multiline: true,
+                                accent: 'info',
+                              })
+                            : renderOrderFact('Lead time details', leadTimeTextDraft, { fullWidth: true, multiline: true, accent: 'info' })}
                           {isManagerEditMode
                             ? renderEditableOrderFact({
                                 label: 'Freight / delivery details',
@@ -5590,34 +6060,79 @@ export function JobDetailsDialog({
                                 accent: 'info',
                               })
                             : renderOrderFact('Carrier', shippingCarrierDraft, { accent: 'info' })}
-                          {isManagerEditMode
-                            ? renderEditableOrderFact({
-                                label: 'Shipping note',
-                                value: shipNotesDraft,
-                                onChange: setShipNotesDraft,
-                                multiline: true,
-                                accent: 'info',
-                              })
-                            : null}
-                          {isManagerEditMode
-                            ? renderEditableOrderFact({
-                                label: 'POD date',
-                                value: podDateDraft,
-                                onChange: setPodDateDraft,
-                                type: 'date',
-                                accent: 'info',
-                              })
-                            : renderOrderFact('POD date', podDateDraft ? formatDate(podDateDraft) : '', { accent: 'info' })}
-                          {renderOrderFact('Status', order?.mondayStatus || order?.rowStatus, { accent: 'info' })}
-                          {renderOrderFact(
-                            'Progress',
-                            Number.isFinite(Number(order?.progressPercent))
-                              ? `${Number(order?.progressPercent).toFixed(0)}%`
-                              : '',
-                            { accent: 'info' },
-                          )}
+                          {renderOrderFact('POD date', podDateDraft ? formatDate(podDateDraft) : '', { accent: 'info' })}
                         </Box>
                       </Box>
+
+                    {isManagerEditMode ? (
+                      <Box
+                        sx={{
+                          mt: 0.5,
+                          px: 1.5,
+                          py: 1.25,
+                          borderRadius: 2,
+                          border: '1px solid',
+                          borderColor: 'rgba(15, 42, 68, 0.1)',
+                          bgcolor: '#f8fafc',
+                        }}
+                      >
+                        <Stack spacing={0.15} sx={{ mb: 1 }}>
+                          <Typography variant="subtitle2" sx={{ fontWeight: 850 }}>
+                            Confirmation layout
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            Which side each line prints on in the order confirmation, work order and
+                            proforma for this order. Arrows move a line across or reorder it, and the
+                            eye leaves it off the document entirely.
+                          </Typography>
+                        </Stack>
+                        <Box
+                          sx={{
+                            display: 'grid',
+                            gap: 1.25,
+                            gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 1fr))' },
+                          }}
+                        >
+                          {renderDocumentLayoutColumn('left')}
+                          {renderDocumentLayoutColumn('right')}
+                        </Box>
+                        {documentLayoutDraft.hidden.length > 0 ? (
+                          <Box sx={{ mt: 1.25 }}>
+                            <Typography
+                              variant="caption"
+                              sx={{ fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'text.secondary' }}
+                            >
+                              Not printed
+                            </Typography>
+                            <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap sx={{ mt: 0.5 }}>
+                              {documentLayoutDraft.hidden.map((key) => (
+                                <Chip
+                                  key={key}
+                                  size="small"
+                                  variant="outlined"
+                                  label={ORDER_DOCUMENT_METADATA_LABELS[key] || key}
+                                  onDelete={() => setDocumentLayoutRowHidden(key, false)}
+                                  deleteIcon={<VisibilityRoundedIcon sx={{ fontSize: 15 }} />}
+                                  sx={{ fontWeight: 700 }}
+                                />
+                              ))}
+                            </Stack>
+                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.4 }}>
+                              These lines are left off the printed documents. Click one to put it back.
+                            </Typography>
+                          </Box>
+                        ) : null}
+
+                        <Button
+                          size="small"
+                          variant="text"
+                          sx={{ mt: 0.75, textTransform: 'none', fontWeight: 700 }}
+                          onClick={() => setDocumentLayoutDraft(ORDER_DOCUMENT_DEFAULT_METADATA_LAYOUT)}
+                        >
+                          Reset to default
+                        </Button>
+                      </Box>
+                    ) : null}
 
                     {!canEditOrderInformation ? (
                       <Typography variant="caption" color="text.secondary">
@@ -5633,6 +6148,11 @@ export function JobDetailsDialog({
                   </Stack>
                 </Paper>
 
+              </Stack>
+            ) : null}
+
+            {detailsTab === 'documents' ? (
+              <Stack spacing={1.1} sx={{ order: 1 }}>
                 <Paper
                   variant="outlined"
                   sx={{
@@ -5886,6 +6406,30 @@ export function JobDetailsDialog({
                               fileName: bolName,
                               mimeType: 'application/pdf',
                             })
+                          : undefined,
+                      })}
+
+                      {renderDocumentCard({
+                        title: 'Acknowledgment',
+                        url: acknowledgmentUrl,
+                        fileName: acknowledgmentDisplayName,
+                        available: Boolean(acknowledgmentUrl),
+                        statusText: acknowledgmentUrl ? 'Uploaded' : 'Optional',
+                        emptyLabel: 'No acknowledgment uploaded',
+                        controlsDisabled: isUploadingShippingDocument || isDeletingShippingDocument,
+                        uploading: shippingUploadInFlightType === 'acknowledgment',
+                        onOpen: acknowledgmentUrl
+                          ? () => handleOpenDocumentPreview({
+                              title: 'Acknowledgment Preview',
+                              url: acknowledgmentUrl,
+                              fileName: acknowledgmentDisplayName,
+                            })
+                          : undefined,
+                        onUpload: () => acknowledgmentUploadInputRef.current?.click(),
+                        onDelete: acknowledgmentUrl
+                          ? () => {
+                            void handleDeleteShippingDocument('acknowledgment')
+                          }
                           : undefined,
                       })}
 
@@ -6739,6 +7283,15 @@ export function JobDetailsDialog({
                   </IconButton>
                 ) : null}
                 <Button
+                  startIcon={isDownloadingDocumentPreview ? <CircularProgress size={14} /> : <DownloadRoundedIcon />}
+                  onClick={() => {
+                    void handleDownloadDocumentPreview()
+                  }}
+                  disabled={isDownloadingDocumentPreview}
+                >
+                  {isDownloadingDocumentPreview ? 'Preparing…' : 'Download'}
+                </Button>
+                <Button
                   onClick={() => {
                     void handlePrintDocumentPreview()
                   }}
@@ -6954,6 +7507,22 @@ export function JobDetailsDialog({
 
             if (file) {
               void handleUploadShippingDocument('customer_signed_change_order', file)
+            }
+
+            event.currentTarget.value = ''
+          }}
+        />
+
+        <input
+          ref={acknowledgmentUploadInputRef}
+          type="file"
+          accept=".pdf,.jpg,.jpeg,.png,.webp,.heic,.heif,application/pdf,image/*"
+          style={{ display: 'none' }}
+          onChange={(event) => {
+            const file = event.target.files?.[0]
+
+            if (file) {
+              void handleUploadShippingDocument('acknowledgment', file)
             }
 
             event.currentTarget.value = ''

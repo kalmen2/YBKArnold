@@ -1,5 +1,5 @@
 /* eslint-disable react-refresh/only-export-components */
-import { Document, Image, Page, Rect, StyleSheet, Svg, Text, View, pdf } from '@react-pdf/renderer'
+import { Document, Font, Image, Page, Rect, StyleSheet, Svg, Text, View, pdf } from '@react-pdf/renderer'
 import type { CrmDocumentTerm, CrmDocumentType, CrmQuotePrintSettings } from './api'
 
 export type OrderDocumentTerms = Partial<Record<CrmDocumentType, CrmDocumentTerm[]>>
@@ -52,20 +52,174 @@ function mergeOrderDocumentSublines(lines: OrderDocumentLine[]) {
     })
 }
 
-const estimateOrderDocumentTextWidth = (value: string) => Array.from(value).reduce((width, character) => {
-  if (character === ' ') return width + 2.5
-  if (/[ilI.,'`!|:;]/.test(character)) return width + 2.2
-  if (/[MW@%&]/.test(character)) return width + 7.5
-  if (/[A-Z0-9]/.test(character)) return width + 5.7
-  return width + 4.6
-}, 0)
+// react-pdf hyphenates by default, which chops long words in half mid-word.
+// A document is read, not justified prose: keep every word whole and let it
+// wrap to the next line the way a word processor does.
+Font.registerHyphenationCallback((word) => [word])
 
-function orderDocumentDetailColumnWidth(labels: string[]) {
+// Helvetica advance widths (units per 1000em) for the printable ASCII range.
+// Measuring beats estimating: an under-estimate wraps the label column, which
+// is the whole thing we are trying to prevent.
+const HELVETICA_WIDTHS: Record<string, number> = {
+  ' ': 278, '!': 278, '"': 355, '#': 556, $: 556, '%': 889, '&': 667, "'": 191,
+  '(': 333, ')': 333, '*': 389, '+': 584, ',': 278, '-': 333, '.': 278, '/': 278,
+  0: 556, 1: 556, 2: 556, 3: 556, 4: 556, 5: 556, 6: 556, 7: 556, 8: 556, 9: 556,
+  ':': 278, ';': 278, '<': 584, '=': 584, '>': 584, '?': 556, '@': 1015,
+  A: 667, B: 667, C: 722, D: 722, E: 667, F: 611, G: 778, H: 722, I: 278, J: 500,
+  K: 667, L: 556, M: 833, N: 722, O: 778, P: 667, Q: 778, R: 722, S: 667, T: 611,
+  U: 722, V: 667, W: 944, X: 667, Y: 667, Z: 611,
+  '[': 278, '\\': 278, ']': 278, '^': 469, _: 556, '`': 333,
+  a: 556, b: 556, c: 500, d: 556, e: 556, f: 278, g: 556, h: 556, i: 222, j: 222,
+  k: 500, l: 222, m: 833, n: 556, o: 556, p: 556, q: 556, r: 333, s: 500, t: 278,
+  u: 556, v: 500, w: 722, x: 500, y: 500, z: 500,
+  '{': 334, '|': 260, '}': 334, '~': 584,
+}
+
+const estimateOrderDocumentTextWidth = (value: string, fontSize = 9) => Array
+  .from(String(value ?? ''))
+  .reduce((width, character) => width + (HELVETICA_WIDTHS[character] ?? 556), 0) / 1000 * fontSize
+
+export const ORDER_DOCUMENT_METADATA_KEYS = [
+  'company', 'contact', 'phone', 'email', 'project', 'description',
+  'leadTime', 'freight', 'shipTo',
+] as const
+
+export const ORDER_DOCUMENT_METADATA_LABELS: Record<string, string> = {
+  company: 'Company', contact: 'Contact', phone: 'Phone', email: 'Email',
+  project: 'Project', description: 'Description',
+  leadTime: 'Lead Time', freight: 'Freight', shipTo: 'Ship To',
+}
+
+export type OrderDocumentMetadataLayout = {
+  left: string[]
+  right: string[]
+  hidden: string[]
+}
+
+export const ORDER_DOCUMENT_DEFAULT_METADATA_LAYOUT: OrderDocumentMetadataLayout = {
+  left: ['company', 'contact', 'phone', 'email', 'project', 'description'],
+  right: ['leadTime', 'freight', 'shipTo'],
+  hidden: [],
+}
+
+// Drops unknown keys and appends anything missing, so a stored layout can never
+// silently hide a row from the document.
+export function normalizeOrderDocumentMetadataLayout(value: unknown): OrderDocumentMetadataLayout {
+  const source = (value ?? {}) as { left?: unknown; right?: unknown; hidden?: unknown }
+  const known = new Set<string>(ORDER_DOCUMENT_METADATA_KEYS)
+  const seen = new Set<string>()
+  const clean = (side: unknown) => (Array.isArray(side) ? side : [])
+    .map((key) => String(key))
+    .filter((key) => known.has(key) && !seen.has(key) && seen.add(key))
+
+  const left = clean(source.left)
+  const right = clean(source.right)
+  const hidden = clean(source.hidden)
+
+  if (!left.length && !right.length && !hidden.length) {
+    return ORDER_DOCUMENT_DEFAULT_METADATA_LAYOUT
+  }
+
+  // A row someone deliberately hid stays hidden; only rows the layout has never
+  // heard of are added back, on whichever side the default puts them.
+  const missing = ORDER_DOCUMENT_METADATA_KEYS.filter((key) => !seen.has(key))
+
+  return {
+    left: [...left, ...missing.filter((key) => ORDER_DOCUMENT_DEFAULT_METADATA_LAYOUT.left.includes(key))],
+    right: [...right, ...missing.filter((key) => ORDER_DOCUMENT_DEFAULT_METADATA_LAYOUT.right.includes(key))],
+    hidden,
+  }
+}
+
+export type OrderDocumentSource = Partial<Omit<OrderDocumentData, 'lines' | 'grandTotal' | 'freightType'>> & {
+  lines: OrderDocumentLine[]
+  acknowledgmentNumber: string
+}
+
+const trimmed = (value: unknown) => String(value ?? '').trim()
+
+// Every document is built from here. Description deliberately does NOT fall
+// back to the project name: an order whose description is blank should print a
+// blank description, not the project title twice on the same page.
+export function buildOrderDocumentData(source: OrderDocumentSource): OrderDocumentData {
+  const productNet = Number(source.productNet || 0)
+  const freightNet = Number(source.freightNet || 0)
+  const hasFreight = freightNet > 0
+    || source.lines.some((line) => line.category === 'freight')
+
+  return {
+    documentDate: trimmed(source.documentDate),
+    companyName: trimmed(source.companyName),
+    contactName: trimmed(source.contactName),
+    contactEmail: trimmed(source.contactEmail),
+    contactPhone: trimmed(source.contactPhone),
+    projectName: trimmed(source.projectName),
+    description: trimmed(source.description),
+    poNumber: trimmed(source.poNumber),
+    acknowledgmentNumber: trimmed(source.acknowledgmentNumber),
+    leadTime: trimmed(source.leadTime),
+    shipTo: trimmed(source.shipTo),
+    freightType: hasFreight ? 'Delivery' : '',
+    freightDescription: trimmed(source.freightDescription),
+    carrier: trimmed(source.carrier),
+    shipmentDate: trimmed(source.shipmentDate),
+    salesRep: trimmed(source.salesRep),
+    poDate: trimmed(source.poDate),
+    acknowledgmentDate: trimmed(source.acknowledgmentDate),
+    estimatedReadyDate: trimmed(source.estimatedReadyDate),
+    productGross: Number(source.productGross ?? productNet),
+    discountPercent: Number(source.discountPercent || 0),
+    discountAmount: Number(source.discountAmount || 0),
+    productNet,
+    freightGross: Number(source.freightGross ?? freightNet),
+    freightDiscountAmount: Number(source.freightDiscountAmount || 0),
+    freightNet,
+    grandTotal: Number((productNet + freightNet).toFixed(2)),
+    depositRequired: Boolean(source.depositRequired),
+    depositPercent: source.depositPercent ?? null,
+    changeVersion: source.changeVersion,
+    metadataLayout: source.metadataLayout ?? null,
+    lines: source.lines,
+  }
+}
+
+// Letter width less the page's horizontal padding.
+const ORDER_TABLE_WIDTH = 536
+// Fallback description width when a caller has not measured the table.
+const ORDER_LINE_DESCRIPTION_WIDTH = 248
+const ORDER_LINE_LABEL_GAP = 9
+
+// The number columns were fixed percentages, so they stayed wide enough for
+// figures that never appear and stole that space from the description. Size
+// them to the widest value actually printed, and give the rest to description.
+function orderLineColumnWidths(lines: { qty?: number | null; unitPrice?: number | null; extPrice: number }[]) {
+  const widest = (values: string[]) => values
+    .reduce((width, value) => Math.max(width, estimateOrderDocumentTextWidth(value, 9)), 0)
+  const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max)
+  const cellPadding = 9
+
+  const item = 24
+  const qty = clamp(widest(['Qty', ...lines.map((line) => String(line.qty ?? '-'))]) + cellPadding, 26, 52)
+  const unit = clamp(
+    widest(['Unit', ...lines.map((line) => (line.unitPrice == null ? '-' : money(line.unitPrice)))]) + cellPadding,
+    42, 96,
+  )
+  const extended = clamp(
+    widest(['Extended', ...lines.map((line) => money(line.extPrice))]) + cellPadding,
+    48, 104,
+  )
+
+  return { item, qty, unit, money: extended, desc: ORDER_TABLE_WIDTH - item - qty - unit - extended }
+}
+
+function orderDocumentDetailColumnWidth(labels: string[], available = ORDER_LINE_DESCRIPTION_WIDTH) {
   const longestLabel = labels
     .flatMap((label) => label.replace(/\r\n?/g, '\n').split('\n'))
     .reduce((longest, label) => Math.max(longest, estimateOrderDocumentTextWidth(label)), 0)
 
-  return Math.min(Math.max(longestLabel + 4, 40), 116)
+  // The longest label sets the column, plus the gap before the body. Capped so
+  // a runaway label cannot squeeze the body column out of existence.
+  return Math.min(Math.max(longestLabel + ORDER_LINE_LABEL_GAP + 2, 40), available * 0.62)
 }
 
 function lineRequiresControlSample(line: Pick<OrderDocumentLine, 'description'>) {
@@ -85,6 +239,8 @@ export type OrderDocumentData = {
   acknowledgmentNumber: string
   leadTime: string
   freightType: string
+  freightDescription?: string
+  metadataLayout?: OrderDocumentMetadataLayout | null
   shipTo: string
   productGross?: number
   discountPercent?: number | null
@@ -152,9 +308,9 @@ const styles = StyleSheet.create({
   sublineRow: { paddingLeft: 14, backgroundColor: '#fbfdff' },
   item: { width: '7%', textAlign: 'center', paddingRight: 4 }, desc: { width: '48%', paddingRight: 7 }, qty: { width: '10%', textAlign: 'right', paddingRight: 5 }, unit: { width: '17.5%', textAlign: 'right', paddingRight: 8 }, money: { width: '17.5%', textAlign: 'right' },
   lineDescriptionHeading: { fontFamily: 'Helvetica-Bold', fontSize: 9.6, color: '#172033' },
-  lineDescriptionDetailRow: { flexDirection: 'row' },
+  lineDescriptionDetailRow: { flexDirection: 'row', marginBottom: 3.4 },
   lineDescriptionFirstDetailRow: { marginTop: 4 },
-  lineDescriptionDetailLabel: { flexShrink: 0, paddingRight: 9, color: '#26384a' },
+  lineDescriptionDetailLabel: { flexShrink: 0, paddingRight: ORDER_LINE_LABEL_GAP, color: '#26384a' },
   lineDescriptionDetailBody: { color: '#15283b' },
   lineDescriptionSampleNotice: { color: '#b51f2e', marginTop: 1 },
   totals: { marginTop: 8, marginLeft: '54%', backgroundColor: '#f7f9fb', borderTopWidth: 2, borderTopColor: '#0f4c81' },
@@ -167,9 +323,12 @@ const styles = StyleSheet.create({
   managers: { marginTop: 10, textAlign: 'center', fontSize: 8, color: '#607284' },
   footer: { position: 'absolute', bottom: 24, left: 38, right: 38, borderTopWidth: 1, borderColor: '#d8e0e7', paddingTop: 7, textAlign: 'center', color: '#607284', fontSize: 7.5 },
   workOrderSummary: { marginTop: 10, flexDirection: 'row', alignItems: 'stretch', backgroundColor: '#f7f9fb', borderBottomWidth: 1, borderColor: '#d5dee6' },
-  workOrderSummaryInfo: { width: '58%', paddingVertical: 10, paddingHorizontal: 12 },
+  workOrderSummaryInfo: { width: '46%', paddingVertical: 10, paddingHorizontal: 12 },
   workOrderLabel: { width: 92, fontSize: 7, color: '#66788a', textTransform: 'uppercase' },
-  workOrderBarcodeArea: { width: '42%', paddingVertical: 8, paddingHorizontal: 12, borderLeftWidth: 1, borderLeftColor: '#d5dee6', alignItems: 'center', justifyContent: 'center' },
+  workOrderLeadTime: { width: '22%', paddingVertical: 8, paddingHorizontal: 10, borderLeftWidth: 1, borderLeftColor: '#d5dee6', alignItems: 'center', justifyContent: 'center' },
+  workOrderLeadTimeLabel: { fontSize: 6.5, color: '#66788a', textTransform: 'uppercase', letterSpacing: 0.6 },
+  workOrderLeadTimeValue: { marginTop: 3, fontSize: 17, fontFamily: 'Helvetica-Bold', color: '#0f4c81', textAlign: 'center', lineHeight: 1.1 },
+  workOrderBarcodeArea: { width: '32%', paddingVertical: 8, paddingHorizontal: 12, borderLeftWidth: 1, borderLeftColor: '#d5dee6', alignItems: 'center', justifyContent: 'center' },
   workOrderBarcodeLabel: { fontSize: 6.5, color: '#66788a', textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 4 },
   workOrderBarcodeText: { marginTop: 3, fontSize: 8.5, fontFamily: 'Helvetica-Bold', letterSpacing: 1.2, textAlign: 'center' },
   workOrderDescription: { marginTop: 9, paddingVertical: 8, paddingHorizontal: 11, borderLeftWidth: 3, borderLeftColor: '#0f4c81', backgroundColor: '#f7f9fb' },
@@ -313,19 +472,23 @@ function Barcode({ value, showText = true }: { value: string; showText?: boolean
 }
 
 function Metadata({ data }: { data: OrderDocumentData }) {
-  const customerRows = [
-    ['Company', data.companyName],
-    ['Contact', data.contactName],
-    ['Phone', data.contactPhone],
-    ['Email', data.contactEmail],
-  ]
-  const orderRows = [
-    ['Project', data.projectName],
-    ['Description', data.description || data.projectName],
-    ['Ship To', data.shipTo],
-    ['Lead Time', data.leadTime],
-    ['Freight', data.freightType],
-  ]
+  const rowsByKey: Record<string, [string, string]> = {
+    company: ['Company', data.companyName],
+    contact: ['Contact', data.contactName],
+    phone: ['Phone', data.contactPhone],
+    email: ['Email', data.contactEmail],
+    project: ['Project', data.projectName],
+    description: ['Description', data.description],
+    leadTime: ['Lead Time', data.leadTime],
+    // The typed freight/delivery details, falling back to the computed type.
+    freight: ['Freight', data.freightDescription || data.freightType],
+    shipTo: ['Ship To', data.shipTo],
+  }
+  // An order can carry its own column arrangement; otherwise the house default.
+  const layout = data.metadataLayout ?? ORDER_DOCUMENT_DEFAULT_METADATA_LAYOUT
+  const pick = (keys: string[]) => keys.map((key) => rowsByKey[key]).filter(Boolean)
+  const customerRows = pick(layout.left)
+  const logisticsRows = pick(layout.right)
   const renderRows = (rows: string[][]) => rows.map(([label, value]) => (
     <View key={label} style={styles.infoRow}>
       <Text style={styles.label}>{label}</Text>
@@ -335,7 +498,7 @@ function Metadata({ data }: { data: OrderDocumentData }) {
 
   return <View style={styles.infoPanel} wrap={false}>
     <View style={styles.infoColumn}>{renderRows(customerRows)}</View>
-    <View style={styles.infoColumnRight}>{renderRows(orderRows)}</View>
+    <View style={styles.infoColumnRight}>{renderRows(logisticsRows)}</View>
   </View>
 }
 
@@ -380,6 +543,7 @@ function AchRemittanceInformation() {
 
 function Lines({ data }: { data: OrderDocumentData }) {
   const lines = mergeOrderDocumentSublines(data.lines)
+  const columns = orderLineColumnWidths(lines)
   const depositPercent = data.depositRequired ? Number(data.depositPercent || 50) : 0
   const depositAmount = data.depositRequired
     ? Number(data.productNet || 0) * (depositPercent / 100)
@@ -387,18 +551,18 @@ function Lines({ data }: { data: OrderDocumentData }) {
 
   return <>
     <Text style={styles.sectionTitle}>Order Details</Text>
-    <View style={styles.tableHead}><Text style={styles.item}>Item</Text><Text style={styles.desc}>Description</Text><Text style={styles.qty}>Qty</Text><Text style={styles.unit}>Unit</Text><Text style={styles.money}>Extended</Text></View>
+    <View style={styles.tableHead}><Text style={[styles.item, { width: columns.item }]}>Item</Text><Text style={[styles.desc, { width: columns.desc }]}>Description</Text><Text style={[styles.qty, { width: columns.qty }]}>Qty</Text><Text style={[styles.unit, { width: columns.unit }]}>Unit</Text><Text style={[styles.money, { width: columns.money }]}>Extended</Text></View>
     {lines.length > 0
       ? lines.map((line, index) => <View key={`${line.category}-${line.id}`} style={styles.tableRow} wrap={false}>
-        <Text style={styles.item}>{index + 1}</Text>
-        <View style={styles.desc}>
-          <OrderLineDescription line={line} />
+        <Text style={[styles.item, { width: columns.item }]}>{index + 1}</Text>
+        <View style={[styles.desc, { width: columns.desc }]}>
+          <OrderLineDescription line={line} width={columns.desc - 7} />
         </View>
-        <Text style={styles.qty}>{line.qty ?? '-'}</Text>
-        <Text style={styles.unit}>{line.unitPrice == null ? '-' : money(line.unitPrice)}</Text>
-        <Text style={styles.money}>{money(line.extPrice)}</Text>
+        <Text style={[styles.qty, { width: columns.qty }]}>{line.qty ?? '-'}</Text>
+        <Text style={[styles.unit, { width: columns.unit }]}>{line.unitPrice == null ? '-' : money(line.unitPrice)}</Text>
+        <Text style={[styles.money, { width: columns.money }]}>{money(line.extPrice)}</Text>
       </View>)
-      : <View style={styles.tableRow}><Text style={styles.item}>-</Text><Text style={styles.desc}>Order details are not available for this order.</Text><Text style={styles.qty}>-</Text><Text style={styles.unit}>-</Text><Text style={styles.money}>-</Text></View>}
+      : <View style={styles.tableRow}><Text style={[styles.item, { width: columns.item }]}>-</Text><Text style={[styles.desc, { width: columns.desc }]}>Order details are not available for this order.</Text><Text style={[styles.qty, { width: columns.qty }]}>-</Text><Text style={[styles.unit, { width: columns.unit }]}>-</Text><Text style={[styles.money, { width: columns.money }]}>-</Text></View>}
     <View style={styles.totals} wrap={false}>
       {Number(data.discountAmount || 0) > 0 ? <>
         <View style={styles.totalRow}><Text>Product Subtotal</Text><Text>{money(data.productGross ?? data.productNet + Number(data.discountAmount || 0))}</Text></View>
@@ -416,7 +580,7 @@ function Lines({ data }: { data: OrderDocumentData }) {
   </>
 }
 
-function OrderLineDescription({ line }: { line: ReturnType<typeof mergeOrderDocumentSublines>[number] }) {
+function OrderLineDescription({ line, width = ORDER_LINE_DESCRIPTION_WIDTH }: { line: ReturnType<typeof mergeOrderDocumentSublines>[number]; width?: number }) {
   const description = String(line.description ?? '').replace(/\r\n?/g, '\n')
   const [heading = '', ...detailLines] = description.split('\n')
   const details = detailLines.join('\n')
@@ -430,6 +594,7 @@ function OrderLineDescription({ line }: { line: ReturnType<typeof mergeOrderDocu
   ].filter((row) => row.label || row.body)
   const detailColumnWidth = orderDocumentDetailColumnWidth(
     detailRows.filter((row) => row.label && row.body).map((row) => row.label),
+    width,
   )
 
   return <View>
@@ -441,7 +606,7 @@ function OrderLineDescription({ line }: { line: ReturnType<typeof mergeOrderDocu
       ]}>
         {row.label && row.body ? <>
           <Text style={[styles.lineDescriptionDetailLabel, { width: detailColumnWidth }]}>{row.label}</Text>
-          <Text style={[styles.lineDescriptionDetailBody, { width: 248 - detailColumnWidth }]}>{row.body}</Text>
+          <Text style={[styles.lineDescriptionDetailBody, { width: width - detailColumnWidth }]}>{row.body}</Text>
         </> : <Text style={styles.lineDescriptionDetailBody}>{row.label || row.body}</Text>}
       </View>
     ))}
@@ -576,8 +741,39 @@ export function ChangeOrderDocument({
   )
 }
 
+// A work order is printed once and read for weeks, so "2 weeks" is wrong the
+// day after it prints. Resolve the lead time to a fixed calendar date: the
+// order's own ready date when it has one, otherwise the order date plus the
+// quoted lead time.
+function parseLeadTimeDays(leadTime: string) {
+  const normalized = String(leadTime || '').toLowerCase()
+  // Ranges ("6-8 weeks") resolve to the far end so the printed date is not optimistic.
+  const weekMatch = normalized.match(/(\d+)\s*(?:[-\u2013]|to)?\s*(\d+)?\s*week/)
+  if (weekMatch) return Number(weekMatch[2] || weekMatch[1]) * 7
+
+  const dayMatch = normalized.match(/(\d+)\s*(?:[-\u2013]|to)?\s*(\d+)?\s*(?:business\s+)?day/)
+  if (dayMatch) return Number(dayMatch[2] || dayMatch[1])
+
+  return null
+}
+
+function workOrderReadyDate(data: OrderDocumentData) {
+  const explicit = String(data.estimatedReadyDate || '').trim()
+  if (explicit) return bolDate(explicit)
+
+  const startParts = String(data.poDate || data.documentDate || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})/)
+  const leadDays = parseLeadTimeDays(data.leadTime)
+  if (!startParts || !leadDays) return ''
+
+  const readyDate = new Date(Date.UTC(Number(startParts[1]), Number(startParts[2]) - 1, Number(startParts[3])))
+  readyDate.setUTCDate(readyDate.getUTCDate() + leadDays)
+
+  return `${readyDate.getUTCMonth() + 1}/${readyDate.getUTCDate()}/${readyDate.getUTCFullYear()}`
+}
+
 function WorkOrderDetails({ data }: { data: OrderDocumentData }) {
   const productionLines = mergeOrderDocumentSublines(data.lines.filter((line) => line.category !== 'freight'))
+  const readyDate = workOrderReadyDate(data)
 
   return (
     <>
@@ -596,6 +792,10 @@ function WorkOrderDetails({ data }: { data: OrderDocumentData }) {
             <Text style={styles.value}>{data.acknowledgmentNumber || '-'}</Text>
           </View>
         </View>
+        <View style={styles.workOrderLeadTime}>
+          <Text style={styles.workOrderLeadTimeLabel}>{readyDate ? 'Ready By' : 'Lead Time'}</Text>
+          <Text style={styles.workOrderLeadTimeValue}>{readyDate || data.leadTime || '-'}</Text>
+        </View>
         <View style={styles.workOrderBarcodeArea}>
           <Barcode value={data.acknowledgmentNumber} showText={false} />
         </View>
@@ -603,7 +803,7 @@ function WorkOrderDetails({ data }: { data: OrderDocumentData }) {
 
       <View style={styles.workOrderDescription} wrap={false}>
         <Text style={styles.workOrderDescriptionLabel}>Project Description</Text>
-        <Text style={styles.workOrderDescriptionValue}>{data.description || data.projectName || '-'}</Text>
+        <Text style={styles.workOrderDescriptionValue}>{data.description || '-'}</Text>
       </View>
 
       <Text style={styles.sectionTitle}>Work Order Details</Text>

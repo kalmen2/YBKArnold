@@ -276,6 +276,7 @@ export type OrdersShippingDocumentType =
   | 'customer_signed_bol'
   | 'customer_signed_change_order'
   | 'inspection_sheet'
+  | 'acknowledgment'
 
 export type OrdersShippingDocumentUploadResponse = {
   ok: boolean
@@ -302,6 +303,8 @@ export type OrdersShippingDocumentUploadResponse = {
     changeOrderStatus: string | null
     inspectionSheet: string | null
     inspectionSheetUrl: string | null
+    acknowledgmentDocument: string | null
+    acknowledgmentDocumentUrl: string | null
   }
 }
 
@@ -327,6 +330,8 @@ export type OrdersShippingDocumentDeleteResponse = {
     changeOrderStatus: string | null
     inspectionSheet: string | null
     inspectionSheetUrl: string | null
+    acknowledgmentDocument: string | null
+    acknowledgmentDocumentUrl: string | null
   }
 }
 
@@ -469,6 +474,9 @@ export type OrdersOverviewOrder = {
   customerSignedChangeOrderUrl: string | null
   inspectionSheet: string | null
   inspectionSheetUrl: string | null
+  acknowledgmentDocument: string | null
+  acknowledgmentDocumentUrl: string | null
+  documentLayout: { left: string[]; right: string[]; hidden?: string[] } | null
   poNumber: string | null
   bench: string | null
   notes: string | null
@@ -968,6 +976,9 @@ type UpdateOrdersOrderDetailsInput = {
   freightDescription?: string | null
   shippingCarrier?: string | null
   shipNotes?: string | null
+  documentLayout?: { left: string[]; right: string[]; hidden?: string[] } | null
+  depositPercent?: number | string | null
+  depositReceivedDate?: string | null
 }
 
 export function postOrdersOrderDetailsUpdate(input: UpdateOrdersOrderDetailsInput) {
@@ -1032,6 +1043,18 @@ export function postOrdersOrderDetailsUpdate(input: UpdateOrdersOrderDetailsInpu
 
   if (Object.prototype.hasOwnProperty.call(input, 'shippingCarrier')) {
     payload.shippingCarrier = input.shippingCarrier ?? ''
+  }
+
+  if (Object.prototype.hasOwnProperty.call(input, 'depositPercent')) {
+    payload.depositPercent = input.depositPercent ?? ''
+  }
+
+  if (Object.prototype.hasOwnProperty.call(input, 'depositReceivedDate')) {
+    payload.depositReceivedDate = input.depositReceivedDate ?? ''
+  }
+
+  if (Object.prototype.hasOwnProperty.call(input, 'documentLayout')) {
+    payload.documentLayout = input.documentLayout ?? null
   }
 
   if (Object.prototype.hasOwnProperty.call(input, 'shipNotes')) {
@@ -1702,6 +1725,7 @@ export function postOrdersShippingDocumentUpload(input: UploadOrdersShippingDocu
     && documentType !== 'customer_signed_bol'
     && documentType !== 'customer_signed_change_order'
     && documentType !== 'inspection_sheet'
+    && documentType !== 'acknowledgment'
   ) {
     throw new Error('Unsupported order document type.')
   }
@@ -1758,6 +1782,7 @@ export function postOrdersShippingDocumentDelete(input: DeleteOrdersShippingDocu
     && documentType !== 'customer_signed_bol'
     && documentType !== 'customer_signed_change_order'
     && documentType !== 'inspection_sheet'
+    && documentType !== 'acknowledgment'
   ) {
     throw new Error('Unsupported order document type.')
   }

@@ -63,6 +63,16 @@ export function registerOrderDocumentRoutes(app, {
       return 'inspection_sheet'
     }
 
+    // Both spellings are in use across the codebase; accept either.
+    if (
+      normalized === 'acknowledgment'
+      || normalized === 'acknowledgement'
+      || normalized === 'acknowledgment_document'
+      || normalized === 'acknowledgement_document'
+    ) {
+      return 'acknowledgment'
+    }
+
     return ''
   }
 
@@ -182,6 +192,19 @@ export function registerOrderDocumentRoutes(app, {
         uploadedAtField: 'customer_signed_change_order_uploaded_at',
         storagePathField: 'customer_signed_change_order_storage_path',
         mimeTypeField: 'customer_signed_change_order_mime_type',
+      }
+    }
+
+    if (documentType === 'acknowledgment') {
+      return {
+        documentLabel: 'Acknowledgment',
+        storageFolder: 'acknowledgment',
+        fileNameField: 'acknowledgment_document',
+        urlFieldPrimary: 'Acknowledgment_source',
+        urlFieldLegacy: 'Acknowledgment',
+        uploadedAtField: 'acknowledgment_uploaded_at',
+        storagePathField: 'acknowledgment_storage_path',
+        mimeTypeField: 'acknowledgment_mime_type',
       }
     }
 
@@ -1613,7 +1636,7 @@ export function registerOrderDocumentRoutes(app, {
 
         if (!documentType) {
           return res.status(400).json({
-            error: 'documentType must be signed_bol, customer_signed_bol, customer_signed_change_order, or inspection_sheet.',
+            error: 'documentType must be signed_bol, customer_signed_bol, customer_signed_change_order, inspection_sheet, or acknowledgment.',
           })
         }
 
@@ -1671,6 +1694,9 @@ export function registerOrderDocumentRoutes(app, {
               inspection_sheet: 1,
               Inspection_sheet_source: 1,
               Inspection_sheet: 1,
+              acknowledgment_document: 1,
+              Acknowledgment_source: 1,
+              Acknowledgment: 1,
             },
           },
         )
@@ -1837,6 +1863,9 @@ export function registerOrderDocumentRoutes(app, {
               inspection_sheet: 1,
               Inspection_sheet_source: 1,
               Inspection_sheet: 1,
+              acknowledgment_document: 1,
+              Acknowledgment_source: 1,
+              Acknowledgment: 1,
             },
           },
         )
@@ -1881,6 +1910,11 @@ export function registerOrderDocumentRoutes(app, {
               String(refreshedOrderDocument?.Inspection_sheet_source ?? '').trim()
               || String(refreshedOrderDocument?.Inspection_sheet ?? '').trim()
               || null,
+            acknowledgmentDocument: String(refreshedOrderDocument?.acknowledgment_document ?? '').trim() || null,
+            acknowledgmentDocumentUrl:
+              String(refreshedOrderDocument?.Acknowledgment_source ?? '').trim()
+              || String(refreshedOrderDocument?.Acknowledgment ?? '').trim()
+              || null,
           },
         })
       } catch (error) {
@@ -1912,7 +1946,7 @@ export function registerOrderDocumentRoutes(app, {
 
         if (!documentType) {
           return res.status(400).json({
-            error: 'documentType must be signed_bol, customer_signed_bol, customer_signed_change_order, or inspection_sheet.',
+            error: 'documentType must be signed_bol, customer_signed_bol, customer_signed_change_order, inspection_sheet, or acknowledgment.',
           })
         }
 
@@ -1948,6 +1982,10 @@ export function registerOrderDocumentRoutes(app, {
               Inspection_sheet_source: 1,
               Inspection_sheet: 1,
               inspection_sheet_storage_path: 1,
+              acknowledgment_document: 1,
+              Acknowledgment_source: 1,
+              Acknowledgment: 1,
+              acknowledgment_storage_path: 1,
             },
           },
         )
@@ -2023,6 +2061,9 @@ export function registerOrderDocumentRoutes(app, {
               inspection_sheet: 1,
               Inspection_sheet_source: 1,
               Inspection_sheet: 1,
+              acknowledgment_document: 1,
+              Acknowledgment_source: 1,
+              Acknowledgment: 1,
             },
           },
         )
@@ -2063,6 +2104,11 @@ export function registerOrderDocumentRoutes(app, {
             inspectionSheetUrl:
               String(refreshedOrderDocument?.Inspection_sheet_source ?? '').trim()
               || String(refreshedOrderDocument?.Inspection_sheet ?? '').trim()
+              || null,
+            acknowledgmentDocument: String(refreshedOrderDocument?.acknowledgment_document ?? '').trim() || null,
+            acknowledgmentDocumentUrl:
+              String(refreshedOrderDocument?.Acknowledgment_source ?? '').trim()
+              || String(refreshedOrderDocument?.Acknowledgment ?? '').trim()
               || null,
           },
         })

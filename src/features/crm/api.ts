@@ -999,6 +999,8 @@ export type CrmConvertQuoteToOrderInput = {
   workOrderName?: string | null
   proformaInvoiceUrl?: string | null
   proformaInvoiceName?: string | null
+  bolUrl?: string | null
+  bolName?: string | null
 }
 
 export type CrmConvertQuoteToOrderResponse = {

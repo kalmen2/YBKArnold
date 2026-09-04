@@ -17,6 +17,13 @@ import {
 const quickBooksTokenDocId = 'primary'
 const quickBooksAccessTokenRefreshSkewMs = 2 * 60 * 1000
 const quickBooksBillPageSize = 200
+// A 504 from QuickBooks is its gateway giving up on a slow query, and it is
+// usually transient. Without a timeout the call can also hang until the
+// function itself is killed, which is what turns a blip into a failed refresh.
+const quickBooksQueryTimeoutMs = 25_000
+const quickBooksQueryRetryDelaysMs = [1_000, 3_000, 7_000]
+const quickBooksTransientStatuses = new Set([429, 500, 502, 503, 504])
+const quickBooksMinBillPageSize = 25
 const quickBooksMaxBillPages = 30
 const quickBooksLookupPageSize = 500
 const quickBooksLookupMaxPages = 12
@@ -751,15 +758,50 @@ export function registerPurchasingRoutes(app, deps) {
     })
   }
 
-  async function quickBooksQuery({ apiBaseUrl, realmId, accessToken, query }) {
+  const delayFor = (ms) => new Promise((resolve) => { setTimeout(resolve, ms) })
+
+  async function quickBooksQuery(options) {
+    let lastError = null
+
+    for (let attempt = 0; attempt <= quickBooksQueryRetryDelaysMs.length; attempt += 1) {
+      try {
+        return await quickBooksQueryOnce(options)
+      } catch (error) {
+        const status = Number(error?.status)
+        const isTransient = quickBooksTransientStatuses.has(status) || error?.name === 'TimeoutError'
+
+        if (!isTransient || attempt === quickBooksQueryRetryDelaysMs.length) {
+          throw error
+        }
+
+        lastError = error
+        await delayFor(quickBooksQueryRetryDelaysMs[attempt])
+      }
+    }
+
+    throw lastError
+  }
+
+  async function quickBooksQueryOnce({ apiBaseUrl, realmId, accessToken, query }) {
     const endpoint = `${normalizeQuickBooksApiBaseUrl(apiBaseUrl)}/v3/company/${encodeURIComponent(realmId)}/query?minorversion=75&query=${encodeURIComponent(query)}`
-    const response = await fetch(endpoint, {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        Accept: 'application/json',
-      },
-    })
+    let response = null
+
+    try {
+      response = await fetch(endpoint, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          Accept: 'application/json',
+        },
+        signal: AbortSignal.timeout(quickBooksQueryTimeoutMs),
+      })
+    } catch (error) {
+      // Surface a timeout as a retryable status rather than an opaque abort.
+      throw createHttpError(
+        `QuickBooks query failed: ${error?.name === 'TimeoutError' ? 'request timed out' : 'network error'}`,
+        504,
+      )
+    }
 
     const responseText = await response.text().catch(() => '')
     let payload = {}
@@ -1201,12 +1243,34 @@ export function registerPurchasingRoutes(app, deps) {
     let maxUpdatedAt = normalizeText(lastUpdatedCursor, 80) || null
     let truncated = false
 
+    // Bills are fetched with SELECT *, so a page carries every line of every
+    // bill. When QuickBooks times out on one, the page was too heavy: halve it
+    // and try the same position again rather than failing the whole refresh.
+    let pageSize = quickBooksBillPageSize
+
     for (let page = 0; page < quickBooksMaxBillPages; page += 1) {
       const whereClause = filterCursor
         ? ` WHERE MetaData.LastUpdatedTime >= '${escapeQuickBooksString(filterCursor)}'`
         : ''
-      const query = `SELECT * FROM Bill${whereClause} ORDERBY MetaData.LastUpdatedTime STARTPOSITION ${startPosition} MAXRESULTS ${quickBooksBillPageSize}`
-      const payload = await queryFn(query)
+      let payload = null
+
+      for (;;) {
+        const query = `SELECT * FROM Bill${whereClause} ORDERBY MetaData.LastUpdatedTime STARTPOSITION ${startPosition} MAXRESULTS ${pageSize}`
+
+        try {
+          payload = await queryFn(query)
+          break
+        } catch (error) {
+          const status = Number(error?.status)
+
+          if (!quickBooksTransientStatuses.has(status) || pageSize <= quickBooksMinBillPageSize) {
+            throw error
+          }
+
+          pageSize = Math.max(quickBooksMinBillPageSize, Math.floor(pageSize / 2))
+        }
+      }
+
       const rows = Array.isArray(payload?.QueryResponse?.Bill)
         ? payload.QueryResponse.Bill
         : []
@@ -1217,7 +1281,7 @@ export function registerPurchasingRoutes(app, deps) {
 
       bills.push(...rows)
 
-      if (rows.length < quickBooksBillPageSize) {
+      if (rows.length < pageSize) {
         return {
           bills,
           truncated,
@@ -1225,7 +1289,7 @@ export function registerPurchasingRoutes(app, deps) {
         }
       }
 
-      startPosition += quickBooksBillPageSize
+      startPosition += pageSize
     }
 
     truncated = true

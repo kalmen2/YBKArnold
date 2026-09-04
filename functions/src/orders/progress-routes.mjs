@@ -1304,6 +1304,9 @@ export function registerOrderProgressRoutes(app, {
         const hasFreightDescriptionField = hasOwnField(req.body, 'freightDescription')
         const hasShippingCarrierField = hasOwnField(req.body, 'shippingCarrier')
         const hasShipNotesField = hasOwnField(req.body, 'shipNotes')
+        const hasDocumentLayoutField = hasOwnField(req.body, 'documentLayout')
+        const hasDepositPercentField = hasOwnField(req.body, 'depositPercent')
+        const hasDepositReceivedDateField = hasOwnField(req.body, 'depositReceivedDate')
 
         if (!mondayItemId) {
           return res.status(400).json({ error: 'mondayItemId is required.' })
@@ -1358,6 +1361,38 @@ export function registerOrderProgressRoutes(app, {
         const rawFreightDescriptionInput = String(req.body?.freightDescription ?? '').trim()
         const rawShippingCarrierInput = String(req.body?.shippingCarrier ?? '').trim()
         const rawShipNotesInput = String(req.body?.shipNotes ?? '').trim()
+        // One number drives the deposit: above zero means required, zero means
+        // not required. Left blank it clears the percentage but leaves the
+        // required flag alone, so an order that is required without a stated
+        // percentage keeps that state.
+        const rawDepositPercentInput = String(req.body?.depositPercent ?? '').trim()
+        const parsedDepositPercent = rawDepositPercentInput === ''
+          ? null
+          : Math.min(100, Math.max(0, Number(rawDepositPercentInput)))
+        const depositPercentIsValid = parsedDepositPercent === null || Number.isFinite(parsedDepositPercent)
+        const rawDepositReceivedDate = String(req.body?.depositReceivedDate ?? '').trim()
+
+        // Per-order column arrangement for the confirmation metadata block.
+        // Unknown keys are dropped and each key may appear once, so a bad
+        // payload can never duplicate or invent a row.
+        const requestedDocumentLayout = (() => {
+          if (!hasDocumentLayoutField) return null
+
+          const known = new Set([
+            'company', 'contact', 'phone', 'email', 'project', 'description',
+            'leadTime', 'freight', 'shipTo',
+          ])
+          const seen = new Set()
+          const clean = (side) => (Array.isArray(side) ? side : [])
+            .map((key) => String(key ?? '').trim())
+            .filter((key) => known.has(key) && !seen.has(key) && seen.add(key))
+
+          const left = clean(req.body?.documentLayout?.left)
+          const right = clean(req.body?.documentLayout?.right)
+          const hidden = clean(req.body?.documentLayout?.hidden)
+
+          return left.length || right.length || hidden.length ? { left, right, hidden } : null
+        })()
 
         const requestedOrderName = normalizeOptionalShortText(rawOrderNameInput, 250)
         const requestedSalesRep = normalizeOptionalShortText(rawSalesRepInput, 200) || ''
@@ -1418,6 +1453,14 @@ export function registerOrderProgressRoutes(app, {
           ...(hasFreightDescriptionField ? { freight_description: requestedFreightDescription || null } : {}),
           ...(hasShippingCarrierField ? { shipping_carrier: requestedShippingCarrier || null } : {}),
           ...(hasShipNotesField ? { ship_notes: requestedShipNotes || null } : {}),
+          ...(hasDocumentLayoutField ? { document_metadata_layout: requestedDocumentLayout } : {}),
+          ...(hasDepositPercentField && depositPercentIsValid
+            ? {
+              deposit_percent: parsedDepositPercent,
+              ...(parsedDepositPercent === null ? {} : { deposit_required: parsedDepositPercent > 0 }),
+            }
+            : {}),
+          ...(hasDepositReceivedDateField ? { deposit_received_date: rawDepositReceivedDate || null } : {}),
         }
         const localMondayShippingUpdate = {
           updatedAt: localShippingUpdate.updatedAt,
