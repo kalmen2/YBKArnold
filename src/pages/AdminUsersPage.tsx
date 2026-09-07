@@ -1,3 +1,4 @@
+import { DialogFeedback } from '../components/DialogFeedback'
 import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded'
 import MoreVertRoundedIcon from '@mui/icons-material/MoreVertRounded'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
@@ -1275,6 +1276,7 @@ export default function AdminUsersPage() {
             />
           </Stack>
         </DialogContent>
+        <DialogFeedback error={errorMessage} onDismissError={() => setErrorMessage(null)} />
         <DialogActions>
           <Button onClick={closePromotionDialog}>Cancel</Button>
           <Button
@@ -1412,6 +1414,7 @@ export default function AdminUsersPage() {
             ) : null}
           </Stack>
         </DialogContent>
+        <DialogFeedback error={errorMessage} onDismissError={() => setErrorMessage(null)} />
         <DialogActions>
           <Button onClick={() => setHoursTarget(null)}>Cancel</Button>
           <Button
@@ -1474,6 +1477,7 @@ export default function AdminUsersPage() {
             </TextField>
           </Stack>
         </DialogContent>
+        <DialogFeedback error={errorMessage} onDismissError={() => setErrorMessage(null)} />
         <DialogActions>
           <Button
             onClick={() => {
@@ -1551,6 +1555,7 @@ export default function AdminUsersPage() {
             </Typography>
           </Stack>
         </DialogContent>
+        <DialogFeedback error={errorMessage} onDismissError={() => setErrorMessage(null)} />
         <DialogActions>
           <Button
             onClick={() => {
@@ -1616,6 +1621,7 @@ export default function AdminUsersPage() {
             </Typography>
           </Stack>
         </DialogContent>
+        <DialogFeedback error={errorMessage} onDismissError={() => setErrorMessage(null)} />
         <DialogActions>
           <Button
             onClick={() => {
@@ -1691,6 +1697,7 @@ export default function AdminUsersPage() {
             />
           </Stack>
         </DialogContent>
+        <DialogFeedback error={errorMessage} onDismissError={() => setErrorMessage(null)} />
         <DialogActions>
           <Button
             onClick={() => {

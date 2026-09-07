@@ -1,3 +1,4 @@
+import { DialogFeedback } from '../components/DialogFeedback'
 import AddRoundedIcon from '@mui/icons-material/AddRounded'
 import CategoryRoundedIcon from '@mui/icons-material/CategoryRounded'
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
@@ -7240,6 +7241,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
             </Stack>
           </Stack>
         </DialogContent>
+        <DialogFeedback error={error} onDismissError={() => setError('')} />
         <DialogActions>
           <Button
             onClick={() => {
@@ -7510,6 +7512,7 @@ export default function TimesheetPage({ initialView = 'timesheet' }: TimesheetPa
             </Stack>
           )}
         </DialogContent>
+        <DialogFeedback error={error} onDismissError={() => setError('')} />
         <DialogActions>
           <Button onClick={() => setMissingManagerDialogOpen(false)}>Close</Button>
         </DialogActions>

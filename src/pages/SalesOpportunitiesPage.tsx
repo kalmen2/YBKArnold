@@ -1,3 +1,4 @@
+import { DialogFeedback } from '../components/DialogFeedback'
 import AddRoundedIcon from '@mui/icons-material/AddRounded'
 import ArrowDropDownRoundedIcon from '@mui/icons-material/ArrowDropDownRounded'
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded'
@@ -3499,6 +3500,7 @@ function StageColumn({
         )}
       </Box>
 
+      {/* no-error-surface: filter selection only, performs no writes */}
       <Dialog
         open={isFilterDialogOpen}
         onClose={() => {
@@ -7755,6 +7757,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
             </ToggleButtonGroup>
           </Stack>
         </DialogContent>
+        <DialogFeedback error={errorMessage} onDismissError={() => setErrorMessage(null)} />
         <DialogActions>
           <Button disabled={isSavingPaymentTerms} onClick={() => setIsPaymentTermsDialogOpen(false)}>Cancel</Button>
           <Button

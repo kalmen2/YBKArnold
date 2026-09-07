@@ -3807,6 +3807,8 @@ export function OrdersGrid({
             maxWidth: 'calc(100vw - 24px)',
             maxHeight: 'min(680px, calc(100vh - 100px))',
             overflow: 'hidden',
+            display: 'flex',
+            flexDirection: 'column',
           },
         }}
       >
@@ -3814,7 +3816,7 @@ export function OrdersGrid({
           direction="row"
           alignItems="center"
           justifyContent="space-between"
-          sx={{ px: 1.5, py: 1.15, borderBottom: '1px solid rgba(15, 23, 42, 0.1)' }}
+          sx={{ px: 1.5, py: 1.15, borderBottom: '1px solid rgba(15, 23, 42, 0.1)', flexShrink: 0 }}
         >
           <Box>
             <Typography variant="subtitle2" fontWeight={800}>
@@ -3831,7 +3833,7 @@ export function OrdersGrid({
           </Tooltip>
         </Stack>
 
-        <Box sx={{ px: 1.5, py: 0.75, borderBottom: '1px solid rgba(15, 23, 42, 0.1)' }}>
+        <Box sx={{ px: 1.5, py: 0.75, borderBottom: '1px solid rgba(15, 23, 42, 0.1)', flexShrink: 0 }}>
           <FormControlLabel
             control={(
               <Checkbox
@@ -3853,7 +3855,7 @@ export function OrdersGrid({
           />
         </Box>
 
-        <Box sx={{ overflowY: 'auto', maxHeight: 'min(590px, calc(100vh - 190px))', py: 0.5 }}>
+        <Box sx={{ flex: '1 1 auto', minHeight: 0, overflowY: 'auto', py: 0.5 }}>
           {columnOrder.map((field) => {
             const column = availableColumnByField.get(field)
             if (!column) return null
