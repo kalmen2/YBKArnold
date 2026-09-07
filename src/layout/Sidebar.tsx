@@ -1,4 +1,5 @@
 import {
+  Badge,
   Box,
   Collapse,
   Divider,
@@ -18,10 +19,15 @@ import AdminPanelSettingsRoundedIcon from '@mui/icons-material/AdminPanelSetting
 import ScienceRoundedIcon from '@mui/icons-material/ScienceRounded'
 import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded'
 import KeyboardArrowRightRoundedIcon from '@mui/icons-material/KeyboardArrowRightRounded'
-import { useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { useMemo, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
+import { fetchChatThreads } from '../features/chat/api'
+import { QUERY_KEYS } from '../lib/queryKeys'
 import { navItems, type NavItem } from '../navigation/navItems'
+
+const chatNavPath = '/chat'
 
 type SidebarProps = {
   collapsed: boolean
@@ -93,6 +99,25 @@ function SidebarContent({ showText, onNavigate }: SidebarContentProps) {
   const isAdminRouteActive = adminNavItems.some((item) => isPathActive(item.path))
   const isTestingRouteActive = testingNavItems.some((item) => isPathActive(item.path))
 
+  // Shares its cache key with the chat page, so opening a thread drops the
+  // count here too without a second request.
+  const chatThreadsQuery = useQuery({
+    queryKey: QUERY_KEYS.chatThreads('all'),
+    queryFn: () => fetchChatThreads('all'),
+    enabled: Boolean(appUser?.uid && appUser?.isApproved),
+    staleTime: 10 * 1000,
+    refetchInterval: 15 * 1000,
+    retry: false,
+  })
+
+  const chatUnreadCount = useMemo(
+    () => (chatThreadsQuery.data?.threads ?? []).reduce(
+      (total, thread) => total + Math.max(0, Number(thread.unreadCount) || 0),
+      0,
+    ),
+    [chatThreadsQuery.data?.threads],
+  )
+
   const [adminExpanded, setAdminExpanded] = useState(isAdminRouteActive)
   const [testingExpanded, setTestingExpanded] = useState(isTestingRouteActive)
   const adminGroupExpanded = adminExpanded || isAdminRouteActive
@@ -106,6 +131,8 @@ function SidebarContent({ showText, onNavigate }: SidebarContentProps) {
     badge?: string,
   ) => {
     const isSelected = isPathActive(path)
+    const unreadCount = path === chatNavPath ? chatUnreadCount : 0
+    const unreadLabel = unreadCount > 99 ? '99+' : String(unreadCount)
 
     return (
       <ListItem key={path} disablePadding sx={{ mb: 0.5 }}>
@@ -150,13 +177,23 @@ function SidebarContent({ showText, onNavigate }: SidebarContentProps) {
               color: isSelected ? 'primary.main' : 'text.secondary',
             }}
           >
-            <Icon fontSize="small" />
+            {unreadCount > 0 && !showText ? (
+              <Badge
+                color="error"
+                badgeContent={unreadLabel}
+                sx={{ '& .MuiBadge-badge': { fontSize: 9, height: 16, minWidth: 16 } }}
+              >
+                <Icon fontSize="small" />
+              </Badge>
+            ) : (
+              <Icon fontSize="small" />
+            )}
           </ListItemIcon>
 
           <ListItemText
             disableTypography
             primary={(
-              <Stack direction="row" spacing={0.75} alignItems="center">
+              <Stack direction="row" spacing={0.75} alignItems="center" sx={{ width: '100%' }}>
                 <Typography component="span" sx={{ fontSize: 14, fontWeight: 500 }}>
                   {label}
                 </Typography>
@@ -177,6 +214,27 @@ function SidebarContent({ showText, onNavigate }: SidebarContentProps) {
                     }}
                   >
                     {badge}
+                  </Box>
+                ) : null}
+                {unreadCount > 0 ? (
+                  <Box
+                    component="span"
+                    aria-label={`${unreadCount} unread messages`}
+                    sx={{
+                      ml: 'auto',
+                      minWidth: 20,
+                      px: 0.6,
+                      py: 0.15,
+                      borderRadius: 5,
+                      textAlign: 'center',
+                      bgcolor: 'error.main',
+                      color: 'error.contrastText',
+                      fontSize: 11,
+                      fontWeight: 800,
+                      lineHeight: 1.4,
+                    }}
+                  >
+                    {unreadLabel}
                   </Box>
                 ) : null}
               </Stack>

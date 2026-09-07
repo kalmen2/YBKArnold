@@ -28,12 +28,15 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
-import { fetchMyAlerts, markMyAlertRead } from '../features/alerts/api'
+import { fetchMyAlerts, markAllMyAlertsRead, markMyAlertRead } from '../features/alerts/api'
 import { formatDateTime } from '../lib/formatters'
 import { useAppProcesses } from '../lib/appProcesses'
 import { QUERY_KEYS } from '../lib/queryKeys'
 import { navItems } from '../navigation/navItems'
 import Sidebar from './Sidebar'
+import { primeChatChime } from '../features/chat/chatNotifications'
+import { useChatNotifications } from '../features/chat/useChatNotifications'
+import { IncomingCallDialog } from '../features/chat/IncomingCallDialog'
 
 const EXPANDED_DRAWER_WIDTH = 248
 const COLLAPSED_DRAWER_WIDTH = 76
@@ -183,6 +186,27 @@ export default function AppLayout() {
     setBrowserNotificationPermission(Notification.permission)
   }
 
+  // Browsers block audio until the page has been interacted with, so unlock
+  // the chime on the first click or key press of the session.
+  useEffect(() => {
+    const unlockChatChime = () => {
+      primeChatChime()
+    }
+
+    window.addEventListener('pointerdown', unlockChatChime, { once: true })
+    window.addEventListener('keydown', unlockChatChime, { once: true })
+
+    return () => {
+      window.removeEventListener('pointerdown', unlockChatChime)
+      window.removeEventListener('keydown', unlockChatChime)
+    }
+  }, [])
+
+  const { incomingCall, declineIncomingCall } = useChatNotifications({
+    currentUid: String(appUser?.uid ?? '').trim(),
+    enabled: Boolean(appUser?.uid && appUser?.isApproved),
+  })
+
   useEffect(() => {
     if (!appUser?.isApproved || typeof Notification === 'undefined' || Notification.permission !== 'default') {
       return
@@ -268,38 +292,61 @@ export default function AppLayout() {
     })
   }
 
+  // Marking read is optimistic: the bell updates on click and the request
+  // settles behind it. Waiting for the round trip plus a refetch is what made
+  // this feel slow.
+  const applyAlertsReadState = (matchesAlert: (alertId: string) => boolean) => {
+    const alertsKey = QUERY_KEYS.alertsMy(alertsLimit)
+    const previous = queryClient.getQueryData<Awaited<ReturnType<typeof fetchMyAlerts>>>(alertsKey)
+
+    if (!previous) {
+      return null
+    }
+
+    queryClient.setQueryData(alertsKey, {
+      ...previous,
+      alerts: previous.alerts.map((alert) => (
+        matchesAlert(alert.id) ? { ...alert, isRead: true } : alert
+      )),
+      unreadCount: previous.alerts.filter(
+        (alert) => !alert.isRead && !matchesAlert(alert.id),
+      ).length,
+    })
+
+    return () => queryClient.setQueryData(alertsKey, previous)
+  }
+
   const handleMarkAlertRead = async (alertId: string) => {
-    setMarkingAlertId(alertId)
+    const rollback = applyAlertsReadState((id) => id === alertId)
 
     try {
       await markMyAlertRead(alertId)
-      await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.alertsMy(alertsLimit) })
     } catch {
-      // Non-blocking in header UI.
+      // Put the badge back rather than lying about what was saved.
+      rollback?.()
     } finally {
-      setMarkingAlertId((current) => (current === alertId ? null : current))
+      void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.alertsMy(alertsLimit) })
     }
   }
 
   const handleMarkAllRead = async () => {
-    if (isMarkingAllRead) {
-      return
-    }
-
-    if (unreadAlerts.length === 0) {
+    if (isMarkingAllRead || unreadAlerts.length === 0) {
       return
     }
 
     setIsMarkingAllRead(true)
 
+    const rollback = applyAlertsReadState(() => true)
+
     try {
-      await Promise.all(unreadAlerts.map((alert) => markMyAlertRead(alert.id)))
-      await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.alertsMy(alertsLimit) })
+      // One request for the whole set, instead of one per alert.
+      await markAllMyAlertsRead()
     } catch {
-      // Non-blocking in header UI.
+      rollback?.()
     } finally {
       setIsMarkingAllRead(false)
       setMarkingAlertId(null)
+      void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.alertsMy(alertsLimit) })
     }
   }
 
@@ -638,6 +685,23 @@ export default function AppLayout() {
           </Menu>
         </Toolbar>
       </AppBar>
+
+      <IncomingCallDialog
+        open={Boolean(incomingCall)}
+        threadTitle={incomingCall?.threadTitle ?? ''}
+        isGroup={Boolean(incomingCall?.isGroup)}
+        call={incomingCall?.call ?? null}
+        onDecline={declineIncomingCall}
+        onAccept={() => {
+          const threadId = incomingCall?.threadId
+          declineIncomingCall()
+
+          if (threadId) {
+            // The chat page reads this and joins on arrival.
+            navigate(`/chat?join=${encodeURIComponent(threadId)}`)
+          }
+        }}
+      />
 
       <Sidebar
         collapsed={effectiveCollapsed}

@@ -18,6 +18,8 @@
   "dependencies": {
     "@emotion/react": "^11.14.0",
     "@emotion/styled": "^11.14.1",
+    "@livekit/components-react": "^2.9.24",
+    "@livekit/components-styles": "^1.2.0",
     "@mui/icons-material": "^7.3.9",
     "@mui/material": "^7.3.9",
     "@mui/x-data-grid": "^9.0.4",
@@ -31,6 +33,7 @@
     "firebase": "^12.12.0",
     "jspdf": "^4.2.1",
     "jszip": "^3.10.1",
+    "livekit-client": "^2.22.2",
     "pdfjs-dist": "^5.7.284",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",

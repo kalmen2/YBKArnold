@@ -344,6 +344,67 @@ app.post('/api/alerts/:alertId/read', requireFirebaseAuth, async (req, res, next
   }
 })
 
+// Marking a full bell-menu of alerts read used to mean one request per alert.
+// This does the whole set in a single round trip.
+app.post('/api/alerts/read-all', requireFirebaseAuth, async (req, res, next) => {
+  try {
+    const publicUser = toPublicAuthUser(req.authUser)
+
+    if (!publicUser?.isApproved) {
+      return res.status(403).json({
+        error: 'Approved access is required.',
+      })
+    }
+
+    const { mobileAlertsCollection, mobileAlertReadsCollection } = await getCollections()
+    const visibleAlerts = await mobileAlertsCollection
+      .find(
+        {
+          $or: [
+            { targetMode: mobileAlertTargetModeAll },
+            { targetUserUids: publicUser.uid },
+          ],
+        },
+        {
+          projection: {
+            _id: 0,
+            id: 1,
+          },
+        },
+      )
+      .limit(500)
+      .toArray()
+
+    const alertIds = visibleAlerts
+      .map((alert) => String(alert?.id ?? '').trim())
+      .filter(Boolean)
+
+    if (alertIds.length === 0) {
+      return res.json({ ok: true, markedCount: 0 })
+    }
+
+    const now = new Date().toISOString()
+
+    await mobileAlertReadsCollection.bulkWrite(
+      alertIds.map((alertId) => ({
+        updateOne: {
+          filter: { uid: publicUser.uid, alertId },
+          update: {
+            $set: { uid: publicUser.uid, alertId, updatedAt: now },
+            $setOnInsert: { id: randomUUID(), createdAt: now, readAt: now },
+          },
+          upsert: true,
+        },
+      })),
+      { ordered: false },
+    )
+
+    return res.json({ ok: true, markedCount: alertIds.length })
+  } catch (error) {
+    next(error)
+  }
+})
+
 app.post('/api/alerts/:alertId/unread', requireFirebaseAuth, async (req, res, next) => {
   try {
     const publicUser = toPublicAuthUser(req.authUser)

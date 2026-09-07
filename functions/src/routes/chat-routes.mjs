@@ -1,4 +1,7 @@
 import { randomUUID } from 'node:crypto'
+import express from 'express'
+import { AccessToken, RoomServiceClient, WebhookReceiver } from 'livekit-server-sdk'
+import { buildFirebaseStorageDownloadUrl } from '../utils/value-utils.mjs'
 
 let appChatThreadsIndexesPromise
 let appChatMessagesIndexesPromise
@@ -14,12 +17,85 @@ const chatMessageTypeDeleted = 'deleted'
 const maxChatAttachmentBytes = 6 * 1024 * 1024
 const allowedChatReactionEmojis = ['👍', '❤️', '😂', '😮', '😢', '🙏']
 
+const chatPresenceStatusAvailable = 'available'
+const chatPresenceStatusDoNotDisturb = 'do_not_disturb'
+const chatPresenceStatusOffline = 'offline'
+const allowedChatPresenceStatuses = [
+  chatPresenceStatusAvailable,
+  chatPresenceStatusDoNotDisturb,
+  chatPresenceStatusOffline,
+]
+// A member counts as online while the chat page keeps polling. The page polls
+// threads every few seconds, so a short window keeps the dot honest without a
+// dedicated socket.
+const chatPresenceFreshnessMillis = 95_000
+// The thread list polls every few seconds; one presence write per member per
+// this interval is enough to stay inside the freshness window.
+const chatPresenceWriteIntervalMillis = 45_000
+const chatPresenceWriteAtByUid = new Map()
+
+// Video calls run on LiveKit. The API secret never leaves the server: the
+// browser only ever receives a short-lived access token scoped to one room.
+const livekitUrl = String(process.env.LIVEKIT_URL ?? '').trim()
+const livekitApiKey = String(process.env.LIVEKIT_API_KEY ?? '').trim()
+const livekitApiSecret = String(process.env.LIVEKIT_API_SECRET ?? '').trim()
+const livekitConfigured = Boolean(livekitUrl && livekitApiKey && livekitApiSecret)
+const livekitHttpUrl = livekitUrl.replace(/^wss:/i, 'https:').replace(/^ws:/i, 'http:')
+let livekitRoomServiceClient = null
+let livekitWebhookReceiver = null
+
+function getLivekitWebhookReceiver() {
+  if (!livekitConfigured) {
+    return null
+  }
+
+  if (!livekitWebhookReceiver) {
+    livekitWebhookReceiver = new WebhookReceiver(livekitApiKey, livekitApiSecret)
+  }
+
+  return livekitWebhookReceiver
+}
+
+function getLivekitRoomService() {
+  if (!livekitConfigured) {
+    return null
+  }
+
+  if (!livekitRoomServiceClient) {
+    livekitRoomServiceClient = new RoomServiceClient(livekitHttpUrl, livekitApiKey, livekitApiSecret)
+  }
+
+  return livekitRoomServiceClient
+}
+// Tokens outlive a long call but not the day, so a leaked one is not a
+// standing invitation.
+const chatCallTokenTtlSeconds = 4 * 60 * 60
+// Explicit on/off switch, independent of whether a key happens to be present.
+// Kept as an explicit switch so calling can be turned off without pulling
+// credentials — flip to 'true' to enable.
+const chatVideoCallsEnabled = String(process.env.CHAT_VIDEO_CALLS_ENABLED ?? '').trim().toLowerCase() === 'true'
+// How long the Join button keeps offering a call. LiveKit tears the room
+// down by itself once the last participant leaves.
+const chatCallRoomTtlSeconds = 2 * 60 * 60
+// Free plan ceiling. Kept explicit so a call fails clearly rather than
+// mysteriously refusing the 21st participant.
+const chatCallMaxParticipants = 20
+// Our own hard ceiling on how many calls can be started per calendar month.
+// A call only ever starts because this server allowed it, so refusing here
+// is a real spend limit rather than a warning. Tune with
+// CHAT_MONTHLY_CALL_LIMIT.
+const chatMonthlyCallLimit = (() => {
+  const configured = Number(process.env.CHAT_MONTHLY_CALL_LIMIT ?? process.env.DAILY_MONTHLY_ROOM_LIMIT)
+  return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 200
+})()
+
 export function registerChatRoutes(app, deps) {
   const {
     authApprovalApproved,
     getCollections,
     normalizeEmail,
     normalizeOptionalShortText,
+    getOrderPhotosBucket,
     requireFirebaseAuth,
     toBoundedInteger,
     toPublicAuthUser,
@@ -283,7 +359,154 @@ export function registerChatRoutes(app, deps) {
     return 'Message'
   }
 
-  function normalizeChatUserRecord(user) {
+  // An active call is only "active" while its room has not expired, so a
+  // crashed tab or a forgotten call cannot leave a dead Join button behind.
+  function chatAttachmentExtension(mimeType, fileName) {
+    const nameExtension = String(fileName ?? '').trim().match(/\.([a-zA-Z0-9]{1,8})$/)?.[1]
+
+    if (nameExtension) {
+      return nameExtension.toLowerCase()
+    }
+
+    const subtype = String(mimeType ?? '').split('/')[1]?.trim().toLowerCase()
+
+    return subtype ? subtype.replace(/[^a-z0-9]/g, '').slice(0, 8) || 'bin' : 'bin'
+  }
+
+  // Attachments used to be stored inline as data URLs, which meant every poll
+  // re-downloaded every photo in the thread. They now live in Storage and the
+  // message carries only a URL. Old messages keep working — see
+  // toPublicChatMessage, which still serves a legacy dataUrl when present.
+  async function uploadChatAttachment({ threadId, attachment }) {
+    const bucket = typeof getOrderPhotosBucket === 'function' ? getOrderPhotosBucket() : null
+
+    if (!bucket) {
+      return null
+    }
+
+    const base64Payload = String(attachment?.dataUrl ?? '')
+      .replace(/^data:[^;]*;base64,/, '')
+      .trim()
+
+    if (!base64Payload) {
+      return null
+    }
+
+    const fileBuffer = Buffer.from(base64Payload, 'base64')
+
+    if (fileBuffer.length === 0) {
+      return null
+    }
+
+    const mimeType = String(attachment?.mimeType ?? '').trim() || 'application/octet-stream'
+    const safeThreadId = String(threadId ?? 'thread').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 60) || 'thread'
+    const extension = chatAttachmentExtension(mimeType, attachment?.fileName)
+    const storagePath = `chat-attachments/${safeThreadId}/${Date.now()}-${randomUUID()}.${extension}`
+    const downloadToken = randomUUID()
+
+    await bucket.file(storagePath).save(fileBuffer, {
+      resumable: false,
+      metadata: {
+        contentType: mimeType,
+        metadata: {
+          firebaseStorageDownloadTokens: downloadToken,
+          chatId: safeThreadId,
+          uploadedAt: new Date().toISOString(),
+        },
+      },
+    })
+
+    return {
+      url: buildFirebaseStorageDownloadUrl(bucket.name, storagePath, downloadToken),
+      storagePath,
+      sizeBytes: fileBuffer.length,
+    }
+  }
+
+  function normalizeChatActiveCall(value) {
+    const source = value && typeof value === 'object' ? value : null
+
+    if (!source) {
+      return null
+    }
+
+    const roomName = String(normalizeOptionalShortText(source.roomName, 220) ?? '').trim()
+    const expiresAt = String(source.expiresAt ?? '').trim()
+    const expiresAtMillis = Date.parse(expiresAt)
+
+    if (!roomName || !Number.isFinite(expiresAtMillis) || expiresAtMillis <= Date.now()) {
+      return null
+    }
+
+    return {
+      roomName,
+      mode: String(source.mode ?? '').trim() === 'audio' ? 'audio' : 'video',
+      startedAt: String(source.startedAt ?? '').trim() || null,
+      startedByUid: String(normalizeOptionalShortText(source.startedByUid, 220) ?? '').trim() || null,
+      startedByName: String(normalizeOptionalShortText(source.startedByName, 220) ?? '').trim() || null,
+      answeredAt: String(source.answeredAt ?? '').trim() || null,
+      callMessageId: String(normalizeOptionalShortText(source.callMessageId, 220) ?? '').trim() || null,
+      expiresAt,
+    }
+  }
+
+  // Any authenticated chat request counts as "I am here". Throttled per uid so
+  // a 4-second poll does not mean a write every 4 seconds.
+  async function touchChatPresence(authUsersCollection, requesterUid) {
+    const uid = String(normalizeOptionalShortText(requesterUid, 220) ?? '').trim()
+
+    if (!uid) {
+      return
+    }
+
+    const writtenAt = Number(chatPresenceWriteAtByUid.get(uid) ?? 0)
+
+    if (Date.now() - writtenAt < chatPresenceWriteIntervalMillis) {
+      return
+    }
+
+    chatPresenceWriteAtByUid.set(uid, Date.now())
+
+    await authUsersCollection.updateOne(
+      { uid },
+      {
+        $set: {
+          chatPresenceAt: new Date().toISOString(),
+        },
+      },
+    )
+  }
+
+  function normalizeChatPresenceStatus(value) {
+    const normalized = String(value ?? '').trim().toLowerCase()
+
+    return allowedChatPresenceStatuses.includes(normalized) ? normalized : null
+  }
+
+  // Presence is derived, never stored as a boolean: a stale heartbeat always
+  // reads as offline even if the member never signed out.
+  function resolveChatPresence(userDocument) {
+    const seenAt = String(userDocument?.chatPresenceAt ?? '').trim()
+      || String(userDocument?.lastActivityAt ?? '').trim()
+      || null
+    const manualStatus = normalizeChatPresenceStatus(userDocument?.chatPresenceStatus)
+      ?? chatPresenceStatusAvailable
+
+    if (manualStatus === chatPresenceStatusOffline) {
+      return { onlineStatus: chatPresenceStatusOffline, lastSeenAt: seenAt }
+    }
+
+    const seenAtMillis = Date.parse(String(seenAt ?? ''))
+    const isFresh = Number.isFinite(seenAtMillis)
+      && Date.now() - seenAtMillis <= chatPresenceFreshnessMillis
+
+    return {
+      onlineStatus: isFresh ? manualStatus : chatPresenceStatusOffline,
+      lastSeenAt: seenAt,
+    }
+  }
+
+  function normalizeChatUserRecord(user, userDocument = null) {
     const uid = String(normalizeOptionalShortText(user?.uid, 220) ?? '').trim()
     const email = normalizeEmail(user?.email)
 
@@ -291,9 +514,13 @@ export function registerChatRoutes(app, deps) {
       return null
     }
 
+    const presence = resolveChatPresence(userDocument ?? user)
+
     return {
       uid,
       email,
+      onlineStatus: presence.onlineStatus,
+      lastSeenAt: presence.lastSeenAt,
       displayName: String(normalizeOptionalShortText(user?.displayName, 220) ?? '').trim() || null,
       imageUrl: String(normalizeOptionalShortText(user?.photoURL, 1000) ?? '').trim() || null,
       role: String(normalizeOptionalShortText(user?.role, 40) ?? '').trim() || 'standard',
@@ -319,8 +546,10 @@ export function registerChatRoutes(app, deps) {
       return []
     }
 
+    // Snapshots are the fallback for members we can no longer look up, so a
+    // frozen presence from write time would be a lie: they always read offline.
     return value
-      .map((entry) => normalizeChatUserRecord(entry))
+      .map((entry) => normalizeChatUserRecord(entry, {}))
       .filter(Boolean)
   }
 
@@ -486,7 +715,7 @@ export function registerChatRoutes(app, deps) {
     const userMap = new Map()
 
     for (const userDocument of userDocuments) {
-      const normalizedUser = normalizeChatUserRecord(toPublicAuthUser(userDocument))
+      const normalizedUser = normalizeChatUserRecord(toPublicAuthUser(userDocument), userDocument)
 
       if (!normalizedUser?.uid) {
         continue
@@ -498,10 +727,89 @@ export function registerChatRoutes(app, deps) {
     return userMap
   }
 
+  // One aggregation for every thread that can possibly hold unread messages,
+  // instead of a count query per thread.
+  async function buildChatUnreadCountMap({
+    chatMessagesCollection,
+    threadDocuments,
+    requesterUid,
+  }) {
+    const normalizedRequesterUid = String(normalizeOptionalShortText(requesterUid, 220) ?? '').trim()
+
+    if (!normalizedRequesterUid) {
+      return new Map()
+    }
+
+    const matchClauses = []
+
+    for (const thread of threadDocuments) {
+      const threadId = String(normalizeOptionalShortText(thread?.id, 220) ?? '').trim()
+      const lastMessageAt = String(thread?.lastMessageAt ?? '').trim()
+
+      if (!threadId || !lastMessageAt) {
+        continue
+      }
+
+      const readAt = getChatUidTimestamp(thread?.readAtByUid, normalizedRequesterUid) ?? ''
+      const clearedAt = getChatHistoryClearedAt(thread, normalizedRequesterUid) ?? ''
+      const seenThrough = readAt > clearedAt ? readAt : clearedAt
+
+      if (seenThrough && lastMessageAt <= seenThrough) {
+        continue
+      }
+
+      matchClauses.push({
+        chatId: threadId,
+        ...(seenThrough
+          ? {
+              createdAt: {
+                $gt: seenThrough,
+              },
+            }
+          : {}),
+      })
+    }
+
+    if (matchClauses.length === 0) {
+      return new Map()
+    }
+
+    const rows = await chatMessagesCollection
+      .aggregate([
+        {
+          $match: {
+            $or: matchClauses,
+          },
+        },
+        {
+          $match: {
+            createdByUid: {
+              $ne: normalizedRequesterUid,
+            },
+            deletedAt: null,
+          },
+        },
+        {
+          $group: {
+            _id: '$chatId',
+            unreadCount: {
+              $sum: 1,
+            },
+          },
+        },
+      ])
+      .toArray()
+
+    return new Map(
+      rows.map((row) => [String(row?._id ?? '').trim(), Math.max(0, Number(row?.unreadCount) || 0)]),
+    )
+  }
+
   async function resolveChatThreadWithMembers({
     authUsersCollection,
     requesterUid = null,
     thread,
+    unreadCount = 0,
   }) {
     if (!thread || typeof thread !== 'object') {
       return null
@@ -539,6 +847,8 @@ export function registerChatRoutes(app, deps) {
       createdByEmail: normalizeEmail(thread.createdByEmail) || null,
       createdByName: String(normalizeOptionalShortText(thread.createdByName, 220) ?? '').trim() || null,
       pinned: normalizeChatUidList(thread.pinnedByUids, 300).includes(String(requesterUid ?? '').trim()),
+      unreadCount: hasVisibleLastMessage ? Math.max(0, Number(unreadCount) || 0) : 0,
+      activeCall: normalizeChatActiveCall(thread.activeCall),
     }
   }
 
@@ -561,10 +871,17 @@ export function registerChatRoutes(app, deps) {
       ? message.attachment
       : null
     const attachmentKind = normalizeChatAttachmentKind(attachmentSource?.kind)
-    const attachmentDataUrl = String(normalizeOptionalShortText(attachmentSource?.dataUrl, 10_000_000) ?? '').trim()
+    // New messages carry a Storage url; messages written before that still
+    // carry an inline data url. Both are served, so nothing needs migrating.
+    const attachmentUrl = String(normalizeOptionalShortText(attachmentSource?.url, 1500) ?? '').trim()
+    const attachmentDataUrl = attachmentUrl
+      ? ''
+      : String(normalizeOptionalShortText(attachmentSource?.dataUrl, 10_000_000) ?? '').trim()
     const attachment = attachmentKind
       ? {
           kind: attachmentKind,
+          url: attachmentUrl || null,
+          storagePath: String(normalizeOptionalShortText(attachmentSource?.storagePath, 500) ?? '').trim() || null,
           mimeType: String(normalizeOptionalShortText(attachmentSource?.mimeType, 120) ?? '').trim().toLowerCase() || null,
           fileName: sanitizeChatAttachmentFileName(attachmentSource?.fileName),
           sizeBytes: Number.isFinite(Number(attachmentSource?.sizeBytes))
@@ -710,6 +1027,7 @@ export function registerChatRoutes(app, deps) {
         })
       }
 
+      const requesterUid = String(normalizeOptionalShortText(publicUser.uid, 220) ?? '').trim()
       const { authUsersCollection } = await getCollections()
       const userDocuments = await authUsersCollection
         .find(
@@ -723,12 +1041,24 @@ export function registerChatRoutes(app, deps) {
           },
         )
         .toArray()
+      await touchChatPresence(authUsersCollection, requesterUid)
+
       const users = userDocuments
-        .map((document) => normalizeChatUserRecord(toPublicAuthUser(document)))
+        .map((document) => normalizeChatUserRecord(
+          toPublicAuthUser(document),
+          // Whoever is asking is online by definition: they just made an
+          // authenticated request. Without this, a refresh shows you as
+          // offline until the throttled heartbeat lands.
+          document?.uid === requesterUid
+            ? { ...document, chatPresenceAt: new Date().toISOString() }
+            : document,
+        ))
         .filter(Boolean)
         // Admins, managers, and office workers may initiate direct chats.
-        // Shop workers and sales reps only see conversations they were added to.
-        .filter(() => canStartDirectChat(publicUser))
+        // Shop workers and sales reps only see conversations they were added to —
+        // but everyone gets their own record back, so the chat header can show
+        // their name and presence.
+        .filter((user) => canStartDirectChat(publicUser) || user.uid === requesterUid)
         .sort((left, right) => {
           const leftLabel = String(left.displayName || left.email).toLowerCase()
           const rightLabel = String(right.displayName || right.email).toLowerCase()
@@ -742,6 +1072,7 @@ export function registerChatRoutes(app, deps) {
 
       return res.json({
         users,
+        videoCallsEnabled: chatVideoCallsEnabled && livekitConfigured,
       })
     } catch (error) {
       next(error)
@@ -770,8 +1101,13 @@ export function registerChatRoutes(app, deps) {
       const threadTypeFilter = requestedType === chatTypeGroup || requestedType === chatTypeDirect
         ? requestedType
         : null
-      const { collections, chatThreadsCollection } = await getChatCollections()
+      const { collections, chatThreadsCollection, chatMessagesCollection } = await getChatCollections()
       const { authUsersCollection } = collections
+
+      // The chat page polls this route, so it doubles as the presence
+      // heartbeat — no extra request just to say "still here".
+      await touchChatPresence(authUsersCollection, requesterUid)
+
       const filter = {
         memberUids: requesterUid,
         hiddenForUids: {
@@ -803,6 +1139,7 @@ export function registerChatRoutes(app, deps) {
               lastMessagePreview: 1,
               lastMessageType: 1,
               pinnedByUids: 1,
+              activeCall: 1,
               historyClearedAtByUid: 1,
               deliveredAtByUid: 1,
               readAtByUid: 1,
@@ -833,14 +1170,27 @@ export function registerChatRoutes(app, deps) {
         }
       }
 
+      const unreadCountByThreadId = await buildChatUnreadCountMap({
+        chatMessagesCollection,
+        threadDocuments,
+        requesterUid,
+      })
       const threads = await Promise.all(
         threadDocuments.map((thread) => resolveChatThreadWithMembers({
           authUsersCollection,
           requesterUid,
           thread,
+          unreadCount: unreadCountByThreadId.get(String(thread?.id ?? '').trim()) ?? 0,
         })),
       )
-      const visibleThreads = threads.filter((thread) => Boolean(thread?.lastMessageAt))
+      // An empty thread still belongs in the list when it was just created:
+      // groups are announced to every member, and a new direct chat stays
+      // visible to whoever started it until the first message lands.
+      const visibleThreads = threads.filter((thread) => Boolean(
+        thread?.lastMessageAt
+        || thread?.type === chatTypeGroup
+        || (thread?.createdByUid && thread.createdByUid === requesterUid),
+      ))
 
       return res.json({
         threads: visibleThreads,
@@ -1316,7 +1666,7 @@ export function registerChatRoutes(app, deps) {
         return res.status(403).json({ error: 'Only admins can delete a chat for everyone.' })
       }
 
-      const { chatThreadsCollection } = await getChatCollections()
+      const { chatThreadsCollection, chatMessagesCollection } = await getChatCollections()
       const thread = await chatThreadsCollection.findOne(
         {
           id: threadId,
@@ -1369,10 +1719,618 @@ export function registerChatRoutes(app, deps) {
         return res.status(404).json({ error: 'Chat thread not found.' })
       }
 
+      // Once every member has hidden it, nobody can ever open this thread
+      // again — so the data behind it is dead weight and gets removed.
+      const remainingThread = await chatThreadsCollection.findOne(
+        { id: threadId },
+        { projection: { _id: 0, memberUids: 1, hiddenForUids: 1 } },
+      )
+      const threadMemberUids = normalizeChatUidList(remainingThread?.memberUids, 250)
+      const threadHiddenUids = normalizeChatUidList(remainingThread?.hiddenForUids, 300)
+      const hiddenForEveryone = threadMemberUids.length > 0
+        && threadMemberUids.every((uid) => threadHiddenUids.includes(uid))
+
+      if (hiddenForEveryone) {
+        const purged = await purgeChatThreadData({
+          chatThreadsCollection,
+          chatMessagesCollection,
+          threadId,
+        })
+
+        return res.json({
+          ok: true,
+          threadId,
+          deletedForEveryone: deleteForEveryone,
+          purged: true,
+          ...purged,
+        })
+      }
+
       return res.json({
         ok: true,
         threadId,
         deletedForEveryone: deleteForEveryone,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  // Counts room creations per calendar month and refuses once the budget is
+  // spent. Atomic, so two people starting calls at once cannot both slip
+  // past the last slot.
+  async function claimChatCallBudgetSlot(collections) {
+    const authDatabase = collections?.databasesByDomain?.auth
+
+    if (!authDatabase) {
+      return { allowed: true, used: 0, limit: chatMonthlyCallLimit }
+    }
+
+    const usageCollection = authDatabase.collection('app_chat_call_usage')
+    const monthKey = new Date().toISOString().slice(0, 7)
+    const result = await usageCollection.findOneAndUpdate(
+      { id: `chat-calls-${monthKey}` },
+      {
+        $inc: { roomsCreated: 1 },
+        $setOnInsert: { id: `chat-calls-${monthKey}`, month: monthKey },
+        $set: { updatedAt: new Date().toISOString() },
+      },
+      { upsert: true, returnDocument: 'after' },
+    )
+
+    const used = Math.max(0, Number(result?.roomsCreated ?? result?.value?.roomsCreated) || 0)
+
+    return {
+      allowed: used <= chatMonthlyCallLimit,
+      used,
+      limit: chatMonthlyCallLimit,
+    }
+  }
+
+  async function releaseChatCallBudgetSlot(collections) {
+    const authDatabase = collections?.databasesByDomain?.auth
+
+    if (!authDatabase) {
+      return
+    }
+
+    const monthKey = new Date().toISOString().slice(0, 7)
+
+    await authDatabase.collection('app_chat_call_usage').updateOne(
+      { id: `chat-calls-${monthKey}` },
+      { $inc: { roomsCreated: -1 } },
+    )
+  }
+
+  // A token is minted per person per join, identifying them to everyone else
+  // in the room. It is scoped to exactly one room and nothing else.
+  async function buildChatCallToken({ roomName, publicUser, requesterUid }) {
+    const accessToken = new AccessToken(livekitApiKey, livekitApiSecret, {
+      identity: requesterUid,
+      name: String(normalizeOptionalShortText(publicUser?.displayName, 220) ?? '').trim()
+        || normalizeEmail(publicUser?.email)
+        || 'Teammate',
+      ttl: chatCallTokenTtlSeconds,
+    })
+
+    accessToken.addGrant({
+      room: roomName,
+      roomJoin: true,
+      canPublish: true,
+      canSubscribe: true,
+      canPublishData: true,
+    })
+
+    return accessToken.toJwt()
+  }
+
+  // Hiding a thread is not enough once nobody can see it any more: the
+  // messages and every file they reference have to actually go, or Storage
+  // grows forever with data no one can reach.
+  async function purgeChatThreadData({
+    chatThreadsCollection,
+    chatMessagesCollection,
+    threadId,
+  }) {
+    const messages = await chatMessagesCollection
+      .find(
+        { chatId: threadId },
+        { projection: { _id: 0, id: 1, attachment: 1 } },
+      )
+      .toArray()
+
+    const bucket = typeof getOrderPhotosBucket === 'function' ? getOrderPhotosBucket() : null
+    const storagePaths = messages
+      .map((message) => String(message?.attachment?.storagePath ?? '').trim())
+      .filter(Boolean)
+
+    if (bucket && storagePaths.length > 0) {
+      // allSettled: one missing object must not abandon the rest of the purge.
+      await Promise.allSettled(
+        storagePaths.map((storagePath) => bucket.file(storagePath).delete({ ignoreNotFound: true })),
+      )
+    }
+
+    const deletedMessages = await chatMessagesCollection.deleteMany({ chatId: threadId })
+    await chatThreadsCollection.deleteOne({ id: threadId })
+
+    return {
+      deletedMessageCount: Number(deletedMessages?.deletedCount ?? 0),
+      deletedFileCount: storagePaths.length,
+    }
+  }
+
+  function formatChatCallDuration(startedAt, endedAt) {
+    const startMillis = Date.parse(String(startedAt ?? ''))
+    const endMillis = Date.parse(String(endedAt ?? ''))
+
+    if (!Number.isFinite(startMillis) || !Number.isFinite(endMillis) || endMillis <= startMillis) {
+      return null
+    }
+
+    const totalSeconds = Math.round((endMillis - startMillis) / 1000)
+
+    if (totalSeconds < 60) {
+      return `${totalSeconds} sec`
+    }
+
+    const minutes = Math.floor(totalSeconds / 60)
+
+    if (minutes < 60) {
+      return `${minutes} min`
+    }
+
+    const hours = Math.floor(minutes / 60)
+    const remainderMinutes = minutes % 60
+
+    return remainderMinutes > 0 ? `${hours} hr ${remainderMinutes} min` : `${hours} hr`
+  }
+
+  // The call announcement is one message that rewrites itself: "started a
+  // call" while it runs, then the outcome once it ends. One line in the
+  // thread instead of three.
+  async function postChatCallMessage({ chatThreadsCollection, chatMessagesCollection, threadId, activeCall, publicUser }) {
+    const now = new Date().toISOString()
+    const messageDocument = {
+      id: randomUUID(),
+      chatId: threadId,
+      text: `${activeCall.mode === 'video' ? '\u{1F4F9}' : '\u{1F4DE}'} ${activeCall.startedByName || 'A teammate'} started a ${
+        activeCall.mode === 'video' ? 'video call' : 'call'
+      }. Join from the chat header.`,
+      attachment: null,
+      replyTo: null,
+      messageType: chatMessageTypeText,
+      isCallEvent: true,
+      createdAt: now,
+      createdByUid: activeCall.startedByUid,
+      createdByEmail: normalizeEmail(publicUser?.email) || null,
+      createdByName: activeCall.startedByName || null,
+      updatedAt: null,
+      updatedByUid: null,
+      updatedByEmail: null,
+      updatedByName: null,
+      deletedAt: null,
+      deletedByUid: null,
+      deletedByEmail: null,
+      mentionUserUids: [],
+      mentionUserEmails: [],
+    }
+
+    await chatMessagesCollection.insertOne(messageDocument)
+    await refreshChatThreadLastMessage({ chatThreadsCollection, chatMessagesCollection, threadId })
+
+    return messageDocument.id
+  }
+
+  async function finalizeChatCallMessage({ chatThreadsCollection, chatMessagesCollection, threadId, activeCall }) {
+    const messageId = String(activeCall?.callMessageId ?? '').trim()
+
+    if (!messageId) {
+      return
+    }
+
+    const endedAt = new Date().toISOString()
+    const icon = activeCall.mode === 'video' ? '\u{1F4F9}' : '\u{1F4DE}'
+    const label = activeCall.mode === 'video' ? 'Video call' : 'Call'
+    // "Answered" means somebody other than the caller actually joined.
+    const duration = activeCall.answeredAt
+      ? formatChatCallDuration(activeCall.answeredAt, endedAt)
+      : null
+    const text = activeCall.answeredAt
+      ? `${icon} ${label}${duration ? ` \u00B7 ${duration}` : ''}`
+      : `${icon} ${label} \u00B7 no answer`
+
+    await chatMessagesCollection.updateOne(
+      { id: messageId },
+      {
+        $set: {
+          text,
+          updatedAt: endedAt,
+        },
+      },
+    )
+
+    await refreshChatThreadLastMessage({ chatThreadsCollection, chatMessagesCollection, threadId })
+  }
+
+  async function requireChatThreadMembership(chatThreadsCollection, threadId, requesterUid) {
+    if (!threadId || !requesterUid) {
+      return null
+    }
+
+    return chatThreadsCollection.findOne(
+      {
+        id: threadId,
+        memberUids: requesterUid,
+      },
+      {
+        projection: {
+          _id: 0,
+        },
+      },
+    )
+  }
+
+  app.post('/api/chat/threads/:threadId/call', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const publicUser = toPublicAuthUser(req.authUser)
+      const threadId = String(normalizeOptionalShortText(req.params.threadId, 220) ?? '').trim()
+      const requesterUid = String(normalizeOptionalShortText(req.authUser?.uid, 220) ?? '').trim()
+      const mode = String(req.body?.mode ?? '').trim() === 'audio' ? 'audio' : 'video'
+
+      if (!publicUser?.isApproved) {
+        return res.status(403).json({ error: 'Approved access is required.' })
+      }
+
+      if (!chatVideoCallsEnabled || !livekitConfigured) {
+        return res.status(503).json({ error: 'Video calling is turned off.' })
+      }
+
+      const { collections, chatThreadsCollection } = await getChatCollections()
+      const thread = await requireChatThreadMembership(chatThreadsCollection, threadId, requesterUid)
+
+      if (!thread) {
+        return res.status(404).json({ error: 'Chat thread not found.' })
+      }
+
+      // Someone already started one: join that instead of opening a second
+      // room nobody else is in. Joining never costs a budget slot.
+      const existingCall = normalizeChatActiveCall(thread.activeCall)
+
+      if (existingCall) {
+        // The first person other than the caller to join is what turns this
+        // from a ringing call into an answered one.
+        if (!existingCall.answeredAt && existingCall.startedByUid !== requesterUid) {
+          const answeredAt = new Date().toISOString()
+          existingCall.answeredAt = answeredAt
+
+          await chatThreadsCollection.updateOne(
+            { id: threadId, memberUids: requesterUid },
+            { $set: { 'activeCall.answeredAt': answeredAt } },
+          )
+        }
+
+        return res.json({
+          call: existingCall,
+          created: false,
+          url: livekitUrl,
+          token: await buildChatCallToken({
+            roomName: existingCall.roomName,
+            publicUser,
+            requesterUid,
+          }),
+        })
+      }
+
+      const budget = await claimChatCallBudgetSlot(collections)
+
+      if (!budget.allowed) {
+        await releaseChatCallBudgetSlot(collections)
+        return res.status(429).json({
+          error: `Monthly call limit reached (${budget.limit}). Calls resume next month, or raise CHAT_MONTHLY_CALL_LIMIT.`,
+        })
+      }
+
+      // LiveKit creates the room implicitly on first join, so there is no
+      // provisioning call to make — the room name is the whole handle.
+      const activeCall = {
+        roomName: `arnold-${threadId}-${randomUUID().slice(0, 8)}`,
+        mode,
+        startedAt: new Date().toISOString(),
+        startedByUid: requesterUid,
+        startedByName: String(normalizeOptionalShortText(publicUser?.displayName, 220) ?? '').trim()
+          || normalizeEmail(req.authUser?.email)
+          || null,
+        expiresAt: new Date(Date.now() + chatCallRoomTtlSeconds * 1000).toISOString(),
+      }
+
+      const { chatMessagesCollection } = await getChatCollections()
+
+      activeCall.callMessageId = await postChatCallMessage({
+        chatThreadsCollection,
+        chatMessagesCollection,
+        threadId,
+        activeCall,
+        publicUser: req.authUser,
+      })
+
+      await chatThreadsCollection.updateOne(
+        {
+          id: threadId,
+          memberUids: requesterUid,
+        },
+        {
+          $set: {
+            activeCall,
+            updatedAt: new Date().toISOString(),
+          },
+        },
+      )
+
+      return res.status(201).json({
+        call: normalizeChatActiveCall(activeCall),
+        created: true,
+        url: livekitUrl,
+        token: await buildChatCallToken({ roomName: activeCall.roomName, publicUser, requesterUid }),
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/chat/threads/:threadId/call', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const publicUser = toPublicAuthUser(req.authUser)
+      const threadId = String(normalizeOptionalShortText(req.params.threadId, 220) ?? '').trim()
+      const requesterUid = String(normalizeOptionalShortText(req.authUser?.uid, 220) ?? '').trim()
+
+      if (!publicUser?.isApproved) {
+        return res.status(403).json({ error: 'Approved access is required.' })
+      }
+
+      const { chatThreadsCollection } = await getChatCollections()
+      const thread = await requireChatThreadMembership(chatThreadsCollection, threadId, requesterUid)
+
+      if (!thread) {
+        return res.status(404).json({ error: 'Chat thread not found.' })
+      }
+
+      return res.json({ call: normalizeChatActiveCall(thread.activeCall) })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  // Called when someone leaves a call. If they were the last one out, the
+  // call record is cleared so the thread stops advertising a Join button for
+  // a room nobody is in.
+  app.post('/api/chat/threads/:threadId/call/leave', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const publicUser = toPublicAuthUser(req.authUser)
+      const threadId = String(normalizeOptionalShortText(req.params.threadId, 220) ?? '').trim()
+      const requesterUid = String(normalizeOptionalShortText(req.authUser?.uid, 220) ?? '').trim()
+
+      if (!publicUser?.isApproved) {
+        return res.status(403).json({ error: 'Approved access is required.' })
+      }
+
+      const { chatThreadsCollection } = await getChatCollections()
+      const thread = await requireChatThreadMembership(chatThreadsCollection, threadId, requesterUid)
+
+      if (!thread) {
+        return res.status(404).json({ error: 'Chat thread not found.' })
+      }
+
+      const activeCall = normalizeChatActiveCall(thread.activeCall)
+
+      if (!activeCall?.roomName) {
+        return res.json({ ok: true, ended: false })
+      }
+
+      let remainingParticipants = 0
+
+      try {
+        const participants = await getLivekitRoomService()?.listParticipants(activeCall.roomName)
+        remainingParticipants = Array.isArray(participants) ? participants.length : 0
+      } catch {
+        // A deleted or never-created room throws here, which means empty.
+        remainingParticipants = 0
+      }
+
+      if (remainingParticipants > 0) {
+        return res.json({ ok: true, ended: false, remainingParticipants })
+      }
+
+      const { chatMessagesCollection } = await getChatCollections()
+      await finalizeChatCallMessage({
+        chatThreadsCollection,
+        chatMessagesCollection,
+        threadId,
+        activeCall,
+      })
+
+      await chatThreadsCollection.updateOne(
+        {
+          id: threadId,
+          memberUids: requesterUid,
+        },
+        {
+          $set: {
+            activeCall: null,
+            updatedAt: new Date().toISOString(),
+          },
+        },
+      )
+
+      return res.json({ ok: true, ended: true })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.delete('/api/chat/threads/:threadId/call', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const publicUser = toPublicAuthUser(req.authUser)
+      const threadId = String(normalizeOptionalShortText(req.params.threadId, 220) ?? '').trim()
+      const requesterUid = String(normalizeOptionalShortText(req.authUser?.uid, 220) ?? '').trim()
+
+      if (!publicUser?.isApproved) {
+        return res.status(403).json({ error: 'Approved access is required.' })
+      }
+
+      const { chatThreadsCollection } = await getChatCollections()
+      const thread = await requireChatThreadMembership(chatThreadsCollection, threadId, requesterUid)
+
+      if (!thread) {
+        return res.status(404).json({ error: 'Chat thread not found.' })
+      }
+
+      // Clearing our record is not enough: everyone still in the room stays
+      // connected. Deleting the room is what actually hangs them up.
+      const endingCall = normalizeChatActiveCall(thread.activeCall)
+
+      if (endingCall?.roomName) {
+        try {
+          await getLivekitRoomService()?.deleteRoom(endingCall.roomName)
+        } catch (error) {
+          // An already-empty room 404s here; the record still needs clearing.
+          console.warn('LiveKit room delete failed', error?.message ?? error)
+        }
+
+        const { chatMessagesCollection } = await getChatCollections()
+        await finalizeChatCallMessage({
+          chatThreadsCollection,
+          chatMessagesCollection,
+          threadId,
+          activeCall: endingCall,
+        })
+      }
+
+      await chatThreadsCollection.updateOne(
+        {
+          id: threadId,
+          memberUids: requesterUid,
+        },
+        {
+          $set: {
+            activeCall: null,
+            updatedAt: new Date().toISOString(),
+          },
+        },
+      )
+
+      return res.json({ ok: true })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  // LiveKit calls this when a room ends. Polling can only notice a dead call
+  // on our own schedule and never notices a browser that crashed mid-call;
+  // this closes both gaps. Unauthenticated by design — the signed
+  // Authorization header from LiveKit is what proves it is genuine.
+  app.post(
+    '/api/chat/livekit-webhook',
+    // LiveKit sends application/webhook+json, which the global JSON parser
+    // ignores, so the raw bytes are still here for signature verification.
+    express.raw({ type: '*/*', limit: '1mb' }),
+    async (req, res) => {
+      try {
+        const receiver = getLivekitWebhookReceiver()
+
+        if (!receiver) {
+          return res.status(503).json({ error: 'Video calling is not configured.' })
+        }
+
+        const rawBody = Buffer.isBuffer(req.body)
+          ? req.body.toString('utf8')
+          : String(req.rawBody ?? '')
+        const authorization = String(req.get('authorization') ?? '')
+
+        if (!rawBody || !authorization) {
+          return res.status(400).json({ error: 'Invalid webhook payload.' })
+        }
+
+        let event
+
+        try {
+          event = await receiver.receive(rawBody, authorization)
+        } catch (error) {
+          console.warn('LiveKit webhook rejected', error?.message ?? error)
+          return res.status(401).json({ error: 'Invalid webhook signature.' })
+        }
+
+        const roomName = String(event?.room?.name ?? '').trim()
+
+        if (event?.event === 'room_finished' && roomName) {
+          const { chatThreadsCollection, chatMessagesCollection } = await getChatCollections()
+          const threadWithCall = await chatThreadsCollection.findOne(
+            { 'activeCall.roomName': roomName },
+            { projection: { _id: 0, id: 1, activeCall: 1 } },
+          )
+
+          if (threadWithCall?.id) {
+            await finalizeChatCallMessage({
+              chatThreadsCollection,
+              chatMessagesCollection,
+              threadId: threadWithCall.id,
+              activeCall: threadWithCall.activeCall ?? {},
+            })
+
+            await chatThreadsCollection.updateOne(
+              { id: threadWithCall.id },
+              {
+                $set: {
+                  activeCall: null,
+                  updatedAt: new Date().toISOString(),
+                },
+              },
+            )
+          }
+        }
+
+        return res.json({ ok: true })
+      } catch (error) {
+        console.error('LiveKit webhook failed', error?.message ?? error)
+        return res.status(200).json({ ok: false })
+      }
+    },
+  )
+
+  app.patch('/api/chat/presence', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const publicUser = toPublicAuthUser(req.authUser)
+      const requesterUid = String(normalizeOptionalShortText(req.authUser?.uid, 220) ?? '').trim()
+      const status = normalizeChatPresenceStatus(req.body?.status)
+
+      if (!publicUser?.isApproved) {
+        return res.status(403).json({ error: 'Approved access is required.' })
+      }
+
+      if (!requesterUid || !status) {
+        return res.status(400).json({ error: 'A valid presence status is required.' })
+      }
+
+      const { collections } = await getChatCollections()
+      const { authUsersCollection } = collections
+      const now = new Date().toISOString()
+
+      await authUsersCollection.updateOne(
+        {
+          uid: requesterUid,
+        },
+        {
+          $set: {
+            chatPresenceStatus: status,
+            chatPresenceAt: now,
+          },
+        },
+      )
+
+      return res.json({
+        ok: true,
+        status,
+        updatedAt: now,
       })
     } catch (error) {
       next(error)
@@ -1720,6 +2678,29 @@ export function registerChatRoutes(app, deps) {
         })
       }
 
+      // Push the bytes to Storage before writing the message, so the document
+      // holds a short URL instead of a multi-megabyte data URL. If the upload
+      // fails we fall back to the inline form rather than losing the message.
+      let storedAttachment = attachment
+
+      if (attachment?.dataUrl) {
+        try {
+          const uploaded = await uploadChatAttachment({ threadId, attachment })
+
+          if (uploaded?.url) {
+            storedAttachment = {
+              ...attachment,
+              dataUrl: null,
+              url: uploaded.url,
+              storagePath: uploaded.storagePath,
+              sizeBytes: uploaded.sizeBytes || attachment.sizeBytes || null,
+            }
+          }
+        } catch (error) {
+          console.warn('Chat attachment upload failed, storing inline', error?.message ?? error)
+        }
+      }
+
       const now = new Date().toISOString()
       const mentionUsers = requestedMentionUserUids.length > 0
         ? await authUsersCollection
@@ -1754,9 +2735,9 @@ export function registerChatRoutes(app, deps) {
         id: randomUUID(),
         chatId: threadId,
         text: messageText || null,
-        attachment: attachment
+        attachment: storedAttachment
           ? {
-              ...attachment,
+              ...storedAttachment,
             }
           : null,
         replyTo: replyTarget
@@ -2049,6 +3030,20 @@ export function registerChatRoutes(app, deps) {
       const existingAttachment = existingMessage.attachment && typeof existingMessage.attachment === 'object'
         ? existingMessage.attachment
         : null
+
+      // Deleting the message deletes the file behind it, otherwise Storage
+      // fills up with objects nothing references.
+      const existingStoragePath = String(existingAttachment?.storagePath ?? '').trim()
+
+      if (existingStoragePath) {
+        try {
+          const bucket = typeof getOrderPhotosBucket === 'function' ? getOrderPhotosBucket() : null
+          await bucket?.file(existingStoragePath).delete({ ignoreNotFound: true })
+        } catch (error) {
+          console.warn('Chat attachment cleanup failed', error?.message ?? error)
+        }
+      }
+
       const nextAttachment = existingAttachment
         ? {
             kind: normalizeChatAttachmentKind(existingAttachment.kind),

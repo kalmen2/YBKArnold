@@ -115,6 +115,7 @@ export const QUERY_KEYS = {
     ['chat', 'threads', type] as const,
   chatMessages: (threadId: string, limit: number, offset: number) =>
     ['chat', 'messages', threadId, limit, offset] as const,
+  chatActivity: (threadId: string) => ['chat', 'activity', threadId] as const,
 
   // Pictures
   photosIndex: ['pictures', 'photos-index'] as const,

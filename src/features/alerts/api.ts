@@ -53,3 +53,10 @@ export function markMyAlertUnread(alertId: string) {
     method: 'POST',
   })
 }
+
+/** Marks every visible alert read in one request instead of one per alert. */
+export function markAllMyAlertsRead() {
+  return apiRequest<{ ok: boolean; markedCount: number }>('/api/alerts/read-all', {
+    method: 'POST',
+  })
+}
