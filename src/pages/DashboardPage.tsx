@@ -32,11 +32,14 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useAuth } from '../auth/useAuth'
 import { apiFetch } from '../features/api-client'
 import {
   fetchDashboardBootstrap,
+  fetchSalesTrend,
   type DashboardOrder,
 } from '../features/dashboard/api'
+import { SalesTrendCard } from '../features/dashboard/SalesTrendCard'
 import {
   DashboardMetricCard,
   type DashboardMetricCardData,
@@ -112,6 +115,7 @@ function dueColor(order: DashboardOrder): 'error' | 'warning' | 'success' | 'def
 export default function DashboardPage() {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
+  const { appUser } = useAuth()
   const [activeDrilldown, setActiveDrilldown] = useState<DrilldownKey | null>(null)
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [refreshMessage, setRefreshMessage] = useState<string | null>(null)
@@ -156,6 +160,16 @@ export default function DashboardPage() {
       }
 
       try {
+        // The sales chart reads a separate server-side aggregate. It renders
+        // its own error state, so a failure here must not fail the refresh.
+        await queryClient
+          .fetchQuery({
+            queryKey: QUERY_KEYS.dashboardSalesTrend,
+            queryFn: () => fetchSalesTrend({ refresh: true }),
+            staleTime: 0,
+          })
+          .catch(() => undefined)
+
         await queryClient.fetchQuery({
           queryKey: QUERY_KEYS.dashboardBootstrap,
           queryFn: () => fetchDashboardBootstrap({ refresh: true }),
@@ -783,6 +797,8 @@ export default function DashboardPage() {
           </Dialog>
         </>
       ) : null}
+
+      {appUser?.canViewOrderValue ? <SalesTrendCard /> : null}
 
       {zendeskSnapshot ? (
         <Box component="section">

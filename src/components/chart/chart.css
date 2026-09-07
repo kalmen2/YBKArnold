@@ -1,0 +1,57 @@
+/* Tooltip and legend polish for ApexCharts, matched to the app surface. */
+.apexcharts-canvas .apexcharts-tooltip {
+  min-width: 80px;
+  border: none;
+  border-radius: 10px;
+  backdrop-filter: blur(6px);
+  color: #10243d;
+  box-shadow: 0 12px 28px rgba(11, 76, 174, 0.16);
+  background-color: rgba(255, 255, 255, 0.92);
+}
+
+.apexcharts-canvas .apexcharts-xaxistooltip {
+  border-radius: 10px;
+  border-color: transparent;
+  backdrop-filter: blur(6px);
+  color: #10243d;
+  box-shadow: 0 12px 28px rgba(11, 76, 174, 0.16);
+  background-color: rgba(255, 255, 255, 0.92);
+}
+
+.apexcharts-canvas .apexcharts-xaxistooltip::before {
+  border-bottom-color: rgba(16, 36, 61, 0.12);
+}
+
+.apexcharts-canvas .apexcharts-xaxistooltip::after {
+  border-bottom-color: rgba(255, 255, 255, 0.92);
+}
+
+.apexcharts-canvas .apexcharts-tooltip-title {
+  font-weight: 700;
+  text-align: center;
+  border-bottom-color: rgba(16, 36, 61, 0.08);
+  color: #4b6179;
+  background-color: rgba(31, 111, 235, 0.06);
+}
+
+.apexcharts-canvas .apexcharts-tooltip-series-group {
+  padding: 4px 12px;
+}
+
+.apexcharts-canvas .apexcharts-tooltip-marker {
+  margin-right: 8px;
+}
+
+.apexcharts-canvas .apexcharts-legend {
+  padding: 0;
+}
+
+.apexcharts-canvas .apexcharts-legend-marker {
+  margin-right: 6px;
+}
+
+.apexcharts-canvas .apexcharts-legend-text {
+  margin-left: 0;
+  padding-left: 0;
+  line-height: 18px;
+}

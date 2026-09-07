@@ -1304,6 +1304,114 @@ app.get('/api/dashboard/monday', requireFirebaseAuth, async (req, res, next) => 
   }
 })
 
+// ----------------------------------------------------------------------
+// Sales trend (Order Value bucketed by order date)
+// ----------------------------------------------------------------------
+
+const _salesTrendCache = createTtlCache()
+const SALES_TREND_CACHE_TTL_MS = 5 * 60 * 1000
+const SALES_TREND_CACHE_KEY = 'sales-trend'
+
+// Buckets on the UTC calendar day. Monday date columns arrive as date-only
+// values, so the UTC day and the shop's day are the same for them.
+function toSalesTrendDayKey(value) {
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value.toISOString().slice(0, 10)
+  }
+
+  const text = String(value ?? '').trim()
+
+  if (!text) {
+    return null
+  }
+
+  if (/^\d{4}-\d{2}-\d{2}/.test(text)) {
+    return text.slice(0, 10)
+  }
+
+  const parsed = new Date(text)
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString().slice(0, 10)
+}
+
+async function buildSalesTrendSnapshot() {
+  const { ordersUnifiedCollection } = await getCollections()
+
+  // Two full calendar years is the widest window any comparison mode needs:
+  // year-over-year spans both, and January's month-over-month reaches back
+  // into the prior December.
+  const earliestDayKey = `${new Date().getUTCFullYear() - 1}-01-01`
+
+  const orderDocuments = await ordersUnifiedCollection
+    .find(
+      {
+        is_cancelled: { $ne: true },
+        is_deleted: { $ne: true },
+      },
+      { projection: { _id: 0, order_date: 1, orderValue: 1 } },
+    )
+    .toArray()
+
+  const bucketsByDay = new Map()
+  let ordersMissingOrderDate = 0
+
+  orderDocuments.forEach((orderDocument) => {
+    const dayKey = toSalesTrendDayKey(orderDocument?.order_date)
+
+    if (!dayKey) {
+      ordersMissingOrderDate += 1
+      return
+    }
+
+    if (dayKey < earliestDayKey) {
+      return
+    }
+
+    const bucket = bucketsByDay.get(dayKey) ?? { date: dayKey, total: 0, count: 0 }
+
+    bucket.total += toFiniteNumber(orderDocument?.orderValue) ?? 0
+    bucket.count += 1
+    bucketsByDay.set(dayKey, bucket)
+  })
+
+  const days = [...bucketsByDay.values()]
+    .map((bucket) => ({ ...bucket, total: Number(bucket.total.toFixed(2)) }))
+    .sort((left, right) => left.date.localeCompare(right.date))
+
+  return {
+    generatedAt: new Date().toISOString(),
+    earliestDate: days.length ? days[0].date : null,
+    // Orders without an order date cannot be placed on the timeline, so the
+    // chart totals will fall short of the Orders grid total by their value.
+    ordersMissingOrderDate,
+    days,
+  }
+}
+
+app.get('/api/dashboard/sales-trend', requireFirebaseAuth, async (req, res, next) => {
+  try {
+    const user = toPublicAuthUser(req.authUser)
+
+    if (!user?.canViewOrderValue) {
+      return res.status(403).json({ error: 'You do not have access to order values.' })
+    }
+
+    if (!isDashboardRefreshRequested(req)) {
+      const cachedSnapshot = _salesTrendCache.get(SALES_TREND_CACHE_KEY)
+
+      if (cachedSnapshot) {
+        return res.json(cachedSnapshot)
+      }
+    }
+
+    const snapshot = await buildSalesTrendSnapshot()
+    _salesTrendCache.set(SALES_TREND_CACHE_KEY, snapshot, SALES_TREND_CACHE_TTL_MS)
+
+    res.json(snapshot)
+  } catch (error) {
+    next(error)
+  }
+})
+
 app.get('/api/dashboard/monday/shop-drawing/download', requireFirebaseAuth, async (req, res, next) => {
   try {
     const orderId = String(req.query?.orderId ?? '').trim()

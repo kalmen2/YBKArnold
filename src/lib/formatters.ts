@@ -86,6 +86,15 @@ export function formatCurrency(value: number, fractionDigits = 0): string {
   }).format(value)
 }
 
+export function formatCompactCurrency(value: number): string {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    notation: 'compact',
+    maximumFractionDigits: 1,
+  }).format(value)
+}
+
 export function formatInteger(value: number): string {
   return new Intl.NumberFormat('en-US', {
     maximumFractionDigits: 0,

@@ -7,6 +7,7 @@
 export const QUERY_KEYS = {
   // Dashboard — shared by DashboardPage, PicturesPage, SupportPage
   dashboardBootstrap: ['dashboard', 'bootstrap'] as const,
+  dashboardSalesTrend: ['dashboard', 'sales-trend'] as const,
 
   // Support — already on React Query, keys preserved as-is
   supportAlerts: ['support', 'alerts'] as const,

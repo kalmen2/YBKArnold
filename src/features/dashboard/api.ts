@@ -113,6 +113,7 @@ type DashboardFetchOptions = {
 }
 
 import { apiRequest } from '../api-client'
+import type { SalesTrendSnapshot } from './salesTrend'
 
 function withRefreshQuery(path: string, refresh = false) {
   if (!refresh) {
@@ -122,6 +123,8 @@ function withRefreshQuery(path: string, refresh = false) {
   const separator = path.includes('?') ? '&' : '?'
   return `${path}${separator}refresh=1`
 }
+
+export type { SalesTrendDay, SalesTrendSnapshot } from './salesTrend'
 
 export type DashboardBootstrapResponse = {
   mondaySnapshot: MondayDashboardSnapshot
@@ -143,5 +146,11 @@ export function fetchMondayDashboardSnapshot(options: DashboardFetchOptions = {}
 export function fetchZendeskTicketSummary(options: DashboardFetchOptions = {}) {
   return apiRequest<ZendeskTicketSummarySnapshot>(
     withRefreshQuery('/api/dashboard/zendesk', options.refresh === true),
+  )
+}
+
+export function fetchSalesTrend(options: DashboardFetchOptions = {}) {
+  return apiRequest<SalesTrendSnapshot>(
+    withRefreshQuery('/api/dashboard/sales-trend', options.refresh === true),
   )
 }
