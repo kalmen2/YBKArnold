@@ -922,7 +922,11 @@ export function registerOrdersRoutes(app, deps) {
         : !hasQuickBooksRecord && !inDesign
           ? 'Not found in QuickBooks projects.'
           : null)
-    const hazardReason = [
+    // Prior-owner history is imported reference data. It has no QuickBooks
+    // project and never will, so every hazard check below would fire on all of
+    // it. The grid marks these with a red dot instead.
+    const isPriorOwnerHistory = String(orderDocument?.ownership_era ?? '').trim() === 'prior_owner'
+    const hazardReason = isPriorOwnerHistory ? null : [
       baseHazardReason,
       customerSignedBolRequired && !customerSignedBolUrl && !customerSignedBol
         ? 'Customer Signed BOL is missing after shipment.'
@@ -1129,6 +1133,8 @@ export function registerOrdersRoutes(app, deps) {
         orderDocument?.source_quote_snapshot?.freight,
       ),
       salesRep: String(orderDocument?.sales_rep ?? '').trim() || null,
+      ownershipEra: String(orderDocument?.ownership_era ?? '').trim() || null,
+      mondayInvoicedStatus: String(orderDocument?.monday_invoiced_status ?? '').trim() || null,
       depositReceivedDate: String(orderDocument?.deposit_received_date ?? '').trim() || null,
       poAmount: Number.isFinite(Number(orderDocument?.poAmount)) ? Number(orderDocument.poAmount) : null,
       billedAmount: Number.isFinite(Number(orderDocument?.billedAmount))
@@ -1454,6 +1460,9 @@ export function registerOrdersRoutes(app, deps) {
             is_cancelled: { $ne: true },
             is_deleted: { $ne: true },
             is_canonical_order: { $ne: false },
+            // History imported from Monday predates the handover. It is never
+            // this company's revenue, so it stays out of sales reporting.
+            ownership_era: { $ne: 'prior_owner' },
           },
           {
             projection: {
@@ -1473,6 +1482,8 @@ export function registerOrdersRoutes(app, deps) {
               canonical_freight_value: 1,
               orderValue: 1,
               freightValue: 1,
+              ownership_era: 1,
+              monday_invoiced_status: 1,
               source_quote_snapshot: 1,
             },
           },
@@ -2140,6 +2151,8 @@ export function registerOrdersRoutes(app, deps) {
               design_parts: 1,
               orderValue: 1,
               freightValue: 1,
+              ownership_era: 1,
+              monday_invoiced_status: 1,
               canonical_product_gross_value: 1,
               discount_percent: 1,
               discount_amount: 1,

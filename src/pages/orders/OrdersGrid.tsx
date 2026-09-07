@@ -1450,6 +1450,20 @@ export function OrdersGrid({
               {row.orderNumber}
             </Typography>
           )}
+          {row.ownershipEra === 'prior_owner' ? (
+            <Tooltip title="Previous owner's order, imported from Monday. Not counted in company sales or profit.">
+              <Box
+                aria-label="Previous owner order"
+                sx={{
+                  width: 8,
+                  height: 8,
+                  flexShrink: 0,
+                  borderRadius: '50%',
+                  bgcolor: 'error.main',
+                }}
+              />
+            </Tooltip>
+          ) : null}
           {row.hazardReason ? (
             <Tooltip title={row.hazardReason}>
               <WarningAmberRoundedIcon sx={{ color: 'warning.main', fontSize: '0.72rem' }} />
@@ -3360,11 +3374,17 @@ export function OrdersGrid({
 
   const orderValueColumnVisible = canViewOrderValue
     && columns.some((column) => String(column.field) === 'orderValue')
-  const filteredOrderValueTotal = useMemo(
-    () => filteredRows.reduce((total, row) => {
+  // The "All" tab mixes this company's orders with imported prior-owner history,
+  // so the headline total covers only our own and the history is shown apart.
+  const filteredOrderValueTotals = useMemo(
+    () => filteredRows.reduce((totals, row) => {
       const orderValue = Number(row.orderValue)
-      return Number.isFinite(orderValue) ? total + orderValue : total
-    }, 0),
+      if (!Number.isFinite(orderValue)) return totals
+      if (row.ownershipEra === 'prior_owner') {
+        return { ...totals, priorOwner: totals.priorOwner + orderValue }
+      }
+      return { ...totals, ours: totals.ours + orderValue }
+    }, { ours: 0, priorOwner: 0 }),
     [filteredRows],
   )
 
@@ -3674,6 +3694,11 @@ export function OrdersGrid({
             if (describeMondayLinkIssue(row)) {
               return 'orders-row--link-review'
             }
+            // History rows are expected to have no QuickBooks project, so they
+            // carry the red dot instead of tinting the whole row.
+            if (row.ownershipEra === 'prior_owner') {
+              return ''
+            }
             if (row.hazardReason) {
               return 'orders-row--hazard'
             }
@@ -3786,8 +3811,13 @@ export function OrdersGrid({
             {filteredRows.length} {filteredRows.length === 1 ? 'order' : 'orders'}
           </Typography>
           <Typography variant="body2" fontWeight={800}>
-            Order Value total: {formatCurrency(filteredOrderValueTotal, 2)}
+            Order Value total: {formatCurrency(filteredOrderValueTotals.ours, 2)}
           </Typography>
+          {filteredOrderValueTotals.priorOwner > 0 ? (
+            <Typography variant="body2" color="text.secondary">
+              {`+ ${formatCurrency(filteredOrderValueTotals.priorOwner, 2)} previous owner (not counted)`}
+            </Typography>
+          ) : null}
         </Stack>
       ) : null}
 

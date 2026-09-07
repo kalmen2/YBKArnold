@@ -131,13 +131,19 @@ export function useOrdersOverview() {
 
   const visibleOrders = useMemo(() => {
     const tabFilteredOrders = allOrders.filter((order) => {
-      if (activeTab === 'archive') {
-        return order.isArchived === true
-      }
-
       // "All" is the complete order history, including archived records.
       if (activeTab === 'all') {
         return true
+      }
+
+      // The previous owner's imported orders are reference history. The working
+      // tabs are for this company's own orders, so they appear only under "All".
+      if (order.ownershipEra === 'prior_owner') {
+        return false
+      }
+
+      if (activeTab === 'archive') {
+        return order.isArchived === true
       }
 
       if (order.isArchived === true) {
@@ -176,6 +182,11 @@ export function useOrdersOverview() {
 
     allOrders.forEach((order) => {
       all += 1
+
+      // Counted under "All" only, matching where they are actually listed.
+      if (order.ownershipEra === 'prior_owner') {
+        return
+      }
 
       if (order.isArchived === true) {
         archive += 1

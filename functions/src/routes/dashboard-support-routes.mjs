@@ -1346,6 +1346,9 @@ async function buildSalesTrendSnapshot() {
       {
         is_cancelled: { $ne: true },
         is_deleted: { $ne: true },
+        // Orders imported from Monday that predate the handover are history
+        // only. They must never reach a sales or profit figure.
+        ownership_era: { $ne: 'prior_owner' },
       },
       { projection: { _id: 0, order_date: 1, orderValue: 1 } },
     )

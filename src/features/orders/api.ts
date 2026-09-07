@@ -565,7 +565,11 @@ export type OrdersOverviewOrder = {
   cutListCachedUrl: string | null
   cutListUrl: string | null
   cutListDocuments: OrdersCutListDocument[]
-  source: 'monday' | 'quickbooks' | 'merged' | 'website'
+  source: 'monday' | 'quickbooks' | 'merged' | 'website' | 'monday_history'
+  /** 'prior_owner' marks history imported from Monday that predates the handover. */
+  ownershipEra: 'prior_owner' | null
+  /** Payment status carried over from Monday for prior-owner orders. History only. */
+  mondayInvoicedStatus: string | null
   hasMondayRecord: boolean
   hasQuickBooksRecord: boolean
   inDesign: boolean
