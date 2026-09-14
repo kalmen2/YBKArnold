@@ -686,14 +686,16 @@ export function registerTimesheetRoutes(app, deps) {
     let primarySnapshot = null
 
     if (!refreshRequested) {
-      primarySnapshot = await getDashboardSnapshotFromCache('monday')
+      // 'monday_board' is the raw board snapshot. 'monday' belongs to the
+      // dashboard and holds a different shape entirely.
+      primarySnapshot = await getDashboardSnapshotFromCache('monday_board')
     }
 
     if (!primarySnapshot) {
       primarySnapshot = await fetchMondayDashboardSnapshot()
     }
 
-    await setDashboardSnapshotCache('monday', primarySnapshot)
+    await setDashboardSnapshotCache('monday_board', primarySnapshot)
 
     let shippedSnapshot = null
 

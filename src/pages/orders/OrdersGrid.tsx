@@ -17,6 +17,10 @@ import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined'
 import ArchiveRoundedIcon from '@mui/icons-material/ArchiveRounded'
 import UnarchiveRoundedIcon from '@mui/icons-material/UnarchiveRounded'
 import AddRoundedIcon from '@mui/icons-material/AddRounded'
+import SubdirectoryArrowRightRoundedIcon from '@mui/icons-material/SubdirectoryArrowRightRounded'
+import ViewColumnRoundedIcon from '@mui/icons-material/ViewColumnRounded'
+import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded'
+import SearchRoundedIcon from '@mui/icons-material/SearchRounded'
 import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded'
 import {
   Alert,
@@ -30,14 +34,18 @@ import {
   DialogContent,
   DialogTitle,
   FormControl,
-  FormControlLabel,
+  Divider,
   IconButton,
+  ListItemText,
+  ListItemIcon,
+  InputAdornment,
   MenuItem,
   Menu,
   Paper,
   Popover,
   Select,
   Stack,
+  Switch,
   Table,
   TableBody,
   TableCell,
@@ -980,6 +988,13 @@ type OrdersGridProps = {
   canViewFullFinancials: boolean
   lastRefreshedAt: string | null
   isLoading: boolean
+  // Moved down from the bar that used to sit above the sheet.
+  searchText: string
+  onSearchTextChange: (next: string) => void
+  canAddOrder: boolean
+  onAddOrder: () => void
+  addOrderDisabled: boolean
+  onExport: () => void
   shopDrawingHandle: React.MutableRefObject<ShopDrawingPreviewHandle | null>
   onOpenBolDocument: (order: OrdersOverviewOrder) => void
   onOpenDocumentPreview: (title: string, url: string) => void
@@ -1013,6 +1028,12 @@ export function OrdersGrid({
   canViewFullFinancials,
   lastRefreshedAt,
   isLoading,
+  searchText,
+  onSearchTextChange,
+  canAddOrder,
+  onAddOrder,
+  addOrderDisabled,
+  onExport,
   shopDrawingHandle,
   onOpenBolDocument,
   onOpenDocumentPreview,
@@ -1058,7 +1079,8 @@ export function OrdersGrid({
   const [updatingStatusColumnKey, setUpdatingStatusColumnKey] = useState<string | null>(null)
   const [actionsAnchorEl, setActionsAnchorEl] = useState<HTMLElement | null>(null)
   const [actionsOrder, setActionsOrder] = useState<OrdersOverviewOrder | null>(null)
-  const [columnsMenuAnchorEl, setColumnsMenuAnchorEl] = useState<HTMLElement | null>(null)
+  const [toolsMenuAnchorEl, setToolsMenuAnchorEl] = useState<HTMLElement | null>(null)
+  const [isColumnsDialogOpen, setIsColumnsDialogOpen] = useState(false)
   const [showSubitemsInline, setShowSubitemsInline] = useState(false)
   const [expandedSubitemOrderIds, setExpandedSubitemOrderIds] = useState<Set<string>>(() => new Set())
   const [columnOrder, setColumnOrder] = useState<string[]>([])
@@ -2023,9 +2045,28 @@ export function OrdersGrid({
       headerName: 'Order Value',
       minWidth: 130,
       type: 'number',
-      renderCell: ({ row }) => Number.isFinite(Number(row.orderValue))
-        ? formatCurrency(Number(row.orderValue), 2)
-        : '—',
+      renderCell: ({ row }) => {
+        if (Number.isFinite(Number(row.orderValue))) {
+          return formatCurrency(Number(row.orderValue), 2)
+        }
+
+        // A linked order carries no value of its own — the money sits on the
+        // parent. Showing the parent's figure here would double-count it.
+        if (row.parentOrderNumber) {
+          return (
+            <Tooltip title={`Value is carried on order ${row.parentOrderNumber}`}>
+              <Chip
+                size="small"
+                variant="outlined"
+                label={`Linked → ${row.parentOrderNumber}`}
+                sx={{ height: 20, fontWeight: 700, fontSize: '0.62rem' }}
+              />
+            </Tooltip>
+          )
+        }
+
+        return '—'
+      },
     },
     {
       field: 'freightValue',
@@ -3574,13 +3615,32 @@ export function OrdersGrid({
         justifyContent="space-between"
         spacing={1}
         sx={{
-          minHeight: 42,
-          px: 1,
-          borderBottom: '1px solid rgba(15, 23, 42, 0.08)',
-          backgroundColor: '#fff',
+          px: 1.5,
+          py: 1.25,
+          borderBottom: 1,
+          borderColor: 'divider',
+          backgroundColor: 'background.paper',
         }}
       >
-        <Stack direction="row" spacing={0.75} alignItems="center" sx={{ minWidth: 0, overflowX: 'auto' }}>
+        <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0 }}>
+          {/* Search leads. It is the control reached for most, so it sits
+              where reading starts rather than wedged between two buttons. */}
+          <TextField
+            size="small"
+            value={searchText}
+            onChange={(event) => onSearchTextChange(event.target.value)}
+            placeholder="Search order, name, invoice, amount…"
+            sx={{ width: { xs: 190, sm: 300, lg: 400 }, flexShrink: 0 }}
+            InputProps={{
+              startAdornment: (
+                <InputAdornment position="start">
+                  <SearchRoundedIcon fontSize="small" sx={{ color: 'text.disabled' }} />
+                </InputAdornment>
+              ),
+            }}
+          />
+
+          <Stack direction="row" spacing={0.75} alignItems="center" sx={{ minWidth: 0, overflowX: 'auto' }}>
           {columnFilterItems.map((item) => {
             const column = availableColumnByField.get(item.field)
             const filterValue = item.operator === 'isEmpty' || item.operator === 'isNotEmpty'
@@ -3608,38 +3668,56 @@ export function OrdersGrid({
               </Stack>
             )
           })}
+          </Stack>
         </Stack>
-        <Stack direction="row" spacing={0.5} alignItems="center" sx={{ flexShrink: 0 }}>
+        {/* The one row of controls for this table: the view you are in, what
+            you are searching for, the one thing that creates an order, and an
+            overflow for everything else. There used to be a second bar above
+            the sheet carrying half of this. */}
+        <Stack direction="row" spacing={0.75} alignItems="center" sx={{ flexShrink: 0 }}>
           {columnFilterItems.length > 0 ? (
             <Button size="small" variant="text" onClick={clearColumnFilters}>
               Clear filters
             </Button>
           ) : null}
-          <Tooltip title="Choose and reorder columns">
-            <IconButton
-              size="small"
-              aria-label="Choose and reorder columns"
-              onClick={(event) => setColumnsMenuAnchorEl(event.currentTarget)}
-            >
-              <MoreVertRoundedIcon />
-            </IconButton>
-          </Tooltip>
+
           <Select
             size="small"
             value={activePersonalViewId}
             onChange={(event) => setActivePersonalViewId(String(event.target.value))}
             inputProps={{ 'aria-label': 'Orders view' }}
-            sx={{ minWidth: 128, height: 30, fontSize: '0.78rem', fontWeight: 700 }}
+            sx={{ minWidth: 140, fontWeight: 700 }}
           >
             {personalViews.map((view) => (
               <MenuItem key={view.id} value={view.id}>{view.name}</MenuItem>
             ))}
           </Select>
-          {personalViews.length <= MAX_ADDITIONAL_PERSONAL_VIEWS ? (
-            <Button size="small" onClick={() => setNewViewDialogOpen(true)}>
-              New view
+
+          {canAddOrder ? (
+            <Button
+              variant="contained"
+              startIcon={<AddRoundedIcon />}
+              onClick={onAddOrder}
+              disabled={addOrderDisabled}
+              sx={{
+                flexShrink: 0,
+                bgcolor: 'grey.800',
+                boxShadow: 'none',
+                '&:hover': { bgcolor: 'grey.900', boxShadow: 'none' },
+              }}
+            >
+              Add order
             </Button>
           ) : null}
+
+          <Tooltip title="Columns, views and export">
+            <IconButton
+              aria-label="Columns, views and export"
+              onClick={(event) => setToolsMenuAnchorEl(event.currentTarget)}
+            >
+              <MoreVertRoundedIcon />
+            </IconButton>
+          </Tooltip>
         </Stack>
       </Stack>
 
@@ -3821,21 +3899,76 @@ export function OrdersGrid({
         </Stack>
       ) : null}
 
-      <Popover
-        open={Boolean(columnsMenuAnchorEl)}
-        anchorEl={columnsMenuAnchorEl}
-        onClose={() => {
-          setColumnsMenuAnchorEl(null)
-          setDraggedColumnField(null)
-        }}
+      {/* Four things, one level deep. Set columns opens its own dialog because
+          it is a task; the rest act immediately. */}
+      <Menu
+        anchorEl={toolsMenuAnchorEl}
+        open={Boolean(toolsMenuAnchorEl)}
+        onClose={() => setToolsMenuAnchorEl(null)}
         anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
         transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+        slotProps={{ paper: { sx: { minWidth: 268 } } }}
+      >
+        <MenuItem
+          onClick={() => {
+            setToolsMenuAnchorEl(null)
+            setIsColumnsDialogOpen(true)
+          }}
+        >
+          <ListItemIcon><ViewColumnRoundedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Set columns</ListItemText>
+        </MenuItem>
+
+        <MenuItem
+          disabled={displayedRows.length === 0}
+          onClick={() => {
+            setToolsMenuAnchorEl(null)
+            onExport()
+          }}
+        >
+          <ListItemIcon><DownloadRoundedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Export to Excel</ListItemText>
+        </MenuItem>
+
+        <MenuItem
+          onClick={() => {
+            const next = !showSubitemsInline
+            setShowSubitemsInline(next)
+            if (!next) setExpandedSubitemOrderIds(new Set())
+          }}
+        >
+          <ListItemIcon><SubdirectoryArrowRightRoundedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>View subitems as rows</ListItemText>
+          <Switch size="small" edge="end" checked={showSubitemsInline} />
+        </MenuItem>
+
+        <Divider />
+
+        <MenuItem
+          disabled={personalViews.length > MAX_ADDITIONAL_PERSONAL_VIEWS}
+          onClick={() => {
+            setToolsMenuAnchorEl(null)
+            setNewViewDialogOpen(true)
+          }}
+        >
+          <ListItemIcon><AddRoundedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>New view</ListItemText>
+        </MenuItem>
+      </Menu>
+
+      {/* Centred on the board rather than hanging off the icon. Choosing and
+          ordering thirty columns is a task, not a menu pick. */}
+      <Dialog
+        open={isColumnsDialogOpen}
+        onClose={() => {
+          setIsColumnsDialogOpen(false)
+          setDraggedColumnField(null)
+        }}
+        maxWidth="xs"
+        fullWidth
         PaperProps={{
           sx: {
-            mt: 0.5,
-            width: 330,
-            maxWidth: 'calc(100vw - 24px)',
-            maxHeight: 'min(680px, calc(100vh - 100px))',
+            maxHeight: 'min(720px, calc(100vh - 96px))',
             overflow: 'hidden',
             display: 'flex',
             flexDirection: 'column',
@@ -3862,28 +3995,6 @@ export function OrdersGrid({
             </IconButton>
           </Tooltip>
         </Stack>
-
-        <Box sx={{ px: 1.5, py: 0.75, borderBottom: '1px solid rgba(15, 23, 42, 0.1)', flexShrink: 0 }}>
-          <FormControlLabel
-            control={(
-              <Checkbox
-                size="small"
-                checked={showSubitemsInline}
-                onChange={(event) => {
-                  setShowSubitemsInline(event.target.checked)
-                  if (!event.target.checked) setExpandedSubitemOrderIds(new Set())
-                }}
-              />
-            )}
-            label={(
-              <Box>
-                <Typography variant="body2" fontWeight={700}>Show subitems as row dropdowns</Typography>
-                <Typography variant="caption" color="text.secondary">View-only; open the order to add or edit.</Typography>
-              </Box>
-            )}
-            sx={{ m: 0, alignItems: 'flex-start' }}
-          />
-        </Box>
 
         <Box sx={{ flex: '1 1 auto', minHeight: 0, overflowY: 'auto', py: 0.5 }}>
           {columnOrder.map((field) => {
@@ -3953,7 +4064,7 @@ export function OrdersGrid({
             )
           })}
         </Box>
-      </Popover>
+      </Dialog>
 
       <Menu
         anchorEl={actionsAnchorEl}

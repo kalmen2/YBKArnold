@@ -349,9 +349,14 @@ export function createOrdersUnifiedService(deps) {
     mondayShippedBoardUrl,
     persistNewMondayOrders,
     setDashboardSnapshotCache,
+    clearDashboardSnapshotCache,
   } = deps
 
   const { fetchProjectsFinancials } = createQuickBooksProjectsService({ getCollections })
+
+  // The raw Monday board snapshot. Kept apart from 'monday', which holds the
+  // built dashboard: the two have different shapes and must never collide.
+  const MONDAY_BOARD_SNAPSHOT_KEY = 'monday_board'
 
   let inFlightRefresh = null
 
@@ -398,9 +403,28 @@ export function createOrdersUnifiedService(deps) {
       rowsByPrefix.get(prefix).push(row)
     })
 
+    // Every order number the website knows, regardless of which board the item
+    // ended up on. Rows are grouped by number prefix, but Monday does not
+    // respect that: 241011A and 250904-A both sit on the 2026 board. Checking
+    // an item only against its own prefix group reported live orders as
+    // missing.
+    const websiteOrderNumberKeys = new Set()
+
+    mergedByKey.forEach((row) => {
+      const normalized = normalizeOrderNumberKey(normalizeText(row?.order_number, 120))
+
+      if (normalized) {
+        websiteOrderNumberKeys.add(normalized)
+      }
+    })
+
     let checkedBoardCount = 0
     let matchedOrderCount = 0
     let updatedOrderCount = 0
+    // Items sitting on the current New Orders board that never became a website
+    // order. Once Monday is switched off these are the only records that would
+    // simply vanish, so the dashboard has to be able to see them.
+    const newOrdersMissingFromWebsite = []
 
     for (const [prefix, rows] of rowsByPrefix.entries()) {
       const board = NEW_ORDERS_FINANCIAL_BOARDS_BY_PREFIX[prefix]
@@ -428,6 +452,8 @@ export function createOrdersUnifiedService(deps) {
           (item) => selectedMondayColumnText(item, board.ackColumnId),
         )
 
+        const matchedItemIds = new Set()
+
         rows.forEach((row) => {
           const financialMatch = resolveMondayOrderMatch(row, financialLookup)
 
@@ -446,6 +472,7 @@ export function createOrdersUnifiedService(deps) {
           }
 
           matchedOrderCount += 1
+          matchedItemIds.add(normalizeText(item?.id, 120))
           const orderValue = selectedMondayMoney(item, board.orderValueColumnId)
           const freightValue = selectedMondayMoney(item, board.freightValueColumnId)
           const depositReceivedDate = toIsoDateOnly(
@@ -481,6 +508,35 @@ export function createOrdersUnifiedService(deps) {
             updatedOrderCount += 1
           }
         })
+
+        // Only the current board. The older ones are history that was already
+        // imported, and every unmatched row there would be noise.
+        if (board.year === 2026) {
+          const boardItems = Array.isArray(snapshot?.items) ? snapshot.items : []
+
+          boardItems.forEach((item) => {
+            const itemId = normalizeText(item?.id, 120)
+            const ack = normalizeText(selectedMondayColumnText(item, board.ackColumnId), 120)
+
+            if (!itemId || !ack || matchedItemIds.has(itemId)) {
+              return
+            }
+
+            if (websiteOrderNumberKeys.has(normalizeOrderNumberKey(ack))) {
+              return
+            }
+
+            newOrdersMissingFromWebsite.push({
+              orderNumber: ack,
+              itemId,
+              itemName: normalizeText(item?.name, 240) || null,
+              boardId: board.boardId,
+              boardYear: board.year,
+              orderValue: selectedMondayMoney(item, board.orderValueColumnId),
+              freightValue: selectedMondayMoney(item, board.freightValueColumnId),
+            })
+          })
+        }
       } catch (error) {
         warnings.push(
           `New Orders ${board.year} enrichment failed: ${normalizeText(error?.message, 400) || 'unknown error'}`,
@@ -492,6 +548,8 @@ export function createOrdersUnifiedService(deps) {
       checkedBoardCount,
       matchedOrderCount,
       updatedOrderCount,
+      newOrdersMissingFromWebsite: newOrdersMissingFromWebsite
+        .sort((left, right) => left.orderNumber.localeCompare(right.orderNumber)),
     }
   }
 
@@ -501,7 +559,20 @@ export function createOrdersUnifiedService(deps) {
     try {
       const snapshot = await fetchMondayDashboardSnapshot()
       await persistNewMondayOrders(snapshot)
-      await setDashboardSnapshotCache('monday', snapshot)
+
+      // The raw board snapshot has its own key. It used to be written over
+      // 'monday', which is the DASHBOARD's snapshot — a different shape with
+      // none of the KPI flags on it. Every orders refresh silently replaced the
+      // dashboard with this, which is why the Needs Attention counts kept
+      // dropping back to zero after they had been working.
+      await setDashboardSnapshotCache(MONDAY_BOARD_SNAPSHOT_KEY, snapshot)
+
+      // Orders just changed, so the built dashboard is stale. Dropping it makes
+      // the next dashboard load rebuild instead of serving old counts.
+      if (typeof clearDashboardSnapshotCache === 'function') {
+        await clearDashboardSnapshotCache('monday')
+      }
+
       return snapshot
     } catch (error) {
       warnings.push(`Order Track refresh failed: ${normalizeText(error?.message, 400) || 'unknown error'}`)
@@ -1943,6 +2014,22 @@ export function createOrdersUnifiedService(deps) {
         }
       }
 
+      // An order date filled in from Monday's PO Date column lives only on the
+      // website: the Order Track and Shipped boards this refresh reads have no
+      // such column, so every pass rebuilt the row with order_date null and
+      // silently wiped the backfill. Keep the stored one when Monday has none.
+      const backfilledOrderDate = normalizeText(storedRow?.order_date, 40)
+
+      if (
+        backfilledOrderDate
+        && normalizeText(storedRow?.order_date_source, 60)
+        && !normalizeText(row?.order_date, 40)
+      ) {
+        row.order_date = backfilledOrderDate
+        row.order_date_source = normalizeText(storedRow?.order_date_source, 60)
+        row.order_date_is_estimated = storedRow?.order_date_is_estimated === true
+      }
+
       const priorLinks = Array.isArray(storedRow?.monday_link_history)
         ? storedRow.monday_link_history
         : []
@@ -2115,6 +2202,7 @@ export function createOrdersUnifiedService(deps) {
       newOrdersFinancialBoardCount: newOrdersEnrichmentStats.checkedBoardCount,
       newOrdersFinancialMatchedCount: newOrdersEnrichmentStats.matchedOrderCount,
       newOrdersFinancialUpdatedCount: newOrdersEnrichmentStats.updatedOrderCount,
+      newOrdersMissingFromWebsite: newOrdersEnrichmentStats.newOrdersMissingFromWebsite ?? [],
       mondayMovedToShippedOutsideWebsiteCount,
       mondayMovedToShippedOutsideWebsiteOrders,
       shippedProgressTrackedOrderCount: shippedProgressFloorStats.shippedProgressTrackedOrderCount,

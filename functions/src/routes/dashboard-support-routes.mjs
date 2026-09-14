@@ -574,8 +574,12 @@ export function registerDashboardSupportRoutes(app, deps) {
     const customerSignedBolUrl =
       String(orderDocument?.Customer_Signed_BOL_source ?? '').trim()
       || String(orderDocument?.Customer_Signed_BOL ?? '').trim()
+    // The previous owner's imported history is shipped, unsigned and always
+    // will be. Counting it here buried the handful that are actually ours.
+    const isPriorOwner = String(orderDocument?.ownership_era ?? '').trim() === 'prior_owner'
     const customerSignedBolMissing = Boolean(
       isDone
+      && !isPriorOwner
       && orderDocument?.customer_signed_bol_required !== false
       && !customerSignedBol
       && !customerSignedBolUrl,
@@ -651,6 +655,13 @@ export function registerDashboardSupportRoutes(app, deps) {
       daysUntilDue,
       isDone,
       customerSignedBolMissing,
+      isPriorOwner,
+      // A date we guessed from the order number is still a missing date: the
+      // chart needs something to plot, but nobody should trust it as fact.
+      missingOrderDate: !isPriorOwner && (!orderDate || orderDocument?.order_date_is_estimated === true),
+      orderDateIsEstimated: orderDocument?.order_date_is_estimated === true,
+      parentOrderNumber: String(orderDocument?.parent_order_number ?? '').trim() || null,
+      quickBooksProjectId: quickBooksProjectId || null,
       isProductionStarted,
       isLate,
       daysLate,
@@ -686,6 +697,9 @@ export function registerDashboardSupportRoutes(app, deps) {
             order_name: 1,
             monday_item_id: 1,
             qb_project_id: 1,
+            ownership_era: 1,
+            parent_order_number: 1,
+            order_date_is_estimated: 1,
             is_shipped: 1,
             customer_signed_bol_required: 1,
             customer_signed_bol: 1,
@@ -721,13 +735,93 @@ export function registerDashboardSupportRoutes(app, deps) {
 
     const { board, shippedBoard } = resolveBoardMetadata(cachedSnapshot, unifiedOrderDocuments)
 
-    const orders = unifiedOrderDocuments
+    const mappedOrders = unifiedOrderDocuments
       .map(mapUnifiedOrderToDashboardOrder)
       .filter((order) => String(order?.id ?? '').trim())
+
+    // A linked order is billed through its parent, so the parent's QuickBooks
+    // project covers it. Without following the link every child looks unbilled.
+    //
+    // This lookup deliberately spans ARCHIVED orders too: a finished parent is
+    // usually archived while its child is still open, and reading only the
+    // dashboard's own set made every such child look unbilled.
+    const orderNumberKey = (value) => String(value ?? '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '')
+    const linkLookupDocuments = await ordersUnifiedCollection
+      .find(
+        { is_cancelled: { $ne: true }, is_deleted: { $ne: true } },
+        {
+          projection: {
+            _id: 0,
+            order_number: 1,
+            qb_project_id: 1,
+            parent_order_number: 1,
+            orderValue: 1,
+            freightValue: 1,
+          },
+        },
+      )
+      .toArray()
+    const projectLookupByOrderNumber = new Map(
+      linkLookupDocuments
+        .filter((document) => orderNumberKey(document?.order_number))
+        .map((document) => [
+          orderNumberKey(document.order_number),
+          {
+            quickBooksProjectId: String(document?.qb_project_id ?? '').trim(),
+            parentOrderNumber: String(document?.parent_order_number ?? '').trim(),
+            orderValue: toFiniteNumber(document?.orderValue),
+            freightValue: toFiniteNumber(document?.freightValue),
+          },
+        ]),
+    )
+    const hasValueThroughParents = (entry, depth = 0) => {
+      if (!entry || depth > 5) {
+        return false
+      }
+
+      if (Number(entry.orderValue) > 0 || Number(entry.freightValue) > 0) {
+        return true
+      }
+
+      const parent = projectLookupByOrderNumber.get(orderNumberKey(entry.parentOrderNumber))
+      return parent ? hasValueThroughParents(parent, depth + 1) : false
+    }
+    const hasProjectThroughParents = (entry, depth = 0) => {
+      if (!entry || depth > 5) {
+        return false
+      }
+
+      if (entry.quickBooksProjectId) {
+        return true
+      }
+
+      const parent = projectLookupByOrderNumber.get(orderNumberKey(entry.parentOrderNumber))
+      return parent ? hasProjectThroughParents(parent, depth + 1) : false
+    }
+
+    const orders = mappedOrders
+      .map((order) => ({
+        ...order,
+        // The previous owner's history has no project and never will.
+        missingQuickBooksProject: !order.isPriorOwner && !hasProjectThroughParents({
+          quickBooksProjectId: String(order.quickBooksProjectId ?? '').trim(),
+          parentOrderNumber: String(order.parentOrderNumber ?? '').trim(),
+        }),
+        // A linked order carries no money of its own — the parent holds it, so
+        // only flag one where the whole chain is blank.
+        missingOrderValue: !order.isPriorOwner && !hasValueThroughParents({
+          orderValue: order.orderValue,
+          freightValue: order.freightValue,
+          parentOrderNumber: String(order.parentOrderNumber ?? '').trim(),
+        }),
+      }))
       .sort(compareOrdersByUrgency)
 
-    const activeOrders = orders.filter((order) => !order.isDone && !isDashboardReadyOrder(order))
-    const completedOrders = orders.filter((order) => order.isDone)
+    // Imported history is not production work. Left in, the previous owner's
+    // 2021 jobs showed up as late orders and swamped the real ones.
+    const workableOrders = orders.filter((order) => !order.isPriorOwner)
+    const activeOrders = workableOrders.filter((order) => !order.isDone && !isDashboardReadyOrder(order))
+    const completedOrders = workableOrders.filter((order) => order.isDone)
     const lateOrders = activeOrders.filter((order) => order.isLate)
     const dueSoonOrders = activeOrders.filter((order) =>
       order.isProductionStarted
@@ -736,8 +830,53 @@ export function registerDashboardSupportRoutes(app, deps) {
       && order.daysUntilDue <= 7,
     )
     const missingDueDateOrders = activeOrders.filter((order) => !order.effectiveDueDate)
+    const missingCustomerSignedBolOrders = orders.filter((order) => order.customerSignedBolMissing)
+    const missingQuickBooksProjectOrders = orders.filter((order) => order.missingQuickBooksProject)
+    const missingOrderValueOrders = orders.filter((order) => order.missingOrderValue)
+    const missingOrderDateOrders = orders.filter((order) => order.missingOrderDate)
 
-    const ordersWithLeadTime = orders.filter((order) => Number.isFinite(Number(order.leadTimeDays)))
+    // Recorded by the orders refresh, which is the only thing that reads the
+    // New Orders board. Shown here so nothing on Monday is lost when it goes.
+    const refreshSummary = await getDashboardSnapshotFromCache('orders_unified_refresh')
+    const onMondayNotOnSiteOrders = (
+      Array.isArray(refreshSummary?.newOrdersMissingFromWebsite)
+        ? refreshSummary.newOrdersMissingFromWebsite
+        : []
+    ).map((entry) => ({
+      id: String(entry?.itemId ?? entry?.orderNumber ?? '').trim(),
+      orderNumber: String(entry?.orderNumber ?? '').trim(),
+      name: String(entry?.itemName ?? '').trim() || String(entry?.orderNumber ?? '').trim(),
+      groupTitle: `New Orders ${entry?.boardYear ?? ''}`.trim(),
+      statusLabel: 'Only on Monday',
+      rowStatus: 'Only on Monday',
+      stageLabel: 'Not on the website',
+      readyLabel: '',
+      leadTimeDays: null,
+      progressPercent: null,
+      orderDate: null,
+      shippedAt: null,
+      dueDate: null,
+      computedDueDate: null,
+      effectiveDueDate: null,
+      daysUntilDue: null,
+      isDone: false,
+      isLate: false,
+      daysLate: 0,
+      updatedAt: null,
+      // There is no website order to open, so the only useful link is the
+      // Monday card itself.
+      itemUrl: entry?.boardId && entry?.itemId
+        ? `https://arnoldcontract.monday.com/boards/${entry.boardId}/pulses/${entry.itemId}`
+        : null,
+      shopDrawingUrl: null,
+      shopDrawingFileName: null,
+      poAmount: toFiniteNumber(entry?.orderValue),
+      amountOwed: null,
+      invoiceNumber: null,
+      paidInFull: null,
+    }))
+
+    const ordersWithLeadTime = workableOrders.filter((order) => Number.isFinite(Number(order.leadTimeDays)))
     const leadTimeTotal = ordersWithLeadTime.reduce(
       (total, order) => total + Number(order.leadTimeDays ?? 0),
       0,
@@ -758,6 +897,11 @@ export function registerDashboardSupportRoutes(app, deps) {
         lateOrders: lateOrders.length,
         dueSoonOrders: dueSoonOrders.length,
         missingDueDateOrders: missingDueDateOrders.length,
+        missingCustomerSignedBolOrders: missingCustomerSignedBolOrders.length,
+        missingQuickBooksProjectOrders: missingQuickBooksProjectOrders.length,
+        missingOrderValueOrders: missingOrderValueOrders.length,
+        missingOrderDateOrders: missingOrderDateOrders.length,
+        onMondayNotOnSiteOrders: onMondayNotOnSiteOrders.length,
         averageLeadTimeDays,
       },
       buckets: {
@@ -770,6 +914,11 @@ export function registerDashboardSupportRoutes(app, deps) {
         activeOrders,
         completedOrders,
         missingDueDateOrders,
+        missingCustomerSignedBolOrders,
+        missingQuickBooksProjectOrders,
+        missingOrderValueOrders,
+        missingOrderDateOrders,
+        onMondayNotOnSiteOrders,
       },
       orders,
       columnDetection: buildDefaultColumnDetection(cachedSnapshot),
@@ -1281,13 +1430,18 @@ export function registerDashboardSupportRoutes(app, deps) {
 app.get('/api/dashboard/monday', requireFirebaseAuth, async (req, res, next) => {
   try {
     const refreshRequested = isDashboardRefreshRequested(req)
-    const cachedSnapshot = await getDashboardSnapshotFromCache('monday')
+    // Two separate things: the dashboard's own built snapshot, and the raw
+    // Monday board snapshot it borrows board names and column ids from. They
+    // used to share the 'monday' key, so an orders refresh would overwrite the
+    // dashboard with the raw board data and every KPI read zero.
+    const cachedDashboardSnapshot = await getDashboardSnapshotFromCache('monday')
 
-    if (!refreshRequested && cachedSnapshot) {
-      return res.json(redactMondaySnapshotForRequest(cachedSnapshot, req))
+    if (!refreshRequested && cachedDashboardSnapshot) {
+      return res.json(redactMondaySnapshotForRequest(cachedDashboardSnapshot, req))
     }
 
-    const snapshot = await buildMondaySnapshotFromUnifiedOrders(cachedSnapshot)
+    const boardSnapshot = await getDashboardSnapshotFromCache('monday_board')
+    const snapshot = await buildMondaySnapshotFromUnifiedOrders(boardSnapshot)
 
     const shopDrawingCacheByOrderId = await loadShopDrawingCacheByOrderId(
       Array.isArray(snapshot?.orders)
@@ -1311,6 +1465,9 @@ app.get('/api/dashboard/monday', requireFirebaseAuth, async (req, res, next) => 
 const _salesTrendCache = createTtlCache()
 const SALES_TREND_CACHE_TTL_MS = 5 * 60 * 1000
 const SALES_TREND_CACHE_KEY = 'sales-trend'
+
+// Dollar history starts in 2024; see buildSalesTrendSnapshot.
+const SALES_TREND_EARLIEST_DAY_KEY = '2024-01-01'
 
 // Buckets on the UTC calendar day. Monday date columns arrive as date-only
 // values, so the UTC day and the shop's day are the same for them.
@@ -1336,21 +1493,21 @@ function toSalesTrendDayKey(value) {
 async function buildSalesTrendSnapshot() {
   const { ordersUnifiedCollection } = await getCollections()
 
-  // Two full calendar years is the widest window any comparison mode needs:
-  // year-over-year spans both, and January's month-over-month reaches back
-  // into the prior December.
-  const earliestDayKey = `${new Date().getUTCFullYear() - 1}-01-01`
-
+  // The previous owner's imported orders are included on purpose: this chart
+  // exists to compare any period against any other, and most of the history
+  // worth comparing against is theirs. Every other sales surface still filters
+  // ownership_era — only this comparison spans the handover.
+  //
+  // 2024 is the floor because the Monday boards before it had no order-value
+  // column: 2021-2023 hold hundreds of orders totalling almost nothing, which
+  // would only ever draw a flat line at zero.
   const orderDocuments = await ordersUnifiedCollection
     .find(
       {
         is_cancelled: { $ne: true },
         is_deleted: { $ne: true },
-        // Orders imported from Monday that predate the handover are history
-        // only. They must never reach a sales or profit figure.
-        ownership_era: { $ne: 'prior_owner' },
       },
-      { projection: { _id: 0, order_date: 1, orderValue: 1 } },
+      { projection: { _id: 0, order_date: 1, orderValue: 1, ownership_era: 1 } },
     )
     .toArray()
 
@@ -1365,24 +1522,38 @@ async function buildSalesTrendSnapshot() {
       return
     }
 
-    if (dayKey < earliestDayKey) {
+    if (dayKey < SALES_TREND_EARLIEST_DAY_KEY) {
       return
     }
 
-    const bucket = bucketsByDay.get(dayKey) ?? { date: dayKey, total: 0, count: 0 }
+    const bucket = bucketsByDay.get(dayKey)
+      ?? { date: dayKey, total: 0, count: 0, priorOwnerTotal: 0 }
+    const value = toFiniteNumber(orderDocument?.orderValue) ?? 0
 
-    bucket.total += toFiniteNumber(orderDocument?.orderValue) ?? 0
+    bucket.total += value
     bucket.count += 1
+
+    // Carried separately so the chart can say which side of the handover a
+    // period falls on without a second request.
+    if (String(orderDocument?.ownership_era ?? '').trim() === 'prior_owner') {
+      bucket.priorOwnerTotal += value
+    }
+
     bucketsByDay.set(dayKey, bucket)
   })
 
   const days = [...bucketsByDay.values()]
-    .map((bucket) => ({ ...bucket, total: Number(bucket.total.toFixed(2)) }))
+    .map((bucket) => ({
+      ...bucket,
+      total: Number(bucket.total.toFixed(2)),
+      priorOwnerTotal: Number(bucket.priorOwnerTotal.toFixed(2)),
+    }))
     .sort((left, right) => left.date.localeCompare(right.date))
 
   return {
     generatedAt: new Date().toISOString(),
     earliestDate: days.length ? days[0].date : null,
+    latestDate: days.length ? days[days.length - 1].date : null,
     // Orders without an order date cannot be placed on the timeline, so the
     // chart totals will fall short of the Orders grid total by their value.
     ordersMissingOrderDate,
@@ -1881,13 +2052,14 @@ app.get('/api/dashboard/bootstrap', requireFirebaseAuth, async (req, res, next) 
     const refreshRequested = isDashboardRefreshRequested(req)
 
     async function loadMonday() {
-      const cachedSnapshot = await getDashboardSnapshotFromCache('monday')
+      const cachedDashboardSnapshot = await getDashboardSnapshotFromCache('monday')
 
-      if (!refreshRequested && cachedSnapshot) {
-        return cachedSnapshot
+      if (!refreshRequested && cachedDashboardSnapshot) {
+        return cachedDashboardSnapshot
       }
 
-      const snapshot = await buildMondaySnapshotFromUnifiedOrders(cachedSnapshot)
+      const boardSnapshot = await getDashboardSnapshotFromCache('monday_board')
+      const snapshot = await buildMondaySnapshotFromUnifiedOrders(boardSnapshot)
       const shopDrawingCacheByOrderId = await loadShopDrawingCacheByOrderId(
         Array.isArray(snapshot?.orders) ? snapshot.orders.map((order) => order?.id) : [],
       )

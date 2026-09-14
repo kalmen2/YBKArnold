@@ -1426,10 +1426,33 @@ const defaultQuotePrintSettings = Object.freeze({
   orderConfirmationRequestedInfo: 'Please send the control sample to the address below:\n\nArnold Kolax Furniture Inc.\nAttn: Misha Patel (Ack # {ack})\n120 Coit Street, Irvington, NJ 07111',
   orderConfirmationNotes: 'Thank you for your order. We appreciate your business and look forward to working with you.',
   orderConfirmationTerms: 'Lead times begin after final approved shop drawings and finish samples are received.',
+  // The lead times offered on a quote. Shared rather than per-browser: a lead
+  // time one person adds is one everybody should be able to quote.
+  leadTimeOptions: ['6 to 8 weeks', '8 to 10 weeks', '10 to 12 weeks'],
 })
 
 function normalizeQuoteOrigin(value, fallback = 'website') {
   return toLowerText(value, 20) === 'excel' ? 'excel' : fallback
+}
+
+/** De-duplicated, trimmed, capped, and never empty — a quote always needs one. */
+function normalizeLeadTimeOptions(value) {
+  const seen = new Set()
+  const options = (Array.isArray(value) ? value : [])
+    .map((entry) => toTrimmedText(entry, 80))
+    .filter((entry) => {
+      const key = entry.toLowerCase()
+
+      if (!entry || seen.has(key)) {
+        return false
+      }
+
+      seen.add(key)
+      return true
+    })
+    .slice(0, 40)
+
+  return options.length > 0 ? options : [...defaultQuotePrintSettings.leadTimeOptions]
 }
 
 function normalizeQuotePrintSettings(input, metadata = {}) {
@@ -1462,6 +1485,7 @@ function normalizeQuotePrintSettings(input, metadata = {}) {
     orderConfirmationRequestedInfo: toTrimmedText(source.orderConfirmationRequestedInfo, 8000) || defaultQuotePrintSettings.orderConfirmationRequestedInfo,
     orderConfirmationNotes: toTrimmedText(source.orderConfirmationNotes, 8000) || defaultQuotePrintSettings.orderConfirmationNotes,
     orderConfirmationTerms: toTrimmedText(source.orderConfirmationTerms, 8000) || defaultQuotePrintSettings.orderConfirmationTerms,
+    leadTimeOptions: normalizeLeadTimeOptions(source.leadTimeOptions),
     updatedAt: toIsoDateOrNull(metadata.updatedAt ?? source.updatedAt),
     updatedByEmail: toTrimmedText(metadata.updatedByEmail ?? source.updatedByEmail, 200) || null,
   }
@@ -3027,6 +3051,18 @@ export function registerCrmRoutes(app, deps) {
       const dealerStates = normalizeUsStateList(normalizeDelimitedTextList(req.query?.dealerStates, 24, 120))
       const salesReps = normalizeDelimitedTextList(req.query?.salesReps, 200, 250)
       const hasEmail = toNullableBoolean(req.query?.hasEmail)
+      const requestedSortBy = toLowerText(req.query?.sortBy, 80)
+      const sortBy = [
+        'name',
+        'quote_count',
+        'conversion_rate',
+        'order_count',
+        'quoted_value',
+        'order_value',
+      ].includes(requestedSortBy)
+        ? requestedSortBy
+        : 'name'
+      const sortDirection = toLowerText(req.query?.sortDirection, 20) === 'desc' ? 'desc' : 'asc'
       const offset = toNonNegativeInteger(req.query?.offset, 0)
       const limit = Math.min(2500, Math.max(1, toNonNegativeInteger(req.query?.limit, 1200)))
 
@@ -3051,6 +3087,8 @@ export function registerCrmRoutes(app, deps) {
         dealerStates,
         salesReps,
         hasEmail,
+        sortBy,
+        sortDirection,
         territoryStates,
         offset,
         limit,
@@ -3063,7 +3101,7 @@ export function registerCrmRoutes(app, deps) {
       }
 
       const collections = await getCollections()
-      const { crmAccountsCollection, crmContactsCollection } = collections
+      const { crmAccountsCollection, crmContactsCollection, crmQuotesCollection, ordersUnifiedCollection } = collections
       const crmAccountChatsCollection = await getCrmAccountChatsCollection(collections)
       const filterClauses = []
       let accountSourceIdsFromContactSearch = []
@@ -3273,43 +3311,210 @@ export function registerCrmRoutes(app, deps) {
 
       const filter = combineFilterClauses(filterClauses)
 
-      const [total, dealers] = await Promise.all([
+      const dealerProjection = {
+        _id: 0,
+        sourceId: 1,
+        name: 1,
+        nameLower: 1,
+        quoteCompanyName: 1,
+        phone: 1,
+        email: 1,
+        ownerEmail: 1,
+        city: 1,
+        state: 1,
+        country: 1,
+        industry: 1,
+        accountType: 1,
+        accountClass: 1,
+        salesRep: 1,
+        paymentTerms: 1,
+        website: 1,
+        emails: 1,
+        pictureUrl: 1,
+        pictureUrlSource: 1,
+        contactCountSource: 1,
+        isArchived: 1,
+        lastImportedAt: 1,
+      }
+      const databaseSortedByName = sortBy === 'name'
+      const [total, dealerRows] = await Promise.all([
         crmAccountsCollection.countDocuments(filter),
-        crmAccountsCollection
-          .find(
-            filter,
-            {
-              projection: {
-                _id: 0,
-                sourceId: 1,
-                name: 1,
-                quoteCompanyName: 1,
-                phone: 1,
-                email: 1,
-                ownerEmail: 1,
-                city: 1,
-                state: 1,
-                country: 1,
-                industry: 1,
-                accountType: 1,
-                accountClass: 1,
-                salesRep: 1,
-                paymentTerms: 1,
-                website: 1,
-                emails: 1,
-                pictureUrl: 1,
-                pictureUrlSource: 1,
-                contactCountSource: 1,
-                isArchived: 1,
-                lastImportedAt: 1,
-              },
-            },
-          )
-          .sort({ nameLower: 1, sourceId: 1 })
-          .skip(offset)
-          .limit(limit)
-          .toArray(),
+        databaseSortedByName
+          ? crmAccountsCollection
+            .find(filter, { projection: dealerProjection })
+            .sort({ nameLower: sortDirection === 'desc' ? -1 : 1, sourceId: 1 })
+            .skip(offset)
+            .limit(limit)
+            .toArray()
+          : crmAccountsCollection
+            .find(filter, { projection: dealerProjection })
+            .sort({ nameLower: 1, sourceId: 1 })
+            .toArray(),
       ])
+      const allDealerSourceIdsForStats = [...new Set(
+        dealerRows
+          .map((dealer) => toTrimmedText(dealer.sourceId, 160))
+          .filter(Boolean),
+      )]
+      const [quoteStatRows, orderStatRows] = await Promise.all([
+        allDealerSourceIdsForStats.length > 0
+          ? crmQuotesCollection
+            .aggregate([
+              {
+                $match: {
+                  dealerSourceId: {
+                    $in: allDealerSourceIdsForStats,
+                  },
+                },
+              },
+              {
+                $group: {
+                  _id: '$dealerSourceId',
+                  quoteCount: {
+                    $sum: 1,
+                  },
+                  convertedQuoteCount: {
+                    $sum: {
+                      $cond: [
+                        {
+                          $or: [
+                            { $eq: ['$status', 'accepted'] },
+                            { $eq: ['$opportunityStage', 'order_placement'] },
+                            { $not: [{ $in: ['$convertedAt', [null, '']] }] },
+                            { $not: [{ $in: ['$convertedOrderId', [null, '']] }] },
+                            { $not: [{ $in: ['$convertedOrderNumber', [null, '']] }] },
+                          ],
+                        },
+                        1,
+                        0,
+                      ],
+                    },
+                  },
+                  quotedValue: {
+                    $sum: {
+                      $ifNull: ['$totalAmount', 0],
+                    },
+                  },
+                },
+              },
+            ])
+            .toArray()
+          : [],
+        allDealerSourceIdsForStats.length > 0
+          ? ordersUnifiedCollection
+            .aggregate([
+              {
+                $match: {
+                  is_canonical_order: true,
+                  is_cancelled: {
+                    $ne: true,
+                  },
+                  $or: [
+                    {
+                      dealer_source_id: {
+                        $in: allDealerSourceIdsForStats,
+                      },
+                    },
+                    {
+                      dealerSourceId: {
+                        $in: allDealerSourceIdsForStats,
+                      },
+                    },
+                  ],
+                },
+              },
+              {
+                $group: {
+                  _id: {
+                    $ifNull: ['$dealer_source_id', '$dealerSourceId'],
+                  },
+                  orderCount: {
+                    $sum: 1,
+                  },
+                  orderValue: {
+                    $sum: {
+                      $ifNull: ['$canonical_order_value', '$orderValue'],
+                    },
+                  },
+                },
+              },
+            ])
+            .toArray()
+          : [],
+      ])
+      const quoteStatsByDealerSourceId = new Map(
+        quoteStatRows
+          .map((entry) => [toTrimmedText(entry._id, 160), {
+            quoteCount: toNonNegativeInteger(entry.quoteCount, 0),
+            convertedQuoteCount: toNonNegativeInteger(entry.convertedQuoteCount, 0),
+            quotedValue: Number.isFinite(Number(entry.quotedValue)) ? Number(entry.quotedValue) : 0,
+          }])
+          .filter(([sourceId]) => Boolean(sourceId)),
+      )
+      const orderStatsByDealerSourceId = new Map(
+        orderStatRows
+          .map((entry) => [toTrimmedText(entry._id, 160), {
+            orderCount: toNonNegativeInteger(entry.orderCount, 0),
+            orderValue: Number.isFinite(Number(entry.orderValue)) ? Number(entry.orderValue) : 0,
+          }])
+          .filter(([sourceId]) => Boolean(sourceId)),
+      )
+      const dealersWithStats = dealerRows.map((dealer) => {
+        const dealerSourceId = toTrimmedText(dealer.sourceId, 160)
+        const quoteStats = quoteStatsByDealerSourceId.get(dealerSourceId) ?? {
+          quoteCount: 0,
+          convertedQuoteCount: 0,
+          quotedValue: 0,
+        }
+        const orderStats = orderStatsByDealerSourceId.get(dealerSourceId) ?? {
+          orderCount: 0,
+          orderValue: 0,
+        }
+        const quoteConversionRate = quoteStats.quoteCount > 0
+          ? (quoteStats.convertedQuoteCount / quoteStats.quoteCount) * 100
+          : 0
+
+        return {
+          ...dealer,
+          quoteCount: quoteStats.quoteCount,
+          convertedQuoteCount: quoteStats.convertedQuoteCount,
+          quoteConversionRate: Number(quoteConversionRate.toFixed(2)),
+          quotedValue: Number(quoteStats.quotedValue.toFixed(2)),
+          orderCount: orderStats.orderCount,
+          orderValue: Number(orderStats.orderValue.toFixed(2)),
+        }
+      })
+      const sortMultiplier = sortDirection === 'desc' ? -1 : 1
+      const sortableValueByDealer = (dealer) => {
+        if (sortBy === 'quote_count') return Number(dealer.quoteCount ?? 0)
+        if (sortBy === 'conversion_rate') return Number(dealer.quoteConversionRate ?? 0)
+        if (sortBy === 'order_count') return Number(dealer.orderCount ?? 0)
+        if (sortBy === 'quoted_value') return Number(dealer.quotedValue ?? 0)
+        if (sortBy === 'order_value') return Number(dealer.orderValue ?? 0)
+        return toLowerText(dealer.nameLower || dealer.name || dealer.sourceId, 240)
+      }
+      const dealers = databaseSortedByName
+        ? dealersWithStats
+        : dealersWithStats
+          .sort((left, right) => {
+            const leftValue = sortableValueByDealer(left)
+            const rightValue = sortableValueByDealer(right)
+
+            if (typeof leftValue === 'number' && typeof rightValue === 'number') {
+              if (leftValue !== rightValue) {
+                return (leftValue - rightValue) * sortMultiplier
+              }
+            } else {
+              const comparison = String(leftValue).localeCompare(String(rightValue))
+
+              if (comparison !== 0) {
+                return comparison * sortMultiplier
+              }
+            }
+
+            return String(left.nameLower || left.name || left.sourceId).localeCompare(String(right.nameLower || right.name || right.sourceId))
+          })
+          .slice(offset, offset + limit)
 
       const dealerSourceIds = [...new Set(
         dealers
@@ -6642,7 +6847,21 @@ export function registerCrmRoutes(app, deps) {
       const { crmQuotePrintSettingsCollection } = await getCollections()
       const updatedAt = nowIso()
       const updatedByEmail = toLowerText(req.authUser?.email, 200) || null
-      const settings = normalizeQuotePrintSettings(req.body, { updatedAt, updatedByEmail })
+      const body = toOptionalObject(req.body)
+
+      // The layout settings page does not know about lead times and does not
+      // send them. Normalizing a body without them would silently reset the
+      // list to the defaults, so the stored list is carried forward instead.
+      if (!Array.isArray(body.leadTimeOptions)) {
+        const stored = await crmQuotePrintSettingsCollection.findOne(
+          { id: 'default' },
+          { projection: { _id: 0, leadTimeOptions: 1 } },
+        )
+
+        body.leadTimeOptions = normalizeLeadTimeOptions(stored?.leadTimeOptions)
+      }
+
+      const settings = normalizeQuotePrintSettings(body, { updatedAt, updatedByEmail })
 
       await crmQuotePrintSettingsCollection.updateOne(
         { id: 'default' },
@@ -6651,6 +6870,38 @@ export function registerCrmRoutes(app, deps) {
       )
 
       return res.json({ settings })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  // Adding one lead time from the quote form, without it having to know or
+  // resend every other print setting.
+  app.post('/api/crm/quote-lead-times', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const leadTime = toTrimmedText(toOptionalObject(req.body).leadTime, 80)
+
+      if (!leadTime) {
+        return res.status(400).json({ error: 'leadTime is required.' })
+      }
+
+      const { crmQuotePrintSettingsCollection } = await getCollections()
+      const stored = await crmQuotePrintSettingsCollection.findOne(
+        { id: 'default' },
+        { projection: { _id: 0, leadTimeOptions: 1 } },
+      )
+      const leadTimeOptions = normalizeLeadTimeOptions([
+        ...normalizeLeadTimeOptions(stored?.leadTimeOptions),
+        leadTime,
+      ])
+
+      await crmQuotePrintSettingsCollection.updateOne(
+        { id: 'default' },
+        { $set: { leadTimeOptions, updatedAt: nowIso() } },
+        { upsert: true },
+      )
+
+      return res.json({ leadTimeOptions })
     } catch (error) {
       next(error)
     }

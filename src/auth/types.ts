@@ -11,6 +11,8 @@ export type AppAuthUser = {
   uid: string
   email: string
   displayName: string | null
+  phone: string | null
+  jobTitle: string | null
   photoURL: string | null
   role: AppAuthRole
   approvalStatus: AppAuthApprovalStatus

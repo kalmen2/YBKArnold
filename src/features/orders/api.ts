@@ -93,6 +93,12 @@ export type OrdersOrderDetailsUpdateResponse = {
   queued?: boolean
   order: {
     mondayItemId: string
+    dealerSourceId: string | null
+    dealerName: string | null
+    contactSourceId: string | null
+    contactName: string | null
+    contactEmail: string | null
+    contactPhone: string | null
     orderName: string | null
     salesRep: string | null
     poNumber: string | null
@@ -967,8 +973,11 @@ export function postOrdersOrderNumberContactAdmin(input: ContactAdminForOrderNum
 type UpdateOrdersOrderDetailsInput = {
   mondayItemId: string
   orderName?: string | null
+  dealerSourceId?: string | null
+  contactSourceId?: string | null
   salesRep?: string | null
   poNumber?: string | null
+  orderDate?: string | null
   notes?: string | null
   description?: string | null
   bench?: string | null
@@ -1000,12 +1009,24 @@ export function postOrdersOrderDetailsUpdate(input: UpdateOrdersOrderDetailsInpu
     payload.orderName = input.orderName ?? ''
   }
 
+  if (Object.prototype.hasOwnProperty.call(input, 'dealerSourceId')) {
+    payload.dealerSourceId = input.dealerSourceId ?? ''
+  }
+
+  if (Object.prototype.hasOwnProperty.call(input, 'contactSourceId')) {
+    payload.contactSourceId = input.contactSourceId ?? ''
+  }
+
   if (Object.prototype.hasOwnProperty.call(input, 'salesRep')) {
     payload.salesRep = input.salesRep ?? ''
   }
 
   if (Object.prototype.hasOwnProperty.call(input, 'poNumber')) {
     payload.poNumber = input.poNumber ?? ''
+  }
+
+  if (Object.prototype.hasOwnProperty.call(input, 'orderDate')) {
+    payload.orderDate = input.orderDate ?? ''
   }
 
   if (Object.prototype.hasOwnProperty.call(input, 'notes')) {

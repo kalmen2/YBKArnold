@@ -60,6 +60,8 @@ export type AppChatMessage = {
   chatId: string
   text: string | null
   messageType: 'text' | 'image' | 'voice' | 'file' | 'mixed' | 'deleted'
+  /** A task was added, taken, completed or removed. Rendered as a system line. */
+  isTaskEvent?: boolean
   attachment: AppChatAttachment | null
   replyTo: AppChatReplyTo | null
   deliveryStatus: AppChatMessageDeliveryStatus
@@ -293,5 +295,79 @@ export function leaveChatCall(threadId: string) {
   return apiRequest<{ ok: boolean; ended: boolean }>(
     `/api/chat/threads/${encodeURIComponent(threadId)}/call/leave`,
     { method: 'POST' },
+  )
+}
+
+export type AppChatTask = {
+  id: string
+  chatId: string
+  title: string
+  isDone: boolean
+  doneAt: string | null
+  doneByUid: string | null
+  doneByName: string | null
+  claimedByUid: string | null
+  claimedByName: string | null
+  claimedAt: string | null
+  createdAt: string
+  createdByUid: string | null
+  createdByName: string | null
+}
+
+export type AppChatTasksResponse = {
+  tasks: AppChatTask[]
+  /** Whether this viewer may delete tasks in this thread. Decided server-side. */
+  canDelete: boolean
+}
+
+export function fetchChatTasks(threadId: string) {
+  return apiRequest<AppChatTasksResponse>(
+    `/api/chat/threads/${encodeURIComponent(threadId)}/tasks`,
+  )
+}
+
+export function createChatTask(threadId: string, title: string) {
+  return apiRequest<{ task: AppChatTask }>(
+    `/api/chat/threads/${encodeURIComponent(threadId)}/tasks`,
+    { method: 'POST', body: JSON.stringify({ title }) },
+  )
+}
+
+export function updateChatTask(
+  taskId: string,
+  input: { isDone?: boolean; claimed?: boolean; title?: string },
+) {
+  return apiRequest<{ task: AppChatTask }>(
+    `/api/chat/tasks/${encodeURIComponent(taskId)}`,
+    { method: 'PATCH', body: JSON.stringify(input) },
+  )
+}
+
+export function deleteChatTask(taskId: string) {
+  return apiRequest<{ deletedTaskId: string }>(
+    `/api/chat/tasks/${encodeURIComponent(taskId)}`,
+    { method: 'DELETE' },
+  )
+}
+
+export type ChatNotificationPreferences = {
+  enabled: boolean
+  mentions: boolean
+  directMessages: boolean
+  groupMessages: boolean
+  taskEvents: boolean
+  whenOnline: boolean
+}
+
+export function fetchChatNotificationPreferences() {
+  return apiRequest<{ preferences: ChatNotificationPreferences; deliversTo: string | null }>(
+    '/api/chat/notification-preferences',
+  )
+}
+
+export function saveChatNotificationPreferences(preferences: ChatNotificationPreferences) {
+  return apiRequest<{ preferences: ChatNotificationPreferences }>(
+    '/api/chat/notification-preferences',
+    { method: 'PUT', body: JSON.stringify({ preferences }) },
   )
 }

@@ -41,6 +41,12 @@ export function createDashboardCacheService({ getCollections }) {
     )
   }
 
+  async function clearDashboardSnapshotCache(snapshotKey) {
+    const { dashboardSnapshotsCollection } = await getCollections()
+
+    await dashboardSnapshotsCollection.deleteOne({ snapshotKey })
+  }
+
   async function clearSupportSnapshotCache() {
     const { dashboardSnapshotsCollection } = await getCollections()
 
@@ -50,6 +56,7 @@ export function createDashboardCacheService({ getCollections }) {
   }
 
   return {
+    clearDashboardSnapshotCache,
     clearSupportSnapshotCache,
     getDashboardSnapshotFromCache,
     isDashboardRefreshRequested,

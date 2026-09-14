@@ -1,129 +1,134 @@
+// The app theme.
+//
+// Values come from the Minimal template — theme-config.ts for the palette,
+// create-theme.ts for the 8px shape unit, custom-shadows.ts for the card
+// shadow — rather than being approximated by eye. It replaces a navy-and-teal
+// theme that painted the page background pale blue and laid three coloured
+// radial gradients over the body. Surfaces are white now, and colour is spent
+// on state and on totals rather than on the backdrop.
 import { alpha, createTheme } from '@mui/material/styles'
+
+// The template's palette carries two shades MUI does not define. Declaring them
+// keeps `primary.lighter` usable from sx without casting at every call site.
+declare module '@mui/material/styles' {
+  interface PaletteColor { lighter: string, darker: string }
+  interface SimplePaletteColorOptions { lighter?: string, darker?: string }
+}
+
+const GREY = {
+  50: '#FCFDFD',
+  100: '#F9FAFB',
+  200: '#F4F6F8',
+  300: '#DFE3E8',
+  400: '#C4CDD5',
+  500: '#919EAB',
+  600: '#637381',
+  700: '#454F5B',
+  800: '#1C252E',
+  900: '#141A21',
+} as const
+
+// Every translucent value in the template is built from grey 500.
+const GREY_500 = GREY[500]
+
+const CARD_SHADOW = `0 0 2px 0 ${alpha(GREY_500, 0.2)}, 0 12px 24px -4px ${alpha(GREY_500, 0.12)}`
 
 const theme = createTheme({
   palette: {
     mode: 'light',
     primary: {
-      light: '#74a8ff',
-      main: '#1f6feb',
-      dark: '#0b4cae',
-      contrastText: '#ffffff',
+      lighter: '#C8FAD6',
+      light: '#5BE49B',
+      main: '#00A76F',
+      dark: '#007867',
+      darker: '#004B50',
+      contrastText: '#FFFFFF',
     },
-    secondary: {
-      light: '#55d6c9',
-      main: '#1ba89a',
-      dark: '#0d6f66',
-      contrastText: '#ffffff',
+    secondary: { light: '#C684FF', main: '#8E33FF', dark: '#5119B7', contrastText: '#FFFFFF' },
+    info: { light: '#61F3F3', main: '#00B8D9', dark: '#006C9C', contrastText: '#FFFFFF' },
+    success: { light: '#77ED8B', main: '#22C55E', dark: '#118D57', contrastText: '#FFFFFF' },
+    warning: { light: '#FFD666', main: '#FFAB00', dark: '#B76E00', contrastText: '#1C252E' },
+    error: { light: '#FFAC82', main: '#FF5630', dark: '#B71D18', contrastText: '#FFFFFF' },
+    grey: GREY,
+    background: { default: '#FFFFFF', paper: '#FFFFFF' },
+    text: { primary: GREY[800], secondary: GREY[600], disabled: GREY[500] },
+    divider: alpha(GREY_500, 0.2),
+    action: {
+      active: GREY[600],
+      hover: alpha(GREY_500, 0.08),
+      selected: alpha(GREY_500, 0.16),
+      disabled: alpha(GREY_500, 0.8),
+      disabledBackground: alpha(GREY_500, 0.24),
     },
-    background: {
-      default: '#edf3ff',
-      paper: '#ffffff',
-    },
-    text: {
-      primary: '#10243d',
-      secondary: '#4b6179',
-    },
-    divider: alpha('#10243d', 0.12),
   },
   shape: {
-    borderRadius: 14,
+    borderRadius: 8,
   },
   typography: {
     fontFamily:
-      '"Avenir Next", "Segoe UI", "Trebuchet MS", "Helvetica Neue", Helvetica, Arial, sans-serif',
-    h4: {
-      fontSize: '1.65rem',
-      letterSpacing: '-0.02em',
-    },
-    h6: {
-      letterSpacing: '-0.01em',
-    },
-    button: {
-      textTransform: 'none',
-      fontWeight: 600,
-      letterSpacing: '0.01em',
-    },
+      '"Public Sans", "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif',
+    h4: { fontSize: '1.65rem', letterSpacing: '-0.02em', fontWeight: 700 },
+    h5: { fontWeight: 700 },
+    h6: { letterSpacing: '-0.01em', fontWeight: 700 },
+    button: { textTransform: 'none', fontWeight: 700 },
   },
   components: {
     MuiCssBaseline: {
       styleOverrides: {
-        body: {
-          backgroundColor: '#edf3ff',
-          backgroundImage: [
-            'radial-gradient(circle at 9% -8%, rgba(31,111,235,0.16) 0%, rgba(31,111,235,0) 34%)',
-            'radial-gradient(circle at 92% 0%, rgba(27,168,154,0.15) 0%, rgba(27,168,154,0) 32%)',
-            'linear-gradient(180deg, #f4f8ff 0%, #f8fbff 45%, #f3faf7 100%)',
-          ].join(', '),
-          backgroundAttachment: 'fixed',
-        },
+        // Plain white. The gradients that used to live here tinted every page.
+        body: { backgroundColor: '#FFFFFF' },
       },
     },
     MuiPaper: {
-      defaultProps: {
-        elevation: 0,
-      },
+      defaultProps: { elevation: 0 },
       styleOverrides: {
-        root: ({ theme }) => ({
-          borderColor: alpha(theme.palette.primary.main, 0.09),
-          borderWidth: 1,
-          borderStyle: 'solid',
-          backgroundImage: 'none',
-          boxShadow: `0 8px 22px ${alpha(theme.palette.primary.dark, 0.05)}`,
-        }),
+        root: { backgroundImage: 'none' },
+        outlined: { borderColor: alpha(GREY_500, 0.16) },
       },
+    },
+    MuiCard: {
+      styleOverrides: {
+        root: { borderRadius: 16, boxShadow: CARD_SHADOW, backgroundImage: 'none' },
+      },
+    },
+    MuiDialog: {
+      styleOverrides: { paper: { borderRadius: 16, backgroundImage: 'none' } },
     },
     MuiAppBar: {
       styleOverrides: {
-        root: ({ theme }) => ({
-          backgroundImage: 'none',
-          borderColor: alpha(theme.palette.primary.main, 0.1),
-        }),
+        root: { backgroundImage: 'none', borderColor: alpha(GREY_500, 0.2) },
       },
     },
     MuiOutlinedInput: {
       styleOverrides: {
-        root: ({ theme }) => ({
-          backgroundColor: alpha(theme.palette.background.paper, 0.82),
-          '&:hover .MuiOutlinedInput-notchedOutline': {
-            borderColor: alpha(theme.palette.primary.main, 0.38),
-          },
-          '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
-            borderWidth: 2,
-          },
-        }),
+        root: {
+          borderRadius: 8,
+          '& .MuiOutlinedInput-notchedOutline': { borderColor: alpha(GREY_500, 0.2) },
+          '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: GREY[800] },
+        },
       },
     },
     MuiButton: {
       styleOverrides: {
-        root: {
-          borderRadius: 999,
-          paddingLeft: 14,
-          paddingRight: 14,
-        },
-        containedPrimary: {
-          boxShadow: '0 10px 20px rgba(31,111,235,0.24)',
-        },
+        // Square-ish, not pill-shaped. The 999px radius was part of the old look.
+        root: { borderRadius: 8 },
+        containedPrimary: { boxShadow: `0 8px 16px 0 ${alpha('#00A76F', 0.24)}` },
       },
+    },
+    MuiChip: {
+      styleOverrides: { sizeSmall: { borderRadius: 8 }, sizeMedium: { borderRadius: 10 } },
+    },
+    MuiToggleButton: {
+      styleOverrides: { root: { borderRadius: 8, textTransform: 'none' } },
     },
     MuiTableHead: {
       styleOverrides: {
-        root: ({ theme }) => ({
-          backgroundColor: alpha(theme.palette.primary.main, 0.06),
-        }),
+        root: { backgroundColor: GREY[200], color: GREY[600] },
       },
     },
     MuiTab: {
       styleOverrides: {
-        root: ({ theme }) => ({
-          borderRadius: 10,
-          minHeight: 38,
-          transition: theme.transitions.create(['background-color', 'color'], {
-            duration: theme.transitions.duration.shorter,
-          }),
-          '&.Mui-selected': {
-            backgroundColor: alpha(theme.palette.primary.main, 0.12),
-          },
-        }),
+        root: { minHeight: 44, fontWeight: 700 },
       },
     },
   },

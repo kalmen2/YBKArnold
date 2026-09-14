@@ -308,10 +308,12 @@ const styles = StyleSheet.create({
   sublineRow: { paddingLeft: 14, backgroundColor: '#fbfdff' },
   item: { width: '7%', textAlign: 'center', paddingRight: 4 }, desc: { width: '48%', paddingRight: 7 }, qty: { width: '10%', textAlign: 'right', paddingRight: 5 }, unit: { width: '17.5%', textAlign: 'right', paddingRight: 8 }, money: { width: '17.5%', textAlign: 'right' },
   lineDescriptionHeading: { fontFamily: 'Helvetica-Bold', fontSize: 9.6, color: '#172033' },
-  lineDescriptionDetailRow: { flexDirection: 'row', marginBottom: 3.4 },
+  lineDescriptionDetailRow: { flexDirection: 'row', marginBottom: 5.5 },
   lineDescriptionFirstDetailRow: { marginTop: 4 },
-  lineDescriptionDetailLabel: { flexShrink: 0, paddingRight: ORDER_LINE_LABEL_GAP, color: '#26384a' },
-  lineDescriptionDetailBody: { color: '#15283b' },
+  lineDescriptionDetailLabel: { flexShrink: 0, paddingRight: ORDER_LINE_LABEL_GAP, color: '#26384a', lineHeight: 1.08 },
+  // Same reasoning as the quote: a wrapped subline reads as one thought only
+  // while its own leading stays well under the gap between sublines.
+  lineDescriptionDetailBody: { color: '#15283b', lineHeight: 1.08 },
   lineDescriptionSampleNotice: { color: '#b51f2e', marginTop: 1 },
   totals: { marginTop: 8, marginLeft: '54%', backgroundColor: '#f7f9fb', borderTopWidth: 2, borderTopColor: '#0f4c81' },
   totalRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4.5, paddingHorizontal: 9, borderBottomWidth: 1, borderBottomColor: '#dbe3ea', fontSize: 9.2 },
@@ -592,10 +594,13 @@ function OrderLineDescription({ line, width = ORDER_LINE_DESCRIPTION_WIDTH }: { 
       body: subline.description,
     })),
   ].filter((row) => row.label || row.body)
-  const detailColumnWidth = orderDocumentDetailColumnWidth(
-    detailRows.filter((row) => row.label && row.body).map((row) => row.label),
-    width,
-  )
+  // One product label anywhere in the line puts every row on the same grid,
+  // blank first column included. Measuring and rendering only the rows that
+  // happened to have both fields was what left the descriptions ragged.
+  const usesLabelColumn = detailRows.some((row) => row.label)
+  const detailColumnWidth = usesLabelColumn
+    ? orderDocumentDetailColumnWidth(detailRows.map((row) => row.label), width)
+    : 0
 
   return <View>
     {heading ? <Text style={styles.lineDescriptionHeading}>{heading}</Text> : null}
@@ -604,10 +609,10 @@ function OrderLineDescription({ line, width = ORDER_LINE_DESCRIPTION_WIDTH }: { 
         styles.lineDescriptionDetailRow,
         ...(index === 0 && heading ? [styles.lineDescriptionFirstDetailRow] : []),
       ]}>
-        {row.label && row.body ? <>
+        {usesLabelColumn ? (
           <Text style={[styles.lineDescriptionDetailLabel, { width: detailColumnWidth }]}>{row.label}</Text>
-          <Text style={[styles.lineDescriptionDetailBody, { width: width - detailColumnWidth }]}>{row.body}</Text>
-        </> : <Text style={styles.lineDescriptionDetailBody}>{row.label || row.body}</Text>}
+        ) : null}
+        <Text style={[styles.lineDescriptionDetailBody, { width: width - detailColumnWidth }]}>{row.body}</Text>
       </View>
     ))}
     {lineRequiresControlSample(line) ? <Text style={styles.lineDescriptionSampleNotice}>

@@ -21,6 +21,7 @@ import { registerOrderPhotoRoutes } from './src/routes/order-photos-routes.mjs'
 import { registerReadOnlyMcpRoutes } from './src/routes/mcp-readonly-routes.mjs'
 import { registerMcpOAuthRoutes } from './src/routes/mcp-oauth-routes.mjs'
 import { registerOrdersRoutes } from './src/routes/orders-routes.mjs'
+import { registerDealerLinkingRoutes } from './src/routes/dealer-linking-routes.mjs'
 import { registerPurchasingRoutes } from './src/routes/purchasing-routes.mjs'
 import { registerQuickBooksRoutes } from './src/routes/quickbooks-routes.mjs'
 import { registerSlackRoutes } from './src/routes/slack-routes.mjs'
@@ -512,6 +513,7 @@ const {
 } = createAnthropicService({ anthropicApiKey })
 
 const {
+  clearDashboardSnapshotCache,
   clearSupportSnapshotCache,
   getDashboardSnapshotFromCache,
   isDashboardRefreshRequested,
@@ -695,6 +697,7 @@ const { refreshOrdersUnifiedCollection } = createOrdersUnifiedService({
   mondayShippedBoardUrl,
   persistNewMondayOrders,
   setDashboardSnapshotCache,
+  clearDashboardSnapshotCache,
 })
 
 const {
@@ -1739,6 +1742,7 @@ const routeDeps = {
   authRoleShopWorker,
   authRoleStandard,
   buildOrderPhotoDownloadFileName,
+  clearDashboardSnapshotCache,
   clearSupportSnapshotCache,
   createMondayItem,
   createMondaySubitem,
@@ -2534,8 +2538,12 @@ registerChatRoutes(app, routeDeps)
 registerCrmRoutes(app, routeDeps)
 const ordersRoutesRuntime = registerOrdersRoutes(app, routeDeps) || {}
 registerDashboardSupportRoutes(app, routeDeps)
+registerDealerLinkingRoutes(app, routeDeps)
 registerDiagnosticReportsRoutes(app, routeDeps)
-registerEmailRoutes(app, routeDeps)
+// Assigned onto routeDeps rather than destructured at registration: chat
+// routes register earlier and read deps.sendSystemEmail lazily at call time.
+const { sendSystemEmail } = registerEmailRoutes(app, routeDeps) || {}
+routeDeps.sendSystemEmail = sendSystemEmail
 const { runEmailIntakeSyncCycle } = registerEmailIntakeRoutes(app, routeDeps)
 registerOrderPhotoRoutes(app, routeDeps)
 const { tokenIdentity: verifyMcpAccessToken } = registerMcpOAuthRoutes(mcpReadOnlyApp, {

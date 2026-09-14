@@ -29,6 +29,17 @@ export type DashboardOrder = {
   daysUntilDue: number | null
   isDone: boolean
   customerSignedBolMissing?: boolean
+  /** No QuickBooks project on this order or any parent it is linked to. */
+  missingQuickBooksProject?: boolean
+  /** No order value on this order or any parent it is linked to. */
+  missingOrderValue?: boolean
+  /** No order date, or one guessed from the order number rather than known. */
+  missingOrderDate?: boolean
+  orderDateIsEstimated?: boolean
+  /** Imported history that predates the handover — excluded from both checks. */
+  isPriorOwner?: boolean
+  parentOrderNumber?: string | null
+  quickBooksProjectId?: string | null
   isProductionStarted?: boolean
   isLate: boolean
   daysLate: number
@@ -62,6 +73,11 @@ export type MondayDashboardSnapshot = {
     lateOrders: number
     dueSoonOrders: number
     missingDueDateOrders: number
+    missingCustomerSignedBolOrders?: number
+    missingQuickBooksProjectOrders?: number
+    missingOrderValueOrders?: number
+    missingOrderDateOrders?: number
+    onMondayNotOnSiteOrders?: number
     averageLeadTimeDays: number | null
   }
   buckets: {
@@ -74,6 +90,12 @@ export type MondayDashboardSnapshot = {
     activeOrders: DashboardOrder[]
     completedOrders: DashboardOrder[]
     missingDueDateOrders: DashboardOrder[]
+    missingCustomerSignedBolOrders?: DashboardOrder[]
+    missingQuickBooksProjectOrders?: DashboardOrder[]
+    missingOrderValueOrders?: DashboardOrder[]
+    missingOrderDateOrders?: DashboardOrder[]
+    /** On the Monday New Orders 2026 board but never became a website order. */
+    onMondayNotOnSiteOrders?: DashboardOrder[]
   }
   orders: DashboardOrder[]
   columnDetection: {

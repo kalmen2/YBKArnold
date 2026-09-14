@@ -354,6 +354,8 @@ export function createAuthUtils({
       uid: String(document.uid ?? ''),
       email: String(document.email ?? ''),
       displayName: String(document.displayName ?? '').trim() || null,
+      phone: String(document.phone ?? '').trim() || null,
+      jobTitle: String(document.jobTitle ?? '').trim() || null,
       photoURL: String(document.photoURL ?? '').trim() || null,
       role: normalizedRole,
       approvalStatus: normalizedApprovalStatus,

@@ -1,14 +1,21 @@
 import { DialogFeedback } from '../components/DialogFeedback'
 import AddRoundedIcon from '@mui/icons-material/AddRounded'
+import FilterAltOffRoundedIcon from '@mui/icons-material/FilterAltOffRounded'
+import FilterListRoundedIcon from '@mui/icons-material/FilterListRounded'
+import UploadFileRoundedIcon from '@mui/icons-material/UploadFileRounded'
 import ArrowDropDownRoundedIcon from '@mui/icons-material/ArrowDropDownRounded'
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded'
 import ArrowForwardRoundedIcon from '@mui/icons-material/ArrowForwardRounded'
-import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded'
+import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded'
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
 import FileUploadRoundedIcon from '@mui/icons-material/FileUploadRounded'
+import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded'
+import KeyboardArrowUpRoundedIcon from '@mui/icons-material/KeyboardArrowUpRounded'
 import MoreVertRoundedIcon from '@mui/icons-material/MoreVertRounded'
-import OpenWithRoundedIcon from '@mui/icons-material/OpenWithRounded'
-import PreviewRoundedIcon from '@mui/icons-material/PreviewRounded'
+import ZoomInRoundedIcon from '@mui/icons-material/ZoomInRounded'
+import ZoomOutRoundedIcon from '@mui/icons-material/ZoomOutRounded'
+import ViewListRoundedIcon from '@mui/icons-material/ViewListRounded'
+import ViewModuleRoundedIcon from '@mui/icons-material/ViewModuleRounded'
 import PrintRoundedIcon from '@mui/icons-material/PrintRounded'
 import ChatBubbleOutlineRoundedIcon from '@mui/icons-material/ChatBubbleOutlineRounded'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
@@ -32,11 +39,17 @@ import {
   FormControlLabel,
   IconButton,
   InputAdornment,
+  ListItemText,
+  ListItemIcon,
+  Divider,
   Menu,
   MenuItem,
   Paper,
   Slider,
   Stack,
+  Step,
+  StepButton,
+  Stepper,
   Tab,
   Tabs,
   Table,
@@ -53,8 +66,8 @@ import {
 import { alpha } from '@mui/material/styles'
 import { deleteObject, getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type ClipboardEvent as ReactClipboardEvent, type MouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type ClipboardEvent as ReactClipboardEvent, type MouseEvent } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import Cropper, { type Area } from 'react-easy-crop'
 import { useAuth } from '../auth/useAuth'
 import { firebaseStorage } from '../auth/firebase'
@@ -64,6 +77,7 @@ import {
   createCrmDealer,
   createCrmDealerContact,
   convertCrmQuoteToOrder,
+  addCrmQuoteLeadTime,
   createCrmQuote,
   createCrmQuoteChatMessage,
   createCrmQuoteRevision,
@@ -117,6 +131,26 @@ import {
 import { resolveFileExtension, sanitizeStoragePathSegment } from '../lib/fileUtils'
 import { formatCurrency } from '../lib/formatters'
 import { runAppProcess } from '../lib/appProcesses'
+import { evaluateQuoteFormula } from '../features/crm/quoteFormula'
+import {
+  calculateExtendedPrice,
+  copyQuoteLineDetailToSubline,
+  createEmptyQuoteLine as createEmptyLineItemFormState,
+  duplicateQuoteLineBlock,
+  duplicateQuoteSubline,
+  joinQuoteLineDescription,
+  moveQuoteLineBlock,
+  quoteFormulaHint as formulaHint,
+  QUOTE_PRODUCT_MAX_LENGTH,
+  splitQuoteLineDescription,
+  updateQuoteLinePricing as updateLineItemPricing,
+  type QuoteLineFormState,
+} from '../features/crm/quoteLines'
+import { OpportunityListView } from '../features/crm/OpportunityListView'
+import type { QuoteFormState, QuoteServiceItemFormState } from '../features/crm/quoteFormState'
+import { NewQuoteDialog } from '../features/crm/newQuote/NewQuoteDialog'
+import { QuoteFieldLabel } from '../features/crm/QuoteFieldLabel'
+import { QuoteTotalsBar } from '../features/crm/QuoteTotalsBar'
 import { QUERY_KEYS } from '../lib/queryKeys'
 
 const DEFAULT_OPPORTUNITY_TITLE_PREFIX = 'Opportunity '
@@ -153,6 +187,7 @@ const DEFAULT_QUOTE_PRINT_SETTINGS: CrmQuotePrintSettings = {
   orderConfirmationTerms: 'Lead times begin after final approved shop drawings and finish samples are received.',
   updatedAt: null,
   updatedByEmail: null,
+  leadTimeOptions: ['6 to 8 weeks', '8 to 10 weeks', '10 to 12 weeks'],
 }
 
 async function parseExcelQuoteForSync(file: File, preferredQuoteNumber?: string) {
@@ -171,17 +206,7 @@ type ParsedExcelQuoteSyncInput = CrmExcelQuoteSyncInput & {
   embeddedLineImages: ExcelSyncEmbeddedImage[]
 }
 
-type OpportunityLineItemFormState = {
-  id: string
-  parentLineId: string | null
-  itemNumber: string
-  detailLabel: string
-  description: string
-  qty: string
-  unitPrice: string
-  extPrice: string
-  images: CrmQuoteLineImage[]
-}
+type OpportunityLineItemFormState = QuoteLineFormState
 
 type QuoteImageShape = 'square' | 'landscape' | 'wide' | 'portrait'
 type QuoteImageDisplaySize = 'small' | 'medium' | 'large'
@@ -200,48 +225,9 @@ type QuoteImageCropTarget = {
   displaySize?: QuoteImageDisplaySize
 }
 
-type QuoteImagePdfLayout = NonNullable<CrmQuoteLineImage['pdfLayout']>
 
-type OpportunityServiceItemFormState = {
-  id: string
-  title: string
-  description: string
-  qty: string
-  unitPrice: string
-  extPrice: string
-  images: CrmQuoteLineImage[]
-  location: CrmQuoteServiceLocation | null
-}
-
-type OpportunityFormState = {
-  dealerSourceId: string
-  quoteNumber: string
-  title: string
-  opportunityDateInput: string
-  companyName: string
-  contactName: string
-  contactEmail: string
-  contactPhone: string
-  salesRep: string
-  projectType: string
-  leadTime: string
-  paymentTerms: string
-  subtotal: string
-  discountPercent: string
-  discountScope: 'products' | 'products_and_freight'
-  totalPriceType: CrmQuoteTotalPriceType
-  freight: string
-  freightDescription: string
-  notes: string
-  lineItems: OpportunityLineItemFormState[]
-  additionalServices: OpportunityServiceItemFormState[]
-  shippingServices: OpportunityServiceItemFormState[]
-  origin: 'website' | 'excel'
-  sourceWorkbookUrl: string
-  sourceWorkbookName: string
-  convertedPdfUrl: string
-  convertedPdfName: string
-}
+type OpportunityServiceItemFormState = QuoteServiceItemFormState
+type OpportunityFormState = QuoteFormState
 
 type AddOpportunityStage = 0 | 1 | 2 | 3 | 4
 
@@ -353,14 +339,37 @@ type StageColumnProps = {
   onPrintQuote: (quote: CrmQuote) => void
   onOpenDetails: (quote: CrmQuote) => void
   onOpenChat: (quote: CrmQuote) => void
+  // The page's toolbar lives in this component's header now, so its controls
+  // come down as props rather than sitting in a second bar of their own.
+  globalSearch: string
+  onGlobalSearchChange: (value: string) => void
+  isRefreshing: boolean
+  onRefresh: () => void
+  onAddOpportunity: () => void
+  isSyncingExcelQuote: boolean
+  onSyncExcelSheet: () => void
 }
 
+// One flat list. The old set needed three menus to reach, and two of its five
+// entries sorted by date while claiming to sort by quote number.
 type StageSortMode =
-  | 'date_oldest_to_newest'
-  | 'date_newest_to_oldest'
-  | 'quote_number_oldest_to_newest'
-  | 'quote_number_asc'
   | 'quote_number_desc'
+  | 'quote_number_asc'
+  | 'date_newest'
+  | 'date_oldest'
+  | 'amount_high'
+  | 'amount_low'
+  | 'account_az'
+
+const STAGE_SORT_OPTIONS: { value: StageSortMode, label: string }[] = [
+  { value: 'quote_number_desc', label: 'Quote number, highest first' },
+  { value: 'quote_number_asc', label: 'Quote number, lowest first' },
+  { value: 'date_newest', label: 'Date, newest first' },
+  { value: 'date_oldest', label: 'Date, oldest first' },
+  { value: 'amount_high', label: 'Amount, highest first' },
+  { value: 'amount_low', label: 'Amount, lowest first' },
+  { value: 'account_az', label: 'Account, A to Z' },
+]
 
 type StageAmountCondition = 'any' | 'gt' | 'gte' | 'lt' | 'lte' | 'between'
 
@@ -387,21 +396,41 @@ type PendingRevisionSave = {
   mode: OpportunitySavePreference
 }
 
+// A formula's answer is the number that matters, so it is shown at full size
+// rather than as fine print. The field keeps the formula so it stays editable.
+const formulaHintSx = {
+  ml: 0,
+  mt: 0.25,
+  fontSize: '0.95rem',
+  fontWeight: 700,
+  color: 'primary.main',
+} as const
+
+// Qty, unit price and ext are pushed together so the description — the part
+// anyone actually reads — keeps the rest of the width. Their default cell
+// padding alone would eat a third of a column this narrow, so it is trimmed
+// with them.
+const QUOTE_LINE_TIGHT_CELL_SX = { px: 0.75 } as const
+
+// The narrow label beside each description ("Finish:", "Size:"). Every pixel
+// taken off it goes straight to the description next to it.
+const QUOTE_LINE_DETAIL_LABEL_WIDTH = 118
+
 type LineItemsEditorProps = {
   lineItems: OpportunityLineItemFormState[]
-  pdfPreviewQuote?: CrmQuote | null
   pdfSettings?: CrmQuotePrintSettings
   canEdit: boolean
   onAddLineItem: () => void
   onAddSubline: (index: number) => void
   onUpdateLineItem: (index: number, field: 'detailLabel' | 'description' | 'qty' | 'unitPrice' | 'extPrice', value: string) => void
   onRemoveLineItem: (index: number) => void
+  onMoveLineItem: (index: number, direction: 'up' | 'down') => void
+  onDuplicateLineItem: (index: number) => void
+  onCopyDetailToSubline: (index: number) => void
   onAddImages: (index: number, images: PreparedQuoteImage[], replaceImageId?: string) => Promise<void>
   onRemoveImage: (lineIndex: number, imageId: string) => void
-  onUpdateImageLayout: (lineIndex: number, imageId: string, layout: QuoteImagePdfLayout) => void
   onInsertLibraryEntry: (entry: CrmQuoteLineLibraryEntry) => void
   isUploadingImage: boolean
-  showPdfLayoutAction?: boolean
 }
 
 const stageDefinitions: StageDefinition[] = [
@@ -556,20 +585,14 @@ function getTodayEasternDateInputValue() {
   return `${year}-${month}-${day}`
 }
 
-function createEmptyLineItemFormState(parentLineId: string | null = null): OpportunityLineItemFormState {
-  return {
-    id: crypto.randomUUID(),
-    parentLineId,
-    itemNumber: '',
-    detailLabel: '',
-    description: '',
-    qty: '',
-    unitPrice: '',
-    extPrice: '',
-    images: [],
-  }
-}
-
+/**
+ * Move a quote line up or down, carrying its sublines with it.
+ *
+ * Lines are stored flat: a main line is followed immediately by its sublines,
+ * which point back at it through parentLineId. Reordering therefore moves a
+ * whole block, not a row — swapping single entries would strand sublines under
+ * the wrong parent.
+ */
 function cloneQuoteLineLibraryEntry(entry: CrmQuoteLineLibraryEntry) {
   const idBySourceId = new Map<string, string>()
   const sourceLines = Array.isArray(entry.lines) ? entry.lines : []
@@ -620,26 +643,7 @@ function insertQuoteLineLibraryEntry(
   return [...currentLines, ...insertedLines]
 }
 
-function calculateExtendedPrice(qty: string, unitPrice: string) {
-  const quantity = Number(qty)
-  const price = Number(unitPrice)
-  return qty.trim() && unitPrice.trim() && Number.isFinite(quantity) && Number.isFinite(price)
-    ? String(Number((quantity * price).toFixed(2)))
-    : ''
-}
-
-function updateLineItemPricing(
-  lineItem: OpportunityLineItemFormState,
-  field: 'detailLabel' | 'description' | 'qty' | 'unitPrice' | 'extPrice',
-  value: string,
-) {
-  const nextLineItem = { ...lineItem, [field]: value }
-  if (field === 'qty' || field === 'unitPrice') {
-    nextLineItem.extPrice = calculateExtendedPrice(nextLineItem.qty, nextLineItem.unitPrice)
-  }
-  return nextLineItem
-}
-
+/** Shows what a typed formula works out to, the way Excel shows the result. */
 function resolveServiceItemExtPrice(item: {
   qty?: number | null
   unitPrice?: number | null
@@ -850,10 +854,16 @@ const quoteImageShapeOptions: Array<{ value: QuoteImageShape; label: string; asp
   { value: 'portrait', label: 'Portrait', aspect: 4 / 5 },
 ]
 
-const quoteImageSizeOptions: Array<{ value: QuoteImageDisplaySize; label: string; description: string }> = [
-  { value: 'small', label: 'Small', description: 'Compact (~60%)' },
-  { value: 'medium', label: 'Medium', description: 'Standard (~100%)' },
-  { value: 'large', label: 'Large', description: 'Large (~145%)' },
+const quoteImageSizeOptions: Array<{
+  value: QuoteImageDisplaySize
+  label: string
+  description: string
+  /** Relative printed width, used for the preview bars beside the control. */
+  scale: number
+}> = [
+  { value: 'small', label: 'Small', description: '66% width', scale: 0.66 },
+  { value: 'medium', label: 'Medium', description: 'Standard', scale: 1 },
+  { value: 'large', label: 'Large', description: '144% width', scale: 1.44 },
 ]
 
 const quoteImageZoomFromSlider = (value: number) => value <= 0
@@ -1005,10 +1015,28 @@ function QuoteImageCropDialog({
             />
           </Box>
           <Box>
-            <Typography variant="caption" fontWeight={800}>Quote size</Typography>
+            <Typography variant="caption" fontWeight={800}>Size on the printed quote</Typography>
             <ToggleButtonGroup exclusive value={displaySize} onChange={(_event, value: QuoteImageDisplaySize | null) => value && setDisplaySize(value)} size="small" fullWidth sx={{ mt: 0.5 }}>
-              {quoteImageSizeOptions.map((option) => <ToggleButton key={option.value} value={option.value}><Stack><span>{option.label}</span><Typography variant="caption" color="text.secondary">{option.description}</Typography></Stack></ToggleButton>)}
+              {quoteImageSizeOptions.map((option) => (
+                <ToggleButton key={option.value} value={option.value}>
+                  <Stack alignItems="center" spacing={0.5}>
+                    <Box
+                      sx={{
+                        width: 34 * option.scale,
+                        height: 16,
+                        borderRadius: 0.5,
+                        bgcolor: displaySize === option.value ? 'primary.main' : 'action.disabled',
+                      }}
+                    />
+                    <span>{option.label}</span>
+                    <Typography variant="caption" color="text.secondary">{option.description}</Typography>
+                  </Stack>
+                </ToggleButton>
+              ))}
             </ToggleButtonGroup>
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+              Only affects the PDF. The form shows the picture as an attachment.
+            </Typography>
           </Box>
         </Stack>
       </DialogContent>
@@ -1020,211 +1048,6 @@ function QuoteImageCropDialog({
   )
 }
 
-const PDF_PRODUCT_LAYOUT_WIDTH = 327
-const PDF_PRODUCT_LAYOUT_HEIGHT = 180
-
-function resolveQuoteImageAspect(image: CrmQuoteLineImage) {
-  const width = Number(image.width || 0)
-  const height = Number(image.height || 0)
-  if (width > 0 && height > 0) return width / height
-  if (image.shape === 'portrait') return 4 / 5
-  if (image.shape === 'wide') return 16 / 9
-  if (image.shape === 'square') return 1
-  return 4 / 3
-}
-
-function resolveDefaultQuoteImagePdfLayout(image: CrmQuoteLineImage): QuoteImagePdfLayout {
-  const width = image.displaySize === 'small' ? 78 : image.displaySize === 'large' ? 170 : 118
-  return {
-    x: PDF_PRODUCT_LAYOUT_WIDTH - width - 6,
-    y: 8,
-    width,
-  }
-}
-
-function normalizeQuoteImagePdfLayout(image: CrmQuoteLineImage, layout: QuoteImagePdfLayout): QuoteImagePdfLayout {
-  const aspect = resolveQuoteImageAspect(image)
-  const width = Math.min(300, Math.max(48, Number(layout.width) || 118))
-  const height = width / aspect
-  return {
-    x: Math.min(PDF_PRODUCT_LAYOUT_WIDTH - width, Math.max(0, Number(layout.x) || 0)),
-    y: Math.min(Math.max(0, PDF_PRODUCT_LAYOUT_HEIGHT - height), Math.max(0, Number(layout.y) || 0)),
-    width,
-  }
-}
-
-function QuotePicturesPdfLayoutDialog({
-  lineItems,
-  quote,
-  settings,
-  open,
-  onCancel,
-  onSave,
-}: {
-  lineItems: OpportunityLineItemFormState[]
-  quote?: CrmQuote | null
-  settings?: CrmQuotePrintSettings
-  open: boolean
-  onCancel: () => void
-  onSave: (layouts: Array<{ lineIndex: number; imageId: string; layout: QuoteImagePdfLayout }>) => void
-}) {
-  const canvasRefs = useRef(new Map<number, HTMLDivElement>())
-  const interactionRef = useRef<{
-    mode: 'move' | 'resize'
-    lineIndex: number
-    image: CrmQuoteLineImage
-    clientX: number
-    clientY: number
-    layout: QuoteImagePdfLayout
-  } | null>(null)
-  const [layouts, setLayouts] = useState<Record<string, QuoteImagePdfLayout>>({})
-  const images = useMemo(() => lineItems.flatMap((lineItem, lineIndex) => (
-    lineItem.images.map((image) => ({ lineIndex, image }))
-  )), [lineItems])
-
-  useEffect(() => {
-    if (!open) return
-    const resetTimer = window.setTimeout(() => {
-      setLayouts(Object.fromEntries(images.map(({ image }) => [
-        image.id,
-        normalizeQuoteImagePdfLayout(image, image.pdfLayout || resolveDefaultQuoteImagePdfLayout(image)),
-      ])))
-      interactionRef.current = null
-    }, 0)
-    return () => window.clearTimeout(resetTimer)
-  }, [images, open])
-
-  const startInteraction = (
-    mode: 'move' | 'resize',
-    lineIndex: number,
-    image: CrmQuoteLineImage,
-    event: ReactPointerEvent<HTMLElement>,
-  ) => {
-    const layout = layouts[image.id]
-    if (!layout) return
-    event.preventDefault()
-    event.stopPropagation()
-    event.currentTarget.setPointerCapture(event.pointerId)
-    interactionRef.current = {
-      mode,
-      lineIndex,
-      image,
-      clientX: event.clientX,
-      clientY: event.clientY,
-      layout,
-    }
-  }
-
-  const continueInteraction = (event: ReactPointerEvent<HTMLElement>) => {
-    const interaction = interactionRef.current
-    const canvas = interaction ? canvasRefs.current.get(interaction.lineIndex) : null
-    if (!interaction || !canvas) return
-    const bounds = canvas.getBoundingClientRect()
-    const dx = (event.clientX - interaction.clientX) * (PDF_PRODUCT_LAYOUT_WIDTH / bounds.width)
-    const dy = (event.clientY - interaction.clientY) * (PDF_PRODUCT_LAYOUT_HEIGHT / bounds.height)
-    const aspect = resolveQuoteImageAspect(interaction.image)
-
-    if (interaction.mode === 'move') {
-      setLayouts((current) => ({
-        ...current,
-        [interaction.image.id]: normalizeQuoteImagePdfLayout(interaction.image, {
-          ...interaction.layout,
-          x: interaction.layout.x + dx,
-          y: interaction.layout.y + dy,
-        }),
-      }))
-      return
-    }
-
-    const widthFromPointer = Math.max(dx, dy * aspect)
-    setLayouts((current) => ({
-      ...current,
-      [interaction.image.id]: normalizeQuoteImagePdfLayout(interaction.image, {
-        ...interaction.layout,
-        width: interaction.layout.width + widthFromPointer,
-      }),
-    }))
-  }
-
-  if (quote && settings) {
-    return (
-      <Suspense fallback={<Dialog open={open} fullScreen><Stack alignItems="center" justifyContent="center" height="100%"><CircularProgress /></Stack></Dialog>}>
-        <QuotePdfPictureLayoutDialog open={open} quote={quote} settings={settings} onCancel={onCancel} onSave={onSave} />
-      </Suspense>
-    )
-  }
-
-  return (
-    <Dialog open={open} onClose={onCancel} maxWidth="lg" fullWidth>
-      <DialogTitle>Preview PDF &amp; Arrange Pictures</DialogTitle>
-      <DialogContent dividers>
-        <Stack spacing={1.5}>
-          <Alert severity="info" icon={<OpenWithRoundedIcon />}>
-            This preview shows all product wording and pictures together. Drag any picture to move it, and drag its red corner to resize it.
-          </Alert>
-          <Box sx={{ overflowX: 'auto', pb: 0.5 }}>
-            <Box sx={{ minWidth: 720, maxWidth: 900, minHeight: 1040, mx: 'auto', p: 3.5, borderRadius: 0.5, overflow: 'hidden', border: '1px solid #cbd5e1', boxShadow: '0 12px 30px rgba(15, 23, 42, .16)', bgcolor: '#fff' }}>
-              <Stack direction="row" justifyContent="space-between" alignItems="flex-start" sx={{ mb: 2.5, pb: 1.5, borderBottom: '3px solid #0f4c81' }}>
-                <Box>
-                  <Typography sx={{ color: '#b1161b', fontSize: 22, fontWeight: 900, letterSpacing: 0.3 }}>ARNOLD <Box component="span" sx={{ color: '#172033' }}>CONTRACT</Box></Typography>
-                  <Typography sx={{ mt: 0.5, fontSize: 9.5, color: '#526071' }}>866-425-6529 &nbsp; • &nbsp; ArnoldContract.us &nbsp; • &nbsp; 120 Coit Street, Irvington, NJ 07111</Typography>
-                </Box>
-                <Box sx={{ textAlign: 'right' }}>
-                  <Typography sx={{ color: '#0f4c81', fontSize: 19, fontWeight: 800 }}>Estimate</Typography>
-                  <Typography sx={{ color: '#475569', fontSize: 10 }}>Picture layout preview</Typography>
-                </Box>
-              </Stack>
-              <Typography sx={{ mb: 0.8, color: '#0f4c81', fontSize: 13, fontWeight: 800 }}>Products</Typography>
-              <Box sx={{ bgcolor: '#0f4c81', color: '#fff', display: 'grid', gridTemplateColumns: '46px 1fr 55px 86px 86px', px: 0.8, py: 0.75, fontSize: 11, fontWeight: 800 }}>
-                <span>Item</span><span>Description and picture</span><span>Qty</span><span>Unit Price</span><span>Ext</span>
-              </Box>
-              {lineItems.map((lineItem, lineIndex) => ({ lineItem, lineIndex }))
-                .filter(({ lineItem }) => !lineItem.parentLineId)
-                .map(({ lineItem, lineIndex }, displayIndex) => (
-                <Box key={lineItem.id || lineIndex} sx={{ display: 'grid', gridTemplateColumns: '46px minmax(0, 1fr) 55px 86px 86px', bgcolor: displayIndex % 2 ? '#fbfdff' : '#fff', borderBottom: '1px solid #d8e0ea' }}>
-                  <Box sx={{ p: 1, borderRight: '1px solid #d8e0ea', fontSize: 12, fontWeight: 800 }}>{displayIndex + 1}</Box>
-                  <Box ref={(node: HTMLDivElement | null) => { if (node) canvasRefs.current.set(lineIndex, node); else canvasRefs.current.delete(lineIndex) }} sx={{ position: 'relative', minHeight: 180, borderRight: '1px solid #d8e0ea', overflow: 'hidden', touchAction: 'none' }}>
-                    <Typography sx={{ position: 'absolute', left: 10, top: 10, right: 10, whiteSpace: 'pre-wrap', color: '#334155', fontSize: 11, lineHeight: 1, pointerEvents: 'none' }}>
-                      {[lineItem.description, lineItem.detailLabel, ...lineItems
-                        .filter((entry) => entry.parentLineId === lineItem.id)
-                        .flatMap((entry) => [entry.detailLabel, entry.description])]
-                        .map((value) => String(value || '').trim())
-                        .filter(Boolean)
-                        .join('\n') || 'Product description'}
-                    </Typography>
-                    {lineItem.images.map((image) => {
-                      const layout = layouts[image.id]
-                      if (!layout) return null
-                      const imageHeight = layout.width / resolveQuoteImageAspect(image)
-                      return (
-                        <Box key={image.id} onPointerDown={(event) => startInteraction('move', lineIndex, image, event)} onPointerMove={continueInteraction} onPointerUp={() => { interactionRef.current = null }} onPointerCancel={() => { interactionRef.current = null }} sx={{ position: 'absolute', left: `${(layout.x / PDF_PRODUCT_LAYOUT_WIDTH) * 100}%`, top: `${(layout.y / PDF_PRODUCT_LAYOUT_HEIGHT) * 100}%`, width: `${(layout.width / PDF_PRODUCT_LAYOUT_WIDTH) * 100}%`, height: `${(imageHeight / PDF_PRODUCT_LAYOUT_HEIGHT) * 100}%`, border: '2px solid #b1161b', borderRadius: 1, bgcolor: '#fff', boxShadow: '0 5px 16px rgba(15,23,42,.2)', cursor: 'grab', userSelect: 'none', '&:active': { cursor: 'grabbing' } }}>
-                          <Box component="img" draggable={false} src={image.url} alt={image.name || `Item ${lineIndex + 1}`} sx={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', pointerEvents: 'none' }} />
-                          <Box onPointerDown={(event) => startInteraction('resize', lineIndex, image, event)} onPointerMove={continueInteraction} onPointerUp={() => { interactionRef.current = null }} onPointerCancel={() => { interactionRef.current = null }} aria-label={`Resize picture for item ${lineIndex + 1}`} sx={{ position: 'absolute', width: 20, height: 20, right: -7, bottom: -7, borderRadius: '50%', bgcolor: '#b1161b', border: '3px solid #fff', boxShadow: '0 1px 5px rgba(0,0,0,.3)', cursor: 'nwse-resize' }} />
-                        </Box>
-                      )
-                    })}
-                  </Box>
-                  <Box sx={{ p: 1, borderRight: '1px solid #d8e0ea', fontSize: 11, textAlign: 'center' }}>{lineItem.qty || '—'}</Box>
-                  <Box sx={{ p: 1, borderRight: '1px solid #d8e0ea', fontSize: 11, textAlign: 'right' }}>{lineItem.unitPrice ? formatCurrency(Number(lineItem.unitPrice), 2) : '—'}</Box>
-                  <Box sx={{ p: 1, bgcolor: '#f8fafc', fontSize: 11, textAlign: 'right' }}>{lineItem.extPrice ? formatCurrency(Number(lineItem.extPrice), 2) : '—'}</Box>
-                </Box>
-              ))}
-            </Box>
-          </Box>
-          <Typography variant="caption" color="text.secondary" textAlign="center">
-            Pictures remain attached to their product row, so descriptions and pricing stay readable when the estimate flows to another page.
-          </Typography>
-        </Stack>
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={() => setLayouts(Object.fromEntries(images.map(({ image }) => [image.id, normalizeQuoteImagePdfLayout(image, resolveDefaultQuoteImagePdfLayout(image))])))}>Reset All</Button>
-        <Box sx={{ flex: 1 }} />
-        <Button onClick={onCancel}>Cancel</Button>
-        <Button variant="contained" onClick={() => onSave(images.map(({ lineIndex, image }) => ({ lineIndex, imageId: image.id, layout: normalizeQuoteImagePdfLayout(image, layouts[image.id] || resolveDefaultQuoteImagePdfLayout(image)) })))}>Done</Button>
-      </DialogActions>
-    </Dialog>
-  )
-}
 
 function toOptionalNumber(value: string) {
   const normalized = value.trim()
@@ -1233,7 +1056,9 @@ function toOptionalNumber(value: string) {
     return null
   }
 
-  const parsed = Number(normalized)
+  // Arithmetic resolves here too, so a formula typed in a field is stored as
+  // the number it works out to rather than being dropped on save.
+  const parsed = evaluateQuoteFormula(normalized) ?? Number(normalized)
 
   if (!Number.isFinite(parsed)) {
     return null
@@ -1298,30 +1123,66 @@ function mapQuoteLineItemsToFormState(lineItems: CrmQuoteLineItem[] | null | und
   return lineItems.map(mapLineItemToFormState)
 }
 
-function splitQuoteLineDescription(value: string) {
-  const normalized = String(value || '').replace(/\r\n?/g, '\n')
-  const newlineIndex = normalized.indexOf('\n')
-
-  if (newlineIndex < 0) {
-    return { heading: normalized, details: '' }
-  }
-
-  return {
-    heading: normalized.slice(0, newlineIndex),
-    details: normalized.slice(newlineIndex + 1),
-  }
-}
-
-function joinQuoteLineDescription(heading: string, details: string) {
-  return details ? `${heading}\n${details}` : heading
-}
-
 function calculateLineItemsTotal(lineItems: CrmQuoteLineItem[]) {
   return Number(
     lineItems
       .reduce((sum, lineItem) => sum + Number(lineItem.extPrice || 0), 0)
       .toFixed(2),
   )
+}
+
+/**
+ * The in-progress quote as the PDF renderer expects to receive it.
+ *
+ * Both the staged dialog and the single-page form preview an unsaved quote, and
+ * a preview that disagreed with either would be worse than no preview, so they
+ * build it here from the same form state.
+ */
+function buildQuotePreviewQuote(
+  form: OpportunityFormState,
+  pricing: {
+    subtotal: number
+    discountPercent: number
+    discountAmount: number
+    discountScope: 'products' | 'products_and_freight'
+    discountFreightAmount: number
+    freight: number
+    totalAmount: number
+  },
+) {
+  return {
+    id: 'new-opportunity-preview',
+    dealerSourceId: form.dealerSourceId || null,
+    quoteNumber: form.quoteNumber.trim() || null,
+    title: form.title.trim() || `${DEFAULT_OPPORTUNITY_TITLE_PREFIX}${form.quoteNumber.trim() || 'Preview'}`,
+    companyName: form.companyName.trim() || null,
+    contactName: form.contactName.trim() || null,
+    contactEmail: form.contactEmail.trim() || null,
+    contactPhone: form.contactPhone.trim() || null,
+    salesRep: form.salesRep.trim() || null,
+    projectType: form.projectType.trim() || null,
+    opportunityDate: form.opportunityDateInput.trim() || null,
+    leadTime: form.leadTime.trim() || null,
+    paymentTerms: form.paymentTerms.trim() || null,
+    subtotal: pricing.subtotal,
+    discountPercent: pricing.discountPercent,
+    discountAmount: pricing.discountAmount,
+    discountScope: pricing.discountScope,
+    discountFreightAmount: pricing.discountFreightAmount,
+    totalPriceType: form.totalPriceType,
+    freight: pricing.freight,
+    freightDescription: form.freightDescription.trim() || null,
+    lineItems: normalizeLineItemsForPayload(form.lineItems),
+    additionalServices: normalizeServiceItemsForPayload(form.additionalServices),
+    shippingServices: normalizeServiceItemsForPayload(form.shippingServices),
+    totalAmount: pricing.totalAmount,
+    notes: form.notes.trim() || null,
+    status: 'draft',
+    origin: form.origin,
+    revisions: [],
+    revisionCount: 0,
+    activeRevisionNumber: 0,
+  } as unknown as CrmQuote
 }
 
 function resolveQuotePricing(
@@ -1334,7 +1195,6 @@ function resolveQuotePricing(
   discountScope: 'products' | 'products_and_freight' = 'products',
 ) {
   const normalizedLineItems = normalizeLineItemsForPayload(lineItems)
-  const lineItemsTotal = calculateLineItemsTotal(normalizedLineItems)
   const normalizedAdditionalServices = normalizeServiceItemsForPayload(additionalServices)
   const normalizedShippingServices = normalizeServiceItemsForPayload(shippingServices)
   const additionalServicesTotal = normalizedAdditionalServices
@@ -1342,6 +1202,7 @@ function resolveQuotePricing(
   const shippingServicesTotal = normalizedShippingServices
     .reduce((sum, item) => sum + Number(resolveServiceItemExtPrice(item) || 0), 0)
   const enteredFreight = toOptionalNumber(freightInput)
+  const lineItemsTotal = calculateLineItemsTotal(normalizedLineItems)
   const grossSubtotal = Number((lineItemsTotal + additionalServicesTotal).toFixed(2))
   const parsedDiscountPercent = toOptionalNumber(discountPercentInput)
   const discountPercent = Math.min(100, Math.max(0, parsedDiscountPercent ?? 0))
@@ -1404,6 +1265,16 @@ function createEmptyOpportunityForm(): OpportunityFormState {
     sourceWorkbookName: '',
     convertedPdfUrl: '',
     convertedPdfName: '',
+  }
+}
+
+/** A blank quote for the single-page form: one line, nothing else assumed. */
+function createEmptySinglePageQuoteForm(): OpportunityFormState {
+  return {
+    ...createEmptyOpportunityForm(),
+    lineItems: [createEmptyLineItemFormState()],
+    additionalServices: [],
+    shippingServices: [],
   }
 }
 
@@ -1472,6 +1343,65 @@ function createOpportunityDetailsFormState(quote: CrmQuote): OpportunityDetailsF
     sourceWorkbookName: String(quote.sourceWorkbookName || ''),
     convertedPdfUrl: String(quote.convertedPdfUrl || ''),
     convertedPdfName: String(quote.convertedPdfName || ''),
+  }
+}
+
+/**
+ * Build a fresh quote form from an existing quote.
+ *
+ * Line ids are regenerated and parentLineId remapped through the new ids: the
+ * copy must not share identifiers with the quote it came from, or saving it
+ * would collide with the original's lines and cross the parent links.
+ *
+ * The quote number is always blank. Every quote needs its own, and inheriting
+ * one silently would produce two quotes claiming the same number.
+ */
+function createDuplicateOpportunityForm(
+  quote: CrmQuote,
+  keepAccountInformation: boolean,
+): OpportunityFormState {
+  const source = createOpportunityDetailsFormState(quote)
+  const idBySourceId = new Map<string, string>()
+
+  source.lineItems.forEach((line) => {
+    idBySourceId.set(String(line.id), crypto.randomUUID())
+  })
+
+  const lineItems = source.lineItems.map((line) => ({
+    ...line,
+    id: idBySourceId.get(String(line.id)) || crypto.randomUUID(),
+    parentLineId: line.parentLineId
+      ? (idBySourceId.get(String(line.parentLineId)) || null)
+      : null,
+  }))
+
+  const duplicated: OpportunityFormState = {
+    ...source,
+    quoteNumber: '',
+    opportunityDateInput: resolveDateInputFromIso(new Date().toISOString()),
+    lineItems,
+    // The copy is a new website quote. Carrying the original's workbook and PDF
+    // links would point it at documents that describe the other quote.
+    origin: 'website',
+    sourceWorkbookUrl: '',
+    sourceWorkbookName: '',
+    convertedPdfUrl: '',
+    convertedPdfName: '',
+  }
+
+  if (keepAccountInformation) {
+    return duplicated
+  }
+
+  return {
+    ...duplicated,
+    dealerSourceId: '',
+    companyName: '',
+    contactName: '',
+    contactEmail: '',
+    contactPhone: '',
+    salesRep: '',
+    paymentTerms: '',
   }
 }
 
@@ -1601,10 +1531,13 @@ function formatOpportunityLikeDate(value: string | null | undefined) {
     return 'N/A'
   }
 
+  // The month as a word, the way the invoice list this page is modelled on
+  // writes it. Month first rather than day first, because the rest of the app
+  // and everyone reading it is on US ordering.
   return parsedDate.toLocaleDateString('en-US', {
     year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
+    month: 'short',
+    day: 'numeric',
   })
 }
 
@@ -1997,29 +1930,74 @@ function createEmptyStageColumnFilters(): StageColumnFilters {
 
 function LineItemsEditor({
   lineItems,
-  pdfPreviewQuote,
-  pdfSettings,
   canEdit,
   onAddLineItem,
   onAddSubline,
   onUpdateLineItem,
   onRemoveLineItem,
+  onMoveLineItem,
+  onDuplicateLineItem,
+  onCopyDetailToSubline,
   onAddImages,
   onRemoveImage,
-  onUpdateImageLayout,
   onInsertLibraryEntry,
   isUploadingImage,
-  showPdfLayoutAction = true,
 }: LineItemsEditorProps) {
-  const lineItemsTotal = calculateLineItemsTotal(normalizeLineItemsForPayload(lineItems))
   const [cropTarget, setCropTarget] = useState<QuoteImageCropTarget | null>(null)
-  const [isPictureLayoutOpen, setIsPictureLayoutOpen] = useState(false)
   const [imageEditError, setImageEditError] = useState('')
   const [isLibraryOpen, setIsLibraryOpen] = useState(false)
   const [librarySearch, setLibrarySearch] = useState('')
   const [saveLibraryTargetIndex, setSaveLibraryTargetIndex] = useState<number | null>(null)
   const [libraryNameDraft, setLibraryNameDraft] = useState('')
   const [libraryError, setLibraryError] = useState('')
+  // Zooming the lines alone, so reviewing a long quote does not mean shrinking
+  // the whole page with Ctrl+minus and losing the toolbar with it.
+  const [lineZoom, setLineZoom] = useState(() => {
+    try {
+      const stored = Number(window.localStorage.getItem('arnold.quoteLines.zoom'))
+      return Number.isFinite(stored) && stored >= 0.6 && stored <= 1.4 ? stored : 1
+    } catch {
+      return 1
+    }
+  })
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('arnold.quoteLines.zoom', String(lineZoom))
+    } catch {
+      // Storage is a convenience here, never a requirement.
+    }
+  }, [lineZoom])
+
+  // Ctrl and +/- resize the lines instead of the whole browser window, which is
+  // what you actually mean while looking at a quote. Ctrl+0 returns to 100%.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!event.ctrlKey && !event.metaKey) {
+        return
+      }
+
+      if (event.key === '-' || event.key === '_') {
+        event.preventDefault()
+        setLineZoom((current) => Math.max(0.6, Number((current - 0.1).toFixed(2))))
+        return
+      }
+
+      if (event.key === '+' || event.key === '=') {
+        event.preventDefault()
+        setLineZoom((current) => Math.min(1.4, Number((current + 0.1).toFixed(2))))
+        return
+      }
+
+      if (event.key === '0') {
+        event.preventDefault()
+        setLineZoom(1)
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
   const [isSavingLibrary, setIsSavingLibrary] = useState(false)
   const libraryQuery = useQuery({
     queryKey: QUERY_KEYS.crmQuoteLineLibrary,
@@ -2029,7 +2007,6 @@ function LineItemsEditor({
     enabled: canEdit && isLibraryOpen,
     staleTime: 60 * 1000,
   })
-  const pictureCount = lineItems.reduce((total, lineItem) => total + lineItem.images.length, 0)
   const visibleLibraryEntries = (libraryQuery.data?.entries || []).filter((entry) => (
     entry.name.toLowerCase().includes(librarySearch.trim().toLowerCase())
   ))
@@ -2071,10 +2048,16 @@ function LineItemsEditor({
   }
 
   const handlePasteLineImage = (index: number, event: ReactClipboardEvent<HTMLElement>) => {
-    if (!canEdit || isUploadingImage || lineItems[index].images.length >= 2) return
+    if (!canEdit || isUploadingImage || (lineItems[index]?.images.length ?? 0) >= 2) return
+
+    // Some browsers put a screenshot in `items`, others only in `files`, and a
+    // paste carrying both text and an image lists the text first. Checking both
+    // lists is the difference between this working everywhere and nowhere.
     const clipboardImage = Array.from(event.clipboardData.items)
       .find((item) => item.kind === 'file' && item.type.startsWith('image/'))
       ?.getAsFile()
+      ?? Array.from(event.clipboardData.files).find((file) => file.type.startsWith('image/'))
+      ?? null
 
     if (!clipboardImage) return
     event.preventDefault()
@@ -2108,26 +2091,55 @@ function LineItemsEditor({
 
   return (
     <Stack spacing={0.9}>
-      <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
+      {/* One toolbar line: what the lines are, then everything you do to them.
+          The running total lives in the totals bar and is not repeated here. */}
+      <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1} flexWrap="wrap" useFlexGap>
         <Stack direction="row" spacing={1.2} alignItems="center">
           <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
             Line Items
           </Typography>
           <Chip size="small" label={`${lineItems.length} row${lineItems.length === 1 ? '' : 's'}`} sx={{ height: 20, fontSize: 11 }} />
-          <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
-            Total: {formatCurrency(lineItemsTotal, 2)}
-          </Typography>
         </Stack>
 
-        <Stack direction="row" spacing={0.8}>
+        <Stack direction="row" spacing={0.8} alignItems="center" flexWrap="wrap" useFlexGap>
           <Button size="small" variant="outlined" startIcon={<WorkspacesRoundedIcon />} onClick={() => setIsLibraryOpen(true)} disabled={!canEdit}>
             Insert from library
           </Button>
-          {showPdfLayoutAction ? (
-            <Button size="small" variant="outlined" startIcon={<PreviewRoundedIcon />} onClick={() => setIsPictureLayoutOpen(true)} disabled={!canEdit || pictureCount === 0}>
-              Preview PDF &amp; Arrange Pictures
-            </Button>
-          ) : null}
+          {/* Arranging pictures by hand is gone. A picture now always prints
+              at the end of its own line, which is where the dragging was
+              trying to put it and kept getting wrong. */}
+          <Stack direction="row" spacing={0.25} alignItems="center" sx={{ mr: 0.5 }}>
+            <Tooltip title="Show more lines at once">
+              <span>
+                <IconButton
+                  size="small"
+                  disabled={lineZoom <= 0.6}
+                  onClick={() => setLineZoom((current) => Math.max(0.6, Number((current - 0.1).toFixed(2))))}
+                >
+                  <ZoomOutRoundedIcon sx={{ fontSize: 18 }} />
+                </IconButton>
+              </span>
+            </Tooltip>
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              onClick={() => setLineZoom(1)}
+              sx={{ minWidth: 34, textAlign: 'center', cursor: 'pointer', userSelect: 'none' }}
+            >
+              {`${Math.round(lineZoom * 100)}%`}
+            </Typography>
+            <Tooltip title="Make the lines bigger">
+              <span>
+                <IconButton
+                  size="small"
+                  disabled={lineZoom >= 1.4}
+                  onClick={() => setLineZoom((current) => Math.min(1.4, Number((current + 0.1).toFixed(2))))}
+                >
+                  <ZoomInRoundedIcon sx={{ fontSize: 18 }} />
+                </IconButton>
+              </span>
+            </Tooltip>
+          </Stack>
           <Button size="small" variant="outlined" onClick={onAddLineItem} disabled={!canEdit}>
             Add line item
           </Button>
@@ -2137,46 +2149,90 @@ function LineItemsEditor({
       <Box
         sx={{
           border: 1,
-          borderColor: alpha('#0f4c81', 0.2),
+          borderColor: 'divider',
           borderRadius: 1.5,
           backgroundColor: '#ffffff',
           overflowX: 'auto',
         }}
       >
+        {/* Scales the lines only, leaving the rest of the page alone. `zoom`
+            reflows rather than just redrawing, so every column — qty, unit
+            price, ext, delete — genuinely narrows. The inverse width keeps the
+            table filling the panel instead of leaving dead space beside it, so
+            zooming out shows more, not the same amount drawn smaller. */}
+        <Box sx={{ zoom: lineZoom, width: `${100 / lineZoom}%` }}>
         {imageEditError ? <Alert severity="error" sx={{ m: 1 }}>{imageEditError}</Alert> : null}
-        <Table size="small" sx={{ minWidth: 1120 }}>
+        <Table size="small" sx={{ minWidth: 1040 }}>
           <TableHead>
             <TableRow>
-              <TableCell sx={{ width: 92, fontWeight: 700 }}>Item</TableCell>
-              <TableCell colSpan={2} sx={{ minWidth: 565, fontWeight: 700 }}>Description / Detail</TableCell>
-              <TableCell sx={{ width: 90, fontWeight: 700 }}>Qty</TableCell>
-              <TableCell sx={{ width: 125, fontWeight: 700 }}>Unit Price</TableCell>
-              <TableCell sx={{ width: 135, fontWeight: 700 }}>Ext</TableCell>
-              <TableCell align="center" sx={{ width: 60, fontWeight: 700 }}>Del</TableCell>
+              <TableCell sx={{ ...QUOTE_LINE_TIGHT_CELL_SX, width: 62, fontWeight: 700 }}>Item</TableCell>
+              <TableCell colSpan={2} sx={{ minWidth: 660, fontWeight: 700 }}>Description / Detail</TableCell>
+              <TableCell sx={{ ...QUOTE_LINE_TIGHT_CELL_SX, width: 76, fontWeight: 700 }}>Qty</TableCell>
+              <TableCell sx={{ ...QUOTE_LINE_TIGHT_CELL_SX, width: 96, fontWeight: 700 }}>Unit Price</TableCell>
+              <TableCell sx={{ ...QUOTE_LINE_TIGHT_CELL_SX, width: 100, fontWeight: 700 }}>Ext</TableCell>
+              <TableCell align="center" sx={{ ...QUOTE_LINE_TIGHT_CELL_SX, width: 44, fontWeight: 700 }}>Del</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
             {lineItems.map((lineItem, index) => ({ lineItem, index }))
               .filter(({ lineItem }) => !lineItem.parentLineId)
-              .map(({ lineItem, index }, mainIndex) => {
+              .map(({ lineItem, index }, mainIndex, mainLines) => {
               const sublines = lineItems
                 .map((entry, entryIndex) => ({ entry, entryIndex }))
                 .filter(({ entry }) => entry.parentLineId === lineItem.id)
 
               return (
-              <TableRow key={lineItem.id} hover>
-                <TableCell sx={{ verticalAlign: 'top' }}>
-                  <Typography variant="body2" sx={{ pt: 0.7, fontWeight: 800, textAlign: 'center' }}>
-                    {mainIndex + 1}
-                  </Typography>
+              <TableRow
+                key={lineItem.id}
+                hover
+                onPaste={(event) => handlePasteLineImage(index, event)}
+              >
+                <TableCell sx={{ ...QUOTE_LINE_TIGHT_CELL_SX, verticalAlign: 'top' }}>
+                  <Stack alignItems="center" spacing={0.1} sx={{ pt: 0.2 }}>
+                    <Tooltip title="Move up">
+                      <span>
+                        <IconButton
+                          size="small"
+                          disabled={!canEdit || mainIndex === 0}
+                          onClick={() => onMoveLineItem(index, 'up')}
+                          sx={{ p: 0.2 }}
+                        >
+                          <KeyboardArrowUpRoundedIcon sx={{ fontSize: 17 }} />
+                        </IconButton>
+                      </span>
+                    </Tooltip>
+                    <Typography variant="body2" sx={{ fontWeight: 800, lineHeight: 1 }}>
+                      {mainIndex + 1}
+                    </Typography>
+                    <Tooltip title="Move down">
+                      <span>
+                        <IconButton
+                          size="small"
+                          disabled={!canEdit || mainIndex === mainLines.length - 1}
+                          onClick={() => onMoveLineItem(index, 'down')}
+                          sx={{ p: 0.2 }}
+                        >
+                          <KeyboardArrowDownRoundedIcon sx={{ fontSize: 17 }} />
+                        </IconButton>
+                      </span>
+                    </Tooltip>
+                    <Tooltip title="Duplicate this line and its sublines">
+                      <span>
+                        <IconButton
+                          size="small"
+                          disabled={!canEdit}
+                          onClick={() => onDuplicateLineItem(index)}
+                          sx={{ p: 0.2, mt: 0.2 }}
+                        >
+                          <ContentCopyRoundedIcon sx={{ fontSize: 14 }} />
+                        </IconButton>
+                      </span>
+                    </Tooltip>
+                  </Stack>
                 </TableCell>
                 <TableCell colSpan={2}>
                   <Stack direction={{ xs: 'column', lg: 'row' }} spacing={0.9} alignItems="flex-start">
-                    <Stack
-                      spacing={0.55}
-                      sx={{ flexGrow: 1, width: '100%' }}
-                      onPaste={(event) => handlePasteLineImage(index, event)}
-                    >
+                    <Stack spacing={0.55} sx={{ flexGrow: 1, width: '100%' }}>
                       <TextField
                         size="small"
                         value={splitQuoteLineDescription(lineItem.description).heading}
@@ -2187,7 +2243,13 @@ function LineItemsEditor({
                         disabled={!canEdit}
                         fullWidth
                         inputProps={{ style: { fontWeight: 800, color: '#172033' } }}
-                        sx={{ '& .MuiOutlinedInput-root': { bgcolor: '#eef2f7' } }}
+                        // Held short on purpose: the detail underneath is what
+                        // gets read, so it always runs longer than this bar.
+                        sx={{
+                          width: 'calc(100% - 190px)',
+                          minWidth: 160,
+                          '& .MuiOutlinedInput-root': { bgcolor: '#eef2f7' },
+                        }}
                       />
                       <Stack direction={{ xs: 'column', md: 'row' }} spacing={0.75} alignItems="stretch">
                         <TextField
@@ -2199,8 +2261,9 @@ function LineItemsEditor({
                           minRows={2}
                           maxRows={10}
                           fullWidth
-                          placeholder="Detail"
-                          sx={{ width: { xs: '100%', md: 170 }, flexShrink: 0 }}
+                          placeholder="Product"
+                          inputProps={{ maxLength: QUOTE_PRODUCT_MAX_LENGTH }}
+                          sx={{ width: { xs: '100%', md: QUOTE_LINE_DETAIL_LABEL_WIDTH }, flexShrink: 0 }}
                         />
                         <TextField
                           size="small"
@@ -2215,7 +2278,24 @@ function LineItemsEditor({
                           maxRows={10}
                           fullWidth
                           placeholder="Description"
+                          sx={{ minWidth: 200 }}
                         />
+                        {/* This row is the line's own detail, not a subline, so
+                            copying it means adding a subline that carries the
+                            same text — which is what it looks like it should do. */}
+                        <Tooltip title="Copy this detail into a new subline">
+                          <span>
+                            <IconButton
+                              size="small"
+                              disabled={!canEdit}
+                              aria-label="Copy detail into a new subline"
+                              onClick={() => onCopyDetailToSubline(index)}
+                              sx={{ mt: 0.25, alignSelf: 'flex-start' }}
+                            >
+                              <ContentCopyRoundedIcon sx={{ fontSize: 14 }} />
+                            </IconButton>
+                          </span>
+                        </Tooltip>
                       </Stack>
                       <Stack spacing={0.4} sx={{ width: '100%' }}>
                         {sublines.map(({ entry, entryIndex }) => (
@@ -2228,9 +2308,9 @@ function LineItemsEditor({
                               multiline
                               minRows={2}
                               maxRows={10}
-                              placeholder="Detail"
-                              inputProps={{ style: { fontWeight: 400 } }}
-                              sx={{ width: { xs: '100%', md: 170 }, flexShrink: 0 }}
+                              placeholder="Product"
+                              inputProps={{ style: { fontWeight: 400 }, maxLength: QUOTE_PRODUCT_MAX_LENGTH }}
+                              sx={{ width: { xs: '100%', md: QUOTE_LINE_DETAIL_LABEL_WIDTH }, flexShrink: 0 }}
                             />
                             <TextField
                               size="small"
@@ -2243,7 +2323,21 @@ function LineItemsEditor({
                               fullWidth
                               placeholder="Description"
                               inputProps={{ style: { fontWeight: 400 } }}
+                              sx={{ minWidth: 200 }}
                             />
+                            <Tooltip title="Duplicate this subline">
+                              <span>
+                                <IconButton
+                                  size="small"
+                                  disabled={!canEdit}
+                                  aria-label="Duplicate additional description"
+                                  onClick={() => onDuplicateLineItem(entryIndex)}
+                                  sx={{ mt: 0.25 }}
+                                >
+                                  <ContentCopyRoundedIcon sx={{ fontSize: 14 }} />
+                                </IconButton>
+                              </span>
+                            </Tooltip>
                             <IconButton
                               size="small"
                               color="error"
@@ -2282,7 +2376,17 @@ function LineItemsEditor({
                         </Button>
                       </Stack>
                     </Stack>
-                    <Stack spacing={0.6} sx={{ width: { xs: '100%', lg: 240 }, flexShrink: 0 }}>
+                    {/* Wide enough for a large preview only once there is one
+                        to show. A line with no picture used to hold the same
+                        240px open, and on a laptop that was most of what the
+                        description was missing. */}
+                    <Stack
+                      spacing={0.6}
+                      sx={{
+                        width: { xs: '100%', lg: lineItem.images.length > 0 ? 240 : 124 },
+                        flexShrink: 0,
+                      }}
+                    >
                       {lineItem.images.length > 0 ? (
                         <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.6 }}>
                           {lineItem.images.map((image) => {
@@ -2351,20 +2455,25 @@ function LineItemsEditor({
                     </Stack>
                   </Stack>
                 </TableCell>
-                <TableCell>
+                <TableCell sx={QUOTE_LINE_TIGHT_CELL_SX}>
                   <TextField
                     variant="standard"
                     size="small"
-                    type="number"
+                    // Text, not number: a number input refuses "48/12" outright,
+                    // so a formula could never be typed in the first place.
+                    type="text"
                     value={lineItem.qty}
                     onChange={(event) => {
                       onUpdateLineItem(index, 'qty', event.target.value)
                     }}
                     disabled={!canEdit}
+                    inputProps={{ inputMode: 'text' }}
+                    helperText={formulaHint(lineItem.qty)}
+                    FormHelperTextProps={{ sx: formulaHintSx }}
                     fullWidth
                   />
                 </TableCell>
-                <TableCell>
+                <TableCell sx={QUOTE_LINE_TIGHT_CELL_SX}>
                   <TextField
                     variant="standard"
                     size="small"
@@ -2376,13 +2485,15 @@ function LineItemsEditor({
                     disabled={!canEdit}
                     inputProps={{ inputMode: 'decimal' }}
                     placeholder="0.00"
+                    helperText={formulaHint(lineItem.unitPrice)}
+                    FormHelperTextProps={{ sx: formulaHintSx }}
                     InputProps={{
                       startAdornment: <InputAdornment position="start">$</InputAdornment>,
                     }}
                     fullWidth
                   />
                 </TableCell>
-                <TableCell>
+                <TableCell sx={QUOTE_LINE_TIGHT_CELL_SX}>
                   <TextField
                     variant="standard"
                     size="small"
@@ -2399,7 +2510,7 @@ function LineItemsEditor({
                     fullWidth
                   />
                 </TableCell>
-                <TableCell align="center">
+                <TableCell align="center" sx={QUOTE_LINE_TIGHT_CELL_SX}>
                   <IconButton
                     size="small"
                     color="error"
@@ -2416,6 +2527,7 @@ function LineItemsEditor({
             })}
           </TableBody>
         </Table>
+        </Box>
       </Box>
       <QuoteImageCropDialog
         open={Boolean(cropTarget)}
@@ -2427,17 +2539,6 @@ function LineItemsEditor({
           if (!cropTarget) return
           await onAddImages(cropTarget.index, [image], cropTarget.imageId)
           setCropTarget(null)
-        }}
-      />
-      <QuotePicturesPdfLayoutDialog
-        open={isPictureLayoutOpen}
-        lineItems={lineItems}
-        quote={pdfPreviewQuote}
-        settings={pdfSettings}
-        onCancel={() => setIsPictureLayoutOpen(false)}
-        onSave={(nextLayouts) => {
-          nextLayouts.forEach(({ lineIndex, imageId, layout }) => onUpdateImageLayout(lineIndex, imageId, layout))
-          setIsPictureLayoutOpen(false)
         }}
       />
       <Dialog open={isLibraryOpen} onClose={() => setIsLibraryOpen(false)} maxWidth="sm" fullWidth>
@@ -2651,11 +2752,11 @@ function QuoteServiceCardSelector({
       sx={{
         overflow: 'hidden',
         borderRadius: 2.5,
-        borderColor: alpha('#0f4c81', 0.2),
+        borderColor: 'divider',
         boxShadow: '0 10px 30px rgba(15, 76, 129, 0.07)',
       }}
     >
-      <Box sx={{ px: 2, py: 1.6, background: `linear-gradient(135deg, ${alpha('#0f4c81', 0.12)}, ${alpha('#0f4c81', 0.025)})` }}>
+      <Box sx={{ px: 2, py: 1.6, bgcolor: 'grey.100' }}>
         <Typography variant="h6" fontWeight={850} color="primary.dark">{heading}</Typography>
         <Typography variant="body2" color="text.secondary">{description}</Typography>
       </Box>
@@ -2686,9 +2787,9 @@ function QuoteServiceCardSelector({
                 p: 1.5,
                 borderRadius: 2,
                 cursor: canEdit ? 'pointer' : 'default',
-                borderColor: isSelected ? 'primary.main' : alpha('#0f4c81', 0.18),
-                bgcolor: isSelected ? alpha('#0f4c81', 0.055) : '#fff',
-                boxShadow: isSelected ? `0 0 0 1px ${alpha('#0f4c81', 0.3)}` : '0 3px 12px rgba(15, 76, 129, 0.05)',
+                borderColor: isSelected ? 'primary.main' : 'divider',
+                bgcolor: isSelected ? 'action.hover' : '#fff',
+                boxShadow: isSelected ? 'none' : 'none',
                 transition: 'transform 140ms ease, box-shadow 140ms ease',
                 '&:hover': canEdit ? {
                   transform: 'translateY(-2px)',
@@ -2765,19 +2866,21 @@ function QuoteServiceCardSelector({
                   required
                   autoFocus
                   label="Quantity"
-                  type="number"
+                  type="text"
                   value={draft.qty}
                   onChange={(event) => setDraft((current) => current ? updateServiceItemPricing(current, 'qty', event.target.value) : current)}
-                  inputProps={{ min: 0, step: 1, inputMode: 'decimal' }}
+                  inputProps={{ inputMode: 'text' }}
+                  helperText={formulaHint(draft.qty)}
                   sx={{ flex: 1 }}
                 />
                 <TextField
                   required
                   label="Unit Price"
-                  type="number"
+                  type="text"
                   value={draft.unitPrice}
                   onChange={(event) => setDraft((current) => current ? updateServiceItemPricing(current, 'unitPrice', event.target.value) : current)}
-                  inputProps={{ min: 0, step: 0.01, inputMode: 'decimal' }}
+                  inputProps={{ inputMode: 'decimal' }}
+                  helperText={formulaHint(draft.unitPrice)}
                   InputProps={{ startAdornment: <InputAdornment position="start">$</InputAdornment> }}
                   sx={{ flex: 1 }}
                 />
@@ -2859,7 +2962,7 @@ function OpportunityCard({
       sx={{
         p: 1.1,
         borderRadius: 1.4,
-        borderColor: alpha('#0f4c81', 0.22),
+        borderColor: 'divider',
         backgroundColor: '#ffffff',
         boxShadow: '0 1px 2px rgba(15, 76, 129, 0.08)',
         cursor: 'pointer',
@@ -2867,7 +2970,7 @@ function OpportunityCard({
         '&:hover': {
           transform: 'translateY(-2px)',
           boxShadow: '0 6px 20px rgba(15, 76, 129, 0.16)',
-          borderColor: alpha('#0f4c81', 0.4),
+          borderColor: 'divider',
         },
       }}
     >
@@ -2882,8 +2985,8 @@ function OpportunityCard({
               width: 52,
               height: 52,
               flexShrink: 0,
-              bgcolor: alpha('#0f4c81', 0.18),
-              color: '#0f4c81',
+              bgcolor: 'divider',
+              color: 'primary.main',
               fontSize: 22,
               fontWeight: 800,
             }}
@@ -2901,7 +3004,7 @@ function OpportunityCard({
                 textDecoration: 'underline',
                 textDecorationColor: 'transparent',
                 '&:hover': {
-                  textDecorationColor: alpha('#0f4c81', 0.6),
+                  textDecorationColor: 'inherit',
                 },
               }}
               onClick={(event) => {
@@ -2914,7 +3017,7 @@ function OpportunityCard({
             <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.1 }}>
               {dealerName}
             </Typography>
-            <Typography variant="caption" sx={{ color: '#0f4c81', fontWeight: 700 }}>
+            <Typography variant="caption" sx={{ color: 'primary.main', fontWeight: 700 }}>
               {formatCurrency(Number(quote.totalAmount || 0), 2)}
             </Typography>
           </Stack>
@@ -2946,7 +3049,7 @@ function OpportunityCard({
                   preventCardClick(event)
                   onOpenChat(quote)
                 }}
-                sx={{ p: 0.15, color: '#0f4c81' }}
+                sx={{ p: 0.15, color: 'primary.main' }}
                 title="Quote chat"
                 aria-label="Open quote chat"
               >
@@ -2961,7 +3064,7 @@ function OpportunityCard({
                 preventCardClick(event)
                 onPrintQuote(quote)
               }}
-              sx={{ p: 0.15, color: '#0f4c81' }}
+              sx={{ p: 0.15, color: 'primary.main' }}
               title="Print quote"
               aria-label="Print quote"
             >
@@ -3061,19 +3164,31 @@ function StageColumn({
   onPrintQuote,
   onOpenDetails,
   onOpenChat,
+  globalSearch,
+  onGlobalSearchChange,
+  isRefreshing,
+  onRefresh,
+  onAddOpportunity,
+  isSyncingExcelQuote,
+  onSyncExcelSheet,
 }: StageColumnProps) {
   const [menuAnchorEl, setMenuAnchorEl] = useState<HTMLElement | null>(null)
-  const [sortSubmenuAnchorEl, setSortSubmenuAnchorEl] = useState<HTMLElement | null>(null)
-  const [sortOptionSubmenuAnchorEl, setSortOptionSubmenuAnchorEl] = useState<HTMLElement | null>(null)
-  const [sortOptionSubmenuType, setSortOptionSubmenuType] = useState<'date' | 'quote_number' | null>(null)
   const [isFilterDialogOpen, setIsFilterDialogOpen] = useState(false)
   const [sortMode, setSortMode] = useState<StageSortMode>('quote_number_desc')
+  // Remembered per browser: whichever way you read this board, it is still that
+  // way tomorrow morning.
+  const [viewMode, setViewMode] = useState<'cards' | 'list'>(() => {
+    try {
+      return window.localStorage.getItem('arnold.opportunities.view') === 'list' ? 'list' : 'cards'
+    } catch {
+      return 'cards'
+    }
+  })
+
   const [activeFilters, setActiveFilters] = useState<StageColumnFilters>(createEmptyStageColumnFilters)
   const [draftFilters, setDraftFilters] = useState<StageColumnFilters>(createEmptyStageColumnFilters)
 
   const isMenuOpen = Boolean(menuAnchorEl)
-  const isSortSubmenuOpen = Boolean(sortSubmenuAnchorEl) && isMenuOpen
-  const isSortOptionSubmenuOpen = Boolean(sortOptionSubmenuAnchorEl) && Boolean(sortOptionSubmenuType) && isSortSubmenuOpen
 
   const resolveDealerName = useCallback((quote: CrmQuote) => String(
     dealersBySourceId.get(quote.dealerSourceId)?.name
@@ -3082,6 +3197,16 @@ function StageColumn({
       || quote.dealerSourceId
       || '',
   ).trim(), [dealersBySourceId])
+
+  // Read off the quote, not off the dealer list. The dealer list only loads
+  // once a dialog opens, so on the list view it is empty and every avatar fell
+  // back to a letter. The quote carries the picture already.
+  const resolveDealerPicture = useCallback(
+    (quote: CrmQuote) => String(
+      quote.dealerPictureUrl ?? dealersBySourceId.get(quote.dealerSourceId)?.pictureUrl ?? '',
+    ).trim() || null,
+    [dealersBySourceId],
+  )
 
   const resolveSalesRepLabel = useCallback((quote: CrmQuote) => String(quote.salesRep ?? '').trim() || '(Unassigned)', [])
 
@@ -3201,16 +3326,22 @@ function StageColumn({
 
     const nextRows = [...filteredRows]
 
-    if (sortMode === 'date_oldest_to_newest') {
-      nextRows.sort((left, right) => compareQuotesByDate(left, right, 'asc'))
-    } else if (sortMode === 'date_newest_to_oldest') {
+    const amountOf = (quote: CrmQuote) => Number(quote.totalAmount || 0)
+
+    if (sortMode === 'date_newest') {
       nextRows.sort((left, right) => compareQuotesByDate(left, right, 'desc'))
-    } else if (sortMode === 'quote_number_oldest_to_newest') {
+    } else if (sortMode === 'date_oldest') {
       nextRows.sort((left, right) => compareQuotesByDate(left, right, 'asc'))
-    } else if (sortMode === 'quote_number_desc') {
-      nextRows.sort((left, right) => compareQuotesByQuoteNumber(right, left))
-    } else {
+    } else if (sortMode === 'amount_high') {
+      nextRows.sort((left, right) => amountOf(right) - amountOf(left))
+    } else if (sortMode === 'amount_low') {
+      nextRows.sort((left, right) => amountOf(left) - amountOf(right))
+    } else if (sortMode === 'account_az') {
+      nextRows.sort((left, right) => resolveDealerName(left).localeCompare(resolveDealerName(right)))
+    } else if (sortMode === 'quote_number_asc') {
       nextRows.sort(compareQuotesByQuoteNumber)
+    } else {
+      nextRows.sort((left, right) => compareQuotesByQuoteNumber(right, left))
     }
 
     return nextRows
@@ -3227,24 +3358,11 @@ function StageColumn({
     sortMode,
   ])
 
-  const handleSelectSortMode = (nextSortMode: StageSortMode) => {
-    setSortMode(nextSortMode)
-    setSortOptionSubmenuAnchorEl(null)
-    setSortOptionSubmenuType(null)
-    setSortSubmenuAnchorEl(null)
-    setMenuAnchorEl(null)
-  }
 
-  const openSortOptionSubmenu = (event: MouseEvent<HTMLElement>, submenuType: 'date' | 'quote_number') => {
-    setSortOptionSubmenuAnchorEl(event.currentTarget)
-    setSortOptionSubmenuType(submenuType)
-  }
 
-  const closeSortSubmenus = () => {
-    setSortOptionSubmenuAnchorEl(null)
-    setSortOptionSubmenuType(null)
-    setSortSubmenuAnchorEl(null)
-  }
+
+
+
 
   return (
     <Paper
@@ -3253,194 +3371,218 @@ function StageColumn({
         width: '100%',
         minWidth: 0,
         borderRadius: 2.5,
-        borderColor: alpha('#0f4c81', 0.16),
+        borderColor: 'divider',
         boxShadow: '0 12px 34px rgba(15, 35, 63, 0.08)',
         overflow: 'hidden',
       }}
     >
-      <Box
-        sx={{
-          px: { xs: 1.1, md: 1.35 },
-          py: 0.65,
-          backgroundColor: alpha(stage.panelColor, 0.4),
-          borderBottom: 1,
-          borderColor: alpha('#0f4c81', 0.12),
-        }}
+      {/* Laid out like the invoice list it is modelled on: the title and the
+          one primary action on their own line, then a filter row beneath where
+          search takes the width and everything else stays small. */}
+      <Stack
+        direction="row"
+        alignItems="center"
+        justifyContent="space-between"
+        spacing={1.5}
+        sx={{ px: { xs: 1.5, md: 2.5 }, pt: 2.5, pb: 1.5 }}
       >
-        <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
-          <Stack direction="row" spacing={0.75} alignItems="center" sx={{ minWidth: 0 }}>
-            <Box sx={{ width: 7, height: 7, borderRadius: '50%', backgroundColor: stage.headerColor, flexShrink: 0 }} />
-            <Typography variant="subtitle2" sx={{ fontWeight: 800, color: '#0b2239', lineHeight: 1.2 }}>
-              {stage.label.replace(/^\d+\.\s*/, '')}
-            </Typography>
-            {activeFilterCount > 0 ? (
-              <Chip
-                size="small"
-                label={`${activeFilterCount} filter${activeFilterCount === 1 ? '' : 's'}`}
-                color="primary"
-                variant="outlined"
-                sx={{ height: 20 }}
-              />
-            ) : null}
-          </Stack>
+        <Stack direction="row" spacing={1} alignItems="baseline" sx={{ minWidth: 0 }}>
+          <Typography variant="h5" sx={{ fontWeight: 700 }}>Opportunities</Typography>
+          <Typography variant="body2" color="text.secondary">{`${rows.length} total`}</Typography>
+        </Stack>
+
+        <Button
+          variant="contained"
+          startIcon={<AddRoundedIcon />}
+          onClick={onAddOpportunity}
+          disabled={!canManage}
+          sx={{
+            // Near-black rather than the palette's green. The accent colour
+            // belongs on state and totals, not on the one button that is
+            // always on screen.
+            bgcolor: 'grey.800',
+            boxShadow: 'none',
+            '&:hover': { bgcolor: 'grey.900', boxShadow: 'none' },
+          }}
+        >
+          Add Opportunity
+        </Button>
+      </Stack>
+
+      <Stack
+        direction={{ xs: 'column', md: 'row' }}
+        alignItems={{ xs: 'stretch', md: 'center' }}
+        spacing={1.5}
+        sx={{ px: { xs: 1.5, md: 2.5 }, pb: 2, borderBottom: 1, borderColor: 'divider' }}
+      >
+        <TextField
+          size="small"
+          placeholder="Search quote, project, account…"
+          value={globalSearch}
+          onChange={(event) => onGlobalSearchChange(event.target.value)}
+          InputProps={{
+            startAdornment: (
+              <InputAdornment position="start">
+                <SearchRoundedIcon fontSize="small" sx={{ color: 'text.disabled' }} />
+              </InputAdornment>
+            ),
+          }}
+          sx={{ flexGrow: 1 }}
+        />
+
+        {/* One control, one list, no submenus. */}
+        <TextField
+          select
+          size="small"
+          label="Sort by"
+          value={sortMode}
+          onChange={(event) => setSortMode(event.target.value as StageSortMode)}
+          sx={{ width: { xs: '100%', md: 236 }, flexShrink: 0 }}
+        >
+          {STAGE_SORT_OPTIONS.map((option) => (
+            <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>
+          ))}
+        </TextField>
+
+        <Stack direction="row" spacing={0.5} alignItems="center" sx={{ flexShrink: 0 }}>
+          <ToggleButtonGroup
+            size="small"
+            exclusive
+            value={viewMode}
+            onChange={(_event, next: 'cards' | 'list' | null) => {
+              if (!next) {
+                return
+              }
+
+              setViewMode(next)
+
+              try {
+                window.localStorage.setItem('arnold.opportunities.view', next)
+              } catch {
+                // Storage is a convenience here, never a requirement.
+              }
+            }}
+          >
+            <ToggleButton value="cards" aria-label="Card view">
+              <ViewModuleRoundedIcon sx={{ fontSize: 19 }} />
+            </ToggleButton>
+            <ToggleButton value="list" aria-label="List view">
+              <ViewListRoundedIcon sx={{ fontSize: 19 }} />
+            </ToggleButton>
+          </ToggleButtonGroup>
+
+          <Tooltip title={isRefreshing ? 'Refreshing…' : 'Refresh'}>
+            <span>
+              <IconButton size="small" onClick={onRefresh} disabled={isRefreshing}>
+                {isRefreshing
+                  ? <CircularProgress size={17} color="inherit" />
+                  : <RefreshRoundedIcon fontSize="small" />}
+              </IconButton>
+            </span>
+          </Tooltip>
+
+          {activeFilterCount > 0 ? (
+            <Chip
+              size="small"
+              color="primary"
+              variant="outlined"
+              label={activeFilterCount}
+              onDelete={() => {
+                const emptyFilters = createEmptyStageColumnFilters()
+                setDraftFilters(emptyFilters)
+                setActiveFilters(emptyFilters)
+              }}
+            />
+          ) : null}
+
+          <Tooltip title="Filters and more">
             <IconButton
               size="small"
-              onClick={(event) => {
-                setMenuAnchorEl(event.currentTarget)
-              }}
-              sx={{
-                color: '#0f4c81',
-                border: `1px solid ${alpha('#0f4c81', 0.2)}`,
-                backgroundColor: alpha('#0f4c81', 0.05),
-                p: 0.55,
-              }}
-              aria-label={`Sort and filter ${stage.label}`}
+              aria-label="Filters and more"
+              onClick={(event) => setMenuAnchorEl(event.currentTarget)}
             >
-              <MoreVertRoundedIcon sx={{ fontSize: 19 }} />
+              <MoreVertRoundedIcon fontSize="small" />
             </IconButton>
+          </Tooltip>
         </Stack>
-        <Menu
-          anchorEl={menuAnchorEl}
-          open={isMenuOpen}
-          onClose={() => {
-            closeSortSubmenus()
+      </Stack>
+
+      {/* What is left after sorting moved into the bar: the two filter actions
+          and the Excel sync. No submenus. */}
+      <Menu
+        anchorEl={menuAnchorEl}
+        open={isMenuOpen}
+        onClose={() => setMenuAnchorEl(null)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+        transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+      >
+        <MenuItem
+          onClick={() => {
+            setDraftFilters(activeFilters)
+            setIsFilterDialogOpen(true)
             setMenuAnchorEl(null)
           }}
-          anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
-          transformOrigin={{ vertical: 'top', horizontal: 'right' }}
         >
-          <MenuItem
-            onClick={(event) => {
-              setSortSubmenuAnchorEl(event.currentTarget)
-              setSortOptionSubmenuAnchorEl(null)
-              setSortOptionSubmenuType(null)
-            }}
-            sx={{ minWidth: 170, display: 'flex', justifyContent: 'space-between', gap: 1.5 }}
-          >
-            Sort by
-            <ChevronRightRoundedIcon fontSize="small" />
-          </MenuItem>
-          <MenuItem
-            onClick={() => {
-              setDraftFilters(activeFilters)
-              setIsFilterDialogOpen(true)
-              closeSortSubmenus()
-              setMenuAnchorEl(null)
-            }}
-          >
-            Filter...
-          </MenuItem>
-          <MenuItem
-            disabled={activeFilterCount === 0}
-            onClick={() => {
-              const emptyFilters = createEmptyStageColumnFilters()
-              setDraftFilters(emptyFilters)
-              setActiveFilters(emptyFilters)
-              closeSortSubmenus()
-              setMenuAnchorEl(null)
-            }}
-          >
-            Clear filters
-          </MenuItem>
-        </Menu>
-        <Menu
-          anchorEl={sortSubmenuAnchorEl}
-          open={isSortSubmenuOpen}
-          onClose={() => {
-            closeSortSubmenus()
-          }}
-          anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
-          transformOrigin={{ vertical: 'top', horizontal: 'left' }}
-        >
-          <MenuItem
-            selected={sortOptionSubmenuType === 'date'}
-            onClick={(event) => {
-              openSortOptionSubmenu(event, 'date')
-            }}
-            sx={{ minWidth: 190, display: 'flex', justifyContent: 'space-between', gap: 1.5 }}
-          >
-            Sort by date
-            <ChevronRightRoundedIcon fontSize="small" />
-          </MenuItem>
-          <MenuItem
-            selected={sortOptionSubmenuType === 'quote_number'}
-            onClick={(event) => {
-              openSortOptionSubmenu(event, 'quote_number')
-            }}
-            sx={{ minWidth: 190, display: 'flex', justifyContent: 'space-between', gap: 1.5 }}
-          >
-            Sort by quote number
-            <ChevronRightRoundedIcon fontSize="small" />
-          </MenuItem>
-        </Menu>
-        <Menu
-          anchorEl={sortOptionSubmenuAnchorEl}
-          open={isSortOptionSubmenuOpen}
-          onClose={() => {
-            setSortOptionSubmenuAnchorEl(null)
-            setSortOptionSubmenuType(null)
-          }}
-          anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
-          transformOrigin={{ vertical: 'top', horizontal: 'left' }}
-        >
-          {sortOptionSubmenuType === 'date' ? (
-            <>
-              <MenuItem
-                selected={sortMode === 'date_oldest_to_newest'}
-                onClick={() => {
-                  handleSelectSortMode('date_oldest_to_newest')
-                }}
-              >
-                Oldest to newest
-              </MenuItem>
-              <MenuItem
-                selected={sortMode === 'date_newest_to_oldest'}
-                onClick={() => {
-                  handleSelectSortMode('date_newest_to_oldest')
-                }}
-              >
-                Newest to oldest
-              </MenuItem>
-            </>
-          ) : null}
+          <ListItemIcon><FilterListRoundedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Filters…</ListItemText>
+        </MenuItem>
 
-          {sortOptionSubmenuType === 'quote_number' ? (
-            <>
-              <MenuItem
-                selected={sortMode === 'quote_number_oldest_to_newest'}
-                onClick={() => {
-                  handleSelectSortMode('quote_number_oldest_to_newest')
-                }}
-              >
-                Oldest to newest
-              </MenuItem>
-              <MenuItem
-                selected={sortMode === 'quote_number_desc'}
-                onClick={() => {
-                  handleSelectSortMode('quote_number_desc')
-                }}
-              >
-                Newest highest to lowest
-              </MenuItem>
-              <MenuItem
-                selected={sortMode === 'quote_number_asc'}
-                onClick={() => {
-                  handleSelectSortMode('quote_number_asc')
-                }}
-              >
-                Lowest to highest
-              </MenuItem>
-            </>
-          ) : null}
-        </Menu>
-      </Box>
+        <MenuItem
+          disabled={activeFilterCount === 0}
+          onClick={() => {
+            const emptyFilters = createEmptyStageColumnFilters()
+            setDraftFilters(emptyFilters)
+            setActiveFilters(emptyFilters)
+            setMenuAnchorEl(null)
+          }}
+        >
+          <ListItemIcon><FilterAltOffRoundedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Clear filters</ListItemText>
+        </MenuItem>
 
+        <Divider />
+
+        <MenuItem
+          disabled={!canManage || isSyncingExcelQuote}
+          onClick={() => {
+            setMenuAnchorEl(null)
+            onSyncExcelSheet()
+          }}
+        >
+          <ListItemIcon><UploadFileRoundedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>{isSyncingExcelQuote ? 'Syncing Excel sheet…' : 'Sync Excel Sheet'}</ListItemText>
+        </MenuItem>
+      </Menu>
+
+
+      {viewMode === 'list' ? (
+        <Box
+          sx={{
+            p: { xs: 1, md: 1.5 },
+            height: 'clamp(620px, 78vh, 900px)',
+            overflowY: 'auto',
+          }}
+        >
+          <OpportunityListView
+            quotes={visibleRows}
+            resolveDealerName={resolveDealerName}
+            resolveDealerPicture={resolveDealerPicture}
+            formatDate={formatOpportunityLikeDate}
+            formatMoney={(value) => formatCurrency(value, 2)}
+            canManage={canManage}
+            busyQuoteId={busyQuoteId}
+            onOpenDetails={onOpenDetails}
+            onOpenChat={onOpenChat}
+            onPrintQuote={onPrintQuote}
+            onDeleteQuote={onDeleteQuote}
+          />
+        </Box>
+      ) : (
       <Box
         sx={{
           p: { xs: 1, md: 1.5 },
           height: 'clamp(620px, 78vh, 900px)',
           overflowY: 'auto',
-          background: `linear-gradient(180deg, ${alpha(stage.panelColor, 0.62)} 0%, #f8fafc 100%)`,
           display: 'grid',
           gridTemplateColumns: {
             xs: 'minmax(0, 1fr)',
@@ -3499,6 +3641,7 @@ function StageColumn({
           })
         )}
       </Box>
+      )}
 
       {/* no-error-surface: filter selection only, performs no writes */}
       <Dialog
@@ -3697,7 +3840,6 @@ type SalesOpportunitiesPageProps = {
 export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpportunitiesPageProps = {}) {
   const { appUser } = useAuth()
   const queryClient = useQueryClient()
-  const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const deepLinkedQuoteId = String(searchParams.get('quoteId') || '').trim()
 
@@ -3776,7 +3918,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   const [preferredSaveAction, setPreferredSaveAction] = useState<OpportunitySavePreference>(() => (
     window.localStorage.getItem(savePreferenceStorageKey) === 'save_close' ? 'save_close' : 'save'
   ))
-  const [uploadQuoteActionMenuAnchorEl, setUploadQuoteActionMenuAnchorEl] = useState<HTMLElement | null>(null)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [chatQuote, setChatQuote] = useState<CrmQuote | null>(null)
   const [addOpportunityChatNote, setAddOpportunityChatNote] = useState('')
@@ -3785,8 +3926,25 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   const activePipelineStage: CrmOpportunityStage = 'proposal_submission'
   const pipelineUploadExcelInputRef = useRef<HTMLInputElement | null>(null)
   const selectedOpportunityId = selectedOpportunity?.id ?? ''
+  // The single-page quote form. It keeps its own draft so opening it never
+  // disturbs a half-finished quote in the staged dialog, and hands that draft
+  // to the same create call when it is done.
+  const [isNewQuoteDialogOpen, setIsNewQuoteDialogOpen] = useState(false)
+  const [newQuoteForm, setNewQuoteForm] = useState<OpportunityFormState>(createEmptySinglePageQuoteForm)
+  const [newQuotePickerDealer, setNewQuotePickerDealer] = useState<CrmDealer | null>(null)
+  const [newQuoteContactSourceId, setNewQuoteContactSourceId] = useState('')
+  const [newQuoteCropTarget, setNewQuoteCropTarget] = useState<{
+    index: number
+    file: File
+    imageId?: string
+    shape?: QuoteImageShape
+    displaySize?: QuoteImageDisplaySize
+  } | null>(null)
+  const [isUploadingNewQuoteImage, setIsUploadingNewQuoteImage] = useState(false)
+
   const shouldLoadDealers = Boolean(
     isDialogOpen
+    || isNewQuoteDialogOpen
     || selectedOpportunityId
     || loadingOpportunityId
     || isExcelAccountDialogOpen
@@ -3800,9 +3958,11 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     enabled: shouldLoadDealers,
   })
 
-  const activeQuoteDealerSourceId = isDialogOpen
-    ? formState.dealerSourceId
-    : (opportunityDetailsFormState?.dealerSourceId || '')
+  const activeQuoteDealerSourceId = isNewQuoteDialogOpen
+    ? (newQuotePickerDealer?.sourceId || newQuoteForm.dealerSourceId)
+    : isDialogOpen
+      ? formState.dealerSourceId
+      : (opportunityDetailsFormState?.dealerSourceId || '')
 
   const addOpportunityContactsQuery = useQuery({
     queryKey: ['crm', 'dealer-contacts', activeQuoteDealerSourceId],
@@ -3811,7 +3971,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       limit: 1000,
       includeArchived: false,
     }),
-    enabled: Boolean((isDialogOpen || selectedOpportunityId) && activeQuoteDealerSourceId),
+    enabled: Boolean((isDialogOpen || isNewQuoteDialogOpen || selectedOpportunityId) && activeQuoteDealerSourceId),
     staleTime: 5 * 60 * 1000,
   })
 
@@ -4111,7 +4271,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     setPreferredSaveAction(action)
     window.localStorage.setItem(savePreferenceStorageKey, action)
   }, [savePreferenceStorageKey])
-  const isUploadQuoteActionMenuOpen = Boolean(uploadQuoteActionMenuAnchorEl)
   const canUseProposalDetailsActions = Boolean(
     canManage
     && selectedOpportunity
@@ -4218,60 +4377,119 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     .reduce((total, missingFields) => total + missingFields.length, 0)
   const addOpportunityCurrentStageMissing = addOpportunityMissingByStage[addOpportunityStage]
 
-  const addOpportunityPreviewQuote = useMemo(() => ({
-    id: 'new-opportunity-preview',
-    dealerSourceId: formState.dealerSourceId || null,
-    quoteNumber: formState.quoteNumber.trim() || null,
-    title: formState.title.trim() || `${DEFAULT_OPPORTUNITY_TITLE_PREFIX}${formState.quoteNumber.trim() || 'Preview'}`,
-    companyName: formState.companyName.trim() || null,
-    contactName: formState.contactName.trim() || null,
-    contactEmail: formState.contactEmail.trim() || null,
-    contactPhone: formState.contactPhone.trim() || null,
-    salesRep: formState.salesRep.trim() || null,
-    projectType: formState.projectType.trim() || null,
-    opportunityDate: formState.opportunityDateInput.trim() || null,
-    leadTime: formState.leadTime.trim() || null,
-    paymentTerms: formState.paymentTerms.trim() || null,
-    subtotal: addPricingPreview.subtotal,
-    discountPercent: addPricingPreview.discountPercent,
-    discountAmount: addPricingPreview.discountAmount,
-    discountScope: addPricingPreview.discountScope,
-    discountFreightAmount: addPricingPreview.discountFreightAmount,
-    totalPriceType: formState.totalPriceType,
-    freight: addPricingPreview.freight,
-    freightDescription: formState.freightDescription.trim() || null,
-    lineItems: normalizeLineItemsForPayload(formState.lineItems),
-    additionalServices: normalizeServiceItemsForPayload(formState.additionalServices),
-    shippingServices: normalizeServiceItemsForPayload(formState.shippingServices),
-    totalAmount: addPricingPreview.totalAmount,
-    notes: formState.notes.trim() || null,
-    status: 'draft',
-    origin: formState.origin,
-    revisions: [],
-    revisionCount: 0,
-    activeRevisionNumber: 0,
-  } as unknown as CrmQuote), [
-    addPricingPreview,
-    formState.additionalServices,
-    formState.companyName,
-    formState.contactEmail,
-    formState.contactName,
-    formState.contactPhone,
-    formState.dealerSourceId,
-    formState.freightDescription,
-    formState.leadTime,
-    formState.lineItems,
-    formState.notes,
-    formState.opportunityDateInput,
-    formState.origin,
-    formState.paymentTerms,
-    formState.projectType,
-    formState.quoteNumber,
-    formState.salesRep,
-    formState.shippingServices,
-    formState.totalPriceType,
-    formState.title,
-  ])
+  const addOpportunityPreviewQuote = useMemo(
+    () => buildQuotePreviewQuote(formState, addPricingPreview),
+    [addPricingPreview, formState],
+  )
+
+  const newQuotePricing = useMemo(
+    () => resolveQuotePricing(
+      newQuoteForm.lineItems,
+      newQuoteForm.freight,
+      0,
+      newQuoteForm.additionalServices,
+      newQuoteForm.shippingServices,
+      newQuoteForm.discountPercent,
+      newQuoteForm.discountScope,
+    ),
+    [newQuoteForm],
+  )
+
+  const newQuotePreviewQuote = useMemo(
+    () => buildQuotePreviewQuote(newQuoteForm, newQuotePricing),
+    [newQuoteForm, newQuotePricing],
+  )
+
+  // The same standard services the staged form offers as cards, flattened into
+  // the list the single-page form's picker shows.
+  const newQuoteLibraryQuery = useQuery({
+    queryKey: QUERY_KEYS.crmQuoteLineLibrary,
+    queryFn: () => fetchCrmQuoteLineLibrary(),
+    enabled: isNewQuoteDialogOpen,
+    staleTime: 60 * 1000,
+  })
+
+  const newQuoteLibraryEntries = useMemo(
+    () => (Array.isArray(newQuoteLibraryQuery.data?.entries) ? newQuoteLibraryQuery.data.entries : []),
+    [newQuoteLibraryQuery.data?.entries],
+  )
+
+  const handleSaveNewQuoteLibraryEntry = useCallback(async (name: string, lineIndex: number) => {
+    const sourceLine = newQuoteForm.lineItems[lineIndex]
+
+    if (!sourceLine || sourceLine.parentLineId) {
+      return
+    }
+
+    const linesToSave = [
+      sourceLine,
+      ...newQuoteForm.lineItems.filter((line) => line.parentLineId === sourceLine.id),
+    ]
+
+    try {
+      await createCrmQuoteLineLibraryEntry({
+        name,
+        // Prices are left out on purpose: a library block is the wording and
+        // the structure, and last quarter's number is worse than none.
+        lines: linesToSave.map((line, index) => ({
+          id: line.id,
+          parentLineId: line.parentLineId,
+          itemNumber: index + 1,
+          detailLabel: line.detailLabel || null,
+          description: line.description || null,
+          qty: null,
+          unitPrice: null,
+          extPrice: null,
+          images: line.parentLineId ? [] : line.images,
+        })),
+      })
+      await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.crmQuoteLineLibrary })
+      setSuccessMessage(`Saved "${name}" to the library.`)
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Could not save this library item.')
+    }
+    // Invalidating rather than refetching keeps this callback stable: the query
+    // object itself is a new reference on every render.
+  }, [newQuoteForm.lineItems, queryClient])
+
+  const quoteLeadTimeOptions = useMemo(
+    () => {
+      const stored = quotePrintSettingsQuery.data?.settings?.leadTimeOptions
+      const options = Array.isArray(stored) && stored.length > 0
+        ? stored
+        : DEFAULT_QUOTE_PRINT_SETTINGS.leadTimeOptions
+
+      // A quote already saved with a lead time that has since been removed
+      // still has to be able to show it.
+      return newQuoteForm.leadTime && !options.includes(newQuoteForm.leadTime)
+        ? [...options, newQuoteForm.leadTime]
+        : options
+    },
+    [newQuoteForm.leadTime, quotePrintSettingsQuery.data?.settings?.leadTimeOptions],
+  )
+
+  const handleAddQuoteLeadTime = useCallback(async (leadTime: string) => {
+    try {
+      await addCrmQuoteLeadTime(leadTime)
+      await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.crmQuotePrintSettings })
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Could not save that lead time.')
+    }
+  }, [queryClient])
+
+  const newQuoteServicePresets = useMemo(
+    () => defaultAdditionalServiceTemplates.map(([title, description, unitPrice]) => ({
+      title, description, unitPrice,
+    })),
+    [],
+  )
+
+  const newQuoteDeliveryPresets = useMemo(
+    () => defaultShippingServiceTemplates.map(([title, description]) => ({
+      title, description, unitPrice: null,
+    })),
+    [],
+  )
 
   const detailsPricingPreview = useMemo(() => {
     if (!opportunityDetailsFormState) {
@@ -4700,6 +4918,141 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     }))
   }, [])
 
+  const handleAddNewQuoteImage = useCallback(async (
+    index: number,
+    prepared: PreparedQuoteImage,
+    replaceImageId?: string,
+  ) => {
+    setErrorMessage(null)
+    setIsUploadingNewQuoteImage(true)
+
+    try {
+      const images = await uploadLineItemImages(
+        [prepared],
+        newQuoteForm.quoteNumber,
+        newQuoteForm.companyName,
+      )
+
+      // The picture being replaced is deleted from storage, not just dropped
+      // from the form, or every adjustment would leave a file behind.
+      const replaced = replaceImageId
+        ? newQuoteForm.lineItems[index]?.images.find((image) => image.id === replaceImageId)
+        : null
+
+      if (replaced && images[0]) {
+        void deleteUploadedDraftImages([replaced])
+      }
+
+      setNewQuoteForm((current) => ({
+        ...current,
+        lineItems: current.lineItems.map((line, lineIndex) => (lineIndex === index
+          ? {
+            ...line,
+            images: replaceImageId
+              ? line.images.map((image) => (image.id === replaceImageId ? images[0] || image : image))
+              : [...line.images, ...images].slice(0, 2),
+          }
+          : line)),
+      }))
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Could not upload that picture.')
+    } finally {
+      setIsUploadingNewQuoteImage(false)
+    }
+  }, [
+    deleteUploadedDraftImages,
+    newQuoteForm.companyName,
+    newQuoteForm.lineItems,
+    newQuoteForm.quoteNumber,
+    uploadLineItemImages,
+  ])
+
+  // Reopens an added picture with its crop, zoom, shape and size as saved.
+  const handleEditNewQuoteImage = useCallback(async (lineIndex: number, imageId: string) => {
+    const image = newQuoteForm.lineItems[lineIndex]?.images.find((entry) => entry.id === imageId)
+
+    if (!image) {
+      return
+    }
+
+    try {
+      const shape = quoteImageShapeOptions.some((option) => option.value === image.shape)
+        ? image.shape as QuoteImageShape
+        : 'landscape'
+      const displaySize = quoteImageSizeOptions.some((option) => option.value === image.displaySize)
+        ? image.displaySize as QuoteImageDisplaySize
+        : 'medium'
+
+      setNewQuoteCropTarget({
+        index: lineIndex,
+        file: await loadQuoteImageForEditing(image),
+        imageId: image.id,
+        shape,
+        displaySize,
+      })
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Could not open this picture.')
+    }
+  }, [newQuoteForm.lineItems])
+
+  // Closing without creating has to take the uploaded pictures with it.
+  // Nothing else ever references them, so left alone they would sit in storage
+  // for good.
+  const discardNewQuoteDraft = useCallback(() => {
+    const orphanedImages = newQuoteForm.lineItems.flatMap((line) => line.images)
+
+    if (orphanedImages.length > 0) {
+      void deleteUploadedDraftImages(orphanedImages)
+    }
+
+    setNewQuoteForm(createEmptySinglePageQuoteForm())
+    setNewQuotePickerDealer(null)
+    setNewQuoteContactSourceId('')
+    setIsNewQuoteDialogOpen(false)
+  }, [deleteUploadedDraftImages, newQuoteForm.lineItems])
+
+  const handleRemoveNewQuoteImage = useCallback((lineIndex: number, imageId: string) => {
+    const removed = newQuoteForm.lineItems[lineIndex]?.images.find((image) => image.id === imageId)
+
+    if (removed) {
+      void deleteUploadedDraftImages([removed])
+    }
+
+    setNewQuoteForm((current) => ({
+      ...current,
+      lineItems: current.lineItems.map((line, index) => (index === lineIndex
+        ? { ...line, images: line.images.filter((image) => image.id !== imageId) }
+        : line)),
+    }))
+  }, [deleteUploadedDraftImages, newQuoteForm.lineItems])
+
+  // Edits made on the quote follow through to the contact record, so fixing an
+  // address here fixes it for the next quote too.
+  const handleSaveNewQuoteContact = useCallback(async (details: {
+    name: string
+    email: string
+    phone: string
+  }) => {
+    if (!newQuoteContactSourceId) {
+      return
+    }
+
+    try {
+      await updateCrmContact(newQuoteContactSourceId, {
+        name: details.name,
+        primaryEmail: details.email,
+        phone: details.phone || null,
+      })
+      await queryClient.invalidateQueries({
+        queryKey: ['crm', 'dealer-contacts', newQuoteForm.dealerSourceId],
+      })
+    } catch (error) {
+      setErrorMessage(error instanceof Error
+        ? error.message
+        : 'Saved on this quote, but the contact record could not be updated.')
+    }
+  }, [newQuoteContactSourceId, newQuoteForm.dealerSourceId, queryClient])
+
   const handleConfirmExcelQuoteSync = useCallback(async () => {
     if (!excelSyncDraft) {
       return
@@ -4915,16 +5268,17 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     uploadLineItemImages,
   ])
 
-  const handleOpenUploadQuoteActionMenu = useCallback((event: MouseEvent<HTMLButtonElement>) => {
-    setUploadQuoteActionMenuAnchorEl(event.currentTarget)
-  }, [])
 
-  const handleCloseUploadQuoteActionMenu = useCallback(() => {
-    setUploadQuoteActionMenuAnchorEl(null)
+
+  const handleOpenNewQuote = useCallback(() => {
+    setNewQuoteForm(createEmptySinglePageQuoteForm())
+    setNewQuotePickerDealer(null)
+    setNewQuoteContactSourceId('')
+    setErrorMessage(null)
+    setIsNewQuoteDialogOpen(true)
   }, [])
 
   const handleOpenUploadQuoteExcelPicker = useCallback(() => {
-    setUploadQuoteActionMenuAnchorEl(null)
     const input = pipelineUploadExcelInputRef.current
 
     if (!input) {
@@ -4934,6 +5288,34 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     input.value = ''
     input.click()
   }, [])
+
+  // Duplicating asks one question first: does the copy keep the account, or is
+  // it the same product for somebody else?
+  const [duplicateSourceQuote, setDuplicateSourceQuote] = useState<CrmQuote | null>(null)
+
+  const handleStartDuplicate = useCallback((keepAccountInformation: boolean) => {
+    const sourceQuote = duplicateSourceQuote
+
+    if (!sourceQuote) {
+      return
+    }
+
+    const duplicatedFormState = createDuplicateOpportunityForm(sourceQuote, keepAccountInformation)
+
+    setDuplicateSourceQuote(null)
+    setSelectedOpportunity(null)
+    setErrorMessage(null)
+    setSuccessMessage(null)
+    setFormState(duplicatedFormState)
+    setAddOpportunityChatNote('')
+    setAddOpportunityStage(0)
+    setAddOpportunitySubmitAttempted(false)
+    setDealerSearchInput('')
+    setSelectedAddContactSourceId('')
+    setAddDialogInitialSnapshot(serializeOpportunityFormState(duplicatedFormState))
+    setIsAddDialogDraftFromExcelSync(false)
+    setIsDialogOpen(true)
+  }, [duplicateSourceQuote])
 
   const handleOpenDialog = useCallback(() => {
     const emptyFormState = createEmptyOpportunityForm()
@@ -4989,21 +5371,28 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       })
       const dealer = response.dealer
 
-      setDealerSearchInput(resolveDealerSelectionLabel(dealer))
       setSelectedAddContactSourceId('')
-      setFormState((current) => ({
-        ...current,
-        dealerSourceId: dealer.sourceId,
-        companyName: resolveDealerQuoteCompanyName(dealer),
-        salesRep: resolveMatchingOption(dealer.salesRep, excelSyncSalesRepOptions)
-          || dealer.salesRep
-          || current.salesRep
-          || 'House',
-        paymentTerms: dealer.paymentTerms || DEFAULT_WEBSITE_PAYMENT_TERMS,
-        contactName: '',
-        contactEmail: '',
-        contactPhone: '',
-      }))
+
+      if (isNewQuoteDialogOpen) {
+        // The picker moves straight on to this dealer's contacts, which is
+        // where the flow was heading when Add was pressed.
+        setNewQuotePickerDealer(dealer)
+      } else {
+        setDealerSearchInput(resolveDealerSelectionLabel(dealer))
+        setFormState((current) => ({
+          ...current,
+          dealerSourceId: dealer.sourceId,
+          companyName: resolveDealerQuoteCompanyName(dealer),
+          salesRep: resolveMatchingOption(dealer.salesRep, excelSyncSalesRepOptions)
+            || dealer.salesRep
+            || current.salesRep
+            || 'House',
+          paymentTerms: dealer.paymentTerms || DEFAULT_WEBSITE_PAYMENT_TERMS,
+          contactName: '',
+          contactEmail: '',
+          contactPhone: '',
+        }))
+      }
       await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.crmOpportunitiesDealers })
       setIsNewDealerDialogOpen(false)
     } catch (error) {
@@ -5013,6 +5402,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     }
   }, [
     excelSyncSalesRepOptions,
+    isNewQuoteDialogOpen,
     newDealerForm.city,
     newDealerForm.email,
     newDealerForm.name,
@@ -5086,7 +5476,22 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       })
       const contact = response.contact
       setSelectedAddContactSourceId(contact.sourceId)
-      if (selectedOpportunityId) {
+
+      if (isNewQuoteDialogOpen) {
+        const dealer = newQuotePickerDealer
+        setNewQuoteForm((current) => ({
+          ...current,
+          dealerSourceId: dealerSourceId,
+          companyName: dealer ? resolveDealerQuoteCompanyName(dealer) : current.companyName,
+          salesRep: current.salesRep
+            || resolveMatchingOption(dealer?.salesRep, excelSyncSalesRepOptions)
+            || 'House',
+          paymentTerms: dealer?.paymentTerms || current.paymentTerms,
+          contactName: resolveContactSelectionLabel(contact),
+          contactEmail: contact.primaryEmail || '',
+          contactPhone: contact.phone || '',
+        }))
+      } else if (selectedOpportunityId) {
         setOpportunityDetailsFormState((current) => current ? ({
           ...current,
           contactName: resolveContactSelectionLabel(contact),
@@ -5109,7 +5514,17 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     } finally {
       setIsSavingNewContact(false)
     }
-  }, [activeQuoteDealerSourceId, newContactForm.email, newContactForm.name, newContactForm.phone, queryClient, selectedOpportunityId])
+  }, [
+    activeQuoteDealerSourceId,
+    excelSyncSalesRepOptions,
+    isNewQuoteDialogOpen,
+    newContactForm.email,
+    newContactForm.name,
+    newContactForm.phone,
+    newQuotePickerDealer,
+    queryClient,
+    selectedOpportunityId,
+  ])
 
   const clearDeepLinkedQuoteId = useCallback(() => {
     if (!searchParams.has('quoteId')) {
@@ -5127,7 +5542,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     setDetailsActionMenuAnchorEl(null)
     setSaveActionMenuAnchorEl(null)
     setPendingRevisionSave(null)
-    setUploadQuoteActionMenuAnchorEl(null)
     const nextRevisionNumber = Number(quote.activeRevisionNumber ?? quote.revisionCount ?? 0)
     const nextRevisionQuote = resolveQuoteRevision(quote, nextRevisionNumber)
     const nextFormState = createOpportunityDetailsFormState(nextRevisionQuote)
@@ -5241,7 +5655,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
 
     setDetailsActionMenuAnchorEl(null)
     setSaveActionMenuAnchorEl(null)
-    setUploadQuoteActionMenuAnchorEl(null)
     setSelectedOpportunity(null)
     setSelectedAddContactSourceId('')
     setOpportunityDetailsStage(0)
@@ -5278,6 +5691,29 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       nextLineItems.splice(insertIndex, 0, createEmptyLineItemFormState(parentLine.id))
       return { ...current, lineItems: nextLineItems }
     })
+  }, [])
+
+  const handleCopyFormDetailToSubline = useCallback((index: number) => {
+    setFormState((current) => ({
+      ...current,
+      lineItems: copyQuoteLineDetailToSubline(current.lineItems, index),
+    }))
+  }, [])
+
+  const handleDuplicateFormLineItem = useCallback((index: number) => {
+    setFormState((current) => ({
+      ...current,
+      lineItems: current.lineItems[index]?.parentLineId
+        ? duplicateQuoteSubline(current.lineItems, index)
+        : duplicateQuoteLineBlock(current.lineItems, index),
+    }))
+  }, [])
+
+  const handleMoveFormLineItem = useCallback((index: number, direction: 'up' | 'down') => {
+    setFormState((current) => ({
+      ...current,
+      lineItems: moveQuoteLineBlock(current.lineItems, index, direction),
+    }))
   }, [])
 
   const handleRemoveFormLineItem = useCallback((index: number) => {
@@ -5358,14 +5794,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     }))
   }, [deleteUploadedDraftImages, formState.lineItems])
 
-  const handleUpdateFormLineImageLayout = useCallback((lineIndex: number, imageId: string, pdfLayout: QuoteImagePdfLayout) => {
-    setFormState((current) => ({
-      ...current,
-      lineItems: current.lineItems.map((line, index) => index === lineIndex
-        ? { ...line, images: line.images.map((image) => image.id === imageId ? { ...image, pdfLayout } : image) }
-        : line),
-    }))
-  }, [])
 
   const handleAddDetailsLineItem = useCallback(() => {
     setOpportunityDetailsFormState((current) => {
@@ -5398,6 +5826,29 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       nextLineItems.splice(insertIndex, 0, createEmptyLineItemFormState(parentLine.id))
       return { ...current, lineItems: nextLineItems }
     })
+  }, [])
+
+  const handleCopyDetailsDetailToSubline = useCallback((index: number) => {
+    setOpportunityDetailsFormState((current) => (current
+      ? { ...current, lineItems: copyQuoteLineDetailToSubline(current.lineItems, index) }
+      : current))
+  }, [])
+
+  const handleDuplicateDetailsLineItem = useCallback((index: number) => {
+    setOpportunityDetailsFormState((current) => (current
+      ? {
+        ...current,
+        lineItems: current.lineItems[index]?.parentLineId
+          ? duplicateQuoteSubline(current.lineItems, index)
+          : duplicateQuoteLineBlock(current.lineItems, index),
+      }
+      : current))
+  }, [])
+
+  const handleMoveDetailsLineItem = useCallback((index: number, direction: 'up' | 'down') => {
+    setOpportunityDetailsFormState((current) => (current
+      ? { ...current, lineItems: moveQuoteLineBlock(current.lineItems, index, direction) }
+      : current))
   }, [])
 
   const handleRemoveDetailsLineItem = useCallback((index: number) => {
@@ -5477,14 +5928,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     }) : current)
   }, [])
 
-  const handleUpdateDetailsLineImageLayout = useCallback((lineIndex: number, imageId: string, pdfLayout: QuoteImagePdfLayout) => {
-    setOpportunityDetailsFormState((current) => current ? ({
-      ...current,
-      lineItems: current.lineItems.map((line, index) => index === lineIndex
-        ? { ...line, images: line.images.map((image) => image.id === imageId ? { ...image, pdfLayout } : image) }
-        : line),
-    }) : current)
-  }, [])
 
   const handlePrintQuote = useCallback(async (quoteSummary: CrmQuote, detailsAlreadyLoaded = false) => {
     setErrorMessage(null)
@@ -5616,17 +6059,23 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     }
   }, [invalidateOpportunityData, selectedOpportunity, selectedRevisionNumber])
 
-  const handleCreateOpportunity = useCallback(async () => {
-    const dealerSourceId = formState.dealerSourceId.trim()
-    const quoteNumber = formState.quoteNumber.trim()
-    const opportunityDateInput = formState.opportunityDateInput.trim()
-    const pricing = resolveQuotePricing(formState.lineItems, formState.freight, 0, formState.additionalServices, formState.shippingServices, formState.discountPercent, formState.discountScope)
+  // `draft` is passed by the single-page form, which validates its own fields
+  // and keeps its own state. Without it this saves the staged dialog's form.
+  const handleCreateOpportunity = useCallback(async (draft?: OpportunityFormState) => {
+    const isSinglePageDraft = Boolean(draft)
+    const source = draft ?? formState
+    const dealerSourceId = source.dealerSourceId.trim()
+    const quoteNumber = source.quoteNumber.trim()
+    const opportunityDateInput = source.opportunityDateInput.trim()
+    const pricing = resolveQuotePricing(source.lineItems, source.freight, 0, source.additionalServices, source.shippingServices, source.discountPercent, source.discountScope)
     const lineItems = pricing.normalizedLineItems
     const totalAmount = pricing.totalAmount
 
-    setAddOpportunitySubmitAttempted(true)
+    if (!isSinglePageDraft) {
+      setAddOpportunitySubmitAttempted(true)
+    }
 
-    if (addOpportunityTotalMissing > 0) {
+    if (!isSinglePageDraft && addOpportunityTotalMissing > 0) {
       setErrorMessage(
         `${addOpportunityTotalMissing} required ${addOpportunityTotalMissing === 1 ? 'field is' : 'fields are'} missing. Review the stages marked in red.`,
       )
@@ -5647,10 +6096,11 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       return
     }
 
-    const title = formState.title.trim() || `${DEFAULT_OPPORTUNITY_TITLE_PREFIX}${quoteNumber}`
+    const title = source.title.trim() || `${DEFAULT_OPPORTUNITY_TITLE_PREFIX}${quoteNumber}`
     const targetStage: CrmOpportunityStage = 'proposal_submission'
-    const targetStatus = isAddDialogDraftFromExcelSync ? 'sent' : 'draft'
-    const sentAt = isAddDialogDraftFromExcelSync ? new Date().toISOString() : null
+    const isExcelDraft = !isSinglePageDraft && isAddDialogDraftFromExcelSync
+    const targetStatus = isExcelDraft ? 'sent' : 'draft'
+    const sentAt = isExcelDraft ? new Date().toISOString() : null
 
     setErrorMessage(null)
     setSuccessMessage(null)
@@ -5658,11 +6108,13 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
 
     try {
 
-      if (selectedAddContactSourceId) {
+      // The single-page form picks an existing contact rather than editing one
+      // inline, so there is nothing to write back for it.
+      if (!isSinglePageDraft && selectedAddContactSourceId) {
         await updateCrmContact(selectedAddContactSourceId, {
-          name: formState.contactName.trim(),
-          primaryEmail: formState.contactEmail.trim(),
-          phone: formState.contactPhone.trim() || null,
+          name: source.contactName.trim(),
+          primaryEmail: source.contactEmail.trim(),
+          phone: source.contactPhone.trim() || null,
         })
       }
 
@@ -5670,41 +6122,41 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         dealerSourceId,
         quoteNumber,
         title,
-        companyName: formState.companyName.trim() || null,
-        contactName: formState.contactName.trim() || null,
-        contactEmail: formState.contactEmail.trim() || null,
-        contactPhone: formState.contactPhone.trim() || null,
+        companyName: source.companyName.trim() || null,
+        contactName: source.contactName.trim() || null,
+        contactEmail: source.contactEmail.trim() || null,
+        contactPhone: source.contactPhone.trim() || null,
         contactSourceId: selectedAddContactSourceId || null,
-        salesRep: formState.salesRep.trim() || null,
-        projectType: formState.projectType.trim() || null,
-        leadTime: formState.leadTime.trim() || null,
-        paymentTerms: formState.paymentTerms.trim() || null,
+        salesRep: source.salesRep.trim() || null,
+        projectType: source.projectType.trim() || null,
+        leadTime: source.leadTime.trim() || null,
+        paymentTerms: source.paymentTerms.trim() || null,
         subtotal: pricing.subtotal,
         discountPercent: pricing.discountPercent,
         discountAmount: pricing.discountAmount,
         discountScope: pricing.discountScope,
         discountFreightAmount: pricing.discountFreightAmount,
-        totalPriceType: formState.totalPriceType,
+        totalPriceType: source.totalPriceType,
         freight: pricing.freight,
-        freightDescription: formState.freightDescription.trim() || null,
+        freightDescription: source.freightDescription.trim() || null,
         status: targetStatus,
         opportunityStage: targetStage,
         opportunityDate: opportunityDateInput || null,
         lineItems,
         additionalServices: pricing.normalizedAdditionalServices,
         shippingServices: pricing.normalizedShippingServices,
-        origin: formState.origin,
-        sourceWorkbookUrl: formState.sourceWorkbookUrl || null,
-        sourceWorkbookName: formState.sourceWorkbookName || null,
-        convertedPdfUrl: formState.convertedPdfUrl || null,
-        convertedPdfName: formState.convertedPdfName || null,
+        origin: source.origin,
+        sourceWorkbookUrl: source.sourceWorkbookUrl || null,
+        sourceWorkbookName: source.sourceWorkbookName || null,
+        convertedPdfUrl: source.convertedPdfUrl || null,
+        convertedPdfName: source.convertedPdfName || null,
         totalAmount,
         sentAt,
-        notes: formState.notes.trim() || null,
+        notes: source.notes.trim() || null,
         revisionCount: 0,
       })
 
-      const openingNote = addOpportunityChatNote.trim()
+      const openingNote = isSinglePageDraft ? '' : addOpportunityChatNote.trim()
       const createdQuoteId = String(createdQuote?.quote?.id ?? '').trim()
 
       if (openingNote && createdQuoteId) {
@@ -5722,15 +6174,22 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       const emptyFormState = createEmptyOpportunityForm()
 
       setSuccessMessage('Opportunity created.')
-      setFormState(emptyFormState)
-      setAddOpportunityChatNote('')
-      setAddOpportunityStage(0)
-      setAddOpportunitySubmitAttempted(false)
-      setDealerSearchInput('')
-      setSelectedAddContactSourceId('')
-      setAddDialogInitialSnapshot(serializeOpportunityFormState(emptyFormState))
-      setIsAddDialogDraftFromExcelSync(false)
-      setIsDialogOpen(false)
+
+      if (isSinglePageDraft) {
+        setNewQuoteForm(createEmptySinglePageQuoteForm())
+        setNewQuotePickerDealer(null)
+        setIsNewQuoteDialogOpen(false)
+      } else {
+        setFormState(emptyFormState)
+        setAddOpportunityChatNote('')
+        setAddOpportunityStage(0)
+        setAddOpportunitySubmitAttempted(false)
+        setDealerSearchInput('')
+        setSelectedAddContactSourceId('')
+        setAddDialogInitialSnapshot(serializeOpportunityFormState(emptyFormState))
+        setIsAddDialogDraftFromExcelSync(false)
+        setIsDialogOpen(false)
+      }
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Failed to create opportunity.')
     } finally {
@@ -5739,32 +6198,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   }, [
     addOpportunityChatNote,
     addOpportunityTotalMissing,
-    formState.additionalServices,
-    formState.companyName,
-    formState.contactEmail,
-    formState.contactName,
-    formState.contactPhone,
-    formState.convertedPdfName,
-    formState.convertedPdfUrl,
-    formState.dealerSourceId,
-    formState.discountPercent,
-    formState.discountScope,
-    formState.freight,
-    formState.freightDescription,
-    formState.leadTime,
-    formState.lineItems,
-    formState.notes,
-    formState.origin,
-    formState.opportunityDateInput,
-    formState.paymentTerms,
-    formState.projectType,
-    formState.quoteNumber,
-    formState.salesRep,
-    formState.shippingServices,
-    formState.sourceWorkbookName,
-    formState.sourceWorkbookUrl,
-    formState.totalPriceType,
-    formState.title,
+    formState,
     invalidateOpportunityData,
     isAddDialogDraftFromExcelSync,
     quotes,
@@ -5871,7 +6305,6 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
     setConvertOrderTargetQuote(null)
     setConvertOrderFormState(createEmptyConvertOrderForm(convertOrderPrimaryBoardId, convertOrderSecondaryBoardId))
     setDetailsActionMenuAnchorEl(null)
-    setUploadQuoteActionMenuAnchorEl(null)
     setSelectedOpportunity(null)
     setOpportunityDetailsFormState(null)
     setOpportunityDetailsInitialSnapshot('')
@@ -6315,7 +6748,10 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
   }
 
   return (
-    <Stack spacing={1.75}>
+    // Centred rather than edge to edge. The invoice list this page is modelled
+    // on leaves air on both sides, and that margin is most of why it reads as
+    // calm — a table stretched across a wide monitor does not.
+    <Stack spacing={1.75} sx={{ width: '100%', maxWidth: 1200, mx: 'auto' }}>
       <StatusAlerts
         errorMessage={isDialogOpen || selectedOpportunity ? null : (errorMessage || (queryError instanceof Error ? queryError.message : null))}
         successMessage={successMessage}
@@ -6966,120 +7402,13 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
       </Dialog>
 
       {!detailsOnly ? <>
-      <Paper
-        variant="outlined"
-        sx={{
-          borderRadius: 2.5,
-          overflow: 'hidden',
-          borderColor: alpha('#0f4c81', 0.16),
-          boxShadow: '0 12px 36px rgba(15, 76, 129, 0.08)',
-        }}
-      >
-        <Stack
-          direction={{ xs: 'column', lg: 'row' }}
-          spacing={0.7}
-          justifyContent="space-between"
-          alignItems={{ xs: 'stretch', lg: 'center' }}
-          sx={{
-            px: { xs: 1.1, md: 1.3 },
-            py: 0.75,
-            backgroundColor: '#ffffff',
-          }}
-        >
-          <Stack direction="row" spacing={0.6} alignItems="center" flexWrap="wrap" useFlexGap>
-            <WorkspacesRoundedIcon sx={{ color: '#0f4c81', fontSize: 19 }} />
-            <Typography variant="subtitle1" sx={{ fontWeight: 800, color: '#0b2239' }}>
-              Opportunities
-            </Typography>
-          </Stack>
-
-          <Stack direction="row" spacing={0.55} alignItems="center">
-            <TextField
-              size="small"
-              placeholder="Search quote #, project, company, or price..."
-              value={globalSearch}
-              onChange={(event) => {
-                setGlobalSearch(event.target.value)
-              }}
-              InputProps={{
-                startAdornment: (
-                  <InputAdornment position="start">
-                    <SearchRoundedIcon fontSize="small" />
-                  </InputAdornment>
-                ),
-              }}
-              sx={{ width: { xs: '100%', sm: 245 } }}
-            />
-            <Button
-              size="small"
-              variant="outlined"
-              color="inherit"
-              startIcon={<RefreshRoundedIcon fontSize="small" />}
-              onClick={() => {
-                void handleRefresh()
-              }}
-              disabled={isRefreshing}
-            >
-              {isRefreshing ? 'Refreshing...' : 'Refresh'}
-            </Button>
-
-            <Button
-              size="small"
-              variant="contained"
-              startIcon={<AddRoundedIcon fontSize="small" />}
-              onClick={handleOpenDialog}
-              disabled={!canManage}
-            >
-              Add Opportunity
-            </Button>
-
-            <Tooltip title="More opportunity actions">
-              <span>
-                <IconButton
-                  size="small"
-                  aria-label="More opportunity actions"
-                  disabled={!canManage || isSyncingExcelQuote}
-                  onClick={handleOpenUploadQuoteActionMenu}
-                  sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 1.25 }}
-                >
-                  <MoreVertRoundedIcon fontSize="small" />
-                </IconButton>
-              </span>
-            </Tooltip>
-
-            <Menu
-              anchorEl={uploadQuoteActionMenuAnchorEl}
-              open={isUploadQuoteActionMenuOpen}
-              onClose={handleCloseUploadQuoteActionMenu}
-              anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
-              transformOrigin={{ vertical: 'top', horizontal: 'right' }}
-            >
-              <MenuItem
-                disabled={!canManage || isSyncingExcelQuote}
-                onClick={handleOpenUploadQuoteExcelPicker}
-              >
-                Sync Excel Sheet
-              </MenuItem>
-              <MenuItem
-                onClick={() => {
-                  handleCloseUploadQuoteActionMenu()
-                  navigate('/config?tab=templates')
-                }}
-              >
-                Document Templates
-              </MenuItem>
-            </Menu>
-            <input
-              hidden
-              ref={pipelineUploadExcelInputRef}
-              type="file"
-              accept=".xls,.xlsx,.xlsm,.ods,.csv"
-              onChange={handleExcelQuoteSyncUpload}
-            />
-          </Stack>
-        </Stack>
-
-      </Paper>
+      <input
+        hidden
+        ref={pipelineUploadExcelInputRef}
+        type="file"
+        accept=".xls,.xlsx,.xlsm,.ods,.csv"
+        onChange={handleExcelQuoteSyncUpload}
+      />
 
       <StageColumn
         key={activePipelineStage}
@@ -7095,6 +7424,13 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         onPrintQuote={(quote) => void handlePrintQuote(quote)}
         onOpenDetails={handleOpenOpportunityDetails}
         onOpenChat={setChatQuote}
+        globalSearch={globalSearch}
+        onGlobalSearchChange={setGlobalSearch}
+        isRefreshing={isRefreshing}
+        onRefresh={() => void handleRefresh()}
+        onAddOpportunity={handleOpenNewQuote}
+        isSyncingExcelQuote={isSyncingExcelQuote}
+        onSyncExcelSheet={handleOpenUploadQuoteExcelPicker}
       />
 
       {quotePrintPreview ? (
@@ -7108,6 +7444,105 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         </Suspense>
       ) : null}
 
+      {isNewQuoteDialogOpen ? (
+      <NewQuoteDialog
+        open
+        form={newQuoteForm}
+        pricing={{
+          productTotal: newQuotePricing.grossSubtotal,
+          freightTotal: newQuotePricing.freight,
+          discountAmount: newQuotePricing.discountAmount + newQuotePricing.discountFreightAmount,
+          netTotal: newQuotePricing.totalAmount,
+        }}
+        dealers={excelSyncDealerOptions}
+        contacts={addOpportunityContactOptions}
+        isLoadingDealers={dealersQuery.isFetching}
+        isLoadingContacts={addOpportunityContactsQuery.isFetching}
+        selectedDealer={newQuotePickerDealer}
+        salesRepOptions={excelSyncSalesRepOptions}
+        projectTypeOptions={excelSyncProjectTypeOptions}
+        leadTimeOptions={quoteLeadTimeOptions}
+        servicePresets={newQuoteServicePresets}
+        deliveryPresets={newQuoteDeliveryPresets}
+        libraryEntries={newQuoteLibraryEntries}
+        isLoadingLibrary={newQuoteLibraryQuery.isFetching}
+        isSaving={isSavingOpportunity}
+        isUploadingImage={isUploadingNewQuoteImage}
+        errorMessage={errorMessage}
+        renderPreview={() => (
+          <Suspense fallback={<Stack alignItems="center" py={8}><CircularProgress /></Stack>}>
+            <QuotePdfPictureLayoutDialog
+              open
+              embedded
+              quote={newQuotePreviewQuote}
+              settings={quotePrintSettingsQuery.data?.settings || DEFAULT_QUOTE_PRINT_SETTINGS}
+              onCancel={() => {}}
+              onSave={() => {}}
+              hideEmbeddedActions
+            />
+          </Suspense>
+        )}
+        onPickDealer={setNewQuotePickerDealer}
+        onPickContact={(contact) => setNewQuoteContactSourceId(contact.sourceId)}
+        onFormChange={setNewQuoteForm}
+        onAddDealer={(typedName) => {
+          setNewDealerError(null)
+          setNewDealerForm({
+            name: typedName.trim(),
+            email: '',
+            phone: '',
+            city: '',
+            state: '',
+            salesRep: newQuoteForm.salesRep.trim(),
+            paymentTerms: DEFAULT_WEBSITE_PAYMENT_TERMS,
+          })
+          setIsNewDealerDialogOpen(true)
+        }}
+        onAddContact={(typedName) => {
+          setNewContactError(null)
+          setNewContactForm({ name: typedName.trim(), email: '', phone: '' })
+          setIsNewContactDialogOpen(true)
+        }}
+        onAddLeadTime={(leadTime) => void handleAddQuoteLeadTime(leadTime)}
+        onUseOldForm={() => {
+          setIsNewQuoteDialogOpen(false)
+          setNewQuotePickerDealer(null)
+          handleOpenDialog()
+        }}
+        onPickImage={(index, file) => setNewQuoteCropTarget({ index, file })}
+        onRemoveImage={handleRemoveNewQuoteImage}
+        onEditImage={(lineIndex, imageId) => void handleEditNewQuoteImage(lineIndex, imageId)}
+        onSaveContact={(details) => void handleSaveNewQuoteContact(details)}
+        onInsertLibraryEntry={(entry) => setNewQuoteForm((current) => ({
+          ...current,
+          lineItems: insertQuoteLineLibraryEntry(current.lineItems, entry),
+        }))}
+        onSaveLibraryEntry={handleSaveNewQuoteLibraryEntry}
+        onCreate={() => void handleCreateOpportunity(newQuoteForm)}
+        onClose={discardNewQuoteDraft}
+      />
+      ) : null}
+
+      {/* Cropping happens here rather than inside the form: the same zoom and
+          crop the staged editor uses, so a picture added either way lands on
+          the PDF the same. */}
+      <QuoteImageCropDialog
+        open={Boolean(newQuoteCropTarget)}
+        file={newQuoteCropTarget?.file || null}
+        initialShape={newQuoteCropTarget?.shape}
+        initialDisplaySize={newQuoteCropTarget?.displaySize}
+        onCancel={() => setNewQuoteCropTarget(null)}
+        onComplete={async (image) => {
+          if (!newQuoteCropTarget) {
+            return
+          }
+
+          const { index, imageId } = newQuoteCropTarget
+          setNewQuoteCropTarget(null)
+          await handleAddNewQuoteImage(index, image, imageId)
+        }}
+      />
+
       <Dialog
         open={isDialogOpen}
         onClose={handleCloseDialog}
@@ -7115,45 +7550,60 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
         fullWidth
         PaperProps={{ sx: { width: 'min(1440px, 97vw)', height: 'min(920px, 95vh)', borderRadius: 2.5 } }}
       >
-        <DialogTitle sx={{ borderBottom: 1, borderColor: 'divider', pb: 0, pt: 1.5 }}>
-          <Typography variant="h6" fontWeight={800}>Add Opportunity</Typography>
-          <Typography variant="body2" color="text.secondary">
-            Build the quote in four stages. You may move ahead with missing fields, but the final quote cannot be submitted until all required information is complete.
-          </Typography>
-          <Tabs
-            value={addOpportunityStage}
-            onChange={(_event, value: AddOpportunityStage) => setAddOpportunityStage(value)}
-            variant="scrollable"
-            scrollButtons="auto"
-            sx={{ mt: 1 }}
+        <DialogTitle sx={{ borderBottom: 1, borderColor: 'divider', pb: 1.5, pt: 2 }}>
+          <Typography variant="h6" fontWeight={800} sx={{ mb: 1.5 }}>Add Opportunity</Typography>
+          {/* A stepper rather than tabs: it shows how far through you are and
+              which stages are already complete, instead of shouting the same
+              red warning next to every unfinished one. */}
+          <Stepper
+            nonLinear
+            activeStep={addOpportunityStage}
+            sx={{
+              '& .MuiStepConnector-line': { borderColor: 'divider' },
+              // Chat is not a step in building the quote — it sits beside the
+              // flow, so no connector runs into it. Connectors are siblings of
+              // the Steps, not children, so the last one is the second-to-last
+              // child rather than anything inside the Chat step.
+              '& > .MuiStepConnector-root:nth-last-child(2) .MuiStepConnector-line': {
+                borderColor: 'transparent',
+              },
+            }}
           >
             {ADD_OPPORTUNITY_STAGES.map((stageLabel, index) => {
-              const missingCount = addOpportunityMissingByStage[index].length
-              const showMissing = addOpportunitySubmitAttempted && missingCount > 0
+              const missingCount = addOpportunityMissingByStage[index]?.length ?? 0
+              const isComplete = missingCount === 0
+              const showMissing = addOpportunitySubmitAttempted && !isComplete
+
               return (
-                <Tab
-                  key={stageLabel}
-                  value={index}
-                  sx={{ color: showMissing ? 'error.main' : undefined }}
-                  label={(
-                    <Stack direction="row" spacing={0.6} alignItems="center">
-                      <Typography component="span" variant="body2" fontWeight={800}>{index + 1}. {stageLabel}</Typography>
-                      {showMissing ? <Typography component="span" color="error" fontWeight={900}>★ Missing Information</Typography> : null}
-                    </Stack>
-                  )}
-                />
+                <Step key={stageLabel} completed={isComplete && index !== addOpportunityStage}>
+                  <StepButton
+                    onClick={() => setAddOpportunityStage(index as AddOpportunityStage)}
+                    optional={showMissing ? (
+                      <Typography variant="caption" color="error">
+                        {`${missingCount} missing`}
+                      </Typography>
+                    ) : undefined}
+                  >
+                    <Typography variant="body2" fontWeight={index === addOpportunityStage ? 800 : 500}>
+                      {stageLabel}
+                    </Typography>
+                  </StepButton>
+                </Step>
               )
             })}
-          </Tabs>
+          </Stepper>
         </DialogTitle>
 
         <DialogContent sx={{ bgcolor: '#f5f8fc', px: { xs: 1.5, md: 2.5 }, py: 2 }}>
           {addOpportunityStage === 0 ? (
-            <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+            <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 2 }}>
               <Stack spacing={1.5}>
+                <Typography variant="overline" sx={{ color: 'text.secondary', fontWeight: 800, letterSpacing: 0.4 }}>
+                  Dealer
+                </Typography>
                 <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.2}>
                   <TextField
-                    label="Quote Number"
+                    label={<QuoteFieldLabel label="Quote Number" value={formState.quoteNumber} />}
                     required
                     autoFocus
                     value={formState.quoteNumber}
@@ -7218,17 +7668,20 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                       <TextField
                         {...params}
                         required
-                        label="Dealer Account"
+                        label={<QuoteFieldLabel label="Dealer Account" value={formState.dealerSourceId} />}
                         helperText="Select a saved dealer, or use Add New when there is no match."
                       />
                     )}
                   />
                 </Stack>
 
+                <Typography variant="overline" sx={{ color: 'text.secondary', fontWeight: 800, letterSpacing: 0.4 }}>
+                  {'Project'}
+                </Typography>
                 <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.2}>
                   <TextField
                     required
-                    label="Project Name"
+                    label={<QuoteFieldLabel label="Project Name" value={formState.title} />}
                     value={formState.title}
                     onChange={(event) => setFormState((current) => ({ ...current, title: event.target.value }))}
                     sx={{ flex: 1.4 }}
@@ -7236,7 +7689,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                   <TextField
                     select
                     required
-                    label="Sales Rep"
+                    label={<QuoteFieldLabel label="Sales Rep" value={formState.salesRep} />}
                     value={formState.salesRep}
                     onChange={(event) => setFormState((current) => ({ ...current, salesRep: event.target.value }))}
                     sx={{ flex: 1 }}
@@ -7245,7 +7698,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                   </TextField>
                   <TextField
                     required
-                    label="Quote Date"
+                    label={<QuoteFieldLabel label="Quote Date" value={formState.opportunityDateInput} />}
                     type="date"
                     value={formState.opportunityDateInput}
                     onChange={(event) => setFormState((current) => ({ ...current, opportunityDateInput: event.target.value }))}
@@ -7254,6 +7707,9 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                   />
                 </Stack>
 
+                <Typography variant="overline" sx={{ color: 'text.secondary', fontWeight: 800, letterSpacing: 0.4 }}>
+                  {'Contact'}
+                </Typography>
                 <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.2}>
                   <Autocomplete
                     options={addOpportunityContactOptions}
@@ -7310,7 +7766,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                       <TextField
                         {...params}
                         required
-                        label="Contact Name"
+                        label={<QuoteFieldLabel label="Contact Name" value={formState.contactName} />}
                         helperText={!formState.dealerSourceId ? 'Select a dealer first.' : 'Select a saved contact, or use Add New.'}
                         InputProps={{
                           ...params.InputProps,
@@ -7328,7 +7784,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                   <TextField
                     required
                     type="email"
-                    label="Contact Email"
+                    label={<QuoteFieldLabel label="Contact Email" value={formState.contactEmail} />}
                     value={formState.contactEmail}
                     onChange={(event) => setFormState((current) => ({ ...current, contactEmail: event.target.value }))}
                     helperText="Required on every quote."
@@ -7336,17 +7792,20 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                   />
                   <TextField
                     type="tel"
-                    label="Contact Phone"
+                    label={<QuoteFieldLabel label="Contact Phone" value={formState.contactPhone} />}
                     value={formState.contactPhone}
                     onChange={(event) => setFormState((current) => ({ ...current, contactPhone: event.target.value }))}
                     sx={{ flex: 0.8 }}
                   />
                 </Stack>
 
+                <Typography variant="overline" sx={{ color: 'text.secondary', fontWeight: 800, letterSpacing: 0.4 }}>
+                  Terms
+                </Typography>
                 <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.2}>
                   <TextField
                     required
-                    label="Lead Time"
+                    label={<QuoteFieldLabel label="Lead Time" value={formState.leadTime} />}
                     value={formState.leadTime}
                     onChange={(event) => setFormState((current) => ({ ...current, leadTime: event.target.value }))}
                     sx={{ flex: 0.7 }}
@@ -7360,7 +7819,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                       <TextField
                         {...params}
                         required
-                        label="Project Type"
+                        label={<QuoteFieldLabel label="Project Type" filled={isExcelSyncProjectTypeOption(formState.projectType)} />}
                         error={addOpportunitySubmitAttempted && !isExcelSyncProjectTypeOption(formState.projectType)}
                         helperText="Same list the Excel sync uses."
                       />
@@ -7397,59 +7856,34 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
 
           {addOpportunityStage === 1 ? (
             <Stack spacing={1.5}>
-              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.1}>
-                <TextField label="Subtotal" value={addPricingPreview.subtotal.toFixed(2)} InputProps={{ readOnly: true, startAdornment: <InputAdornment position="start">$</InputAdornment> }} sx={{ flex: 1 }} />
-                <TextField label="Freight" value={addPricingPreview.freight.toFixed(2)} InputProps={{ readOnly: true, startAdornment: <InputAdornment position="start">$</InputAdornment> }} sx={{ flex: 1 }} />
-                <TextField
-                  label="Discount"
-                  value={formState.discountPercent}
-                  onChange={(event) => {
-                    const value = event.target.value
-                    if (value === '' || (/^\d{0,3}(?:\.\d{0,2})?$/.test(value) && Number(value) <= 100)) {
-                      setFormState((current) => ({ ...current, discountPercent: value }))
-                    }
-                  }}
-                  InputProps={{ endAdornment: <InputAdornment position="end">%</InputAdornment> }}
-                  sx={{ flex: 0.7 }}
-                />
-              </Stack>
-              {formState.discountPercent ? (
-                <ToggleButtonGroup
-                  exclusive
-                  size="small"
-                  value={formState.discountScope}
-                  onChange={(_, value: 'products' | 'products_and_freight' | null) => {
-                    if (value) setFormState((current) => ({ ...current, discountScope: value }))
-                  }}
-                  sx={{ alignSelf: 'flex-end' }}
-                >
-                  <ToggleButton value="products">Products only</ToggleButton>
-                  <ToggleButton value="products_and_freight">Products + freight</ToggleButton>
-                </ToggleButtonGroup>
-              ) : null}
-              <Paper variant="outlined" sx={{ px: 1.2, py: 1, borderRadius: 1.5 }}>
-                <Stack direction="row" spacing={1} justifyContent="space-between" flexWrap="wrap" useFlexGap>
-                  <Typography variant="body2">Product: {formatCurrency(addPricingPreview.grossSubtotal, 2)}</Typography>
-                  <Typography variant="body2">Freight: {formatCurrency(addPricingPreview.freight, 2)}</Typography>
-                  <Typography variant="body2" fontWeight={800} color="primary">
-                    {formState.totalPriceType === 'list' ? 'List Price Total' : 'Net Price Total'}: {formatCurrency(formState.totalPriceType === 'list' ? addPricingPreview.listPriceTotal : addPricingPreview.totalAmount, 2)}
-                  </Typography>
-                </Stack>
-              </Paper>
               <LineItemsEditor
                 lineItems={formState.lineItems}
                 pdfSettings={quotePrintSettingsQuery.data?.settings || DEFAULT_QUOTE_PRINT_SETTINGS}
                 canEdit
-                showPdfLayoutAction={false}
                 onAddLineItem={handleAddFormLineItem}
                 onAddSubline={handleAddFormSubline}
                 onUpdateLineItem={handleUpdateFormLineItem}
                 onRemoveLineItem={handleRemoveFormLineItem}
+                onMoveLineItem={handleMoveFormLineItem}
+                onDuplicateLineItem={handleDuplicateFormLineItem}
+                onCopyDetailToSubline={handleCopyFormDetailToSubline}
                 onAddImages={handleAddFormLineImages}
                 onRemoveImage={handleRemoveFormLineImage}
-                onUpdateImageLayout={handleUpdateFormLineImageLayout}
                 onInsertLibraryEntry={handleInsertFormLibraryEntry}
                 isUploadingImage={isUploadingLineImage}
+              />
+              <QuoteTotalsBar
+                productTotal={addPricingPreview.grossSubtotal}
+                freightTotal={addPricingPreview.freight}
+                netTotal={formState.totalPriceType === 'list'
+                  ? addPricingPreview.listPriceTotal
+                  : addPricingPreview.totalAmount}
+                totalLabel={formState.totalPriceType === 'list' ? 'List Price Total' : 'Net Price Total'}
+                discountPercent={formState.discountPercent}
+                discountScope={formState.discountScope}
+                canEdit
+                onDiscountPercentChange={(value) => setFormState((current) => ({ ...current, discountPercent: value }))}
+                onDiscountScopeChange={(value) => setFormState((current) => ({ ...current, discountScope: value }))}
               />
               <TextField
                 select
@@ -7540,11 +7974,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                   quote={addOpportunityPreviewQuote}
                   settings={quotePrintSettingsQuery.data?.settings || DEFAULT_QUOTE_PRINT_SETTINGS}
                   onCancel={() => {}}
-                  onSave={(layouts) => {
-                    layouts.forEach(({ lineIndex, imageId, layout }) => {
-                      handleUpdateFormLineImageLayout(lineIndex, imageId, layout)
-                    })
-                  }}
+                  onSave={() => {}}
                   hideEmbeddedActions
                 />
               </Suspense>
@@ -7847,8 +8277,8 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
             gap: 1,
             py: 1.6,
             px: 2,
-            color: '#0b2239',
-            background: `linear-gradient(135deg, ${alpha('#0f4c81', 0.16)} 0%, ${alpha('#0f4c81', 0.08)} 100%)`,
+            color: 'text.primary',
+            bgcolor: 'grey.100',
           }}
         >
           <Stack spacing={0.15}>
@@ -7868,14 +8298,14 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                     onClick={() => setChatQuote(selectedOpportunity)}
                     title="Quote chat"
                     aria-label="Open quote chat"
-                    sx={{ color: '#0f4c81', bgcolor: alpha('#ffffff', 0.7), '&:hover': { bgcolor: '#ffffff' } }}
+                    sx={{ color: 'primary.main', bgcolor: alpha('#ffffff', 0.7), '&:hover': { bgcolor: '#ffffff' } }}
                   >
                     <ChatBubbleOutlineRoundedIcon sx={{ fontSize: 17 }} />
                   </IconButton>
                 </Badge>
               ) : null}
             </Stack>
-            <Typography variant="caption" sx={{ color: alpha('#0b2239', 0.78) }}>
+            <Typography variant="caption" sx={{ color: 'text.secondary' }}>
               {detailsOnly
                 ? 'Review and update this saved quote.'
                 : 'Update details here. Upload quote packages from the pipeline header.'}
@@ -7965,6 +8395,34 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
             ) : null}
           </Stack>
         </DialogTitle>
+        <Dialog
+          open={Boolean(duplicateSourceQuote)}
+          onClose={() => setDuplicateSourceQuote(null)}
+          maxWidth="xs"
+          fullWidth
+        >
+          <DialogTitle>Duplicate quote</DialogTitle>
+          <DialogContent>
+            <Typography variant="body2" color="text.secondary">
+              {`Copying the lines, services and images from ${
+                String(duplicateSourceQuote?.quoteNumber || 'this quote')
+              }. Should the new quote keep the same account?`}
+            </Typography>
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1.5 }}>
+              Either way you enter a new quote number — it is never copied.
+            </Typography>
+          </DialogContent>
+          <DialogActions sx={{ px: 3, pb: 2, gap: 1 }}>
+            <Button onClick={() => setDuplicateSourceQuote(null)}>Cancel</Button>
+            <Button variant="outlined" onClick={() => handleStartDuplicate(false)}>
+              Lines only
+            </Button>
+            <Button variant="contained" onClick={() => handleStartDuplicate(true)}>
+              Keep account
+            </Button>
+          </DialogActions>
+        </Dialog>
+
         <Menu
           anchorEl={detailsActionMenuAnchorEl}
           open={isDetailsActionMenuOpen}
@@ -7985,6 +8443,15 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
             }}
           >
             Mark as followed up
+          </MenuItem>
+          <MenuItem
+            disabled={!selectedOpportunity || isSavingOpportunityDetails}
+            onClick={() => {
+              setDetailsActionMenuAnchorEl(null)
+              setDuplicateSourceQuote(selectedOpportunity)
+            }}
+          >
+            Duplicate quote
           </MenuItem>
           <MenuItem
             disabled={
@@ -8060,8 +8527,8 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                   variant="outlined"
                   sx={{
                     p: 1.5,
-                    borderColor: alpha('#0f4c81', 0.28),
-                    background: `linear-gradient(135deg, ${alpha('#0f4c81', 0.11)} 0%, ${alpha('#4f9ac9', 0.07)} 100%)`,
+                    borderColor: 'divider',
+                    bgcolor: 'grey.100',
                   }}
                 >
                   <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.2} alignItems={{ xs: 'stretch', sm: 'center' }}>
@@ -8072,15 +8539,15 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                         borderRadius: 1.4,
                         display: 'grid',
                         placeItems: 'center',
-                        color: '#0f4c81',
-                        bgcolor: alpha('#0f4c81', 0.12),
+                        color: 'primary.main',
+                        bgcolor: 'divider',
                         flexShrink: 0,
                       }}
                     >
                       <WorkspacesRoundedIcon />
                     </Box>
                     <Stack spacing={0.25} sx={{ flex: 1, minWidth: 0 }}>
-                      <Typography variant="overline" sx={{ color: '#0f4c81', fontWeight: 800, lineHeight: 1.2 }}>
+                      <Typography variant="overline" sx={{ color: 'primary.main', fontWeight: 800, lineHeight: 1.2 }}>
                         Accepted Into Order
                       </Typography>
                       <Typography variant="h6" sx={{ fontWeight: 800 }}>
@@ -8106,280 +8573,239 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                 </Paper>
               ) : null}
 
-              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.1}>
-                <Autocomplete
-                  options={excelSyncDealerOptions}
-                  value={dealersBySourceId.get(opportunityDetailsFormState.dealerSourceId) ?? null}
-                  onChange={(_event, value) => {
-                    setSelectedAddContactSourceId('')
-                    setOpportunityDetailsFormState((current) => {
-                      if (!current || !value) {
-                        return current
-                      }
-
-                      return {
-                        ...current,
-                        dealerSourceId: value.sourceId,
-                        companyName: resolveDealerQuoteCompanyName(value) || current.companyName,
-                        contactName: '',
-                        contactEmail: '',
-                        contactPhone: '',
-                        salesRep: resolveMatchingOption(value.salesRep, excelSyncSalesRepOptions) || 'House',
-                        paymentTerms: current.origin === 'excel'
-                          ? current.paymentTerms
-                          : (value.paymentTerms || DEFAULT_WEBSITE_PAYMENT_TERMS),
-                      }
-                    })
-                  }}
-                  isOptionEqualToValue={(option, value) => option.sourceId === value.sourceId}
-                  getOptionLabel={(option) => resolveDealerSelectionLabel(option)}
-                  renderInput={(params) => (
+              {/* Same four groups, in the same order, as the Add Opportunity
+                  form. The headings used to sit inside the rows, so "Project"
+                  and "Terms" rendered as stray words between two fields. */}
+              <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 2 }}>
+                <Stack spacing={1.5}>
+                  <Typography variant="overline" sx={{ color: 'text.secondary', fontWeight: 800, letterSpacing: 0.4 }}>
+                    Dealer
+                  </Typography>
+                  <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.2}>
                     <TextField
-                      {...params}
-                      label="Dealer Account"
-                      helperText={opportunityDetailsFormState.dealerSourceId
-                        ? 'This account is linked to the quote.'
-                        : 'Select an account before converting this quote to an order.'}
-                    />
-                  )}
-                  disabled={!canManage}
-                  sx={{ flex: 1 }}
-                />
-              </Stack>
-
-              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.1}>
-                <TextField
-                  label="Quote Number"
-                  value={opportunityDetailsFormState.quoteNumber}
-                  onChange={(event) => {
-                    setOpportunityDetailsFormState((current) => {
-                      if (!current) {
-                        return current
-                      }
-
-                      return {
-                        ...current,
-                        quoteNumber: event.target.value,
-                      }
-                    })
-                  }}
-                  disabled={!canManage}
-                  sx={{ flex: 1 }}
-                />
-
-                <TextField
-                  label="Project Name"
-                  value={opportunityDetailsFormState.title}
-                  onChange={(event) => {
-                    setOpportunityDetailsFormState((current) => {
-                      if (!current) {
-                        return current
-                      }
-
-                      return {
-                        ...current,
-                        title: event.target.value,
-                      }
-                    })
-                  }}
-                  disabled={!canManage}
-                  sx={{ flex: 1 }}
-                />
-              </Stack>
-
-              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.1}>
-                <TextField
-                  label="Quote Date"
-                  type="date"
-                  value={opportunityDetailsFormState.opportunityDateInput}
-                  onChange={(event) => {
-                    setOpportunityDetailsFormState((current) => {
-                      if (!current) {
-                        return current
-                      }
-
-                      return {
-                        ...current,
-                        opportunityDateInput: event.target.value,
-                      }
-                    })
-                  }}
-                  disabled={!canManage}
-                  sx={{ flex: 1 }}
-                  InputLabelProps={{
-                    shrink: true,
-                  }}
-                />
-
-                {opportunityDetailsFormState.origin === 'excel' ? (
-                  <TextField
-                    label="Company Name (from Excel)"
-                    value={opportunityDetailsFormState.companyName}
-                    onChange={(event) => setOpportunityDetailsFormState((current) => current ? ({ ...current, companyName: event.target.value }) : current)}
-                    disabled={!canManage}
-                    sx={{ flex: 1 }}
-                  />
-                ) : null}
-              </Stack>
-
-              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.1}>
-                <Autocomplete
-                  options={addOpportunityContactOptions}
-                  value={selectedAddOpportunityContact}
-                  inputValue={opportunityDetailsFormState.contactName}
-                  onChange={(_event, contact) => {
-                    setSelectedAddContactSourceId(contact?.sourceId || '')
-                    setOpportunityDetailsFormState((current) => current ? ({
-                      ...current,
-                      contactName: contact ? resolveContactSelectionLabel(contact) : '',
-                      contactEmail: contact?.primaryEmail || '',
-                      contactPhone: contact?.phone || '',
-                    }) : current)
-                  }}
-                  onInputChange={(_event, inputValue, reason) => {
-                    if (reason !== 'input') return
-                    setSelectedAddContactSourceId('')
-                    setOpportunityDetailsFormState((current) => current ? ({ ...current, contactName: inputValue }) : current)
-                  }}
-                  isOptionEqualToValue={(option, value) => option.sourceId === value.sourceId}
-                  getOptionLabel={(contact) => resolveContactSelectionLabel(contact)}
-                  PaperComponent={(paperProps) => (
-                    <Paper {...paperProps}>
-                      {paperProps.children}
-                      <Box sx={{ p: 0.8, borderTop: 1, borderColor: 'divider' }}>
-                        <Button fullWidth size="small" onMouseDown={(event) => event.preventDefault()} onClick={handleOpenNewContactDialog}>
-                          Add new contact
-                        </Button>
-                      </Box>
-                    </Paper>
-                  )}
-                  renderInput={(params) => <TextField {...params} required label="Contact Name" />}
-                  disabled={!canManage}
-                  sx={{ flex: 1 }}
-                />
-
-                <TextField
-                  label="Contact Email"
-                  value={opportunityDetailsFormState.contactEmail}
-                  onChange={(event) => {
-                    setOpportunityDetailsFormState((current) => {
-                      if (!current) {
-                        return current
-                      }
-
-                      return {
-                        ...current,
-                        contactEmail: event.target.value,
-                      }
-                    })
-                  }}
-                  disabled={!canManage}
-                  sx={{ flex: 1 }}
-                />
-
-                <TextField
-                  label="Contact Phone"
-                  value={opportunityDetailsFormState.contactPhone}
-                  onChange={(event) => {
-                    setOpportunityDetailsFormState((current) => {
-                      if (!current) {
-                        return current
-                      }
-
-                      return {
-                        ...current,
-                        contactPhone: event.target.value,
-                      }
-                    })
-                  }}
-                  disabled={!canManage}
-                  sx={{ flex: 1 }}
-                />
-              </Stack>
-
-              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.1}>
-                <TextField
-                  select
-                  label="Sales Rep"
-                  value={opportunityDetailsFormState.salesRep}
-                  onChange={(event) => {
-                    setOpportunityDetailsFormState((current) => {
-                      if (!current) {
-                        return current
-                      }
-
-                      return {
-                        ...current,
-                        salesRep: event.target.value,
-                      }
-                    })
-                  }}
-                  disabled={!canManage}
-                  sx={{ flex: 1 }}
-                >
-                  {[...new Set([...excelSyncSalesRepOptions, opportunityDetailsFormState.salesRep].filter(Boolean))].map((salesRep) => <MenuItem key={salesRep} value={salesRep}>{salesRep}</MenuItem>)}
-                </TextField>
-
-                <TextField
-                  label="Lead Time"
-                  value={opportunityDetailsFormState.leadTime}
-                  onChange={(event) => {
-                    setOpportunityDetailsFormState((current) => {
-                      if (!current) {
-                        return current
-                      }
-
-                      return {
-                        ...current,
-                        leadTime: event.target.value,
-                      }
-                    })
-                  }}
-                  disabled={!canManage}
-                  sx={{ flex: 1 }}
-                />
-
-                <Autocomplete
-                  options={excelSyncProjectTypeOptions}
-                  value={isExcelSyncProjectTypeOption(opportunityDetailsFormState.projectType) ? opportunityDetailsFormState.projectType : null}
-                  onChange={(_event, value) => {
-                    setOpportunityDetailsFormState((current) => (
-                      current ? { ...current, projectType: value || '' } : current
-                    ))
-                  }}
-                  disabled={!canManage}
-                  sx={{ flex: 1 }}
-                  renderInput={(params) => (
-                    <TextField {...params} required label="Project Type" />
-                  )}
-                />
-
-                <Paper variant="outlined" sx={{ p: 1.2, flex: 1.3, borderRadius: 1.5 }}>
-                  <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
-                    <Box>
-                      <Stack direction="row" spacing={0.5} alignItems="center">
-                        <Typography variant="caption" color="text.secondary" fontWeight={800}>PAYMENT TERMS</Typography>
-                        <Tooltip title="This is the payment terms for this dealer. You can change it.">
-                          <InfoOutlinedIcon color="action" sx={{ fontSize: 17 }} />
-                        </Tooltip>
-                      </Stack>
-                      <Typography variant="body1" fontWeight={700}>{opportunityDetailsFormState.paymentTerms || 'Not set'}</Typography>
-                      <Typography variant="caption" color="text.secondary">These are the payment terms for this dealer.</Typography>
-                    </Box>
-                    <Button
-                      size="small"
+                      label={<QuoteFieldLabel label="Quote Number" value={opportunityDetailsFormState.quoteNumber} />}
+                      value={opportunityDetailsFormState.quoteNumber}
+                      onChange={(event) => setOpportunityDetailsFormState((current) => (
+                        current ? { ...current, quoteNumber: event.target.value } : current
+                      ))}
                       disabled={!canManage}
-                      onClick={() => {
-                        setPaymentTermsDraft(opportunityDetailsFormState.paymentTerms)
-                        setPaymentTermsApplyMode('quote')
-                        setIsPaymentTermsDialogOpen(true)
+                      sx={{ flex: 0.7 }}
+                    />
+                    <Autocomplete
+                      options={excelSyncDealerOptions}
+                      value={dealersBySourceId.get(opportunityDetailsFormState.dealerSourceId) ?? null}
+                      onChange={(_event, value) => {
+                        setSelectedAddContactSourceId('')
+                        setOpportunityDetailsFormState((current) => {
+                          if (!current || !value) {
+                            return current
+                          }
+
+                          return {
+                            ...current,
+                            dealerSourceId: value.sourceId,
+                            companyName: resolveDealerQuoteCompanyName(value) || current.companyName,
+                            contactName: '',
+                            contactEmail: '',
+                            contactPhone: '',
+                            salesRep: resolveMatchingOption(value.salesRep, excelSyncSalesRepOptions) || 'House',
+                            paymentTerms: current.origin === 'excel'
+                              ? current.paymentTerms
+                              : (value.paymentTerms || DEFAULT_WEBSITE_PAYMENT_TERMS),
+                          }
+                        })
                       }}
-                    >
-                      Change
-                    </Button>
+                      isOptionEqualToValue={(option, value) => option.sourceId === value.sourceId}
+                      getOptionLabel={(option) => resolveDealerSelectionLabel(option)}
+                      renderInput={(params) => (
+                        <TextField
+                          {...params}
+                          label={<QuoteFieldLabel label="Dealer Account" value={opportunityDetailsFormState.dealerSourceId} />}
+                          helperText={opportunityDetailsFormState.dealerSourceId
+                            ? 'This account is linked to the quote.'
+                            : 'Select an account before converting this quote to an order.'}
+                        />
+                      )}
+                      disabled={!canManage}
+                      sx={{ flex: 1.3 }}
+                    />
                   </Stack>
-                </Paper>
-              </Stack>
+
+                  <Typography variant="overline" sx={{ color: 'text.secondary', fontWeight: 800, letterSpacing: 0.4 }}>
+                    Project
+                  </Typography>
+                  <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.2}>
+                    <TextField
+                      label={<QuoteFieldLabel label="Project Name" value={opportunityDetailsFormState.title} />}
+                      value={opportunityDetailsFormState.title}
+                      onChange={(event) => setOpportunityDetailsFormState((current) => (
+                        current ? { ...current, title: event.target.value } : current
+                      ))}
+                      disabled={!canManage}
+                      sx={{ flex: 1.4 }}
+                    />
+                    <TextField
+                      select
+                      label={<QuoteFieldLabel label="Sales Rep" value={opportunityDetailsFormState.salesRep} />}
+                      value={opportunityDetailsFormState.salesRep}
+                      onChange={(event) => setOpportunityDetailsFormState((current) => (
+                        current ? { ...current, salesRep: event.target.value } : current
+                      ))}
+                      disabled={!canManage}
+                      sx={{ flex: 1 }}
+                    >
+                      {[...new Set([...excelSyncSalesRepOptions, opportunityDetailsFormState.salesRep].filter(Boolean))].map((salesRep) => <MenuItem key={salesRep} value={salesRep}>{salesRep}</MenuItem>)}
+                    </TextField>
+                    <TextField
+                      label={<QuoteFieldLabel label="Quote Date" value={opportunityDetailsFormState.opportunityDateInput} />}
+                      type="date"
+                      value={opportunityDetailsFormState.opportunityDateInput}
+                      onChange={(event) => setOpportunityDetailsFormState((current) => (
+                        current ? { ...current, opportunityDateInput: event.target.value } : current
+                      ))}
+                      disabled={!canManage}
+                      InputLabelProps={{ shrink: true }}
+                      sx={{ flex: 0.8 }}
+                    />
+                  </Stack>
+
+                  {opportunityDetailsFormState.origin === 'excel' ? (
+                    <TextField
+                      label={<QuoteFieldLabel label="Company Name (from Excel)" value={opportunityDetailsFormState.companyName} />}
+                      value={opportunityDetailsFormState.companyName}
+                      onChange={(event) => setOpportunityDetailsFormState((current) => (
+                        current ? { ...current, companyName: event.target.value } : current
+                      ))}
+                      disabled={!canManage}
+                    />
+                  ) : null}
+
+                  <Typography variant="overline" sx={{ color: 'text.secondary', fontWeight: 800, letterSpacing: 0.4 }}>
+                    Contact
+                  </Typography>
+                  <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.2}>
+                    <Autocomplete
+                      options={addOpportunityContactOptions}
+                      value={selectedAddOpportunityContact}
+                      inputValue={opportunityDetailsFormState.contactName}
+                      onChange={(_event, contact) => {
+                        setSelectedAddContactSourceId(contact?.sourceId || '')
+                        setOpportunityDetailsFormState((current) => current ? ({
+                          ...current,
+                          contactName: contact ? resolveContactSelectionLabel(contact) : '',
+                          contactEmail: contact?.primaryEmail || '',
+                          contactPhone: contact?.phone || '',
+                        }) : current)
+                      }}
+                      onInputChange={(_event, inputValue, reason) => {
+                        if (reason !== 'input') return
+                        setSelectedAddContactSourceId('')
+                        setOpportunityDetailsFormState((current) => current ? ({ ...current, contactName: inputValue }) : current)
+                      }}
+                      isOptionEqualToValue={(option, value) => option.sourceId === value.sourceId}
+                      getOptionLabel={(contact) => resolveContactSelectionLabel(contact)}
+                      PaperComponent={(paperProps) => (
+                        <Paper {...paperProps}>
+                          {paperProps.children}
+                          <Box sx={{ p: 0.8, borderTop: 1, borderColor: 'divider' }}>
+                            <Button fullWidth size="small" onMouseDown={(event) => event.preventDefault()} onClick={handleOpenNewContactDialog}>
+                              Add new contact
+                            </Button>
+                          </Box>
+                        </Paper>
+                      )}
+                      renderInput={(params) => (
+                        <TextField
+                          {...params}
+                          required
+                          label={<QuoteFieldLabel label="Contact Name" value={opportunityDetailsFormState.contactName} />}
+                        />
+                      )}
+                      disabled={!canManage}
+                      sx={{ flex: 1.2 }}
+                    />
+                    <TextField
+                      type="email"
+                      label={<QuoteFieldLabel label="Contact Email" value={opportunityDetailsFormState.contactEmail} />}
+                      value={opportunityDetailsFormState.contactEmail}
+                      onChange={(event) => setOpportunityDetailsFormState((current) => (
+                        current ? { ...current, contactEmail: event.target.value } : current
+                      ))}
+                      disabled={!canManage}
+                      sx={{ flex: 1 }}
+                    />
+                    <TextField
+                      type="tel"
+                      label={<QuoteFieldLabel label="Contact Phone" value={opportunityDetailsFormState.contactPhone} />}
+                      value={opportunityDetailsFormState.contactPhone}
+                      onChange={(event) => setOpportunityDetailsFormState((current) => (
+                        current ? { ...current, contactPhone: event.target.value } : current
+                      ))}
+                      disabled={!canManage}
+                      sx={{ flex: 0.8 }}
+                    />
+                  </Stack>
+
+                  <Typography variant="overline" sx={{ color: 'text.secondary', fontWeight: 800, letterSpacing: 0.4 }}>
+                    Terms
+                  </Typography>
+                  <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.2}>
+                    <TextField
+                      label={<QuoteFieldLabel label="Lead Time" value={opportunityDetailsFormState.leadTime} />}
+                      value={opportunityDetailsFormState.leadTime}
+                      onChange={(event) => setOpportunityDetailsFormState((current) => (
+                        current ? { ...current, leadTime: event.target.value } : current
+                      ))}
+                      disabled={!canManage}
+                      sx={{ flex: 0.7 }}
+                    />
+                    <Autocomplete
+                      options={excelSyncProjectTypeOptions}
+                      value={isExcelSyncProjectTypeOption(opportunityDetailsFormState.projectType) ? opportunityDetailsFormState.projectType : null}
+                      onChange={(_event, value) => {
+                        setOpportunityDetailsFormState((current) => (
+                          current ? { ...current, projectType: value || '' } : current
+                        ))
+                      }}
+                      disabled={!canManage}
+                      sx={{ flex: 0.9 }}
+                      renderInput={(params) => (
+                        <TextField
+                          {...params}
+                          required
+                          label={<QuoteFieldLabel label="Project Type" filled={isExcelSyncProjectTypeOption(opportunityDetailsFormState.projectType)} />}
+                          helperText="Same list the Excel sync uses."
+                        />
+                      )}
+                    />
+                    <Paper variant="outlined" sx={{ p: 1.2, flex: 1.3, borderRadius: 1.5 }}>
+                      <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
+                        <Box>
+                          <Stack direction="row" spacing={0.5} alignItems="center">
+                            <Typography variant="caption" color="text.secondary" fontWeight={800}>PAYMENT TERMS</Typography>
+                            <Tooltip title="This is the payment terms for this dealer. You can change it.">
+                              <InfoOutlinedIcon color="action" sx={{ fontSize: 17 }} />
+                            </Tooltip>
+                          </Stack>
+                          <Typography variant="body1" fontWeight={700}>{opportunityDetailsFormState.paymentTerms || 'Not set'}</Typography>
+                          <Typography variant="caption" color="text.secondary">These are the payment terms for this dealer.</Typography>
+                        </Box>
+                        <Button
+                          size="small"
+                          disabled={!canManage}
+                          onClick={() => {
+                            setPaymentTermsDraft(opportunityDetailsFormState.paymentTerms)
+                            setPaymentTermsApplyMode('quote')
+                            setIsPaymentTermsDialogOpen(true)
+                          }}
+                        >
+                          Change
+                        </Button>
+                      </Stack>
+                    </Paper>
+                  </Stack>
+                </Stack>
+              </Paper>
 
                 </>
               ) : null}
@@ -8387,127 +8813,42 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
               {opportunityDetailsStage === 1 ? (
                 <>
 
-              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.1}>
-                <TextField
-                  label="Subtotal (calculated)"
-                  value={detailsPricingPreview?.subtotal.toFixed(2) || '0.00'}
-                  disabled={!canManage}
-                  type="text"
-                  inputProps={{ inputMode: 'decimal' }}
-                  placeholder="0.00"
-                  sx={{ flex: 1 }}
-                  InputProps={{
-                    readOnly: true,
-                    startAdornment: <InputAdornment position="start">$</InputAdornment>,
-                  }}
-                />
-
-                <TextField
-                  label={opportunityDetailsFormState.origin === 'excel' ? 'Freight' : 'Freight (calculated)'}
-                  value={opportunityDetailsFormState.origin === 'excel' ? opportunityDetailsFormState.freight : (detailsPricingPreview?.freight.toFixed(2) || '0.00')}
-                  onChange={(event) => {
-                    setOpportunityDetailsFormState((current) => {
-                      if (!current) {
-                        return current
-                      }
-
-                      return {
-                        ...current,
-                        freight: event.target.value,
-                      }
-                    })
-                  }}
-                  disabled={!canManage}
-                  type="text"
-                  inputProps={{ inputMode: 'decimal' }}
-                  placeholder="0.00"
-                  sx={{ flex: 1 }}
-                  InputProps={{
-                    readOnly: opportunityDetailsFormState.origin !== 'excel',
-                    startAdornment: <InputAdornment position="start">$</InputAdornment>,
-                  }}
-                />
-
-                <TextField
-                  label="Discount"
-                  value={opportunityDetailsFormState.discountPercent}
-                  onChange={(event) => {
-                    const value = event.target.value
-                    if (value === '' || (/^\d{0,3}(?:\.\d{0,2})?$/.test(value) && Number(value) <= 100)) {
-                      setOpportunityDetailsFormState((current) => current ? ({ ...current, discountPercent: value }) : current)
-                    }
-                  }}
-                  disabled={!canManage}
-                  type="text"
-                  inputProps={{ inputMode: 'decimal' }}
-                  placeholder="0"
-                  sx={{ flex: 0.7 }}
-                  InputProps={{ endAdornment: <InputAdornment position="end">%</InputAdornment> }}
-                  helperText="Enter the discount percentage"
-                />
-              </Stack>
-              {opportunityDetailsFormState.discountPercent ? (
-                <ToggleButtonGroup
-                  exclusive
-                  size="small"
-                  value={opportunityDetailsFormState.discountScope}
-                  onChange={(_, value: 'products' | 'products_and_freight' | null) => {
-                    if (value) {
-                      setOpportunityDetailsFormState((current) => current ? ({ ...current, discountScope: value }) : current)
-                    }
-                  }}
-                  disabled={!canManage}
-                  sx={{ alignSelf: 'flex-end' }}
-                >
-                  <ToggleButton value="products">Products only</ToggleButton>
-                  <ToggleButton value="products_and_freight">Products + freight</ToggleButton>
-                </ToggleButtonGroup>
-              ) : null}
-
-              {detailsPricingPreview ? (
-                <Box
-                  sx={{
-                    px: 1.2,
-                    py: 1,
-                    borderRadius: 1,
-                    border: `1px solid ${alpha('#0f4c81', 0.2)}`,
-                    backgroundColor: '#ffffff',
-                  }}
-                >
-                  <Stack direction="row" spacing={1} justifyContent="space-between" alignItems="center" flexWrap="wrap" useFlexGap>
-                    <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
-                      Product: {formatCurrency(detailsPricingPreview.grossSubtotal, 2)}
-                    </Typography>
-                    {detailsPricingPreview.discountAmount > 0 ? (
-                      <Typography variant="caption" sx={{ fontWeight: 800, color: '#b51f2e' }}>
-                        Discount ({detailsPricingPreview.discountPercent}%): -{formatCurrency(detailsPricingPreview.discountAmount, 2)}
-                      </Typography>
-                    ) : null}
-                    <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
-                      Freight: {formatCurrency(detailsPricingPreview.freight, 2)}
-                    </Typography>
-                    <Typography variant="body2" sx={{ fontWeight: 800, color: '#0f4c81' }}>
-                      {opportunityDetailsFormState.totalPriceType === 'list' ? 'List Price Total' : 'Net Price Total'}: {formatCurrency(opportunityDetailsFormState.totalPriceType === 'list' ? detailsPricingPreview.listPriceTotal : detailsPricingPreview.totalAmount, 2)}
-                    </Typography>
-                  </Stack>
-                </Box>
-              ) : null}
-
               <LineItemsEditor
                 lineItems={opportunityDetailsFormState.lineItems}
-                pdfPreviewQuote={selectedOpportunityPrintQuote}
                 pdfSettings={quotePrintSettingsQuery.data?.settings || DEFAULT_QUOTE_PRINT_SETTINGS}
                 canEdit={canManage}
                 onAddLineItem={handleAddDetailsLineItem}
                 onAddSubline={handleAddDetailsSubline}
                 onUpdateLineItem={handleUpdateDetailsLineItem}
                 onRemoveLineItem={handleRemoveDetailsLineItem}
+                onMoveLineItem={handleMoveDetailsLineItem}
+                onDuplicateLineItem={handleDuplicateDetailsLineItem}
+                onCopyDetailToSubline={handleCopyDetailsDetailToSubline}
                 onAddImages={handleAddDetailsLineImages}
                 onRemoveImage={handleRemoveDetailsLineImage}
-                onUpdateImageLayout={handleUpdateDetailsLineImageLayout}
                 onInsertLibraryEntry={handleInsertDetailsLibraryEntry}
                 isUploadingImage={isUploadingLineImage}
               />
+              {detailsPricingPreview ? (
+                <QuoteTotalsBar
+                  productTotal={detailsPricingPreview.grossSubtotal}
+                  freightTotal={detailsPricingPreview.freight}
+                  netTotal={opportunityDetailsFormState.totalPriceType === 'list'
+                    ? detailsPricingPreview.listPriceTotal
+                    : detailsPricingPreview.totalAmount}
+                  totalLabel={opportunityDetailsFormState.totalPriceType === 'list' ? 'List Price Total' : 'Net Price Total'}
+                  discountPercent={opportunityDetailsFormState.discountPercent}
+                  discountScope={opportunityDetailsFormState.discountScope}
+                  canEdit={canManage}
+                  onDiscountPercentChange={(value) => setOpportunityDetailsFormState((current) => (
+                    current ? { ...current, discountPercent: value } : current
+                  ))}
+                  onDiscountScopeChange={(value) => setOpportunityDetailsFormState((current) => (
+                    current ? { ...current, discountScope: value } : current
+                  ))}
+                />
+              ) : null}
+
               <TextField
                 select
                 label="Total shown on quote"
@@ -8577,11 +8918,7 @@ export default function SalesOpportunitiesPage({ detailsOnly = false }: SalesOpp
                     quote={selectedOpportunityPrintQuote}
                     settings={quotePrintSettingsQuery.data?.settings || DEFAULT_QUOTE_PRINT_SETTINGS}
                     onCancel={() => {}}
-                    onSave={(layouts) => {
-                      layouts.forEach(({ lineIndex, imageId, layout }) => {
-                        handleUpdateDetailsLineImageLayout(lineIndex, imageId, layout)
-                      })
-                    }}
+                    onSave={() => {}}
                     hideEmbeddedActions
                   />
                 </Suspense>

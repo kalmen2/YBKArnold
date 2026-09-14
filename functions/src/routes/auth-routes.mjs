@@ -495,6 +495,45 @@ app.patch('/api/auth/users/:uid/zendesk-link', requireFirebaseAuth, requireAdmin
   }
 })
 
+app.patch('/api/auth/users/:uid/profile', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
+  try {
+    const existingUser = await requireUserByUid(req, res)
+    if (!existingUser) return
+
+    const body = req.body ?? {}
+    const updates = {}
+
+    if (Object.prototype.hasOwnProperty.call(body, 'displayName')) {
+      const displayName = String(body.displayName ?? '').trim().slice(0, 220)
+
+      if (!displayName) {
+        return res.status(400).json({ error: 'Name cannot be empty.' })
+      }
+
+      updates.displayName = displayName
+    }
+
+    if (Object.prototype.hasOwnProperty.call(body, 'phone')) {
+      updates.phone = String(body.phone ?? '').trim().slice(0, 60) || null
+    }
+
+    if (Object.prototype.hasOwnProperty.call(body, 'jobTitle')) {
+      updates.jobTitle = String(body.jobTitle ?? '').trim().slice(0, 120) || null
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: 'Provide a name, phone or job title to change.' })
+    }
+
+    // Email is deliberately not editable. It is the Firebase sign-in identity,
+    // so changing it here would leave Mongo and Firebase disagreeing about who
+    // this account is and lock the person out.
+    return updateUserAndRespond(res, String(existingUser.uid), updates)
+  } catch (error) {
+    next(error)
+  }
+})
+
 app.patch('/api/auth/users/:uid/approval', requireFirebaseAuth, requireAdminRole, async (req, res, next) => {
   try {
     const role = normalizeAuthRole(req.body?.role)

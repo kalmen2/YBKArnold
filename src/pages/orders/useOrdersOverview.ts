@@ -114,6 +114,12 @@ export function useOrdersOverview() {
     queryKey: QUERY_KEYS.ordersOverview,
     queryFn: fetchOrdersOverview,
     staleTime: 60 * 1000,
+    // Held far longer than it stays fresh. After a minute the next visit
+    // refetches in the background, but the rows from last time are still in
+    // the cache to paint immediately. At the default ten minutes the cache was
+    // being dropped while the user was on another page, so coming back to
+    // Orders meant waiting on a cold fetch with nothing on screen.
+    gcTime: 60 * 60 * 1000,
   })
 
   const refreshMutation = useMutation<OrdersRefreshResponse>({

@@ -149,6 +149,12 @@ export type CrmDealer = {
   quoteCompanyName?: string | null
   pictureUrl?: string | null
   chatMessageCount?: number
+  quoteCount?: number
+  convertedQuoteCount?: number
+  quoteConversionRate?: number
+  orderCount?: number
+  quotedValue?: number
+  orderValue?: number
   phone?: string | null
   city?: string | null
   state?: string | null
@@ -202,6 +208,8 @@ export type CrmDealersQueryOptions = {
   salesReps?: string[]
   ownerEmail?: string
   hasEmail?: boolean | null
+  sortBy?: string
+  sortDirection?: 'asc' | 'desc'
 }
 
 export type CrmSalesRep = {
@@ -649,11 +657,17 @@ export type CrmQuotePrintSettings = {
   orderConfirmationRequestedInfo: string
   orderConfirmationNotes: string
   orderConfirmationTerms: string
+  /** The lead times offered on a quote. Shared by everyone, not per-browser. */
+  leadTimeOptions: string[]
   updatedAt: string | null
   updatedByEmail: string | null
 }
 
-export type CrmQuotePrintSettingsInput = Omit<CrmQuotePrintSettings, 'id' | 'updatedAt' | 'updatedByEmail'>
+// Lead times are optional on the way in: the layout settings page does not
+// edit them, and the server keeps whatever is stored when they are omitted.
+export type CrmQuotePrintSettingsInput =
+  Omit<CrmQuotePrintSettings, 'id' | 'updatedAt' | 'updatedByEmail' | 'leadTimeOptions'>
+  & { leadTimeOptions?: string[] }
 
 export type CrmDocumentType =
   | 'quote'
@@ -1085,6 +1099,8 @@ export function fetchCrmDealers(
       hasEmail: options.hasEmail === null || options.hasEmail === undefined
         ? undefined
         : (options.hasEmail ? 'true' : 'false'),
+      sortBy: options.sortBy ?? undefined,
+      sortDirection: options.sortDirection ?? undefined,
     }),
   )
 }
@@ -1428,6 +1444,13 @@ export function fetchCrmPlaceSuggestions(query: string) {
 
 export function fetchCrmQuotePrintSettings() {
   return apiRequest<{ settings: CrmQuotePrintSettings }>('/api/crm/quote-print-settings')
+}
+
+export function addCrmQuoteLeadTime(leadTime: string) {
+  return apiRequest<{ leadTimeOptions: string[] }>('/api/crm/quote-lead-times', {
+    method: 'POST',
+    body: JSON.stringify({ leadTime }),
+  })
 }
 
 export function updateCrmQuotePrintSettings(input: CrmQuotePrintSettingsInput) {

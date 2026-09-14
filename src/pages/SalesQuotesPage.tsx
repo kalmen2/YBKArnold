@@ -1,22 +1,23 @@
-import LocalOfferRoundedIcon from '@mui/icons-material/LocalOfferRounded'
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
 import MoreVertRoundedIcon from '@mui/icons-material/MoreVertRounded'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded'
 import {
   Box,
-  Button,
   Chip,
+  Tooltip,
+  Tabs,
+  Tab,
+  CircularProgress,
+  Card,
   IconButton,
   InputAdornment,
   Menu,
   MenuItem,
-  Paper,
   Stack,
   TextField,
   Typography,
 } from '@mui/material'
-import { alpha } from '@mui/material/styles'
 import { DataGrid, type GridColDef } from '@mui/x-data-grid'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState, type MouseEvent } from 'react'
@@ -233,10 +234,7 @@ export default function SalesQuotesPage() {
     }
   }, [quoteUniverse])
 
-  const totalVisibleAmount = useMemo(
-    () => rows.reduce((sum, quote) => sum + Number(quote.totalAmount || 0), 0),
-    [rows],
-  )
+
 
   const isLoading = quotesQuery.isLoading
   const isRefreshing = quotesQuery.isFetching && !quotesQuery.isLoading
@@ -486,186 +484,138 @@ export default function SalesQuotesPage() {
   ], [isMovingBackQuoteId])
 
   return (
-    <Stack spacing={1.5}>
-      <Paper
-        variant="outlined"
-        sx={{
-          overflow: 'hidden',
-          borderRadius: 2.5,
-          borderColor: alpha('#0f4c81', 0.18),
-          boxShadow: `0 16px 42px ${alpha('#0b2239', 0.08)}`,
-        }}
+    // Centred like the invoice list it is modelled on, rather than edge to edge.
+    <Stack spacing={2.5} sx={{ width: '100%', maxWidth: 1200, mx: 'auto' }}>
+      <Stack
+        direction="row"
+        alignItems="center"
+        justifyContent="space-between"
+        spacing={1.5}
+        flexWrap="wrap"
+        useFlexGap
       >
-        <Stack spacing={0}>
-          <Stack
-            direction={{ xs: 'column', md: 'row' }}
-            spacing={1}
-            justifyContent="space-between"
-            alignItems={{ xs: 'stretch', md: 'center' }}
-            sx={{
-              px: { xs: 1.5, md: 2.25 },
-              py: { xs: 1.5, md: 1.8 },
-              color: '#fff',
-              background: 'linear-gradient(120deg, #081f33 0%, #0f4c81 58%, #1876b8 100%)',
-            }}
-          >
-            <Stack spacing={0.25}>
-              <Stack direction="row" spacing={0.8} alignItems="center">
-                <LocalOfferRoundedIcon sx={{ color: '#8fd0ff' }} />
-                <Typography variant="h6" sx={{ fontWeight: 800, color: 'inherit' }}>
-                  Quote History
-                </Typography>
-              </Stack>
-              <Typography variant="body2" sx={{ color: alpha('#fff', 0.74) }}>
-                A complete, searchable record of every customer quote and outcome.
-              </Typography>
-            </Stack>
-
-            <Stack direction="row" spacing={0.75} alignItems="center">
-              <Button
-                variant="outlined"
-                sx={{ color: '#fff', borderColor: alpha('#fff', 0.45), '&:hover': { borderColor: '#fff', bgcolor: alpha('#fff', 0.08) } }}
-                startIcon={<RefreshRoundedIcon fontSize="small" />}
-                disabled={isRefreshing}
-                onClick={() => {
-                  void quotesQuery.refetch()
-                }}
-              >
-                {isRefreshing ? 'Refreshing...' : 'Refresh'}
-              </Button>
-            </Stack>
-          </Stack>
-
-          <Box
-            sx={{
-              p: { xs: 1.25, md: 1.5 },
-              display: 'grid',
-              gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', md: 'repeat(5, minmax(0, 1fr))' },
-              gap: 0.75,
-              bgcolor: alpha('#eaf4ff', 0.42),
-              borderBottom: '1px solid',
-              borderColor: 'divider',
-            }}
-          >
-            {lifecycleOrder.map((lifecycle) => {
-              const count = lifecycleCounts[lifecycle]
-              const isActive = lifecycleView === lifecycle
-
-              return (
-                <Button
-                  key={lifecycle}
-                  variant="text"
-                  onClick={() => {
-                    setLifecycleView(lifecycle)
-                  }}
-                  sx={{
-                    minHeight: 66,
-                    px: 1.25,
-                    py: 0.8,
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: 'flex-start',
-                    textTransform: 'none',
-                    borderRadius: 1.75,
-                    border: '1px solid',
-                    borderColor: isActive ? '#0f4c81' : alpha('#0f4c81', 0.14),
-                    bgcolor: isActive ? '#fff' : alpha('#fff', 0.62),
-                    boxShadow: isActive ? `0 6px 18px ${alpha('#0f4c81', 0.12)}` : 'none',
-                    color: '#0b2239',
-                  }}
-                >
-                  <Typography variant="h6" sx={{ fontWeight: 850, lineHeight: 1.05 }}>{count}</Typography>
-                  <Typography variant="caption" sx={{ color: isActive ? '#0f4c81' : 'text.secondary', fontWeight: 750 }}>
-                    {resolveLifecycleLabel(lifecycle)}
-                  </Typography>
-                </Button>
-              )
-            })}
-          </Box>
-
-          <Box
-            sx={{
-              p: { xs: 1.25, md: 1.5 },
-              display: 'grid',
-              gridTemplateColumns: {
-                xs: '1fr',
-                md: '2fr 1fr 1fr 1fr',
-              },
-              gap: 1,
-              bgcolor: 'background.paper',
-            }}
-          >
-            <TextField
-              size="small"
-              placeholder="Search quote #, project, dealer, contact, or rep"
-              value={searchInput}
-              onChange={(event) => {
-                setSearchInput(event.target.value)
-              }}
-              InputProps={{
-                startAdornment: (
-                  <InputAdornment position="start">
-                    <SearchRoundedIcon fontSize="small" />
-                  </InputAdornment>
-                ),
-              }}
-            />
-
-            <TextField
-              select
-              size="small"
-              label="Sales rep"
-              value={salesRepFilter}
-              onChange={(event) => {
-                setSalesRepFilter(event.target.value)
-              }}
-            >
-              <MenuItem value="">All reps</MenuItem>
-              {salesRepOptions.map((option) => (
-                <MenuItem key={`rep-${option}`} value={option}>{option}</MenuItem>
-              ))}
-            </TextField>
-
-            <TextField
-              select
-              size="small"
-              label="State"
-              value={dealerStateFilter}
-              onChange={(event) => {
-                setDealerStateFilter(event.target.value)
-              }}
-            >
-              <MenuItem value="">All states</MenuItem>
-              {dealerStateOptions.map((option) => (
-                <MenuItem key={`state-${option}`} value={option}>{option}</MenuItem>
-              ))}
-            </TextField>
-
-            <TextField
-              select
-              size="small"
-              label="Project type"
-              value={projectTypeFilter}
-              onChange={(event) => {
-                setProjectTypeFilter(event.target.value)
-              }}
-            >
-              <MenuItem value="">All types</MenuItem>
-              {projectTypeOptions.map((option) => (
-                <MenuItem key={`project-type-${option}`} value={option}>{option}</MenuItem>
-              ))}
-            </TextField>
-          </Box>
-        </Stack>
-      </Paper>
-
-      <Paper variant="outlined" sx={{ p: { xs: 1, md: 1.25 }, borderRadius: 2.25, borderColor: alpha('#0f4c81', 0.16), boxShadow: `0 10px 30px ${alpha('#0b2239', 0.055)}` }}>
-        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.5} justifyContent="space-between" alignItems={{ xs: 'flex-start', sm: 'center' }} sx={{ mb: 1 }}>
-          <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
-            {rows.length} quote{rows.length === 1 ? '' : 's'} in this view
+        <Box>
+          <Typography variant="h5" sx={{ fontWeight: 700 }}>Quotes</Typography>
+          <Typography variant="body2" color="text.secondary">
+            Every quote and how it ended, converted and cancelled included.
           </Typography>
-          <Chip size="small" variant="outlined" label={`Visible value ${formatCurrency(totalVisibleAmount, 2)}`} sx={{ fontWeight: 750, bgcolor: alpha('#eaf4ff', 0.5) }} />
+        </Box>
+
+        <Stack direction="row" spacing={1} alignItems="center">
+          <Tooltip title={isRefreshing ? 'Refreshing…' : 'Refresh'}>
+            <span>
+              <IconButton
+                onClick={() => { void quotesQuery.refetch() }}
+                disabled={isRefreshing}
+              >
+                {isRefreshing
+                  ? <CircularProgress size={18} color="inherit" />
+                  : <RefreshRoundedIcon fontSize="small" />}
+              </IconButton>
+            </span>
+          </Tooltip>
         </Stack>
+      </Stack>
+
+      <Card>
+        {/* Tabs with a count on each, the way the invoice list splits paid from
+            pending. They were five boxed buttons on a tinted panel before. */}
+        <Tabs
+          value={lifecycleView}
+          onChange={(_event, next: QuoteLifecycleView) => setLifecycleView(next)}
+          variant="scrollable"
+          scrollButtons="auto"
+          sx={{ px: 2.5, borderBottom: 1, borderColor: 'divider' }}
+        >
+          {lifecycleOrder.map((lifecycle) => (
+            <Tab
+              key={lifecycle}
+              value={lifecycle}
+              label={
+                <Stack direction="row" spacing={1} alignItems="center">
+                  <span>{resolveLifecycleLabel(lifecycle)}</span>
+                  <Chip
+                    size="small"
+                    label={lifecycleCounts[lifecycle]}
+                    color={lifecycleView === lifecycle ? 'primary' : 'default'}
+                    variant={lifecycleView === lifecycle ? 'filled' : 'outlined'}
+                    sx={{ height: 22, minWidth: 30 }}
+                  />
+                </Stack>
+              }
+            />
+          ))}
+        </Tabs>
+
+        <Stack
+          direction={{ xs: 'column', md: 'row' }}
+          spacing={1.5}
+          alignItems={{ xs: 'stretch', md: 'center' }}
+          sx={{ p: 2.5 }}
+        >
+          <TextField
+            size="small"
+            placeholder="Search quote, project, account, contact, or rep…"
+            value={searchInput}
+            onChange={(event) => setSearchInput(event.target.value)}
+            InputProps={{
+              startAdornment: (
+                <InputAdornment position="start">
+                  <SearchRoundedIcon fontSize="small" sx={{ color: 'text.disabled' }} />
+                </InputAdornment>
+              ),
+            }}
+            sx={{ flexGrow: 1 }}
+          />
+
+          <TextField
+            select
+            size="small"
+            label="Sales rep"
+            value={salesRepFilter}
+            onChange={(event) => setSalesRepFilter(event.target.value)}
+            sx={{ width: { xs: '100%', md: 170 }, flexShrink: 0 }}
+          >
+            <MenuItem value="">All reps</MenuItem>
+            {salesRepOptions.map((option) => (
+              <MenuItem key={`rep-${option}`} value={option}>{option}</MenuItem>
+            ))}
+          </TextField>
+
+          <TextField
+            select
+            size="small"
+            label="State"
+            value={dealerStateFilter}
+            onChange={(event) => setDealerStateFilter(event.target.value)}
+            sx={{ width: { xs: '100%', md: 130 }, flexShrink: 0 }}
+          >
+            <MenuItem value="">All states</MenuItem>
+            {dealerStateOptions.map((option) => (
+              <MenuItem key={`state-${option}`} value={option}>{option}</MenuItem>
+            ))}
+          </TextField>
+
+          <TextField
+            select
+            size="small"
+            label="Project type"
+            value={projectTypeFilter}
+            onChange={(event) => setProjectTypeFilter(event.target.value)}
+            sx={{ width: { xs: '100%', md: 170 }, flexShrink: 0 }}
+          >
+            <MenuItem value="">All types</MenuItem>
+            {projectTypeOptions.map((option) => (
+              <MenuItem key={`project-type-${option}`} value={option}>{option}</MenuItem>
+            ))}
+          </TextField>
+        </Stack>
+      </Card>
+
+      <Card sx={{ p: { xs: 1.5, md: 2 } }}>
+        <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1.5 }}>
+          {`${rows.length} quote${rows.length === 1 ? '' : 's'} in this view`}
+        </Typography>
 
         <StatusAlerts
           errorMessage={actionErrorMessage || queryErrorMessage}
@@ -681,21 +631,16 @@ export default function SalesQuotesPage() {
             sx={{
               border: 1,
               borderColor: 'divider',
-              borderRadius: 1,
+              borderRadius: 2,
               height: '70vh',
               overflow: 'hidden',
               '& .MuiDataGrid-columnHeaders': {
-                borderBottomColor: alpha('#0f4c81', 0.18),
-                bgcolor: '#f2f7fb',
-                color: '#123a5a',
-                fontWeight: 800,
+                bgcolor: 'grey.200',
+                color: 'text.secondary',
+                fontWeight: 700,
               },
-              '& .MuiDataGrid-cell': {
-                alignItems: 'center',
-              },
-              '& .MuiDataGrid-row:hover': {
-                bgcolor: alpha('#eaf4ff', 0.62),
-              },
+              '& .MuiDataGrid-cell': { alignItems: 'center' },
+              '& .MuiDataGrid-row:hover': { bgcolor: 'action.hover' },
             }}
           >
             <DataGrid
@@ -720,7 +665,7 @@ export default function SalesQuotesPage() {
             />
           </Box>
         )}
-      </Paper>
+      </Card>
 
       <Menu
         anchorEl={actionAnchorEl}

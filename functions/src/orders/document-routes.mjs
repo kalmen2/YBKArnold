@@ -15,6 +15,7 @@ import {
 } from './order-shared.mjs'
 
 import { createMondayCardStore } from './monday-card-store.mjs'
+import { pushOrderValuesToMonday } from './monday-order-value-sync.mjs'
 
 export function registerOrderDocumentRoutes(app, {
   assertMondayLink,
@@ -29,6 +30,7 @@ export function registerOrderDocumentRoutes(app, {
   resolveMondayOrderContext,
   syncMondayProgressDetailsToCollections,
   toPublicAuthUser,
+  updateMondayItemTextColumn,
   updateMondayLinkColumnValue,
 }) {
   const mondayCards = createMondayCardStore({ getCollections })
@@ -313,6 +315,11 @@ export function registerOrderDocumentRoutes(app, {
             projection: {
               _id: 0,
               source_quote_snapshot: 1,
+              order_number: 1,
+              new_orders_item_id: 1,
+              new_orders_board_id: 1,
+              monday_financial_item_id: 1,
+              monday_financial_board_id: 1,
             },
           },
         )
@@ -345,12 +352,26 @@ export function registerOrderDocumentRoutes(app, {
           },
         )
 
+        // Monday holds the value written at conversion. Without this push it
+        // keeps showing the pre-edit figure forever.
+        const mondayPush = await pushOrderValuesToMonday({
+          orderDocument,
+          productValue: productNet,
+          freightValue: freightNet,
+          updateMondayItemTextColumn,
+        })
+
+        if (mondayPush.failed?.length) {
+          console.warn('Order value push to Monday partially failed.', mondayPush)
+        }
+
         return res.json({
           ok: true,
           productNet,
           freightNet,
           grandTotal: productNet + freightNet,
           lines,
+          mondayPush,
         })
       } catch (error) {
         next(error)
@@ -1688,6 +1709,10 @@ export function registerOrderDocumentRoutes(app, {
               Customer_Signed_BOL: 1,
               pending_order_change: 1,
               change_version: 1,
+              new_orders_item_id: 1,
+              new_orders_board_id: 1,
+              monday_financial_item_id: 1,
+              monday_financial_board_id: 1,
               customer_signed_change_order: 1,
               customer_signed_change_order_url: 1,
               Customer_Signed_Change_Order: 1,
@@ -1839,6 +1864,22 @@ export function registerOrderDocumentRoutes(app, {
           updateFilter,
           updateCommand,
         )
+
+        // An approved change order moves the money. Monday has to follow it
+        // for the same reason the document-lines edit does.
+        if (documentType === 'customer_signed_change_order') {
+          const approvedChange = orderDocument.pending_order_change
+          const changePush = await pushOrderValuesToMonday({
+            orderDocument,
+            productValue: Number(approvedChange?.productNet || 0),
+            freightValue: Number(approvedChange?.freightNet || 0),
+            updateMondayItemTextColumn,
+          })
+
+          if (changePush.failed?.length) {
+            console.warn('Change-order value push to Monday partially failed.', changePush)
+          }
+        }
 
         const refreshedOrderDocument = await ordersUnifiedCollection.findOne(
           updateFilter,

@@ -2,26 +2,42 @@ export type SalesTrendDay = {
   date: string
   total: number
   count: number
+  /** Portion of the day's total booked by the previous owner. */
+  priorOwnerTotal?: number
 }
 
 export type SalesTrendSnapshot = {
   generatedAt: string
   earliestDate: string | null
+  latestDate?: string | null
   /** Orders that cannot be placed on the timeline because they have no order date. */
   ordersMissingOrderDate?: number
   days: SalesTrendDay[]
 }
 
-export type SalesTrendMode = 'monthOverMonth' | 'monthVsLastYear' | 'yearOverYear'
+/** A month (monthIndex set) or a whole year (monthIndex null). */
+export type SalesTrendPeriod = {
+  year: number
+  monthIndex: number | null
+}
+
+export type SalesTrendSelection = {
+  primary: SalesTrendPeriod
+  comparison: SalesTrendPeriod
+}
 
 export type SalesTrendSeries = {
   label: string
   values: (number | null)[]
   total: number
+  /** True when the whole period sits before the handover — the previous owner's. */
+  isPriorOwner: boolean
+  /** True when the period has not finished yet. */
+  isInProgress: boolean
 }
 
 export type SalesTrendView = {
-  mode: SalesTrendMode
+  granularity: 'month' | 'year'
   categories: string[]
   activePeriod: SalesTrendSeries
   comparisonPeriod: SalesTrendSeries
@@ -35,15 +51,28 @@ export type SalesTrendView = {
   comparisonPeriodNote: string
 }
 
-export const SALES_TREND_MODE_OPTIONS: { value: SalesTrendMode, label: string }[] = [
-  { value: 'monthOverMonth', label: 'Month over month' },
-  { value: 'monthVsLastYear', label: 'Month vs. last year' },
-  { value: 'yearOverYear', label: 'Year over year' },
-]
-
-const MONTH_LABELS = [
+export const MONTH_LABELS = [
   'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
   'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+]
+
+/** The business changed hands on this date. */
+export const HANDOVER_DATE_KEY = '2026-03-08'
+
+// The Monday boards before 2024 had no order-value column, so those years hold
+// hundreds of orders worth exactly nothing. Offering them would only ever draw
+// a flat line at zero, so the comparison starts where the money starts.
+export const EARLIEST_COMPARABLE_YEAR = 2024
+
+export type SalesTrendPresetKey =
+  | 'thisVsLastMonth'
+  | 'thisMonthVsLastYear'
+  | 'thisVsLastYear'
+
+export const SALES_TREND_PRESETS: { value: SalesTrendPresetKey, label: string }[] = [
+  { value: 'thisVsLastMonth', label: 'This month vs last month' },
+  { value: 'thisMonthVsLastYear', label: 'This month vs a year ago' },
+  { value: 'thisVsLastYear', label: 'This year vs last year' },
 ]
 
 function dayKey(year: number, monthIndex: number, day: number): string {
@@ -56,6 +85,73 @@ function daysInMonth(year: number, monthIndex: number): number {
 
 function roundMoney(value: number): number {
   return Math.round(value * 100) / 100
+}
+
+export function periodsAreEqual(left: SalesTrendPeriod, right: SalesTrendPeriod): boolean {
+  return left.year === right.year && left.monthIndex === right.monthIndex
+}
+
+export function formatPeriodLabel(period: SalesTrendPeriod): string {
+  return period.monthIndex === null
+    ? String(period.year)
+    : `${MONTH_LABELS[period.monthIndex]} ${period.year}`
+}
+
+/** Resolve a preset into the two periods it selects, relative to `today`. */
+export function resolvePreset(preset: SalesTrendPresetKey, today: Date = new Date()): SalesTrendSelection {
+  const year = today.getFullYear()
+  const monthIndex = today.getMonth()
+
+  if (preset === 'thisVsLastYear') {
+    return {
+      primary: { year, monthIndex: null },
+      comparison: { year: year - 1, monthIndex: null },
+    }
+  }
+
+  if (preset === 'thisMonthVsLastYear') {
+    return {
+      primary: { year, monthIndex },
+      comparison: { year: year - 1, monthIndex },
+    }
+  }
+
+  return {
+    primary: { year, monthIndex },
+    comparison: monthIndex === 0
+      ? { year: year - 1, monthIndex: 11 }
+      : { year, monthIndex: monthIndex - 1 },
+  }
+}
+
+/** The preset a selection corresponds to, or null when it is a custom pick. */
+export function matchPreset(
+  selection: SalesTrendSelection,
+  today: Date = new Date(),
+): SalesTrendPresetKey | null {
+  for (const preset of SALES_TREND_PRESETS) {
+    const resolved = resolvePreset(preset.value, today)
+
+    if (
+      periodsAreEqual(resolved.primary, selection.primary)
+      && periodsAreEqual(resolved.comparison, selection.comparison)
+    ) {
+      return preset.value
+    }
+  }
+
+  return null
+}
+
+function periodBounds(period: SalesTrendPeriod): { start: string, end: string } {
+  if (period.monthIndex === null) {
+    return { start: dayKey(period.year, 0, 1), end: dayKey(period.year, 11, 31) }
+  }
+
+  return {
+    start: dayKey(period.year, period.monthIndex, 1),
+    end: dayKey(period.year, period.monthIndex, daysInMonth(period.year, period.monthIndex)),
+  }
 }
 
 function sumRange(totalsByDate: Map<string, number>, startKey: string, endKey: string): number {
@@ -161,110 +257,133 @@ function percentChangeOf(current: number, baseline: number): number | null {
   return ((current - baseline) / baseline) * 100
 }
 
+/** Years that can be compared, newest first. Never earlier than 2024. */
+export function availableYears(snapshot: SalesTrendSnapshot | undefined, today: Date = new Date()): number[] {
+  const thisYear = today.getFullYear()
+  const earliestInData = snapshot?.earliestDate
+    ? Number(snapshot.earliestDate.slice(0, 4))
+    : EARLIEST_COMPARABLE_YEAR
+  const from = Math.max(
+    EARLIEST_COMPARABLE_YEAR,
+    Number.isFinite(earliestInData) ? earliestInData : EARLIEST_COMPARABLE_YEAR,
+  )
+  const years: number[] = []
+
+  for (let year = thisYear; year >= from; year -= 1) {
+    years.push(year)
+  }
+
+  return years
+}
+
 /**
- * Turns the raw daily buckets into two cumulative series for the selected
- * comparison. The headline percentage is pace-matched — a partial month is
- * compared against the prior period through the same day, never against its
- * finished total.
+ * Turns the raw daily buckets into two cumulative series for the chosen pair of
+ * periods. Any month or year can be compared against any other.
+ *
+ * The headline percentage is pace-matched: while the primary period is still
+ * running it is compared against the other period through the same point, never
+ * against its finished total.
  */
 export function buildSalesTrendView(
   snapshot: SalesTrendSnapshot | undefined,
-  mode: SalesTrendMode,
+  selection: SalesTrendSelection,
   today: Date = new Date(),
 ): SalesTrendView {
   const totalsByDate = toTotalsByDate(snapshot)
-  const year = today.getFullYear()
-  const monthIndex = today.getMonth()
-  const dayOfMonth = today.getDate()
-  const todayKey = dayKey(year, monthIndex, dayOfMonth)
+  const todayKey = dayKey(today.getFullYear(), today.getMonth(), today.getDate())
 
-  if (mode === 'yearOverYear') {
-    const comparisonYear = year - 1
-    const comparisonStart = dayKey(comparisonYear, 0, 1)
-    const comparisonEnd = dayKey(comparisonYear, 11, 31)
-    const comparisonPaceEnd = dayKey(
-      comparisonYear,
-      monthIndex,
-      Math.min(dayOfMonth, daysInMonth(comparisonYear, monthIndex)),
-    )
+  const { primary, comparison } = selection
+  const granularity: 'month' | 'year' = primary.monthIndex === null ? 'year' : 'month'
 
-    const currentTotal = sumRange(totalsByDate, dayKey(year, 0, 1), todayKey)
-    const comparisonTotal = sumRange(totalsByDate, comparisonStart, comparisonEnd)
-    const comparisonPaceTotal = sumRange(totalsByDate, comparisonStart, comparisonPaceEnd)
+  const primaryBounds = periodBounds(primary)
+  const comparisonBounds = periodBounds(comparison)
 
-    return {
-      mode,
-      categories: MONTH_LABELS,
-      activePeriod: {
-        label: String(year),
-        values: buildMonthlyCumulative(totalsByDate, year, todayKey),
-        total: currentTotal,
-      },
-      comparisonPeriod: {
-        label: String(comparisonYear),
-        values: buildMonthlyCumulative(totalsByDate, comparisonYear, comparisonEnd),
-        total: comparisonTotal,
-      },
-      comparisonPaceTotal,
-      percentChange: percentChangeOf(currentTotal, comparisonPaceTotal),
-      hasComparisonData: hasAnyOrdersInRange(snapshot, comparisonStart, comparisonEnd),
-      comparisonNoun: 'the same point last year',
-      currentPeriodNote: 'year to date',
-      comparisonPeriodNote: 'full year',
+  // A period still running is cut off at today; a finished one runs to its end.
+  const primaryCutoff = primaryBounds.end > todayKey ? todayKey : primaryBounds.end
+  const comparisonCutoff = comparisonBounds.end > todayKey ? todayKey : comparisonBounds.end
+  const primaryInProgress = primaryBounds.end > todayKey && primaryBounds.start <= todayKey
+
+  // How far through the primary period we are, mapped onto the comparison so
+  // a part-finished month is never measured against a full one.
+  let comparisonPaceEnd = comparisonCutoff
+
+  if (primaryInProgress) {
+    if (granularity === 'year') {
+      const monthIndex = today.getMonth()
+      comparisonPaceEnd = dayKey(
+        comparison.year,
+        monthIndex,
+        Math.min(today.getDate(), daysInMonth(comparison.year, monthIndex)),
+      )
+    } else if (comparison.monthIndex !== null) {
+      comparisonPaceEnd = dayKey(
+        comparison.year,
+        comparison.monthIndex,
+        Math.min(today.getDate(), daysInMonth(comparison.year, comparison.monthIndex)),
+      )
+    }
+
+    if (comparisonPaceEnd > comparisonCutoff) {
+      comparisonPaceEnd = comparisonCutoff
     }
   }
 
-  // Month over month steps back one month (rolling into last December each
-  // January); month vs. last year holds the month and steps back a year.
-  const steppingBackAMonth = mode === 'monthOverMonth'
-  const comparisonMonthIndex = steppingBackAMonth ? (monthIndex + 11) % 12 : monthIndex
-  const comparisonYear = steppingBackAMonth
-    ? (monthIndex === 0 ? year - 1 : year)
-    : year - 1
+  const primaryTotal = sumRange(totalsByDate, primaryBounds.start, primaryCutoff)
+  const comparisonTotal = sumRange(totalsByDate, comparisonBounds.start, comparisonCutoff)
+  const comparisonPaceTotal = sumRange(totalsByDate, comparisonBounds.start, comparisonPaceEnd)
 
-  const currentMonthLength = daysInMonth(year, monthIndex)
-  const comparisonMonthLength = daysInMonth(comparisonYear, comparisonMonthIndex)
-  const categoryCount = Math.max(currentMonthLength, comparisonMonthLength)
+  const primarySeries: SalesTrendSeries = {
+    label: formatPeriodLabel(primary),
+    values: [],
+    total: primaryTotal,
+    isPriorOwner: primaryBounds.end < HANDOVER_DATE_KEY,
+    isInProgress: primaryInProgress,
+  }
+  const comparisonSeries: SalesTrendSeries = {
+    label: formatPeriodLabel(comparison),
+    values: [],
+    total: comparisonTotal,
+    isPriorOwner: comparisonBounds.end < HANDOVER_DATE_KEY,
+    isInProgress: comparisonBounds.end > todayKey && comparisonBounds.start <= todayKey,
+  }
 
-  const currentStart = dayKey(year, monthIndex, 1)
-  const comparisonStart = dayKey(comparisonYear, comparisonMonthIndex, 1)
-  const comparisonEnd = dayKey(comparisonYear, comparisonMonthIndex, comparisonMonthLength)
-  const comparisonPaceEnd = dayKey(
-    comparisonYear,
-    comparisonMonthIndex,
-    Math.min(dayOfMonth, comparisonMonthLength),
-  )
+  let categories: string[]
 
-  const currentTotal = sumRange(totalsByDate, currentStart, todayKey)
-  const comparisonTotal = sumRange(totalsByDate, comparisonStart, comparisonEnd)
-  const comparisonPaceTotal = sumRange(totalsByDate, comparisonStart, comparisonPaceEnd)
+  if (granularity === 'year') {
+    categories = MONTH_LABELS
+    primarySeries.values = buildMonthlyCumulative(totalsByDate, primary.year, primaryCutoff)
+    comparisonSeries.values = buildMonthlyCumulative(totalsByDate, comparison.year, comparisonCutoff)
+  } else {
+    const primaryMonthIndex = primary.monthIndex ?? 0
+    const comparisonMonthIndex = comparison.monthIndex ?? primaryMonthIndex
+    const categoryCount = Math.max(
+      daysInMonth(primary.year, primaryMonthIndex),
+      daysInMonth(comparison.year, comparisonMonthIndex),
+    )
+
+    categories = Array.from({ length: categoryCount }, (_, index) => String(index + 1))
+    primarySeries.values = buildDailyCumulative(
+      totalsByDate, primary.year, primaryMonthIndex, primaryCutoff, categoryCount,
+    )
+    comparisonSeries.values = buildDailyCumulative(
+      totalsByDate, comparison.year, comparisonMonthIndex, comparisonCutoff, categoryCount,
+    )
+  }
+
+  const periodNoun = granularity === 'year' ? 'year' : 'month'
 
   return {
-    mode,
-    categories: Array.from({ length: categoryCount }, (_, index) => String(index + 1)),
-    activePeriod: {
-      label: `${MONTH_LABELS[monthIndex]} ${year}`,
-      values: buildDailyCumulative(totalsByDate, year, monthIndex, todayKey, categoryCount),
-      total: currentTotal,
-    },
-    comparisonPeriod: {
-      label: `${MONTH_LABELS[comparisonMonthIndex]} ${comparisonYear}`,
-      values: buildDailyCumulative(
-        totalsByDate,
-        comparisonYear,
-        comparisonMonthIndex,
-        comparisonEnd,
-        categoryCount,
-      ),
-      total: comparisonTotal,
-    },
+    granularity,
+    categories,
+    activePeriod: primarySeries,
+    comparisonPeriod: comparisonSeries,
     comparisonPaceTotal,
-    percentChange: percentChangeOf(currentTotal, comparisonPaceTotal),
-    hasComparisonData: hasAnyOrdersInRange(snapshot, comparisonStart, comparisonEnd),
-    comparisonNoun: mode === 'monthOverMonth'
-      ? 'the same point last month'
-      : 'the same point last year',
-    currentPeriodNote: 'month to date',
-    comparisonPeriodNote: 'full month',
+    percentChange: percentChangeOf(primaryTotal, comparisonPaceTotal),
+    hasComparisonData: hasAnyOrdersInRange(snapshot, comparisonBounds.start, comparisonBounds.end),
+    comparisonNoun: primaryInProgress
+      ? `${comparisonSeries.label} at the same point`
+      : comparisonSeries.label,
+    currentPeriodNote: primaryInProgress ? `${periodNoun} to date` : `full ${periodNoun}`,
+    comparisonPeriodNote: comparisonSeries.isInProgress ? `${periodNoun} to date` : `full ${periodNoun}`,
   }
 }

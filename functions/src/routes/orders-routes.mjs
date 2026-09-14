@@ -2731,6 +2731,7 @@ export function registerOrdersRoutes(app, deps) {
     resolveMondayOrderContext,
     syncMondayProgressDetailsToCollections,
     toPublicAuthUser,
+    updateMondayItemTextColumn,
     updateMondayLinkColumnValue,
   })
 

@@ -22,9 +22,7 @@ import {
   postOrdersCreate,
   postOrdersDelete,
   postOrdersSubOrderLink,
-  type OrdersMondayProgressStatusBulkQueuedRow,
   type OrdersOverviewOrder,
-  type OrdersOverviewResponse,
 } from '../features/orders/api'
 import { QUERY_KEYS } from '../lib/queryKeys'
 import {
@@ -55,7 +53,6 @@ import {
   ShopDrawingPreview,
   type ShopDrawingPreviewHandle,
 } from './orders/ShopDrawingPreview'
-import { UpdateOrdersDialog } from './orders/UpdateOrdersDialog'
 import { useOrdersOverview } from './orders/useOrdersOverview'
 
 const FEEDBACK_TOAST_MS = 2000
@@ -65,45 +62,6 @@ const WARNING_TOAST_MS = 3000
 type ApiRequestError = Error & {
   status?: number
   payload?: unknown
-}
-
-function applyQueuedProgressStatusUpdates(
-  order: OrdersOverviewOrder,
-  queuedUpdates: OrdersMondayProgressStatusBulkQueuedRow[],
-) {
-  const updatesByColumnId = new Map(
-    (Array.isArray(queuedUpdates) ? queuedUpdates : [])
-      .map((entry) => [
-        String(entry?.columnId ?? '').trim(),
-        String(entry?.status ?? '').trim(),
-      ] as const)
-      .filter(([columnId]) => Boolean(columnId)),
-  )
-
-  if (updatesByColumnId.size === 0 || !Array.isArray(order.progressStatusDetails)) {
-    return order
-  }
-
-  const nextProgressStatusDetails = order.progressStatusDetails.map((detail) => {
-    const columnId = String(detail?.columnId ?? '').trim()
-
-    if (!columnId || !updatesByColumnId.has(columnId)) {
-      return detail
-    }
-
-    const nextStatus = updatesByColumnId.get(columnId)
-
-    return {
-      ...detail,
-      status: nextStatus ? nextStatus : null,
-    }
-  })
-
-  return {
-    ...order,
-    progressStatusDetails: nextProgressStatusDetails,
-    mondayUpdatedAt: new Date().toISOString(),
-  }
 }
 
 export default function OrdersPage() {
@@ -128,7 +86,6 @@ export default function OrdersPage() {
   const [quickBooksDialogOrder, setQuickBooksDialogOrder] = useState<OrdersOverviewOrder | null>(null)
   const [quickBooksDialogMetric, setQuickBooksDialogMetric] =
     useState<OrdersQuickBooksDrilldownMetric | null>(null)
-  const [updateOrdersDialogOpen, setUpdateOrdersDialogOpen] = useState(false)
   const [addManualOrderDialogOpen, setAddManualOrderDialogOpen] = useState(false)
   const [manualOrderInitialForm, setManualOrderInitialForm] = useState<Partial<AddManualOrderDialogForm> | null>(null)
   const [duplicateSourceOrder, setDuplicateSourceOrder] = useState<OrdersOverviewOrder | null>(null)
@@ -404,13 +361,7 @@ export default function OrdersPage() {
     setQuickBooksDialogMetric(null)
   }, [])
 
-  const handleOpenUpdateOrdersDialog = useCallback(() => {
-    setUpdateOrdersDialogOpen(true)
-  }, [])
 
-  const handleCloseUpdateOrdersDialog = useCallback(() => {
-    setUpdateOrdersDialogOpen(false)
-  }, [])
 
   const handleOpenAddManualOrderDialog = useCallback(() => {
     setManualOrderInitialForm(null)
@@ -711,83 +662,8 @@ export default function OrdersPage() {
     }
   }, [isLinkingOrder, linkOrderTarget, queryClient])
 
-  const handleSavedBulkOrderUpdates = useCallback((summary: {
-    updatedCount: number
-    queuedCount: number
-    failedCount: number
-    queuedUpdates: OrdersMondayProgressStatusBulkQueuedRow[]
-    warnings: string[]
-  }) => {
-    const warningMessages = (Array.isArray(summary.warnings) ? summary.warnings : [])
-      .map((entry) => String(entry ?? '').trim())
-      .filter(Boolean)
-    const queuedCount = Number.isFinite(Number(summary.queuedCount))
-      ? Number(summary.queuedCount)
-      : Number(summary.updatedCount ?? 0)
 
-    if (summary.failedCount > 0) {
-      setWarningMessage(`Saved ${queuedCount} updates to backend. ${summary.failedCount} failed.`)
-    } else if (warningMessages.length > 0) {
-      setWarningMessage(`Saved ${queuedCount} updates. ${warningMessages[0]}`)
-    } else {
-      setSuccessMessage(`Saved ${queuedCount} updates. Monday sync is running in the background.`)
-    }
 
-    const queuedUpdates = Array.isArray(summary.queuedUpdates)
-      ? summary.queuedUpdates
-      : []
-
-    if (queuedUpdates.length > 0) {
-      const updatesByItemId = queuedUpdates.reduce((accumulator, entry) => {
-        const mondayItemId = String(entry?.mondayItemId ?? '').trim()
-
-        if (!mondayItemId) {
-          return accumulator
-        }
-
-        if (!accumulator.has(mondayItemId)) {
-          accumulator.set(mondayItemId, [])
-        }
-
-        const queuedItemUpdates = accumulator.get(mondayItemId)
-
-        if (queuedItemUpdates) {
-          queuedItemUpdates.push(entry)
-        }
-
-        return accumulator
-      }, new Map<string, OrdersMondayProgressStatusBulkQueuedRow[]>())
-
-      queryClient.setQueryData<OrdersOverviewResponse>(
-        QUERY_KEYS.ordersOverview,
-        (current) => {
-          if (!current || !Array.isArray(current.orders) || updatesByItemId.size === 0) {
-            return current
-          }
-
-          const nextOrders = current.orders.map((order) => {
-            const queuedOrderUpdates = updatesByItemId.get(String(order.mondayItemId ?? '').trim())
-
-            if (!queuedOrderUpdates || queuedOrderUpdates.length === 0) {
-              return order
-            }
-
-            return applyQueuedProgressStatusUpdates(order, queuedOrderUpdates)
-          })
-
-          return {
-            ...current,
-            generatedAt: new Date().toISOString(),
-            orders: nextOrders,
-          }
-        },
-      )
-    }
-  }, [queryClient])
-
-  const bulkEditableOrders = overview.visibleOrders.filter(
-    (order) => order.hasMondayRecord && !order.isShipped,
-  )
   const currentBoardExportRef = useRef<OrdersBoardExport>({ sheetName: 'Orders', rows: [] })
 
   const handleCurrentBoardExportChange = useCallback((board: OrdersBoardExport) => {
@@ -833,24 +709,14 @@ export default function OrdersPage() {
   }, [overview.activeTab])
 
   return (
-    <Stack spacing={3}>
+    <Stack spacing={1.25}>
       <OrdersToolbar
-        totalRows={overview.counts.visible}
         lastRefreshedAt={overview.lastRefreshedAt}
         activeTab={overview.activeTab}
         onActiveTabChange={overview.setActiveTab}
         tabCounts={overview.tabCounts}
-        canOpenBulkUpdate={canEditMondayStages}
-        onOpenBulkUpdate={handleOpenUpdateOrdersDialog}
-        bulkUpdateDisabled={bulkEditableOrders.length === 0}
-        canAddOrder={canCreateOrders}
-        onAddOrder={handleOpenAddManualOrderDialog}
-        addOrderDisabled={isCreatingManualOrder || Boolean(deletingOrderKey)}
-        searchText={overview.searchText}
-        onSearchTextChange={overview.setSearchText}
         isRefreshing={overview.isRefreshing}
         onRefresh={handleRefresh}
-        onExport={handleExport}
       />
 
       {errorMessage ? <Alert severity="error">{errorMessage}</Alert> : null}
@@ -878,6 +744,12 @@ export default function OrdersPage() {
 
       <OrdersGrid
         orders={overview.visibleOrders}
+        searchText={overview.searchText}
+        onSearchTextChange={overview.setSearchText}
+        canAddOrder={canCreateOrders}
+        onAddOrder={handleOpenAddManualOrderDialog}
+        addOrderDisabled={isCreatingManualOrder || Boolean(deletingOrderKey)}
+        onExport={handleExport}
         activeTab={overview.activeTab}
         viewMode="standard"
         canEditMondayStages={canEditMondayStages}
@@ -890,7 +762,11 @@ export default function OrdersPage() {
         canViewOrderValue={appUser?.canViewOrderValue === true}
         canViewFullFinancials={appUser?.canViewFullFinancials === true}
         lastRefreshedAt={overview.lastRefreshedAt}
-        isLoading={overview.isLoading || overview.isFetching || overview.isRefreshing}
+        // Deliberately not overview.isFetching: that is true during the
+        // background refetch that follows every navigation, and passing it here
+        // blanked a grid that already had rows to show. Only a genuinely empty
+        // grid, or a refresh the user asked for, covers the rows.
+        isLoading={overview.isLoading || overview.isRefreshing}
         shopDrawingHandle={shopDrawingHandle}
         onOpenBolDocument={handleOpenBolDocument}
         onOpenDocumentPreview={handleOpenDocumentPreview}
@@ -941,14 +817,6 @@ export default function OrdersPage() {
         order={quickBooksDialogOrder}
         metric={quickBooksDialogMetric}
         onClose={handleCloseQuickBooksDialog}
-      />
-
-      <UpdateOrdersDialog
-        open={updateOrdersDialogOpen}
-        orders={bulkEditableOrders}
-        shopDrawingHandle={shopDrawingHandle}
-        onClose={handleCloseUpdateOrdersDialog}
-        onSaved={handleSavedBulkOrderUpdates}
       />
 
       <AddManualOrderDialog

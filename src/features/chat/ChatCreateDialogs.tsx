@@ -5,6 +5,7 @@ import {
   Autocomplete,
   Box,
   Button,
+  Chip,
   Dialog,
   DialogActions,
   DialogContent,
@@ -14,12 +15,13 @@ import {
   ListItemButton,
   Stack,
   TextField,
+  Tooltip,
   Typography,
 } from '@mui/material'
 import { useMemo, useState } from 'react'
 import type { AppChatUser } from './api'
-import { ChatAvatar } from './ChatAvatar'
-import { formatLastSeen, resolveUserLabel } from './chatUi'
+import { ChatUserIdentity } from './ChatUserIdentity'
+import { filterUserOptions, formatLastSeen, resolveUserLabel } from './chatUi'
 
 export function NewChatDialog({
   open,
@@ -93,21 +95,7 @@ export function NewChatDialog({
               onClick={() => onSelect(user.uid)}
               sx={{ borderRadius: '10px', gap: 1.25, mb: 0.25 }}
             >
-              <ChatAvatar
-                size={36}
-                name={resolveUserLabel(user)}
-                imageUrl={user.imageUrl}
-                status={user.onlineStatus}
-                colorKey={user.uid}
-              />
-              <Box sx={{ minWidth: 0 }}>
-                <Typography variant="body2" noWrap sx={{ fontWeight: 600 }}>
-                  {resolveUserLabel(user)}
-                </Typography>
-                <Typography variant="caption" color="text.secondary" noWrap sx={{ display: 'block' }}>
-                  {formatLastSeen(user)}
-                </Typography>
-              </Box>
+              <ChatUserIdentity user={user} size={36} tooltip={formatLastSeen(user)} />
             </ListItemButton>
           ))}
         </List>
@@ -167,6 +155,20 @@ export function NewGroupDialog({
             onChange={(_event, value) => setMembers(value)}
             getOptionLabel={(option) => resolveUserLabel(option)}
             isOptionEqualToValue={(option, value) => option.uid === value.uid}
+            filterOptions={filterUserOptions}
+            renderOption={({ key, ...optionProps }, option) => (
+              <Box component="li" key={key} {...optionProps} sx={{ px: 1.25, py: 0.75 }}>
+                <ChatUserIdentity user={option} size={30} />
+              </Box>
+            )}
+            renderValue={(selected, getItemProps) => selected.map((option, index) => {
+              const { key, ...chipProps } = getItemProps({ index })
+              return (
+                <Tooltip key={key} title={option.email}>
+                  <Chip {...chipProps} size="small" label={resolveUserLabel(option)} />
+                </Tooltip>
+              )
+            })}
             renderInput={(params) => (
               <TextField {...params} label="Members" placeholder="Add workers" />
             )}

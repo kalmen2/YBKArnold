@@ -82,6 +82,7 @@ export const DEFAULT_QUOTE_PRINT_SETTINGS: CrmQuotePrintSettings = {
   orderConfirmationTerms: 'Lead times begin after final approved shop drawings and finish samples are received.',
   updatedAt: null,
   updatedByEmail: null,
+  leadTimeOptions: ['6 to 8 weeks', '8 to 10 weeks', '10 to 12 weeks'],
 }
 
 const money = (value: number | null | undefined) => {
@@ -253,12 +254,13 @@ const estimateHelveticaTextWidth = (value: string) => Array.from(value).reduce((
   return width + 4.6
 }, 0)
 
+/** As wide as the longest product in the line, and no wider. */
 const detailColumnWidth = (values: string[]) => {
   const longestLineWidth = values
     .flatMap((value) => value.replace(/\r\n?/g, '\n').split('\n'))
     .reduce((longest, value) => Math.max(longest, estimateHelveticaTextWidth(value)), 0)
 
-  return Math.min(Math.max(longestLineWidth + 2, 32), 210)
+  return Math.min(Math.max(longestLineWidth, 24), 150)
 }
 
 const hasImages = (items: Array<{ images?: CrmQuoteLineItem['images'] }>) => items.some((item) => (item.images || []).length > 0)
@@ -423,10 +425,14 @@ function createStyles(accentColor: string) {
     descriptionLine: { flexDirection: 'row', alignItems: 'flex-start' },
     descriptionLineDetail: { flexShrink: 0, color: '#26384a' },
     descriptionLineBody: { flexGrow: 1, flexShrink: 1, flexBasis: 0 },
-    descriptionFieldText: { lineHeight: 0.62 },
-    descriptionLineBodyPaired: { marginLeft: 12 },
-    descriptionLineAfterHeading: { marginTop: 2 },
-    descriptionSubline: { marginTop: 2.5 },
+    // Tight on purpose. A subline that wraps has to read as one thought, so
+    // the leading inside it stays well under the gap that separates one subline
+    // from the next. It was 0.62 before, which overlapped; 1.15 was legible but
+    // close enough to the subline gap that wrapped lines looked like new rows.
+    descriptionFieldText: { lineHeight: 1.08 },
+    descriptionLineBodyPaired: { marginLeft: 10 },
+    descriptionLineAfterHeading: { marginTop: 3 },
+    descriptionSubline: { marginTop: 5.5 },
     descriptionMediaRail: { marginLeft: 7, flexShrink: 0 },
     descriptionMediaBox: { borderWidth: 1, borderColor: '#d8e0ea', borderRadius: 2, overflow: 'hidden', backgroundColor: '#ffffff' },
     descriptionMediaBoxSpaced: { marginTop: 4 },
@@ -587,8 +593,7 @@ export function NativeQuotePdfDocument({
 
         {rows.map((lineItem, index) => {
           const lineImages = (lineItem.images || []).slice(0, 2)
-          const usesCustomImageLayout = lineImages.some((image) => image.pdfLayout)
-          const usesInlinePictureLayout = lineImages.length > 0 && (pictureLayoutMode || usesCustomImageLayout)
+          const usesInlinePictureLayout = lineImages.length > 0 && pictureLayoutMode
           const imagePlacements = usesInlinePictureLayout ? resolveProductImagePlacements(lineImages) : []
           const primaryPlacement = imagePlacements[0]
           const pictureRailWidth = imagePlacements.length > 0 ? Math.max(...imagePlacements.map((placement) => placement.width)) : 0
@@ -599,13 +604,26 @@ export function NativeQuotePdfDocument({
             : false
           const description = plain(lineItem.description, '')
           const [heading = '', ...detailLines] = description.split('\n')
-          const hasMainDescriptionLine = Boolean(lineItem.detailLabel || detailLines.length > 0)
-          const sharedDetailWidth = detailColumnWidth([
-            lineItem.detailLabel && detailLines.length > 0 ? lineItem.detailLabel : '',
-            ...lineItem.sublineDescriptions
-              .filter((subline) => subline.detail && subline.description)
-              .map((subline) => subline.detail),
-          ])
+          // Every row under the heading is the same shape: a product label and
+          // a description, either of which may be empty. Building them as one
+          // list is what lets the whole line share a single column grid.
+          const descriptionRows = [
+            ...(lineItem.detailLabel || detailLines.length > 0
+              ? [{ product: plain(lineItem.detailLabel, ''), body: detailLines.join('\n') }]
+              : []),
+            ...lineItem.sublineDescriptions.map((subline) => ({
+              product: plain(subline.detail, ''),
+              body: plain(subline.description, ''),
+            })),
+          ]
+
+          // One product label anywhere in the line puts every row on the grid,
+          // blank first column included. Mixing indented and full-width rows in
+          // the same line is what made the old output look ragged.
+          const usesProductColumn = descriptionRows.some((row) => row.product.trim())
+          const productColumnWidth = usesProductColumn
+            ? detailColumnWidth(descriptionRows.map((row) => row.product))
+            : 0
           const renderFieldLines = (value: string) => value
             .replace(/\r\n?/g, '\n')
             .split('\n')
@@ -619,31 +637,29 @@ export function NativeQuotePdfDocument({
           ) : (
             <View style={styles.descriptionContent}>
               {heading ? <Text style={styles.descriptionHeading}>{heading}</Text> : null}
-              {(lineItem.detailLabel || detailLines.length > 0) ? (
-                <View style={[styles.descriptionLine, heading ? styles.descriptionLineAfterHeading : {}]}>
-                  {lineItem.detailLabel && detailLines.length > 0 ? (
-                    <>
-                      <View style={[styles.descriptionLineDetail, { width: sharedDetailWidth }]}>{renderFieldLines(lineItem.detailLabel)}</View>
-                      <View style={[styles.descriptionLineBody, styles.descriptionLineBodyPaired]}>{renderFieldLines(detailLines.join('\n'))}</View>
-                    </>
-                  ) : (
-                    <View style={styles.descriptionLineBody}>{renderFieldLines(plain(lineItem.detailLabel || detailLines.join('\n'), ''))}</View>
-                  )}
-                </View>
-              ) : null}
-              {lineItem.sublineDescriptions.map((subline, sublineIndex) => (
+              {descriptionRows.map((row, rowIndex) => (
                 <View
-                  key={`${subline.detail}-${sublineIndex}`}
-                  style={[styles.descriptionLine, heading || hasMainDescriptionLine || sublineIndex > 0 ? styles.descriptionSubline : {}]}
+                  key={`${row.product}-${rowIndex}`}
+                  style={[
+                    styles.descriptionLine,
+                    rowIndex > 0
+                      ? styles.descriptionSubline
+                      : (heading ? styles.descriptionLineAfterHeading : {}),
+                  ]}
                 >
-                  {subline.detail && subline.description ? (
-                    <>
-                      <View style={[styles.descriptionLineDetail, { width: sharedDetailWidth }]}>{renderFieldLines(subline.detail)}</View>
-                      <View style={[styles.descriptionLineBody, styles.descriptionLineBodyPaired]}>{renderFieldLines(subline.description)}</View>
-                    </>
-                  ) : (
-                    <View style={styles.descriptionLineBody}>{renderFieldLines(subline.detail || subline.description)}</View>
-                  )}
+                  {usesProductColumn ? (
+                    <View style={[styles.descriptionLineDetail, { width: productColumnWidth }]}>
+                      {row.product ? renderFieldLines(row.product) : null}
+                    </View>
+                  ) : null}
+                  <View
+                    style={[
+                      styles.descriptionLineBody,
+                      usesProductColumn ? styles.descriptionLineBodyPaired : {},
+                    ]}
+                  >
+                    {renderFieldLines(row.body)}
+                  </View>
                 </View>
               ))}
             </View>

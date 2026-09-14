@@ -8,6 +8,7 @@ import {
   Button,
   Chip,
   Dialog,
+  Divider,
   DialogActions,
   DialogContent,
   DialogTitle,
@@ -442,6 +443,61 @@ export default function AdminUsersPage() {
       setActiveUserId(null)
     }
   }, [deleteTarget, setErrorMessage])
+
+  const [profileTarget, setProfileTarget] = useState<AppAuthUser | null>(null)
+  const [profileName, setProfileName] = useState('')
+  const [profilePhone, setProfilePhone] = useState('')
+  const [profileJobTitle, setProfileJobTitle] = useState('')
+
+  const openProfileEditor = useCallback((user: AppAuthUser) => {
+    setProfileTarget(user)
+    setProfileName(user.displayName ?? '')
+    setProfilePhone(user.phone ?? '')
+    setProfileJobTitle(user.jobTitle ?? '')
+    setErrorMessage(null)
+    setActionMessage(null)
+  }, [])
+
+  const handleSaveProfile = useCallback(async () => {
+    if (!profileTarget) {
+      return
+    }
+
+    const displayName = profileName.trim()
+
+    if (!displayName) {
+      setErrorMessage('Name cannot be empty.')
+      return
+    }
+
+    setErrorMessage(null)
+    setActionMessage(null)
+    setActiveUserId(profileTarget.uid)
+
+    try {
+      const payload = await apiRequest<{ user: AppAuthUser }>(
+        `/api/auth/users/${profileTarget.uid}/profile`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({
+            displayName,
+            phone: profilePhone.trim(),
+            jobTitle: profileJobTitle.trim(),
+          }),
+        },
+      )
+
+      setUsers((currentUsers) => currentUsers.map((user) => (
+        user.uid === payload.user.uid ? payload.user : user
+      )))
+      setActionMessage('Profile updated.')
+      setProfileTarget(null)
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Could not update the profile.')
+    } finally {
+      setActiveUserId(null)
+    }
+  }, [profileJobTitle, profileName, profilePhone, profileTarget])
 
   const openHoursEditor = useCallback((user: AppAuthUser) => {
     setHoursTarget(user)
@@ -940,11 +996,80 @@ export default function AdminUsersPage() {
         </TableContainer>
       ) : null}
 
+      <Dialog
+        open={Boolean(profileTarget)}
+        onClose={() => setProfileTarget(null)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>Edit user details</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ mt: 0.5 }}>
+            <TextField
+              label="Name"
+              size="small"
+              value={profileName}
+              onChange={(event) => setProfileName(event.target.value)}
+              fullWidth
+              autoFocus
+            />
+            <TextField
+              label="Job title"
+              size="small"
+              value={profileJobTitle}
+              onChange={(event) => setProfileJobTitle(event.target.value)}
+              placeholder="Shop floor, Estimator, Installer..."
+              fullWidth
+            />
+            <TextField
+              label="Phone"
+              size="small"
+              value={profilePhone}
+              onChange={(event) => setProfilePhone(event.target.value)}
+              fullWidth
+            />
+            <TextField
+              label="Email"
+              size="small"
+              value={profileTarget?.email ?? ''}
+              fullWidth
+              disabled
+              helperText="Email is the sign-in identity and cannot be changed here."
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={() => setProfileTarget(null)}>Cancel</Button>
+          <Button
+            variant="contained"
+            disabled={!profileName.trim() || activeUserId === profileTarget?.uid}
+            onClick={() => { void handleSaveProfile() }}
+          >
+            Save
+          </Button>
+        </DialogActions>
+      </Dialog>
+
       <Menu
         anchorEl={actionsAnchorEl}
         open={actionsMenuOpen}
         onClose={handleActionsMenuClose}
       >
+        <MenuItem
+          disabled={actionsTargetIsSaving || !actionsTarget}
+          onClick={() => {
+            if (!actionsTarget) {
+              return
+            }
+
+            closeRowActions()
+            openProfileEditor(actionsTarget)
+          }}
+          sx={{ minWidth: 220 }}
+        >
+          Edit Name & Details
+        </MenuItem>
+        <Divider />
         <MenuItem
           disabled={actionsTargetIsSaving || !actionsTarget}
           selected={actionsSubmenuSection === 'approval_role'}

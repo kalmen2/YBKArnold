@@ -69,9 +69,14 @@ export function calculateDateDifferenceDays(startDate, endDate) {
 // A deleted or cancelled order is finished. It stays in Mongo as history, but
 // it must never reserve an order number, block a rename, or win an identity
 // lookup away from the live order that reused its number.
+//
+// A history twin is the same thing by intent: it deliberately shares an order
+// number with the live order so the previous owner's figure can sit beside
+// ours, and it must never win or muddy a lookup for that number.
 export const LIVE_ORDER_FILTER = Object.freeze({
   is_deleted: { $ne: true },
   is_cancelled: { $ne: true },
+  is_history_twin: { $ne: true },
 })
 
 export function isTerminalOrderDocument(orderDocument) {

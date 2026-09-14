@@ -75,14 +75,16 @@ import {
   groupOrderDocumentTerms,
 } from '../../features/crm/OrderConversionDocuments'
 import { DEFAULT_QUOTE_PRINT_SETTINGS } from '../../features/crm/NativeQuotePdf'
-import { fetchCrmSalesReps } from '../../features/crm/api'
 import {
   createCrmDealerContact,
   fetchCrmContacts,
+  fetchCrmDealers,
   fetchCrmDocumentTerms,
   fetchCrmQuotePrintSettings,
+  fetchCrmSalesReps,
   updateCrmContact,
   type CrmContact,
+  type CrmDealer,
 } from '../../features/crm/api'
 import { OrderDesignPartsTab } from '../../features/orders/OrderDesignPartsTab'
 import {
@@ -705,6 +707,7 @@ export function JobDetailsDialog({
   const [notesDraft, setNotesDraft] = useState('')
   const [descriptionDraft, setDescriptionDraft] = useState('')
   const [benchDraft, setBenchDraft] = useState('')
+  const [dealerSourceIdDraft, setDealerSourceIdDraft] = useState('')
   const [orderDateDraft, setOrderDateDraft] = useState('')
   const [leadTimeDateDraft, setLeadTimeDateDraft] = useState('')
   const [podDateDraft, setPodDateDraft] = useState('')
@@ -712,6 +715,16 @@ export function JobDetailsDialog({
   const [documentLayoutDraft, setDocumentLayoutDraft] = useState(ORDER_DOCUMENT_DEFAULT_METADATA_LAYOUT)
   const [depositPercentDraft, setDepositPercentDraft] = useState('')
   const [depositReceivedDateDraft, setDepositReceivedDateDraft] = useState('')
+  const hasLinkedMondayItem = Boolean(String(order?.mondayItemId ?? '').trim())
+  const canManageOrderMetadata = appUser?.isAdmin === true || appUser?.isManager === true
+  const canEditOrderInformation =
+    canManageOrderMetadata
+    || appUser?.isOfficeWorker === true
+  const canManageOrderDocuments = canEditOrderInformation
+  const canEditOrderNumber =
+    appUser?.isAdmin === true
+    && hasLinkedMondayItem
+  const canEditOrderDate = appUser?.isAdmin === true && hasLinkedMondayItem
   const salesRepsQuery = useQuery({
     queryKey: QUERY_KEYS.crmSalesReps,
     queryFn: () => fetchCrmSalesReps(),
@@ -727,6 +740,37 @@ export function JobDetailsDialog({
 
     return [...new Set([...names, ...(current ? [current] : [])])].sort((a, b) => a.localeCompare(b))
   }, [order?.salesRep, salesRepsQuery.data?.salesReps])
+  const dealersQuery = useQuery({
+    queryKey: ['crm', 'order-dialog-dealers'],
+    queryFn: () => fetchCrmDealers({ limit: 2500, includeArchived: false }),
+    enabled: open && mode === 'details' && canEditOrderInformation,
+    staleTime: 5 * 60 * 1000,
+  })
+  const dealerOptions = useMemo(() => {
+    const optionsBySourceId = new Map<string, Pick<CrmDealer, 'sourceId' | 'name'>>()
+    const currentDealerSourceId = String(order?.dealerSourceId ?? '').trim()
+    const currentDealerName = String(order?.dealerName ?? '').trim()
+
+    ;(dealersQuery.data?.dealers ?? []).forEach((dealer) => {
+      const sourceId = String(dealer.sourceId ?? '').trim()
+
+      if (sourceId) {
+        optionsBySourceId.set(sourceId, {
+          sourceId,
+          name: String(dealer.name ?? dealer.quoteCompanyName ?? sourceId).trim() || sourceId,
+        })
+      }
+    })
+
+    if (currentDealerSourceId && !optionsBySourceId.has(currentDealerSourceId)) {
+      optionsBySourceId.set(currentDealerSourceId, {
+        sourceId: currentDealerSourceId,
+        name: currentDealerName || currentDealerSourceId,
+      })
+    }
+
+    return [...optionsBySourceId.values()].sort((left, right) => left.name.localeCompare(right.name))
+  }, [dealersQuery.data?.dealers, order?.dealerName, order?.dealerSourceId])
   const [leadTimeTextDraft, setLeadTimeTextDraft] = useState('')
   const [freightDescriptionDraft, setFreightDescriptionDraft] = useState('')
   const [shippingCarrierDraft, setShippingCarrierDraft] = useState('')
@@ -752,10 +796,13 @@ export function JobDetailsDialog({
     enabled: open,
     staleTime: 10 * 60 * 1000,
   })
+  const activeDealerSourceIdForContacts = isManagerEditMode
+    ? dealerSourceIdDraft
+    : String(order?.dealerSourceId ?? '').trim()
   const dealerContactsQuery = useQuery({
-    queryKey: ['crm', 'dealer-contacts', order?.dealerSourceId],
-    queryFn: () => fetchCrmContacts({ dealerSourceId: String(order?.dealerSourceId ?? ''), limit: 1000, includeArchived: false }),
-    enabled: open && Boolean(order?.dealerSourceId),
+    queryKey: ['crm', 'dealer-contacts', activeDealerSourceIdForContacts],
+    queryFn: () => fetchCrmContacts({ dealerSourceId: activeDealerSourceIdForContacts, limit: 1000, includeArchived: false }),
+    enabled: open && Boolean(activeDealerSourceIdForContacts),
     staleTime: 5 * 60 * 1000,
   })
   const [warrantyActionSuccess, setWarrantyActionSuccess] = useState<string | null>(null)
@@ -895,6 +942,8 @@ export function JobDetailsDialog({
     setNotesDraft(String(order?.notes ?? '').trim())
     setDescriptionDraft(String(order?.description ?? '').trim())
     setBenchDraft(String(order?.bench ?? '').trim())
+    setDealerSourceIdDraft(String(order?.dealerSourceId ?? '').trim())
+    setSelectedContactSourceId(String(order?.contactSourceId ?? '').trim())
     setOrderDateDraft(normalizeDateInputValue(order?.orderDate ?? ''))
     setLeadTimeDateDraft(normalizeDateInputValue(order?.dueDate ?? ''))
     setPodDateDraft(normalizeDateInputValue(order?.shippedAt ?? ''))
@@ -952,11 +1001,13 @@ export function JobDetailsDialog({
     mode,
     open,
     order?.description,
+    order?.dealerSourceId,
     order?.dueDate,
     order?.id,
     order?.orderDate,
     order?.orderName,
     order?.orderNumber,
+    order?.contactSourceId,
     order?.notes,
     order?.poNumber,
     order?.shippedAt,
@@ -1407,16 +1458,6 @@ export function JobDetailsDialog({
   const canOpenCutListDocument = Boolean(cutListUrl)
   const hasInvoiceDocument = Boolean(order?.hasInvoiceDocument)
   const canOpenInvoiceDocument = hasInvoiceDocument
-  const hasLinkedMondayItem = Boolean(String(order?.mondayItemId ?? '').trim())
-  const canManageOrderMetadata = appUser?.isAdmin === true || appUser?.isManager === true
-  const canEditOrderInformation =
-    canManageOrderMetadata
-    || appUser?.isOfficeWorker === true
-  const canManageOrderDocuments = canEditOrderInformation
-  const canEditOrderNumber =
-    canEditOrderInformation
-    && hasLinkedMondayItem
-    && order?.hasQuickBooksRecord !== true
   const isWarrantyActionInFlight =
     isSavingWarrantyIssue || isSavingWarrantyLeadTime || isMarkingWarrantyDone
   const canManageWarrantyIssue = Boolean(order?.isShipped && String(order?.mondayItemId ?? '').trim())
@@ -1700,7 +1741,14 @@ export function JobDetailsDialog({
   }
 
   const updateCachedManagerOrderDetails = (nextDetails: {
+    dealerSourceId: string | null
+    dealerName: string | null
+    contactSourceId: string | null
+    contactName: string | null
+    contactEmail: string | null
+    contactPhone: string | null
     orderName: string | null
+    orderDate: string | null
     poNumber: string | null
     notes: string | null
     description: string | null
@@ -1717,7 +1765,14 @@ export function JobDetailsDialog({
   }) => {
     const applyDetails = (entry: OrdersOverviewOrder) => ({
       ...entry,
+      dealerSourceId: nextDetails.dealerSourceId,
+      dealerName: nextDetails.dealerName,
+      contactSourceId: nextDetails.contactSourceId,
+      contactName: nextDetails.contactName,
+      contactEmail: nextDetails.contactEmail,
+      contactPhone: nextDetails.contactPhone,
       orderName: nextDetails.orderName,
+      orderDate: nextDetails.orderDate,
       poNumber: nextDetails.poNumber,
       notes: nextDetails.notes,
       description: nextDetails.description,
@@ -1809,15 +1864,15 @@ export function JobDetailsDialog({
         const response = await updateCrmContact(currentContact.sourceId, { name, primaryEmail: String(contactEmailDraft ?? '').trim() || null, phone: String(contactPhoneDraft ?? '').trim() || null })
         contact = response.contact
       } else if (contactDialogMode === 'add') {
-        if (!order.dealerSourceId) throw new Error('This order is not linked to a CRM company.')
-        const response = await createCrmDealerContact(order.dealerSourceId, { name, primaryEmail: String(contactEmailDraft ?? '').trim() || null, phone: String(contactPhoneDraft ?? '').trim() || null })
+        if (!activeDealerSourceIdForContacts) throw new Error('Choose a CRM company before adding a contact.')
+        const response = await createCrmDealerContact(activeDealerSourceIdForContacts, { name, primaryEmail: String(contactEmailDraft ?? '').trim() || null, phone: String(contactPhoneDraft ?? '').trim() || null })
         contact = response.contact
       } else {
         contact = (dealerContactsQuery.data?.contacts || []).find((entry) => entry.sourceId === selectedContactSourceId) as CrmContact
         if (!contact) throw new Error('Choose a contact or add a new one.')
       }
       await applyOrderContact(contact)
-      await queryClient.invalidateQueries({ queryKey: ['crm', 'dealer-contacts', order.dealerSourceId] })
+      await queryClient.invalidateQueries({ queryKey: ['crm', 'dealer-contacts', activeDealerSourceIdForContacts] })
       setIsContactDialogOpen(false)
     } catch (error) {
       setContactActionError(error instanceof Error ? error.message : 'Could not save the order contact.')
@@ -2367,6 +2422,85 @@ export function JobDetailsDialog({
     </Box>
   )
 
+  const renderEditableOrderOptionSelect = ({
+    label,
+    value,
+    onChange,
+    options,
+    loading = false,
+    disabled = false,
+    placeholder = 'Not set',
+    action,
+  }: {
+    label: string
+    value: string
+    onChange: (value: string) => void
+    options: Array<{ value: string; label: string }>
+    loading?: boolean
+    disabled?: boolean
+    placeholder?: string
+    action?: ReactNode
+  }) => (
+    <Box
+      sx={{
+        display: 'grid',
+        gridTemplateColumns: { xs: '1fr', sm: '124px minmax(0, 1fr)' },
+        alignItems: 'center',
+        gap: 1,
+        py: 0.3,
+        minWidth: 0,
+        borderBottom: '1px solid',
+        borderColor: 'rgba(15, 42, 68, 0.055)',
+        '&:last-of-type': { borderBottom: 0 },
+      }}
+    >
+      <Typography
+        variant="caption"
+        sx={{
+          fontWeight: 700,
+          fontSize: '0.7rem',
+          letterSpacing: '0.04em',
+          textTransform: 'uppercase',
+          color: 'text.secondary',
+          lineHeight: 1.6,
+        }}
+      >
+        {label}
+      </Typography>
+      <Stack direction="row" alignItems="center" spacing={0.75} sx={{ minWidth: 0 }}>
+        <TextField
+          select
+          size="small"
+          value={options.some((option) => option.value === value) ? value : ''}
+          onChange={(event) => onChange(event.target.value)}
+          disabled={disabled || isSavingManagerEdit || loading}
+          fullWidth
+          SelectProps={{ displayEmpty: true }}
+          sx={{
+            '& .MuiOutlinedInput-root': {
+              bgcolor: disabled ? 'transparent' : 'rgba(15, 42, 68, 0.028)',
+              fontSize: { xs: '0.88rem', md: '0.91rem' },
+              fontWeight: 650,
+              '& fieldset': { borderColor: 'transparent' },
+              '&:hover:not(.Mui-disabled) fieldset': { borderColor: 'rgba(15, 42, 68, 0.22)' },
+              '&.Mui-focused': { bgcolor: '#ffffff' },
+              '&.Mui-focused fieldset': { borderColor: 'primary.main' },
+            },
+            '& .MuiSelect-select': { py: 0.62 },
+          }}
+        >
+          <MenuItem value="">
+            <Typography variant="body2" color="text.disabled">{loading ? 'Loading...' : placeholder}</Typography>
+          </MenuItem>
+          {options.map((option) => (
+            <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>
+          ))}
+        </TextField>
+        {action ? <Box sx={{ flexShrink: 0 }}>{action}</Box> : null}
+      </Stack>
+    </Box>
+  )
+
   const renderOrderFactRow = (
     fieldLabel: string,
     content: ReactNode,
@@ -2787,13 +2921,17 @@ export function JobDetailsDialog({
     const nextOrderName = String(orderNameDraft ?? '').trim()
     const requestedOrderNumber = String(orderNumberDraft ?? '').trim()
     const currentOrderNumber = String(order.orderNumber ?? '').trim()
+    const requestedDealerSourceId = String(dealerSourceIdDraft ?? '').trim()
+    const currentDealerSourceId = String(order.dealerSourceId ?? '').trim()
+    const requestedContactSourceId = String(selectedContactSourceId ?? '').trim()
+    const currentContactSourceId = String(order.contactSourceId ?? '').trim()
 
     if (!mondayItemId) {
       setManagerEditError('Monday item id is missing for this order.')
       return
     }
 
-    if (!requestedOrderNumber) {
+    if (canEditOrderNumber && !requestedOrderNumber) {
       setManagerEditError('Order number is required.')
       return
     }
@@ -2811,7 +2949,7 @@ export function JobDetailsDialog({
     try {
       let orderNumberWarning: string | null = null
 
-      if (requestedOrderNumber !== currentOrderNumber) {
+      if (canEditOrderNumber && requestedOrderNumber !== currentOrderNumber) {
         const orderNumberResponse = await postOrdersOrderNumberUpdate({
           mondayItemId,
           orderNumber: requestedOrderNumber,
@@ -2825,6 +2963,14 @@ export function JobDetailsDialog({
       const response = await postOrdersOrderDetailsUpdate({
         mondayItemId,
         orderName: nextOrderName,
+        ...(requestedDealerSourceId !== currentDealerSourceId
+          ? { dealerSourceId: requestedDealerSourceId, contactSourceId: requestedContactSourceId }
+          : requestedContactSourceId !== currentContactSourceId
+            ? { contactSourceId: requestedContactSourceId }
+            : {}),
+        ...(canEditOrderDate && String(orderDateDraft ?? '').trim() !== normalizeDateInputValue(order.orderDate ?? '')
+          ? { orderDate: String(orderDateDraft ?? '').trim() }
+          : {}),
         ...(String(salesRepDraft ?? '').trim() !== String(order.salesRep ?? '').trim()
           ? { salesRep: String(salesRepDraft ?? '').trim() }
           : {}),
@@ -2874,12 +3020,15 @@ export function JobDetailsDialog({
           : {}),
       })
 
+      setDealerSourceIdDraft(String(response.order.dealerSourceId ?? '').trim())
+      setSelectedContactSourceId(String(response.order.contactSourceId ?? '').trim())
       setOrderNameDraft(String(response.order.orderName ?? '').trim())
       setSalesRepDraft(String(response.order.salesRep ?? '').trim())
       setPoNumberDraft(String(response.order.poNumber ?? '').trim())
       setNotesDraft(String(response.order.notes ?? '').trim())
       setDescriptionDraft(String(response.order.description ?? '').trim())
       setBenchDraft(String(response.order.bench ?? '').trim())
+      setOrderDateDraft(normalizeDateInputValue(response.order.orderDate ?? ''))
       setLeadTimeDateDraft(normalizeDateInputValue(response.order.dueDate ?? ''))
       setPodDateDraft(normalizeDateInputValue(response.order.podDate ?? ''))
       setShipToDraft(String(response.order.shipTo ?? '').trim())
@@ -5841,12 +5990,17 @@ export function JobDetailsDialog({
                                 value: orderNumberDraft,
                                 onChange: setOrderNumberDraft,
                                 disabled: !canEditOrderNumber,
-                                helperText: order?.hasQuickBooksRecord
-                                  ? 'Locked because this order has a QuickBooks project.'
-                                  : undefined,
                               })
                             : renderOrderFact('Order number', orderNumberDraft)}
-                          {renderOrderFact('Order date', orderDateDraft ? formatDate(orderDateDraft) : '')}
+                          {isManagerEditMode
+                            ? renderEditableOrderFact({
+                                label: 'Order date',
+                                value: orderDateDraft,
+                                onChange: setOrderDateDraft,
+                                type: 'date',
+                                disabled: !canEditOrderDate,
+                              })
+                            : renderOrderFact('Order date', orderDateDraft ? formatDate(orderDateDraft) : '')}
                           {isManagerEditMode
                             ? renderEditableOrderFact({
                                 label: 'Project',
@@ -5854,36 +6008,67 @@ export function JobDetailsDialog({
                                 onChange: setOrderNameDraft,
                               })
                             : renderOrderFact('Project', orderNameDraft)}
-                          {renderOrderFact('Company', order?.dealerName)}
-                          {renderOrderFactRow(
-                            'Contact',
-                            order?.contactName || order?.contactEmail || order?.contactPhone ? (
-                              <Stack spacing={0.1} sx={{ minWidth: 0 }}>
-                                <Typography variant="body1" sx={{ fontSize: '0.91rem', fontWeight: 650, lineHeight: 1.5 }}>
-                                  {order?.contactName || 'Unnamed contact'}
-                                </Typography>
-                                {order?.contactEmail ? (
-                                  <Typography variant="body2" color="text.secondary" sx={{ overflowWrap: 'anywhere' }}>
-                                    {order.contactEmail}
+                          {isManagerEditMode
+                            ? renderEditableOrderOptionSelect({
+                                label: 'Company',
+                                value: dealerSourceIdDraft,
+                                onChange: (nextDealerSourceId) => {
+                                  setDealerSourceIdDraft(nextDealerSourceId)
+                                  setSelectedContactSourceId('')
+                                },
+                                options: dealerOptions.map((dealer) => ({
+                                  value: dealer.sourceId,
+                                  label: dealer.name,
+                                })),
+                                loading: dealersQuery.isLoading,
+                              })
+                            : renderOrderFact('Company', order?.dealerName)}
+                          {isManagerEditMode
+                            ? renderEditableOrderOptionSelect({
+                                label: 'Contact',
+                                value: selectedContactSourceId,
+                                onChange: setSelectedContactSourceId,
+                                options: (dealerContactsQuery.data?.contacts ?? []).map((contact) => ({
+                                  value: contact.sourceId,
+                                  label: [contact.name, contact.primaryEmail, contact.phone].filter(Boolean).join(' · ') || contact.sourceId,
+                                })),
+                                loading: dealerContactsQuery.isLoading,
+                                disabled: !dealerSourceIdDraft,
+                                placeholder: dealerSourceIdDraft ? 'No contact selected' : 'Choose company first',
+                                action: (
+                                  <Button
+                                    size="small"
+                                    variant="text"
+                                    onClick={openContactDialog}
+                                    disabled={!dealerSourceIdDraft || dealerSourceIdDraft !== String(order?.dealerSourceId ?? '').trim()}
+                                    sx={{ minWidth: 0, px: 0.5, textTransform: 'none', fontWeight: 750 }}
+                                  >
+                                    Change
+                                  </Button>
+                                ),
+                              })
+                            : renderOrderFactRow(
+                                'Contact',
+                                order?.contactName || order?.contactEmail || order?.contactPhone ? (
+                                  <Stack spacing={0.1} sx={{ minWidth: 0 }}>
+                                    <Typography variant="body1" sx={{ fontSize: '0.91rem', fontWeight: 650, lineHeight: 1.5 }}>
+                                      {order?.contactName || 'Unnamed contact'}
+                                    </Typography>
+                                    {order?.contactEmail ? (
+                                      <Typography variant="body2" color="text.secondary" sx={{ overflowWrap: 'anywhere' }}>
+                                        {order.contactEmail}
+                                      </Typography>
+                                    ) : null}
+                                    {order?.contactPhone ? (
+                                      <Typography variant="body2" color="text.secondary">{order.contactPhone}</Typography>
+                                    ) : null}
+                                  </Stack>
+                                ) : (
+                                  <Typography variant="body1" sx={{ fontSize: '0.91rem', fontWeight: 500, color: 'text.disabled' }}>
+                                    Not set
                                   </Typography>
-                                ) : null}
-                                {order?.contactPhone ? (
-                                  <Typography variant="body2" color="text.secondary">{order.contactPhone}</Typography>
-                                ) : null}
-                              </Stack>
-                            ) : (
-                              <Typography variant="body1" sx={{ fontSize: '0.91rem', fontWeight: 500, color: 'text.disabled' }}>
-                                Not set
-                              </Typography>
-                            ),
-                            {
-                              action: canEditOrderInformation ? (
-                                <Button size="small" variant="text" onClick={openContactDialog} sx={{ minWidth: 0, px: 0.5, textTransform: 'none', fontWeight: 750 }}>
-                                  Change
-                                </Button>
-                              ) : null,
-                            },
-                          )}
+                                ),
+                              )}
                           {(canEditOrderInformation || appUser?.canViewOrderValue)
                             ? isManagerEditMode
                               ? renderEditableOrderSelect({

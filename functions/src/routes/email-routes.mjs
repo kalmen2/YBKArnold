@@ -2161,4 +2161,91 @@ export function registerEmailRoutes(app, deps) {
       next(error)
     }
   })
+
+  // System notifications (chat mentions, tasks) are not somebody replying to a
+  // customer — they are the app writing to a worker. They go out through the
+  // owner's connected Google account but From: a dedicated alias, so replies
+  // never land in a person's inbox and the mail does not read as being from
+  // them. Returned rather than exported because the token refresh lives in
+  // this closure.
+  async function sendSystemEmail({ to, subject, textBody, htmlBody }) {
+    const recipient = normalizeText(to, 320)
+
+    if (!recipient) {
+      return { sent: false, reason: 'no_recipient' }
+    }
+
+    const fromEmail = normalizeText(process.env.NOTIFICATION_FROM_EMAIL, 320)
+      || normalizeText(process.env.OWNER_EMAIL, 320)
+
+    if (!fromEmail) {
+      return { sent: false, reason: 'no_sender_configured' }
+    }
+
+    const { emailConnectionsCollection } = await getGoogleCollections()
+
+    // Every Google connection is a candidate, freshest first. A stale grant
+    // returns invalid_grant forever, and the account that happens to belong to
+    // the owner is not necessarily the one still authorised — so try each in
+    // turn rather than trusting one. The From: is the alias either way.
+    const connections = await emailConnectionsCollection
+      .find({ provider: googleProviderId })
+      .sort({ updatedAt: -1 })
+      .toArray()
+
+    if (connections.length === 0) {
+      return { sent: false, reason: 'no_google_connection' }
+    }
+
+    const googleConfig = getGoogleConfig()
+    const raw = buildGmailRawMessage({
+      fromEmail,
+      to: [recipient],
+      cc: [],
+      bcc: [],
+      subject,
+      textBody,
+      htmlBody,
+    })
+    const failures = []
+
+    for (const candidate of connections) {
+      try {
+        let tokenResolution = await resolveGoogleAccessToken({
+          emailConnectionsCollection,
+          connection: candidate,
+          googleConfig,
+        })
+
+        try {
+          await sendGoogleRawEmail({ accessToken: tokenResolution.accessToken, raw })
+        } catch (error) {
+          if (Number(error?.status) !== 401) {
+            throw error
+          }
+
+          tokenResolution = await resolveGoogleAccessToken({
+            emailConnectionsCollection,
+            connection: tokenResolution.connection,
+            googleConfig,
+            forceRefresh: true,
+          })
+
+          await sendGoogleRawEmail({ accessToken: tokenResolution.accessToken, raw })
+        }
+
+        return { sent: true, fromEmail, to: recipient, via: candidate.userEmailLower || null }
+      } catch (error) {
+        failures.push(`${candidate.userEmailLower || 'unknown'}: ${String(error?.message ?? error).slice(0, 200)}`)
+      }
+    }
+
+    // Nothing could send. Surfaced rather than thrown, because the caller is a
+    // chat message that must still post.
+    console.warn('System email could not be sent by any Google connection.', failures)
+
+    return { sent: false, reason: 'no_working_connection', failures }
+  }
+
+  return { sendSystemEmail }
 }

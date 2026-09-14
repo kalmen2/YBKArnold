@@ -13,13 +13,16 @@ import {
   IconButton,
   Stack,
   TextField,
+  Tooltip,
   Typography,
 } from '@mui/material'
 import { useState } from 'react'
 import type { AppChatMessage, AppChatThread, AppChatUser } from './api'
 import { ChatAvatar } from './ChatAvatar'
+import { ChatUserIdentity } from './ChatUserIdentity'
 import {
   buildThreadTitle,
+  filterUserOptions,
   formatAttachmentSize,
   formatLastSeen,
   resolveAttachmentSrc,
@@ -147,6 +150,20 @@ export function ChatDetailsPanel({
                 onChange={(_event, value) => setMemberUids(value.map((user) => user.uid))}
                 getOptionLabel={(option) => resolveUserLabel(option)}
                 isOptionEqualToValue={(option, value) => option.uid === value.uid}
+                filterOptions={filterUserOptions}
+                renderOption={({ key, ...optionProps }, option) => (
+                  <Box component="li" key={key} {...optionProps} sx={{ px: 1.25, py: 0.75 }}>
+                    <ChatUserIdentity user={option} size={30} />
+                  </Box>
+                )}
+                renderValue={(selected, getItemProps) => selected.map((option, index) => {
+                  const { key, ...chipProps } = getItemProps({ index })
+                  return (
+                    <Tooltip key={key} title={option.email}>
+                      <Chip {...chipProps} size="small" label={resolveUserLabel(option)} />
+                    </Tooltip>
+                  )
+                })}
                 renderInput={(params) => (
                   <TextField {...params} label="Members" placeholder="Add a worker" />
                 )}
@@ -172,25 +189,14 @@ export function ChatDetailsPanel({
 
         <Stack spacing={1} sx={{ mb: 2 }}>
           {thread.memberProfiles.map((member) => (
-            <Stack key={member.uid} direction="row" spacing={1.25} alignItems="center">
-              <ChatAvatar
-                size={32}
-                name={resolveUserLabel(member)}
-                imageUrl={member.imageUrl}
-                status={member.onlineStatus}
-                colorKey={member.uid}
-              />
-              <Box sx={{ minWidth: 0, flexGrow: 1 }}>
-                <Typography variant="body2" noWrap sx={{ fontWeight: 600 }}>
-                  {resolveUserLabel(member)}
-                  {member.uid === currentUid ? ' (you)' : ''}
-                </Typography>
-                <Typography variant="caption" color="text.secondary" noWrap sx={{ display: 'block' }}>
-                  {formatLastSeen(member)}
-                </Typography>
-              </Box>
+            <ChatUserIdentity
+              key={member.uid}
+              user={member}
+              nameSuffix={member.uid === currentUid ? ' (you)' : ''}
+              tooltip={formatLastSeen(member)}
+            >
               {member.isAdmin ? <Chip size="small" label="Admin" variant="outlined" /> : null}
-            </Stack>
+            </ChatUserIdentity>
           ))}
         </Stack>
 

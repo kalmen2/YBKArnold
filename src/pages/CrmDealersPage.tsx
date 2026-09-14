@@ -1,15 +1,22 @@
 import ContactsRoundedIcon from '@mui/icons-material/ContactsRounded'
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
 import EditRoundedIcon from '@mui/icons-material/EditRounded'
+import EmailRoundedIcon from '@mui/icons-material/EmailRounded'
 import FacebookRoundedIcon from '@mui/icons-material/FacebookRounded'
+import FilterListRoundedIcon from '@mui/icons-material/FilterListRounded'
 import LanguageRoundedIcon from '@mui/icons-material/LanguageRounded'
 import LinkedInIcon from '@mui/icons-material/LinkedIn'
+import LocalOfferRoundedIcon from '@mui/icons-material/LocalOfferRounded'
+import LocationOnRoundedIcon from '@mui/icons-material/LocationOnRounded'
 import MoreVertRoundedIcon from '@mui/icons-material/MoreVertRounded'
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded'
 import PinterestIcon from '@mui/icons-material/Pinterest'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
+import ReceiptLongRoundedIcon from '@mui/icons-material/ReceiptLongRounded'
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded'
 import AddRoundedIcon from '@mui/icons-material/AddRounded'
+import SortRoundedIcon from '@mui/icons-material/SortRounded'
+import StarRoundedIcon from '@mui/icons-material/StarRounded'
 import TwitterIcon from '@mui/icons-material/Twitter'
 import YouTubeIcon from '@mui/icons-material/YouTube'
 import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage'
@@ -17,6 +24,8 @@ import {
   Avatar,
   Box,
   Button,
+  Card,
+  CardHeader,
   Checkbox,
   Chip,
   CircularProgress,
@@ -32,7 +41,6 @@ import {
   List,
   ListItemButton,
   ListItemText,
-  Link,
   Menu,
   MenuItem,
   Paper,
@@ -50,8 +58,9 @@ import {
   TextField,
   Tooltip,
   Typography,
+  LinearProgress,
 } from '@mui/material'
-import { alpha } from '@mui/material/styles'
+import { alpha, useTheme } from '@mui/material/styles'
 import { useQuery } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
 import { Link as RouterLink, unstable_usePrompt, useBeforeUnload, useSearchParams } from 'react-router-dom'
@@ -89,6 +98,7 @@ import { displayContactName } from '../features/crm/utils'
 import { resolveImageFileExtension, sanitizeStoragePathSegment } from '../lib/fileUtils'
 import { QUERY_KEYS } from '../lib/queryKeys'
 import { ChatThread, type ChatThreadMessage, type ChatThreadSendPayload } from '../features/chat/ChatThread'
+import { Chart, ChartSelect, useChart } from '../components/chart'
 
 function resolveSocialVisual(platform: string, href: string) {
   const source = `${platform} ${href}`.toLowerCase()
@@ -212,6 +222,113 @@ function normalizeWebsiteHref(value: string | null | undefined) {
   return `https://${trimmedValue}`
 }
 
+function formatCompactNumber(value: number) {
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value)
+}
+
+function formatCompactCurrency(value: number) {
+  return new Intl.NumberFormat(undefined, {
+    style: 'currency',
+    currency: 'USD',
+    maximumFractionDigits: 0,
+  }).format(value)
+}
+
+function formatPercent(value: number) {
+  return `${Math.round(value)}%`
+}
+
+function resolveMonthKey(value: string | null | undefined) {
+  const timestamp = Date.parse(String(value ?? '').trim())
+
+  if (!Number.isFinite(timestamp)) {
+    return ''
+  }
+
+  const date = new Date(timestamp)
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`
+}
+
+function formatMonthLabel(monthKey: string) {
+  const timestamp = Date.parse(`${monthKey}-01T00:00:00.000Z`)
+
+  if (!Number.isFinite(timestamp)) {
+    return monthKey
+  }
+
+  return new Intl.DateTimeFormat(undefined, { month: 'short', year: '2-digit', timeZone: 'UTC' }).format(new Date(timestamp))
+}
+
+type AccountOverviewPeriod = '3m' | '6m' | '12m' | 'all'
+type AccountSortBy = 'name' | 'quote_count' | 'conversion_rate' | 'order_count' | 'quoted_value' | 'order_value'
+type AccountSortDirection = 'asc' | 'desc'
+
+const accountOverviewPeriodOptions = [
+  { value: '3m', label: '3 months' },
+  { value: '6m', label: '6 months' },
+  { value: '12m', label: '12 months' },
+  { value: 'all', label: 'All months' },
+]
+
+const accountSortOptions: Array<{
+  value: AccountSortBy
+  label: string
+  defaultDirection: AccountSortDirection
+}> = [
+  { value: 'name', label: 'Account name', defaultDirection: 'asc' },
+  { value: 'quote_count', label: 'Most quotes', defaultDirection: 'desc' },
+  { value: 'conversion_rate', label: 'Highest conversion', defaultDirection: 'desc' },
+  { value: 'order_count', label: 'Most orders', defaultDirection: 'desc' },
+  { value: 'quoted_value', label: 'Highest quoted value', defaultDirection: 'desc' },
+  { value: 'order_value', label: 'Highest order value', defaultDirection: 'desc' },
+]
+
+function resolveMonthDate(monthKey: string) {
+  const timestamp = Date.parse(`${monthKey}-01T00:00:00.000Z`)
+  return Number.isFinite(timestamp) ? new Date(timestamp) : null
+}
+
+function shiftUtcMonth(date: Date, offset: number) {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + offset, 1))
+}
+
+function formatMonthKeyFromDate(date: Date) {
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`
+}
+
+function buildMonthRange(startDate: Date, endDate: Date) {
+  const months: string[] = []
+  const cursor = new Date(Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth(), 1))
+  const end = new Date(Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth(), 1))
+
+  while (cursor <= end) {
+    months.push(formatMonthKeyFromDate(cursor))
+    cursor.setUTCMonth(cursor.getUTCMonth() + 1)
+  }
+
+  return months
+}
+
+function resolveOverviewMonthKeys(activityMonthKeys: string[], period: AccountOverviewPeriod) {
+  const currentMonth = new Date()
+  const todayMonth = new Date(Date.UTC(currentMonth.getUTCFullYear(), currentMonth.getUTCMonth(), 1))
+  const activityDates = activityMonthKeys
+    .map(resolveMonthDate)
+    .filter((date): date is Date => Boolean(date))
+    .sort((first, second) => first.getTime() - second.getTime())
+  const endDate = activityDates.length > 0 && activityDates[activityDates.length - 1] > todayMonth
+    ? activityDates[activityDates.length - 1]
+    : todayMonth
+
+  if (period === 'all') {
+    const startDate = activityDates[0] ?? shiftUtcMonth(endDate, -5)
+    return buildMonthRange(startDate, endDate)
+  }
+
+  const monthCount = Number(period.replace('m', ''))
+  return buildMonthRange(shiftUtcMonth(endDate, -(monthCount - 1)), endDate)
+}
+
 type DealerFormState = {
   sourceId: string
   name: string
@@ -238,20 +355,287 @@ type DealerFormState = {
   isFavorite: boolean
 }
 
-function AccountReadOnlyOverview({ account }: { account: DealerFormState }) {
+function AccountStatsOverview({
+  account,
+  contactsTotal,
+  quotes,
+  orders,
+  isLoadingQuotes,
+  isLoadingOrders,
+}: {
+  account: DealerFormState
+  contactsTotal: number
+  quotes: CrmQuote[]
+  orders: CrmOrder[]
+  isLoadingQuotes: boolean
+  isLoadingOrders: boolean
+}) {
+  const theme = useTheme()
+  const [overviewPeriod, setOverviewPeriod] = useState<AccountOverviewPeriod>('6m')
+  const accountTypeLabel = account.accountType === 'designer' ? 'Designer' : 'Dealer'
+  const quoteTotal = quotes.reduce((total, quote) => total + (Number.isFinite(Number(quote.totalAmount)) ? Number(quote.totalAmount) : 0), 0)
+  const orderTotal = orders.reduce((total, order) => total + (Number.isFinite(Number(order.orderValue)) ? Number(order.orderValue) : 0), 0)
+  const convertedQuotes = quotes.filter((quote) => Boolean(quote.convertedAt || quote.convertedOrderId || quote.convertedOrderNumber)).length
+  const quoteConversionRate = quotes.length > 0 ? (convertedQuotes / quotes.length) * 100 : 0
+  const valueConversionRate = quoteTotal > 0 ? Math.min(100, (orderTotal / quoteTotal) * 100) : 0
+  const activityMonthKeys = Array.from(new Set([
+    ...quotes.map((quote) => resolveMonthKey(quote.acceptedAt || quote.sentAt || quote.opportunityDate || quote.createdAt || quote.updatedAt)),
+    ...orders.map((order) => resolveMonthKey(order.poDate || order.createdAt || order.updatedAt)),
+  ].filter(Boolean))).sort()
+  const monthKeys = resolveOverviewMonthKeys(activityMonthKeys, overviewPeriod)
+  const quoteValuesByMonth = new Map<string, number>()
+  const orderValuesByMonth = new Map<string, number>()
+
+  quotes.forEach((quote) => {
+    const monthKey = resolveMonthKey(quote.acceptedAt || quote.sentAt || quote.opportunityDate || quote.createdAt || quote.updatedAt)
+    const quoteValue = Number.isFinite(Number(quote.totalAmount)) ? Number(quote.totalAmount) : 0
+
+    if (monthKey) {
+      quoteValuesByMonth.set(monthKey, (quoteValuesByMonth.get(monthKey) ?? 0) + quoteValue)
+    }
+  })
+
+  orders.forEach((order) => {
+    const monthKey = resolveMonthKey(order.poDate || order.createdAt || order.updatedAt)
+    const orderValue = Number.isFinite(Number(order.orderValue)) ? Number(order.orderValue) : 0
+
+    if (monthKey) {
+      orderValuesByMonth.set(monthKey, (orderValuesByMonth.get(monthKey) ?? 0) + orderValue)
+    }
+  })
+
+  const monthTotals = monthKeys.map((monthKey) => {
+    return {
+      monthKey,
+      quoteValue: quoteValuesByMonth.get(monthKey) ?? 0,
+      orderValue: orderValuesByMonth.get(monthKey) ?? 0,
+    }
+  })
+  const maxMonthlyValue = Math.max(
+    0,
+    ...monthTotals.map((month) => month.quoteValue),
+    ...monthTotals.map((month) => month.orderValue),
+  )
+  const metricCards = [
+    { label: 'Quote value', value: formatCompactCurrency(quoteTotal), icon: <LocalOfferRoundedIcon fontSize="small" /> },
+    { label: 'Conversion rate', value: formatPercent(quoteConversionRate), icon: <ReceiptLongRoundedIcon fontSize="small" /> },
+    { label: 'Contacts', value: formatCompactNumber(contactsTotal), icon: <ContactsRoundedIcon fontSize="small" /> },
+  ]
+  const chartOptions = useChart({
+    colors: [theme.palette.success.main, theme.palette.warning.main],
+    chart: {
+      toolbar: { show: false },
+    },
+    stroke: {
+      width: 3,
+      curve: 'smooth',
+    },
+    fill: {
+      type: 'gradient',
+      gradient: {
+        shadeIntensity: 1,
+        opacityFrom: 0.22,
+        opacityTo: 0.04,
+        stops: [0, 100],
+      },
+    },
+    markers: {
+      size: 4,
+      strokeWidth: 2,
+      strokeColors: theme.palette.background.paper,
+      hover: { size: 6 },
+    },
+    xaxis: {
+      categories: monthTotals.map((month) => formatMonthLabel(month.monthKey)),
+      axisBorder: { show: false },
+      axisTicks: { show: false },
+    },
+    yaxis: {
+      min: 0,
+      max: maxMonthlyValue > 0 ? undefined : 1,
+      tickAmount: 4,
+      labels: {
+        formatter: (value: number) => (maxMonthlyValue > 0 ? formatCompactCurrency(value) : ''),
+      },
+    },
+    grid: {
+      borderColor: alpha(theme.palette.grey[500], 0.16),
+      strokeDashArray: 3,
+    },
+    tooltip: {
+      shared: true,
+      intersect: false,
+      y: {
+        formatter: (value: number) => formatCompactCurrency(value),
+      },
+    },
+  })
+  const chartSeries = [
+    { name: 'Quotes', data: monthTotals.map((month) => Number(month.quoteValue.toFixed(2))) },
+    { name: 'Orders', data: monthTotals.map((month) => Number(month.orderValue.toFixed(2))) },
+  ]
+  const radialOptions = useChart({
+    colors: [theme.palette.success.main],
+    chart: { sparkline: { enabled: true } },
+    plotOptions: {
+      radialBar: {
+        hollow: { size: '64%' },
+        track: { background: alpha(theme.palette.grey[500], 0.16) },
+        dataLabels: {
+          name: { show: false },
+          value: {
+            offsetY: 8,
+            fontSize: '22px',
+            fontWeight: 800,
+            formatter: (value: number) => formatPercent(value),
+          },
+        },
+      },
+    },
+    stroke: { lineCap: 'round' },
+  })
+  const conversionRows = [
+    {
+      label: 'Quotes converted to orders',
+      value: quoteConversionRate,
+      amount: `${convertedQuotes} of ${quotes.length}`,
+    },
+    {
+      label: 'Order value against quoted value',
+      value: valueConversionRate,
+      amount: `${formatCompactCurrency(orderTotal)} of ${formatCompactCurrency(quoteTotal)}`,
+    },
+  ]
+
+  return (
+    <Stack spacing={1.5}>
+      {(isLoadingQuotes || isLoadingOrders) ? (
+        <Stack direction="row" spacing={1} alignItems="center">
+          <CircularProgress size={16} />
+          <Typography variant="body2" color="text.secondary">Loading account activity...</Typography>
+        </Stack>
+      ) : null}
+
+      <Box
+        sx={{
+          display: 'grid',
+          gridTemplateColumns: { xs: '1fr', md: 'repeat(3, minmax(0, 1fr))' },
+          gap: 1,
+        }}
+      >
+        {metricCards.map((metric) => (
+          <Paper key={metric.label} variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
+            <Stack direction="row" spacing={1.25} alignItems="center">
+              <Avatar variant="rounded" sx={{ width: 38, height: 38, bgcolor: (theme) => alpha(theme.palette.primary.main, 0.08), color: 'primary.main' }}>
+                {metric.icon}
+              </Avatar>
+              <Box sx={{ minWidth: 0 }}>
+                <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
+                  {metric.label}
+                </Typography>
+                <Typography variant="h6" sx={{ fontWeight: 800, lineHeight: 1.15 }} noWrap>
+                  {metric.value}
+                </Typography>
+              </Box>
+            </Stack>
+          </Paper>
+        ))}
+      </Box>
+
+      <Box
+        sx={{
+          display: 'grid',
+          gridTemplateColumns: { xs: '1fr', lg: 'minmax(0, 1.45fr) minmax(280px, 0.8fr)' },
+          gap: 1.5,
+        }}
+      >
+        <Card variant="outlined" sx={{ borderRadius: 2 }}>
+          <CardHeader
+            title="Monthly value"
+            subheader={`${accountTypeLabel} quote and order activity`}
+            action={(
+              <ChartSelect
+                options={accountOverviewPeriodOptions}
+                value={overviewPeriod}
+                onChange={(newValue) => setOverviewPeriod(newValue as AccountOverviewPeriod)}
+              />
+            )}
+            slotProps={{ title: { variant: 'subtitle2', fontWeight: 800 }, subheader: { variant: 'body2' } }}
+          />
+          <Chart
+            type="area"
+            series={chartSeries}
+            options={chartOptions}
+            slotProps={{ loading: { p: 2.5 } }}
+            sx={{ px: 1, pt: 1, pb: 2, height: 300 }}
+          />
+        </Card>
+
+        <Card variant="outlined" sx={{ borderRadius: 2 }}>
+          <CardHeader
+            title="Conversion"
+            subheader="Quotes becoming orders"
+            slotProps={{ title: { variant: 'subtitle2', fontWeight: 800 }, subheader: { variant: 'body2' } }}
+          />
+          <Stack spacing={2.25} sx={{ px: 3, pb: 3 }}>
+            <Stack direction={{ xs: 'column', sm: 'row', lg: 'column' }} spacing={2} alignItems={{ xs: 'stretch', sm: 'center', lg: 'stretch' }}>
+              <Box sx={{ mx: 'auto', width: 150, height: 150 }}>
+                <Chart
+                  type="radialBar"
+                  series={[Math.round(quoteConversionRate)]}
+                  options={radialOptions}
+                  slotProps={{ loading: { p: 2 } }}
+                  sx={{ height: 150 }}
+                />
+              </Box>
+              <Box sx={{ minWidth: 0, flex: 1 }}>
+                <Typography variant="h4" sx={{ fontWeight: 800, lineHeight: 1 }}>
+                  {formatPercent(quoteConversionRate)}
+                </Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75 }}>
+                  {convertedQuotes} converted from {quotes.length} quote{quotes.length === 1 ? '' : 's'}
+                </Typography>
+              </Box>
+            </Stack>
+            {conversionRows.map((row) => (
+              <Box key={row.label}>
+                <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
+                  <Typography variant="body2" sx={{ fontWeight: 700 }}>{row.label}</Typography>
+                  <Typography variant="body2" color="text.secondary">{row.amount}</Typography>
+                </Stack>
+                <LinearProgress
+                  variant="determinate"
+                  value={Math.max(0, Math.min(100, row.value))}
+                  sx={{
+                    height: 8,
+                    borderRadius: 999,
+                    bgcolor: (progressTheme) => alpha(progressTheme.palette.grey[500], 0.16),
+                  }}
+                />
+              </Box>
+            ))}
+          </Stack>
+        </Card>
+      </Box>
+    </Stack>
+  )
+}
+
+function AccountInformationFields({ account }: { account: DealerFormState }) {
   const displayValue = (value: string) => value.trim() || 'Not provided'
   const location = [account.address, account.city, account.state, account.zip, account.country]
     .map((value) => value.trim())
     .filter(Boolean)
     .join(', ')
+  const accountTypeLabel = account.accountType === 'designer' ? 'Designer' : 'Dealer'
 
   const detailGroups = [
     {
-      title: 'Company',
+      title: 'Account setup',
       rows: [
         ['Account name', account.name],
         ['Quote company name', account.quoteCompanyName],
-        ['Account type', account.accountType === 'designer' ? 'Designer' : 'Dealer'],
+        ['Account type', accountTypeLabel],
         ['Sales representative', account.salesRep],
         ['Payment terms', account.paymentTerms],
       ],
@@ -274,16 +658,16 @@ function AccountReadOnlyOverview({ account }: { account: DealerFormState }) {
       <Box
         sx={{
           display: 'grid',
-          gridTemplateColumns: { xs: '1fr', md: 'repeat(2, minmax(0, 1fr))' },
-          gap: 1.25,
+          gridTemplateColumns: { xs: '1fr', lg: 'repeat(2, minmax(0, 1fr))' },
+          gap: 1.5,
         }}
       >
         {detailGroups.map((group) => (
           <Paper key={group.title} variant="outlined" sx={{ p: 1.5, borderRadius: 2, bgcolor: 'background.paper' }}>
-            <Typography variant="overline" color="primary.main" sx={{ fontWeight: 800, letterSpacing: 0.8 }}>
+            <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
               {group.title}
             </Typography>
-            <Stack divider={<Divider flexItem />}>
+            <Stack divider={<Divider flexItem />} sx={{ mt: 0.75 }}>
               {group.rows.map(([label, value]) => (
                 <Box key={label} sx={{ py: 0.9, display: 'grid', gridTemplateColumns: 'minmax(120px, 0.8fr) minmax(0, 1.4fr)', gap: 1.5 }}>
                   <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>{label}</Typography>
@@ -298,8 +682,8 @@ function AccountReadOnlyOverview({ account }: { account: DealerFormState }) {
       </Box>
 
       <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
-        <Typography variant="overline" color="primary.main" sx={{ fontWeight: 800, letterSpacing: 0.8 }}>Location & online</Typography>
-        <Box sx={{ mt: 0.5, display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(2, minmax(0, 1fr))' }, gap: 1.5 }}>
+        <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>Address and social links</Typography>
+        <Box sx={{ mt: 1, display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(2, minmax(0, 1fr))' }, gap: 1.5 }}>
           <Box>
             <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>Address</Typography>
             <Typography variant="body2" sx={{ mt: 0.25, fontWeight: location ? 600 : 400, color: location ? 'text.primary' : 'text.disabled' }}>
@@ -307,14 +691,12 @@ function AccountReadOnlyOverview({ account }: { account: DealerFormState }) {
             </Typography>
           </Box>
           <Box>
-            <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>Website</Typography>
-            {normalizeWebsiteHref(account.website) ? (
-              <Link href={normalizeWebsiteHref(account.website)} target="_blank" rel="noopener noreferrer" sx={{ mt: 0.25, display: 'block', fontSize: 14, fontWeight: 600, overflowWrap: 'anywhere' }}>
-                {account.website}
-              </Link>
-            ) : (
-              <Typography variant="body2" color="text.disabled" sx={{ mt: 0.25 }}>Not provided</Typography>
-            )}
+            <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>Classification</Typography>
+            <Stack direction="row" flexWrap="wrap" gap={0.75} sx={{ mt: 0.5 }}>
+              <Chip size="small" label={accountTypeLabel} color={account.accountType === 'designer' ? 'secondary' : 'primary'} variant="outlined" />
+              {account.isFavorite ? <Chip size="small" icon={<StarRoundedIcon />} label="Favorite" variant="outlined" /> : null}
+              {account.isArchived ? <Chip size="small" label="Archived" color="warning" variant="outlined" /> : null}
+            </Stack>
           </Box>
         </Box>
         {account.socialLinks.length > 0 ? (
@@ -332,7 +714,11 @@ function AccountReadOnlyOverview({ account }: { account: DealerFormState }) {
               />
             ))}
           </Stack>
-        ) : null}
+        ) : (
+          <Typography variant="body2" color="text.disabled" sx={{ mt: 1.25 }}>
+            No social links.
+          </Typography>
+        )}
       </Paper>
 
       {account.accountText.trim() ? (
@@ -526,7 +912,7 @@ export default function CrmDealersPage() {
 
   const [dealerQuotes, setDealerQuotes] = useState<CrmQuote[]>([])
   const [dealerOrders, setDealerOrders] = useState<CrmOrder[]>([])
-  const [detailsTab, setDetailsTab] = useState<'info' | 'contacts' | 'chat' | 'quotes' | 'orders' | 'terms'>('info')
+  const [detailsTab, setDetailsTab] = useState<'overview' | 'info' | 'contacts' | 'chat' | 'quotes' | 'orders' | 'terms'>('overview')
   const [isSendingDealerChat, setIsSendingDealerChat] = useState(false)
 
   const [isLoadingDetail, setIsLoadingDetail] = useState(false)
@@ -544,7 +930,10 @@ export default function CrmDealersPage() {
   const [dealerStateFilters, setDealerStateFilters] = useState<string[]>([])
   const [dealerSalesRepFilters, setDealerSalesRepFilters] = useState<string[]>([])
   const [filtersMenuAnchorEl, setFiltersMenuAnchorEl] = useState<HTMLElement | null>(null)
-  const [filtersMenuMode, setFiltersMenuMode] = useState<'root' | 'state' | 'salesRep'>('root')
+  const [filtersMenuMode, setFiltersMenuMode] = useState<'root' | 'type' | 'state' | 'salesRep'>('root')
+  const [accountSortBy, setAccountSortBy] = useState<AccountSortBy>('name')
+  const [accountSortDirection, setAccountSortDirection] = useState<AccountSortDirection>('asc')
+  const [sortMenuAnchorEl, setSortMenuAnchorEl] = useState<HTMLElement | null>(null)
 
   const [contactSearchInput, setContactSearchInput] = useState('')
   const contactSearch = useDebounceValue(contactSearchInput)
@@ -661,7 +1050,12 @@ export default function CrmDealersPage() {
     return [...optionSet].sort((left, right) => left.localeCompare(right))
   }, [dealers, salesReps])
 
-  const hasAdvancedFilters = dealerStateFilters.length > 0 || dealerSalesRepFilters.length > 0
+  const hasAdvancedFilters = accountTypeFilter !== 'all' || dealerStateFilters.length > 0 || dealerSalesRepFilters.length > 0
+  const activeAccountSortOption = accountSortOptions.find((option) => option.value === accountSortBy) ?? accountSortOptions[0]
+  const activeAccountSortDirectionLabel = accountSortBy === 'name'
+    ? accountSortDirection === 'desc' ? 'Z to A' : 'A to Z'
+    : accountSortDirection === 'desc' ? 'high to low' : 'low to high'
+  const activeAccountSortLabel = `${activeAccountSortOption.label} ${activeAccountSortDirectionLabel}`
 
   useEffect(() => {
     const requestedDealerId = searchParams.get('dealerSourceId')?.trim() ?? ''
@@ -698,7 +1092,7 @@ export default function CrmDealersPage() {
 
   useEffect(() => {
     setDealerPage(0)
-  }, [accountTypeFilter, dealerSalesRepFilters, dealerStateFilters])
+  }, [accountSortBy, accountSortDirection, accountTypeFilter, dealerSalesRepFilters, dealerStateFilters])
 
   const { isLoading: isLoadingDealers, isRefreshing: isRefreshingDealers, errorMessage, setErrorMessage, load: loadDealers } = useDataLoader({
     fetcher: useCallback(() => fetchCrmDealers({
@@ -708,7 +1102,9 @@ export default function CrmDealersPage() {
       accountType: accountTypeFilter === 'all' ? undefined : accountTypeFilter,
       dealerStates: dealerStateFilters.length > 0 ? dealerStateFilters : undefined,
       salesReps: dealerSalesRepFilters.length > 0 ? dealerSalesRepFilters : undefined,
-    }), [accountTypeFilter, dealerPage, dealerRowsPerPage, dealerSalesRepFilters, dealerSearch, dealerStateFilters]),
+      sortBy: accountSortBy,
+      sortDirection: accountSortDirection,
+    }), [accountSortBy, accountSortDirection, accountTypeFilter, dealerPage, dealerRowsPerPage, dealerSalesRepFilters, dealerSearch, dealerStateFilters]),
     onSuccess: useCallback((response: CrmDealersResponse) => {
       const nextDealers = Array.isArray(response.dealers) ? response.dealers : []
       const normalizedTotal = typeof response.total === 'number' && Number.isFinite(response.total)
@@ -873,6 +1269,12 @@ export default function CrmDealersPage() {
   }, [loadDealerDetail])
 
   useEffect(() => {
+    if (detailsTab === 'overview') {
+      void loadDealerSalesData()
+      void loadDealerQuotesData()
+      return
+    }
+
     if (detailsTab === 'orders') {
       void loadDealerSalesData()
       return
@@ -912,6 +1314,42 @@ export default function CrmDealersPage() {
     () => [...dealerQuotes].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()),
     [dealerQuotes],
   )
+
+  const visibleDealerCounts = useMemo(() => {
+    const counts = {
+      all: dealersTotal,
+      dealer: 0,
+      designer: 0,
+      none: 0,
+    }
+
+    dealers.forEach((dealer) => {
+      const normalizedType = String(dealer.accountType || dealer.accountClass || '').trim().toLowerCase()
+
+      if (normalizedType === 'designer') {
+        counts.designer += 1
+        return
+      }
+
+      if (normalizedType === 'dealer') {
+        counts.dealer += 1
+        return
+      }
+
+      counts.none += 1
+    })
+
+    return counts
+  }, [dealers, dealersTotal])
+
+  const selectedAccountName = selectedDealer?.name || selectedDealer?.sourceId || ''
+  const selectedAccountTypeLabel = selectedDealer
+    ? (String(selectedDealer.accountType || selectedDealer.accountClass || '').trim().toLowerCase() === 'designer' ? 'Designer' : 'Dealer')
+    : ''
+  const selectedAccountLocation = selectedDealer
+    ? [selectedDealer.city, selectedDealer.state].map((value) => String(value ?? '').trim()).filter(Boolean).join(', ')
+    : ''
+  const selectedAccountPictureUrl = String(dealerForm?.pictureUrl || selectedDealer?.pictureUrl || '').trim() || undefined
 
   const dealerFormSnapshot = useMemo(
     () => serializeDealerFormState(dealerForm),
@@ -1459,13 +1897,15 @@ export default function CrmDealersPage() {
   }
 
   return (
-    <Stack spacing={2.5}>
+    <Stack spacing={2}>
       <Paper
         variant="outlined"
         sx={{
-          p: { xs: 1.25, md: 1.5 },
-          borderColor: (theme) => alpha(theme.palette.primary.main, 0.28),
-          background: (theme) => `linear-gradient(125deg, ${alpha(theme.palette.primary.main, 0.15)} 0%, ${alpha(theme.palette.info.main, 0.08)} 42%, ${alpha(theme.palette.background.paper, 0.98)} 100%)`,
+          p: { xs: 1, md: 1.25 },
+          borderRadius: 2,
+          borderColor: (theme) => alpha(theme.palette.grey[500], 0.18),
+          bgcolor: 'background.paper',
+          boxShadow: (theme) => `0 10px 28px ${alpha(theme.palette.grey[900], 0.04)}`,
         }}
       >
         <Stack
@@ -1475,16 +1915,23 @@ export default function CrmDealersPage() {
           alignItems={{ xs: 'stretch', lg: 'center' }}
         >
           <Stack
-            direction={{ xs: 'column', sm: 'row' }}
-            spacing={0.75}
-            alignItems={{ xs: 'flex-start', sm: 'center' }}
+            direction="row"
+            spacing={1}
+            alignItems="center"
             sx={{ flexShrink: 0 }}
           >
-            <Stack direction="row" spacing={0.4} alignItems="center">
-              <Typography variant="h6" sx={{ fontWeight: 700, lineHeight: 1.2 }}>
-                Accounts
-              </Typography>
-            </Stack>
+            <Typography variant="h6" sx={{ fontWeight: 800, lineHeight: 1.1 }}>
+              Accounts
+            </Typography>
+            <Chip size="small" label={dealersTotal.toLocaleString()} variant="outlined" />
+            {hasAdvancedFilters ? (
+              <Chip
+                size="small"
+                color="primary"
+                variant="outlined"
+                label={`${(accountTypeFilter !== 'all' ? 1 : 0) + dealerStateFilters.length + dealerSalesRepFilters.length} filters`}
+              />
+            ) : null}
 
             <Menu
               anchorEl={filtersMenuAnchorEl}
@@ -1507,6 +1954,7 @@ export default function CrmDealersPage() {
                 <Button
                   size="small"
                   onClick={() => {
+                    setAccountTypeFilter('all')
                     setDealerStateFilters([])
                     setDealerSalesRepFilters([])
                   }}
@@ -1520,6 +1968,23 @@ export default function CrmDealersPage() {
 
               {filtersMenuMode === 'root' ? (
                 <>
+                  <MenuItem
+                    onClick={() => {
+                      setFiltersMenuMode('type')
+                    }}
+                  >
+                    <ListItemText
+                      primary="By account type"
+                      secondary={accountTypeFilter === 'all'
+                        ? 'All accounts'
+                        : accountTypeFilter === 'dealer'
+                          ? 'Dealers'
+                          : accountTypeFilter === 'designer'
+                            ? 'Designers'
+                            : 'Not set'}
+                    />
+                  </MenuItem>
+
                   <MenuItem
                     onClick={() => {
                       setFiltersMenuMode('state')
@@ -1541,6 +2006,36 @@ export default function CrmDealersPage() {
                       secondary={dealerSalesRepFilters.length > 0 ? `${dealerSalesRepFilters.length} selected` : 'All sales reps'}
                     />
                   </MenuItem>
+                </>
+              ) : filtersMenuMode === 'type' ? (
+                <>
+                  <MenuItem
+                    onClick={() => {
+                      setFiltersMenuMode('root')
+                    }}
+                  >
+                    <ListItemText primary="Back" secondary="Choose filter type" />
+                  </MenuItem>
+
+                  <Divider />
+
+                  {([
+                    ['all', 'All accounts', visibleDealerCounts.all],
+                    ['dealer', 'Dealers', visibleDealerCounts.dealer],
+                    ['designer', 'Designers', visibleDealerCounts.designer],
+                    ['none', 'Not set', visibleDealerCounts.none],
+                  ] as const).map(([value, label, count]) => (
+                    <MenuItem
+                      dense
+                      key={`accounts-type-filter-${value}`}
+                      selected={accountTypeFilter === value}
+                      onClick={() => {
+                        setAccountTypeFilter(value)
+                      }}
+                    >
+                      <ListItemText primary={label} secondary={`${count} shown on this page`} />
+                    </MenuItem>
+                  ))}
                 </>
               ) : filtersMenuMode === 'state' ? (
                 <>
@@ -1615,26 +2110,6 @@ export default function CrmDealersPage() {
               )}
             </Menu>
 
-            <Stack
-              direction={{ xs: 'column', md: 'row' }}
-              spacing={0.75}
-              alignItems={{ xs: 'stretch', md: 'center' }}
-            >
-              <Tabs
-                value={accountTypeFilter}
-                onChange={(_event, nextValue: 'all' | 'dealer' | 'designer' | 'none') => {
-                  setAccountTypeFilter(nextValue)
-                }}
-                variant="scrollable"
-                allowScrollButtonsMobile
-                sx={{ minHeight: 30 }}
-              >
-                <Tab value="all" label="All" sx={{ minHeight: 30, textTransform: 'none', py: 0.25 }} />
-                <Tab value="dealer" label="Dealers" sx={{ minHeight: 30, textTransform: 'none', py: 0.25 }} />
-                <Tab value="designer" label="Designers" sx={{ minHeight: 30, textTransform: 'none', py: 0.25 }} />
-                <Tab value="none" label="Not set" sx={{ minHeight: 30, textTransform: 'none', py: 0.25 }} />
-              </Tabs>
-            </Stack>
           </Stack>
 
           <Box
@@ -1647,7 +2122,7 @@ export default function CrmDealersPage() {
           >
             <TextField
               size="small"
-              label="Search accounts or emails"
+              label="Search"
               placeholder="Account name, account ID, owner or contact email"
               value={dealerSearchInput}
               sx={{ width: { xs: '100%', lg: 'min(560px, 100%)' } }}
@@ -1673,6 +2148,90 @@ export default function CrmDealersPage() {
               flexShrink: 0,
             }}
           >
+            <Tooltip title={`Sorted by ${activeAccountSortLabel}`}>
+              <Button
+                variant={accountSortBy === 'name' && accountSortDirection === 'asc' ? 'outlined' : 'contained'}
+                size="small"
+                startIcon={<SortRoundedIcon />}
+                onClick={(event) => {
+                  setSortMenuAnchorEl(event.currentTarget)
+                }}
+              >
+                Sort
+              </Button>
+            </Tooltip>
+            <Menu
+              anchorEl={sortMenuAnchorEl}
+              open={Boolean(sortMenuAnchorEl)}
+              onClose={() => {
+                setSortMenuAnchorEl(null)
+              }}
+              PaperProps={{
+                sx: {
+                  width: 300,
+                },
+              }}
+            >
+              <Box sx={{ px: 1.5, py: 1 }}>
+                <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                  Sort accounts
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  {activeAccountSortLabel}
+                </Typography>
+              </Box>
+
+              <Divider />
+
+              {accountSortOptions.map((option) => (
+                <MenuItem
+                  dense
+                  key={`accounts-sort-${option.value}`}
+                  selected={accountSortBy === option.value}
+                  onClick={() => {
+                    setAccountSortBy(option.value)
+                    setAccountSortDirection(option.defaultDirection)
+                    setSortMenuAnchorEl(null)
+                  }}
+                >
+                  <ListItemText primary={option.label} secondary={option.defaultDirection === 'desc' ? 'Highest first' : 'A to Z'} />
+                </MenuItem>
+              ))}
+
+              <Divider />
+
+              <MenuItem
+                dense
+                selected={accountSortDirection === 'desc'}
+                onClick={() => {
+                  setAccountSortDirection('desc')
+                }}
+              >
+                <ListItemText primary="Direction: high to low" />
+              </MenuItem>
+              <MenuItem
+                dense
+                selected={accountSortDirection === 'asc'}
+                onClick={() => {
+                  setAccountSortDirection('asc')
+                }}
+              >
+                <ListItemText primary={accountSortBy === 'name' ? 'Direction: A to Z' : 'Direction: low to high'} />
+              </MenuItem>
+            </Menu>
+            <Tooltip title={hasAdvancedFilters ? 'Filters active' : 'Open filters'}>
+              <Button
+                variant={hasAdvancedFilters ? 'contained' : 'outlined'}
+                size="small"
+                startIcon={<FilterListRoundedIcon />}
+                onClick={(event) => {
+                  setFiltersMenuMode('root')
+                  setFiltersMenuAnchorEl(event.currentTarget)
+                }}
+              >
+                Filters
+              </Button>
+            </Tooltip>
             <Button component={RouterLink} to={contactsPageLink} variant="outlined" startIcon={<ContactsRoundedIcon />}>
               Contacts
             </Button>
@@ -1709,9 +2268,10 @@ export default function CrmDealersPage() {
         <Paper
           variant="outlined"
           sx={{
-            p: 1.5,
-            borderColor: (theme) => alpha(theme.palette.primary.main, 0.22),
-            background: (theme) => `linear-gradient(180deg, ${alpha(theme.palette.primary.main, 0.06)} 0%, ${theme.palette.background.paper} 36%)`,
+            p: 1,
+            borderRadius: 2,
+            borderColor: (theme) => alpha(theme.palette.grey[500], 0.18),
+            bgcolor: (theme) => alpha(theme.palette.grey[500], 0.035),
             height: { xs: 'auto', xl: desktopPanelsHeight },
             overflow: { xs: 'visible', xl: 'hidden' },
             display: 'flex',
@@ -1720,9 +2280,17 @@ export default function CrmDealersPage() {
         >
           <Stack spacing={1.25} sx={{ height: '100%', minHeight: 0 }}>
             <Stack direction="row" spacing={0.5} alignItems="center" justifyContent="space-between">
-              <Typography variant="h6" sx={{ fontWeight: 700 }}>
-                Account Names
-              </Typography>
+              <Box sx={{ px: 0.5 }}>
+                <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                  Account Names
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  {dealersTotal > 0 ? `${dealerPage * dealerRowsPerPage + 1}-${Math.min((dealerPage + 1) * dealerRowsPerPage, dealersTotal)}` : '0'} of {dealersTotal}
+                </Typography>
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontWeight: 700 }}>
+                  {activeAccountSortLabel}
+                </Typography>
+              </Box>
 
               <Tooltip title={hasAdvancedFilters ? 'More filters (active)' : 'More filters'}>
                 <IconButton
@@ -1757,15 +2325,27 @@ export default function CrmDealersPage() {
                   minHeight: 0,
                   maxHeight: { xs: 320, xl: 'none' },
                   overflow: 'auto',
+                  borderRadius: 2,
+                  borderColor: (theme) => alpha(theme.palette.grey[500], 0.16),
+                  bgcolor: 'background.paper',
                 }}
               >
-                <List disablePadding>
+                <List disablePadding sx={{ p: 0.5 }}>
                   {dealers.map((dealer, index) => {
                     const isSelected = selectedDealerId === dealer.sourceId
                     const accountName = dealer.name || dealer.sourceId
                     const accountInitial = accountName.charAt(0).toUpperCase()
                     const accountPictureUrl = String(dealer.pictureUrl ?? '').trim() || undefined
                     const accountLocation = [dealer.city, dealer.state].filter(Boolean).join(', ') || 'No location'
+                    const accountType = String(dealer.accountType || dealer.accountClass || '').trim().toLowerCase()
+                    const accountTypeLabel = accountType === 'designer' ? 'Designer' : accountType === 'dealer' ? 'Dealer' : 'Not set'
+                    const salesRepLabel = String(dealer.salesRep ?? '').trim()
+                    const rawQuoteCount = Number(dealer.quoteCount ?? 0)
+                    const rawOrderCount = Number(dealer.orderCount ?? 0)
+                    const rawQuoteConversionRate = Number(dealer.quoteConversionRate ?? 0)
+                    const quoteCount = Number.isFinite(rawQuoteCount) ? Math.max(0, rawQuoteCount) : 0
+                    const orderCount = Number.isFinite(rawOrderCount) ? Math.max(0, rawOrderCount) : 0
+                    const quoteConversionRate = Number.isFinite(rawQuoteConversionRate) ? Math.max(0, rawQuoteConversionRate) : 0
 
                     return (
                       <ListItemButton
@@ -1778,22 +2358,26 @@ export default function CrmDealersPage() {
                           py: 1,
                           px: 1,
                           gap: 1,
-                          borderBottom: index < dealers.length - 1 ? '1px solid' : 'none',
-                          borderColor: 'divider',
+                          mb: index < dealers.length - 1 ? 0.5 : 0,
+                          border: '1px solid',
+                          borderColor: isSelected ? 'primary.main' : 'transparent',
+                          borderRadius: 1.5,
+                          bgcolor: isSelected ? (theme) => alpha(theme.palette.primary.main, 0.08) : 'transparent',
                           '&.Mui-selected': {
-                            bgcolor: (theme) => alpha(theme.palette.primary.main, 0.14),
-                            borderLeft: '3px solid',
-                            borderColor: 'primary.main',
+                            bgcolor: (theme) => alpha(theme.palette.primary.main, 0.08),
                           },
                           '&.Mui-selected:hover': {
-                            bgcolor: (theme) => alpha(theme.palette.primary.main, 0.2),
+                            bgcolor: (theme) => alpha(theme.palette.primary.main, 0.12),
+                          },
+                          '&:hover': {
+                            bgcolor: (theme) => alpha(theme.palette.grey[500], 0.08),
                           },
                         }}
                       >
                         <Avatar
                           src={accountPictureUrl}
                           alt={accountName}
-                          sx={{ width: 32, height: 32, fontSize: 12, fontWeight: 700 }}
+                          sx={{ width: 38, height: 38, fontSize: 13, fontWeight: 800 }}
                           imgProps={{ loading: 'lazy', referrerPolicy: 'no-referrer' }}
                         >
                           {accountInitial || '?'}
@@ -1801,15 +2385,49 @@ export default function CrmDealersPage() {
 
                         <ListItemText
                           primary={accountName}
-                          secondary={accountLocation}
                           primaryTypographyProps={{
                             fontSize: 14,
                             fontWeight: isSelected ? 700 : 500,
+                            noWrap: true,
                           }}
                           secondaryTypographyProps={{
-                            fontSize: 12,
+                            component: 'div',
                             color: 'text.secondary',
                           }}
+                          secondary={(
+                            <Stack spacing={0.5} sx={{ mt: 0.35 }}>
+                              <Typography variant="caption" color="text.secondary" noWrap>
+                                {accountLocation}
+                              </Typography>
+                              <Stack direction="row" spacing={0.5} alignItems="center" flexWrap="wrap" useFlexGap>
+                                <Chip size="small" label={accountTypeLabel} variant="outlined" sx={{ height: 20, fontSize: 11 }} />
+                                {salesRepLabel ? (
+                                  <Chip size="small" label={salesRepLabel} sx={{ height: 20, fontSize: 11 }} />
+                                ) : null}
+                                <Chip
+                                  size="small"
+                                  label={`${formatCompactNumber(quoteCount)} quotes`}
+                                  color={accountSortBy === 'quote_count' ? 'primary' : 'default'}
+                                  variant={accountSortBy === 'quote_count' ? 'filled' : 'outlined'}
+                                  sx={{ height: 20, fontSize: 11 }}
+                                />
+                                <Chip
+                                  size="small"
+                                  label={`${formatPercent(quoteConversionRate)} conv`}
+                                  color={accountSortBy === 'conversion_rate' ? 'success' : 'default'}
+                                  variant={accountSortBy === 'conversion_rate' ? 'filled' : 'outlined'}
+                                  sx={{ height: 20, fontSize: 11 }}
+                                />
+                                <Chip
+                                  size="small"
+                                  label={`${formatCompactNumber(orderCount)} orders`}
+                                  color={accountSortBy === 'order_count' ? 'warning' : 'default'}
+                                  variant={accountSortBy === 'order_count' ? 'filled' : 'outlined'}
+                                  sx={{ height: 20, fontSize: 11 }}
+                                />
+                              </Stack>
+                            </Stack>
+                          )}
                         />
                       </ListItemButton>
                     )
@@ -1818,24 +2436,32 @@ export default function CrmDealersPage() {
               </Paper>
             )}
 
-            <TablePagination
-              component="div"
-              count={dealersTotal}
-              page={dealerPage}
-              onPageChange={(_event, nextPage) => {
-                setDealerPage(nextPage)
-              }}
-              rowsPerPage={dealerRowsPerPage}
-              onRowsPerPageChange={(event) => {
-                setDealerRowsPerPage(Number(event.target.value))
-                setDealerPage(0)
-              }}
-              showFirstButton
-              showLastButton
-              rowsPerPageOptions={[25, 50, 100]}
-            />
+            <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1} sx={{ px: 0.5, pt: 0.25 }}>
+              <FormControl size="small" sx={{ minWidth: 88 }}>
+                <Select
+                  value={String(dealerRowsPerPage)}
+                  onChange={(event) => {
+                    setDealerRowsPerPage(Number(event.target.value))
+                    setDealerPage(0)
+                  }}
+                  sx={{
+                    height: 32,
+                    bgcolor: 'background.paper',
+                    '& .MuiSelect-select': {
+                      py: 0.5,
+                      fontSize: 13,
+                      fontWeight: 700,
+                    },
+                  }}
+                >
+                  {[25, 50, 100, 250].map((rowsPerPageOption) => (
+                    <MenuItem key={rowsPerPageOption} value={rowsPerPageOption}>
+                      {rowsPerPageOption}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
 
-            <Stack direction="row" justifyContent="space-between" sx={{ px: 0.5 }}>
               <Button
                 size="small"
                 variant="outlined"
@@ -1863,8 +2489,11 @@ export default function CrmDealersPage() {
         <Paper
           variant="outlined"
           sx={{
-            p: 1.5,
-            borderColor: (theme) => alpha(theme.palette.primary.main, 0.22),
+            p: { xs: 1.25, md: 1.5 },
+            borderRadius: 2,
+            borderColor: (theme) => alpha(theme.palette.grey[500], 0.18),
+            bgcolor: 'background.paper',
+            boxShadow: (theme) => `0 18px 45px ${alpha(theme.palette.grey[900], 0.05)}`,
             height: { xs: 'auto', xl: desktopPanelsHeight },
             overflow: { xs: 'visible', xl: 'auto' },
           }}
@@ -1884,36 +2513,58 @@ export default function CrmDealersPage() {
               <Typography color="text.secondary">Loading account details...</Typography>
             </Stack>
           ) : selectedDealer ? (
-            <Stack spacing={1.1}>
+            <Stack spacing={1.5}>
               <Paper
                 variant="outlined"
                 sx={{
-                  p: 1,
-                  borderColor: (theme) => alpha(theme.palette.primary.main, 0.24),
-                  background: (theme) => `linear-gradient(120deg, ${alpha(theme.palette.primary.main, 0.1)} 0%, ${alpha(theme.palette.background.paper, 0.9)} 80%)`,
+                  p: { xs: 1.5, md: 2 },
+                  borderRadius: 2,
+                  borderColor: (theme) => alpha(theme.palette.grey[500], 0.16),
+                  bgcolor: (theme) => alpha(theme.palette.grey[500], 0.035),
                 }}
               >
                 <Stack
                   direction={{ xs: 'column', md: 'row' }}
-                  spacing={1}
+                  spacing={1.5}
                   justifyContent="space-between"
                   alignItems={{ xs: 'flex-start', md: 'center' }}
                 >
-                  <Stack direction="row" spacing={1.25} alignItems="center">
+                  <Stack direction="row" spacing={1.5} alignItems="center" sx={{ minWidth: 0 }}>
                     <Avatar
-                      src={(dealerForm?.pictureUrl || selectedDealer.pictureUrl) || undefined}
-                      alt={selectedDealer.name || selectedDealer.sourceId}
-                      sx={{ width: 44, height: 44, fontSize: 16 }}
+                      src={selectedAccountPictureUrl}
+                      alt={selectedAccountName}
+                      sx={{
+                        width: 62,
+                        height: 62,
+                        fontSize: 22,
+                        fontWeight: 800,
+                        boxShadow: (theme) => `0 0 0 4px ${theme.palette.background.paper}`,
+                      }}
                       imgProps={{ loading: 'lazy', referrerPolicy: 'no-referrer' }}
                     >
-                      {(selectedDealer.name || selectedDealer.sourceId).charAt(0).toUpperCase()}
+                      {selectedAccountName.charAt(0).toUpperCase()}
                     </Avatar>
 
-                    <Stack spacing={0.3}>
-                      <Typography variant="h6" sx={{ fontWeight: 700 }}>
-                        {selectedDealer.name || selectedDealer.sourceId}
+                    <Stack spacing={0.75} sx={{ minWidth: 0 }}>
+                      <Typography variant="h5" sx={{ fontWeight: 800, lineHeight: 1.12 }} noWrap>
+                        {selectedAccountName}
                       </Typography>
-                      <Typography variant="body2" color="text.secondary">
+                      <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
+                        <Chip size="small" label={selectedAccountTypeLabel} color={selectedAccountTypeLabel === 'Designer' ? 'secondary' : 'primary'} variant="outlined" />
+                        {selectedAccountLocation ? (
+                          <Chip size="small" icon={<LocationOnRoundedIcon />} label={selectedAccountLocation} variant="outlined" />
+                        ) : null}
+                        {selectedDealer.isArchived ? (
+                          <Chip size="small" label="Archived" color="warning" variant="outlined" />
+                        ) : null}
+                        {dealerForm?.isFavorite ? (
+                          <Chip size="small" icon={<StarRoundedIcon />} label="Favorite" variant="outlined" />
+                        ) : null}
+                        {isAccountEditing && hasUnsavedDealerChanges ? (
+                          <Chip size="small" label="Unsaved" color="warning" variant="outlined" />
+                        ) : null}
+                      </Stack>
+                      <Typography variant="caption" color="text.secondary">
                         ID: {selectedDealer.sourceId}
                       </Typography>
                     </Stack>
@@ -1928,16 +2579,6 @@ export default function CrmDealersPage() {
                       justifyContent: { xs: 'space-between', md: 'flex-end' },
                     }}
                   >
-                    <Stack direction="row" spacing={0.75}>
-                      {selectedDealer.isArchived ? (
-                        <Chip size="small" label="Archived" color="warning" variant="outlined" />
-                      ) : null}
-                      <Chip size="small" label={`Contacts: ${dealerDetail?.contactsTotal ?? 0}`} variant="outlined" />
-                      {isAccountEditing && hasUnsavedDealerChanges ? (
-                        <Chip size="small" label="Unsaved" color="warning" variant="outlined" />
-                      ) : null}
-                    </Stack>
-
                     {isAccountEditing ? (
                       <>
                         <Button
@@ -1998,43 +2639,63 @@ export default function CrmDealersPage() {
               <Box
                 sx={{
                   display: 'flex',
-                  justifyContent: { xs: 'flex-start', md: 'flex-end' },
+                  justifyContent: 'flex-start',
+                  borderBottom: '1px solid',
+                  borderColor: 'divider',
                 }}
               >
                 <Tabs
                   value={detailsTab}
-                  onChange={(_event, nextValue: 'info' | 'contacts' | 'chat' | 'quotes' | 'orders' | 'terms') => {
+                  onChange={(_event, nextValue: 'overview' | 'info' | 'contacts' | 'chat' | 'quotes' | 'orders' | 'terms') => {
                     setDetailsTab(nextValue)
                   }}
                   variant="scrollable"
                   allowScrollButtonsMobile
                   sx={{
-                    minHeight: 32,
+                    minHeight: 40,
                     '& .MuiTabs-flexContainer': {
-                      gap: 0.4,
+                      gap: 0.5,
                     },
                     '& .MuiTab-root': {
-                      minHeight: 32,
-                      py: 0.25,
-                      px: 1,
-                      fontSize: 12,
+                      minHeight: 40,
+                      py: 0.5,
+                      px: 1.25,
+                      fontSize: 13,
                       lineHeight: 1.2,
                       textTransform: 'none',
+                      borderRadius: '8px 8px 0 0',
+                    },
+                    '& .MuiTab-iconWrapper': {
+                      mr: 0.5,
                     },
                   }}
                 >
-                  <Tab value="info" label="Account Info" />
-                  <Tab value="contacts" label={`Contacts (${dealerDetail?.contactsTotal ?? 0})`} />
-                  <Tab value="chat" label={`Chat (${dealerChatTotal})`} />
-                  <Tab value="quotes" label={`Quotes (${dealerQuotes.length})`} />
-                  <Tab value="orders" label={`Orders (${dealerOrders.length})`} />
-                  <Tab value="terms" label="Terms & Conditions" />
+                  <Tab value="overview" icon={<ReceiptLongRoundedIcon fontSize="small" />} iconPosition="start" label="Overview" />
+                  <Tab value="info" icon={<LanguageRoundedIcon fontSize="small" />} iconPosition="start" label="Information" />
+                  <Tab value="contacts" icon={<ContactsRoundedIcon fontSize="small" />} iconPosition="start" label={`Contacts (${dealerDetail?.contactsTotal ?? 0})`} />
+                  <Tab value="chat" icon={<EmailRoundedIcon fontSize="small" />} iconPosition="start" label={`Chat (${dealerChatTotal})`} />
+                  <Tab value="quotes" icon={<LocalOfferRoundedIcon fontSize="small" />} iconPosition="start" label={`Quotes (${dealerQuotes.length})`} />
+                  <Tab value="orders" icon={<ReceiptLongRoundedIcon fontSize="small" />} iconPosition="start" label={`Orders (${dealerOrders.length})`} />
+                  <Tab value="terms" icon={<EditRoundedIcon fontSize="small" />} iconPosition="start" label="Terms" />
                 </Tabs>
               </Box>
 
-              <Divider />
-
-              {detailsTab === 'info' ? (
+              {detailsTab === 'overview' ? (
+                dealerForm ? (
+                  <AccountStatsOverview
+                    account={dealerForm}
+                    contactsTotal={dealerDetail?.contactsTotal ?? 0}
+                    quotes={quoteRows}
+                    orders={orderRows}
+                    isLoadingQuotes={isLoadingQuotesData}
+                    isLoadingOrders={isLoadingSalesData}
+                  />
+                ) : (
+                  <Typography color="text.secondary" sx={{ py: 1 }}>
+                    Account overview is loading...
+                  </Typography>
+                )
+              ) : detailsTab === 'info' ? (
                 dealerForm ? (
                   isAccountEditing ? (
                   <Stack spacing={1}>
@@ -2446,7 +3107,7 @@ export default function CrmDealersPage() {
                     </Box>
                   </Stack>
                   ) : (
-                    <AccountReadOnlyOverview account={dealerForm} />
+                    <AccountInformationFields account={dealerForm} />
                   )
                 ) : (
                   <Typography color="text.secondary" sx={{ py: 1 }}>

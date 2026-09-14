@@ -5,6 +5,7 @@ import { buildFirebaseStorageDownloadUrl } from '../utils/value-utils.mjs'
 
 let appChatThreadsIndexesPromise
 let appChatMessagesIndexesPromise
+let appChatTasksIndexesPromise
 
 const chatTypeDirect = 'direct'
 const chatTypeGroup = 'group'
@@ -92,7 +93,13 @@ const chatMonthlyCallLimit = (() => {
 export function registerChatRoutes(app, deps) {
   const {
     authApprovalApproved,
+    authRoleAdmin,
     getCollections,
+    mobilePushTokenProviderExpo,
+    mobilePushTokenProviderFcm,
+    normalizeAnyPushToken,
+    sendExpoPushMessages,
+    sendFcmPushMessages,
     normalizeEmail,
     normalizeOptionalShortText,
     getOrderPhotosBucket,
@@ -654,6 +661,7 @@ export function registerChatRoutes(app, deps) {
 
     const chatThreadsCollection = authDatabase.collection('app_chats')
     const chatMessagesCollection = authDatabase.collection('app_chat_messages')
+    const chatTasksCollection = authDatabase.collection('app_chat_tasks')
 
     if (!appChatThreadsIndexesPromise) {
       appChatThreadsIndexesPromise = Promise.all([
@@ -674,11 +682,23 @@ export function registerChatRoutes(app, deps) {
       ])
     }
 
+    if (!appChatTasksIndexesPromise) {
+      appChatTasksIndexesPromise = Promise.all([
+        chatTasksCollection.createIndex({ id: 1 }, { unique: true }),
+        chatTasksCollection.createIndex({ chatId: 1, isDone: 1, createdAt: 1 }),
+      ])
+    }
+
     try {
-      await Promise.all([appChatThreadsIndexesPromise, appChatMessagesIndexesPromise])
+      await Promise.all([
+        appChatThreadsIndexesPromise,
+        appChatMessagesIndexesPromise,
+        appChatTasksIndexesPromise,
+      ])
     } catch (error) {
       appChatThreadsIndexesPromise = undefined
       appChatMessagesIndexesPromise = undefined
+      appChatTasksIndexesPromise = undefined
       throw error
     }
 
@@ -686,6 +706,7 @@ export function registerChatRoutes(app, deps) {
       collections,
       chatThreadsCollection,
       chatMessagesCollection,
+      chatTasksCollection,
     }
   }
 
@@ -915,6 +936,7 @@ export function registerChatRoutes(app, deps) {
       chatId,
       text: normalizeChatText(message.text) || null,
       messageType: normalizeChatMessageType(message.messageType),
+      isTaskEvent: message?.isTaskEvent === true,
       attachment,
       replyTo,
       deliveryStatus: resolveChatMessageDeliveryStatus(message, thread, requesterUid),
@@ -1574,6 +1596,662 @@ export function registerChatRoutes(app, deps) {
     }
   })
 
+  // -- Email notifications --------------------------------------------------
+  //
+  // Defaults are deliberately quiet. The ones that are on by default are
+  // addressed at a person; group traffic is off until someone asks for it.
+  const notificationEmailDefaults = Object.freeze({
+    enabled: false,
+    mentions: true,
+    directMessages: true,
+    groupMessages: false,
+    taskEvents: false,
+    whenOnline: false,
+  })
+
+  function normalizeNotificationEmailPreferences(value) {
+    const source = value && typeof value === 'object' ? value : {}
+    const resolved = {}
+
+    for (const [key, fallback] of Object.entries(notificationEmailDefaults)) {
+      resolved[key] = typeof source[key] === 'boolean' ? source[key] : fallback
+    }
+
+    return resolved
+  }
+
+  /**
+   * A group nudge is sent once and then stays quiet until the person actually
+   * opens the thread. Reading stamps readAtByUid, which moves past the notified
+   * stamp and re-arms a single further email. Someone who has not looked yet
+   * does not need telling twice.
+   */
+  function shouldSendThreadEmail(thread, uid) {
+    const fieldKey = buildChatUidFieldKey(uid)
+
+    if (!fieldKey) {
+      return false
+    }
+
+    const notifiedAt = String(thread?.emailNotifiedAtByUid?.[fieldKey] ?? '').trim()
+
+    if (!notifiedAt) {
+      return true
+    }
+
+    const readAt = String(thread?.readAtByUid?.[fieldKey] ?? '').trim()
+
+    return Boolean(readAt && readAt > notifiedAt)
+  }
+
+  // Chat has been writing alert rows and never pushing them. The alert list in
+  // the app filled up while no phone ever rang. This is the missing half: the
+  // same dispatch the admin alert route uses, reachable from chat.
+  async function pushChatAlert({ alertId, recipientUids, title, body, threadId }) {
+    if (
+      typeof sendExpoPushMessages !== 'function'
+      || typeof sendFcmPushMessages !== 'function'
+      || recipientUids.length === 0
+    ) {
+      return { pushTokenCount: 0, acceptedCount: 0, errorCount: 0 }
+    }
+
+    try {
+      const { collections } = await getChatCollections()
+      const { mobilePushTokensCollection } = collections
+
+      if (!mobilePushTokensCollection) {
+        return { pushTokenCount: 0, acceptedCount: 0, errorCount: 0 }
+      }
+
+      const tokenDocuments = await mobilePushTokensCollection
+        .find(
+          { uid: { $in: recipientUids }, disabledAt: { $in: [null, ''] } },
+          { projection: { _id: 0, token: 1, tokenProvider: 1 } },
+        )
+        .toArray()
+
+      const expoTokens = new Set()
+      const fcmTokens = new Set()
+
+      tokenDocuments.forEach((document) => {
+        const normalized = normalizeAnyPushToken(document?.token, document?.tokenProvider)
+
+        if (!normalized) {
+          return
+        }
+
+        if (normalized.tokenProvider === mobilePushTokenProviderExpo) {
+          expoTokens.add(normalized.token)
+        } else if (normalized.tokenProvider === mobilePushTokenProviderFcm) {
+          fcmTokens.add(normalized.token)
+        }
+      })
+
+      const pushData = { alertId, type: 'chat_message', route: 'chat', screen: 'chat', threadId }
+      const [expoResult, fcmResult] = await Promise.all([
+        sendExpoPushMessages([...expoTokens].map((token) => ({
+          to: token,
+          sound: 'default',
+          title,
+          body,
+          data: pushData,
+          priority: 'high',
+          channelId: 'alerts',
+        }))),
+        sendFcmPushMessages({ tokens: [...fcmTokens], title, body, data: pushData }),
+      ])
+
+      return {
+        pushTokenCount: expoTokens.size + fcmTokens.size,
+        acceptedCount: Number(expoResult?.acceptedCount ?? 0) + Number(fcmResult?.acceptedCount ?? 0),
+        errorCount: (expoResult?.errorEntries?.length ?? 0) + (fcmResult?.errorEntries?.length ?? 0),
+      }
+    } catch (error) {
+      // A push failure must never take down the message it belongs to.
+      console.warn('Chat push notification failed.', error?.message ?? error)
+      return { pushTokenCount: 0, acceptedCount: 0, errorCount: 0 }
+    }
+  }
+
+  // A dead OAuth grant is silent: chat keeps working and email just stops. This
+  // is the tripwire — one alert to the admins per hour, so a broken connection
+  // announces itself the same day instead of being noticed weeks later.
+  let lastEmailFailureAlertAt = 0
+
+  async function raiseEmailFailureAlert(detail) {
+    const oneHourMs = 60 * 60 * 1000
+
+    if (Date.now() - lastEmailFailureAlertAt < oneHourMs) {
+      return
+    }
+
+    lastEmailFailureAlertAt = Date.now()
+
+    try {
+      const { collections } = await getChatCollections()
+      const { authUsersCollection, mobileAlertsCollection } = collections
+      const admins = await authUsersCollection
+        .find(
+          { role: authRoleAdmin, approvalStatus: authApprovalApproved },
+          { projection: { _id: 0, uid: 1 } },
+        )
+        .toArray()
+      const adminUids = normalizeChatUidList(admins.map((admin) => admin?.uid), 50)
+
+      if (adminUids.length === 0) {
+        return
+      }
+
+      const now = new Date().toISOString()
+
+      await mobileAlertsCollection.insertOne({
+        id: randomUUID(),
+        title: 'Notification emails are failing',
+        message: String(detail ?? '').slice(0, 300)
+          || 'The connected Google account could not send. Reconnect under Settings > Email.',
+        isUpdate: false,
+        targetMode: 'selected',
+        targetUserUids: adminUids,
+        createdByUid: null,
+        createdByEmail: null,
+        delivery: {
+          targetUserCount: adminUids.length,
+          pushTokenCount: 0,
+          pushAcceptedCount: 0,
+          pushErrorCount: 0,
+          errorSamples: [],
+        },
+        metadata: { source: 'notification_email_failure' },
+        createdAt: now,
+        updatedAt: now,
+      })
+    } catch (alertError) {
+      console.warn('Could not raise the email failure alert.', alertError?.message ?? alertError)
+    }
+  }
+
+  async function sendChatNotificationEmails({
+    chatThreadsCollection,
+    authUsersCollection,
+    thread,
+    recipientUids,
+    kind,
+    subject,
+    body,
+  }) {
+    const send = deps?.sendSystemEmail
+
+    if (typeof send !== 'function' || recipientUids.length === 0) {
+      return
+    }
+
+    const recipients = await authUsersCollection
+      .find(
+        { uid: { $in: recipientUids }, approvalStatus: authApprovalApproved },
+        {
+          projection: {
+            _id: 0,
+            uid: 1,
+            email: 1,
+            displayName: 1,
+            notificationEmail: 1,
+            chatPresenceStatus: 1,
+            chatPresenceAt: 1,
+            lastActivityAt: 1,
+          },
+        },
+      )
+      .toArray()
+
+    const notifiedAt = new Date().toISOString()
+    const notifiedFields = {}
+
+    for (const recipient of recipients) {
+      const preferences = normalizeNotificationEmailPreferences(recipient?.notificationEmail)
+
+      if (!preferences.enabled || preferences[kind] !== true) {
+        continue
+      }
+
+      // Somebody with the app open is already being told on screen. Presence
+      // is derived from heartbeat freshness, so a stale tab counts as away.
+      const presence = resolveChatPresence(recipient)
+
+      if (!preferences.whenOnline && presence.onlineStatus !== chatPresenceStatusOffline) {
+        continue
+      }
+
+      if (!shouldSendThreadEmail(thread, recipient.uid)) {
+        continue
+      }
+
+      const address = normalizeEmail(recipient?.email)
+
+      if (!address) {
+        continue
+      }
+
+      try {
+        const result = await send({ to: address, subject, textBody: body })
+
+        if (result && result.sent === false) {
+          await raiseEmailFailureAlert(
+            result.reason === 'no_working_connection'
+              ? 'No connected Google account can send. Reconnect under Settings > Email.'
+              : `Notification email not sent: ${result.reason}`,
+          )
+          continue
+        }
+
+        const fieldKey = buildChatUidFieldKey(recipient.uid)
+
+        if (fieldKey) {
+          notifiedFields[`emailNotifiedAtByUid.${fieldKey}`] = notifiedAt
+        }
+      } catch (error) {
+        // A mail failure must never take down the message that triggered it.
+        console.warn('Chat notification email failed.', {
+          uid: recipient.uid,
+          message: String(error?.message ?? error).slice(0, 300),
+        })
+
+        await raiseEmailFailureAlert(String(error?.message ?? error))
+      }
+    }
+
+    if (Object.keys(notifiedFields).length > 0) {
+      await chatThreadsCollection.updateOne({ id: thread.id }, { $set: notifiedFields })
+    }
+  }
+
+  // Task changes are announced in the thread so the conversation carries the
+  // record. They are written as ordinary messages flagged isTaskEvent, which
+  // the client renders as a centred system line rather than a bubble.
+  async function postChatTaskEventMessage({
+    chatThreadsCollection,
+    chatMessagesCollection,
+    threadId,
+    text,
+    actorUid,
+    actorName,
+    actorEmail,
+  }) {
+    const trimmedText = String(normalizeOptionalShortText(text, 600) ?? '').trim()
+
+    if (!trimmedText) {
+      return null
+    }
+
+    const now = new Date().toISOString()
+    const messageDocument = {
+      id: randomUUID(),
+      chatId: threadId,
+      text: trimmedText,
+      attachment: null,
+      replyTo: null,
+      messageType: chatMessageTypeText,
+      isTaskEvent: true,
+      createdAt: now,
+      createdByUid: actorUid || null,
+      createdByEmail: actorEmail || null,
+      createdByName: actorName || null,
+      updatedAt: null,
+      updatedByUid: null,
+      updatedByEmail: null,
+      updatedByName: null,
+      deletedAt: null,
+      deletedByUid: null,
+      deletedByEmail: null,
+      mentionUserUids: [],
+      mentionUserEmails: [],
+    }
+
+    await chatMessagesCollection.insertOne(messageDocument)
+    await refreshChatThreadLastMessage({ chatThreadsCollection, chatMessagesCollection, threadId })
+
+    return messageDocument.id
+  }
+
+  // -- Thread tasks ---------------------------------------------------------
+  //
+  // Anyone in the conversation can add a task, take it, and tick it off.
+  //
+  // Deleting is the only restricted action, and one rule covers both kinds of
+  // chat: if an admin is in the thread, only an admin may delete. Groups always
+  // contain at least one admin by construction, so "admins delete in groups"
+  // and "admins delete in a direct chat that has one" are the same sentence.
+  function canDeleteChatTask(threadHasAdmin, publicUser) {
+    if (publicUser?.isAdmin) {
+      return true
+    }
+
+    return !threadHasAdmin
+  }
+
+  function mapChatTask(task) {
+    return {
+      id: String(task?.id ?? '').trim(),
+      chatId: String(task?.chatId ?? '').trim(),
+      title: String(task?.title ?? '').trim(),
+      isDone: task?.isDone === true,
+      doneAt: String(task?.doneAt ?? '').trim() || null,
+      doneByUid: String(task?.doneByUid ?? '').trim() || null,
+      doneByName: String(task?.doneByName ?? '').trim() || null,
+      claimedByUid: String(task?.claimedByUid ?? '').trim() || null,
+      claimedByName: String(task?.claimedByName ?? '').trim() || null,
+      claimedAt: String(task?.claimedAt ?? '').trim() || null,
+      createdAt: String(task?.createdAt ?? '').trim(),
+      createdByUid: String(task?.createdByUid ?? '').trim() || null,
+      createdByName: String(task?.createdByName ?? '').trim() || null,
+    }
+  }
+
+  async function resolveTaskThreadForRequest(req, res) {
+    const publicUser = toPublicAuthUser(req.authUser)
+
+    if (!publicUser?.isApproved) {
+      res.status(403).json({ error: 'Approved access is required.' })
+      return null
+    }
+
+    const requesterUid = String(normalizeOptionalShortText(req.authUser?.uid, 220) ?? '').trim()
+
+    if (!requesterUid) {
+      res.status(401).json({ error: 'Authenticated user is required.' })
+      return null
+    }
+
+    const {
+      collections,
+      chatTasksCollection,
+      chatThreadsCollection,
+      chatMessagesCollection,
+    } = await getChatCollections()
+    const taskId = String(normalizeOptionalShortText(req.params.taskId, 220) ?? '').trim()
+    let threadId = String(normalizeOptionalShortText(req.params.threadId, 220) ?? '').trim()
+    let task = null
+
+    if (taskId) {
+      task = await chatTasksCollection.findOne({ id: taskId }, { projection: { _id: 0 } })
+
+      if (!task) {
+        res.status(404).json({ error: 'Task not found.' })
+        return null
+      }
+
+      threadId = String(task.chatId ?? '').trim()
+    }
+
+    if (!threadId) {
+      res.status(400).json({ error: 'threadId is required.' })
+      return null
+    }
+
+    // Membership is the access check: reading the thread by memberUids means a
+    // non-member can never reach its tasks, whatever id they send.
+    const thread = await chatThreadsCollection.findOne(
+      { id: threadId, memberUids: requesterUid },
+      { projection: { _id: 0, id: 1, type: 1, memberUids: 1, memberSnapshots: 1 } },
+    )
+
+    if (!thread) {
+      res.status(404).json({ error: 'Chat thread not found.' })
+      return null
+    }
+
+    // Read admin status live rather than from memberSnapshots. A snapshot is
+    // written when the thread is created or edited, so someone promoted to
+    // admin afterwards would still look like a plain member here — and this
+    // decides who may delete.
+    const { authUsersCollection } = collections
+    const memberMapByUid = await buildApprovedUserMapByUid(authUsersCollection, thread.memberUids)
+    const threadHasAdmin = [...memberMapByUid.values()].some((member) => member?.isAdmin === true)
+
+    return {
+      publicUser,
+      requesterUid,
+      requesterName: String(normalizeOptionalShortText(publicUser?.displayName, 220) ?? '').trim()
+        || normalizeEmail(req.authUser?.email)
+        || null,
+      thread,
+      threadHasAdmin,
+      threadId,
+      task,
+      chatTasksCollection,
+      chatThreadsCollection,
+      chatMessagesCollection,
+    }
+  }
+
+  function announceTaskEvent(context, phrase) {
+    return postChatTaskEventMessage({
+      chatThreadsCollection: context.chatThreadsCollection,
+      chatMessagesCollection: context.chatMessagesCollection,
+      threadId: context.threadId,
+      text: `${context.requesterName || 'A teammate'} ${phrase}`,
+      actorUid: context.requesterUid,
+      actorName: context.requesterName,
+      actorEmail: normalizeEmail(context.publicUser?.email) || null,
+    })
+  }
+
+  app.get('/api/chat/notification-preferences', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const publicUser = toPublicAuthUser(req.authUser)
+      const requesterUid = String(normalizeOptionalShortText(req.authUser?.uid, 220) ?? '').trim()
+
+      if (!publicUser?.isApproved || !requesterUid) {
+        return res.status(403).json({ error: 'Approved access is required.' })
+      }
+
+      const { collections } = await getChatCollections()
+      const userDocument = await collections.authUsersCollection.findOne(
+        { uid: requesterUid },
+        { projection: { _id: 0, notificationEmail: 1, email: 1 } },
+      )
+
+      return res.json({
+        preferences: normalizeNotificationEmailPreferences(userDocument?.notificationEmail),
+        deliversTo: normalizeEmail(userDocument?.email) || null,
+      })
+    } catch (error) {
+      return next(error)
+    }
+  })
+
+  app.put('/api/chat/notification-preferences', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const publicUser = toPublicAuthUser(req.authUser)
+      const requesterUid = String(normalizeOptionalShortText(req.authUser?.uid, 220) ?? '').trim()
+
+      if (!publicUser?.isApproved || !requesterUid) {
+        return res.status(403).json({ error: 'Approved access is required.' })
+      }
+
+      // Everyone sets their own, and only their own.
+      const preferences = normalizeNotificationEmailPreferences(req.body?.preferences)
+      const { collections } = await getChatCollections()
+
+      await collections.authUsersCollection.updateOne(
+        { uid: requesterUid },
+        { $set: { notificationEmail: preferences, updatedAt: new Date().toISOString() } },
+      )
+
+      return res.json({ preferences })
+    } catch (error) {
+      return next(error)
+    }
+  })
+
+  app.get('/api/chat/threads/:threadId/tasks', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const context = await resolveTaskThreadForRequest(req, res)
+
+      if (!context) {
+        return undefined
+      }
+
+      const tasks = await context.chatTasksCollection
+        .find({ chatId: context.threadId }, { projection: { _id: 0 } })
+        .sort({ isDone: 1, createdAt: 1 })
+        .limit(500)
+        .toArray()
+
+      return res.json({
+        tasks: tasks.map(mapChatTask),
+        canDelete: canDeleteChatTask(context.threadHasAdmin, context.publicUser),
+      })
+    } catch (error) {
+      return next(error)
+    }
+  })
+
+  app.post('/api/chat/threads/:threadId/tasks', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const context = await resolveTaskThreadForRequest(req, res)
+
+      if (!context) {
+        return undefined
+      }
+
+      const title = String(normalizeOptionalShortText(req.body?.title, 400) ?? '').trim()
+
+      if (!title) {
+        return res.status(400).json({ error: 'A task needs a title.' })
+      }
+
+      const now = new Date().toISOString()
+      const task = {
+        id: randomUUID(),
+        chatId: context.threadId,
+        title,
+        isDone: false,
+        doneAt: null,
+        doneByUid: null,
+        doneByName: null,
+        claimedByUid: null,
+        claimedByName: null,
+        claimedAt: null,
+        createdAt: now,
+        createdByUid: context.requesterUid,
+        createdByName: context.requesterName,
+        updatedAt: now,
+      }
+
+      await context.chatTasksCollection.insertOne({ ...task })
+      await announceTaskEvent(context, `added a task: ${title}`)
+
+      return res.status(201).json({ task: mapChatTask(task) })
+    } catch (error) {
+      return next(error)
+    }
+  })
+
+  app.patch('/api/chat/tasks/:taskId', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const context = await resolveTaskThreadForRequest(req, res)
+
+      if (!context) {
+        return undefined
+      }
+
+      const body = req.body ?? {}
+      const hasDone = Object.prototype.hasOwnProperty.call(body, 'isDone')
+      const hasClaim = Object.prototype.hasOwnProperty.call(body, 'claimed')
+      const hasTitle = Object.prototype.hasOwnProperty.call(body, 'title')
+
+      if (!hasDone && !hasClaim && !hasTitle) {
+        return res.status(400).json({ error: 'Provide isDone, claimed or title.' })
+      }
+
+      const now = new Date().toISOString()
+      const updateFields = { updatedAt: now }
+
+      if (hasTitle) {
+        const title = String(normalizeOptionalShortText(body.title, 400) ?? '').trim()
+
+        if (!title) {
+          return res.status(400).json({ error: 'A task needs a title.' })
+        }
+
+        updateFields.title = title
+      }
+
+      if (hasDone) {
+        const isDone = body.isDone === true
+        updateFields.isDone = isDone
+        updateFields.doneAt = isDone ? now : null
+        updateFields.doneByUid = isDone ? context.requesterUid : null
+        updateFields.doneByName = isDone ? context.requesterName : null
+      }
+
+      if (hasClaim) {
+        // Taking a task is always taking it for yourself; releasing only ever
+        // clears your own claim, so nobody can hand a job to someone else.
+        const claimed = body.claimed === true
+        updateFields.claimedByUid = claimed ? context.requesterUid : null
+        updateFields.claimedByName = claimed ? context.requesterName : null
+        updateFields.claimedAt = claimed ? now : null
+      }
+
+      await context.chatTasksCollection.updateOne({ id: context.task.id }, { $set: updateFields })
+
+      const updated = await context.chatTasksCollection.findOne(
+        { id: context.task.id },
+        { projection: { _id: 0 } },
+      )
+      const taskTitle = String(updated?.title ?? context.task.title ?? '').trim()
+
+      // Only real changes are announced. Ticking a task that is already done,
+      // or re-taking one you already hold, would otherwise spam the thread.
+      if (hasTitle && updateFields.title !== context.task.title) {
+        await announceTaskEvent(context, `renamed a task to: ${taskTitle}`)
+      }
+
+      if (hasDone && updateFields.isDone !== (context.task.isDone === true)) {
+        await announceTaskEvent(
+          context,
+          updateFields.isDone ? `completed: ${taskTitle}` : `reopened: ${taskTitle}`,
+        )
+      }
+
+      if (hasClaim && updateFields.claimedByUid !== (context.task.claimedByUid ?? null)) {
+        await announceTaskEvent(
+          context,
+          updateFields.claimedByUid ? `took the task: ${taskTitle}` : `let go of: ${taskTitle}`,
+        )
+      }
+
+      return res.json({ task: mapChatTask(updated) })
+    } catch (error) {
+      return next(error)
+    }
+  })
+
+  app.delete('/api/chat/tasks/:taskId', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const context = await resolveTaskThreadForRequest(req, res)
+
+      if (!context) {
+        return undefined
+      }
+
+      if (!canDeleteChatTask(context.threadHasAdmin, context.publicUser)) {
+        return res.status(403).json({
+          error: 'Only an admin can delete tasks in this chat.',
+        })
+      }
+
+      await context.chatTasksCollection.deleteOne({ id: context.task.id })
+      await announceTaskEvent(context, `deleted the task: ${String(context.task.title ?? '').trim()}`)
+
+      return res.json({ deletedTaskId: context.task.id })
+    } catch (error) {
+      return next(error)
+    }
+  })
+
   app.patch('/api/chat/threads/:threadId/preferences', requireFirebaseAuth, async (req, res, next) => {
     try {
       const publicUser = toPublicAuthUser(req.authUser)
@@ -1852,6 +2530,10 @@ export function registerChatRoutes(app, deps) {
     }
 
     const deletedMessages = await chatMessagesCollection.deleteMany({ chatId: threadId })
+    // Tasks belong to the thread, so they die with it rather than being
+    // orphaned in a collection nothing can reach any more.
+    const { chatTasksCollection } = await getChatCollections()
+    await chatTasksCollection.deleteMany({ chatId: threadId })
     await chatThreadsCollection.deleteOne({ id: threadId })
 
     return {
@@ -2643,6 +3325,10 @@ export function registerChatRoutes(app, deps) {
             memberUids: 1,
             type: 1,
             name: 1,
+            // The read gate compares these two: an unread nudge is sent once
+            // and stays quiet until the person opens the thread.
+            readAtByUid: 1,
+            emailNotifiedAtByUid: 1,
           },
         },
       )
@@ -2771,29 +3457,84 @@ export function registerChatRoutes(app, deps) {
 
       await chatMessagesCollection.insertOne(messageDocument)
 
-      if (mentionRecipientUids.length > 0) {
+      // Mentions are their own kind: someone was named, so that beats the
+      // thread-level group setting.
+      const otherMemberUids = normalizeChatUidList(thread.memberUids, 250)
+        .filter((uid) => uid && uid !== requesterUid)
+      const emailAuthorName = String(
+        normalizeOptionalShortText(publicUser?.displayName || requesterEmail || 'A teammate', 120) ?? '',
+      ).trim()
+      const emailThreadLabel = String(normalizeOptionalShortText(thread.name, 120) ?? '').trim()
+        || (thread.type === 'group' ? 'a group chat' : 'a direct chat')
+      const emailPreview = (messageText || 'Sent an attachment').slice(0, 400)
+      const mentionedSet = new Set(mentionRecipientUids)
+
+      await sendChatNotificationEmails({
+        chatThreadsCollection,
+        authUsersCollection,
+        thread,
+        recipientUids: mentionRecipientUids,
+        kind: 'mentions',
+        subject: `${emailAuthorName} mentioned you in ${emailThreadLabel}`,
+        body: `${emailAuthorName} mentioned you in ${emailThreadLabel}:\n\n${emailPreview}`,
+      })
+
+      await sendChatNotificationEmails({
+        chatThreadsCollection,
+        authUsersCollection,
+        thread,
+        recipientUids: otherMemberUids.filter((uid) => !mentionedSet.has(uid)),
+        kind: thread.type === 'group' ? 'groupMessages' : 'directMessages',
+        subject: `New message in ${emailThreadLabel}`,
+        body: `${emailAuthorName} wrote in ${emailThreadLabel}:\n\n${emailPreview}`,
+      })
+
+      // Everyone who should hear about this message. Mentions are called out by
+      // name; everybody else in a direct chat still needs telling, which is why
+      // Misha heard nothing about a message sent straight to her.
+      const alertRecipientUids = mentionRecipientUids.length > 0
+        ? mentionRecipientUids
+        : (thread.type === chatTypeDirect ? otherMemberUids : [])
+
+      if (alertRecipientUids.length > 0) {
+        const isMention = mentionRecipientUids.length > 0
         const authorName = String(normalizeOptionalShortText(publicUser?.displayName || requesterEmail || 'A teammate', 120) ?? '').trim()
         const chatLabel = String(normalizeOptionalShortText(thread.name, 120) ?? '').trim() || 'chat'
         const alertNow = new Date().toISOString()
+        const alertId = randomUUID()
+        const alertTitle = isMention ? `Mentioned in ${chatLabel}` : `Message from ${authorName}`
+        const alertBody = isMention
+          ? `${authorName} mentioned you: ${(messageText || 'Sent an attachment').slice(0, 300)}`
+          : (messageText || 'Sent an attachment').slice(0, 300)
+
+        // Send first, then record what actually happened, so the delivery
+        // counts on the alert are real instead of zeros nobody ever filled in.
+        const pushResult = await pushChatAlert({
+          alertId,
+          recipientUids: alertRecipientUids,
+          title: alertTitle,
+          body: alertBody,
+          threadId,
+        })
 
         await mobileAlertsCollection.insertOne({
-          id: randomUUID(),
-          title: `Mentioned in ${chatLabel}`,
-          message: `${authorName} mentioned you: ${(messageText || 'Sent an attachment').slice(0, 300)}`,
+          id: alertId,
+          title: alertTitle,
+          message: alertBody,
           isUpdate: false,
           targetMode: 'selected',
-          targetUserUids: mentionRecipientUids,
+          targetUserUids: alertRecipientUids,
           createdByUid: requesterUid,
           createdByEmail: requesterEmail,
           delivery: {
-            targetUserCount: mentionRecipientUids.length,
-            pushTokenCount: 0,
-            pushAcceptedCount: 0,
-            pushErrorCount: 0,
+            targetUserCount: alertRecipientUids.length,
+            pushTokenCount: pushResult.pushTokenCount,
+            pushAcceptedCount: pushResult.acceptedCount,
+            pushErrorCount: pushResult.errorCount,
             errorSamples: [],
           },
           metadata: {
-            source: 'app_chat_mention',
+            source: isMention ? 'app_chat_mention' : 'app_chat_direct_message',
             chatThreadId: threadId,
             chatMessageId: messageDocument.id,
           },

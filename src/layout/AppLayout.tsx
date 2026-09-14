@@ -1,15 +1,11 @@
 import KeyboardDoubleArrowLeftRoundedIcon from '@mui/icons-material/KeyboardDoubleArrowLeftRounded'
 import KeyboardDoubleArrowRightRoundedIcon from '@mui/icons-material/KeyboardDoubleArrowRightRounded'
-import DoneAllRoundedIcon from '@mui/icons-material/DoneAllRounded'
 import LogoutRoundedIcon from '@mui/icons-material/LogoutRounded'
 import MenuRoundedIcon from '@mui/icons-material/MenuRounded'
-import NotificationsRoundedIcon from '@mui/icons-material/NotificationsRounded'
 import SyncRoundedIcon from '@mui/icons-material/SyncRounded'
-import TaskAltRoundedIcon from '@mui/icons-material/TaskAltRounded'
 import {
   Avatar,
   AppBar,
-  Badge,
   Box,
   Button,
   CircularProgress,
@@ -36,6 +32,7 @@ import { navItems } from '../navigation/navItems'
 import Sidebar from './Sidebar'
 import { primeChatChime } from '../features/chat/chatNotifications'
 import { useChatNotifications } from '../features/chat/useChatNotifications'
+import { NotificationsDrawer } from './NotificationsDrawer'
 import { IncomingCallDialog } from '../features/chat/IncomingCallDialog'
 
 const EXPANDED_DRAWER_WIDTH = 248
@@ -52,7 +49,6 @@ export default function AppLayout() {
   const [mobileOpen, setMobileOpen] = useState(false)
   const [isSigningOut, setIsSigningOut] = useState(false)
   const [profileMenuAnchorEl, setProfileMenuAnchorEl] = useState<HTMLElement | null>(null)
-  const [alertsMenuAnchorEl, setAlertsMenuAnchorEl] = useState<HTMLElement | null>(null)
   const [processesMenuAnchorEl, setProcessesMenuAnchorEl] = useState<HTMLElement | null>(null)
   const [markingAlertId, setMarkingAlertId] = useState<string | null>(null)
   const [isMarkingAllRead, setIsMarkingAllRead] = useState(false)
@@ -245,7 +241,13 @@ export default function AppLayout() {
 
     const newBrowserAlerts = alerts.filter((alert) => {
       const source = String(alert.metadata?.source ?? '').trim().toLowerCase()
-      return !seenIds.has(alert.id) && (source.includes('mention') || source === 'diagnostic_report_resolved')
+      // Any chat alert pops, not only mentions: a direct message is the most
+      // personal thing there is and was the one case that stayed silent.
+      return !seenIds.has(alert.id) && (
+        source.startsWith('app_chat')
+        || source.includes('mention')
+        || source === 'diagnostic_report_resolved'
+      )
     })
 
     alerts.forEach((alert) => seenIds.add(alert.id))
@@ -277,10 +279,6 @@ export default function AppLayout() {
 
   const handleProfileMenuClose = () => {
     setProfileMenuAnchorEl(null)
-  }
-
-  const handleAlertsMenuClose = () => {
-    setAlertsMenuAnchorEl(null)
   }
 
   const handleSignOut = () => {
@@ -353,22 +351,13 @@ export default function AppLayout() {
   return (
     <Box
       sx={{
+        // Plain white. Two fixed radial gradients used to sit over every page
+        // here; changing the palette only changed what colour they tinted it.
         display: 'flex',
         minHeight: '100vh',
-        bgcolor: 'transparent',
+        bgcolor: 'background.default',
         position: 'relative',
         isolation: 'isolate',
-        '&::before': {
-          content: '""',
-          position: 'fixed',
-          inset: 0,
-          pointerEvents: 'none',
-          zIndex: 0,
-          background: [
-            `radial-gradient(780px circle at 8% -8%, ${alpha(theme.palette.primary.light, 0.24)} 0%, transparent 56%)`,
-            `radial-gradient(600px circle at 95% 0%, ${alpha(theme.palette.secondary.light, 0.2)} 0%, transparent 50%)`,
-          ].join(', '),
-        },
       }}
     >
       <AppBar
@@ -377,10 +366,9 @@ export default function AppLayout() {
         elevation={0}
         sx={{
           borderBottom: 1,
-          borderColor: alpha(theme.palette.primary.main, 0.14),
-          bgcolor: alpha(theme.palette.background.paper, 0.82),
-          backdropFilter: 'blur(14px)',
-          boxShadow: `0 10px 30px ${alpha(theme.palette.primary.dark, 0.08)}`,
+          borderColor: 'divider',
+          bgcolor: 'background.paper',
+          boxShadow: 'none',
           width: { md: `calc(100% - ${drawerWidth}px)` },
           ml: { md: `${drawerWidth}px` },
           zIndex: theme.zIndex.drawer + 1,
@@ -443,26 +431,16 @@ export default function AppLayout() {
               </Button>
             ) : null}
 
-            <IconButton
-              size="small"
-              color="inherit"
-              aria-label="Open notifications"
-              onClick={(event) => {
-                setAlertsMenuAnchorEl(event.currentTarget)
-                void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.alertsMy(alertsLimit) })
-                if (browserNotificationPermission === 'default') {
-                  void requestBrowserNotificationPermission()
-                }
-              }}
-            >
-              <Badge
-                color="error"
-                badgeContent={unreadCount > 99 ? '99+' : unreadCount}
-                invisible={unreadCount <= 0}
-              >
-                <NotificationsRoundedIcon fontSize="small" />
-              </Badge>
-            </IconButton>
+            <NotificationsDrawer
+              alerts={alerts}
+              unreadCount={unreadCount}
+              isMarkingAllRead={isMarkingAllRead}
+              markingAlertId={markingAlertId}
+              onMarkAllRead={() => { void handleMarkAllRead() }}
+              onMarkRead={(alert) => { void handleMarkAlertRead(alert.id) }}
+              browserNotificationPermission={browserNotificationPermission}
+              onRequestBrowserNotifications={() => { void requestBrowserNotificationPermission() }}
+            />
 
             <IconButton
               size="small"
@@ -542,124 +520,6 @@ export default function AppLayout() {
                 </Stack>
               </MenuItem>
             ))}
-          </Menu>
-
-          <Menu
-            anchorEl={alertsMenuAnchorEl}
-            open={Boolean(alertsMenuAnchorEl)}
-            onClose={handleAlertsMenuClose}
-            anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
-            transformOrigin={{ vertical: 'top', horizontal: 'right' }}
-            PaperProps={{ sx: { mt: 0.75, width: 360, maxHeight: 420 } }}
-          >
-            <Box sx={{ px: 2, py: 1.25 }}>
-              <Stack direction="row" spacing={1} justifyContent="space-between" alignItems="center">
-                <Box>
-                  <Typography variant="subtitle2" fontWeight={700}>
-                    Notifications
-                  </Typography>
-                  <Typography variant="caption" color="text.secondary">
-                    {unreadCount > 0
-                      ? `${unreadCount} unread`
-                      : 'All caught up'}
-                  </Typography>
-                </Box>
-
-                <Button
-                  size="small"
-                  variant="text"
-                  startIcon={isMarkingAllRead ? <CircularProgress color="inherit" size={14} /> : <DoneAllRoundedIcon fontSize="small" />}
-                  onClick={() => {
-                    void handleMarkAllRead()
-                  }}
-                  disabled={unreadCount <= 0 || isMarkingAllRead}
-                >
-                  Mark all read
-                </Button>
-              </Stack>
-              {browserNotificationPermission !== 'granted' ? (
-                <Button
-                  size="small"
-                  variant="outlined"
-                  sx={{ mt: 1 }}
-                  onClick={() => void requestBrowserNotificationPermission()}
-                  disabled={browserNotificationPermission === 'denied'}
-                >
-                  {browserNotificationPermission === 'denied'
-                    ? 'Desktop notifications blocked in browser'
-                    : 'Enable desktop notifications'}
-                </Button>
-              ) : null}
-            </Box>
-
-            <Divider />
-
-            {unreadAlerts.length === 0 ? (
-              <MenuItem disabled>
-                <Typography variant="body2" color="text.secondary">
-                  No unread notifications.
-                </Typography>
-              </MenuItem>
-            ) : (
-              unreadAlerts.map((alert) => (
-                <MenuItem
-                  key={alert.id}
-                  sx={{ alignItems: 'flex-start', whiteSpace: 'normal', py: 1.1 }}
-                >
-                  <Stack direction="row" spacing={1} sx={{ width: '100%', minWidth: 0 }} alignItems="flex-start">
-                    <Stack spacing={0.4} sx={{ maxWidth: '100%', flexGrow: 1, minWidth: 0 }}>
-                      <Stack direction="row" spacing={0.75} alignItems="center">
-                        {!alert.isRead ? (
-                          <Box
-                            sx={{
-                              width: 8,
-                              height: 8,
-                              borderRadius: '50%',
-                              bgcolor: 'error.main',
-                              flexShrink: 0,
-                            }}
-                          />
-                        ) : null}
-
-                        <Typography variant="body2" fontWeight={alert.isRead ? 500 : 700} noWrap>
-                          {alert.title}
-                        </Typography>
-                      </Stack>
-
-                      <Typography variant="caption" color="text.secondary">
-                        {alert.message}
-                      </Typography>
-
-                      <Typography variant="caption" color="text.secondary">
-                        {formatDateTime(alert.createdAt)}
-                      </Typography>
-                    </Stack>
-
-                    {alert.isRead ? (
-                      <IconButton size="small" disabled aria-label="Read">
-                        <TaskAltRoundedIcon fontSize="small" />
-                      </IconButton>
-                    ) : (
-                      <IconButton
-                        size="small"
-                        aria-label="Mark as read"
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          void handleMarkAlertRead(alert.id)
-                        }}
-                        disabled={markingAlertId === alert.id || isMarkingAllRead}
-                      >
-                        {markingAlertId === alert.id ? (
-                          <CircularProgress size={16} />
-                        ) : (
-                          <TaskAltRoundedIcon fontSize="small" />
-                        )}
-                      </IconButton>
-                    )}
-                  </Stack>
-                </MenuItem>
-              ))
-            )}
           </Menu>
 
           <Menu

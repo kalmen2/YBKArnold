@@ -1,11 +1,11 @@
-import AccessTimeRoundedIcon from '@mui/icons-material/AccessTimeRounded'
 import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded'
-import EngineeringRoundedIcon from '@mui/icons-material/EngineeringRounded'
 import ErrorOutlineRoundedIcon from '@mui/icons-material/ErrorOutlineRounded'
+import CloudOffRoundedIcon from '@mui/icons-material/CloudOffRounded'
+import EventBusyRoundedIcon from '@mui/icons-material/EventBusyRounded'
+import PriceCheckRoundedIcon from '@mui/icons-material/PriceCheckRounded'
+import ReceiptLongRoundedIcon from '@mui/icons-material/ReceiptLongRounded'
 import FactCheckRoundedIcon from '@mui/icons-material/FactCheckRounded'
-import MarkEmailUnreadRoundedIcon from '@mui/icons-material/MarkEmailUnreadRounded'
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded'
-import PendingActionsRoundedIcon from '@mui/icons-material/PendingActionsRounded'
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded'
 import ScheduleRoundedIcon from '@mui/icons-material/ScheduleRounded'
 import TaskAltRoundedIcon from '@mui/icons-material/TaskAltRounded'
@@ -19,7 +19,6 @@ import {
   Dialog,
   DialogContent,
   DialogTitle,
-  Paper,
   Stack,
   Table,
   TableBody,
@@ -39,13 +38,10 @@ import {
   fetchSalesTrend,
   type DashboardOrder,
 } from '../features/dashboard/api'
+import { BerryMiniCard, BerryStatCard, type DashboardCardData } from '../features/dashboard/BerryStatCard'
 import { SalesTrendCard } from '../features/dashboard/SalesTrendCard'
-import {
-  DashboardMetricCard,
-  type DashboardMetricCardData,
-} from '../features/dashboard/DashboardMetricCard'
 import { buildDashboardOrderGroups } from '../features/dashboard/orderGroups'
-import { postOrdersRefresh } from '../features/orders/api'
+import { fetchOrdersOverview, postOrdersRefresh } from '../features/orders/api'
 import { formatDateTime, formatDisplayDate } from '../lib/formatters'
 import { QUERY_KEYS } from '../lib/queryKeys'
 
@@ -54,18 +50,24 @@ type DrilldownKey =
   | 'dueSoonOrders'
   | 'dueInTwoWeeksOrders'
   | 'readyOrders'
-  | 'activeOrders'
   | 'missingDueDateOrders'
   | 'missingCustomerSignedBolOrders'
+  | 'missingQuickBooksProjectOrders'
+  | 'missingOrderValueOrders'
+  | 'missingOrderDateOrders'
+  | 'onMondayNotOnSiteOrders'
 
 const drilldownTitles: Record<DrilldownKey, string> = {
   lateOrders: 'Late Orders',
   dueSoonOrders: 'Due In Next 7 Days',
   dueInTwoWeeksOrders: 'Due In Days 8 to 14',
   readyOrders: 'Ready Orders',
-  activeOrders: 'Active Orders',
   missingDueDateOrders: 'Missing Due Date',
   missingCustomerSignedBolOrders: 'Shipped Orders Missing Customer Signed BOLs',
+  missingQuickBooksProjectOrders: 'Orders With No QuickBooks Project',
+  missingOrderValueOrders: 'Orders With No Order Value',
+  missingOrderDateOrders: 'Orders With No Real Order Date',
+  onMondayNotOnSiteOrders: 'On Monday, Never Reached The Website',
 }
 
 function dueLabel(order: DashboardOrder) {
@@ -133,8 +135,6 @@ export default function DashboardPage() {
   })
 
   const snapshot = bootstrapQuery.data?.mondaySnapshot ?? null
-  const zendeskSnapshot = bootstrapQuery.data?.zendeskSnapshot ?? null
-  const isLoading = bootstrapQuery.isLoading
   const errorMessage = bootstrapQuery.error instanceof Error ? bootstrapQuery.error.message : null
 
   const handleRefresh = useCallback(() => {
@@ -257,65 +257,90 @@ export default function DashboardPage() {
     }
   }, [clearShopDrawingPreviewObjectUrl])
 
+  // The previous owner's imported orders are history, not production work.
+  // Grouping them made 2021 jobs show up as late orders.
   const orderGroups = useMemo(
-    () => buildDashboardOrderGroups(snapshot?.orders ?? []),
+    () => buildDashboardOrderGroups(
+      (snapshot?.orders ?? []).filter((order) => order.isPriorOwner !== true),
+    ),
     [snapshot],
   )
   const missingCustomerSignedBolOrders = useMemo(
     () => (snapshot?.orders ?? []).filter((order) => order.customerSignedBolMissing === true),
     [snapshot],
   )
+  const missingQuickBooksProjectOrders = useMemo(
+    () => (snapshot?.orders ?? []).filter((order) => order.missingQuickBooksProject === true),
+    [snapshot],
+  )
+  const missingOrderValueOrders = useMemo(
+    () => (snapshot?.orders ?? []).filter((order) => order.missingOrderValue === true),
+    [snapshot],
+  )
+  const missingOrderDateOrders = useMemo(
+    () => (snapshot?.orders ?? []).filter((order) => order.missingOrderDate === true),
+    [snapshot],
+  )
+  // These never became website orders, so they only exist in the refresh
+  // summary — there is no row in snapshot.orders to filter for.
+  const onMondayNotOnSiteOrders = useMemo(
+    () => snapshot?.details?.onMondayNotOnSiteOrders ?? [],
+    [snapshot],
+  )
 
-  const summaryCards = useMemo<DashboardMetricCardData<DrilldownKey>[]>(() => {
-    if (!snapshot) {
-      return []
-    }
-
+  // Top row is the production picture only, in Berry's four solid colour
+  // blocks. Anything that means "a record needs fixing" drops to the small
+  // cards below the sales chart instead of competing with it.
+  // Built whether or not the snapshot has arrived. Without a snapshot every
+  // value is null, the cards render at full size with a skeleton in place of
+  // the number, and the page below them never has to move.
+  const summaryCards = useMemo<(DashboardCardData<DrilldownKey> & { bgcolor: string })[]>(() => {
     return [
       {
         key: 'lateOrders',
         label: 'Late Orders',
-        value: orderGroups.lateOrders.length,
+        value: snapshot ? orderGroups.lateOrders.length : null,
         helper: 'Past due · action required',
         icon: <ErrorOutlineRoundedIcon />,
         color: '#c62828',
+        bgcolor: 'error.main',
       },
       {
         key: 'dueSoonOrders',
         label: 'Due This Week',
-        value: orderGroups.dueThisWeekOrders.length,
+        value: snapshot ? orderGroups.dueThisWeekOrders.length : null,
         helper: 'Due today through day 7',
         icon: <ScheduleRoundedIcon />,
         color: '#ef6c00',
+        bgcolor: 'primary.dark',
       },
       {
         key: 'dueInTwoWeeksOrders',
         label: 'Due in 2 Weeks',
-        value: orderGroups.dueInTwoWeeksOrders.length,
+        value: snapshot ? orderGroups.dueInTwoWeeksOrders.length : null,
         helper: 'Due in 8 to 14 days',
         icon: <TaskAltRoundedIcon />,
         color: '#00897b',
+        bgcolor: 'secondary.main',
       },
       {
         key: 'readyOrders',
         label: 'Ready Orders',
-        value: orderGroups.readyOrders.length,
+        value: snapshot ? orderGroups.readyOrders.length : null,
         helper: 'Production complete · ready to ship',
         icon: <CheckCircleRoundedIcon />,
         color: '#2e7d32',
+        bgcolor: 'success.dark',
       },
-      {
-        key: 'activeOrders',
-        label: 'In Progress',
-        value: orderGroups.inProgressOrders.length,
-        helper: 'Active production · excludes ready',
-        icon: <AccessTimeRoundedIcon />,
-        color: '#1565c0',
-      },
+    ]
+  }, [orderGroups, snapshot])
+
+  const attentionCards = useMemo<DashboardCardData<DrilldownKey>[]>(() => {
+    return [
       {
         key: 'missingDueDateOrders',
         label: 'Missing Due Date',
-        value: orderGroups.missingDueDateOrders.length,
+        value: snapshot ? orderGroups.missingDueDateOrders.length : null,
         helper: 'Schedule required',
         icon: <FactCheckRoundedIcon />,
         color: '#6a1b9a',
@@ -323,62 +348,54 @@ export default function DashboardPage() {
       {
         key: 'missingCustomerSignedBolOrders',
         label: 'Shipped Missing Customer BOLs',
-        value: missingCustomerSignedBolOrders.length,
+        value: snapshot ? missingCustomerSignedBolOrders.length : null,
         helper: 'Shipped orders needing upload',
         icon: <ErrorOutlineRoundedIcon />,
         color: '#ad1457',
       },
-    ]
-  }, [missingCustomerSignedBolOrders, orderGroups, snapshot])
-
-  const zendeskSummaryCards = useMemo<DashboardMetricCardData[]>(() => {
-    if (!zendeskSnapshot) {
-      return []
-    }
-
-    return [
       {
-        key: 'newTickets',
-        label: 'New',
-        value: zendeskSnapshot.metrics.newTickets,
-        helper: 'Awaiting first review',
-        icon: <MarkEmailUnreadRoundedIcon />,
-        color: '#1e88e5',
+        key: 'missingQuickBooksProjectOrders',
+        label: 'No QuickBooks Project',
+        value: snapshot ? missingQuickBooksProjectOrders.length : null,
+        helper: 'Nothing to bill the work against',
+        icon: <ReceiptLongRoundedIcon />,
+        color: '#00695c',
       },
       {
-        key: 'inProgressTickets',
-        label: 'In Progress',
-        value: zendeskSnapshot.metrics.inProgressTickets,
-        helper: 'Actively being handled',
-        icon: <EngineeringRoundedIcon />,
+        key: 'missingOrderValueOrders',
+        label: 'No Order Value',
+        value: snapshot ? missingOrderValueOrders.length : null,
+        helper: 'Counts as $0 in sales',
+        icon: <PriceCheckRoundedIcon />,
+        color: '#b8860b',
+      },
+      {
+        key: 'missingOrderDateOrders',
+        label: 'No Real Order Date',
+        value: snapshot ? missingOrderDateOrders.length : null,
+        helper: 'Blank, or a date guessed from the number',
+        icon: <EventBusyRoundedIcon />,
         color: '#5e35b1',
       },
       {
-        key: 'openTickets',
-        label: 'Open',
-        value: zendeskSnapshot.metrics.openTickets,
-        helper: 'Requires follow-up',
-        icon: <AccessTimeRoundedIcon />,
-        color: '#fb8c00',
-      },
-      {
-        key: 'pendingTickets',
-        label: 'Pending',
-        value: zendeskSnapshot.metrics.pendingTickets,
-        helper: 'Waiting for a response',
-        icon: <PendingActionsRoundedIcon />,
-        color: '#8d6e63',
-      },
-      {
-        key: 'solvedTickets',
-        label: 'Solved',
-        value: zendeskSnapshot.metrics.solvedTickets,
-        helper: 'Completed requests',
-        icon: <TaskAltRoundedIcon />,
-        color: '#2e7d32',
+        key: 'onMondayNotOnSiteOrders',
+        label: 'On Monday, Not On Site',
+        value: snapshot ? onMondayNotOnSiteOrders.length : null,
+        helper: 'Would be lost if Monday is switched off',
+        icon: <CloudOffRoundedIcon />,
+        color: '#d84315',
       },
     ]
-  }, [zendeskSnapshot])
+  }, [
+    missingCustomerSignedBolOrders,
+    missingOrderDateOrders,
+    missingOrderValueOrders,
+    onMondayNotOnSiteOrders,
+    missingQuickBooksProjectOrders,
+    orderGroups,
+    snapshot,
+  ])
+
 
   const drilldownOrders = useMemo(() => {
     if (!activeDrilldown || !snapshot) {
@@ -397,10 +414,6 @@ export default function DashboardPage() {
       return orderGroups.dueThisWeekOrders
     }
 
-    if (activeDrilldown === 'activeOrders') {
-      return orderGroups.inProgressOrders
-    }
-
     if (activeDrilldown === 'missingDueDateOrders') {
       return orderGroups.missingDueDateOrders
     }
@@ -409,8 +422,48 @@ export default function DashboardPage() {
       return missingCustomerSignedBolOrders
     }
 
+    if (activeDrilldown === 'missingQuickBooksProjectOrders') {
+      return missingQuickBooksProjectOrders
+    }
+
+    if (activeDrilldown === 'missingOrderValueOrders') {
+      return missingOrderValueOrders
+    }
+
+    if (activeDrilldown === 'missingOrderDateOrders') {
+      return missingOrderDateOrders
+    }
+
+    if (activeDrilldown === 'onMondayNotOnSiteOrders') {
+      return onMondayNotOnSiteOrders
+    }
+
     return orderGroups.lateOrders
-  }, [activeDrilldown, missingCustomerSignedBolOrders, orderGroups, snapshot])
+  }, [
+    activeDrilldown,
+    missingCustomerSignedBolOrders,
+    missingOrderDateOrders,
+    missingOrderValueOrders,
+    missingQuickBooksProjectOrders,
+    onMondayNotOnSiteOrders,
+    orderGroups,
+    snapshot,
+  ])
+
+  // Every row in a drilldown has an Open button that navigates to the Orders
+  // page, and that page cannot paint until the orders list has loaded. Fetching
+  // it while the user is still reading the table turns that wait into no wait.
+  useEffect(() => {
+    if (!activeDrilldown) {
+      return
+    }
+
+    void queryClient.prefetchQuery({
+      queryKey: QUERY_KEYS.ordersOverview,
+      queryFn: fetchOrdersOverview,
+      staleTime: 60 * 1000,
+    })
+  }, [activeDrilldown, queryClient])
 
   const handleViewOrder = useCallback((order: DashboardOrder) => {
     const orderId = String(order.mondayItemId ?? order.id ?? '').trim()
@@ -428,20 +481,13 @@ export default function DashboardPage() {
     navigate(`/orders?${query.toString()}`)
   }, [activeDrilldown, navigate])
 
-  const handleOpenTicketQueue = useCallback((key: string) => {
-    const statusByMetric: Record<string, string> = {
-      newTickets: 'new',
-      inProgressTickets: 'in_progress',
-      openTickets: 'open',
-      pendingTickets: 'pending',
-      solvedTickets: 'solved',
-    }
-    const status = statusByMetric[key]
-    navigate(status ? `/support?status=${status}` : '/support')
-  }, [navigate])
 
   return (
-    <Stack spacing={2.5}>
+    // Berry centres its dashboard at the lg breakpoint (1200px) rather than
+    // filling the screen. On a wide monitor that stops four cards stretching
+    // into strips and keeps the numbers readable. Applied here rather than in
+    // the layout: the Orders grid and Chat genuinely need the full width.
+    <Stack spacing={2.5} sx={{ width: '100%', maxWidth: 1200, mx: 'auto' }}>
       <Stack
         direction={{ xs: 'column', md: 'row' }}
         spacing={1.5}
@@ -510,243 +556,224 @@ export default function DashboardPage() {
         </Alert>
       ) : null}
 
-      {isLoading ? (
-        <Paper variant="outlined" sx={{ p: 4 }}>
-          <Stack direction="row" spacing={1.25} alignItems="center">
-            <CircularProgress size={22} />
-            <Typography color="text.secondary">Loading dashboard data...</Typography>
-          </Stack>
-        </Paper>
-      ) : null}
+      <Box
+        component="section"
+        sx={{
+          display: 'grid',
+          gridTemplateColumns: {
+            xs: 'repeat(1, minmax(0, 1fr))',
+            sm: 'repeat(2, minmax(0, 1fr))',
+            lg: 'repeat(4, minmax(0, 1fr))',
+          },
+          gap: 2.5,
+        }}
+      >
+        {summaryCards.map((card) => (
+          <BerryStatCard
+            key={card.key}
+            value={card.value}
+            title={card.label}
+            caption={card.helper}
+            icon={card.icon}
+            bgcolor={card.bgcolor}
+            onClick={() => setActiveDrilldown(card.key)}
+          />
+        ))}
+      </Box>
 
-      {snapshot ? (
-        <>
-          <Box component="section">
-            <Stack spacing={1.5}>
-              <Stack
-                direction={{ xs: 'column', md: 'row' }}
-                justifyContent="space-between"
-                alignItems={{ xs: 'flex-start', md: 'center' }}
-                gap={1}
-              >
-                <Typography variant="h6" fontWeight={700}>
-                  Production Overview
-                </Typography>
+      <Dialog
+        open={Boolean(activeDrilldown)}
+        onClose={() => setActiveDrilldown(null)}
+        maxWidth="lg"
+        fullWidth
+      >
+        <DialogTitle>{activeDrilldown ? drilldownTitles[activeDrilldown] : 'Details'}</DialogTitle>
+        <DialogContent>
+          {drilldownOrders.length === 0 ? (
+            <Typography color="text.secondary">No orders in this section.</Typography>
+          ) : (
+            <TableContainer>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Order</TableCell>
+                    <TableCell>Group</TableCell>
+                    <TableCell>Workflow</TableCell>
+                    <TableCell>Lead-Time Due</TableCell>
+                    <TableCell>Progress</TableCell>
+                    <TableCell>Paid</TableCell>
+                    <TableCell align="right">Shop Drawing</TableCell>
+                    <TableCell align="right">View</TableCell>
+                    <TableCell align="right">Monday</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {drilldownOrders.map((order) => {
+                    const hasShopDrawing = Boolean(
+                      String(order.shopDrawingCachedUrl ?? '').trim()
+                      || String(order.shopDrawingUrl ?? '').trim(),
+                    )
+                    const isCurrentPreviewLoading = Boolean(
+                      isShopDrawingPreviewLoading
+                      && shopDrawingPreviewOrder?.id === order.id,
+                    )
+                    const paidInFull = typeof order.paidInFull === 'boolean'
+                      ? order.paidInFull
+                      : null
+                    const managerReadyPercent = typeof order.managerReadyPercent === 'number'
+                      ? Math.max(0, Math.min(100, Math.round(order.managerReadyPercent)))
+                      : null
+                    const displayProgressPercent = activeDrilldown === 'readyOrders'
+                      ? (managerReadyPercent ?? order.progressPercent)
+                      : order.progressPercent
 
-                {snapshot.board.url ? (
-                  <Button
-                    variant="outlined"
-                    color="inherit"
-                    href={snapshot.board.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    startIcon={<OpenInNewRoundedIcon />}
-                  >
-                    Open Board
-                  </Button>
-                ) : null}
-              </Stack>
+                    return (
+                    <TableRow key={order.id} hover>
+                      <TableCell>
+                        <Typography fontWeight={600}>{order.name}</Typography>
+                      </TableCell>
+                      <TableCell>{order.groupTitle}</TableCell>
+                      <TableCell>
+                        <Chip
+                          size="small"
+                          label={order.rowStatus || order.statusLabel || 'Unspecified'}
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <Stack spacing={0.2}>
+                          <Typography variant="body2">
+                            {formatDisplayDate(order.effectiveDueDate)}
+                          </Typography>
+                          <Chip
+                            size="small"
+                            label={dueLabel(order)}
+                            color={dueColor(order)}
+                            variant="outlined"
+                          />
+                        </Stack>
+                      </TableCell>
+                      <TableCell>
+                        {typeof displayProgressPercent === 'number' ? (
+                          <Button
+                            size="small"
+                            variant="text"
+                            sx={{ minWidth: 0, px: 0.5, textTransform: 'none' }}
+                            onClick={() => handleViewOrder(order)}
+                          >
+                            {`${displayProgressPercent}%`}
+                          </Button>
+                        ) : '—'}
+                      </TableCell>
+                      <TableCell>
+                        {paidInFull === null ? (
+                          '—'
+                        ) : (
+                          <Chip
+                            size="small"
+                            label={paidInFull ? 'Yes' : 'No'}
+                            color={paidInFull ? 'success' : 'warning'}
+                            variant="outlined"
+                          />
+                        )}
+                      </TableCell>
+                      <TableCell align="right">
+                        {hasShopDrawing ? (
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            startIcon={
+                              isCurrentPreviewLoading
+                                ? <CircularProgress size={12} color="inherit" />
+                                : <VisibilityRoundedIcon sx={{ fontSize: 16 }} />
+                            }
+                            onClick={() => {
+                              void handleOpenShopDrawingPreview(order)
+                            }}
+                            disabled={isCurrentPreviewLoading}
+                          >
+                            {isCurrentPreviewLoading ? 'Loading...' : 'Preview'}
+                          </Button>
+                        ) : (
+                          <Typography variant="caption" color="text.secondary">
+                            Not available
+                          </Typography>
+                        )}
+                      </TableCell>
+                      <TableCell align="right">
+                        <Button
+                          size="small"
+                          onClick={() => handleViewOrder(order)}
+                          endIcon={<VisibilityRoundedIcon sx={{ fontSize: 16 }} />}
+                        >
+                          Open
+                        </Button>
+                      </TableCell>
+                      <TableCell align="right">
+                        {order.itemUrl ? (
+                          <Button
+                            size="small"
+                            href={order.itemUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            endIcon={<OpenInNewRoundedIcon sx={{ fontSize: 16 }} />}
+                          >
+                            Open
+                          </Button>
+                        ) : (
+                          <Typography variant="caption" color="text.secondary">
+                            No link
+                          </Typography>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                    )
+                  })}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          )}
+        </DialogContent>
+      </Dialog>
 
+      <Dialog
+        open={Boolean(shopDrawingPreviewOrder)}
+        onClose={handleCloseShopDrawingPreview}
+        fullWidth
+        maxWidth="lg"
+      >
+        <DialogTitle>
+          {shopDrawingPreviewOrder
+            ? `Shop Drawing Preview - ${shopDrawingPreviewOrder.name}`
+            : 'Shop Drawing Preview'}
+        </DialogTitle>
+        <DialogContent dividers sx={{ p: 0 }}>
+          {isShopDrawingPreviewLoading && !shopDrawingPreviewSrc ? (
+            <Stack
+              spacing={1}
+              alignItems="center"
+              justifyContent="center"
+              sx={{
+                height: { xs: '56vh', md: '64vh' },
+                p: 2,
+              }}
+            >
+              <CircularProgress size={28} />
               <Typography variant="body2" color="text.secondary">
-                Live workload from {snapshot.board.name}. Ready orders are excluded from upcoming work.
+                Loading preview...
               </Typography>
-
-              <Box
-                sx={{
-                  display: 'grid',
-                  gridTemplateColumns: {
-                    xs: 'repeat(1, minmax(0, 1fr))',
-                    sm: 'repeat(2, minmax(0, 1fr))',
-                    xl: 'repeat(7, minmax(0, 1fr))',
-                  },
-                  gap: 1.5,
-                }}
-              >
-                {summaryCards.map(({ key, ...card }) => (
-                  <DashboardMetricCard
-                    key={key}
-                    {...card}
-                    onClick={() => setActiveDrilldown(key)}
-                  />
-                ))}
-              </Box>
             </Stack>
-          </Box>
-
-          <Dialog
-            open={Boolean(activeDrilldown)}
-            onClose={() => setActiveDrilldown(null)}
-            maxWidth="lg"
-            fullWidth
-          >
-            <DialogTitle>{activeDrilldown ? drilldownTitles[activeDrilldown] : 'Details'}</DialogTitle>
-            <DialogContent>
-              {drilldownOrders.length === 0 ? (
-                <Typography color="text.secondary">No orders in this section.</Typography>
-              ) : (
-                <TableContainer>
-                  <Table size="small">
-                    <TableHead>
-                      <TableRow>
-                        <TableCell>Order</TableCell>
-                        <TableCell>Group</TableCell>
-                        <TableCell>Workflow</TableCell>
-                        <TableCell>Lead-Time Due</TableCell>
-                        <TableCell>Progress</TableCell>
-                        <TableCell>Paid</TableCell>
-                        <TableCell align="right">Shop Drawing</TableCell>
-                        <TableCell align="right">View</TableCell>
-                        <TableCell align="right">Monday</TableCell>
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
-                      {drilldownOrders.map((order) => {
-                        const hasShopDrawing = Boolean(
-                          String(order.shopDrawingCachedUrl ?? '').trim()
-                          || String(order.shopDrawingUrl ?? '').trim(),
-                        )
-                        const isCurrentPreviewLoading = Boolean(
-                          isShopDrawingPreviewLoading
-                          && shopDrawingPreviewOrder?.id === order.id,
-                        )
-                        const paidInFull = typeof order.paidInFull === 'boolean'
-                          ? order.paidInFull
-                          : null
-                        const managerReadyPercent = typeof order.managerReadyPercent === 'number'
-                          ? Math.max(0, Math.min(100, Math.round(order.managerReadyPercent)))
-                          : null
-                        const displayProgressPercent = activeDrilldown === 'readyOrders'
-                          ? (managerReadyPercent ?? order.progressPercent)
-                          : order.progressPercent
-
-                        return (
-                        <TableRow key={order.id} hover>
-                          <TableCell>
-                            <Typography fontWeight={600}>{order.name}</Typography>
-                          </TableCell>
-                          <TableCell>{order.groupTitle}</TableCell>
-                          <TableCell>
-                            <Chip
-                              size="small"
-                              label={order.rowStatus || order.statusLabel || 'Unspecified'}
-                            />
-                          </TableCell>
-                          <TableCell>
-                            <Stack spacing={0.2}>
-                              <Typography variant="body2">
-                                {formatDisplayDate(order.effectiveDueDate)}
-                              </Typography>
-                              <Chip
-                                size="small"
-                                label={dueLabel(order)}
-                                color={dueColor(order)}
-                                variant="outlined"
-                              />
-                            </Stack>
-                          </TableCell>
-                          <TableCell>
-                            {typeof displayProgressPercent === 'number' ? (
-                              <Button
-                                size="small"
-                                variant="text"
-                                sx={{ minWidth: 0, px: 0.5, textTransform: 'none' }}
-                                onClick={() => handleViewOrder(order)}
-                              >
-                                {`${displayProgressPercent}%`}
-                              </Button>
-                            ) : '—'}
-                          </TableCell>
-                          <TableCell>
-                            {paidInFull === null ? (
-                              '—'
-                            ) : (
-                              <Chip
-                                size="small"
-                                label={paidInFull ? 'Yes' : 'No'}
-                                color={paidInFull ? 'success' : 'warning'}
-                                variant="outlined"
-                              />
-                            )}
-                          </TableCell>
-                          <TableCell align="right">
-                            {hasShopDrawing ? (
-                              <Button
-                                size="small"
-                                variant="outlined"
-                                startIcon={
-                                  isCurrentPreviewLoading
-                                    ? <CircularProgress size={12} color="inherit" />
-                                    : <VisibilityRoundedIcon sx={{ fontSize: 16 }} />
-                                }
-                                onClick={() => {
-                                  void handleOpenShopDrawingPreview(order)
-                                }}
-                                disabled={isCurrentPreviewLoading}
-                              >
-                                {isCurrentPreviewLoading ? 'Loading...' : 'Preview'}
-                              </Button>
-                            ) : (
-                              <Typography variant="caption" color="text.secondary">
-                                Not available
-                              </Typography>
-                            )}
-                          </TableCell>
-                          <TableCell align="right">
-                            <Button
-                              size="small"
-                              onClick={() => handleViewOrder(order)}
-                              endIcon={<VisibilityRoundedIcon sx={{ fontSize: 16 }} />}
-                            >
-                              Open
-                            </Button>
-                          </TableCell>
-                          <TableCell align="right">
-                            {order.itemUrl ? (
-                              <Button
-                                size="small"
-                                href={order.itemUrl}
-                                target="_blank"
-                                rel="noreferrer"
-                                endIcon={<OpenInNewRoundedIcon sx={{ fontSize: 16 }} />}
-                              >
-                                Open
-                              </Button>
-                            ) : (
-                              <Typography variant="caption" color="text.secondary">
-                                No link
-                              </Typography>
-                            )}
-                          </TableCell>
-                        </TableRow>
-                        )
-                      })}
-                    </TableBody>
-                  </Table>
-                </TableContainer>
-              )}
-            </DialogContent>
-          </Dialog>
-
-          <Dialog
-            open={Boolean(shopDrawingPreviewOrder)}
-            onClose={handleCloseShopDrawingPreview}
-            fullWidth
-            maxWidth="lg"
-          >
-            <DialogTitle>
-              {shopDrawingPreviewOrder
-                ? `Shop Drawing Preview - ${shopDrawingPreviewOrder.name}`
-                : 'Shop Drawing Preview'}
-            </DialogTitle>
-            <DialogContent dividers sx={{ p: 0 }}>
-              {isShopDrawingPreviewLoading && !shopDrawingPreviewSrc ? (
+          ) : shopDrawingPreviewSrc ? (
+            <Box sx={{ height: { xs: '72vh', md: '80vh' }, position: 'relative' }}>
+              {isShopDrawingPreviewLoading ? (
                 <Stack
                   spacing={1}
                   alignItems="center"
                   justifyContent="center"
                   sx={{
-                    height: { xs: '56vh', md: '64vh' },
-                    p: 2,
+                    position: 'absolute',
+                    inset: 0,
+                    bgcolor: 'rgba(255, 255, 255, 0.85)',
+                    zIndex: 1,
                   }}
                 >
                   <CircularProgress size={28} />
@@ -754,106 +781,55 @@ export default function DashboardPage() {
                     Loading preview...
                   </Typography>
                 </Stack>
-              ) : shopDrawingPreviewSrc ? (
-                <Box sx={{ height: { xs: '72vh', md: '80vh' }, position: 'relative' }}>
-                  {isShopDrawingPreviewLoading ? (
-                    <Stack
-                      spacing={1}
-                      alignItems="center"
-                      justifyContent="center"
-                      sx={{
-                        position: 'absolute',
-                        inset: 0,
-                        bgcolor: 'rgba(255, 255, 255, 0.85)',
-                        zIndex: 1,
-                      }}
-                    >
-                      <CircularProgress size={28} />
-                      <Typography variant="body2" color="text.secondary">
-                        Loading preview...
-                      </Typography>
-                    </Stack>
-                  ) : null}
-                  <iframe
-                    key={shopDrawingPreviewSrc}
-                    src={shopDrawingPreviewSrc}
-                    title="Shop Drawing Preview"
-                    onLoad={() => {
-                      setIsShopDrawingPreviewLoading(false)
-                    }}
-                    onError={() => {
-                      setIsShopDrawingPreviewLoading(false)
-                      setShopDrawingErrorMessage('Could not load shop drawing preview.')
-                    }}
-                    style={{ width: '100%', height: '100%', border: 0 }}
-                  />
-                </Box>
-              ) : (
-                <Stack sx={{ p: 2 }}>
-                  <Typography color="text.secondary">No preview is available.</Typography>
-                </Stack>
-              )}
-            </DialogContent>
-          </Dialog>
-        </>
-      ) : null}
+              ) : null}
+              <iframe
+                key={shopDrawingPreviewSrc}
+                src={shopDrawingPreviewSrc}
+                title="Shop Drawing Preview"
+                onLoad={() => {
+                  setIsShopDrawingPreviewLoading(false)
+                }}
+                onError={() => {
+                  setIsShopDrawingPreviewLoading(false)
+                  setShopDrawingErrorMessage('Could not load shop drawing preview.')
+                }}
+                style={{ width: '100%', height: '100%', border: 0 }}
+              />
+            </Box>
+          ) : (
+            <Stack sx={{ p: 2 }}>
+              <Typography color="text.secondary">No preview is available.</Typography>
+            </Stack>
+          )}
+        </DialogContent>
+      </Dialog>
 
       {appUser?.canViewOrderValue ? <SalesTrendCard /> : null}
 
-      {zendeskSnapshot ? (
-        <Box component="section">
-          <Stack spacing={1.5}>
-            <Stack
-              direction={{ xs: 'column', md: 'row' }}
-              justifyContent="space-between"
-              alignItems={{ xs: 'flex-start', md: 'center' }}
-              gap={1}
-            >
-              <Box>
-                <Typography variant="h6" fontWeight={700}>
-                  Support Overview
-                </Typography>
-                <Typography variant="body2" color="text.secondary">
-                  Live service workload from Zendesk
-                </Typography>
-              </Box>
-
-              {zendeskSnapshot.agentUrl ? (
-                <Button
-                  variant="outlined"
-                  color="inherit"
-                  href={zendeskSnapshot.agentUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  startIcon={<OpenInNewRoundedIcon />}
-                >
-                  Open Helpdesk
-                </Button>
-              ) : null}
-            </Stack>
-
-            <Box
-              sx={{
-                display: 'grid',
-                gridTemplateColumns: {
-                  xs: 'repeat(1, minmax(0, 1fr))',
-                  sm: 'repeat(2, minmax(0, 1fr))',
-                  xl: 'repeat(5, minmax(0, 1fr))',
-                },
-                gap: 1.5,
-              }}
-            >
-              {zendeskSummaryCards.map(({ key, ...card }) => (
-                <DashboardMetricCard
-                  key={key}
-                  {...card}
-                  onClick={() => handleOpenTicketQueue(key)}
-                />
-              ))}
-            </Box>
-          </Stack>
-        </Box>
-      ) : null}
+      <Box
+        component="section"
+        sx={{
+          display: 'grid',
+          gridTemplateColumns: {
+            xs: 'repeat(1, minmax(0, 1fr))',
+            sm: 'repeat(2, minmax(0, 1fr))',
+            md: 'repeat(3, minmax(0, 1fr))',
+            lg: 'repeat(6, minmax(0, 1fr))',
+          },
+          gap: 2.5,
+        }}
+      >
+        {attentionCards.map((card) => (
+          <BerryMiniCard
+            key={card.key}
+            value={card.value}
+            title={card.label}
+            icon={card.icon}
+            accent={card.color}
+            onClick={() => setActiveDrilldown(card.key)}
+          />
+        ))}
+      </Box>
     </Stack>
   )
 }

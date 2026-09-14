@@ -17,6 +17,26 @@ export function resolveUserLabel(user: Pick<AppChatUser, 'displayName' | 'email'
   return String(user.displayName ?? '').trim() || user.email
 }
 
+// Autocomplete's default filter only reads the option label, which is the
+// display name. Searching has to reach the email too, or two people with the
+// same name are impossible to tell apart while typing.
+export function filterUserOptions<T extends Pick<AppChatUser, 'displayName' | 'email' | 'role'>>(
+  options: T[],
+  state: { inputValue: string },
+): T[] {
+  const needle = String(state?.inputValue ?? '').trim().toLowerCase()
+
+  if (!needle) {
+    return options
+  }
+
+  return options.filter((option) => (
+    `${option.displayName ?? ''} ${option.email ?? ''} ${option.role ?? ''}`
+      .toLowerCase()
+      .includes(needle)
+  ))
+}
+
 export function resolveInitials(value: string | null | undefined) {
   const words = String(value ?? '')
     .replace(/@.*$/, '')
@@ -306,4 +326,32 @@ export function resolveAttachmentSrc(
   attachment: { url?: string | null; dataUrl?: string | null } | null | undefined,
 ) {
   return String(attachment?.url ?? '').trim() || String(attachment?.dataUrl ?? '').trim() || ''
+}
+
+/**
+ * Names typed with an @ that were never picked from the suggestion list.
+ *
+ * react-mentions stores a real tag as `@[Name](uid)`. Anything else beginning
+ * with @ is plain text — it reads as a tag to the sender and notifies nobody,
+ * which is exactly how a message meant for someone reaches them silently never.
+ */
+export function findUnresolvedMentionNames(markup: string, plainText: string) {
+  const resolvedNames = new Set(
+    Array.from(String(markup ?? '').matchAll(/@\[([^\]]+)\]\([^)]+\)/g))
+      .map((entry) => String(entry[1] ?? '').trim().toLowerCase())
+      .filter(Boolean),
+  )
+
+  // Read the plain text, where a resolved tag has already collapsed to its
+  // display name, and keep the ones no real tag accounts for.
+  return [...new Set(
+    // The @ must not follow a word character, or "kal@ybkarnold.com" reads as
+    // a mention of @ybkarnold.com.
+    Array.from(String(plainText ?? '').matchAll(/(?<![\p{L}\d._%+-])@([\p{L}][\p{L}\d._'-]*)/gu))
+      .map((entry) => String(entry[1] ?? '').trim())
+      .filter(Boolean)
+      .filter((name) => ![...resolvedNames].some((resolved) => (
+        resolved === name.toLowerCase() || resolved.startsWith(`${name.toLowerCase()} `)
+      ))),
+  )]
 }

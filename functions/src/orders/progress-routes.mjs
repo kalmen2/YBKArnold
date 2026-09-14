@@ -1287,6 +1287,8 @@ export function registerOrderProgressRoutes(app, {
 
         const mondayItemId = String(req.body?.mondayItemId ?? '').trim()
         const hasOrderNameField = hasOwnField(req.body, 'orderName')
+        const hasDealerSourceIdField = hasOwnField(req.body, 'dealerSourceId')
+        const hasContactSourceIdField = hasOwnField(req.body, 'contactSourceId')
         const hasSalesRepField = hasOwnField(req.body, 'salesRep')
         const hasPoNumberField = hasOwnField(req.body, 'poNumber')
         const hasNotesField = hasOwnField(req.body, 'notes')
@@ -1314,6 +1316,8 @@ export function registerOrderProgressRoutes(app, {
 
         if (
           !hasOrderNameField
+          && !hasDealerSourceIdField
+          && !hasContactSourceIdField
           && !hasSalesRepField
           && !hasPoNumberField
           && !hasNotesField
@@ -1334,13 +1338,15 @@ export function registerOrderProgressRoutes(app, {
           })
         }
 
-        if (hasOrderDateField) {
+        if (hasOrderDateField && !publicUser.isAdmin) {
           return res.status(403).json({
-            error: 'Order date is read-only and must be changed at its source.',
+            error: 'Please contact admin to change the order date.',
           })
         }
 
         const rawOrderNameInput = String(req.body?.orderName ?? '').trim()
+        const rawDealerSourceIdInput = String(req.body?.dealerSourceId ?? '').trim()
+        const rawContactSourceIdInput = String(req.body?.contactSourceId ?? '').trim()
         const rawSalesRepInput = String(req.body?.salesRep ?? '').trim()
         const rawPoNumberInput = String(req.body?.poNumber ?? '').trim()
         const rawNotesInput = String(req.body?.notes ?? '').trim()
@@ -1395,6 +1401,8 @@ export function registerOrderProgressRoutes(app, {
         })()
 
         const requestedOrderName = normalizeOptionalShortText(rawOrderNameInput, 250)
+        const requestedDealerSourceId = normalizeOptionalShortText(rawDealerSourceIdInput, 160) || ''
+        const requestedContactSourceId = normalizeOptionalShortText(rawContactSourceIdInput, 160) || ''
         const requestedSalesRep = normalizeOptionalShortText(rawSalesRepInput, 200) || ''
         const requestedPoNumber = normalizeOptionalShortText(rawPoNumberInput, 120) || ''
         const requestedNotes = normalizeOptionalShortText(rawNotesInput, 2000) || ''
@@ -1442,12 +1450,64 @@ export function registerOrderProgressRoutes(app, {
         }
 
         const {
+          crmAccountsCollection,
+          crmContactsCollection,
           mondayOrdersCollection,
           ordersUnifiedCollection,
         } = await getCollections()
+        const [existingOrderForRelations, requestedDealer, requestedContact] = await Promise.all([
+          ordersUnifiedCollection.findOne({ monday_item_id: mondayItemId }, { projection: { _id: 0, dealer_source_id: 1, source_quote_snapshot: 1 } }),
+          hasDealerSourceIdField && requestedDealerSourceId
+            ? crmAccountsCollection.findOne({ sourceId: requestedDealerSourceId }, { projection: { _id: 0, sourceId: 1, name: 1 } })
+            : null,
+          hasContactSourceIdField && requestedContactSourceId
+            ? crmContactsCollection.findOne({ sourceId: requestedContactSourceId, isArchived: { $ne: true } }, { projection: { _id: 0 } })
+            : null,
+        ])
+
+        if (hasDealerSourceIdField && requestedDealerSourceId && !requestedDealer) {
+          return res.status(404).json({ error: 'Company was not found.' })
+        }
+
+        if (hasContactSourceIdField && requestedContactSourceId && !requestedContact) {
+          return res.status(404).json({ error: 'Contact was not found or is archived.' })
+        }
+
+        const effectiveDealerSourceId = hasDealerSourceIdField
+          ? requestedDealerSourceId
+          : String(existingOrderForRelations?.dealer_source_id ?? '').trim()
+        const requestedDealerName = requestedDealer
+          ? String(requestedDealer.name || requestedDealer.sourceId || '').trim()
+          : ''
+
+        if (requestedContact) {
+          const contactDealerSourceId = String(requestedContact.accountSourceId ?? '').trim()
+
+          if (effectiveDealerSourceId && contactDealerSourceId && contactDealerSourceId !== effectiveDealerSourceId) {
+            return res.status(400).json({ error: 'Choose a contact belonging to this order’s company.' })
+          }
+        }
 
         const localShippingUpdate = {
           updatedAt: new Date().toISOString(),
+          ...(hasDealerSourceIdField
+            ? {
+              dealer_source_id: requestedDealerSourceId || null,
+              dealer_name: requestedDealerSourceId ? requestedDealerName : null,
+              contact_source_id: null,
+              contact_name: null,
+              contact_email: null,
+              contact_phone: null,
+            }
+            : {}),
+          ...(hasContactSourceIdField
+            ? {
+              contact_source_id: requestedContactSourceId || null,
+              contact_name: requestedContact ? String(requestedContact.name ?? '').trim() || null : null,
+              contact_email: requestedContact ? String(requestedContact.primaryEmail ?? '').trim() || null : null,
+              contact_phone: requestedContact ? String(requestedContact.phone ?? '').trim() || null : null,
+            }
+            : {}),
           ...(hasShipToField ? { ship_to: requestedShipTo || null } : {}),
           ...(hasLeadTimeTextField ? { lead_time_text: requestedLeadTimeText || null } : {}),
           ...(hasFreightDescriptionField ? { freight_description: requestedFreightDescription || null } : {}),
@@ -1464,13 +1524,39 @@ export function registerOrderProgressRoutes(app, {
         }
         const localMondayShippingUpdate = {
           updatedAt: localShippingUpdate.updatedAt,
+          ...(hasDealerSourceIdField
+            ? {
+              dealerSourceId: requestedDealerSourceId || null,
+              dealerName: requestedDealerSourceId ? requestedDealerName : null,
+              contactSourceId: null,
+              contactName: null,
+              contactEmail: null,
+              contactPhone: null,
+            }
+            : {}),
+          ...(hasContactSourceIdField
+            ? {
+              contactSourceId: requestedContactSourceId || null,
+              contactName: requestedContact ? String(requestedContact.name ?? '').trim() || null : null,
+              contactEmail: requestedContact ? String(requestedContact.primaryEmail ?? '').trim() || null : null,
+              contactPhone: requestedContact ? String(requestedContact.phone ?? '').trim() || null : null,
+            }
+            : {}),
           ...(hasShipToField ? { shipTo: requestedShipTo || null } : {}),
           ...(hasLeadTimeTextField ? { leadTime: requestedLeadTimeText || null } : {}),
           ...(hasFreightDescriptionField ? { freightDescription: requestedFreightDescription || null } : {}),
           ...(hasShippingCarrierField ? { shippingCarrier: requestedShippingCarrier || null } : {}),
           ...(hasShipNotesField ? { shipNotes: requestedShipNotes || null } : {}),
         }
-        if (hasShipToField || hasLeadTimeTextField || hasFreightDescriptionField || hasShippingCarrierField || hasShipNotesField) {
+        if (
+          hasDealerSourceIdField
+          || hasContactSourceIdField
+          || hasShipToField
+          || hasLeadTimeTextField
+          || hasFreightDescriptionField
+          || hasShippingCarrierField
+          || hasShipNotesField
+        ) {
           await Promise.all([
             ordersUnifiedCollection.updateOne({ monday_item_id: mondayItemId }, { $set: localShippingUpdate }),
             mondayCards.updateOneCompat({ mondayItemId }, { $set: localMondayShippingUpdate }),
@@ -1484,6 +1570,7 @@ export function registerOrderProgressRoutes(app, {
           updatedAt: savedAt,
           monday_sync_status: 'queued',
           ...(hasOrderNameField ? { order_name: requestedOrderName } : {}),
+          ...(hasOrderDateField ? { order_date: requestedOrderDate || null } : {}),
           ...(hasSalesRepField ? { sales_rep: requestedSalesRep || null } : {}),
           ...(hasPoNumberField ? { po_number: requestedPoNumber || null } : {}),
           ...(hasNotesField ? { monday_notes: requestedNotes || null } : {}),
@@ -1497,6 +1584,7 @@ export function registerOrderProgressRoutes(app, {
           updatedAt: savedAt,
           mondaySyncStatus: 'queued',
           ...(hasOrderNameField ? { orderName: requestedOrderName } : {}),
+          ...(hasOrderDateField ? { orderDate: requestedOrderDate || null } : {}),
           ...(hasSalesRepField ? { salesRep: requestedSalesRep || null } : {}),
           ...(hasPoNumberField ? { poNumber: requestedPoNumber || null } : {}),
           ...(hasNotesField ? { notes: requestedNotes || null } : {}),
@@ -1525,6 +1613,7 @@ export function registerOrderProgressRoutes(app, {
 
         const changes = {
           ...(hasOrderNameField ? { orderName: requestedOrderName } : {}),
+          ...(hasOrderDateField ? { orderDate: requestedOrderDate } : {}),
           ...(hasSalesRepField ? { salesRep: requestedSalesRep } : {}),
           ...(hasPoNumberField ? { poNumber: requestedPoNumber } : {}),
           ...(hasNotesField ? { notes: requestedNotes } : {}),
@@ -1550,7 +1639,14 @@ export function registerOrderProgressRoutes(app, {
           queued: Object.keys(changes).length > 0,
           order: {
             mondayItemId,
+            dealerSourceId: String(storedOrder?.dealer_source_id ?? storedMondayOrder?.dealerSourceId ?? '').trim() || null,
+            dealerName: String(storedOrder?.dealer_name ?? storedMondayOrder?.dealerName ?? '').trim() || null,
+            contactSourceId: String(storedOrder?.contact_source_id ?? storedMondayOrder?.contactSourceId ?? '').trim() || null,
+            contactName: String(storedOrder?.contact_name ?? storedMondayOrder?.contactName ?? '').trim() || null,
+            contactEmail: String(storedOrder?.contact_email ?? storedMondayOrder?.contactEmail ?? '').trim() || null,
+            contactPhone: String(storedOrder?.contact_phone ?? storedMondayOrder?.contactPhone ?? '').trim() || null,
             orderName: String(storedOrder?.order_name ?? storedMondayOrder?.orderName ?? '').trim() || null,
+            orderDate: String(storedOrder?.order_date ?? storedMondayOrder?.orderDate ?? '').trim() || null,
             salesRep: String(storedOrder?.sales_rep ?? storedMondayOrder?.salesRep ?? '').trim() || null,
             poNumber: String(storedOrder?.po_number ?? storedMondayOrder?.poNumber ?? '').trim() || null,
             notes: String(storedOrder?.monday_notes ?? storedMondayOrder?.notes ?? '').trim() || null,

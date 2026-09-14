@@ -1,5 +1,7 @@
 import ArticleOutlinedIcon from '@mui/icons-material/ArticleOutlined'
 import BugReportOutlinedIcon from '@mui/icons-material/BugReportOutlined'
+import LinkRoundedIcon from '@mui/icons-material/LinkRounded'
+import MarkEmailReadOutlinedIcon from '@mui/icons-material/MarkEmailReadOutlined'
 import NotificationsNoneOutlinedIcon from '@mui/icons-material/NotificationsNoneOutlined'
 import PeopleOutlineRoundedIcon from '@mui/icons-material/PeopleOutlineRounded'
 import TextSnippetOutlinedIcon from '@mui/icons-material/TextSnippetOutlined'
@@ -14,8 +16,11 @@ const QuoteReminderSettingsPage = lazy(() => import('./QuoteReminderSettingsPage
 const ReportIssuePage = lazy(() => import('./ReportIssuePage'))
 const DocumentTermsPage = lazy(() => import('./DocumentTermsPage'))
 const QuoteLineLibraryPage = lazy(() => import('./QuoteLineLibraryPage'))
+// Temporary backfill tool. Remove this tab once every order has a dealer.
+const DealerLinkingPage = lazy(() => import('./DealerLinkingPage'))
+const NotificationEmailSettingsPage = lazy(() => import('./NotificationEmailSettingsPage'))
 
-type ConfigTab = 'templates' | 'quote-library' | 'terms' | 'visitors' | 'quote-reminders' | 'report-issue'
+type ConfigTab = 'templates' | 'quote-library' | 'terms' | 'visitors' | 'quote-reminders' | 'report-issue' | 'dealer-linking' | 'email-notifications'
 
 const configTabs: Array<{
   value: ConfigTab
@@ -52,6 +57,16 @@ const configTabs: Array<{
     label: 'Report Issue',
     icon: BugReportOutlinedIcon,
   },
+  {
+    value: 'email-notifications',
+    label: 'Email Notifications',
+    icon: MarkEmailReadOutlinedIcon,
+  },
+  {
+    value: 'dealer-linking',
+    label: 'Dealer Linking',
+    icon: LinkRoundedIcon,
+  },
 ]
 
 function getConfigTabFromQuery(rawTab: string | null): ConfigTab {
@@ -73,6 +88,14 @@ function getConfigTabFromQuery(rawTab: string | null): ConfigTab {
 
   if (rawTab === 'report-issue') {
     return 'report-issue'
+  }
+
+  if (rawTab === 'dealer-linking') {
+    return 'dealer-linking'
+  }
+
+  if (rawTab === 'email-notifications') {
+    return 'email-notifications'
   }
 
   return 'visitors'
@@ -136,7 +159,11 @@ export default function ConfigPage() {
                 ? <QuoteReminderSettingsPage />
                 : selectedTab === 'report-issue'
                   ? <ReportIssuePage />
-                  : <VisitorsPage />}
+                  : selectedTab === 'dealer-linking'
+                    ? <DealerLinkingPage />
+                    : selectedTab === 'email-notifications'
+                      ? <NotificationEmailSettingsPage />
+                      : <VisitorsPage />}
         </Suspense>
       </Box>
     </Box>

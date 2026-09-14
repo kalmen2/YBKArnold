@@ -2,11 +2,13 @@
 // /api/chat/*. Everything here is internal-only: the people you can reach are
 // exactly the approved users the API returns.
 import CallRoundedIcon from '@mui/icons-material/CallRounded'
+import ChecklistRoundedIcon from '@mui/icons-material/ChecklistRounded'
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined'
 import MenuRoundedIcon from '@mui/icons-material/MenuRounded'
 import VideocamRoundedIcon from '@mui/icons-material/VideocamRounded'
 import {
   Alert,
+  Badge,
   Box,
   Button,
   Chip,
@@ -36,6 +38,7 @@ import {
   endChatCall,
   fetchChatActivity,
   fetchChatMessages,
+  fetchChatTasks,
   fetchChatThreads,
   fetchChatUsers,
   leaveChatCall,
@@ -48,6 +51,7 @@ import {
   updateChatThreadPreferences,
   type AppChatCallMode,
   type AppChatMessage,
+  type AppChatTask,
   type AppChatPresenceStatus,
   type AppChatThread,
 } from '../features/chat/api'
@@ -56,6 +60,7 @@ import { ChatCallWindow, type ChatCallSession } from '../features/chat/ChatCallW
 import { ChatComposer, type ChatAttachmentDraft } from '../features/chat/ChatComposer'
 import { NewChatDialog, NewGroupDialog } from '../features/chat/ChatCreateDialogs'
 import { ChatDetailsPanel } from '../features/chat/ChatDetailsPanel'
+import { ChatTasksPanel } from '../features/chat/ChatTasksPanel'
 import { ChatMessageList } from '../features/chat/ChatMessageList'
 import { ChatSidebar } from '../features/chat/ChatSidebar'
 import {
@@ -63,6 +68,7 @@ import {
   buildThreadTitle,
   CHAT_MAX_ATTACHMENT_BYTES,
   extractMentionUids,
+  findUnresolvedMentionNames,
   findThreadPeer,
   normalizeEmail,
   readFileAsDataUrl,
@@ -106,7 +112,9 @@ export default function ChatPage() {
   const [replyTo, setReplyTo] = useState<AppChatMessage | null>(null)
   const [draftThreadId, setDraftThreadId] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
-  const [detailsOpen, setDetailsOpen] = useState(false)
+  // The right rail shows one of these, or nothing. Clicking the active button
+  // closes it; clicking the other swaps without closing.
+  const [sidePanel, setSidePanel] = useState<'info' | 'tasks' | null>(null)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const [newChatOpen, setNewChatOpen] = useState(false)
   const [newGroupOpen, setNewGroupOpen] = useState(false)
@@ -196,6 +204,17 @@ export default function ChatPage() {
     [activeThreadId, threads],
   )
 
+  // Shares a cache key with the tasks panel, so the badge and the panel are
+  // one request rather than two.
+  const taskCountQuery = useQuery({
+    queryKey: QUERY_KEYS.chatTasks(activeThreadId ?? 'none'),
+    queryFn: () => fetchChatTasks(activeThreadId ?? ''),
+    enabled: Boolean(activeThreadId),
+    staleTime: 15 * 1000,
+  })
+  const openTaskCount = (taskCountQuery.data?.tasks ?? [])
+    .filter((task: AppChatTask) => !task.isDone).length
+
   const messagesQuery = useQuery({
     queryKey: QUERY_KEYS.chatMessages(activeThreadId ?? 'none', messageLimit, 0),
     queryFn: () => fetchChatMessages(activeThreadId ?? '', { limit: messageLimit, offset: 0 }),
@@ -239,13 +258,36 @@ export default function ChatPage() {
     return `${names.length} people are typing...`
   }, [activityQuery.data?.typingUsers])
 
-  const mentionOptions = useMemo(() => [
-    { id: mentionAllId, display: 'all' },
-    ...users.map((user) => ({
-      id: user.uid,
-      display: String(user.displayName || user.email.split('@')[0] || user.email).trim(),
-    })),
-  ], [users])
+  const mentionOptions = useMemo(() => {
+    // You can only tag somebody who is in this conversation. Offering the whole
+    // directory meant tagging a person who would never see the message.
+    const memberUidSet = new Set(selectedThread?.memberUids ?? [])
+    const threadMembers = memberUidSet.size > 0
+      ? users.filter((user) => memberUidSet.has(user.uid))
+      : []
+    const nameCounts = new Map<string, number>()
+
+    threadMembers.forEach((user) => {
+      const name = String(user.displayName || user.email.split('@')[0] || user.email).trim().toLowerCase()
+      nameCounts.set(name, (nameCounts.get(name) ?? 0) + 1)
+    })
+
+    return [
+      { id: mentionAllId, display: 'all' },
+      ...threadMembers.map((user) => {
+        const name = String(user.displayName || user.email.split('@')[0] || user.email).trim()
+
+        // Two people really are called Jose Gonzalez here. Without the email
+        // in the list there is no way to tell which one you are tagging.
+        return {
+          id: user.uid,
+          display: (nameCounts.get(name.toLowerCase()) ?? 0) > 1
+            ? `${name} (${user.email})`
+            : name,
+        }
+      }),
+    ]
+  }, [selectedThread, users])
 
   const invalidateThreadViews = useCallback(async () => {
     await Promise.all([
@@ -400,9 +442,27 @@ export default function ChatPage() {
     }
 
     const mentionUids = extractMentionUids(messageMarkup)
+    // "@all" means everyone in this conversation, not everyone in the company.
     const resolvedMentionUids = mentionUids.includes(mentionAllId)
-      ? [...new Set(users.map((user) => user.uid))]
+      ? [...new Set(selectedThread?.memberUids ?? [])]
       : mentionUids
+
+    // Typing "@Misha" without picking her from the list leaves plain text: it
+    // looks tagged and notifies nobody. Say so rather than sending silently.
+    const unresolvedMentions = findUnresolvedMentionNames(messageMarkup, text)
+
+    if (unresolvedMentions.length > 0) {
+      const names = unresolvedMentions.map((name) => `@${name}`).join(', ')
+      const confirmed = window.confirm(
+        `${names} ${unresolvedMentions.length === 1 ? 'is' : 'are'} just text — `
+        + `${unresolvedMentions.length === 1 ? 'that person' : 'those people'} will not be notified.\n\n`
+        + 'Pick the name from the list as you type to tag someone.\n\nSend anyway?',
+      )
+
+      if (!confirmed) {
+        return
+      }
+    }
 
     typingSentAtRef.current = 0
     void setChatTyping(activeThreadId, false).catch(() => {})
@@ -431,8 +491,8 @@ export default function ChatPage() {
     messageMarkup,
     messageText,
     replyTo,
+    selectedThread?.memberUids,
     sendMessageMutation,
-    users,
   ])
 
   const handleAttach = useCallback(async (file: File) => {
@@ -667,11 +727,22 @@ export default function ChatPage() {
                     </Tooltip>
                   </>
                 )}
+                <Tooltip title={openTaskCount > 0 ? `Tasks · ${openTaskCount} open` : 'Tasks'}>
+                  <IconButton
+                    aria-label="Tasks"
+                    color={sidePanel === 'tasks' ? 'primary' : 'default'}
+                    onClick={() => setSidePanel((previous) => (previous === 'tasks' ? null : 'tasks'))}
+                  >
+                    <Badge badgeContent={openTaskCount} color="primary" max={99}>
+                      <ChecklistRoundedIcon />
+                    </Badge>
+                  </IconButton>
+                </Tooltip>
                 <Tooltip title="Chat details">
                   <IconButton
                     aria-label="Chat details"
-                    color={detailsOpen ? 'primary' : 'default'}
-                    onClick={() => setDetailsOpen((previous) => !previous)}
+                    color={sidePanel === 'info' ? 'primary' : 'default'}
+                    onClick={() => setSidePanel((previous) => (previous === 'info' ? null : 'info'))}
                   >
                     <InfoOutlinedIcon />
                   </IconButton>
@@ -721,8 +792,53 @@ export default function ChatPage() {
           ) : null}
         </Paper>
 
-        {selectedThread && detailsOpen && isDesktop ? (
+        {selectedThread && sidePanel && isDesktop ? (
           <Paper sx={{ width: 320, flexShrink: 0, overflow: 'hidden' }}>
+            {sidePanel === 'tasks' ? (
+              <ChatTasksPanel
+                thread={selectedThread}
+                currentUid={currentUid}
+                onClose={() => setSidePanel(null)}
+              />
+            ) : (
+              <ChatDetailsPanel
+                thread={selectedThread}
+                messages={messages}
+                users={users}
+                currentUid={currentUid}
+                isAdmin={isAdmin}
+                isSavingGroup={updateGroupMutation.isPending}
+                onClose={() => setSidePanel(null)}
+                onSaveGroup={(payload) => {
+                  if (!payload.name || payload.memberUids.length === 0) {
+                    setActionError('A group needs a name and at least one member.')
+                    return
+                  }
+
+                  updateGroupMutation.mutate({ threadId: selectedThread.id, payload })
+                }}
+                onTogglePin={handleTogglePin}
+                onDeleteThread={(thread) => setDeleteTarget(thread)}
+              />
+            )}
+          </Paper>
+        ) : null}
+      </Box>
+
+      {selectedThread && !isDesktop ? (
+        <Drawer
+          anchor="right"
+          open={Boolean(sidePanel)}
+          onClose={() => setSidePanel(null)}
+          slotProps={{ paper: { sx: { width: 320, maxWidth: '90vw' } } }}
+        >
+          {sidePanel === 'tasks' ? (
+            <ChatTasksPanel
+              thread={selectedThread}
+              currentUid={currentUid}
+              onClose={() => setSidePanel(null)}
+            />
+          ) : (
             <ChatDetailsPanel
               thread={selectedThread}
               messages={messages}
@@ -730,7 +846,7 @@ export default function ChatPage() {
               currentUid={currentUid}
               isAdmin={isAdmin}
               isSavingGroup={updateGroupMutation.isPending}
-              onClose={() => setDetailsOpen(false)}
+              onClose={() => setSidePanel(null)}
               onSaveGroup={(payload) => {
                 if (!payload.name || payload.memberUids.length === 0) {
                   setActionError('A group needs a name and at least one member.')
@@ -742,36 +858,7 @@ export default function ChatPage() {
               onTogglePin={handleTogglePin}
               onDeleteThread={(thread) => setDeleteTarget(thread)}
             />
-          </Paper>
-        ) : null}
-      </Box>
-
-      {selectedThread && !isDesktop ? (
-        <Drawer
-          anchor="right"
-          open={detailsOpen}
-          onClose={() => setDetailsOpen(false)}
-          slotProps={{ paper: { sx: { width: 320, maxWidth: '90vw' } } }}
-        >
-          <ChatDetailsPanel
-            thread={selectedThread}
-            messages={messages}
-            users={users}
-            currentUid={currentUid}
-            isAdmin={isAdmin}
-            isSavingGroup={updateGroupMutation.isPending}
-            onClose={() => setDetailsOpen(false)}
-            onSaveGroup={(payload) => {
-              if (!payload.name || payload.memberUids.length === 0) {
-                setActionError('A group needs a name and at least one member.')
-                return
-              }
-
-              updateGroupMutation.mutate({ threadId: selectedThread.id, payload })
-            }}
-            onTogglePin={handleTogglePin}
-            onDeleteThread={(thread) => setDeleteTarget(thread)}
-          />
+          )}
         </Drawer>
       ) : null}
 

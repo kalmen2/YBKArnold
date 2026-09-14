@@ -2,9 +2,11 @@
 // reactions, reply context and delivery ticks.
 import AddReactionOutlinedIcon from '@mui/icons-material/AddReactionOutlined'
 import CheckRoundedIcon from '@mui/icons-material/CheckRounded'
+import ChecklistRoundedIcon from '@mui/icons-material/ChecklistRounded'
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
 import DoneAllRoundedIcon from '@mui/icons-material/DoneAllRounded'
 import InsertDriveFileOutlinedIcon from '@mui/icons-material/InsertDriveFileOutlined'
+import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded'
 import ReplyRoundedIcon from '@mui/icons-material/ReplyRounded'
 import {
   Box,
@@ -13,11 +15,12 @@ import {
   CircularProgress,
   Divider,
   IconButton,
+  ListItemIcon,
+  ListItemText,
   Menu,
   MenuItem,
   Paper,
   Stack,
-  Tooltip,
   Typography,
 } from '@mui/material'
 import { alpha } from '@mui/material/styles'
@@ -77,6 +80,7 @@ export function ChatMessageList({
 }) {
   const bottomRef = useRef<HTMLDivElement | null>(null)
   const [reactionAnchor, setReactionAnchor] = useState<{ el: HTMLElement; message: AppChatMessage } | null>(null)
+  const [actionAnchor, setActionAnchor] = useState<{ el: HTMLElement; message: AppChatMessage } | null>(null)
 
   const lastMessageId = messages[messages.length - 1]?.id ?? null
 
@@ -164,7 +168,43 @@ export function ChatMessageList({
         const attachment = message.attachment
         const attachmentSrc = resolveAttachmentSrc(attachment)
         const senderLabel = mine ? 'You' : message.createdByName || message.createdByEmail || 'Teammate'
-        const canDelete = !deleted && canDeleteMessage(message, currentUid, currentEmail, isAdmin)
+
+        if (message.isTaskEvent) {
+          // A task announcement belongs to the room, not to a person, so it
+          // reads as a centred line instead of a bubble on one side.
+          return (
+            <Fragment key={message.id}>
+              {showDayDivider ? (
+                <Divider sx={{ my: 1.75 }}>
+                  <Chip size="small" label={dayLabel} sx={{ fontWeight: 600 }} />
+                </Divider>
+              ) : null}
+
+              <Stack direction="row" justifyContent="center" sx={{ my: 0.75 }}>
+                <Stack
+                  direction="row"
+                  spacing={0.75}
+                  alignItems="center"
+                  sx={(theme) => ({
+                    px: 1.25,
+                    py: 0.4,
+                    borderRadius: '999px',
+                    maxWidth: '90%',
+                    bgcolor: alpha(theme.palette.primary.main, 0.07),
+                  })}
+                >
+                  <ChecklistRoundedIcon sx={{ fontSize: 14, color: 'primary.main', flexShrink: 0 }} />
+                  <Typography variant="caption" color="text.secondary" sx={{ wordBreak: 'break-word' }}>
+                    {message.text}
+                  </Typography>
+                  <Typography variant="caption" color="text.disabled" sx={{ flexShrink: 0, fontSize: 10 }}>
+                    {formatChatTime(message.createdAt)}
+                  </Typography>
+                </Stack>
+              </Stack>
+            </Fragment>
+          )
+        }
 
         return (
           <Fragment key={message.id}>
@@ -205,8 +245,11 @@ export function ChatMessageList({
 
                 <Paper
                   sx={{
+                    position: 'relative',
                     px: 1.25,
                     py: 0.85,
+                    // Room for the chevron so it never sits on top of the text.
+                    pr: deleted ? 1.25 : 3.25,
                     // Explicit pixels: theme.shape.borderRadius is 14, so a
                     // numeric shorthand here would render a pill.
                     borderRadius: '10px',
@@ -221,6 +264,28 @@ export function ChatMessageList({
                     boxShadow: 'none',
                   }}
                 >
+                  {!deleted ? (
+                    <IconButton
+                      className="chat-message-actions"
+                      size="small"
+                      aria-label="Message actions"
+                      onClick={(event) => setActionAnchor({ el: event.currentTarget, message })}
+                      sx={{
+                        // Absolute so an empty action area can never shift a
+                        // bubble: a deleted message lines up with every other.
+                        position: 'absolute',
+                        top: 1,
+                        right: 1,
+                        p: 0.25,
+                        opacity: 0,
+                        transition: 'opacity 120ms ease',
+                        '@media (hover: none)': { opacity: 0.55 },
+                      }}
+                    >
+                      <KeyboardArrowDownRoundedIcon sx={{ fontSize: 16 }} />
+                    </IconButton>
+                  ) : null}
+
                   {message.replyTo ? (
                     <Box
                       sx={{
@@ -337,37 +402,6 @@ export function ChatMessageList({
                 ) : null}
               </Box>
 
-              <Stack
-                className="chat-message-actions"
-                direction="row"
-                spacing={0.25}
-                sx={{ opacity: 0, transition: 'opacity 120ms ease', flexShrink: 0 }}
-              >
-                {!deleted ? (
-                  <Tooltip title="React">
-                    <IconButton
-                      size="small"
-                      onClick={(event) => setReactionAnchor({ el: event.currentTarget, message })}
-                    >
-                      <AddReactionOutlinedIcon sx={{ fontSize: 16 }} />
-                    </IconButton>
-                  </Tooltip>
-                ) : null}
-                {!deleted ? (
-                  <Tooltip title="Reply">
-                    <IconButton size="small" onClick={() => onReply(message)}>
-                      <ReplyRoundedIcon sx={{ fontSize: 16 }} />
-                    </IconButton>
-                  </Tooltip>
-                ) : null}
-                {canDelete ? (
-                  <Tooltip title="Delete message">
-                    <IconButton size="small" color="error" onClick={() => onDeleteMessage(message)}>
-                      <DeleteOutlineRoundedIcon sx={{ fontSize: 16 }} />
-                    </IconButton>
-                  </Tooltip>
-                ) : null}
-              </Stack>
             </Stack>
           </Fragment>
         )
@@ -380,6 +414,56 @@ export function ChatMessageList({
       ) : null}
 
       <Box ref={bottomRef} />
+
+      <Menu
+        anchorEl={actionAnchor?.el ?? null}
+        open={Boolean(actionAnchor)}
+        onClose={() => setActionAnchor(null)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+        transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+      >
+        <MenuItem
+          onClick={() => {
+            const anchor = actionAnchor
+            setActionAnchor(null)
+            if (anchor) {
+              // Anchored to the chevron, not this item: the item unmounts the
+              // moment the menu closes and would take the position with it.
+              setReactionAnchor({ el: anchor.el, message: anchor.message })
+            }
+          }}
+        >
+          <ListItemIcon><AddReactionOutlinedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>React</ListItemText>
+        </MenuItem>
+        <MenuItem
+          onClick={() => {
+            const message = actionAnchor?.message
+            setActionAnchor(null)
+            if (message) {
+              onReply(message)
+            }
+          }}
+        >
+          <ListItemIcon><ReplyRoundedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Reply</ListItemText>
+        </MenuItem>
+        {actionAnchor
+          && canDeleteMessage(actionAnchor.message, currentUid, currentEmail, isAdmin) ? (
+          <MenuItem
+            onClick={() => {
+              const message = actionAnchor?.message
+              setActionAnchor(null)
+              if (message) {
+                onDeleteMessage(message)
+              }
+            }}
+          >
+            <ListItemIcon><DeleteOutlineRoundedIcon fontSize="small" color="error" /></ListItemIcon>
+            <ListItemText sx={{ color: 'error.main' }}>Delete</ListItemText>
+          </MenuItem>
+        ) : null}
+      </Menu>
 
       <Menu
         anchorEl={reactionAnchor?.el ?? null}

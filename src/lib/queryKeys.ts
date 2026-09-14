@@ -18,6 +18,9 @@ export const QUERY_KEYS = {
   supportConversation: (ticketId: number) =>
     ['support', 'conversation', ticketId] as const,
 
+  // Dealer linking backfill (temporary tool)
+  dealerLinking: ['admin', 'dealer-linking'] as const,
+
   // CRM
   crmPageBootstrap: ['crm', 'page-bootstrap'] as const,
   crmDealers: ['crm', 'dealers'] as const,
@@ -116,6 +119,8 @@ export const QUERY_KEYS = {
     ['chat', 'threads', type] as const,
   chatMessages: (threadId: string, limit: number, offset: number) =>
     ['chat', 'messages', threadId, limit, offset] as const,
+  chatTasks: (threadId: string) => ['chat', 'tasks', threadId] as const,
+  chatNotificationPreferences: ['chat', 'notification-preferences'] as const,
   chatActivity: (threadId: string) => ['chat', 'activity', threadId] as const,
 
   // Pictures
