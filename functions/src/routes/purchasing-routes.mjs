@@ -907,6 +907,13 @@ export function registerPurchasingRoutes(app, deps) {
       entityPath,
       payload,
     })
+    const resolvePdf = (entityPath, entityId) => quickBooksFetchPdf({
+      apiBaseUrl: quickBooksConfig.apiBaseUrl,
+      realmId,
+      accessToken: tokenDoc.accessToken,
+      entityPath,
+      entityId,
+    })
 
     const queryFn = async (queryText) => {
       try {
@@ -946,10 +953,67 @@ export function registerPurchasingRoutes(app, deps) {
       }
     }
 
+    const pdfFn = async (entityPath, entityId) => {
+      try {
+        return await resolvePdf(entityPath, entityId)
+      } catch (error) {
+        if (Number(error?.status) !== 401) {
+          throw error
+        }
+
+        tokenDoc = await resolveQuickBooksAccessToken({
+          quickBooksTokensCollection,
+          clientId: quickBooksConfig.clientId,
+          clientSecret: quickBooksConfig.clientSecret,
+          forceRefresh: true,
+        })
+
+        return resolvePdf(entityPath, entityId)
+      }
+    }
+
     return {
       queryFn,
       createFn,
+      pdfFn,
     }
+  }
+
+  /**
+   * The printable purchase order, straight from QuickBooks.
+   *
+   * This is the document a vendor is actually sent, so it has to come from
+   * QuickBooks rather than be redrawn here. Anything we drew ourselves would
+   * eventually disagree with what the vendor received.
+   */
+  async function quickBooksFetchPdf({ apiBaseUrl, realmId, accessToken, entityPath, entityId }) {
+    const endpoint = `${normalizeQuickBooksApiBaseUrl(apiBaseUrl)}/v3/company/${encodeURIComponent(realmId)}/${entityPath}/${encodeURIComponent(entityId)}/pdf?minorversion=75`
+    let response = null
+
+    try {
+      response = await fetch(endpoint, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          Accept: 'application/pdf',
+        },
+        signal: AbortSignal.timeout(quickBooksQueryTimeoutMs),
+      })
+    } catch (error) {
+      throw createHttpError(
+        `QuickBooks PDF request failed: ${error?.name === 'TimeoutError' ? 'request timed out' : 'network error'}`,
+        504,
+      )
+    }
+
+    if (!response.ok) {
+      throw createHttpError(
+        `QuickBooks returned ${response.status} for the purchase order PDF.`,
+        response.status === 401 ? 401 : 502,
+      )
+    }
+
+    return Buffer.from(await response.arrayBuffer())
   }
 
   async function queryAllQuickBooksRows({
@@ -1099,6 +1163,11 @@ export function registerPurchasingRoutes(app, deps) {
           productNumber,
           description,
           active: item?.Active !== false,
+          // Carried so a newly created item can copy the accounts the existing
+          // ones already use, rather than hard-coding a chart of accounts here.
+          type: normalizeText(item?.Type, 40) || null,
+          expenseAccountId: extractQuickBooksRefValue(item?.ExpenseAccountRef) || null,
+          incomeAccountId: extractQuickBooksRefValue(item?.IncomeAccountRef) || null,
         }
       })
       .filter(Boolean)
@@ -1236,6 +1305,15 @@ export function registerPurchasingRoutes(app, deps) {
     }
   }
 
+  /** Full lines, unlike the PO-context query, which only needs id and date. */
+  async function queryQuickBooksPurchaseOrderLines({ queryFn }) {
+    return queryAllQuickBooksRows({
+      queryFn,
+      entityName: 'PurchaseOrder',
+      orderBy: 'MetaData.LastUpdatedTime',
+    })
+  }
+
   async function queryIncrementalQuickBooksBills({ queryFn, lastUpdatedCursor }) {
     const bills = []
     let startPosition = 1
@@ -1299,6 +1377,94 @@ export function registerPurchasingRoutes(app, deps) {
       truncated,
       maxUpdatedAt,
     }
+  }
+
+  /**
+   * Purchase orders, stored the same way bills are.
+   *
+   * Two things need them. A bill already records which purchase order it
+   * settles, so having the order's own date is what makes "how long did it
+   * take" answerable at all — that arithmetic has been in the item screen for
+   * a while, reading a field nothing ever filled in. And an order with no bill
+   * against it is simply something that is still on its way, which is the other
+   * half of what a buying list has to show.
+   */
+  function buildQuickBooksPurchaseOrderLineTransactions(purchaseOrder) {
+    const purchaseOrderId = normalizeText(purchaseOrder?.Id, 160)
+
+    if (!purchaseOrderId) {
+      return []
+    }
+
+    const poDate = parseDateOnly(purchaseOrder?.TxnDate)
+    const updatedAt = normalizeText(purchaseOrder?.MetaData?.LastUpdatedTime, 80) || null
+    const docNumber = normalizeText(purchaseOrder?.DocNumber, 160) || null
+    // Open or Closed. Closed does not have to mean everything arrived — see the
+    // note on the purchase orders endpoint.
+    const poStatus = normalizeText(purchaseOrder?.POStatus, 40) || null
+    const vendorRaw =
+      extractQuickBooksRefName(purchaseOrder?.VendorRef)
+      || extractQuickBooksRefValue(purchaseOrder?.VendorRef)
+      || null
+    const memo =
+      normalizeText(purchaseOrder?.PrivateNote, 600)
+      || normalizeText(purchaseOrder?.Memo, 600)
+      || null
+    const lines = Array.isArray(purchaseOrder?.Line) ? purchaseOrder.Line : []
+
+    return lines
+      .map((line, index) => {
+        const lineDetail = normalizeBillLineDetail(line)
+        const itemRaw =
+          normalizeText(lineDetail?.ItemRef?.name, 260)
+          || normalizeText(line?.Description, 320)
+          || normalizeText(lineDetail?.AccountRef?.name, 260)
+          || null
+        const itemKey = normKey(itemRaw)
+
+        if (!itemKey) {
+          return null
+        }
+
+        const amount = toMoney(line?.Amount)
+        const qtyFromLine = Number(lineDetail?.Qty)
+        const qty = Number.isFinite(qtyFromLine) && qtyFromLine > 0 ? qtyFromLine : 1
+        const unitPriceFromLine = Number(lineDetail?.UnitPrice)
+        const unitCost = Number.isFinite(unitPriceFromLine) && unitPriceFromLine > 0
+          ? Number(unitPriceFromLine.toFixed(4))
+          : qty > 0
+            ? Number((amount / qty).toFixed(4))
+            : 0
+        const lineId = normalizeText(line?.Id, 120) || String(index + 1)
+
+        return {
+          id: `qbo_po:${purchaseOrderId}:line:${lineId}`,
+          source: 'qbo_online',
+          type: 'Purchase Order',
+          date: poDate,
+          poDate,
+          // Its own id, so a bill's LinkedTxn lands straight on it.
+          poNumber: purchaseOrderId,
+          transNumber: docNumber,
+          poStatus,
+          itemKey,
+          itemRaw,
+          itemDescription: normalizeText(line?.Description, 320) || null,
+          vendorKey: normKey(vendorRaw) || 'unknown',
+          vendorRaw,
+          qty,
+          unitCost,
+          amount,
+          memo,
+          shipDate: null,
+          delivDate: null,
+          shipDays: null,
+          quickBooksPurchaseOrderId: purchaseOrderId,
+          quickBooksLineId: lineId,
+          quickBooksUpdatedAt: updatedAt,
+        }
+      })
+      .filter(Boolean)
   }
 
   function extractLinkedPurchaseOrderNumber(bill) {
@@ -1402,6 +1568,83 @@ export function registerPurchasingRoutes(app, deps) {
         }
       })
       .filter(Boolean)
+  }
+
+  /**
+   * Days from raising the purchase order to being billed for it.
+   *
+   * A bill is only written when the goods arrive, so the gap between the two
+   * dates is how long the vendor actually took. The item and vendor screens
+   * have been reading this field for a while; nothing ever filled it in.
+   *
+   * Done as a pass over the collection rather than over the batch: a bill
+   * arriving today can settle an order raised months ago, and that order is in
+   * the database, not in this sync's payload.
+   */
+  async function backfillShipDays(purchasingTransactionsCollection) {
+    const pendingBills = await purchasingTransactionsCollection
+      .find(
+        { type: 'Bill', poNumber: { $ne: null }, shipDays: null },
+        { projection: { _id: 0, id: 1, poNumber: 1, date: 1 } },
+      )
+      .toArray()
+
+    if (pendingBills.length === 0) {
+      return { scanned: 0, updated: 0 }
+    }
+
+    const poNumbers = [...new Set(pendingBills.map((bill) => bill.poNumber).filter(Boolean))]
+    const purchaseOrders = await purchasingTransactionsCollection
+      .find(
+        { type: 'Purchase Order', poNumber: { $in: poNumbers } },
+        { projection: { _id: 0, poNumber: 1, poDate: 1, date: 1 } },
+      )
+      .toArray()
+
+    const poDateByNumber = new Map()
+
+    purchaseOrders.forEach((purchaseOrder) => {
+      const poDate = purchaseOrder.poDate || purchaseOrder.date
+
+      if (poDate) {
+        poDateByNumber.set(String(purchaseOrder.poNumber), poDate)
+      }
+    })
+
+    const operations = []
+
+    pendingBills.forEach((bill) => {
+      const poDate = poDateByNumber.get(String(bill.poNumber))
+
+      if (!poDate || !bill.date) {
+        return
+      }
+
+      const days = Math.round(
+        (new Date(bill.date).getTime() - new Date(poDate).getTime()) / 86400000,
+      )
+
+      // A bill dated before its own purchase order is a data entry slip, not a
+      // negative delivery time. Record the date, leave the duration unknown.
+      operations.push({
+        updateOne: {
+          filter: { id: bill.id },
+          update: {
+            $set: Number.isFinite(days) && days >= 0
+              ? { poDate, shipDays: days }
+              : { poDate },
+          },
+        },
+      })
+    })
+
+    if (operations.length === 0) {
+      return { scanned: pendingBills.length, updated: 0 }
+    }
+
+    const result = await purchasingTransactionsCollection.bulkWrite(operations, { ordered: false })
+
+    return { scanned: pendingBills.length, updated: result.modifiedCount ?? 0 }
   }
 
   async function upsertPurchasingTransactions(transactions, purchasingTransactionsCollection) {
@@ -1682,13 +1925,21 @@ export function registerPurchasingRoutes(app, deps) {
 
         return !previousCursorBillIds.has(billId)
       })
-      const transactions = filteredBills.flatMap((bill) =>
+      // Purchase orders are pulled whole rather than incrementally: a bill can
+      // settle an order raised months before the cursor, and without the order
+      // line the delivery time cannot be worked out.
+      const purchaseOrderResult = await queryQuickBooksPurchaseOrderLines({ queryFn })
+      const purchaseOrderTransactions = purchaseOrderResult.rows.flatMap((purchaseOrder) =>
+        buildQuickBooksPurchaseOrderLineTransactions(purchaseOrder))
+      const billTransactions = filteredBills.flatMap((bill) =>
         buildQuickBooksBillLineTransactions(bill))
+      const transactions = [...purchaseOrderTransactions, ...billTransactions]
       const touchedItemKeys = [...new Set(transactions.map((transaction) => transaction.itemKey).filter(Boolean))]
       const transactionWriteSummary = await upsertPurchasingTransactions(
         transactions,
         purchasingTransactionsCollection,
       )
+      const shipDaysSummary = await backfillShipDays(purchasingTransactionsCollection)
       const itemRebuildSummary = await rebuildPurchasingItemsForKeys({
         itemKeys: touchedItemKeys,
         purchasingItemsCollection,
@@ -1719,12 +1970,15 @@ export function registerPurchasingRoutes(app, deps) {
         lastQuickBooksBillUpdatedAt: nextCursor,
         lastQuickBooksBillIdsAtCursor: [...nextCursorBillIds].slice(0, 5000),
         billCountFetched: filteredBills.length,
+        purchaseOrderCountFetched: purchaseOrderResult.rows.length,
         lineCountFetched: transactions.length,
+        shipDaysScanned: shipDaysSummary.scanned,
+        shipDaysResolved: shipDaysSummary.updated,
         newTransactionCount: transactionWriteSummary.insertedCount,
         updatedTransactionCount: transactionWriteSummary.updatedCount,
         touchedItemCount: touchedItemKeys.length,
         rebuiltItemCount: itemRebuildSummary.rebuiltCount,
-        truncated: Boolean(billQueryResult.truncated),
+        truncated: Boolean(billQueryResult.truncated) || Boolean(purchaseOrderResult.truncated),
         lastErrorMessage: null,
         lastErrorAt: null,
       }
@@ -2332,6 +2586,105 @@ export function registerPurchasingRoutes(app, deps) {
         )
       }
 
+      /**
+       * The shape QuickBooks wants for a new purchasable item, worked out from
+       * the ones already there.
+       *
+       * Hard-coding an expense account would mean guessing at a chart of
+       * accounts that differs per company and changes. Copying the account the
+       * existing non-inventory items already post to is both correct and
+       * self-maintaining.
+       */
+      function resolveNewItemTemplate() {
+        const purchasable = poContext.items.filter((item) => item.expenseAccountId)
+
+        if (purchasable.length === 0) {
+          return null
+        }
+
+        const countByAccount = new Map()
+
+        purchasable.forEach((item) => {
+          const key = `${item.type || 'NonInventory'}|${item.expenseAccountId}|${item.incomeAccountId || ''}`
+          countByAccount.set(key, (countByAccount.get(key) ?? 0) + 1)
+        })
+
+        const [mostCommon] = [...countByAccount.entries()].sort((left, right) => right[1] - left[1])
+        const [type, expenseAccountId, incomeAccountId] = String(mostCommon[0]).split('|')
+
+        return {
+          type: type || 'NonInventory',
+          expenseAccountId,
+          incomeAccountId: incomeAccountId || null,
+        }
+      }
+
+      // An item nobody has bought before is normal, not an error. It becomes a
+      // real QuickBooks item at this moment because a vendor has been chosen,
+      // which is when it stops being a note and starts being a purchase.
+      const unmatchedLines = normalizedLines.filter((line) => (
+        collectPoItemMatchCandidates({ line, itemSearchIndex }).length === 0
+      ))
+      const createdItems = []
+
+      if (unmatchedLines.length > 0) {
+        const template = resolveNewItemTemplate()
+
+        if (!template) {
+          throw createHttpError(
+            'No existing QuickBooks item has an expense account to copy, so new items cannot be created automatically. Create one item by hand in QuickBooks first.',
+            409,
+          )
+        }
+
+        const seenNames = new Set()
+
+        for (const line of unmatchedLines) {
+          const name = (line.productNumber || line.itemName).slice(0, 100)
+          const nameKey = normKey(name)
+
+          if (!nameKey || seenNames.has(nameKey)) {
+            continue
+          }
+
+          seenNames.add(nameKey)
+
+          const payload = {
+            Name: name,
+            Type: template.type,
+            ExpenseAccountRef: { value: template.expenseAccountId },
+            ...(template.incomeAccountId ? { IncomeAccountRef: { value: template.incomeAccountId } } : {}),
+            ...(line.description ? { PurchaseDesc: line.description.slice(0, 1000) } : {}),
+          }
+          const created = await createFn('item', payload)
+          const createdItem = created?.Item ?? null
+          const createdId = normalizeText(createdItem?.Id, 160)
+
+          if (!createdId) {
+            throw createHttpError(`Could not create QuickBooks item "${name}".`, 502)
+          }
+
+          const mapped = {
+            id: createdId,
+            name: normalizeText(createdItem?.Name, 260) || name,
+            productNumber: normalizeText(createdItem?.Sku, 160) || name,
+            description: line.description || '',
+            active: true,
+            type: template.type,
+            expenseAccountId: template.expenseAccountId,
+            incomeAccountId: template.incomeAccountId,
+          }
+
+          createdItems.push(mapped)
+          poContext.items.push(mapped)
+          itemSearchIndex.push({
+            item: mapped,
+            productToken: normKey(mapped.productNumber),
+            nameToken: normKey(mapped.name),
+          })
+        }
+      }
+
       const linesByVendorId = new Map()
 
       normalizedLines.forEach((line) => {
@@ -2358,7 +2711,7 @@ export function registerPurchasingRoutes(app, deps) {
 
         if (!matchedItem) {
           throw createHttpError(
-            `Line ${line.index + 1}: QuickBooks item match failed for product "${line.productNumber}".`,
+            `Line ${line.index + 1}: QuickBooks item "${line.productNumber}" could not be matched even after creating it.`,
             409,
           )
         }
@@ -2488,6 +2841,9 @@ export function registerPurchasingRoutes(app, deps) {
         startingPoNumber: String(safeStartingPoNumber),
         poCount: createdPurchaseOrders.length,
         lineCount: normalizedLines.length,
+        // Reported back so the page can say which items it just invented on
+        // your behalf, rather than creating them silently.
+        createdItems: createdItems.map((item) => ({ id: item.id, name: item.name })),
         purchaseOrders: createdPurchaseOrders,
       })
     } catch (error) {
@@ -2802,6 +3158,538 @@ export function registerPurchasingRoutes(app, deps) {
 
   // Any approved, authenticated user can refresh the shared purchasing snapshot.
   // Creating purchase orders remains restricted by requireOfficeManagerOrAdminRole.
+  // ---------------------------------------------------------------------------
+  // The buying list
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Orders whose parts are worth buying yet.
+   *
+   * Design is deliberately excluded: the parts list is still being written
+   * there, and buying against a list that is still changing is how you end up
+   * with the wrong panel. Production and waiting-for-production are both in,
+   * because waiting only means a manager has not pressed the button.
+   */
+  const buyingListOrderFilter = {
+    is_cancelled: { $ne: true },
+    is_deleted: { $ne: true },
+    is_shipped: { $ne: true },
+    is_archived: { $ne: true },
+    $or: [
+      { in_design: { $ne: true } },
+      { production_handoff_status: 'waiting_for_production' },
+    ],
+  }
+
+  function daysBetween(fromDateText, toDateText) {
+    const from = fromDateText ? new Date(fromDateText) : null
+    const to = toDateText ? new Date(toDateText) : null
+
+    if (!from || !to || Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
+      return null
+    }
+
+    return Math.round((to.getTime() - from.getTime()) / 86400000)
+  }
+
+  /**
+   * Statuses that mean nobody is buying this.
+   *
+   * Cancelled speaks for itself. The other three are supplied another way: we
+   * make it, somebody else supplies it, or the customer's own material is being
+   * used. None of them belong on a list of things to order.
+   */
+  const NON_PURCHASE_STATUSES = new Set([
+    'canceled',
+    'cancelled',
+    'make in house',
+    'by other',
+    'com',
+  ])
+
+  /** Statuses that mean it has arrived. */
+  const RECEIVED_STATUSES = new Set(['is here'])
+
+  /**
+   * Statuses that mean an order has been placed.
+   *
+   * Partial counts as on order rather than received: some of it is still owed,
+   * and the part that is still owed is the part worth watching.
+   */
+  const ORDERED_STATUSES = new Set(['ordered', 'partial', 'partial receipt'])
+
+  /**
+   * What a line needs next, decided in one place.
+   *
+   * The Monday status leads and the dates follow, because the status column is
+   * what the shop actually keeps up to date. Of 253 live subitems, 185 said
+   * "Is here" while only 69 carried a received date — reading dates first
+   * called 116 arrived parts "not ordered".
+   *
+   * The page, any report and any alert all read this rather than each deciding
+   * for itself what "late" means, because two answers to that question is worse
+   * than either answer.
+   */
+  function resolveBuyingState(line, todayText) {
+    const status = String(line.status ?? '').trim().toLowerCase()
+
+    if (line.source === 'stock' || NON_PURCHASE_STATUSES.has(status)) {
+      return 'not_needed'
+    }
+
+    if (RECEIVED_STATUSES.has(status) || line.dateReceived) {
+      return 'received'
+    }
+
+    if (ORDERED_STATUSES.has(status) || line.dateOrdered) {
+      // Ordered, and the date it was promised has passed with nothing booked in.
+      return line.dueDate && line.dueDate < todayText ? 'overdue_arrival' : 'ordered'
+    }
+
+    if (line.orderByDate && line.orderByDate < todayText) {
+      return 'overdue_order'
+    }
+
+    return 'not_ordered'
+  }
+
+  /**
+   * Blank rows Monday creates on its own.
+   *
+   * Adding a subitem in Monday makes one called "Subitem" with nothing on it,
+   * and sixteen of them reached us that way. A row with that name and no other
+   * information is not a part anybody has to buy, so it is skipped.
+   *
+   * Hard-coded on purpose, and temporary: this goes when Monday does. A row
+   * named "Subitem" that somebody has since given a vendor, a date, a quantity
+   * or a description is real work and is kept.
+   */
+  const MONDAY_PLACEHOLDER_NAMES = new Set(['', 'item', 'subitem', 'buy', 'new subitem'])
+
+  function isEmptyMondayPlaceholder(part) {
+    const name = String(part?.itemName ?? '').trim().toLowerCase()
+
+    if (!MONDAY_PLACEHOLDER_NAMES.has(name)) {
+      return false
+    }
+
+    const carriesSomething = [
+      part?.description,
+      part?.vendor,
+      part?.dimensions,
+      part?.orderByDate,
+      part?.dueDate,
+      part?.dateOrdered,
+      part?.dateReceived,
+      part?.status,
+      part?.itemKey,
+      part?.link,
+    ].some((value) => String(value ?? '').trim())
+
+    return !carriesSomething && (Number(part?.quantity) || 1) <= 1
+  }
+
+  /** A line nobody can plan around, because it has no dates on it at all. */
+  function isMissingDates(line) {
+    return !line.orderByDate && !line.dueDate
+  }
+
+  function buildBuyingLineFromPart(part, order, todayText) {
+    const line = {
+      lineId: `part:${order.orderKey}:${part.id}`,
+      kind: 'order_part',
+      partId: String(part?.id ?? ''),
+      orderKey: order.orderKey,
+      orderNumber: String(order.order_number ?? '').trim() || null,
+      orderName: String(order.name ?? '').trim() || null,
+      // The project is the order. There is no third thing to pick.
+      projectNumber: String(order.order_number ?? '').trim() || null,
+      projectId: String(order.qb_project_id ?? '').trim() || null,
+      itemKey: String(part?.itemKey ?? '').trim() || null,
+      itemName: String(part?.itemName ?? '').trim() || 'Item',
+      description: String(part?.description ?? '').trim() || null,
+      dimensions: String(part?.dimensions ?? '').trim() || null,
+      quantity: Number.isFinite(Number(part?.quantity)) ? Number(part.quantity) : 1,
+      vendor: String(part?.vendor ?? '').trim() || null,
+      source: String(part?.source ?? '').trim() === 'stock' ? 'stock' : 'purchase',
+      orderByDate: String(part?.orderByDate ?? '').trim() || null,
+      dueDate: String(part?.dueDate ?? '').trim() || null,
+      dateOrdered: String(part?.dateOrdered ?? '').trim() || null,
+      dateReceived: String(part?.dateReceived ?? '').trim() || null,
+      status: String(part?.status ?? '').trim() || null,
+    }
+
+    return {
+      ...line,
+      state: resolveBuyingState(line, todayText),
+      missingDates: isMissingDates(line),
+      daysUntilOrderBy: daysBetween(todayText, line.orderByDate),
+      daysUntilDue: daysBetween(todayText, line.dueDate),
+    }
+  }
+
+  function buildBuyingLineFromRequest(request, todayText) {
+    const line = {
+      lineId: `request:${request.id}`,
+      kind: 'standalone',
+      requestId: String(request?.id ?? ''),
+      orderKey: null,
+      orderNumber: null,
+      orderName: null,
+      projectNumber: String(request?.projectNumber ?? '').trim() || null,
+      projectId: String(request?.projectId ?? '').trim() || null,
+      projectName: String(request?.projectName ?? '').trim() || null,
+      itemKey: String(request?.itemKey ?? '').trim() || null,
+      itemName: String(request?.itemName ?? '').trim() || 'Item',
+      description: String(request?.description ?? '').trim() || null,
+      dimensions: null,
+      quantity: Number.isFinite(Number(request?.quantity)) ? Number(request.quantity) : 1,
+      vendor: String(request?.vendor ?? '').trim() || null,
+      source: String(request?.source ?? '').trim() === 'stock' ? 'stock' : 'purchase',
+      orderByDate: String(request?.orderByDate ?? '').trim() || null,
+      dueDate: String(request?.dueDate ?? '').trim() || null,
+      dateOrdered: String(request?.dateOrdered ?? '').trim() || null,
+      dateReceived: String(request?.dateReceived ?? '').trim() || null,
+      status: null,
+      notes: String(request?.notes ?? '').trim() || null,
+    }
+
+    return {
+      ...line,
+      state: resolveBuyingState(line, todayText),
+      missingDates: isMissingDates(line),
+      daysUntilOrderBy: daysBetween(todayText, line.orderByDate),
+      daysUntilDue: daysBetween(todayText, line.dueDate),
+    }
+  }
+
+  app.get('/api/purchasing/buying-list', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const { ordersUnifiedCollection, purchasingRequestsCollection } = await getCollections()
+      const todayText = new Date().toISOString().slice(0, 10)
+
+      const [orders, requests] = await Promise.all([
+        ordersUnifiedCollection
+          .find(buyingListOrderFilter, {
+            projection: {
+              _id: 0,
+              orderKey: 1,
+              order_number: 1,
+              name: 1,
+              qb_project_id: 1,
+              design_parts: 1,
+            },
+          })
+          .toArray(),
+        purchasingRequestsCollection
+          .find({ isDeleted: { $ne: true } }, { projection: { _id: 0 } })
+          .toArray(),
+      ])
+
+      let mondayPlaceholderCount = 0
+      const orderLines = orders.flatMap((order) => (
+        (Array.isArray(order.design_parts) ? order.design_parts : [])
+          .filter((part) => part && String(part.id ?? '').trim())
+          .filter((part) => {
+            if (!isEmptyMondayPlaceholder(part)) {
+              return true
+            }
+
+            mondayPlaceholderCount += 1
+            return false
+          })
+          .map((part) => buildBuyingLineFromPart(part, order, todayText))
+      ))
+      const requestLines = requests.map((request) => buildBuyingLineFromRequest(request, todayText))
+      const allLines = [...orderLines, ...requestLines]
+      // Cancelled, made in house, supplied by others, customer's own material,
+      // and anything taken from stock. Dropped here rather than filtered on the
+      // page: none of them is a thing anybody has to buy.
+      const lines = allLines.filter((line) => line.state !== 'not_needed')
+
+      const counts = lines.reduce((totals, line) => {
+        totals[line.state] = (totals[line.state] ?? 0) + 1
+        return totals
+      }, {})
+
+      counts.missing_dates = lines.filter((line) => line.missingDates).length
+
+      return res.json({
+        generatedAt: new Date().toISOString(),
+        today: todayText,
+        counts,
+        excludedCount: allLines.length - lines.length,
+        mondayPlaceholderCount,
+        lines,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  // ---------------------------------------------------------------------------
+  // Standalone purchase requests
+  // ---------------------------------------------------------------------------
+
+  function normalizeRequestDate(value) {
+    const text = normalizeText(value, 40)
+    return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : null
+  }
+
+  function mapPurchasingRequest(request) {
+    return {
+      id: String(request?.id ?? ''),
+      itemKey: String(request?.itemKey ?? '').trim() || null,
+      itemName: String(request?.itemName ?? '').trim() || 'Item',
+      description: String(request?.description ?? '').trim() || null,
+      projectId: String(request?.projectId ?? '').trim() || null,
+      projectNumber: String(request?.projectNumber ?? '').trim() || null,
+      projectName: String(request?.projectName ?? '').trim() || null,
+      quantity: Number.isFinite(Number(request?.quantity)) ? Number(request.quantity) : 1,
+      vendor: String(request?.vendor ?? '').trim() || null,
+      source: String(request?.source ?? '').trim() === 'stock' ? 'stock' : 'purchase',
+      orderByDate: String(request?.orderByDate ?? '').trim() || null,
+      dueDate: String(request?.dueDate ?? '').trim() || null,
+      dateOrdered: String(request?.dateOrdered ?? '').trim() || null,
+      dateReceived: String(request?.dateReceived ?? '').trim() || null,
+      notes: String(request?.notes ?? '').trim() || null,
+      createdAt: String(request?.createdAt ?? '').trim() || null,
+      createdByEmail: String(request?.createdByEmail ?? '').trim() || null,
+      updatedAt: String(request?.updatedAt ?? '').trim() || null,
+    }
+  }
+
+  app.post('/api/purchasing/requests', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const itemName = normalizeText(req.body?.itemName, 260)
+
+      if (!itemName) {
+        return res.status(400).json({ error: 'Item name is required.' })
+      }
+
+      const quantityRaw = Number(req.body?.quantity)
+
+      if (!Number.isFinite(quantityRaw) || quantityRaw <= 0) {
+        return res.status(400).json({ error: 'Quantity must be greater than zero.' })
+      }
+
+      // Every purchase belongs to a project, general shop spend included — it
+      // has a project called General. Required here rather than at purchase
+      // order time, so nothing reaches the buying list unable to be bought.
+      const projectId = normalizeText(req.body?.projectId, 160)
+
+      if (!projectId) {
+        return res.status(400).json({ error: 'A QuickBooks project is required.' })
+      }
+
+      const { purchasingRequestsCollection } = await getCollections()
+      const now = new Date().toISOString()
+      const request = {
+        id: randomUUID(),
+        itemKey: normKey(normalizeText(req.body?.itemKey, 260) || itemName) || null,
+        itemName,
+        description: normalizeText(req.body?.description, 900) || null,
+        projectId,
+        projectNumber: normalizeText(req.body?.projectNumber, 160) || null,
+        projectName: normalizeText(req.body?.projectName, 260) || null,
+        quantity: Number(quantityRaw.toFixed(3)),
+        vendor: normalizeText(req.body?.vendor, 260) || null,
+        source: normalizeText(req.body?.source, 20) === 'stock' ? 'stock' : 'purchase',
+        orderByDate: normalizeRequestDate(req.body?.orderByDate),
+        dueDate: normalizeRequestDate(req.body?.dueDate),
+        dateOrdered: null,
+        dateReceived: null,
+        notes: normalizeText(req.body?.notes, 900) || null,
+        isDeleted: false,
+        createdAt: now,
+        createdByEmail: normalizeText(req.authUser?.email, 200) || null,
+        updatedAt: now,
+      }
+
+      await purchasingRequestsCollection.insertOne({ ...request })
+
+      return res.status(201).json({ request: mapPurchasingRequest(request) })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.patch('/api/purchasing/requests/:requestId', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const requestId = normalizeText(req.params.requestId, 160)
+      const { purchasingRequestsCollection } = await getCollections()
+      const existing = await purchasingRequestsCollection.findOne(
+        { id: requestId },
+        { projection: { _id: 0 } },
+      )
+
+      if (!existing) {
+        return res.status(404).json({ error: 'Purchase request not found.' })
+      }
+
+      const changes = { updatedAt: new Date().toISOString() }
+
+      if (req.body?.itemName !== undefined) {
+        const itemName = normalizeText(req.body.itemName, 260)
+
+        if (!itemName) {
+          return res.status(400).json({ error: 'Item name is required.' })
+        }
+
+        changes.itemName = itemName
+        changes.itemKey = normKey(itemName) || null
+      }
+
+      if (req.body?.quantity !== undefined) {
+        const quantityRaw = Number(req.body.quantity)
+
+        if (!Number.isFinite(quantityRaw) || quantityRaw <= 0) {
+          return res.status(400).json({ error: 'Quantity must be greater than zero.' })
+        }
+
+        changes.quantity = Number(quantityRaw.toFixed(3))
+      }
+
+      if (req.body?.description !== undefined) changes.description = normalizeText(req.body.description, 900) || null
+      if (req.body?.vendor !== undefined) changes.vendor = normalizeText(req.body.vendor, 260) || null
+      if (req.body?.notes !== undefined) changes.notes = normalizeText(req.body.notes, 900) || null
+      if (req.body?.source !== undefined) changes.source = normalizeText(req.body.source, 20) === 'stock' ? 'stock' : 'purchase'
+      if (req.body?.orderByDate !== undefined) changes.orderByDate = normalizeRequestDate(req.body.orderByDate)
+      if (req.body?.dueDate !== undefined) changes.dueDate = normalizeRequestDate(req.body.dueDate)
+      if (req.body?.dateOrdered !== undefined) changes.dateOrdered = normalizeRequestDate(req.body.dateOrdered)
+      if (req.body?.dateReceived !== undefined) changes.dateReceived = normalizeRequestDate(req.body.dateReceived)
+
+      await purchasingRequestsCollection.updateOne({ id: requestId }, { $set: changes })
+
+      return res.json({ request: mapPurchasingRequest({ ...existing, ...changes }) })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.delete('/api/purchasing/requests/:requestId', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const requestId = normalizeText(req.params.requestId, 160)
+      const { purchasingRequestsCollection } = await getCollections()
+      // Soft delete: a request that was raised and dropped is worth keeping,
+      // because someone always asks why it was never bought.
+      const result = await purchasingRequestsCollection.updateOne(
+        { id: requestId },
+        { $set: { isDeleted: true, updatedAt: new Date().toISOString() } },
+      )
+
+      if (!result.matchedCount) {
+        return res.status(404).json({ error: 'Purchase request not found.' })
+      }
+
+      return res.json({ ok: true, requestId })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  // ---------------------------------------------------------------------------
+  // Purchase orders raised
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Every purchase order in QuickBooks, with its lines.
+   *
+   * Read live rather than from our own copy: the document a vendor holds is the
+   * one in QuickBooks, and a number that has drifted is worse than a slow page.
+   */
+  app.get('/api/purchasing/purchase-orders', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const { queryFn } = await createQuickBooksExecutor()
+      const result = await queryAllQuickBooksRows({
+        queryFn,
+        entityName: 'PurchaseOrder',
+        orderBy: 'TxnDate DESC',
+      })
+
+      const purchaseOrders = result.rows.map((purchaseOrder) => {
+        const lines = (Array.isArray(purchaseOrder?.Line) ? purchaseOrder.Line : [])
+          .map((line, index) => {
+            const lineDetail = normalizeBillLineDetail(line)
+            const itemName =
+              normalizeText(lineDetail?.ItemRef?.name, 260)
+              || normalizeText(line?.Description, 320)
+              || normalizeText(lineDetail?.AccountRef?.name, 260)
+              || `Line ${index + 1}`
+            const quantity = Number(lineDetail?.Qty)
+            const unitPrice = Number(lineDetail?.UnitPrice)
+
+            return {
+              lineId: normalizeText(line?.Id, 120) || String(index + 1),
+              itemName,
+              description: normalizeText(line?.Description, 320) || null,
+              projectName: extractQuickBooksRefName(lineDetail?.CustomerRef) || null,
+              quantity: Number.isFinite(quantity) ? quantity : null,
+              unitPrice: Number.isFinite(unitPrice) ? unitPrice : null,
+              amount: toMoney(line?.Amount),
+            }
+          })
+
+        return {
+          id: normalizeText(purchaseOrder?.Id, 160),
+          docNumber: normalizeText(purchaseOrder?.DocNumber, 160) || null,
+          txnDate: parseDateOnly(purchaseOrder?.TxnDate),
+          vendorId: extractQuickBooksRefValue(purchaseOrder?.VendorRef) || null,
+          vendorName: extractQuickBooksRefName(purchaseOrder?.VendorRef) || null,
+          // QuickBooks calls it POStatus, and it is only ever Open or Closed.
+          // Closed does not reliably mean everything arrived: QuickBooks closes
+          // an order when every line has been billed, but a person can also
+          // close one by hand to stop chasing the rest. So Closed means "no
+          // longer outstanding", not "fully received". Arrival is judged from
+          // bills, which is why the delivery times come from there.
+          status: normalizeText(purchaseOrder?.POStatus, 40) || null,
+          totalAmount: toMoney(purchaseOrder?.TotalAmt),
+          memo: normalizeText(purchaseOrder?.PrivateNote, 600) || null,
+          lineCount: lines.length,
+          lines,
+        }
+      })
+        .filter((purchaseOrder) => purchaseOrder.id)
+        // Closed orders are dropped here rather than filtered on the page.
+        // QuickBooks closes an order when every line has been billed, and a
+        // person can close one by hand to stop chasing the rest. Either way
+        // there is nothing left to do with it, so it is not worth carrying.
+        .filter((purchaseOrder) => String(purchaseOrder.status ?? '').toLowerCase() !== 'closed')
+
+      return res.json({
+        generatedAt: new Date().toISOString(),
+        truncated: Boolean(result.truncated),
+        purchaseOrders,
+      })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/purchasing/purchase-orders/:purchaseOrderId/pdf', requireFirebaseAuth, async (req, res, next) => {
+    try {
+      const purchaseOrderId = normalizeText(req.params.purchaseOrderId, 160)
+
+      if (!purchaseOrderId) {
+        return res.status(400).json({ error: 'Purchase order id is required.' })
+      }
+
+      const { pdfFn } = await createQuickBooksExecutor()
+      const pdf = await pdfFn('purchaseorder', purchaseOrderId)
+      const docNumber = normalizeText(req.query?.docNumber, 160) || purchaseOrderId
+
+      res.setHeader('Content-Type', 'application/pdf')
+      res.setHeader(
+        'Content-Disposition',
+        `inline; filename="PO-${docNumber.replace(/[^a-z0-9._-]+/gi, '-')}.pdf"`,
+      )
+
+      return res.end(pdf)
+    } catch (error) {
+      next(error)
+    }
+  })
+
   app.post('/api/purchasing/refresh', requireFirebaseAuth, async (req, res, next) => {
     try {
       const forceRefresh = String(req.query?.force ?? '').trim() === '1'

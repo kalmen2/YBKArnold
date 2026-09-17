@@ -131,5 +131,7 @@ export const QUERY_KEYS = {
     ['purchasing', 'items', search, page, pageSize, aiAssistKey] as const,
   purchasingPoContext: ['purchasing', 'po-context'] as const,
   purchasingItemDetail: (itemKey: string) => ['purchasing', 'item', itemKey] as const,
+  purchasingBuyingList: ['purchasing', 'buying-list'] as const,
+  purchasingPurchaseOrders: ['purchasing', 'purchase-orders'] as const,
   purchasingItemPhotos: (itemKey: string) => ['purchasing', 'item-photos', itemKey] as const,
 } as const

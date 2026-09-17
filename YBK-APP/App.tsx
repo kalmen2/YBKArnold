@@ -5,7 +5,6 @@ import { Picker } from '@react-native-picker/picker'
 import * as AppleAuthentication from 'expo-apple-authentication'
 import * as Application from 'expo-application'
 import * as Crypto from 'expo-crypto'
-import * as DocumentPicker from 'expo-document-picker'
 import { Audio } from 'expo-av'
 import Constants from 'expo-constants'
 import { Ionicons } from '@expo/vector-icons'
@@ -14,7 +13,6 @@ import * as FileSystem from 'expo-file-system/legacy'
 import * as ImagePicker from 'expo-image-picker'
 import * as LocalAuthentication from 'expo-local-authentication'
 import * as Notifications from 'expo-notifications'
-import * as Sharing from 'expo-sharing'
 import * as WebBrowser from 'expo-web-browser'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -4497,6 +4495,7 @@ export default function App() {
 
   const handleAttachChatFile = useCallback(async () => {
     try {
+      const DocumentPicker = await import('expo-document-picker')
       const result = await DocumentPicker.getDocumentAsync({
         copyToCacheDirectory: true,
         multiple: false,
@@ -4574,6 +4573,8 @@ export default function App() {
       await FileSystem.writeAsStringAsync(cachedFileUri, dataUrlMatch[2], {
         encoding: 'base64',
       })
+
+      const Sharing = await import('expo-sharing')
 
       if (!(await Sharing.isAvailableAsync())) {
         throw new Error('Opening files is not available on this device.')

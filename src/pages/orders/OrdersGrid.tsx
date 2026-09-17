@@ -17,6 +17,7 @@ import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined'
 import ArchiveRoundedIcon from '@mui/icons-material/ArchiveRounded'
 import UnarchiveRoundedIcon from '@mui/icons-material/UnarchiveRounded'
 import AddRoundedIcon from '@mui/icons-material/AddRounded'
+import ReceiptLongRoundedIcon from '@mui/icons-material/ReceiptLongRounded'
 import SubdirectoryArrowRightRoundedIcon from '@mui/icons-material/SubdirectoryArrowRightRounded'
 import ViewColumnRoundedIcon from '@mui/icons-material/ViewColumnRounded'
 import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded'
@@ -334,6 +335,46 @@ const normalizeWebsiteProgressStatusKey = normalizeProgressStageStatus
 
 function normalizeWebsiteProgressStatusOptions(options: unknown) {
   return normalizeProgressStatusOptions(options)
+}
+
+/**
+ * The production stages, in the order work moves through them.
+ *
+ * Column ids and option labels are the Order Track board's own, read off Monday
+ * rather than invented, so a value written here is one Monday accepts. The
+ * options act as a fallback: most orders arrive with an empty options list, and
+ * without this the stage could be read but never changed.
+ */
+const MONDAY_STAGE_COLUMNS: {
+  key: string
+  label: string
+  columnId: string
+  options: string[]
+}[] = [
+  { key: 'design', label: 'Design', columnId: 'status', options: ['Working on it', 'Done', 'Stuck', 'Waiting for Approval', 'HOLD'] },
+  { key: 'baseForm', label: 'Base/Form', columnId: 'status16', options: ['Working on it', 'Done', 'Stuck', 'Ats', 'N/A'] },
+  { key: 'build', label: 'Build', columnId: 'status5', options: ['Working on it', 'Done', 'Stuck', 'N/A'] },
+  { key: 'sandOrLam', label: 'Sand or lam', columnId: 'dup__of_sanding', options: ['Working on it', 'Done', 'Stuck', 'N/A'] },
+  { key: 'sealer', label: 'Sealer', columnId: 'status0', options: ['Working on it', 'Done', 'Stuck', 'N/A'] },
+  { key: 'lacquer', label: 'Lacquer', columnId: 'status6', options: ['Working on it', 'Done', 'Stuck', 'Touch-up', 'N/A'] },
+  { key: 'ready', label: 'Ready', columnId: 'status3', options: ['Working on it', 'Done', 'Stuck'] },
+  { key: 'invoiced', label: 'Invoiced', columnId: 'status7', options: ['Invoiced', 'Done', 'Paid in Full', 'N/C', 'Deposit Received', 'Invoiced/PIF', 'Invoiced/DepRecd'] },
+]
+
+/** The order's own detail for a stage, matched on key first, then column id. */
+function findStageDetail(
+  order: OrdersOverviewOrder,
+  stage: { key: string, columnId: string },
+) {
+  const details = Array.isArray(order.progressStatusDetails) ? order.progressStatusDetails : []
+
+  return details.find((entry) => String(entry?.key ?? '').trim() === stage.key)
+    ?? details.find((entry) => String(entry?.columnId ?? '').trim() === stage.columnId)
+    ?? null
+}
+
+function resolveStageStatus(order: OrdersOverviewOrder, stage: { key: string, columnId: string }) {
+  return String(findStageDetail(order, stage)?.status ?? '').trim() || null
 }
 
 function buildTrackedProgressStageStates(
@@ -1077,6 +1118,7 @@ export function OrdersGrid({
   const [statusPopoverError, setStatusPopoverError] = useState<string | null>(null)
   const [isStatusPopoverLoading, setIsStatusPopoverLoading] = useState(false)
   const [updatingStatusColumnKey, setUpdatingStatusColumnKey] = useState<string | null>(null)
+  const [savingStageCell, setSavingStageCell] = useState('')
   const [actionsAnchorEl, setActionsAnchorEl] = useState<HTMLElement | null>(null)
   const [actionsOrder, setActionsOrder] = useState<OrdersOverviewOrder | null>(null)
   const [toolsMenuAnchorEl, setToolsMenuAnchorEl] = useState<HTMLElement | null>(null)
@@ -1451,6 +1493,11 @@ export function OrdersGrid({
 
         return (
           <Stack direction="row" spacing={0.5} alignItems="center" sx={{ width: 'fit-content' }}>
+          {/* The order number reads as text, in the body colour, because it is
+              the thing being read on every row. It used to be tinted green or
+              red to say whether the order had a QuickBooks project; that made
+              the identifier itself hard to read, and the same fact is now on
+              the icon beside it. */}
           {canOpenDetails ? (
             <Button
               size="small"
@@ -1459,8 +1506,12 @@ export function OrdersGrid({
                 minWidth: 0,
                 p: 0,
                 textTransform: 'none',
-                fontWeight: 700,
-                color: row.hasQuickBooksRecord ? 'success.main' : 'error.main',
+                // Dark and a touch larger, but not heavy. Bold made a column of
+                // them shout; the colour is what makes it readable.
+                fontWeight: 600,
+                fontSize: '0.92rem',
+                color: 'text.primary',
+                '&:hover': { bgcolor: 'transparent', textDecoration: 'underline' },
               }}
               onMouseEnter={() => prefetchJobDetails(row)}
               onClick={() => onOpenJobDialog(row, 'details')}
@@ -1468,10 +1519,18 @@ export function OrdersGrid({
               {row.orderNumber}
             </Button>
           ) : (
-            <Typography variant="body2" fontWeight={700} color="warning.dark">
+            <Typography fontWeight={600} color="text.secondary" sx={{ fontSize: '0.92rem' }}>
               {row.orderNumber}
             </Typography>
           )}
+          {!row.hasQuickBooksRecord ? (
+            <Tooltip title="No QuickBooks project on this order.">
+              <ReceiptLongRoundedIcon
+                aria-label="No QuickBooks project"
+                sx={{ color: 'error.main', fontSize: '0.8rem', flexShrink: 0 }}
+              />
+            </Tooltip>
+          ) : null}
           {row.ownershipEra === 'prior_owner' ? (
             <Tooltip title="Previous owner's order, imported from Monday. Not counted in company sales or profit.">
               <Box
@@ -2773,6 +2832,100 @@ export function OrdersGrid({
     handleSaveBench,
   ])
 
+  const handleSaveStageCell = useCallback(
+    async (
+      order: OrdersOverviewOrder,
+      stage: { key: string, columnId: string },
+      nextStatus: string,
+    ) => {
+      const mondayItemId = String(order.mondayItemId ?? '').trim()
+      const columnId = String(findStageDetail(order, stage)?.columnId ?? stage.columnId).trim()
+
+      if (!mondayItemId || !columnId) {
+        return
+      }
+
+      setSavingStageCell(`${mondayItemId}:${columnId}`)
+
+      try {
+        const response = await postOrdersMondayProgressStatusUpdate({
+          mondayItemId,
+          columnId,
+          status: nextStatus,
+        })
+
+        updateOrdersOverviewCache(mondayItemId, response.order)
+        await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.ordersOverview })
+      } catch (error) {
+        setBenchEditError(
+          error instanceof Error ? error.message : 'Could not update that stage on Monday.',
+        )
+      } finally {
+        setSavingStageCell('')
+      }
+    },
+    [queryClient, updateOrdersOverviewCache],
+  )
+
+  /**
+   * The production stages as columns you can edit in place.
+   *
+   * These are the Monday status columns the Update Orders dialog used to set,
+   * one order at a time in a modal. Editing them where they are read is fewer
+   * steps, and they can be filtered and sorted like anything else.
+   *
+   * Option lists come from the order itself where Monday has sent them, and
+   * fall back to the board's own labels, which is what makes a stage editable
+   * on an order whose options never came through.
+   */
+  const stageColumns = useMemo<GridColDef<OrdersOverviewOrder>[]>(
+    () => MONDAY_STAGE_COLUMNS.map((stage) => ({
+      field: `stage_${stage.key}`,
+      headerName: stage.label,
+      width: 150,
+      sortable: true,
+      valueGetter: (_value, row) => resolveStageStatus(row, stage) ?? '',
+      renderCell: ({ row }) => {
+        const status = resolveStageStatus(row, stage)
+        const detail = findStageDetail(row, stage)
+        const options = detail?.options?.length ? detail.options : stage.options
+        const mondayItemId = String(row.mondayItemId ?? '').trim()
+        const columnId = String(detail?.columnId ?? stage.columnId).trim()
+        const canEdit = canEditMondayStages && Boolean(mondayItemId && columnId)
+        const cellKey = `${mondayItemId}:${columnId}`
+
+        if (!canEdit) {
+          return status
+            ? <Chip size="small" variant="outlined" label={status} />
+            : <Typography variant="body2" color="text.disabled">—</Typography>
+        }
+
+        return (
+          <Select
+            size="small"
+            variant="standard"
+            disableUnderline
+            displayEmpty
+            value={options.includes(status ?? '') ? status : ''}
+            disabled={savingStageCell === cellKey}
+            onClick={(event) => event.stopPropagation()}
+            onChange={(event) => void handleSaveStageCell(row, stage, String(event.target.value))}
+            renderValue={(selected) => (selected
+              ? <Chip size="small" variant="outlined" label={String(selected)} />
+              : <Typography variant="body2" color="text.disabled">—</Typography>)}
+            sx={{ width: '100%', '& .MuiSelect-select': { py: 0.25 } }}
+          >
+            <MenuItem value=""><em>Clear</em></MenuItem>
+            {options.map((option) => (
+              <MenuItem key={option} value={option}>{option}</MenuItem>
+            ))}
+          </Select>
+        )
+      },
+    })),
+    [canEditMondayStages, handleSaveStageCell, savingStageCell],
+  )
+
   const standardColumns = useMemo<GridColDef<OrdersOverviewOrder>[]>(() => {
     const standardColumnSpecs = activeTab === 'design'
       ? [
@@ -2947,11 +3100,26 @@ export function OrdersGrid({
       )
     })
 
+    // The production stages go on the end, off by default. They are what the
+    // Update Orders dialog used to set, so anyone who wants them switches them
+    // on from the column chooser and keeps them in a saved view.
+    stageColumns.forEach((column) => {
+      const field = String(column.field)
+
+      if (seen.has(field)) {
+        return
+      }
+
+      seen.add(field)
+      result.push(column)
+    })
+
     return result
   }, [
     adminColumns,
     canViewFullFinancials,
     canViewOrderValue,
+    stageColumns,
     standardColumns,
     viewMode,
   ])
@@ -3699,12 +3867,7 @@ export function OrdersGrid({
               startIcon={<AddRoundedIcon />}
               onClick={onAddOrder}
               disabled={addOrderDisabled}
-              sx={{
-                flexShrink: 0,
-                bgcolor: 'grey.800',
-                boxShadow: 'none',
-                '&:hover': { bgcolor: 'grey.900', boxShadow: 'none' },
-              }}
+              sx={{ flexShrink: 0, boxShadow: 'none' }}
             >
               Add order
             </Button>

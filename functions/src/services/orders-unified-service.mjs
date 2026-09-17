@@ -1236,6 +1236,113 @@ export function createOrdersUnifiedService(deps) {
     }
   }
 
+  /**
+   * Re-read shipped orders whose documents never arrived.
+   *
+   * An order is hydrated from the shipped board once, on the sync that notices
+   * it has moved there. After that it is shipped, so it drops out of the
+   * carryover query and is never looked at again. A shop drawing uploaded to
+   * Monday after the move therefore never reaches us: of forty shipped orders
+   * missing a drawing, sixteen had one sitting on Monday the whole time.
+   *
+   * Bounded on purpose. Only rows that are missing something are re-read, and
+   * only a page of them per sync, so a thousand shipped orders never turn into
+   * a thousand lookups.
+   */
+  async function backfillShippedDocuments({ refreshedAt, warnings, limit = 120 }) {
+    const shippedBoardId = normalizeText(mondayShippedBoardId, 120)
+
+    if (!shippedBoardId || typeof fetchMondayBoardItemsByIds !== 'function') {
+      return { checked: 0, recovered: 0 }
+    }
+
+    const candidates = await ordersUnifiedCollection
+      .find(
+        {
+          is_shipped: true,
+          is_deleted: { $ne: true },
+          monday_item_id: { $nin: [null, ''] },
+          monday_board_id: shippedBoardId,
+          $or: [
+            { Shop_drawing: { $in: [null, ''] } },
+            { Signed_BOL: { $in: [null, ''] } },
+          ],
+        },
+        { projection: { _id: 0, orderKey: 1, monday_item_id: 1 } },
+      )
+      .limit(limit)
+      .toArray()
+
+    if (candidates.length === 0) {
+      return { checked: 0, recovered: 0 }
+    }
+
+    const rowsByItemId = new Map()
+    const keysByItemId = new Map()
+
+    candidates.forEach((candidate) => {
+      const itemId = normalizeText(candidate.monday_item_id, 120)
+
+      if (itemId) {
+        rowsByItemId.set(itemId, {})
+        keysByItemId.set(itemId, candidate.orderKey)
+      }
+    })
+
+    try {
+      const snapshot = await fetchMondayBoardItemsByIds({
+        boardId: shippedBoardId,
+        boardUrl: normalizeText(mondayShippedBoardUrl, 400) || null,
+        boardName: 'Shipped Orders',
+        itemIds: [...rowsByItemId.keys()],
+      })
+      const operations = []
+
+      ;(Array.isArray(snapshot?.orders) ? snapshot.orders : []).forEach((detail) => {
+        const itemId = normalizeText(detail?.id, 120)
+        const orderKey = keysByItemId.get(itemId)
+
+        if (!orderKey) {
+          return
+        }
+
+        const changes = { updatedAt: refreshedAt }
+        const drawingUrl = normalizeText(detail?.shopDrawingUrl, 800) || null
+        const signedBolUrl = normalizeText(detail?.signedBolUrl, 800) || null
+        const updatedAt = toIsoOrNull(detail?.updatedAt)
+
+        if (drawingUrl) {
+          changes.Shop_drawing_source = drawingUrl
+          changes.Shop_drawing = drawingUrl
+        }
+
+        if (signedBolUrl) {
+          changes.Signed_BOL_source = signedBolUrl
+          changes.Signed_BOL = signedBolUrl
+        }
+
+        if (updatedAt) {
+          changes.monday_updated_at = updatedAt
+        }
+
+        if (Object.keys(changes).length > 1) {
+          operations.push({ updateOne: { filter: { orderKey }, update: { $set: changes } } })
+        }
+      })
+
+      if (operations.length > 0) {
+        await ordersUnifiedCollection.bulkWrite(operations, { ordered: false })
+      }
+
+      return { checked: candidates.length, recovered: operations.length }
+    } catch (error) {
+      warnings.push(
+        `Shipped document backfill failed: ${normalizeText(error?.message, 400) || 'unknown error'}`,
+      )
+      return { checked: candidates.length, recovered: 0 }
+    }
+  }
+
   async function enrichMatchedShippedRows({ matchedRowsByItemId, refreshedAt, warnings }) {
     const shippedBoardId = normalizeText(mondayShippedBoardId, 120)
 
@@ -1642,7 +1749,15 @@ export function createOrdersUnifiedService(deps) {
         reconciled.is_canonical_order = true
         reconciled.has_crm_record = true
         reconciled.has_monday_record = primaryActive || secondaryActive
-        reconciled.in_design = secondaryItemId ? true : Boolean(reconciled.in_design)
+        // An item living on the design board is in design; one that is not, is
+        // not. Falling back to the stored flag meant an order dragged from
+        // Design to Order Track in Monday stayed on the Design tab forever,
+        // because nothing ever cleared it.
+        reconciled.in_design = secondaryActive
+          ? true
+          : primaryActive
+            ? false
+            : Boolean(reconciled.in_design)
 
         if (secondaryActive) {
           reconciled.monday_item_id = secondaryItemId
@@ -1849,6 +1964,10 @@ export function createOrdersUnifiedService(deps) {
       refreshedAt,
       warnings,
     )
+    // Runs after the merge so it reads what was just written, and writes
+    // straight to the collection rather than into the merge, because these rows
+    // are not part of this pull at all.
+    const shippedDocumentBackfill = await backfillShippedDocuments({ refreshedAt, warnings })
 
     const mondayMovedToShippedOutsideWebsiteOrders = [...new Map(
       movedToShippedOutsideWebsiteRows
@@ -2199,6 +2318,8 @@ export function createOrdersUnifiedService(deps) {
       quickBooksOnlyShippedCheckedCount: quickBooksOnlyCandidates.length,
       quickBooksOnlyMarkedShippedCount,
       shippedDetailEnrichedCount,
+      shippedDocumentsChecked: shippedDocumentBackfill.checked,
+      shippedDocumentsRecovered: shippedDocumentBackfill.recovered,
       newOrdersFinancialBoardCount: newOrdersEnrichmentStats.checkedBoardCount,
       newOrdersFinancialMatchedCount: newOrdersEnrichmentStats.matchedOrderCount,
       newOrdersFinancialUpdatedCount: newOrdersEnrichmentStats.updatedOrderCount,

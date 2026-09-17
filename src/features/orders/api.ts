@@ -1971,9 +1971,13 @@ export type OrderDesignPart = {
   status: string | null
   statusColor: string | null
   vendor: string | null
+  /** When it has to be bought, as opposed to dueDate, when it has to be here. */
+  orderByDate: string | null
   dateOrdered: string | null
   dateReceived: string | null
   dueDate: string | null
+  /** 'stock' keeps it off the buying list; it is in the shop already. */
+  source: 'purchase' | 'stock'
   createdAt: string | null
   createdByUid: string | null
   createdByEmail: string | null
@@ -2001,9 +2005,11 @@ export type OrderDesignPartInput = {
   veneerDirection?: 'length' | 'width' | 'none' | null
   status?: string | null
   vendor?: string | null
+  orderByDate?: string | null
   dateOrdered?: string | null
   dateReceived?: string | null
   dueDate?: string | null
+  source?: 'purchase' | 'stock'
 }
 
 export function fetchOrderDesignParts(orderKey: string) {

@@ -13,6 +13,7 @@ import {
   TextField,
   Typography,
 } from '@mui/material'
+import { createTheme, ThemeProvider, useTheme } from '@mui/material/styles'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
@@ -72,6 +73,27 @@ export default function OrdersPage() {
   const [searchParams] = useSearchParams()
   const requestedOrderId = String(searchParams.get('orderId') ?? '').trim()
   const requestedInitialTab = String(searchParams.get('tab') ?? '').trim()
+  const appTheme = useTheme()
+  const ordersTheme = useMemo(() => createTheme(appTheme, {
+    palette: {
+      primary: {
+        lighter: '#D0E4FF',
+        light: '#5B93E4',
+        main: '#1B4F8C',
+        dark: '#123661',
+        darker: '#0B2239',
+        contrastText: '#FFFFFF',
+      },
+    },
+    components: {
+      MuiButton: {
+        styleOverrides: {
+          containedPrimary: { boxShadow: 'none' },
+        },
+      },
+    },
+  }), [appTheme])
+
   const canEditMondayStages = appUser?.isAdmin === true || appUser?.isManager === true
   const canCreateOrders = appUser?.isOfficeWorker === true || canEditMondayStages
 
@@ -709,6 +731,10 @@ export default function OrdersPage() {
   }, [overview.activeTab])
 
   return (
+    // Orders runs on a deeper blue rather than the app's green. The sidebar
+    // keeps the green, so the colour says which part of the app you are in
+    // rather than repeating the same accent on every page.
+    <ThemeProvider theme={ordersTheme}>
     <Stack spacing={1.25}>
       <OrdersToolbar
         lastRefreshedAt={overview.lastRefreshedAt}
@@ -869,5 +895,6 @@ export default function OrdersPage() {
         </DialogActions>
       </Dialog>
     </Stack>
+    </ThemeProvider>
   )
 }

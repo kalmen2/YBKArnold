@@ -252,6 +252,10 @@ export function createMongoCollectionsService({
       crmOrdersCollection: crmDatabase.collection('crm_orders'),
       purchasingItemsCollection: purchasingDatabase.collection('purchasing_items'),
       purchasingTransactionsCollection: purchasingDatabase.collection('purchasing_transactions'),
+      // Things to buy that belong to no order: shop supplies, consumables,
+      // stock replenishment. Order subitems carry their own project; these
+      // carry none.
+      purchasingRequestsCollection: purchasingDatabase.collection('purchasing_requests'),
       workersCollection: timesheetDatabase.collection('workers'),
       entriesCollection: timesheetDatabase.collection('timesheet_entries'),
       stagesCollection: timesheetDatabase.collection('timesheet_stages'),
@@ -320,6 +324,7 @@ export function createMongoCollectionsService({
         const aiCommentSummariesCollection = aiDatabase.collection('ai_comment_summaries')
         const purchasingItemsCollection = purchasingDatabase.collection('purchasing_items')
         const purchasingTransactionsCollection = purchasingDatabase.collection('purchasing_transactions')
+        const purchasingRequestsCollection = purchasingDatabase.collection('purchasing_requests')
         const quickBooksTokensCollection = integrationsDatabase.collection('quickbooks_oauth_tokens')
         const quickBooksStatesCollection = integrationsDatabase.collection('quickbooks_oauth_states')
         const emailConnectionsCollection = integrationsDatabase.collection('email_oauth_connections')
@@ -457,6 +462,8 @@ export function createMongoCollectionsService({
             purchasingTransactionsCollection.createIndex({ itemKey: 1, date: -1 }),
             purchasingTransactionsCollection.createIndex({ vendorKey: 1, date: -1 }),
             purchasingTransactionsCollection.createIndex({ poNumber: 1 }, { sparse: true }),
+            purchasingRequestsCollection.createIndex({ id: 1 }, { unique: true }),
+            purchasingRequestsCollection.createIndex({ state: 1, orderByDate: 1 }),
             // Text search indexes for CRM
             crmAccountsCollection.createIndex(
               { name: 'text', email: 'text' },
@@ -575,6 +582,7 @@ export function createMongoCollectionsService({
           aiCommentSummariesCollection,
           purchasingItemsCollection,
           purchasingTransactionsCollection,
+          purchasingRequestsCollection,
           quickBooksTokensCollection,
           quickBooksStatesCollection,
           emailConnectionsCollection,

@@ -1,4 +1,4 @@
-import { apiRequest } from '../api-client'
+import { apiFetch, apiRequest } from '../api-client'
 
 export type PurchasingItemSummary = {
   itemKey: string
@@ -233,6 +233,8 @@ export type PurchasingPoCreateResponse = {
   startingPoNumber: string
   poCount: number
   lineCount: number
+  /** Items that did not exist in QuickBooks and were created for this order. */
+  createdItems?: { id: string, name: string }[]
   purchaseOrders: PurchasingPoCreatedOrder[]
 }
 
@@ -373,4 +375,169 @@ export function createPurchasingPurchaseOrders(payload: PurchasingPoCreateReques
     },
     { timeoutMs: 180000 },
   )
+}
+
+// ---------------------------------------------------------------------------
+// The buying list
+// ---------------------------------------------------------------------------
+
+/**
+ * What a line needs next. Decided on the server so the page, any report and
+ * any alert never disagree about what "late" means.
+ */
+export type BuyingLineState =
+  | 'not_ordered'
+  | 'overdue_order'
+  | 'ordered'
+  | 'overdue_arrival'
+  | 'received'
+
+export type BuyingLine = {
+  lineId: string
+  kind: 'order_part' | 'standalone'
+  partId?: string
+  requestId?: string
+  orderKey: string | null
+  orderNumber: string | null
+  orderName: string | null
+  /** The order is the project. Standalone lines have none. */
+  projectNumber: string | null
+  projectId: string | null
+  projectName?: string | null
+  itemKey: string | null
+  itemName: string
+  description: string | null
+  dimensions: string | null
+  quantity: number
+  vendor: string | null
+  source: 'purchase' | 'stock'
+  orderByDate: string | null
+  dueDate: string | null
+  dateOrdered: string | null
+  dateReceived: string | null
+  status: string | null
+  notes?: string | null
+  state: BuyingLineState
+  /** No order-by and no needed-by date, so nothing can be planned around it. */
+  missingDates: boolean
+  daysUntilOrderBy: number | null
+  daysUntilDue: number | null
+}
+
+export type BuyingListResponse = {
+  generatedAt: string
+  today: string
+  counts: Partial<Record<BuyingLineState | 'missing_dates', number>>
+  /** Cancelled, made in house, supplied by others, or taken from stock. */
+  excludedCount: number
+  /** Blank rows Monday creates on its own. Goes away with Monday. */
+  mondayPlaceholderCount: number
+  lines: BuyingLine[]
+}
+
+export function fetchBuyingList() {
+  return apiRequest<BuyingListResponse>('/api/purchasing/buying-list')
+}
+
+export type PurchasingRequestInput = {
+  itemName: string
+  itemKey?: string | null
+  description?: string | null
+  /** Required. Even general shop spend has a QuickBooks project. */
+  projectId: string
+  projectNumber?: string | null
+  projectName?: string | null
+  quantity: number
+  vendor?: string | null
+  source?: 'purchase' | 'stock'
+  orderByDate?: string | null
+  dueDate?: string | null
+  notes?: string | null
+}
+
+export function createPurchasingRequest(input: PurchasingRequestInput) {
+  return apiRequest<{ request: { id: string } }>('/api/purchasing/requests', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export function updatePurchasingRequest(
+  requestId: string,
+  changes: Partial<PurchasingRequestInput> & {
+    dateOrdered?: string | null
+    dateReceived?: string | null
+  },
+) {
+  return apiRequest<{ request: { id: string } }>(
+    `/api/purchasing/requests/${encodeURIComponent(requestId)}`,
+    { method: 'PATCH', body: JSON.stringify(changes) },
+  )
+}
+
+export function deletePurchasingRequest(requestId: string) {
+  return apiRequest<{ ok: boolean }>(
+    `/api/purchasing/requests/${encodeURIComponent(requestId)}`,
+    { method: 'DELETE' },
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Purchase orders raised
+// ---------------------------------------------------------------------------
+
+export type PurchaseOrderLine = {
+  lineId: string
+  itemName: string
+  description: string | null
+  projectName: string | null
+  quantity: number | null
+  unitPrice: number | null
+  amount: number
+}
+
+export type PurchaseOrderRecord = {
+  id: string
+  docNumber: string | null
+  txnDate: string | null
+  vendorId: string | null
+  vendorName: string | null
+  /** QuickBooks POStatus: Open until the order has been fully billed. */
+  status: string | null
+  totalAmount: number
+  memo: string | null
+  lineCount: number
+  lines: PurchaseOrderLine[]
+}
+
+export type PurchaseOrdersResponse = {
+  generatedAt: string
+  truncated: boolean
+  purchaseOrders: PurchaseOrderRecord[]
+}
+
+export function fetchPurchaseOrders() {
+  return apiRequest<PurchaseOrdersResponse>('/api/purchasing/purchase-orders', undefined, {
+    timeoutMs: 120000,
+  })
+}
+
+/**
+ * The document the vendor is sent, fetched from QuickBooks rather than redrawn.
+ *
+ * Read through apiFetch rather than opened as a plain URL, because the endpoint
+ * needs the Firebase token and a new browser tab carries no headers.
+ */
+export async function fetchPurchaseOrderPdf(purchaseOrderId: string, docNumber: string | null) {
+  const query = docNumber ? `?docNumber=${encodeURIComponent(docNumber)}` : ''
+  const response = await apiFetch(
+    `/api/purchasing/purchase-orders/${encodeURIComponent(purchaseOrderId)}/pdf${query}`,
+  )
+  const blob = await response.blob()
+
+  if (!blob || blob.size === 0) {
+    throw new Error('QuickBooks returned an empty purchase order file.')
+  }
+
+  return blob
 }

@@ -30,6 +30,8 @@ import {
   Pagination,
   Paper,
   Stack,
+  Tabs,
+  Tab,
   Switch,
   Table,
   TableBody,
@@ -45,6 +47,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
+import { BuyingListPanel } from '../features/purchasing/BuyingListPanel'
 import { useDebounceValue } from '../hooks/useDebounceValue'
 import { formatCurrency, formatDate, formatDateTime } from '../lib/formatters'
 import { QUERY_KEYS } from '../lib/queryKeys'
@@ -306,6 +309,10 @@ function getAiPriceStatusMeta(status: PurchasingAiPriceStatus) {
 }
 
 export default function PurchasingPage() {
+  // Two jobs on one page: what still has to be bought, and what everything has
+  // cost and how long it took. The buying list leads because it is the one with
+  // something waiting on it.
+  const [pageTab, setPageTab] = useState<'buy' | 'orders' | 'catalog'>('buy')
   const [searchInput, setSearchInput] = useState('')
   const debouncedSearch = useDebounceValue(searchInput, 300)
   const [isManualAiAssistEnabled, setIsManualAiAssistEnabled] = useState(false)
@@ -1124,17 +1131,45 @@ export default function PurchasingPage() {
     }
   }
 
+  if (pageTab !== 'catalog') {
+    return (
+      <Box sx={{ px: { xs: 1.25, md: 2 }, pb: 2 }}>
+        <Tabs
+          value={pageTab}
+          onChange={(_event, next: 'buy' | 'orders' | 'catalog') => setPageTab(next)}
+          sx={{ mb: 2 }}
+        >
+          <Tab value="buy" label="To buy" />
+          <Tab value="orders" label="Purchase orders" />
+          <Tab value="catalog" label="Item history" />
+        </Tabs>
+
+        <BuyingListPanel canCreatePurchaseOrders={canCreatePurchaseOrders} view={pageTab} />
+      </Box>
+    )
+  }
+
   return (
     <Box
       sx={{
         px: { xs: 1.25, md: 2 },
         pt: 0,
         pb: { xs: 1.5, md: 0 },
-        height: { md: 'calc(100vh - 102px)' },
+        height: { md: 'calc(100vh - 150px)' },
         boxSizing: 'border-box',
         overflow: { md: 'hidden' },
       }}
     >
+      <Tabs
+        value={pageTab}
+        onChange={(_event, next: 'buy' | 'orders' | 'catalog') => setPageTab(next)}
+        sx={{ mb: 1.5 }}
+      >
+        <Tab value="buy" label="To buy" />
+        <Tab value="orders" label="Purchase orders" />
+        <Tab value="catalog" label="Item history" />
+      </Tabs>
+
       <Box
         sx={{
           display: 'grid',

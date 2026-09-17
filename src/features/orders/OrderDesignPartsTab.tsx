@@ -64,9 +64,14 @@ type PartDraft = {
   veneerDirection: 'length' | 'width' | 'none' | ''
   status: string
   vendor: string
+  // Two dates, because they answer different questions. orderByDate is when it
+  // has to be bought; dueDate is when it has to be here.
+  orderByDate: string
   dateOrdered: string
   dateReceived: string
   dueDate: string
+  /** 'stock' means it is in the shop already, so it never reaches the buying list. */
+  source: 'purchase' | 'stock'
 }
 
 const EMPTY_DRAFT: PartDraft = {
@@ -80,9 +85,11 @@ const EMPTY_DRAFT: PartDraft = {
   veneerDirection: '',
   status: '',
   vendor: '',
+  orderByDate: '',
   dateOrdered: '',
   dateReceived: '',
   dueDate: '',
+  source: 'purchase',
 }
 
 const ORDER_TRACK_SUBITEM_STATUSES = [
@@ -180,7 +187,7 @@ export function OrderDesignPartsTab({ orderKey, orderNumber, inDesign = false }:
   const dialogTitle = editorMode === 'catalog'
     ? 'Add purchasing item'
     : editorMode === 'requested'
-      ? 'Request a new item'
+      ? 'Add a new item'
       : 'Edit needed part'
 
   const closeEditor = () => {
@@ -229,6 +236,8 @@ export function OrderDesignPartsTab({ orderKey, orderNumber, inDesign = false }:
       veneerDirection: part.veneerDirection || '',
       status: part.status || '',
       vendor: part.vendor || '',
+      orderByDate: part.orderByDate?.slice(0, 10) || '',
+      source: part.source === 'stock' ? 'stock' : 'purchase',
       dateOrdered: part.dateOrdered?.slice(0, 10) || '',
       dateReceived: part.dateReceived?.slice(0, 10) || '',
       dueDate: part.dueDate?.slice(0, 10) || '',
@@ -291,6 +300,8 @@ export function OrderDesignPartsTab({ orderKey, orderNumber, inDesign = false }:
           veneerDirection: requiresVeneerDirection && draft.veneerDirection ? draft.veneerDirection : null,
           status: draft.status || null,
           vendor: draft.vendor || null,
+          orderByDate: draft.orderByDate || null,
+          source: draft.source,
           dateOrdered: draft.dateOrdered || null,
           dateReceived: draft.dateReceived || null,
           dueDate: draft.dueDate || null,
@@ -307,6 +318,12 @@ export function OrderDesignPartsTab({ orderKey, orderNumber, inDesign = false }:
           dimensions: requiresDimensions ? draft.dimensions.trim() : null,
           requiresVeneerDirection,
           veneerDirection: requiresVeneerDirection && draft.veneerDirection ? draft.veneerDirection : null,
+          // Sent on create too. The form asks for these now, and dropping them
+          // here would have meant saving and reopening to fill them in.
+          vendor: draft.vendor.trim() || null,
+          source: draft.source,
+          orderByDate: draft.orderByDate || null,
+          dueDate: draft.dueDate || null,
         })
       }
       await queryClient.invalidateQueries({ queryKey: QUERY_KEYS.orderDesignParts(orderKey) })
@@ -414,8 +431,10 @@ export function OrderDesignPartsTab({ orderKey, orderNumber, inDesign = false }:
           <ListItemButton onClick={openRequestEditor} sx={{ color: 'primary.main' }}>
             <PlaylistAddRoundedIcon sx={{ mr: 1.25 }} />
             <ListItemText
-              primary="Request new item"
-              secondary={catalogSearch.trim() ? `Can't find “${catalogSearch.trim()}”?` : 'Create a request for Purchasing'}
+              primary={catalogSearch.trim() ? `Add “${catalogSearch.trim()}”` : 'Add a new item'}
+              secondary={catalogSearch.trim()
+                ? 'Not in the list. Add it with its own details.'
+                : 'Anything the catalog has not seen before.'}
               primaryTypographyProps={{ fontWeight: 800 }}
             />
           </ListItemButton>
@@ -425,7 +444,7 @@ export function OrderDesignPartsTab({ orderKey, orderNumber, inDesign = false }:
           <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
             <Chip size="small" label={`${parts.length} total`} variant="outlined" />
             <Chip size="small" label={`${counts.catalog} catalog`} variant="outlined" />
-            <Chip size="small" label={`${counts.requested} requested`} color={counts.requested ? 'warning' : 'default'} variant="outlined" />
+            <Chip size="small" label={`${counts.requested} new`} color={counts.requested ? 'warning' : 'default'} variant="outlined" />
             <Chip size="small" label={`${counts.monday} from Monday`} color="info" variant="outlined" />
           </Stack>
           {partsQuery.isLoading ? (
@@ -445,9 +464,10 @@ export function OrderDesignPartsTab({ orderKey, orderNumber, inDesign = false }:
                     <TableCell sx={{ minWidth: 310, fontWeight: 800 }}>Subitem</TableCell>
                     <TableCell sx={{ minWidth: 145, fontWeight: 800 }}>Status</TableCell>
                     <TableCell sx={{ minWidth: 145, fontWeight: 800 }}>Vendor</TableCell>
+                    <TableCell sx={{ minWidth: 110, fontWeight: 800 }}>Order By</TableCell>
                     <TableCell sx={{ minWidth: 115, fontWeight: 800 }}>Date Ordered</TableCell>
                     <TableCell sx={{ minWidth: 115, fontWeight: 800 }}>Date Received</TableCell>
-                    <TableCell sx={{ minWidth: 115, fontWeight: 800 }}>Due Date</TableCell>
+                    <TableCell sx={{ minWidth: 115, fontWeight: 800 }}>Needed By</TableCell>
                     <TableCell align="right" sx={{ minWidth: 155, fontWeight: 800 }}>Actions</TableCell>
                   </TableRow>
                 </TableHead>
@@ -460,7 +480,7 @@ export function OrderDesignPartsTab({ orderKey, orderNumber, inDesign = false }:
                             <Typography variant="body2" fontWeight={800}>{part.itemName}</Typography>
                             <Chip
                               size="small"
-                              label={part.sourceType === 'requested' ? 'Request' : part.sourceType === 'monday' ? 'Monday' : 'Purchasing'}
+                              label={part.sourceType === 'requested' ? 'New item' : part.sourceType === 'monday' ? 'Monday' : 'Catalog'}
                               color={part.sourceType === 'requested' ? 'warning' : part.sourceType === 'monday' ? 'info' : 'primary'}
                               variant="outlined"
                             />
@@ -481,7 +501,12 @@ export function OrderDesignPartsTab({ orderKey, orderNumber, inDesign = false }:
                         </Stack>
                       </TableCell>
                       <TableCell>{part.status ? <Chip size="small" label={part.status} sx={{ bgcolor: part.statusColor || undefined, fontWeight: 700 }} /> : '—'}</TableCell>
-                      <TableCell>{part.vendor || '—'}</TableCell>
+                      <TableCell>
+                        {part.source === 'stock'
+                          ? <Chip size="small" variant="outlined" label="Stock" />
+                          : part.vendor || '—'}
+                      </TableCell>
+                      <TableCell>{part.orderByDate || '—'}</TableCell>
                       <TableCell>{part.dateOrdered || '—'}</TableCell>
                       <TableCell>{part.dateReceived || '—'}</TableCell>
                       <TableCell>{part.dueDate || '—'}</TableCell>
@@ -577,6 +602,10 @@ export function OrderDesignPartsTab({ orderKey, orderNumber, inDesign = false }:
               </>
             ) : null}
             <TextField label="Quantity" type="number" inputProps={{ min: 0.001, step: 1 }} value={draft.quantity} onChange={(event) => setDraft((current) => ({ ...current, quantity: event.target.value }))} required />
+            {/* Status is the Monday column on an existing subitem, so it is only
+                offered once there is one. Everything below it — who is buying
+                it, when, and whether it is coming out of stock — is known when
+                the item is added and used to require saving and reopening. */}
             {editorMode === 'edit' ? (
               <>
                 <FormControl fullWidth>
@@ -586,15 +615,33 @@ export function OrderDesignPartsTab({ orderKey, orderNumber, inDesign = false }:
                     {(inDesign ? DESIGN_SUBITEM_STATUSES : ORDER_TRACK_SUBITEM_STATUSES).map((status) => <MenuItem key={status} value={status}>{status}</MenuItem>)}
                   </Select>
                 </FormControl>
-                <TextField label="Vendor" value={draft.vendor} onChange={(event) => setDraft((current) => ({ ...current, vendor: event.target.value }))} />
-                <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: inDesign ? '1fr' : 'repeat(3, 1fr)' }, gap: 1 }}>
-                  {!inDesign ? <TextField label="Date ordered" type="date" InputLabelProps={{ shrink: true }} value={draft.dateOrdered} onChange={(event) => setDraft((current) => ({ ...current, dateOrdered: event.target.value }))} /> : null}
-                  <TextField label="Date received" type="date" InputLabelProps={{ shrink: true }} value={draft.dateReceived} onChange={(event) => setDraft((current) => ({ ...current, dateReceived: event.target.value }))} />
-                  {!inDesign ? <TextField label="Due date" type="date" InputLabelProps={{ shrink: true }} value={draft.dueDate} onChange={(event) => setDraft((current) => ({ ...current, dueDate: event.target.value }))} /> : null}
-                </Box>
               </>
             ) : null}
-            <TextField label={editorMode === 'requested' ? 'Description of new item' : 'Notes (optional)'} value={draft.description} onChange={(event) => setDraft((current) => ({ ...current, description: event.target.value }))} multiline minRows={3} required={editorMode === 'requested'} />
+            <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 1 }}>
+              <TextField label="Vendor" value={draft.vendor} onChange={(event) => setDraft((current) => ({ ...current, vendor: event.target.value }))} />
+              <TextField
+                select
+                label="Source"
+                value={draft.source}
+                onChange={(event) => setDraft((current) => ({ ...current, source: event.target.value as 'purchase' | 'stock' }))}
+                helperText={draft.source === 'stock' ? 'In the shop already; stays off the buying list.' : 'Appears on the buying list.'}
+              >
+                <MenuItem value="purchase">Buy it</MenuItem>
+                <MenuItem value="stock">Take from stock</MenuItem>
+              </TextField>
+            </Box>
+            <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, 1fr)' }, gap: 1 }}>
+              <TextField label="Order by" type="date" InputLabelProps={{ shrink: true }} helperText="When it has to be bought." value={draft.orderByDate} onChange={(event) => setDraft((current) => ({ ...current, orderByDate: event.target.value }))} />
+              <TextField label="Needed by" type="date" InputLabelProps={{ shrink: true }} helperText="When it has to be here." value={draft.dueDate} onChange={(event) => setDraft((current) => ({ ...current, dueDate: event.target.value }))} />
+            </Box>
+            {/* Only meaningful once the item exists, so kept to the edit form. */}
+            {editorMode === 'edit' ? (
+              <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: inDesign ? '1fr' : 'repeat(2, 1fr)' }, gap: 1 }}>
+                {!inDesign ? <TextField label="Date ordered" type="date" InputLabelProps={{ shrink: true }} value={draft.dateOrdered} onChange={(event) => setDraft((current) => ({ ...current, dateOrdered: event.target.value }))} /> : null}
+                <TextField label="Date received" type="date" InputLabelProps={{ shrink: true }} value={draft.dateReceived} onChange={(event) => setDraft((current) => ({ ...current, dateReceived: event.target.value }))} />
+              </Box>
+            ) : null}
+            <TextField label={editorMode === 'requested' ? 'Describe the new item' : 'Notes (optional)'} value={draft.description} onChange={(event) => setDraft((current) => ({ ...current, description: event.target.value }))} multiline minRows={3} required={editorMode === 'requested'} />
             <TextField label="Link (optional)" placeholder="https://…" value={draft.link} onChange={(event) => setDraft((current) => ({ ...current, link: event.target.value }))} />
           </Stack>
         </DialogContent>

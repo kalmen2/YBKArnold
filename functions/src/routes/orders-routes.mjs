@@ -1642,9 +1642,16 @@ export function registerOrdersRoutes(app, deps) {
       status: String(part?.status ?? '').trim() || null,
       statusColor: String(part?.statusColor ?? '').trim() || null,
       vendor: String(part?.vendor ?? '').trim() || null,
+      // Two dates, because they answer different questions. orderByDate is
+      // when it has to be bought; dueDate is when it has to be here.
+      orderByDate: String(part?.orderByDate ?? '').trim() || null,
       dateOrdered: String(part?.dateOrdered ?? '').trim() || null,
       dateReceived: String(part?.dateReceived ?? '').trim() || null,
       dueDate: String(part?.dueDate ?? '').trim() || null,
+      // Where it comes from. 'stock' means it is already in the shop, so it
+      // never reaches the buying list. When inventory arrives this is the field
+      // the deduction hangs off, with no migration.
+      source: String(part?.source ?? '').trim() === 'stock' ? 'stock' : 'purchase',
       createdAt: String(part?.createdAt ?? '').trim() || null,
       createdByUid: String(part?.createdByUid ?? '').trim() || null,
       createdByEmail: String(part?.createdByEmail ?? '').trim() || null,
@@ -1723,7 +1730,18 @@ export function registerOrdersRoutes(app, deps) {
       const { ordersUnifiedCollection, purchasingItemsCollection } = await getCollections()
       const orderExists = await ordersUnifiedCollection.findOne(
         { orderKey },
-        { projection: { _id: 1, monday_item_id: 1 } },
+        // order_number has to be here: the Monday item is found by matching the
+        // order number against the ACK column, and projecting it away made that
+        // lookup run with undefined and fail with "not found on Monday" for
+        // orders that were plainly on the board.
+        {
+          projection: {
+            _id: 1,
+            order_number: 1,
+            monday_item_id: 1,
+            monday_production_item_id: 1,
+          },
+        },
       )
       if (!orderExists) return res.status(404).json({ error: 'Order not found.' })
 
@@ -1799,9 +1817,11 @@ export function registerOrdersRoutes(app, deps) {
         status: null,
         statusColor: null,
         vendor: String(req.body?.vendor ?? '').trim().slice(0, 260) || null,
+        orderByDate: normalizeSubitemDate(req.body?.orderByDate),
         dateOrdered: normalizeSubitemDate(req.body?.dateOrdered),
         dateReceived: normalizeSubitemDate(req.body?.dateReceived),
         dueDate: normalizeSubitemDate(req.body?.dueDate),
+        source: String(req.body?.source ?? '').trim() === 'stock' ? 'stock' : 'purchase',
         createdAt: now,
         createdByUid: String(publicUser?.uid ?? req.authUser?.uid ?? '').trim() || null,
         createdByEmail: String(publicUser?.email ?? req.authUser?.email ?? '').trim() || null,
@@ -1896,9 +1916,13 @@ export function registerOrdersRoutes(app, deps) {
         status: requestedStatus || null,
         statusColor: requestedStatus ? schema.statusColors[requestedStatus.toLowerCase()] || null : null,
         vendor: String(req.body?.vendor ?? existing.vendor ?? '').trim().slice(0, 260) || null,
+        orderByDate: normalizeSubitemDate(req.body?.orderByDate ?? existing.orderByDate),
         dateOrdered: normalizeSubitemDate(req.body?.dateOrdered ?? existing.dateOrdered),
         dateReceived: normalizeSubitemDate(req.body?.dateReceived ?? existing.dateReceived),
         dueDate: normalizeSubitemDate(req.body?.dueDate ?? existing.dueDate),
+        source: req.body?.source !== undefined
+          ? (String(req.body.source).trim() === 'stock' ? 'stock' : 'purchase')
+          : (String(existing.source ?? '').trim() === 'stock' ? 'stock' : 'purchase'),
         updatedAt: now,
         updatedByEmail: String(req.authUser?.email ?? '').trim() || null,
       }
